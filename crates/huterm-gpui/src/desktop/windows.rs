@@ -72,6 +72,9 @@ const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod button_layout;
 mod client_frame;
+#[cfg(all(test, feature = "test-support"))]
+mod close_hooks;
+mod exit_closes;
 mod model;
 mod projection;
 mod tab_bar;
@@ -95,6 +98,7 @@ use button_layout::{
 use client_frame::{
     ClientFrame, FRAME_RADIUS, FrameState, requested_decorations, resize_cursor,
 };
+use exit_closes::{CommitOutcome, ExitCloses};
 use model::{
     QuakeRecord, TabEntry, TitleScope, WindowLayout, WindowModel, WindowRecord,
     WindowRestore, apply_tab_order,
@@ -209,6 +213,8 @@ struct DesktopRuntime {
     host_effects: DesktopHostEffectClient,
     terminating: AtomicBool,
     restore: Mutex<Option<RestoreSnapshot>>,
+    #[cfg(all(test, feature = "test-support"))]
+    close_hooks: close_hooks::CloseHooks,
 }
 
 /// A structural result with the hierarchy sequence read under the same
@@ -600,6 +606,9 @@ struct Desktop {
     latched: Vec<NoticeContent>,
     /// Client-owned facts about every window; read window facts here.
     windows: WindowModel,
+    /// Exit-closes owed to tabs whose shell exited under `close_on_exit`,
+    /// which the close pipeline of one window showing the tab takes.
+    exit_closes: ExitCloses,
     /// The runtime structure every window and palette reads names, tab
     /// membership, and order from. The UI thread never locks Mux for it.
     hierarchy: Projection,
@@ -1163,6 +1172,7 @@ fn install_desktop(
         latched: Vec::new(),
         config_path: loaded.path,
         windows: WindowModel::default(),
+        exit_closes: ExitCloses::default(),
         hierarchy,
         title_consumers: TitleConsumers::default(),
         views: Views::default(),
@@ -1181,6 +1191,12 @@ fn install_desktop(
     cx.on_window_closed(|cx, window| {
         let desktop = cx.global_mut::<Desktop>();
         desktop.windows.remove(window);
+        // A close the window took and had not started committing never
+        // reached the runtime.
+        if desktop.exit_closes.release(window).is_some() {
+            offer_exit_closes(cx, Some(window));
+        }
+        let desktop = cx.global_mut::<Desktop>();
         desktop.title_consumers.set_host(window, false);
         desktop.views.prune();
         // The closed window's titles left the model; Quit dialogs and
@@ -1330,6 +1346,11 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     if touched.is_empty() {
         return;
     }
+    let desktop = cx.global_mut::<Desktop>();
+    let state = desktop.hierarchy.state();
+    desktop
+        .exit_closes
+        .retain(|tab| state.tab_workspace(tab).is_some());
     let desktop = cx.global::<Desktop>();
     let terminating = desktop.runtime.terminating.load(Ordering::Acquire);
     let windows = windows_to_visit(&desktop.windows, touched);
@@ -1929,7 +1950,6 @@ fn open_window_with_profile(
                 busy: false,
                 installs: PendingInstalls::default(),
                 close: CloseState::default(),
-                exited_tabs: ExitQueue::default(),
                 notices: NoticeStack::default(),
                 notice_focus: cx.focus_handle(),
                 focused_notice: None,
@@ -2732,7 +2752,6 @@ struct WorkspaceView {
     /// Views this window is installing for tabs it did not spawn.
     installs: PendingInstalls,
     close: CloseState,
-    exited_tabs: ExitQueue,
     notices: NoticeStack,
     /// Focus for the toast column; `notices` bindings match while it holds
     /// focus.
@@ -2837,32 +2856,6 @@ impl Drop for WorkspaceView {
     }
 }
 
-#[derive(Default)]
-struct ExitQueue(std::collections::VecDeque<TabId>);
-
-impl ExitQueue {
-    fn observe(
-        &mut self,
-        tab: TabId,
-        was_exited: bool,
-        exited: bool,
-        enabled: bool,
-    ) {
-        if enabled && !was_exited && exited {
-            self.0.push_back(tab);
-        }
-    }
-
-    fn take_next(&mut self, contains: impl Fn(TabId) -> bool) -> Option<TabId> {
-        while let Some(tab) = self.0.pop_front() {
-            if contains(tab) {
-                return Some(tab);
-            }
-        }
-        None
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TabDragSource {
     workspace: WorkspaceId,
@@ -2942,6 +2935,75 @@ fn close_commit_retries(result: &Result<(), MuxError>) -> bool {
     )
 }
 
+/// How a commit ended for the exit-close of `tab` it carried.
+fn exit_commit_outcome(
+    result: &Result<(), MuxError>,
+    target: &CloseTarget,
+    tab: TabId,
+) -> CommitOutcome {
+    if close_commit_retries(result) {
+        CommitOutcome::Retry
+    } else if result.is_err() {
+        CommitOutcome::Failed
+    } else if target.tabs().is_some_and(|tabs| tabs.contains(&tab)) {
+        CommitOutcome::Closed
+    } else {
+        CommitOutcome::NotReached
+    }
+}
+
+/// Records how the commit that carried `tab`'s exit-close ended, whether or
+/// not `window`, which started it, is still open.
+fn finish_exit_commit(
+    cx: &mut App,
+    window: gpui::WindowId,
+    tab: TabId,
+    outcome: CommitOutcome,
+) {
+    let desktop = cx.global_mut::<Desktop>();
+    // A closing window's view still assesses a refused commit again; its
+    // removal returns the close to owed.
+    let window_open = desktop.windows.record(window).is_some();
+    if desktop.exit_closes.finish_commit(tab, outcome, window_open) {
+        offer_exit_closes(cx, Some(window));
+    }
+}
+
+/// Offers the owed exit-closes, once no window is being updated, to the
+/// windows other than `except` that show their tabs; the first whose close
+/// pipeline is idle takes each. Never reads another window's view from
+/// inside an update.
+fn offer_exit_closes(cx: &mut App, except: Option<gpui::WindowId>) {
+    cx.defer(move |cx| {
+        if terminating(cx) {
+            return;
+        }
+        let desktop = cx.global::<Desktop>();
+        let owed: Vec<TabId> = desktop.exit_closes.owed().collect();
+        let windows: Vec<gpui::WindowId> = desktop
+            .windows
+            .records()
+            .filter(|record| {
+                Some(record.id) != except
+                    && record.tabs.iter().any(|entry| owed.contains(&entry.id))
+            })
+            .map(|record| record.id)
+            .collect();
+        for handle in cx.windows() {
+            if !windows.contains(&handle.window_id()) {
+                continue;
+            }
+            let _ = handle.update(cx, |root, window, cx| {
+                if let Ok(view) = root.downcast::<WorkspaceView>() {
+                    view.update(cx, |view, cx| {
+                        view.resume_close(window, cx);
+                    });
+                }
+            });
+        }
+    });
+}
+
 fn merge_close(
     pending: Option<CloseTarget>,
     requested: CloseTarget,
@@ -3001,17 +3063,20 @@ enum CloseDecision {
 }
 
 impl CloseState {
+    /// The next close to start once no operation is busy and no
+    /// confirmation shows: a queued request first, then an exit-close that
+    /// `take_exit` takes.
     fn next_request(
         &mut self,
-        exits: &mut ExitQueue,
         busy: bool,
         contains: impl Fn(TabId) -> bool,
+        take_exit: impl FnOnce() -> Option<TabId>,
     ) -> Option<CloseTarget> {
         if busy || self.confirmation.is_some() {
             return None;
         }
         self.take_pending(&contains)
-            .or_else(|| exits.take_next(contains).map(CloseTarget::Tab))
+            .or_else(|| take_exit().map(CloseTarget::Tab))
     }
 
     fn begin_check(&mut self, target: CloseTarget) -> CloseTarget {
@@ -4162,11 +4227,13 @@ impl WorkspaceView {
             cx.notify();
         }
         if result.exited {
-            self.exited_tabs.observe(
+            let desktop = cx.global_mut::<Desktop>();
+            let holds =
+                desktop.hierarchy.state().tab_workspace(tab_id).is_some();
+            desktop.exit_closes.observe(
                 tab_id,
-                false,
-                true,
                 self.config.terminal.close_on_exit,
+                holds,
             );
         }
         if result.changed {
@@ -6273,6 +6340,7 @@ impl WorkspaceView {
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
         let Some(target) = self.current_close_target(target) else {
+            self.release_exit_close_if_idle(cx);
             return;
         };
         if matches!(target, CloseTarget::Application) {
@@ -6283,39 +6351,19 @@ impl WorkspaceView {
             return;
         }
         let target = self.close.begin_check(target);
-        let request = match &target {
-            CloseTarget::Application => CloseRequest::Application,
-            CloseTarget::Window => {
-                let Some(attachment) = self.attachment_id(cx) else {
-                    self.remove_window(window, cx, false);
-                    return;
-                };
-                CloseRequest::Window(attachment)
-            }
-            CloseTarget::Tab(tab) => {
-                let Some(workspace) = self.workspace_id(cx) else {
-                    return;
-                };
-                CloseRequest::Tab {
-                    workspace,
-                    tab: *tab,
-                }
-            }
-            CloseTarget::Tabs(tabs) => {
-                let Some(workspace) = self.workspace_id(cx) else {
-                    return;
-                };
-                CloseRequest::Tabs {
-                    workspace,
-                    tabs: tabs.clone(),
-                }
-            }
+        let Some(request) = self.close_request(&target, window, cx) else {
+            self.release_exit_close_if_idle(cx);
+            return;
         };
         let generation = self.close.generation;
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-        let task = cx
-            .background_executor()
-            .spawn(async move { runtime.assess(request) });
+        let task = cx.background_executor().spawn(async move {
+            #[cfg(all(test, feature = "test-support"))]
+            if runtime.close_hooks.enter(close_hooks::Stage::Assess).await {
+                return Err(RuntimeError::Stopped.into());
+            }
+            runtime.assess(request)
+        });
         self.busy = true;
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
@@ -6333,6 +6381,10 @@ impl WorkspaceView {
                             format!("Cannot assess close: {error}"),
                             cx,
                         );
+                        // Reported once here; nothing retries it.
+                        cx.global_mut::<Desktop>()
+                            .exit_closes
+                            .settle(view.window);
                         view.cancel_close(window, cx);
                         return;
                     }
@@ -6360,6 +6412,52 @@ impl WorkspaceView {
         })
         .detach();
         cx.notify();
+    }
+
+    /// The runtime request for `target`; `None` when this window has
+    /// nothing to send. A window close without an attachment removes the
+    /// window at once.
+    fn close_request(
+        &mut self,
+        target: &CloseTarget,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<CloseRequest> {
+        Some(match target {
+            CloseTarget::Application => CloseRequest::Application,
+            CloseTarget::Window => {
+                let Some(attachment) = self.attachment_id(cx) else {
+                    self.remove_window(window, cx, false);
+                    return None;
+                };
+                CloseRequest::Window(attachment)
+            }
+            CloseTarget::Tab(tab) => CloseRequest::Tab {
+                workspace: self.workspace_id(cx)?,
+                tab: *tab,
+            },
+            CloseTarget::Tabs(tabs) => CloseRequest::Tabs {
+                workspace: self.workspace_id(cx)?,
+                tabs: tabs.clone(),
+            },
+        })
+    }
+
+    /// Returns the exit-close this window took to owed when no operation
+    /// of the window still holds it, and offers it to the other windows
+    /// showing its tab.
+    fn release_exit_close_if_idle(&self, cx: &mut App) {
+        if self.busy || self.close.confirmation.is_some() {
+            return;
+        }
+        if cx
+            .global_mut::<Desktop>()
+            .exit_closes
+            .release(self.window)
+            .is_some()
+        {
+            offer_exit_closes(cx, Some(self.window));
+        }
     }
 
     /// Restricts tab targets to current tabs, in window order; `None` when
@@ -6402,7 +6500,10 @@ impl WorkspaceView {
     ) {
         self.busy = false;
         self.reconcile_own(window, cx);
-        if matches!(self.close.cancel(), Some(CloseTarget::Application)) {
+        let cancelled = self.close.cancel();
+        // A cancelled close never reached the runtime.
+        self.release_exit_close_if_idle(cx);
+        if matches!(cancelled, Some(CloseTarget::Application)) {
             #[cfg(target_os = "macos")]
             native_quit::cancel_request();
             cx.global_mut::<Desktop>().quitting = false;
@@ -6419,11 +6520,18 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        let target =
-            self.close
-                .next_request(&mut self.exited_tabs, self.busy, |id| {
-                    self.tabs.iter().any(|tab| tab.id == id)
-                });
+        let id = self.window;
+        let tabs = &self.tabs;
+        let shows = |tab: TabId| tabs.iter().any(|view| view.id == tab);
+        // A closing window or teardown takes no exit-close.
+        let can_take = !terminating(cx)
+            && self.record(cx).is_some_and(|record| !record.closing);
+        let target = self.close.next_request(self.busy, shows, || {
+            if !can_take {
+                return None;
+            }
+            cx.global_mut::<Desktop>().exit_closes.take(id, shows)
+        });
         if let Some(target) = target {
             self.request_close(target, window, cx);
             true
@@ -6445,6 +6553,13 @@ impl WorkspaceView {
         };
         self.busy = true;
         let generation = self.close.generation;
+        // From here the commit's result decides the exit-close, even if
+        // this window closes first.
+        let exit = cx
+            .global_mut::<Desktop>()
+            .exit_closes
+            .begin_commit(self.window);
+        let id = self.window;
         self.publish_restorable_bounds(cx);
         let windows = if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
@@ -6454,6 +6569,14 @@ impl WorkspaceView {
         };
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let task = cx.background_executor().spawn(async move {
+            #[cfg(all(test, feature = "test-support"))]
+            if runtime.close_hooks.enter(close_hooks::Stage::Commit).await {
+                // A teardown failure after the runtime accepted the close.
+                let mut committed =
+                    runtime.commit(&assessment, confirmed, windows);
+                committed.result = Err(RuntimeError::Stopped.into());
+                return committed;
+            }
             runtime.commit(&assessment, confirmed, windows)
         });
         let app = cx.to_async();
@@ -6466,6 +6589,10 @@ impl WorkspaceView {
             } else {
                 projected(&app, seq).await
             };
+            if let Some(tab) = exit {
+                let outcome = exit_commit_outcome(&result, &target, tab);
+                app.update(|cx| finish_exit_commit(cx, id, tab, outcome));
+            }
             let _ = view.update_in(cx, |view, window, cx| {
                 if view.close.generation != generation {
                     return;

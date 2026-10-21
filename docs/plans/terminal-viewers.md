@@ -58,8 +58,10 @@ landed and the code on `main` at `8dfb406c` was read again:
   window. A window closed while its confirmation shows returns the close to
   owed. Changed before PR B: an exit-close never prompts, so these rules
   apply only if that changes (see the exit-close decision).
-- Whether `Desktop` owns an exit-close outright, instead of a window
-  claiming it, is decided in PR B.
+- Decided on 2026-10-21 in PR B part 2: `Desktop` does not own an
+  exit-close outright. It owns the owed exit-closes, and the window close
+  pipeline that takes one assesses and commits it (see the exit-close
+  decision).
 - In-place re-subscription (PR B) is covered through the smoke fixture only.
   The desktop never calls `retarget_attachment`, `move_tab`, or
   `move_workspace`, so a revoked viewer whose tab stays in the window's
@@ -1078,35 +1080,68 @@ the terminal stays alive.
 
 ### Desktop: exit close has one actor (PR B)
 
-`Desktop` keeps an **owed exit-close** per tab. The first window whose view
-observes the tab's exit transition while its config has `close_on_exit` set
-records it, as `ExitQueue::observe` decides today. A reload therefore
-still affects only future exits, and a tab retained by
-`close_on_exit = false` is never closed later.
+Decided on 2026-10-21 in PR B part 2: `Desktop` does not own an exit-close
+outright. The window close pipeline stays the only actor that assesses and
+commits a close; `Desktop` owns the owed exit-closes instead of each
+window's `ExitQueue`, which is gone. The gating that keeps single-window
+behavior correct lives in the window: a busy window, a confirmation that
+is showing, merging into a wider `Tabs`, `Window`, or `Application` target,
+retrying a refused commit (`close_commit_retries`), the failure notice, and
+closing an emptied window (`remove_closed_tabs`). If `Desktop` ran closes
+itself, it would have to duplicate all of that or change single-window
+behavior. For example, an exit that closed a tab behind a showing
+window-close confirmation would make the confirmed commit go stale and
+assess again.
 
-An owed close moves through three states:
+`Desktop::exit_closes` (`windows/exit_closes.rs`) keeps one record per
+tab, in exit order:
 
-1. **Owed:** any window showing the tab may claim it, however late its view
-   was installed. The first to do so queues the close in its `ExitQueue`;
-   other windows do not.
-2. **Claimed:** the claiming window holds it until its close operation
-   starts. If the window drops its view or closes first, the close returns
-   to owed, and the window visits the others showing the tab through
-   `cx.defer` and `update_windows`, as `reconcile` does, never reading
-   another window's entity from inside its own update.
-3. **Submitted:** once the assessment or commit has started on a worker,
-   the operation owns the close until its worker returns, even if its view
-   is dropped or its window closes, so a second window can never assess or
-   commit the same close. An application-level completion keyed by tab,
-   independent of the window, records the worker's result:
-   - success clears the close, and `TabClosed` lets reconcile drop the
-     other windows' views;
-   - a failure clears it with the failure notice and is not retried, as
-     today;
-   - an assessment whose window closed before it could start the commit
-     reached nothing in Mux, so the close returns to owed for the remaining
-     windows. A commit that started always runs to its result, because the
-     worker does not depend on the window.
+1. **Owed:** the first window whose view reports the tab's exit transition
+   records it, owed when that window's config has `close_on_exit` set and
+   settled otherwise. A reload therefore affects only future exits, and a
+   tab retained by `close_on_exit = false` is never closed later, even by
+   a window whose view reports the same exit after a reload. A report for
+   a tab the projection no longer holds records nothing, and a record goes
+   away when the projection drops its tab, so a busy window that keeps a
+   closed tab's view cannot revive its close.
+2. **Taken:** `CloseState::next_request` keeps its precedence, queued user
+   closes first, then exits. When the window's pipeline is idle, not busy
+   and with no confirmation showing, it takes the first owed tab the window
+   shows and starts its assessment in the same update. Any window showing
+   the tab may take it, however late its view was installed. A window holds
+   at most one, and a closing window or teardown takes none. The plan's
+   former claimed state, a claim held before the operation starts, does not
+   exist: taking starts the operation.
+3. **Settled:** the close is done, failed, or retained. Later reports of
+   the same exit change nothing.
+
+A taken close ends when the window operation that took it ends:
+
+- A commit that closes the tab settles it, and `TabClosed` lets reconcile
+  drop the other windows' views.
+- A commit refused with `StaleClose` or `ConfirmationRequired` stays with
+  the window while it assesses again.
+- A failed assessment or commit settles it with the window's single failure
+  notice, and nothing retries it.
+- A close that never reached Mux for the tab returns to owed: its target
+  merged into a wider one that did not close the tab, such as a window
+  close that only detached; the user cancelled a merged confirmation; or
+  the retry after a stale commit found the tab gone from the window, as
+  when the tab moved to another workspace. The window then offers it,
+  through `cx.defer` and window handles as `reconcile` does, to the other
+  windows showing the tab, which run `resume_close`. It never reads
+  another window's entity from inside its own update.
+- Once a commit has started, its worker runs to its result even if the
+  window closes. The commit's completion records the result keyed by tab in
+  application context, before and regardless of the window's view update,
+  so a second window can never assess or commit the same close, and a
+  commit that succeeded raises no stale-close notice anywhere.
+- When the window is removed, a close it took and had not started
+  committing returns to owed and is offered to the others.
+
+A window that drops its view of the tab while its own assessment runs
+still commits the close; the runtime decides whether the tab is still
+there. Only the stale-commit path above returns such a close to owed.
 
 Exit notices stay per window, based on the viewer's exit transition, so a
 view installed after the exit announces nothing. Failure notices stay per
@@ -1117,17 +1152,20 @@ assessment is always idle (`JobLifecycle::assess` in `huterm-core`), and
 only a non-idle assessment asks, so no production path raises a dialog for
 an exit-close. Decided before PR B: PR B adds no confirmation rules for
 exit-closes and no test-only way to produce a confirming assessment.
-Instead, one test pins that an exit-close shown in two windows closes
-without prompting. If an exited terminal can ever assess as non-idle, the
-two rules agreed on 2026-10-03 return with it: cancelling clears the owed
-close for every window, and a window closed while its confirmation shows
-returns the close to owed.
+Instead, the tier 2 tests pin that an exit-close shown in two windows
+closes without prompting. If an exited terminal can ever assess as
+non-idle, the two rules agreed on 2026-10-03 return with it: cancelling
+clears the owed close for every window, and a window closed while its
+confirmation shows returns the close to owed. Today a cancelled merged
+confirmation returns the exit-close to owed, which a later refresh of that
+window takes again.
 
-The three states exist because a window owns the operation. PR B decides
-whether `Desktop` can own an exit-close outright, checked against
-`ExitQueue` and the close assessment, once its two-window harness shows
-whether today's single-window exit behavior can be pinned first. If
-`Desktop` owns it, the claimed state goes away.
+Tier 2 tests hold or fail the assessment and the commit through a
+test-only hook in `DesktopRuntime` (`windows/close_hooks.rs`, compiled
+only for tests with the `test-support` feature). It counts both stages,
+holds either until released, and fails the next worker that passes. A
+failed commit runs the real commit first, as a teardown failure after the
+runtime accepted the close would.
 
 ### Smoke fixture (PR B)
 
@@ -1285,9 +1323,11 @@ so each part's tests pass before the next begins:
    debug counter for snapshot builds and cache reuses reported in smoke
    state, derived in the desktop (see "Smoke fixture"), and the helper
    script for native two-window checks. Extend the harness to tier 2.
-2. Exit close. Decide whether `Desktop` owns an exit-close outright. Add
-   owed exit-closes, with claims unless `Desktop` owns them, the test that
-   an exit-close never prompts, and `check-viewers.ts` step 6.
+2. Exit close. `Desktop` owns the owed exit-closes and the window close
+   pipeline takes them; `Desktop` does not own the close itself. Pin the
+   single-window exit behavior in tier 2 first, then add the exit-close
+   test hook, the tier 2 exit-close tests including the one that an
+   exit-close never prompts, and `check-viewers.ts` step 6.
 3. Replacement. Re-subscribe a revoked view in place from reconcile. Give
    `ScrollController` a way to clear its latched failure, or skip it for
    `Revoked`, so a replaced viewer resumes snapshots. Add the fixture
@@ -1589,23 +1629,31 @@ Installing views:
 
 Exit close:
 
-- Exit-close tests, with both windows observing the exit before either close
-  starts:
-  - exactly one close is assessed;
-  - the claim returns to owed when the claiming window drops its view before
-    starting, and a view installed after the exit takes it over;
-  - with the assessment held and then the commit held, dropping the claiming
-    view starts no second operation;
-  - an assessment failure and a commit failure each clear the close with one
-    notice;
+- Tier 2 tests that pin today's single-window behavior, added before the
+  refactor and passing on both sides of it: an exited tab closes under
+  `close_on_exit`, the last tab's exit closes its window, and an exit while
+  the window is busy closes once the busy close ends.
+- Tier 2 exit-close tests, with both windows observing the exit before the
+  close is decided unless noted:
+  - exactly one close is assessed and committed, and the other window takes
+    nothing while the first holds it;
+  - a view installed after the exit takes a close that its busy window
+    cannot, and takes it over when the claiming window closes during its
+    assessment, then closes the tab;
+  - with the assessment held and then the commit held, dropping the
+    claiming view starts no second operation;
   - closing the claiming window after its commit starts and before the
-    commit returns leads to one close and no stale-close notice in the other
-    window; closing it during the assessment returns the close to owed, and
-    the other window then closes the tab;
-  - a tab that exited under `close_on_exit = false` stays open after a
-    reload enables it, as the existing reload test requires;
-  - a view installed after the exit announces nothing;
-  - the close happens without a confirmation prompt in either window.
+    commit returns leads to one close and no notice in the other window;
+  - an assessment failure and a commit failure each settle the close with
+    one notice in the claiming window and none in the other;
+  - a tab that exited under `close_on_exit = false` stays open after both
+    windows enable it;
+  - a view installed after the exit announces nothing (part 1's test);
+  - no window shows a confirmation for any of these closes.
+- Unit tests for `ExitCloses`: the first report decides, takes follow exit
+  order with one close per window, an uncommitted close returns to owed
+  while a committing one waits for its result, a refused commit stays with
+  an open window, and records end with their tabs.
 - `check-viewers.ts` step 6, below.
 
 Replacement:

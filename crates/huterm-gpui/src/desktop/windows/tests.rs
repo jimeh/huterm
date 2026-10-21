@@ -405,45 +405,33 @@ fn hidden_and_every_overlay_frame_preserve_full_terminal_bounds() {
 }
 
 #[test]
-fn exit_queue_retains_inactive_siblings_while_busy_and_cancel_consumes_only_current()
- {
-    let first = TabId::new(1);
-    let second = TabId::new(2);
-    let mut queue = ExitQueue::default();
+fn exit_closes_wait_behind_busy_work_confirmation_and_queued_closes() {
+    let window = gpui::WindowId::from(1);
+    let (first, second, queued) = (TabId::new(1), TabId::new(2), TabId::new(4));
+    let mut exits = ExitCloses::default();
     let mut close = CloseState::default();
     close.begin_check(CloseTarget::Tab(TabId::new(3)));
-    queue.observe(first, false, true, true);
-    queue.observe(second, false, true, true);
-    // Busy structural work leaves both requests queued, independent of active tab.
-    assert_eq!(close.next_request(&mut queue, true, |_| true), None);
+    exits.observe(first, true, true);
+    exits.observe(second, true, true);
+    let mut next = |close: &mut CloseState, busy| {
+        close.next_request(busy, |_| true, || exits.take(window, |_| true))
+    };
+    // Busy structural work leaves both exit-closes owed, independent of
+    // the active tab.
+    assert_eq!(next(&mut close, true), None);
     close.cancel();
-    let target = close.next_request(&mut queue, false, |_| true).unwrap();
+    close.queue(CloseTarget::Tab(queued));
+    assert_eq!(next(&mut close, false), Some(CloseTarget::Tab(queued)));
+    let target = next(&mut close, false).unwrap();
     assert_eq!(target, CloseTarget::Tab(first));
     close.begin_check(target.clone());
     assert_eq!(
         close.checked(true),
         Some(CloseDecision::Confirm(target.clone()))
     );
-    assert_eq!(close.next_request(&mut queue, false, |_| true), None);
+    assert_eq!(next(&mut close, false), None);
     assert_eq!(close.cancel(), Some(target));
-    queue.observe(first, true, true, true);
-    queue.observe(second, true, true, true);
-    assert_eq!(queue.take_next(|_| true), Some(second));
-    assert_eq!(queue.take_next(|_| true), None);
-}
-
-#[test]
-fn exit_queue_reload_affects_future_transitions_and_discards_removed_tabs() {
-    let first = TabId::new(1);
-    let second = TabId::new(2);
-    let third = TabId::new(3);
-    let mut queue = ExitQueue::default();
-    queue.observe(first, false, true, false);
-    queue.observe(first, true, true, true);
-    queue.observe(second, false, true, true);
-    queue.observe(third, false, true, true);
-    assert_eq!(queue.take_next(|id| id != second), Some(third));
-    assert_eq!(queue.take_next(|_| true), None);
+    assert_eq!(exits.owed().collect::<Vec<_>>(), [second]);
 }
 
 #[test]

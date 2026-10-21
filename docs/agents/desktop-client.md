@@ -42,7 +42,7 @@ failed install waits for a later batch that touches the workspace. A window
 that gains an attachment runs its own full reconcile, because attaching
 emits no hierarchy event. A view installed after its tab exited shows the
 exit from status but announces nothing: only the exit transition raises a
-notice or queues an exit-close.
+notice or records an exit-close.
 
 ## Activity tasks and frame scheduling
 
@@ -114,11 +114,25 @@ remain blocked. Use commit_close_with for capture and termination-gate changes:
 validate once before side effects, then capture before teardown. A second
 freshness check after capture can strand a half-accepted Quit.
 
-The terminal activity drain queues shell-exit transitions once for assessed tab
-close.
-Keep automatic exit requests separate from the merged manual close intent, so
-canceling one prompt does not lose inactive siblings. Config reload changes only
-future exit events. Exited tabs retain history and local selection/scrolling;
+`Desktop::exit_closes` owns exit-closes, one record per tab, and the window
+close pipeline is the only actor that assesses and commits them. The first
+view to report a tab's exit transition records it, owed under that window's
+`close_on_exit` and settled otherwise, so a reload changes only future exits.
+An idle window that shows an owed tab takes it in `next_request`, after
+queued user closes, and starts its assessment at once; any window showing the
+tab may take it, and a window holds one at a time. Keep automatic exit
+requests separate from the merged manual close intent, so canceling one prompt
+does not lose inactive siblings. A close that never reached Mux for its tab
+(cancelled, merged into a wider target that left the tab, or found gone on a
+stale retry) returns to owed and is offered to the other windows through
+`cx.defer` and window handles, never by reading their entities from inside an
+update. Once its commit starts, the commit's completion records the result by
+tab in application context, so closing the window cannot let a second window
+close the same tab. Removing a window returns a close it took but had not
+started committing. A failed assessment or commit settles with one notice and
+is not retried. Tier 2 tests hold and fail both stages through
+`windows/close_hooks.rs`, which compiles only for tests with `test-support`.
+Exited tabs retain history and local selection/scrolling;
 close their input queue and reset mouse ownership without emitting releases.
 
 ## Rendering

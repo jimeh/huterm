@@ -88,8 +88,12 @@ the shared viewport and canonical grid through a fresh observing viewer,
 which rearms neither window. Smoke state's `w<i>.snapshots=<builds>,<reuses>`
 counts snapshot replies for the active terminal across both windows, a
 report rather than a gate, and `w<i>.clipboard_writes` the clipboard writes
-a window delivered. `mise run smoke:manual-viewers` opens the same two
-windows for manual Cmd-Tab, Mission Control, and occlusion checks.
+a window delivered. Step 6 types `exit` into window 1's first tab, whose
+fixture shell then exits, and checks that both windows drop to one tab and
+that neither lists a `command` notice for a failed or unassessable close
+among its `w<i>.notice<j>=` fields. `mise run smoke:manual-viewers` opens
+the same two windows for manual Cmd-Tab, Mission Control, and occlusion
+checks.
 
 An attached window installs a view for every tab in its workspace, so a
 smoke that drops a view while keeping its terminal alive must move the tab

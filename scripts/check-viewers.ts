@@ -2,11 +2,12 @@
  * Show one terminal in two windows of the palette smoke binary: attach a
  * second window to the first window's session, then check shared output,
  * the shared viewport, control of the PTY size, installing a tab opened
- * later, single delivery of a clipboard write, and closing the second
- * window. Input goes through fixture commands addressed to a window, so the
- * check does not depend on which window has native keyboard focus. Where
- * Xvfb delivers no frames, assertions read runtime-backed state: the PTY
- * size from the shell and the shared viewport from a fixture snapshot.
+ * later, single delivery of a clipboard write, one close for a shell that
+ * exits, and closing the second window. Input goes through fixture
+ * commands addressed to a window, so the check does not depend on which
+ * window has native keyboard focus. Where Xvfb delivers no frames,
+ * assertions read runtime-backed state: the PTY size from the shell and
+ * the shared viewport from a fixture snapshot.
  */
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -44,6 +45,13 @@ export function sizeLine(sizes: string, token: string): { columns: number; rows:
   return rows === undefined || columns === undefined ? undefined : { columns, rows };
 }
 
+/** Window `window`'s notices about a close that failed or could not be assessed. */
+export function closeFailureNotices(state: string, window: number): string[] {
+  const count = Number(windowField(state, window, "notices") ?? 0);
+  return Array.from({ length: count }, (_, index) => quoted(state, `w${window}.notice${index}`) ?? "")
+    .filter((notice) => /\|command\|(Close failed|Cannot assess close)/.test(notice));
+}
+
 /** The `bottom_offset=<n> grid=<c>,<r>` answer of the `viewport` command. */
 export function parseViewport(value: string): { offset: number; columns: number; rows: number } {
   const match = /^bottom_offset=(\d+) grid=(\d+),(\d+)$/.exec(value.trim());
@@ -57,7 +65,8 @@ export async function checkViewers(executable: string): Promise<void> {
   const sizes = join(directory, "sizes");
   const config = join(directory, "config.toml");
   // `size <token>` records the PTY size after every report queued before
-  // the line; `clip <text>` writes the clipboard through OSC 52.
+  // the line; `clip <text>` writes the clipboard through OSC 52; `exit`
+  // ends the shell.
   await writeFile(shell, `#!/bin/sh
 trap 'exit 0' HUP TERM
 printf 'READY\\n'
@@ -67,6 +76,7 @@ while IFS= read -r line; do
     fill*) i=0; while [ "$i" -lt 300 ]; do echo "line $i"; i=$((i+1)); done; printf 'FILLED:%s\\n' "\${line#fill }";;
     clip*) printf '\\033]52;c;%s\\007' "$(printf %s "\${line#clip }" | base64)"; printf 'CLIPPED\\n';;
     ack*) printf 'ACK:%s\\n' "\${line#ack }";;
+    exit) exit 0;;
   esac
 done
 `, { mode: 0o700 });
@@ -198,12 +208,25 @@ always_show = true
     if (delivered !== 1) throw new Error(`the clipboard write was delivered ${delivered} times`);
     await waitFor(async () => (await command("clipboard")) === "viewers-clip", "the clipboard text");
 
+    // 6. With close_on_exit, the first tab's shell exits and one close
+    // removes the tab from both windows, which keep the second tab.
+    await stateWhere((state) => windowField(state, 1, "active_index") === "0", "window 1 to show the first tab");
+    await command("type-in\t1\texit");
+    await stateWhere((state) => windowField(state, 0, "tabs") === "1" && windowField(state, 1, "tabs") === "1",
+      "both windows to lose the exited tab");
+    await send(0, "ack after-exit", "ACK:after-exit");
+    const exited = await stateWhere((state) => text(state, 1).includes("ACK:after-exit"), "window 1 to show the second tab");
+    for (const window of [0, 1]) {
+      const notices = closeFailureNotices(exited, window);
+      if (notices.length > 0) throw new Error(`window ${window} reported a failed close: ${notices.join("; ")}`);
+    }
+
     // 7. Closing window 1 detaches it; window 0's shell still answers.
     await command("invoke-in\t1\tclose_window");
     await stateWhere((state) => state.includes("windows=1"), "window 1 to close");
     await send(0, "ack still-here", "ACK:still-here");
     const final = await current();
-    if (windowField(final, 0, "tabs") !== "2") throw new Error(`window 0 lost a tab: ${final}`);
+    if (windowField(final, 0, "tabs") !== "1") throw new Error(`window 0 lost a tab: ${final}`);
 
     console.log(`VIEWERS_SMOKE native=${process.platform} snapshots(builds,reuses) ${report.join(" ")}`);
     await command("quit");
