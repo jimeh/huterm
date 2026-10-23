@@ -259,6 +259,16 @@ subject lists the subject under a section the renderer rejects; correct it with
 a `BEGIN_COMMIT_OVERRIDE` block in the merged pull request's description, then
 let Release Please regenerate the release pull request.
 
+Release Please treats any `BEGIN_COMMIT_OVERRIDE` in a merged pull request's
+description as an override, even inside backticks or without an
+`END_COMMIT_OVERRIDE` marker. The text after it, up to an end marker if one
+exists, replaces the commit message. If that text does not parse as a
+conventional commit, Release Please drops the commit from the changelog and the
+release pull request, and its workflow still passes. Write the marker in a
+description only as a complete, intentional block of valid conventional commit
+messages. In prose, call it something else, such as "a commit-override block".
+To recover, reword the description and rerun Release Please.
+
 Preview the notes with `mise run release-notes:preview`. It writes
 `target/release-notes-preview.html` by default and accepts `--output <path>`,
 `--version <version>`, and `--installed <version>`, which applies Sparkle's

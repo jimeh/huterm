@@ -142,6 +142,9 @@ below 10 seconds; CI remains authoritative because hooks can be bypassed.
 
 Squash-merged `feat`, `fix`, and `perf` pull request titles become user-facing
 update notes; see [release notes](docs/agents/releases.md#release-notes).
+Outside an intentional override block, never write `BEGIN_COMMIT_OVERRIDE` in a
+pull request description, even in backticks. Release Please treats any
+occurrence as a commit override and silently drops a commit it cannot parse.
 
 ## Dependency changes
 
