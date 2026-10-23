@@ -577,14 +577,18 @@ fn a_window_attached_to_a_session_installs_and_shows_its_tabs(
     });
 }
 
-/// A child that prints `READY`, answers its first line by setting its title
-/// to `one`, ringing once, and printing `DONE1`, and answers each later line
-/// by setting its title to `two`, ringing twice, and printing `DONE<n>`.
-/// Bells ring only in answer to a line, so none can arrive before the window
-/// is active, where the view would not count it.
+/// A child that prints `READY`, then answers its first line by ringing once
+/// and setting its title to `one`, its second by ringing twice and setting
+/// it to `two`, and its third by setting it to `three` without ringing.
+/// Each answer prints `DONE<n>` last. A view that shows an answer's title
+/// has therefore applied the poll that carried its bells, which come first,
+/// and bells ring only in answer to a line typed into the active window,
+/// where the view counts them.
 const STATUS: &str = "printf READY; n=0; while read line; do n=$((n+1)); \
-     if [ $n = 1 ]; then printf '\\033]0;one\\007\\007DONE1'; \
-     else printf '\\033]0;two\\007\\007\\007DONE%s' $n; fi; done";
+     case $n in \
+     1) printf '\\007\\033]0;one\\007DONE1';; \
+     2) printf '\\007\\007\\033]0;two\\007DONE2';; \
+     *) printf '\\033]0;three\\007DONE3';; esac; done";
 
 #[gpui::test]
 fn the_refresh_applies_each_status_change_once(cx: &mut TestAppContext) {
@@ -598,18 +602,17 @@ fn the_refresh_applies_each_status_change_once(cx: &mut TestAppContext) {
         let view = view.read(cx);
         (view.title.clone(), view.bell_flash_count)
     };
-    harness.type_line(window, "w");
-    harness.wait_text(window, tab, "DONE1");
-    harness.wait_for("the first title", |cx| state(cx).0 == "one");
-    assert_eq!(harness.cx.update(state), ("one".to_owned(), 1));
-    harness.type_line(window, "x");
-    harness.wait_text(window, tab, "DONE2");
-    harness.wait_for("the second title", |cx| state(cx).0 == "two");
-    // Polling again after the change, as every later wake does, applies
-    // nothing more.
+    for (line, title, bells) in [("w", "one", 1), ("x", "two", 3)] {
+        harness.type_line(window, line);
+        harness.wait_for(&format!("the title {title:?}"), |cx| {
+            state(cx).0 == title
+        });
+        assert_eq!(harness.cx.update(state), (title.to_owned(), bells));
+    }
+    // A later status change without bells applies none again.
     harness.type_line(window, "y");
-    harness.wait_text(window, tab, "DONE3");
-    assert_eq!(harness.cx.update(state), ("two".to_owned(), 5));
+    harness.wait_for("the title \"three\"", |cx| state(cx).0 == "three");
+    assert_eq!(harness.cx.update(state), ("three".to_owned(), 3));
 }
 
 #[gpui::test]

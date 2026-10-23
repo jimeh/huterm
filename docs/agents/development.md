@@ -349,6 +349,14 @@ Typed keys reach a terminal only once its window is active and the terminal
 is focused, so `DesktopHarness::activate` waits for both. Its waits pump
 frames on every window.
 
+In either tier, screen text and polled state reach a view separately. Text
+comes with a snapshot, while bells, titles, and exits come from the poll in
+the tab's activity drain, which can apply later. Text on screen proves
+nothing about the poll, so a test that counts polled effects waits for a
+status change that the child writes after them, such as a new title, and
+never for output text. Before this rule, a bell count read once `DONE3`
+showed came up short on macOS CI.
+
 ## Validation ladder
 
 | Trigger | Command | Scope | Evidence owner |
