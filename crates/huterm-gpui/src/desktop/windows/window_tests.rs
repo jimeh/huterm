@@ -3,11 +3,12 @@
 //! Mux, as another client would. The harness section of
 //! `docs/plans/terminal-viewers.md` describes what this tier covers.
 
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use gpui::{Keystroke, TestAppContext, VisualTestContext};
 use huterm_protocol::{
-    CellSize, GridSize, TerminalCommand, TerminalInput, TerminalLifecycle,
+    CellSize, GridSize, Rgb, TerminalCommand, TerminalInput, TerminalLifecycle,
     TerminalPresentation, TerminalSnapshot,
 };
 
@@ -1542,6 +1543,64 @@ fn a_replacement_started_before_a_resize_takes_the_current_size(
         "the canonical grid to follow the new size",
         |snapshot| snapshot.size == large,
     );
+}
+
+/// A raw-mode child that prints `READY`, asks for the default foreground
+/// color once it reads a byte, prints `ASKED`, and then reports every byte
+/// it receives in hex, the color reply included.
+const ASKS_FOREGROUND: &str = "stty raw -echo; printf READY; \
+     dd bs=1 count=1 2>/dev/null >/dev/null; printf '\\033]10;?\\007ASKED'; \
+     while byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); \
+     [ -n \"$byte\" ]; do printf '%s' \"$byte\"; done";
+
+#[gpui::test]
+fn a_replacement_started_before_a_theme_change_takes_the_current_colors(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ASKS_FOREGROUND);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Subscribe);
+    harness.revoke(window);
+    harness.wait_for("the replacement to start", |_| {
+        hooks.held(Stage::Subscribe) == 1
+    });
+    // As a reload does: the revoked viewer refuses the new colors.
+    let theme = Theme {
+        foreground: Rgb {
+            red: 0x12,
+            green: 0x34,
+            blue: 0x56,
+        },
+        ..Theme::default()
+    };
+    harness.cx.update(|cx| {
+        terminal(cx, window, tab).unwrap().update(cx, |view, _| {
+            view.publish_presentation(&theme);
+            view.theme = theme.clone();
+        });
+    });
+    hooks.release(Stage::Subscribe);
+    harness.wait_for("the replacement", |cx| {
+        replaced(cx, window, tab, 1).is_some()
+    });
+    harness.type_line(window, "q");
+    harness.wait_for("the child to receive the new foreground", |cx| {
+        received(cx, window, tab, "ASKED")
+            .is_some_and(|hex| hex.contains(&hex_of("rgb:1212/3434/5656")))
+    });
+}
+
+/// `text` as the lowercase hex a hex-echo child prints for it.
+fn hex_of(text: &str) -> String {
+    text.bytes().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    })
 }
 
 /// Exits the [`EXITS`] tab while its window's replacement viewer is held

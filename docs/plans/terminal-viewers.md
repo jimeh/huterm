@@ -1749,7 +1749,8 @@ Replacement:
     `Subscribe` gate in the test-only worker hooks
     (`windows/worker_hooks.rs`), a window that blurs while the other
     window takes focus leaves focus and the size with the active window,
-    and a window resized meanwhile gets the current size;
+    a window resized meanwhile gets the current size, and a theme changed
+    meanwhile reaches the child's color query (added after review);
   - a shell that exits while its only live view is being replaced still
     closes the tab under `close_on_exit` and raises the exit notice
     without it.
