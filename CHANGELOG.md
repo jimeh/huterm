@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/jimeh/huterm/compare/v0.17.0...v0.18.0) (2026-10-23)
+
+
+### Features
+
+* show release notes for every version a macOS update brings ([#224](https://github.com/jimeh/huterm/issues/224)) ([67a9849](https://github.com/jimeh/huterm/commit/67a98495dd335bf3afa4a5d4a06202dc13c3c201))
+
 ## [0.17.0](https://github.com/jimeh/huterm/compare/v0.16.0...v0.17.0) (2026-10-08)
 
 
