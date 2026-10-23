@@ -84,7 +84,8 @@ fn read_state(cx: &mut App) -> String {
             for (index, tab) in workspace.tabs.iter().enumerate() {
                 let terminal = tab.view.read(cx);
                 let cell = terminal.physical_cell_size();
-                let grid = terminal.last_grid_size;
+                let grid = terminal.requested_grid;
+                let displayed = terminal.displayed_grid_state();
                 let layout = terminal.terminal_layout(window);
                 let theme = &terminal.theme;
                 writeln!(
@@ -99,6 +100,12 @@ fn read_state(cx: &mut App) -> String {
                     output,
                     "tab{index}.grid={},{}",
                     grid.columns, grid.rows
+                )
+                .unwrap();
+                writeln!(
+                    output,
+                    "tab{index}.displayed_grid={},{}",
+                    displayed.0, displayed.1
                 )
                 .unwrap();
                 writeln!(

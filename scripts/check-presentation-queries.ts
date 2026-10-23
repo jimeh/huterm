@@ -117,7 +117,8 @@ async function main(executableArgument: string): Promise<void> {
     const initial = await waitFor(async () => {
       const value = await state();
       return value?.tabs === "1" && value["tab0.visible"] === "true"
-        && value["tab0.grid"] === value["tab0.layout_grid"] ? value : undefined;
+        && value["tab0.grid"] === value["tab0.layout_grid"]
+        && value["tab0.displayed_grid"] === value["tab0.grid"] ? value : undefined;
     }, "initial rendered terminal");
     await writeFile(join(directory, `query-initial-${firstPid}`), "query");
     const initialReplies = await queryReplies("initial", firstPid);

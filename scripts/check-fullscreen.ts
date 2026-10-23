@@ -85,7 +85,8 @@ export function assertTimeout(state: State, diagnostics: string): void {
 
 export function ptyMatchesGrid(state: State, word: string): boolean {
   const [columns, rows] = state["w0.grid"]?.split(",") ?? [];
-  if (!columns || !rows) return false;
+  // The visible view also displays the grid it requested once settled.
+  if (!columns || !rows || state["w0.displayed_grid"] !== state["w0.grid"]) return false;
   return new RegExp(`ACK:${word}:\\s*${rows}\\s+${columns}`).test(state["w0.text"] ?? "");
 }
 

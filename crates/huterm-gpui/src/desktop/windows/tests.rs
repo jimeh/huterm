@@ -724,24 +724,23 @@ fn application_mouse_coordinates_follow_all_tab_placements() {
                 WindowConfig::default(),
             );
             let start = chrome.terminal.origin + layout.bounds.origin;
+            let geometry = super::super::grid_geometry::GridGeometry::new(
+                Bounds::new(start, layout.bounds.size),
+                cell,
+                layout.grid,
+                Some(layout.grid),
+            );
+            assert!(geometry.contains(start), "{placement:?}");
             assert_eq!(
-                application_mouse_geometry(
-                    start,
-                    chrome.terminal.origin,
-                    layout,
-                    cell
-                ),
-                (true, MousePosition::default()),
+                geometry.cell(start),
+                MousePosition::default(),
                 "{placement:?}"
             );
+            let next = start + point(px(8.0), px(16.0));
+            assert!(geometry.contains(next), "{placement:?}");
             assert_eq!(
-                application_mouse_geometry(
-                    start + point(px(8.0), px(16.0)),
-                    chrome.terminal.origin,
-                    layout,
-                    cell
-                ),
-                (true, MousePosition { column: 1, row: 1 }),
+                geometry.cell(next),
+                MousePosition { column: 1, row: 1 },
                 "{placement:?}"
             );
             let tab_center = chrome.tabs.origin
@@ -749,16 +748,7 @@ fn application_mouse_coordinates_follow_all_tab_placements() {
                     chrome.tabs.size.width / 2.0,
                     chrome.tabs.size.height / 2.0,
                 );
-            assert!(
-                !application_mouse_geometry(
-                    tab_center,
-                    chrome.terminal.origin,
-                    layout,
-                    cell
-                )
-                .0,
-                "{placement:?}"
-            );
+            assert!(!geometry.contains(tab_center), "{placement:?}");
         }
     }
 }

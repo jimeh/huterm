@@ -94,6 +94,11 @@ impl Links {
         self.result = None;
         self.cancel_press();
     }
+    /// Forgets the pointer's cell, so the next update requests a lookup even
+    /// at the same cell. Invalidation alone relies on a snapshot following.
+    pub fn forget_point(&mut self) {
+        self.point = None;
+    }
     pub fn disable(&mut self) {
         self.invalidate();
         self.enabled = false;
@@ -207,6 +212,15 @@ mod tests {
         assert!(!state.update(Some(point(0)), false, (0.0, 0.0)));
         state.publish(intent, Some(LinkLookup::Match(link())));
         assert!(state.hover().is_none());
+    }
+    #[test]
+    fn a_forgotten_point_requests_a_lookup_at_the_same_cell() {
+        let mut state = ready();
+        state.invalidate();
+        assert!(!state.update(Some(point(0)), true, (0.0, 0.0)));
+        state.invalidate();
+        state.forget_point();
+        assert!(state.update(Some(point(0)), true, (0.0, 0.0)));
     }
     #[test]
     fn owned_press_survives_unrelated_snapshots_and_opens_captured_target_once()

@@ -69,7 +69,10 @@ Do not suppress invalidation by comparing content generations: presentation
 updates invalidate without advancing the content generation. Keep ChromeLayout
 as the
 shared source of terminal bounds for painting, mouse input, scrollbars, and PTY
-resizing.
+resizing. Inside those bounds, `TerminalLayout` computes the requested grid,
+which the view reports and the PTY follows while the view controls;
+`requested_grid` is never what the view draws. `GridGeometry` maps between
+window positions and the displayed grid, the snapshot's `size`.
 
 ## Close and Quit
 

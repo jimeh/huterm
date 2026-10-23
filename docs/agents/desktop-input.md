@@ -78,6 +78,21 @@ pointer callbacks for hidden views; keep focus and window-activation cleanup
 subscriptions on each TerminalView. Ghostty's side of mouse format and tracking
 state is in [the engine guide](terminal-engines.md#color-and-mouse-state).
 
+A view displays the snapshot's grid, which differs from the grid it requests
+while another viewer controls the terminal and until the snapshot for a new
+layout arrives. `GridGeometry` maps the pointer onto the displayed grid:
+application reports, link points, and selection points use displayed-grid cells
+clamped to its nearest edge. Only the visible area, where the displayed grid
+overlaps the requested grid's painted bounds, starts a report; it is measured in
+pixels, so a viewport narrower than one cell still reports on the part it
+paints. Outside it the pointer keeps the padding's local behavior. Every mouse
+report carries the displayed snapshot's geometry revision, and the runtime
+discards a press, hover, or wheel report whose grid has changed since; releases
+and owned motion are never checked. A snapshot with a new revision forgets the
+motion deduplication sample, so a discarded hover does not suppress the next one
+in the same cell. A local layout change forgets the hover point as well as the
+link result: no snapshot follows it while another viewer controls.
+
 ## Pointer tracking, scrolling, and selection
 
 Derive scrollbar geometry and label text from the displayed snapshot offset.
@@ -104,7 +119,10 @@ terminal viewport inset for PTY sizing, scrollbar geometry, and mouse input.
 Within that viewport, `TerminalLayout` owns padded grid bounds and dimensions
 for painting, PTY sizing, and selection coordinates. Keep scrollbar geometry
 relative to the outer viewport. Clip grid painting to its bounds because a
-snapshot from before a resize may arrive after the viewport has shrunk.
+snapshot from before a resize may arrive after the viewport has shrunk, and
+because another viewer may control a larger grid. Page scrolling moves the
+smaller of the requested and displayed row counts, so a clipped view never skips
+rows it cannot show.
 
 Shared relative scroll requests can follow output that advances the runtime
 viewport. Benchmark expected offsets use command plus pre-operation runtime

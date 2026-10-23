@@ -48,9 +48,10 @@ describe("fullscreen evidence checker", () => {
     expect(() => assertWindowedBounds(original, undefined, true)).toThrow();
   });
   test("PTY evidence follows the grid published with its output", () => {
-    const state = { "w0.grid": "106,47", "w0.text": "ACK:native:47 106" };
+    const state = { "w0.grid": "106,47", "w0.displayed_grid": "106,47", "w0.text": "ACK:native:47 106" };
     expect(ptyMatchesGrid(state, "native")).toBe(true);
     expect(ptyMatchesGrid({ ...state, "w0.grid": "100,32" }, "native")).toBe(false);
+    expect(ptyMatchesGrid({ ...state, "w0.displayed_grid": "100,32" }, "native")).toBe(false);
     expect(ptyMatchesGrid(state, "restored")).toBe(false);
   });
   test("hosted native fullscreen may settle at another usable origin", () => {

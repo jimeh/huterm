@@ -36,3 +36,17 @@ test("Mise pins the same Rust toolchain as rust-toolchain.toml", () => {
     .toEqual({ version: toolchain.channel, components: [...toolchain.components].sort(), profile: toolchain.profile });
   expect(locked).toEqual([toolchain.channel]);
 });
+
+test("the Rust lint, type-check, and test tasks build the GPUI view tests", () => {
+  // Those tests compile only with this feature, so a task without it would
+  // skip them and still pass.
+  const tasks = toml("mise.toml").tasks;
+  const commands: Record<string, string | undefined> = {
+    lint: tasks.lint.run,
+    typecheck: tasks.typecheck.run,
+    "test:rust": (tasks["test:rust"].run as string[]).find((command) => command.includes("--workspace")),
+  };
+  const enabled = Object.fromEntries(Object.entries(commands).map(([name, command]) =>
+    [name, /--features (\S+,)?huterm-gpui\/test-support(,|\s)/.test(command ?? "")]));
+  expect(enabled).toEqual({ lint: true, typecheck: true, "test:rust": true });
+});

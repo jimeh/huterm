@@ -87,7 +87,7 @@ run = "cargo fmt --all -- --check"
 [tasks.lint]
 depends = ["ghostty:prepare"]
 description = "Run Clippy with warnings denied"
-run = "bash scripts/build-exec.sh cargo clippy --workspace --all-targets --features huterm-config/schema --locked -- -D warnings"
+run = "bash scripts/build-exec.sh cargo clippy --workspace --all-targets --features huterm-config/schema,huterm-gpui/test-support --locked -- -D warnings"
 
 [tasks."lint:test-order"]
 description = "Check that inline Rust test modules follow production items"
@@ -112,7 +112,7 @@ run = "markdownlint-cli2 --no-globs --"
 [tasks.typecheck]
 depends = ["ghostty:prepare"]
 description = "Type-check all workspace targets"
-run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --locked"
+run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --features huterm-gpui/test-support --locked"
 
 [tasks.architecture]
 description = "Check dependency-neutral protocol, process-info, and Ghostty binding boundaries"
@@ -167,7 +167,7 @@ depends = ["ghostty:prepare"]
 # `--all-targets` skips doctests; huterm-ghostty's compile_fail doctests
 # prove its borrow and thread-affinity guarantees.
 run = [
-  "bash scripts/build-exec.sh cargo test --workspace --all-targets --locked",
+  "bash scripts/build-exec.sh cargo test --workspace --all-targets --features huterm-gpui/test-support --locked",
   "bash scripts/build-exec.sh cargo test --locked -p huterm-ghostty --doc",
 ]
 
