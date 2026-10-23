@@ -1717,7 +1717,10 @@ Exit close:
   - a tab that exited under `close_on_exit = false` stays open after both
     windows enable it;
   - a view installed after the exit announces nothing (part 1's test);
-  - no window shows a confirmation for any of these closes.
+  - no window shows a confirmation for any of these closes;
+  - cancelling a window-close confirmation that absorbed an exit-close
+    leaves the close owed, and the window then closes the exited tab once
+    and stays open (added after review).
 - Unit tests for `ExitCloses`: the first report decides, takes follow exit
   order with one close per window, an uncommitted close returns to owed
   while a committing one waits for its result, a refused commit stays with

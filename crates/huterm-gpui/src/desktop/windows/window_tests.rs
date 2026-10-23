@@ -806,6 +806,63 @@ fn an_exit_while_the_window_is_busy_closes_once_the_busy_close_ends(
     );
 }
 
+/// A child that keeps a running job, which a close of its tab must confirm,
+/// and prints `READY` once the job exists.
+const RUNS_JOB: &str = "sleep 300 & printf READY; wait";
+
+#[gpui::test]
+fn cancelling_a_window_close_that_absorbed_an_exit_close_still_closes_the_tab(
+    cx: &mut TestAppContext,
+) {
+    // The window is the session's only attachment, so closing it closes the
+    // session, which assesses the running job and asks. The exit therefore
+    // comes from typing in the window, not from another client.
+    let mut harness = DesktopHarness::new(cx);
+    let exits = harness.open_tab(EXITS);
+    let runs = harness.open_tab(RUNS_JOB);
+    let window = harness.attach_window();
+    harness.wait_for("the window to install both tabs", |cx| {
+        [exits, runs]
+            .into_iter()
+            .all(|tab| terminal(cx, window, tab).is_some())
+    });
+    harness.update_view(window, |view, window, cx| {
+        view.select(runs, window, cx);
+    });
+    harness.activate(window, runs);
+    harness.wait_text(window, runs, "READY");
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Assess);
+    harness.exit_tab(window, exits);
+    harness.wait_for("the window to take the exit-close", |cx| {
+        exited(cx, window, exits) && hooks.held(Stage::Assess) == 1
+    });
+    // Queued behind the exit-close, the window close absorbs it.
+    harness.update_view(window, |view, window, cx| {
+        view.request_close(CloseTarget::Window, window, cx);
+    });
+    hooks.release(Stage::Assess);
+    harness.wait_for("the window close to ask", |cx| confirming(cx, window));
+    assert_eq!(hooks.entered(Stage::Commit), 0);
+    harness.update_view(window, |view, window, cx| {
+        view.cancel_confirmation(window, cx);
+    });
+    harness.wait_for("the exited tab to close", |cx| {
+        !projected(cx, exits) && terminal(cx, window, exits).is_none()
+    });
+    // The exit-close, the window close that absorbed it, then the
+    // exit-close again.
+    assert_eq!(hooks.entered(Stage::Assess), 3);
+    assert_eq!(hooks.entered(Stage::Commit), 1, "one close was committed");
+    harness.cx.update(|cx| {
+        assert!(cx.windows().contains(&window), "the window stays open");
+        assert!(terminal(cx, window, runs).is_some(), "the job's tab stays");
+        assert!(!confirming(cx, window));
+        assert_eq!(notices(cx, window), Vec::<String>::new());
+    });
+}
+
 /// Two windows showing an [`EXITS`] tab and an [`ECHO`] sibling, with
 /// every view installed.
 fn two_windows(
