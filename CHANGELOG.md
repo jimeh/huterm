@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/jimeh/huterm/compare/v0.18.0...v0.19.0) (2026-10-24)
+
+
+### Features
+
+* map terminal views against the grid they display ([#225](https://github.com/jimeh/huterm/issues/225)) ([fe7c3d6](https://github.com/jimeh/huterm/commit/fe7c3d6c3800163b06d586905d9481026d82d6d3))
+
 ## [0.18.0](https://github.com/jimeh/huterm/compare/v0.17.0...v0.18.0) (2026-10-23)
 
 
