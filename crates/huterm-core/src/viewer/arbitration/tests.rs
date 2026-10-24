@@ -573,6 +573,36 @@ fn stale_geometry_discards_new_reports_but_never_owned_releases() {
 }
 
 #[test]
+fn held_button_motion_needs_a_gesture_its_viewer_owns() {
+    let mut fixture = Fixture::new();
+    let first = fixture.sized(80);
+    let second = fixture.sized(90);
+    let stale = fixture.arbiter.geometry_revision();
+    fixture.arbiter.report(&first, Report::Focus(true));
+    fixture.arbiter.report(&second, Report::Focus(true));
+    let current = fixture.arbiter.geometry_revision();
+    assert!(current > stale);
+    let mut admit = |slot: &Slot, action, geometry| {
+        fixture.arbiter.admit_mouse(
+            slot,
+            &mouse(action, 1),
+            stamp(Some(geometry)),
+            true,
+        )
+    };
+    let left = MouseButton::Left;
+    // A refused press leaves its view dragging; the application never saw
+    // the press, so it must not see the drag.
+    assert!(!admit(&second, MouseAction::Press(left), stale));
+    assert!(!admit(&second, MouseAction::Motion(Some(left)), current));
+    assert!(admit(&second, MouseAction::Motion(None), current));
+    // After the owner's gesture ends, its drag motion is refused too.
+    assert!(admit(&first, MouseAction::Press(left), current));
+    assert!(admit(&first, MouseAction::Release(left), current));
+    assert!(!admit(&first, MouseAction::Motion(Some(left)), current));
+}
+
+#[test]
 fn finalizing_the_gesture_owner_releases_its_buttons_where_it_left_them() {
     let mut fixture = Fixture::new();
     let owner = fixture.sized(80);

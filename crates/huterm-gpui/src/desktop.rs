@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -18,8 +19,8 @@ use huterm_core::{Mux, RuntimeError, TerminalViewer, ViewerWake};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers, TabId,
-    TerminalCommand, TerminalInput, TerminalMetadata, TerminalPresentation,
-    TerminalSnapshot, ids,
+    TerminalCommand, TerminalId, TerminalInput, TerminalLifecycle,
+    TerminalMetadata, TerminalPresentation, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -355,6 +356,21 @@ struct TerminalView {
     /// The root process's exit status, once it has exited with one.
     exit_code: Option<u32>,
     failed: bool,
+    /// The viewer's authority was withdrawn; the window replaces or removes
+    /// the view.
+    revoked: bool,
+    /// Counts the viewers this view has held, so a reply to a replaced
+    /// viewer's request is ignored.
+    viewer_epoch: u64,
+    /// The focus this view last reported, which a replacement viewer
+    /// reports once swapped in: GPUI raises no new focus event for a view
+    /// that stays focused.
+    reported_focus: bool,
+    /// A poll showed the terminal running, so an exit this view first sees
+    /// from status, as a replacement viewer does when the shell exited while
+    /// it was in flight, is still this view's exit transition. A view
+    /// installed after the exit never sets it and announces nothing.
+    seen_running: bool,
     visible: bool,
     input_queue: InputQueue,
     pending_work: async_channel::Sender<()>,
@@ -382,6 +398,8 @@ struct TerminalView {
     link_completions: u64,
     link_max_lookup: Duration,
     link_max_latency: Duration,
+    /// Clipboard writes this view delivered; smoke state reports it.
+    clipboard_writes: u64,
     pending_resize: Option<(GridSize, CellSize)>,
     resize_requests: u64,
     /// Times the size panel was raised; smoke state reports it.
@@ -440,6 +458,91 @@ struct TerminalView {
     frame_clock: Rc<refresh::FrameClock>,
 }
 
+/// Snapshot replies per terminal, counted only while a smoke installs this
+/// global. Viewers share the runtime's snapshot cache, so a reply carrying
+/// the same snapshot as the terminal's previous reply reused it; any other
+/// reply built one. Replies to requests outside the desktop's views are not
+/// seen, so this is a report, not an exact count.
+#[derive(Default)]
+pub(super) struct SnapshotCounts(HashMap<TerminalId, SnapshotCount>);
+
+struct SnapshotCount {
+    last: Arc<TerminalSnapshot>,
+    builds: u64,
+    reuses: u64,
+}
+
+impl gpui::Global for SnapshotCounts {}
+
+impl SnapshotCounts {
+    fn record(
+        &mut self,
+        terminal: TerminalId,
+        snapshot: &Arc<TerminalSnapshot>,
+    ) {
+        match self.0.entry(terminal) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let count = entry.get_mut();
+                if Arc::ptr_eq(&count.last, snapshot) {
+                    count.reuses += 1;
+                } else {
+                    count.builds += 1;
+                    count.last = Arc::clone(snapshot);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(SnapshotCount {
+                    last: Arc::clone(snapshot),
+                    builds: 1,
+                    reuses: 0,
+                });
+            }
+        }
+    }
+
+    /// The snapshots built and reused for `terminal`.
+    pub(super) fn get(&self, terminal: TerminalId) -> (u64, u64) {
+        self.0
+            .get(&terminal)
+            .map_or((0, 0), |count| (count.builds, count.reuses))
+    }
+}
+
+/// The root process's exit a poll reports, as a transition or from status.
+fn reported_exit(
+    update: &huterm_core::ViewerUpdate,
+) -> Option<huterm_protocol::ExitStatus> {
+    update.exited.or_else(|| {
+        update
+            .status
+            .as_ref()
+            .and_then(|status| match status.lifecycle {
+                TerminalLifecycle::Exited(exit) => Some(exit),
+                TerminalLifecycle::Running => None,
+            })
+    })
+}
+
+/// The state a view's new viewer starts with. Every desktop viewer starts
+/// unfocused: a replacement registered focused would be the latest focus
+/// gain and take control, even if its window blurred while the
+/// replacement was in flight. The view reports its focus once swapped in.
+#[derive(Clone)]
+struct ViewerStart {
+    geometry: Option<(GridSize, CellSize)>,
+    presentation: TerminalPresentation,
+}
+
+impl ViewerStart {
+    /// A viewer for a view that has shown nothing yet.
+    fn fresh(presentation: TerminalPresentation) -> Self {
+        Self {
+            geometry: None,
+            presentation,
+        }
+    }
+}
+
 #[derive(Default)]
 struct RefreshResult {
     changed: bool,
@@ -482,7 +585,7 @@ impl TerminalView {
             match viewer.update_presentation(initial_presentation.clone()) {
                 Ok(()) => (None, None),
                 Err(RuntimeError::Busy) => (Some(initial_presentation), None),
-                Err(error) => (None, Some(error.to_string())),
+                Err(error) => (None, Some(error)),
             };
         let (failure_wake, failure_wakes) = async_channel::bounded(1);
         let focus_subscription = cx.on_focus(
@@ -592,6 +695,7 @@ impl TerminalView {
             link_completions: 0,
             link_max_lookup: Duration::ZERO,
             link_max_latency: Duration::ZERO,
+            clipboard_writes: 0,
             pending_resize: None,
             resize_requests: 0,
             resize_indicators: 0,
@@ -639,6 +743,10 @@ impl TerminalView {
             exited: false,
             exit_code: None,
             failed: false,
+            revoked: false,
+            viewer_epoch: 0,
+            reported_focus: false,
+            seen_running: false,
             visible: false,
             selection: None,
             selected_text: None,
@@ -656,8 +764,8 @@ impl TerminalView {
             refresh_mode: config.terminal.refresh,
             frame_clock,
         };
-        if let Some(message) = presentation_failure {
-            view.report_failure(Severity::Error, "Terminal error", message);
+        if let Some(error) = presentation_failure {
+            view.report_viewer_failure(&error);
         }
         view.wake_pending_work();
         key_bench::start(window.window_handle(), cx);
@@ -676,6 +784,38 @@ impl TerminalView {
         }
         self.scroll.invalidate();
         self.start_snapshot_if_needed(cx);
+    }
+
+    /// Records a started snapshot request for the scroll benchmark, which
+    /// may queue a scroll behind it.
+    fn sample_scroll_benchmark(&mut self, viewport: huterm_protocol::Viewport) {
+        if self
+            .scroll_benchmark
+            .as_ref()
+            .is_some_and(ScrollBenchmark::is_started)
+        {
+            let injected_at =
+                self.scroll_benchmark.as_mut().and_then(|benchmark| {
+                    benchmark.take_injection(viewport.bottom_offset)
+                });
+            self.renderer.borrow_mut().begin_scroll_sample(
+                self.snapshot_sequence,
+                viewport.bottom_offset,
+                injected_at,
+            );
+        }
+        if self
+            .scroll_benchmark
+            .as_mut()
+            .is_some_and(ScrollBenchmark::queue_during_inflight)
+        {
+            if self.scroll.scroll_rows(1)
+                && let Some(benchmark) = &mut self.scroll_benchmark
+            {
+                benchmark.record_injection(self.scroll.desired());
+            }
+            let _ = self.scroll.begin_request();
+        }
     }
 
     fn start_snapshot_if_needed(&mut self, cx: &mut Context<'_, Self>) {
@@ -707,36 +847,16 @@ impl TerminalView {
             }
         };
         self.snapshot_sequence = self.snapshot_sequence.saturating_add(1);
-        if self
-            .scroll_benchmark
-            .as_ref()
-            .is_some_and(ScrollBenchmark::is_started)
-        {
-            let injected_at =
-                self.scroll_benchmark.as_mut().and_then(|benchmark| {
-                    benchmark.take_injection(viewport.bottom_offset)
-                });
-            self.renderer.borrow_mut().begin_scroll_sample(
-                self.snapshot_sequence,
-                viewport.bottom_offset,
-                injected_at,
-            );
-        }
-        if self
-            .scroll_benchmark
-            .as_mut()
-            .is_some_and(ScrollBenchmark::queue_during_inflight)
-        {
-            if self.scroll.scroll_rows(1)
-                && let Some(benchmark) = &mut self.scroll_benchmark
-            {
-                benchmark.record_injection(self.scroll.desired());
-            }
-            let _ = self.scroll.begin_request();
-        }
+        self.sample_scroll_benchmark(viewport);
+        let epoch = self.viewer_epoch;
         cx.spawn(async move |view, cx| {
             let result = request.recv().await;
             let _ = view.update(cx, |view, cx| {
+                // The replacement restarted scroll state for its own
+                // requests.
+                if view.viewer_epoch != epoch {
+                    return;
+                }
                 let changed = match result {
                     Ok(reply) => {
                         if link_intent.is_some() {
@@ -760,7 +880,7 @@ impl TerminalView {
                         view.links.publish(link_intent, reply.link);
                         let hover_changed = view.links.hover() != hover.as_ref();
                         let changed =
-                            view.apply_snapshot(reply.snapshot) || hover_changed;
+                            view.apply_snapshot(reply.snapshot, cx) || hover_changed;
                         view.renderer
                             .borrow_mut()
                             .record_output_applied(reply.invalidated_at, changed);
@@ -783,8 +903,18 @@ impl TerminalView {
         .detach();
     }
 
-    /// Applies a snapshot and reports whether the view must render again.
-    fn apply_snapshot(&mut self, snapshot: Arc<TerminalSnapshot>) -> bool {
+    /// Applies a snapshot reply and reports whether the view must render
+    /// again.
+    fn apply_snapshot(
+        &mut self,
+        snapshot: Arc<TerminalSnapshot>,
+        cx: &mut App,
+    ) -> bool {
+        if cx.has_global::<SnapshotCounts>() {
+            let terminal = self.viewer.terminal_id();
+            cx.global_mut::<SnapshotCounts>()
+                .record(terminal, &snapshot);
+        }
         let mut changed = self
             .snapshot
             .as_deref()
@@ -850,6 +980,7 @@ impl TerminalView {
                         ClipboardItem::new_string(write.text().to_owned());
                     if recipient.is_current(&pending) {
                         cx.write_to_clipboard(item);
+                        self.clipboard_writes += 1;
                     }
                 }
             }
@@ -859,6 +990,7 @@ impl TerminalView {
         }
         let mut changed = self.retry_client_messages();
         let update = self.viewer.poll();
+        self.revoked |= update.revoked;
         if let Some(generation) = update.invalidated {
             if self
                 .selection
@@ -870,6 +1002,7 @@ impl TerminalView {
             self.scroll.invalidate();
         }
         if let Some(status) = &update.status {
+            self.seen_running |= status.lifecycle == TerminalLifecycle::Running;
             // Applications often resend an unchanged title; only a new
             // title needs to re-render the tab and window.
             if status.title != self.title {
@@ -890,8 +1023,13 @@ impl TerminalView {
             }
             changed |= self.bell.ring(Instant::now(), active, self.visual_bell);
         }
-        if let Some(status) = update.exited {
-            self.observe_exit(status.code, cx);
+        // A view installed after the exit sees no transition, but still
+        // shows the terminal as exited; only a transition is announced.
+        let exit = reported_exit(&update);
+        if let Some(exit) = exit
+            && !self.exited
+        {
+            self.observe_exit(exit.code, cx);
             changed = true;
         }
         if update.missed_failures > 0 {
@@ -918,13 +1056,72 @@ impl TerminalView {
         if changed {
             cx.notify();
         }
+        let transition =
+            update.exited.is_some() || (self.seen_running && exit.is_some());
         RefreshResult {
             changed,
-            exited: !previously_exited && self.exited,
+            exited: !previously_exited && transition,
             exit_code: self.exit_code,
             more: host_count == 8,
             failures: std::mem::take(&mut self.failures),
         }
+    }
+
+    /// The geometry and presentation a replacement for this view's viewer
+    /// starts with, so the runtime keeps what it knew of the view.
+    fn viewer_start(&self) -> ViewerStart {
+        ViewerStart {
+            geometry: self
+                .last_cell_size
+                .map(|cell| (self.requested_grid, cell)),
+            presentation: terminal_presentation(&self.theme),
+        }
+    }
+
+    /// Replaces a revoked viewer in place. Selection, scroll position, and
+    /// the shown snapshot stay; the next snapshot clears the selection only
+    /// if the content generation moved. Input the old viewer had not sent is
+    /// discarded with its authority, and its in-flight replies are ignored.
+    /// The runtime released the old viewer's gestures. `viewer` started
+    /// with `start`; the view's state may have moved on since the
+    /// replacement began, so whatever differs now is reported again, and
+    /// its focus follows in order with later input.
+    fn replace_viewer(
+        &mut self,
+        viewer: TerminalViewer,
+        start: &ViewerStart,
+        clipboard_allowed: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(recipient) = viewer.host_effects() {
+            recipient.set_allowed(clipboard_allowed);
+        }
+        self.viewer = viewer;
+        self.viewer_epoch += 1;
+        self.revoked = false;
+        self.input_queue = InputQueue::default();
+        if self.exited {
+            self.input_queue.close();
+        }
+        let current = self.viewer_start();
+        self.pending_resize = current
+            .geometry
+            .filter(|geometry| start.geometry != Some(*geometry));
+        self.pending_presentation = (current.presentation
+            != start.presentation)
+            .then_some(current.presentation);
+        self.mouse = MouseState::default();
+        self.context_lookup = None;
+        self.links.invalidate();
+        if self.reported_focus {
+            self.enqueue_focus(true);
+        }
+        self.retry_client_messages();
+        self.wake_pending_work();
+        self.scroll.restart();
+        self.scroll.invalidate();
+        self.start_snapshot_if_needed(cx);
+        cx.notify();
     }
 
     /// Root-shell exit: input closes and mouse ownership resets. Exit is
@@ -2053,6 +2250,7 @@ impl TerminalView {
                     return;
                 }
             };
+        let epoch = self.viewer_epoch;
         cx.spawn(async move |view, cx| {
             let result = request.recv().await;
             let _ = view.update(cx, |view, cx| {
@@ -2077,6 +2275,9 @@ impl TerminalView {
                     }
                     Ok(None) if current => view.clear_selection(),
                     Ok(_) => {}
+                    // A replaced viewer's failure says nothing about the
+                    // view's current viewer.
+                    Err(_) if view.viewer_epoch != epoch => {}
                     Err(error) => {
                         view.report_viewer_failure(&error);
                     }
@@ -2328,6 +2529,7 @@ impl TerminalView {
         // A focus change ends the current run of coalesced mouse reports, as
         // any other input does.
         self.mouse.boundary();
+        self.reported_focus = focused;
         let viewer = &self.viewer;
         let result = self
             .input_queue
@@ -2344,9 +2546,11 @@ impl TerminalView {
     /// an exited tab, which stops when the tab closes; a focus change or
     /// retry on the way out is not a failure. Neither raises a notice.
     fn report_viewer_failure(&mut self, error: &RuntimeError) -> bool {
-        if matches!(error, RuntimeError::Revoked)
-            || (self.exited && matches!(error, RuntimeError::Stopped))
-        {
+        if matches!(error, RuntimeError::Revoked) {
+            self.revoked = true;
+            return false;
+        }
+        if self.exited && matches!(error, RuntimeError::Stopped) {
             return false;
         }
         self.report_failure(

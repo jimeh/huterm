@@ -77,6 +77,34 @@ shows, `0,0` before the first. It follows the requested grid one snapshot later
 and stays stale while the tab is hidden, so compare the two only for a visible
 tab and only once settled.
 
+`scripts/check-viewers.ts` runs in the palette smokes as the `viewers` step.
+It attaches a second window with the fixture's `attach-window` command and
+drives both windows through window-indexed fixture commands (`type-in`,
+`invoke-in`, `resize-window`, `activate`) instead of native input, so it
+needs no per-window X11 focus. Where Xvfb draws no frames it reads
+runtime-backed state: the shell appends `stty size` to a file, ordered
+behind every geometry report queued before the line, and `viewport` reads
+the shared viewport and canonical grid through a fresh observing viewer,
+which rearms neither window. Smoke state's `w<i>.snapshots=<builds>,<reuses>`
+counts snapshot replies for the active terminal across both windows, a
+report rather than a gate, and `w<i>.clipboard_writes` the clipboard writes
+a window delivered. Step 6 types `exit` into window 1's first tab, whose
+fixture shell then exits, and checks that both windows drop to one tab and
+that neither lists a `command` notice for a failed or unassessable close
+among its `w<i>.notice<j>=` fields. Before step 7, `revoke-window\t1`
+revokes window 1's viewers by retargeting its attachment to a temporary
+session and back under one Mux lock, which leaves the hierarchy unchanged,
+and the check asserts that output typed in window 0 still reaches window 1's
+replaced viewer. Tier 2 tests call the same `revoke_viewers` function.
+`mise run smoke:manual-viewers` opens
+the same two windows for manual Cmd-Tab, Mission Control, and occlusion
+checks.
+
+An attached window installs a view for every tab in its workspace, so a
+smoke that drops a view while keeping its terminal alive must move the tab
+out of the window's workspace, as the refresh smoke's detach does. A view
+dropped while its tab stays is installed again at the next reconcile.
+
 Smoke state is sampled from the model, which can run ahead of the drawn frame.
 Before a smoke presses on a newly opened overlay, wait for a field set during
 render or paint, such as `dialog_drawn_groups` or `menu_rect`, not only for the

@@ -166,7 +166,7 @@ Tab labels look tabs up there by ID and combine them with the live terminal
 title. Structural results carry the hierarchy sequence they committed at, and
 completions wait for the projection to apply it before acting. Client effects
 derive from projection state through `reconcile`, which removes views, orders
-tabs, and publishes titles but never installs views. See
+tabs, publishes titles, and installs views for tabs a window did not spawn. See
 [the hierarchy projection plan](../plans/hierarchy-projection.md).
 Moves retain empty parents and never change terminal lifetime. Desktop windows
 retain their attachment identity for assessed close. Orphaned spawn cleanup

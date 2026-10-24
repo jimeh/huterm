@@ -12,8 +12,8 @@ use std::rc::Rc;
 use gpui::{Task, WindowId};
 use huterm_core::{HierarchyRecvError, HierarchySubscription};
 use huterm_protocol::{
-    ApplyOutcome, HierarchyEvent, HierarchyState, TabId, TabInfo, Touched,
-    WorkspaceId,
+    ApplyOutcome, HierarchyEvent, HierarchyState, SessionId, TabId, TabInfo,
+    Touched, WorkspaceId,
 };
 
 use super::model::WindowModel;
@@ -308,16 +308,17 @@ pub(super) fn installed_order(
 
 /// The views reconcile removes from one window: those whose tabs the
 /// projection has applied and no longer holds, or holds in a workspace other
-/// than the window's `workspace`, such as a tab moved elsewhere. `installed`
-/// pairs each view's tab with the sequence it committed at; a view the
-/// projection has not caught up with is never removed. A busy window keeps
-/// its views: its structural completion drops them and refocuses in one
-/// update, then reconciles. Nothing is removed once teardown owns removal. A
-/// projected tab without a view, detached or not yet installed, is not a
-/// removal and never installs a view.
+/// than the window's `workspace`, such as a tab moved elsewhere, or in a
+/// workspace that now belongs to a session other than the window's attached
+/// `session`. `installed` pairs each view's tab with the sequence it
+/// committed at; a view the projection has not caught up with is never
+/// removed. A busy window keeps its views: its structural completion drops
+/// them and refocuses in one update, then reconciles. Nothing is removed
+/// once teardown owns removal.
 pub(super) fn removals(
     state: &HierarchyState,
     workspace: Option<WorkspaceId>,
+    session: Option<SessionId>,
     installed: &[(TabId, u64)],
     busy: bool,
     terminating: bool,
@@ -331,11 +332,124 @@ pub(super) fn removals(
             state.seq() >= *committed
                 && match state.tab_workspace(*tab) {
                     None => true,
-                    Some(owner) => workspace.is_some_and(|own| own != owner),
+                    Some(owner) => {
+                        workspace.is_some_and(|own| own != owner)
+                            || session.is_some_and(|own| {
+                                state.workspace_session(owner) != Some(own)
+                            })
+                    }
                 }
         })
         .map(|(tab, _)| *tab)
         .collect()
+}
+
+/// The tabs reconcile installs in one window: those the projection holds in
+/// the window's `workspace` that have neither a view in `installed` nor an
+/// entry in `pending`, in projected order. Nothing installs in a busy
+/// window, whose own spawn holds `busy` until it pushes its view; in a
+/// window without an attached `session`, or whose workspace now belongs to
+/// another session; or once teardown has committed.
+pub(super) fn installs(
+    state: &HierarchyState,
+    workspace: Option<WorkspaceId>,
+    session: Option<SessionId>,
+    installed: &[TabId],
+    pending: &[TabId],
+    busy: bool,
+    terminating: bool,
+) -> Vec<TabId> {
+    let (Some(workspace), Some(session)) = (workspace, session) else {
+        return Vec::new();
+    };
+    if terminating
+        || busy
+        || state.workspace_session(workspace) != Some(session)
+    {
+        return Vec::new();
+    }
+    state
+        .workspace_tabs(workspace)
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .filter(|tab| !installed.contains(tab) && !pending.contains(tab))
+        .collect()
+}
+
+/// The revoked views reconcile replaces in place in one window: those whose
+/// tabs the projection still holds in the window's `workspace`, under the
+/// same conditions as [`installs`], without an entry in `pending`. A
+/// revoked view whose tab left is removed instead.
+pub(super) fn replacements(
+    state: &HierarchyState,
+    workspace: Option<WorkspaceId>,
+    session: Option<SessionId>,
+    revoked: &[TabId],
+    pending: &[TabId],
+    busy: bool,
+    terminating: bool,
+) -> Vec<TabId> {
+    let held =
+        installs(state, workspace, session, &[], pending, busy, terminating);
+    revoked
+        .iter()
+        .copied()
+        .filter(|tab| held.contains(tab))
+        .collect()
+}
+
+/// Whether a finished install of `tab` still applies: reconcile would
+/// install it now, apart from `busy`, teardown, and the install's own
+/// pending entry.
+pub(super) fn install_applies(
+    state: &HierarchyState,
+    workspace: Option<WorkspaceId>,
+    session: Option<SessionId>,
+    installed: &[TabId],
+    tab: TabId,
+) -> bool {
+    installs(state, workspace, session, installed, &[], false, false)
+        .contains(&tab)
+}
+
+/// A window's installs and replacements that have started and not
+/// finished, and those that failed. A failed one waits for a later batch
+/// that touches the window's workspace before reconcile tries it again, so
+/// a failure cannot loop.
+#[derive(Debug, Default)]
+pub(super) struct PendingInstalls {
+    in_flight: Vec<TabId>,
+    failed: Vec<TabId>,
+}
+
+impl PendingInstalls {
+    fn begin(&mut self, tabs: &[TabId]) {
+        self.in_flight.extend_from_slice(tabs);
+    }
+
+    /// Ends `tab`'s install; a `failed` one waits for the next batch that
+    /// touches the workspace.
+    pub(super) fn finish(&mut self, tab: TabId, failed: bool) {
+        self.in_flight.retain(|pending| *pending != tab);
+        if failed && !self.failed.contains(&tab) {
+            self.failed.push(tab);
+        }
+    }
+
+    /// Allows failed installs again once a batch touched `workspace`.
+    fn touched(&mut self, touched: &Touched, workspace: Option<WorkspaceId>) {
+        if workspace
+            .is_some_and(|workspace| touched.contains_workspace(workspace))
+        {
+            self.failed.clear();
+        }
+    }
+
+    /// The tabs reconcile must not install now.
+    fn excluded(&self) -> Vec<TabId> {
+        self.in_flight.iter().chain(&self.failed).copied().collect()
+    }
 }
 
 /// Windows a summary concerns: those showing a touched workspace or tab.
@@ -409,6 +523,8 @@ pub(super) fn tab_names<'a>(
 pub(super) trait ReconcileTarget {
     fn projection(&self) -> &HierarchyState;
     fn workspace(&self) -> Option<WorkspaceId>;
+    /// The session of the window's attachment; `None` without one.
+    fn session(&self) -> Option<SessionId>;
     /// Installed tabs in display order with their committed sequences.
     fn installed(&self) -> Vec<(TabId, u64)>;
     /// Whether the window has a structural operation, such as its own
@@ -425,6 +541,15 @@ pub(super) trait ReconcileTarget {
     fn title(&self, tab: TabId) -> String;
     /// Publishes a title; returns whether it changed.
     fn publish_title(&mut self, tab: TabId, title: &str) -> bool;
+    fn pending_installs(&mut self) -> &mut PendingInstalls;
+    /// Starts installing views for `tabs`, which reconcile has recorded as
+    /// in flight.
+    fn install(&mut self, tabs: &[TabId]);
+    /// Installed tabs whose viewer reported revocation.
+    fn revoked(&self) -> Vec<TabId>;
+    /// Starts replacing the revoked viewers of `tabs`, which reconcile has
+    /// recorded as in flight.
+    fn replace(&mut self, tabs: &[TabId]);
 }
 
 /// The tab a window must activate after reconcile: its new active tab when
@@ -446,9 +571,10 @@ pub(super) struct WindowChange {
     pub(super) titles: bool,
 }
 
-/// Brings one window in line with the projection: membership, then order,
-/// then the titles of touched tabs. Derived from state and compared before
-/// every write, so running it again changes nothing.
+/// Brings one window in line with the projection: removals, then order,
+/// then the titles of touched tabs, then installs and replacements. Derived
+/// from state and compared before every write, so running it again changes
+/// nothing.
 pub(super) fn reconcile_window(
     target: &mut impl ReconcileTarget,
     touched: &Touched,
@@ -458,6 +584,7 @@ pub(super) fn reconcile_window(
     let remove = removals(
         target.projection(),
         target.workspace(),
+        target.session(),
         &installed,
         target.busy(),
         terminating,
@@ -502,6 +629,37 @@ pub(super) fn reconcile_window(
             change.changed = true;
             change.titles = true;
         }
+    }
+    target.pending_installs().touched(touched, workspace);
+    let pending = target.pending_installs().excluded();
+    let installed: Vec<TabId> =
+        target.installed().into_iter().map(|(tab, _)| tab).collect();
+    let install = installs(
+        target.projection(),
+        workspace,
+        target.session(),
+        &installed,
+        &pending,
+        target.busy(),
+        terminating,
+    );
+    if !install.is_empty() {
+        target.pending_installs().begin(&install);
+        target.install(&install);
+    }
+    let pending = target.pending_installs().excluded();
+    let replace = replacements(
+        target.projection(),
+        workspace,
+        target.session(),
+        &target.revoked(),
+        &pending,
+        target.busy(),
+        terminating,
+    );
+    if !replace.is_empty() {
+        target.pending_installs().begin(&replace);
+        target.replace(&replace);
     }
     change
 }
