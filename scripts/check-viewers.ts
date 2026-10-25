@@ -3,9 +3,11 @@
  * second window to the first window's session, then check shared output,
  * the shared viewport, control of the PTY size, installing a tab opened
  * later, single delivery of a clipboard write, one close for a shell that
- * exits, replacing revoked viewers in place, and closing the second
- * window. Input goes through fixture commands addressed to a window, so
- * the check does not depend on which window has native keyboard focus.
+ * exits, replacing revoked viewers in place, closing the second window
+ * through the platform's close path, cancelling `AppKit` termination on
+ * macOS, and that closing the session's last tab closes both windows and
+ * ends the app. Input goes through fixture commands addressed to a window,
+ * so the check does not depend on which window has native keyboard focus.
  * Where Xvfb delivers no frames, assertions read runtime-backed state: the
  * PTY size from the shell and the shared viewport from a fixture snapshot.
  */
@@ -65,8 +67,9 @@ export async function checkViewers(executable: string): Promise<void> {
   const sizes = join(directory, "sizes");
   const config = join(directory, "config.toml");
   // `size <token>` records the PTY size after every report queued before
-  // the line; `clip <text>` writes the clipboard through OSC 52; `exit`
-  // ends the shell.
+  // the line; `clip <text>` writes the clipboard through OSC 52; `job`
+  // runs a foreground `head` that the next line ends; `exit` ends the
+  // shell.
   await writeFile(shell, `#!/bin/sh
 trap 'exit 0' HUP TERM
 printf 'READY\\n'
@@ -76,6 +79,7 @@ while IFS= read -r line; do
     fill*) i=0; while [ "$i" -lt 300 ]; do echo "line $i"; i=$((i+1)); done; printf 'FILLED:%s\\n' "\${line#fill }";;
     clip*) printf '\\033]52;c;%s\\007' "$(printf %s "\${line#clip }" | base64)"; printf 'CLIPPED\\n';;
     ack*) printf 'ACK:%s\\n' "\${line#ack }";;
+    job) printf 'JOB\\n'; head -n 1 >/dev/null; printf 'ENDED\\n';;
     exit) exit 0;;
   esac
 done
@@ -229,16 +233,44 @@ always_show = true
       "window 1's replaced viewer to show new output");
     if (windowField(revoked, 1, "tabs") !== "1") throw new Error(`window 1 lost its view: ${revoked}`);
 
-    // 7. Closing window 1 detaches it; window 0's shell still answers.
-    await command("invoke-in\t1\tclose_window");
+    // 7. Closing window 1 through the platform's close path detaches it;
+    // window 0's shell still answers.
+    await command("native-close\t1");
     await stateWhere((state) => state.includes("windows=1"), "window 1 to close");
     await send(0, "ack still-here", "ACK:still-here");
     const final = await current();
     if (windowField(final, 0, "tabs") !== "1") throw new Error(`window 0 lost a tab: ${final}`);
 
+    if (process.platform === "darwin") {
+      // AppKit termination while a job runs asks first; cancelling keeps
+      // the shell, which answers once the job ends.
+      await send(0, "job", "JOB");
+      await command("native-terminate");
+      await stateWhere((state) => windowField(state, 0, "confirming") === "true", "the Quit confirmation");
+      await command("invoke-in\t0\tdialog_cancel");
+      await stateWhere((state) => windowField(state, 0, "confirming") === "false", "the Quit to be cancelled");
+      await send(0, "end", "ENDED");
+      await send(0, "ack after-terminate", "ACK:after-terminate");
+    }
+
+    // 8. Closing the session's last tab in a fresh second window closes
+    // both windows, and with no session and no quake hotkey left the app
+    // exits on its own.
+    const before8 = await current();
+    if (!before8.includes("quake_hotkeys=false")) throw new Error(`a quake hotkey keeps the app alive: ${before8}`);
+    await command("attach-window\t0");
+    await stateWhere((state) => state.includes("windows=2") && windowField(state, 1, "tabs") === "1"
+      && text(state, 1).includes("ACK:still-here"), "the fresh window to show the tab");
     console.log(`VIEWERS_SMOKE native=${process.platform} snapshots(builds,reuses) ${report.join(" ")}`);
-    await command("quit");
-    await waitFor(async () => app.exitCode !== null, "desktop cleanup");
+    await command("invoke-in\t1\tclose_tab");
+    const failures: string[] = [];
+    await waitFor(async () => {
+      if (app.exitCode !== null) return true;
+      const state = await current();
+      for (const window of [0, 1]) failures.push(...closeFailureNotices(state, window));
+      return false;
+    }, "the app to exit after its last tab closed");
+    if (failures.length > 0) throw new Error(`a window reported a failed close: ${failures.join("; ")}`);
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);
   } catch (error) {
     throw new Error(`viewers: ${String(error)}; state=${await current()}`, { cause: error });

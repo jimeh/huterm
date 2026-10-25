@@ -96,6 +96,16 @@ revokes window 1's viewers by retargeting its attachment to a temporary
 session and back under one Mux lock, which leaves the hierarchy unchanged,
 and the check asserts that output typed in window 0 still reaches window 1's
 replaced viewer. Tier 2 tests call the same `revoke_viewers` function.
+Step 7 closes window 1 with `native-close\t1`: `performClose:` on macOS and a
+`WM_DELETE_WINDOW` client message from a private x11rb connection on X11. The
+call runs outside any GPUI update, because `AppKit` runs GPUI's close callback
+before `performClose:` returns. On macOS, `native-terminate` then calls
+`[NSApp terminate:nil]` while window 0 runs the fixture shell's `job` line, a
+foreground `head` that the next line ends; the check cancels the Quit
+confirmation and requires `ENDED` and a shell ACK. Step 8 checks
+`quake_hotkeys=false` in smoke state, attaches a fresh window 1, and closes
+the session's last tab there: both windows take emptied closes, no sampled
+state lists a close-failure notice, and the app exits with code 0 on its own.
 `mise run smoke:manual-viewers` opens
 the same two windows for manual Cmd-Tab, Mission Control, and occlusion
 checks.

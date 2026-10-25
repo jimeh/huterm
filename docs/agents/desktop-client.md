@@ -154,6 +154,44 @@ is not retried. Tier 2 tests hold and fail both stages through
 Exited tabs retain history and local selection/scrolling;
 close their input queue and reset mouse ownership without emitting releases.
 
+A window whose last tab view goes away takes an emptied close
+(`CloseTarget::Emptied`, core `CloseRequest::EmptiedWindow`) on three edges:
+reconcile removed its last view, its own tab close or exit-close removed its
+last tab (`remove_closed_tabs`), or a batch that touched its workspace found
+its attached session gone. Reconcile only marks the window
+(`EmptiedClose::Owed`) and never removes it, so no assessment or commit
+continuation runs after its window is gone. Core decides under its lock and
+refuses with `ViewNotEmpty` while the workspace holds tabs, so a tab that is
+still installing, or that another window just opened, is never terminated; a
+check against the projection cannot tell an arriving tab from one moved to a
+sibling workspace. A refused window stays marked (`Refused`) and asks again
+only from a batch that touches its workspace or an install completion that
+installed nothing, and only while it shows no view and the projection holds no
+tab it would install; a pushed view clears the mark. `UnknownAttachment`
+removes the window without a notice; any other assessment failure raises one
+notice and clears the mark.
+
+Automatic closes, exit-closes and emptied closes, start only from
+`next_request`: after queued user closes, while the pipeline is idle (not busy
+and no confirmation showing), and never in a closing window or during
+teardown. A Window or Application close absorbs a pending emptied close. A
+window that shows, assesses, or commits a Quit therefore stays open when its
+session closes underneath it: the Quit's commit goes stale and assesses again,
+and a cancelled Quit clears `quitting` before the window takes its emptied
+close. A tab confirmation whose tabs all left the window is cancelled, since
+its commit could only go stale.
+
+The close dialog's Confirm listener captures the target and
+`CloseState::generation` at render, and `confirm_confirmation` acts only while
+`can_confirm` still sees that confirmation at that generation. Every cancel
+and every new check moves the generation. GPUI dispatches a click against the
+last drawn frame, so without the guard a click drawn before Cancel finds no
+assessment, and `finish_close` assesses again and commits without a prompt once
+the jobs end. Cancel and Escape check `can_cancel_confirmation`, and the
+keyboard confirm reads the current confirmation. A tier 2 test produces the
+stale click by cancelling and calling `Window::dispatch_event` in one update,
+before the end-of-update draw drops the dialog.
+
 ## Rendering
 
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal

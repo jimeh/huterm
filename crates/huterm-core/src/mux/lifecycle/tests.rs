@@ -159,6 +159,156 @@ fn structural_changes_invalidate_consent_without_consuming_attachment() {
         Err(MuxError::StaleClose)
     ));
     assert_eq!(mux.attachment_session(attachment).unwrap(), second);
+    // A tab moving to another session also changes the window's scope.
+    let source = mux.create_workspace(second, None).unwrap();
+    let elsewhere = mux.create_session(None).unwrap();
+    let destination = mux.create_workspace(elsewhere, None).unwrap();
+    let opened = mux
+        .open_test_tab(source, &command("printf READY; read value"))
+        .unwrap();
+    ready(&opened.client, "READY");
+    let ticket = mux
+        .prepare_close(CloseRequest::Window(attachment))
+        .unwrap()
+        .check_jobs();
+    mux.move_tab(source, opened.tab.id, destination, None)
+        .unwrap();
+    assert!(matches!(
+        mux.commit_close(&ticket, &ticket.recheck(), true),
+        Err(MuxError::StaleClose)
+    ));
+    assert_eq!(mux.attachment_session(attachment).unwrap(), second);
+    assert_eq!(
+        mux.select_tab(opened.tab.id).unwrap().workspace,
+        Some(destination)
+    );
+    mux.shutdown().unwrap();
+}
+fn pid_of(client: &crate::test_support::TestClient) -> nix::unistd::Pid {
+    let pid = client.job_context().unwrap().shell.unwrap();
+    nix::unistd::Pid::from_raw(i32::try_from(pid).unwrap())
+}
+/// Sends a line to a child that answers each line by printing the next
+/// step's marker, and waits for `marker`.
+fn answers(client: &crate::test_support::TestClient, marker: &str) {
+    client
+        .send_input(TerminalInput::Text("next\n".into()))
+        .expect("the child no longer accepts input");
+    ready(client, marker);
+}
+#[test]
+fn retarget_keeps_the_old_sessions_child_and_closing_the_new_one_spares_it() {
+    let steps = "printf READY; read value; printf ALIVE; read value; \
+                 printf AGAIN; read value";
+    let mut mux = Mux::default();
+    let first = mux.create_session(None).unwrap();
+    let first_workspace = mux.create_workspace(first, None).unwrap();
+    let kept = mux.open_test_tab(first_workspace, &command(steps)).unwrap();
+    let second = mux.create_session(None).unwrap();
+    let second_workspace = mux.create_workspace(second, None).unwrap();
+    let closed = mux
+        .open_test_tab(second_workspace, &command(steps))
+        .unwrap();
+    ready(&kept.client, "READY");
+    ready(&closed.client, "READY");
+    let attachment = mux.attach_session(first).unwrap();
+    mux.retarget_attachment(attachment, second).unwrap();
+    answers(&kept.client, "ALIVE");
+    let closed_pid = pid_of(&closed.client);
+    mux.close_session(second).unwrap();
+    assert_eq!(
+        nix::sys::signal::kill(closed_pid, None),
+        Err(nix::errno::Errno::ESRCH),
+        "the closed session's child survived"
+    );
+    assert!(mux.attachment_session(attachment).is_err());
+    answers(&kept.client, "AGAIN");
+    assert!(nix::sys::signal::kill(pid_of(&kept.client), None).is_ok());
+    mux.shutdown().unwrap();
+}
+#[test]
+fn emptied_window_closes_stop_no_terminal_and_never_need_consent() {
+    let steps = "printf READY; read value; printf ALIVE; read value";
+    let emptied = |mux: &Mux, attachment, workspace| {
+        mux.prepare_close(CloseRequest::EmptiedWindow {
+            attachment,
+            workspace,
+        })
+    };
+    let commit = |mux: &mut Mux, ticket: CloseTicket| {
+        let assessment = ticket.check_jobs();
+        assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
+        mux.commit_close(&assessment, &assessment.recheck(), false)
+    };
+    let mut mux = Mux::default();
+
+    // A workspace that still holds tabs refuses and changes nothing.
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let held = mux.open_test_tab(workspace, &command(steps)).unwrap();
+    ready(&held.client, "READY");
+    let attachment = mux.attach_session(session).unwrap();
+    let before = mux.capture_hierarchy();
+    assert!(matches!(
+        emptied(&mux, attachment, workspace),
+        Err(MuxError::ViewNotEmpty(refused)) if refused == workspace
+    ));
+    assert_eq!(mux.capture_hierarchy(), before);
+
+    // The tab moves to a sibling workspace: the sole attachment detaches
+    // and the moved child keeps running in the unviewed session.
+    let sibling = mux.create_workspace(session, None).unwrap();
+    mux.move_tab(workspace, held.tab.id, sibling, None).unwrap();
+    let ticket = emptied(&mux, attachment, workspace).unwrap();
+    assert_eq!(ticket.effect(), CloseEffect::Detach(attachment));
+    commit(&mut mux, ticket).unwrap();
+    assert!(mux.attachment_session(attachment).is_err());
+    assert!(mux.session(session).is_some());
+    answers(&held.client, "ALIVE");
+
+    // Another attachment holds the session: detach.
+    let shared = mux.create_session(None).unwrap();
+    let shared_workspace = mux.create_workspace(shared, None).unwrap();
+    let first = mux.attach_session(shared).unwrap();
+    let second = mux.attach_session(shared).unwrap();
+    let ticket = emptied(&mux, first, shared_workspace).unwrap();
+    assert_eq!(ticket.effect(), CloseEffect::Detach(first));
+    commit(&mut mux, ticket).unwrap();
+    assert_eq!(mux.attachment_session(second).unwrap(), shared);
+
+    // The last attachment of an empty session deletes it, and the
+    // invalidated attachment is then unknown.
+    let ticket = emptied(&mux, second, shared_workspace).unwrap();
+    assert_eq!(ticket.effect(), CloseEffect::Session(shared));
+    commit(&mut mux, ticket).unwrap();
+    assert!(mux.session(shared).is_none());
+    assert!(matches!(
+        emptied(&mux, second, shared_workspace),
+        Err(MuxError::UnknownAttachment(unknown)) if unknown == second
+    ));
+
+    // A tab opened between assessment and commit makes the commit stale,
+    // and the next assessment refuses.
+    let arriving = mux.create_session(None).unwrap();
+    let arriving_workspace = mux.create_workspace(arriving, None).unwrap();
+    let attachment = mux.attach_session(arriving).unwrap();
+    let ticket = emptied(&mux, attachment, arriving_workspace).unwrap();
+    assert_eq!(ticket.effect(), CloseEffect::Session(arriving));
+    let opened = mux
+        .open_test_tab(arriving_workspace, &command(steps))
+        .unwrap();
+    ready(&opened.client, "READY");
+    assert!(matches!(
+        commit(&mut mux, ticket),
+        Err(MuxError::StaleClose)
+    ));
+    assert!(matches!(
+        emptied(&mux, attachment, arriving_workspace),
+        Err(MuxError::ViewNotEmpty(_))
+    ));
+    answers(&opened.client, "ALIVE");
+    assert_eq!(mux.terminal_count(), 2);
+    mux.shutdown().unwrap();
 }
 #[test]
 fn detach_keeps_real_child_alive_and_last_window_close_reaps_it() {

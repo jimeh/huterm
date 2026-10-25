@@ -399,6 +399,17 @@ pub(super) fn replacements(
         .collect()
 }
 
+/// Whether the projection holds no tab that a window attached to `session`
+/// would show in `workspace`, so a refused emptied close of that window may
+/// run again.
+pub(super) fn holds_no_tabs(
+    state: &HierarchyState,
+    workspace: Option<WorkspaceId>,
+    session: Option<SessionId>,
+) -> bool {
+    installs(state, workspace, session, &[], &[], false, false).is_empty()
+}
+
 /// Whether a finished install of `tab` still applies: reconcile would
 /// install it now, apart from `busy`, teardown, and the install's own
 /// pending entry.
@@ -569,6 +580,8 @@ pub(super) struct WindowChange {
     pub(super) changed: bool,
     /// A published title changed, so title consumers may need a refresh.
     pub(super) titles: bool,
+    /// The removals took the window's last view.
+    pub(super) emptied: bool,
 }
 
 /// Brings one window in line with the projection: removals, then order,
@@ -596,6 +609,7 @@ pub(super) fn reconcile_window(
         // consumers such as a Quit dialog elsewhere must redraw.
         change.changed = true;
         change.titles = true;
+        change.emptied = target.installed().is_empty();
     }
     let current: Vec<TabId> =
         target.installed().into_iter().map(|(tab, _)| tab).collect();

@@ -179,7 +179,14 @@ Session AttachmentId is distinct from a terminal viewer (`ViewerId`); one
 attachment holds a viewer per displayed terminal, and detach, retarget, session
 close, and cross-session moves revoke its viewers. Detach
 and retarget preserve zero-view sessions; an assessed last-window close deletes
-its session. Desktop close uses prepare/check/commit and request generations.
+its session. `CloseRequest::EmptiedWindow` closes a window whose last view went
+away without stopping a terminal, resolved under the Mux lock in this order: an
+invalidated attachment fails with `UnknownAttachment`; a workspace that still
+holds tabs in the attachment's session fails with `ViewNotEmpty`; another
+attachment on the session, or tabs in its other workspaces, give Detach;
+otherwise Session deletes the empty session. No resolution needs consent, and
+the revision check turns a tab opened after assessment into `StaleClose`.
+Desktop close uses prepare/check/commit and request generations.
 Run process-table scans off both Mux and terminal-parser threads; carry fresh
 assessed background process groups into teardown. Match a terminal's processes
 by TTY device number. On macOS, take TTY membership from the kernel's TTY

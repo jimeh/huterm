@@ -846,6 +846,9 @@ pub enum MuxError {
     /// Current job evidence requires explicit user consent.
     #[error("close requires confirmation")]
     ConfirmationRequired,
+    /// An emptied window's workspace still holds tabs it has not shown yet.
+    #[error("workspace {0:?} still holds tabs")]
+    ViewNotEmpty(WorkspaceId),
     /// A multi-tab close request named no tabs.
     #[error("close request names no tabs")]
     EmptyClose,

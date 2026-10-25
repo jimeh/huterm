@@ -288,6 +288,9 @@ impl WorkspaceView {
             self.installs.finish(tab, failed);
         }
         if !pushed {
+            if self.emptied_close_may_retry(cx) {
+                self.owe_emptied_close(cx);
+            }
             return;
         }
         self.measure_tab_widths(window, cx);

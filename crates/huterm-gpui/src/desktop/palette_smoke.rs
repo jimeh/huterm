@@ -232,6 +232,69 @@ async fn execute(
     cx.update(|cx| execute_sync(cx, command))
 }
 
+/// The native handle `native-close` closes: GPUI's `NSView` on macOS and
+/// the window's XID on X11.
+#[cfg(target_os = "macos")]
+type NativeWindow = *mut std::ffi::c_void;
+#[cfg(not(target_os = "macos"))]
+type NativeWindow = u32;
+
+/// Reads the native handle of the window at `index` inside its update, for
+/// `native_close` to use after the update ends.
+fn native_window(cx: &mut App, index: &str) -> anyhow::Result<NativeWindow> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let index: usize = index.parse().context("window index")?;
+    let handle = *cx.windows().get(index).context("smoke window index")?;
+    handle.update(cx, |_, window, _| {
+        let raw = HasWindowHandle::window_handle(window)
+            .map_err(|error| anyhow::anyhow!("native window handle: {error}"))?
+            .as_raw();
+        match raw {
+            #[cfg(target_os = "macos")]
+            RawWindowHandle::AppKit(handle) => Ok(handle.ns_view.as_ptr()),
+            #[cfg(not(target_os = "macos"))]
+            RawWindowHandle::Xcb(handle) => Ok(handle.window.get()),
+            #[cfg(not(target_os = "macos"))]
+            RawWindowHandle::Xlib(handle) => Ok(u32::try_from(handle.window)?),
+            _ => anyhow::bail!("native-close needs an AppKit or X11 window"),
+        }
+    })?
+}
+
+/// Asks `AppKit` to close the window, which calls GPUI's close callback
+/// synchronously, so no GPUI update may be active.
+#[cfg(target_os = "macos")]
+fn native_close(view: NativeWindow) -> anyhow::Result<()> {
+    super::input_smoke::perform_close(view)
+}
+
+/// Sends the window a `WM_DELETE_WINDOW` client message from a private
+/// connection, as a window manager's close button does.
+#[cfg(not(target_os = "macos"))]
+fn native_close(window: NativeWindow) -> anyhow::Result<()> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{
+        ClientMessageEvent, ConnectionExt as _, EventMask,
+    };
+
+    let (connection, _) = x11rb::connect(None)?;
+    let atom = |name: &[u8]| -> anyhow::Result<u32> {
+        Ok(connection.intern_atom(false, name)?.reply()?.atom)
+    };
+    let event = ClientMessageEvent::new(
+        32,
+        window,
+        atom(b"WM_PROTOCOLS")?,
+        [atom(b"WM_DELETE_WINDOW")?, x11rb::CURRENT_TIME, 0, 0, 0],
+    );
+    connection
+        .send_event(false, window, EventMask::NO_EVENT, event)?
+        .check()?;
+    connection.flush()?;
+    Ok(())
+}
+
 /// Runs a viewer fixture command addressed to a window by index, or
 /// returns `None` for any other command.
 async fn viewer_fixture(
@@ -246,6 +309,24 @@ async fn viewer_fixture(
     }
     if let Some(index) = command.strip_prefix("viewport\t") {
         return Some(shared_viewport(cx, index).await);
+    }
+    // `native-close\t<index>` closes the window at `index` through the
+    // platform's own close path, as its title-bar button or the window
+    // manager would. The native call runs outside any GPUI update.
+    if let Some(index) = command.strip_prefix("native-close\t") {
+        return Some(
+            cx.update(|cx| native_window(cx, index))
+                .and_then(native_close)
+                .map(|()| format!("window {index} asked to close")),
+        );
+    }
+    // `native-terminate` calls `[NSApp terminate:nil]`, as Dock Quit does.
+    #[cfg(target_os = "macos")]
+    if command == "native-terminate" {
+        return Some(
+            crate::native_quit::request_termination()
+                .map(|()| "termination requested".to_owned()),
+        );
     }
     None
 }
@@ -711,8 +792,9 @@ fn read_state(cx: &mut App) -> String {
     // theirs as `w<i>.notices=` and `w<i>.notice<j>=` on their line.
     let desktop = cx.global::<Desktop>();
     let mut output = format!(
-        "windows={} config.warning={:?} {} model_titles={:?} reloads={} reload_titles={:?}\n",
+        "windows={} quake_hotkeys={} config.warning={:?} {} model_titles={:?} reloads={} reload_titles={:?}\n",
         cx.windows().len(),
+        super::quake_windows::keep_alive(cx),
         desktop.config.warning,
         smoke_notices(
             "desktop.",

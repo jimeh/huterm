@@ -105,8 +105,9 @@ use model::{
 };
 use projection::{
     Drained, Install, PendingInstalls, Projection, ReconcileTarget, Resolution,
-    TabNames, TitleConsumers, Wait, WindowChange, installed_order,
-    reactivation, reconcile_window, tab_names, windows_to_visit,
+    TabNames, TitleConsumers, Wait, WindowChange, holds_no_tabs,
+    installed_order, reactivation, reconcile_window, tab_names,
+    windows_to_visit,
 };
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
@@ -2890,6 +2891,9 @@ enum CloseTarget {
     Tabs(Vec<TabId>),
     Window,
     Application,
+    /// The automatic close of a window whose last tab view went away. It
+    /// stops no terminal, so it never prompts.
+    Emptied,
 }
 
 impl CloseTarget {
@@ -2897,7 +2901,7 @@ impl CloseTarget {
         match self {
             Self::Tab(id) => Some(vec![*id]),
             Self::Tabs(ids) => Some(ids.clone()),
-            Self::Window | Self::Application => None,
+            Self::Window | Self::Application | Self::Emptied => None,
         }
     }
 }
@@ -3053,6 +3057,19 @@ fn tabs_after(order: &[TabId], tab: TabId) -> Vec<TabId> {
         .unwrap_or_default()
 }
 
+/// Whether a window owes the emptied close of [`CloseTarget::Emptied`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum EmptiedClose {
+    #[default]
+    None,
+    /// The window's last view went away: the next idle pipeline requests
+    /// the close, and it stays owed until the close reaches an outcome.
+    Owed,
+    /// The runtime refused the close while the window's workspace held
+    /// tabs; a later batch or install may owe it again.
+    Refused,
+}
+
 #[derive(Default)]
 struct CloseState {
     current: Option<CloseTarget>,
@@ -3063,6 +3080,10 @@ struct CloseState {
     /// button whenever a confirmation opens.
     dialog_focus: DialogFocus,
     generation: u64,
+    emptied: EmptiedClose,
+    /// Clicks the Confirm button's listener received, stale or not.
+    #[cfg(test)]
+    confirm_clicks: usize,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -3075,7 +3096,7 @@ enum CloseDecision {
 impl CloseState {
     /// The next close to start once no operation is busy and no
     /// confirmation shows: a queued request first, then an exit-close that
-    /// `take_exit` takes.
+    /// `take_exit` takes, then an owed emptied close.
     fn next_request(
         &mut self,
         busy: bool,
@@ -3087,6 +3108,10 @@ impl CloseState {
         }
         self.take_pending(&contains)
             .or_else(|| take_exit().map(CloseTarget::Tab))
+            .or_else(|| {
+                (self.emptied == EmptiedClose::Owed)
+                    .then_some(CloseTarget::Emptied)
+            })
     }
 
     fn begin_check(&mut self, target: CloseTarget) -> CloseTarget {
@@ -3141,6 +3166,15 @@ impl CloseState {
     /// cancel; false once its commit has begun.
     fn can_cancel_confirmation(&self) -> bool {
         self.confirmation.is_some()
+    }
+    /// Whether a Confirm button drawn for `target` at `generation` may
+    /// commit: only while that same confirmation still shows. Every cancel
+    /// and every new check moves the generation, so a click dispatched
+    /// against an older frame reaches neither a cancelled dialog nor a
+    /// replacement asking the same question.
+    fn can_confirm(&self, target: &CloseTarget, generation: u64) -> bool {
+        self.generation == generation
+            && self.confirmation.as_ref() == Some(target)
     }
     fn cancel(&mut self) -> Option<CloseTarget> {
         self.generation += 1;
@@ -3246,6 +3280,7 @@ impl WorkspaceView {
             title: tab.title(self.config.tabs, cx),
         };
         self.tabs.push(tab);
+        self.close.emptied = EmptiedClose::None;
         let windows = &mut cx.global_mut::<Desktop>().windows;
         if spawned {
             windows.open_tab(self.window, entry);
@@ -3303,11 +3338,68 @@ impl WorkspaceView {
         terminating: bool,
         cx: &mut Context<'_, Self>,
     ) -> WindowChange {
-        reconcile_window(
+        let change = reconcile_window(
             &mut WindowReconcile { view: self, cx },
             touched,
             terminating,
-        )
+        );
+        if !terminating {
+            self.note_emptied(change.emptied, touched, cx);
+        }
+        change
+    }
+
+    /// Owes the emptied close when reconcile took the window's last view,
+    /// or when a batch that touched the window's workspace found its
+    /// attached session gone or left a refused emptied close nothing to
+    /// install. It only marks the window: the idle close pipeline requests
+    /// the close, so reconcile never removes a window itself.
+    fn note_emptied(
+        &mut self,
+        emptied: bool,
+        touched: &Touched,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(record) = self
+            .record(cx)
+            .filter(|record| !record.closing && record.attachment.is_some())
+        else {
+            return;
+        };
+        let batch = record
+            .workspace
+            .is_some_and(|workspace| touched.contains_workspace(workspace));
+        let state = cx.global::<Desktop>().hierarchy.state();
+        let session_gone = record
+            .session
+            .is_some_and(|session| state.session(session).is_none());
+        if emptied
+            || (batch && (session_gone || self.emptied_close_may_retry(cx)))
+        {
+            self.owe_emptied_close(cx);
+        }
+    }
+
+    /// Whether a refused emptied close may run again: the window still
+    /// shows no view, and the projection holds no tab it would install, so
+    /// no install is in flight either.
+    fn emptied_close_may_retry(&self, cx: &App) -> bool {
+        self.close.emptied == EmptiedClose::Refused
+            && self.tabs.is_empty()
+            && holds_no_tabs(
+                cx.global::<Desktop>().hierarchy.state(),
+                self.workspace_id(cx),
+                self.attached_session(cx),
+            )
+    }
+
+    /// Marks the emptied close owed; the notification runs the close
+    /// pipeline, which takes it once idle.
+    fn owe_emptied_close(&mut self, cx: &mut Context<'_, Self>) {
+        if self.close.emptied != EmptiedClose::Owed && !terminating(cx) {
+            self.close.emptied = EmptiedClose::Owed;
+            cx.notify();
+        }
     }
 
     /// Applies canonical order to the model entries and tab views; returns
@@ -5729,7 +5821,7 @@ fn close_dialog_input<'a>(
                 .unwrap_or_default(),
         },
         CloseTarget::Tabs(ids) => CloseDialogTarget::Tabs { count: ids.len() },
-        CloseTarget::Window => CloseDialogTarget::Window,
+        CloseTarget::Window | CloseTarget::Emptied => CloseDialogTarget::Window,
         CloseTarget::Application => CloseDialogTarget::Application,
     };
     let headings = match dialog_target {
@@ -6388,6 +6480,7 @@ impl WorkspaceView {
             return;
         };
         let generation = self.close.generation;
+        let checking = target.clone();
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let task = cx.background_executor().spawn(async move {
             #[cfg(all(test, feature = "test-support"))]
@@ -6412,6 +6505,11 @@ impl WorkspaceView {
                 let assessment = match result {
                     Ok(assessment) => assessment,
                     Err(error) => {
+                        if checking == CloseTarget::Emptied
+                            && view.emptied_close_refused(&error, window, cx)
+                        {
+                            return;
+                        }
                         view.report_failure(
                             "Close",
                             format!("Cannot assess close: {error}"),
@@ -6450,9 +6548,50 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Settles an emptied close the runtime would not assess. A workspace
+    /// that still holds tabs keeps the window, which installs them, and a
+    /// session closed underneath it removes the window without a notice.
+    /// Returns false for any other failure, which is reported once and not
+    /// retried.
+    fn emptied_close_refused(
+        &mut self,
+        error: &MuxError,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        match error {
+            MuxError::ViewNotEmpty(_) => {
+                self.close.current = None;
+                self.close.emptied = if self.tabs.is_empty() {
+                    EmptiedClose::Refused
+                } else {
+                    EmptiedClose::None
+                };
+                // Queued user closes run next.
+                cx.notify();
+                true
+            }
+            MuxError::UnknownAttachment(_) => {
+                let quit_after = matches!(
+                    self.close.pending,
+                    Some(CloseTarget::Application)
+                );
+                cx.global_mut::<Desktop>()
+                    .windows
+                    .detach_attachment(self.window);
+                self.remove_window(window, cx, quit_after);
+                true
+            }
+            _ => {
+                self.close.emptied = EmptiedClose::None;
+                false
+            }
+        }
+    }
+
     /// The runtime request for `target`; `None` when this window has
-    /// nothing to send. A window close without an attachment removes the
-    /// window at once.
+    /// nothing to send. A window or emptied close without an attachment
+    /// removes the window at once.
     fn close_request(
         &mut self,
         target: &CloseTarget,
@@ -6461,12 +6600,19 @@ impl WorkspaceView {
     ) -> Option<CloseRequest> {
         Some(match target {
             CloseTarget::Application => CloseRequest::Application,
-            CloseTarget::Window => {
+            CloseTarget::Window | CloseTarget::Emptied => {
                 let Some(attachment) = self.attachment_id(cx) else {
                     self.remove_window(window, cx, false);
                     return None;
                 };
-                CloseRequest::Window(attachment)
+                if *target == CloseTarget::Window {
+                    CloseRequest::Window(attachment)
+                } else {
+                    CloseRequest::EmptiedWindow {
+                        attachment,
+                        workspace: self.workspace_id(cx)?,
+                    }
+                }
             }
             CloseTarget::Tab(tab) => CloseRequest::Tab {
                 workspace: self.workspace_id(cx)?,
@@ -6529,6 +6675,26 @@ impl WorkspaceView {
         }
     }
 
+    /// Commits the confirmation of `target` from its Confirm button, drawn
+    /// at `generation`. A stale click, dispatched against a frame drawn
+    /// before Cancel or before a new check replaced the dialog, does
+    /// nothing; `finish_close` would otherwise assess it again.
+    fn confirm_confirmation(
+        &mut self,
+        target: CloseTarget,
+        generation: u64,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        #[cfg(test)]
+        {
+            self.close.confirm_clicks += 1;
+        }
+        if self.close.can_confirm(&target, generation) {
+            self.finish_close(target, window, cx);
+        }
+    }
+
     fn cancel_close(
         &mut self,
         window: &mut Window,
@@ -6556,18 +6722,34 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
+        let showing =
+            |tab: &TabId| self.tabs.iter().any(|view| view.id == *tab);
+        if self
+            .close
+            .confirmation
+            .as_ref()
+            .and_then(CloseTarget::tabs)
+            .is_some_and(|tabs| !tabs.iter().any(showing))
+        {
+            // Every tab it asks about left the window, so its commit could
+            // only go stale.
+            self.cancel_close(window, cx);
+        }
         let id = self.window;
         let tabs = &self.tabs;
         let shows = |tab: TabId| tabs.iter().any(|view| view.id == tab);
-        // A closing window or teardown takes no exit-close.
+        // A closing window or teardown takes no automatic close.
         let can_take = !terminating(cx)
             && self.record(cx).is_some_and(|record| !record.closing);
-        let target = self.close.next_request(self.busy, shows, || {
-            if !can_take {
-                return None;
-            }
-            cx.global_mut::<Desktop>().exit_closes.take(id, shows)
-        });
+        let target = self
+            .close
+            .next_request(self.busy, shows, || {
+                if !can_take {
+                    return None;
+                }
+                cx.global_mut::<Desktop>().exit_closes.take(id, shows)
+            })
+            .filter(|target| can_take || *target != CloseTarget::Emptied);
         if let Some(target) = target {
             self.request_close(target, window, cx);
             true
@@ -6661,7 +6843,7 @@ impl WorkspaceView {
                         settle_waiters(cx);
                         approved_quit(cx);
                     }
-                    CloseTarget::Window => {
+                    CloseTarget::Window | CloseTarget::Emptied => {
                         let quit_after = matches!(
                             view.close.pending,
                             Some(CloseTarget::Application)
@@ -6687,7 +6869,7 @@ impl WorkspaceView {
     }
 
     /// Drops the records of committed tab closes, then resumes queued
-    /// closes or closes the emptied window.
+    /// closes, which include the emptied close once no tab remains.
     fn remove_closed_tabs(
         &mut self,
         ids: &[TabId],
@@ -6705,11 +6887,11 @@ impl WorkspaceView {
             self.select(active, window, cx);
             self.reveal_tab_activity(window, cx);
         }
+        if self.tabs.is_empty() {
+            self.owe_emptied_close(cx);
+        }
         if self.resume_close(window, cx) {
             return;
-        }
-        if self.tabs.is_empty() {
-            self.request_close(CloseTarget::Window, window, cx);
         }
         cx.notify();
     }
@@ -8360,6 +8542,7 @@ impl Render for WorkspaceView {
         }
         self.drawn_dialog_groups = None;
         if let Some(target) = self.close.confirmation.clone() {
+            let generation = self.close.generation;
             let input = self.close_dialog_input(&target, cx);
             self.drawn_dialog_groups = Some(dialog_group_titles(&input));
             let model = build_close_dialog(&input);
@@ -8373,7 +8556,12 @@ impl Render for WorkspaceView {
                     view.cancel_confirmation(window, cx);
                 }),
                 cx.listener(move |view, _, window, cx| {
-                    view.finish_close(target.clone(), window, cx);
+                    view.confirm_confirmation(
+                        target.clone(),
+                        generation,
+                        window,
+                        cx,
+                    );
                 }),
             );
             root = root.child(modal_layer(dialog, &layout));

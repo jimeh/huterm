@@ -75,10 +75,16 @@ Linux launches `$SHELL` in the current working directory. Without `$SHELL`,
 Huterm falls back to `/bin/zsh` on macOS and `/bin/sh` on Linux.
 
 Closing a tab stops its terminal. Windows attach to sessions. Closing a window
-only detaches when another view remains; closing its final view terminates that
-session. Core detachment and attachment retargeting preserve zero-view sessions.
-Huterm stays alive without windows while any session survives, and macOS Dock
-reopen creates a window. Hiding a window keeps its attachment.
+only detaches it when another window views the same session, and then never
+asks for confirmation; closing a session's last window terminates the session. A
+window whose last tab goes away closes too, whether it closed that tab, another
+window closed or moved it, or its shell exited. That close stops no terminal and
+never asks; a window whose workspace gains a tab meanwhile stays open and shows
+it. A window whose session is closed elsewhere closes without a notice.
+Hiding a quake window keeps its attachment and terminals. Core detachment and
+attachment retargeting preserve zero-view sessions. Huterm stays alive
+without windows while any session survives or a quake hotkey is registered, and
+macOS Dock reopen creates a window; with none of them left, it exits.
 
 Close and Quit warn about foreground/background jobs or unknown process state.
 Idle shells need no confirmation. Structure and job evidence are rechecked before
@@ -121,9 +127,10 @@ rename controls, cross-window transfers, session/workspace switching, shared
 views, and persistence remain follow-up work. The embedded attachment and close
 lifecycle is implemented; server-mode lifetime policy and IPC remain deferred.
 
-Process inspection uses a bounded system `ps` snapshot off the UI and terminal
-parser threads. It follows shell descendants and the owned PTY, including
-background process groups while the root shell is alive. Scan failures require
+Process inspection reads operating-system process facts in process through
+`huterm-procinfo`, off the UI and terminal parser threads. It follows shell
+descendants and the owned PTY, including background process groups while the
+root shell is alive. Scan failures require
 confirmation. Root-shell exit completes the terminal and reaps the child
 immediately, including when its tab is retained for history. Closing completed
 history does not scan for or signal surviving processes. This follows the

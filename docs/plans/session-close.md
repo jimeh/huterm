@@ -1,7 +1,7 @@
 # Embedded session close
 
-Status: approved for the embedded half of [issue #21][issue-21] after three
-Codex review rounds.
+Status: implemented for the embedded half of [issue #21][issue-21]; see
+[Deviations](#deviations) for what changed during implementation.
 
 Closing, detaching, switching, and quitting are separate lifecycle events.
 This plan covers them in embedded mode, where the desktop owns the runtime
@@ -520,6 +520,38 @@ Agreed with the maintainer on 2026-10-25:
 ## Open questions
 
 None.
+
+## Deviations
+
+Recorded when the plan shipped:
+
+- The emptied mark lives on `CloseState` as a three-state `EmptiedClose`
+  (none, owed, refused) rather than in the window model; `model.rs` is
+  unchanged. An owed close stays owed until it reaches an outcome, so a
+  Window or Application close that absorbs it and is then cancelled leaves
+  it owed, and the window takes it once idle.
+- The session-gone edge fires only from a batch that touches the window's
+  workspace, so it stays an edge: a later unrelated reconcile does not retry
+  an emptied close whose assessment failed.
+- A `ViewNotEmpty` that arrives after a view already installed clears the
+  mark instead of marking the window refused.
+- Emptied closes, like exit-closes, are not offered in a closing window or
+  during teardown.
+- `EmptiedWindow` also validates the workspace's runtime scope and fails with
+  `ForeignRuntime` for a foreign workspace.
+- Two tests beyond the list above: a tier 2 test that a tab confirmation
+  whose tab left the window is cancelled, and a projection unit test that
+  only the removal of the last view reports the window emptied.
+- The tier 2 stale Confirm test finds the button through a
+  `debug_selector("confirm-close")`, which only debug builds record, and
+  observes the listener through a test-only click counter on `CloseState`.
+  It produces the stale click by cancelling and dispatching the click in one
+  update, because GPUI's test mode draws dirty windows at the end of every
+  update.
+- The viewers fixture shell's `job` line runs a foreground `head -n 1`, which
+  the next typed line ends. Smoke state gains `quake_hotkeys=`, which the
+  final step checks. `native_quit::request_termination` lost its dead-code
+  allowance, since the palette smoke now calls it.
 
 [issue-9]: https://github.com/jimeh/huterm/issues/9
 [issue-20]: https://github.com/jimeh/huterm/issues/20

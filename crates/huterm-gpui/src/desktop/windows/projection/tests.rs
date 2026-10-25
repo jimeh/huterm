@@ -399,6 +399,36 @@ fn several_renames_notify_their_window_once_and_skip_other_windows() {
 }
 
 #[test]
+fn only_the_removal_of_the_last_view_reports_the_window_emptied() {
+    let mut feed = Feed::new();
+    let mut model = WindowModel::default();
+    let mut fake = attached_window(&mut model, 1, workspace(10));
+    for value in [1, 2] {
+        let seq = feed.open(workspace(10), value);
+        push(&mut fake, &mut model, &feed.state, value, seq);
+    }
+    let touched = feed.apply(HierarchyEvent::TabClosed { tab: tab(1) });
+    let change = reconcile(&mut fake, &mut model, &feed.state, &touched);
+    assert!(change.changed && !change.emptied);
+    assert!(!holds_no_tabs(
+        &feed.state,
+        Some(workspace(10)),
+        fake.session
+    ));
+    let touched = feed.apply(HierarchyEvent::TabClosed { tab: tab(2) });
+    let change = reconcile(&mut fake, &mut model, &feed.state, &touched);
+    assert!(change.emptied);
+    assert!(holds_no_tabs(
+        &feed.state,
+        Some(workspace(10)),
+        fake.session
+    ));
+    // Nothing is left to remove, so reconciling again reports nothing.
+    let again = reconcile(&mut fake, &mut model, &feed.state, &touched);
+    assert_eq!(again, WindowChange::default());
+}
+
+#[test]
 fn a_view_the_projection_has_not_caught_up_with_is_never_dropped() {
     let mut feed = Feed::new();
     let mut model = WindowModel::default();
