@@ -187,6 +187,19 @@ attachment on the session, or tabs in its other workspaces, give Detach;
 otherwise Session deletes the empty session. No resolution needs consent, and
 the revision check turns a tab opened after assessment into `StaleClose`.
 Desktop close uses prepare/check/commit and request generations.
+
+A runtime can stop while Mux still owns its tab: its owner panicked or a fatal
+reader or writer failure ended it, and its own teardown signalled and reaped the
+child. The viewer `Registry` closes whenever the runtime thread ends, including
+by unwinding, so `Registry::is_closed` means "stopped on its own" for a terminal
+Mux owns. `CloseTicket::check_jobs` assesses such a terminal as `Idle` without
+asking it, reading the stop at check time so a recheck sees a later stop too.
+`close_tab` and `close_terminals`, and so `shutdown`, read the stop before they
+signal any runtime and then drop that runtime's join error, which its viewers
+already saw as `Stopped`; `ShutdownTimedOut` still reports, because a child may
+be alive, and a runtime that panics during the close still reports
+`ThreadPanic`. Mux keeps the tab and emits nothing when a runtime stops: only
+an explicit close removes it.
 Run process-table scans off both Mux and terminal-parser threads; carry fresh
 assessed background process groups into teardown. Match a terminal's processes
 by TTY device number. On macOS, take TTY membership from the kernel's TTY

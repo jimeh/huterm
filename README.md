@@ -92,8 +92,11 @@ teardown. Consent covers existing job groups while their leader creation identit
 survives, including leader exec and child churn. A leaderless group needs an
 original surviving member. New groups, lost identity evidence, structural changes,
 or newly unknown process state require reassessment and renewed consent when
-needed. Completed jobs do not re-prompt. macOS Dock Quit uses the same cancellable
-path as the application menu.
+needed. Completed jobs do not re-prompt. A terminal whose runtime stopped on its
+own, after an internal failure, closes without a prompt or a failure notice,
+including when its window closes or the application quits; its runtime already
+stopped its shell. macOS Dock Quit uses the same cancellable path as the
+application menu.
 Quit includes all sessions, even those with no views. Before teardown it retains
 one in-memory hierarchy and window-navigation/layout capture. Disk persistence,
 terminal-history serialization, and restart restoration remain unimplemented.

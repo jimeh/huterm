@@ -617,6 +617,27 @@ Recorded when the plan shipped:
   final step checks. `native_quit::request_termination` lost its dead-code
   allowance, since the palette smoke now calls it.
 
+Recorded with the review round 1 corrections and the stopped-terminal rules:
+
+- `DesktopRuntime::assess` returns `Committed`, the assessment with the
+  hierarchy sequence read under the Mux lock, for every target; only a
+  refused emptied close waits on it.
+- `request_quit` also skips an active window the platform still names after
+  its removal, which GPUI's test platform does; without this the continued
+  Quit could still find no host.
+- Tests gain `Stage::Assessed`, held after an assessment returns, and
+  `Desktop::close_failures`, a test-only count of close failure notices.
+- An explicit `RuntimeClient::close` outside Mux now counts as a stopped
+  runtime, so `foreground_exit_and_unavailable_runtime_are_assessed_conservatively`
+  keeps its unknown-state check with a paused, unresponsive runtime instead,
+  and the unused `TestClient::close` helper is gone.
+- No deterministic test covers a runtime that panics during the close
+  itself, which still reports `ThreadPanic`; the stop is read before the
+  close signals any runtime, by inspection.
+- The reap assertion in
+  `a_panicked_tab_closes_without_consent_or_failure_and_spares_its_sibling`
+  fails until this branch rebases onto #237's panic teardown.
+
 ## Review round 1 corrections
 
 Decided on 2026-10-25 after the first Codex and Claude review of PR #238:

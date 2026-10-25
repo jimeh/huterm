@@ -42,10 +42,6 @@ impl TestClient {
         self.control.has_foreground_job().await
     }
 
-    pub(crate) fn close(&self) -> Result<(), RuntimeError> {
-        self.control.close()
-    }
-
     pub(crate) fn resize(
         &self,
         grid: GridSize,

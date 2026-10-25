@@ -105,15 +105,35 @@ pub struct CloseAssessment {
 }
 impl CloseTicket {
     /// Checks foreground and background processes on the calling worker.
-    /// Must run off the UI thread and outside the structural mutex.
+    /// Must run off the UI thread and outside the structural mutex. A
+    /// terminal whose runtime has stopped by now assesses as idle without
+    /// asking it: its own teardown already stopped its child.
     #[must_use]
     pub fn check_jobs(&self) -> CloseAssessment {
-        let jobs = crate::jobs::inspect_all(
+        let stopped: Vec<bool> = self
+            .clients
+            .iter()
+            .map(|client| client.registry().is_closed())
+            .collect();
+        let mut inspected = crate::jobs::inspect_all(
             self.clients
                 .iter()
-                .map(RuntimeClient::job_context)
+                .zip(&stopped)
+                .filter(|(_, stopped)| !**stopped)
+                .map(|(client, _)| client.job_context())
                 .collect(),
-        );
+        )
+        .into_iter();
+        let jobs = stopped
+            .iter()
+            .map(|stopped| {
+                if *stopped {
+                    JobState::Idle
+                } else {
+                    inspected.next().unwrap_or(JobState::Unknown)
+                }
+            })
+            .collect();
         CloseAssessment {
             ticket: self.clone(),
             jobs,

@@ -1719,6 +1719,44 @@ impl DesktopHarness {
             !cx.windows().contains(&window)
         });
     }
+
+    /// Close failures reported in any window, including removed ones.
+    fn close_failures(&mut self) -> usize {
+        self.cx.update(|cx| cx.global::<Desktop>().close_failures)
+    }
+
+    /// Requests Quit in `window`, which queues it behind a busy close.
+    fn queue_quit(&mut self, window: AnyWindowHandle) {
+        self.update_view(window, |view, window, cx| {
+            assert!(view.busy, "the Quit would not queue");
+            view.request_close(CloseTarget::Application, window, cx);
+        });
+    }
+
+    /// Creates a session no window shows, which keeps the application
+    /// running once its windows are gone, and returns it.
+    fn unviewed_session(&self) -> SessionId {
+        self.runtime.lock().create_session(None).unwrap()
+    }
+
+    /// Waits until Quit captured the restore set and began teardown, and
+    /// checks that the capture holds `session`.
+    fn wait_quit(&mut self, session: SessionId) {
+        let runtime = Arc::clone(&self.runtime);
+        self.wait_for("the application to quit", |_| {
+            runtime.terminating.load(Ordering::Acquire)
+        });
+        let restore = runtime.restore.lock().unwrap();
+        let captured = restore.as_ref().expect("Quit captured nothing");
+        assert!(
+            captured
+                .hierarchy
+                .sessions
+                .iter()
+                .any(|kept| kept.id == session),
+            "the capture lacks the unviewed session"
+        );
+    }
 }
 
 /// Whether the session still exists in Mux.
@@ -1851,6 +1889,7 @@ fn closing_the_shared_workspaces_last_tab_closes_both_windows(
         !cx.windows().contains(&closer) && !cx.windows().contains(&other)
     });
     assert!(!session_exists(&harness));
+    assert_eq!(harness.close_failures(), 0);
 }
 
 #[gpui::test]
@@ -1867,6 +1906,7 @@ fn a_session_another_client_closes_closes_its_windows(cx: &mut TestAppContext) {
     });
     // An unknown attachment removes a window silently: no commit ran.
     assert_eq!(harness.runtime.worker_hooks.entered(Stage::Commit), 0);
+    assert_eq!(harness.close_failures(), 0);
 }
 
 #[gpui::test]
@@ -2192,4 +2232,241 @@ fn a_confirm_click_drawn_before_cancel_neither_assesses_nor_commits(
     harness.cx.update(|cx| {
         assert!(terminal(cx, window, stays).is_some());
     });
+}
+
+/// Holds viewer subscriptions and opens a tab that `window` starts
+/// installing, then closes `shown`, the window's only view, through Mux.
+/// Waits until the runtime refused the emptied close that follows, while
+/// its result is held before it reaches the window, and returns the
+/// installing tab. Viewer subscriptions stay held.
+fn refuse_an_emptied_close_and_hold_it(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    shown: TabId,
+) -> TabId {
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Subscribe);
+    let installing = harness.open_tab(ECHO);
+    harness.wait_for("the window to start installing", |_| {
+        hooks.held(Stage::Subscribe) == 1
+    });
+    hooks.hold(Stage::Assessed);
+    harness.close_tab(shown);
+    harness.wait_for("the refused emptied close to be held", |cx| {
+        terminal(cx, window, shown).is_none()
+            && hooks.held(Stage::Assessed) == 1
+    });
+    installing
+}
+
+#[gpui::test]
+fn a_tab_removed_after_core_refused_an_emptied_close_closes_the_window(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let shown = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[shown]);
+    let installing =
+        refuse_an_emptied_close_and_hold_it(&mut harness, window, shown);
+    harness.close_tab(installing);
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.release(Stage::Assessed);
+    // The install stays held, so only the refusal's handling can close the
+    // window.
+    harness.wait_closed(window);
+    hooks.release(Stage::Subscribe);
+    assert!(!session_exists(&harness));
+    assert_eq!(hooks.entered(Stage::Assess), 2);
+    assert_eq!(harness.close_failures(), 0);
+}
+
+#[gpui::test]
+fn a_session_closed_after_core_refused_an_emptied_close_removes_the_window(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let shown = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[shown]);
+    refuse_an_emptied_close_and_hold_it(&mut harness, window, shown);
+    harness.close_session();
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.release(Stage::Assessed);
+    harness.wait_closed(window);
+    hooks.release(Stage::Subscribe);
+    // Removed without asking the runtime again.
+    assert_eq!(hooks.entered(Stage::Assess), 1);
+    assert_eq!(hooks.entered(Stage::Commit), 0);
+    assert_eq!(harness.close_failures(), 0);
+}
+
+/// Closes `tab`, `window`'s only view, through Mux while `stage` is held,
+/// and waits until the emptied close that follows waits at `stage`.
+fn hold_the_emptied_close_at(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    tab: TabId,
+    stage: Stage,
+) {
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(stage);
+    harness.close_tab(tab);
+    harness.wait_for("the emptied close to wait", |cx| {
+        terminal(cx, window, tab).is_none() && hooks.held(stage) == 1
+    });
+}
+
+#[gpui::test]
+fn a_session_closed_while_an_emptied_close_commits_removes_the_window_silently(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    hold_the_emptied_close_at(&mut harness, window, tab, Stage::Commit);
+    harness.close_session();
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.release(Stage::Commit);
+    harness.wait_closed(window);
+    // The stale commit assessed again and found the attachment gone.
+    assert_eq!(hooks.entered(Stage::Commit), 1);
+    assert_eq!(hooks.entered(Stage::Assess), 2);
+    assert_eq!(harness.close_failures(), 0);
+}
+
+#[gpui::test]
+fn a_quit_queued_behind_an_emptied_close_of_a_closed_session_still_quits(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let unviewed = harness.unviewed_session();
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    hold_the_emptied_close_at(&mut harness, window, tab, Stage::Assess);
+    harness.queue_quit(window);
+    harness.close_session();
+    harness.runtime.worker_hooks.release(Stage::Assess);
+    harness.wait_closed(window);
+    harness.wait_quit(unviewed);
+    assert_eq!(harness.close_failures(), 0);
+}
+
+#[gpui::test]
+fn a_quit_queued_behind_a_committing_emptied_close_still_quits(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let unviewed = harness.unviewed_session();
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    hold_the_emptied_close_at(&mut harness, window, tab, Stage::Commit);
+    harness.queue_quit(window);
+    harness.runtime.worker_hooks.release(Stage::Commit);
+    harness.wait_closed(window);
+    harness.wait_quit(unviewed);
+    assert!(!session_exists(&harness));
+}
+
+#[gpui::test]
+fn a_quit_queued_behind_a_window_close_still_quits(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let unviewed = harness.unviewed_session();
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Commit);
+    harness.update_view(window, |view, window, cx| {
+        view.request_close(CloseTarget::Window, window, cx);
+    });
+    harness.wait_for("the window close to commit", |_| {
+        hooks.held(Stage::Commit) == 1
+    });
+    harness.queue_quit(window);
+    hooks.release(Stage::Commit);
+    harness.wait_closed(window);
+    harness.wait_quit(unviewed);
+    assert!(!session_exists(&harness));
+}
+
+#[gpui::test]
+fn a_window_close_of_a_closed_session_removes_the_window_without_a_notice(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Assess);
+    harness.update_view(window, |view, window, cx| {
+        view.request_close(CloseTarget::Window, window, cx);
+    });
+    harness.wait_for("the window close to be assessed", |_| {
+        hooks.held(Stage::Assess) == 1
+    });
+    harness.close_session();
+    hooks.release(Stage::Assess);
+    harness.wait_closed(window);
+    assert_eq!(hooks.entered(Stage::Commit), 0);
+    assert_eq!(harness.close_failures(), 0);
+}
+
+#[gpui::test]
+fn cancelling_a_tab_confirmation_whose_tab_left_keeps_a_queued_tab_close(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let runs = harness.open_tab(RUNS_JOB);
+    let queued = harness.open_tab(ECHO);
+    let stays = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[runs, queued, stays]);
+    harness.wait_text(window, runs, "READY");
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Assess);
+    harness.update_view(window, |view, window, cx| {
+        view.request_close(CloseTarget::Tab(runs), window, cx);
+    });
+    harness.wait_for("the first tab close to be assessed", |_| {
+        hooks.held(Stage::Assess) == 1
+    });
+    // A second tab close queues behind the first and outlives its prompt.
+    harness.update_view(window, |view, window, cx| {
+        view.request_close(CloseTarget::Tab(queued), window, cx);
+    });
+    hooks.release(Stage::Assess);
+    harness
+        .wait_for("the first tab's confirmation", |cx| confirming(cx, window));
+    harness.close_tab(runs);
+    harness.wait_for("the queued tab close to run", |cx| {
+        !projected(cx, queued) && terminal(cx, window, queued).is_none()
+    });
+    harness.cx.update(|cx| {
+        assert!(!confirming(cx, window));
+        assert!(terminal(cx, window, stays).is_some());
+    });
+    harness.answers(window, stays, "stays");
+}
+
+#[gpui::test]
+fn a_failed_emptied_close_assessment_keeps_a_queued_quit(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let unviewed = harness.unviewed_session();
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    hold_the_emptied_close_at(&mut harness, window, tab, Stage::Assess);
+    harness.queue_quit(window);
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.fail(Stage::Assess);
+    hooks.release(Stage::Assess);
+    harness.wait_quit(unviewed);
+    assert_eq!(harness.close_failures(), 1);
 }

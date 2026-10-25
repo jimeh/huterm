@@ -412,6 +412,13 @@ impl Registry {
         }
     }
 
+    /// Whether the registry closed. It closes when the runtime thread ends,
+    /// including by unwinding, so for a terminal Mux still owns this means
+    /// the runtime stopped on its own.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.state().closed
+    }
+
     pub(crate) fn terminal_id(&self) -> TerminalId {
         self.terminal_id
     }

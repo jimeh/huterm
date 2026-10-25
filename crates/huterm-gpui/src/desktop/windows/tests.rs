@@ -54,8 +54,12 @@ fn a_stale_cancel_after_confirm_cannot_reach_the_commit() {
     let session = runtime.lock().create_session(None).unwrap();
     let mut close = CloseState::default();
     let target = close.begin_check(CloseTarget::Window);
-    close.assessment =
-        Some(runtime.assess(CloseRequest::Session(session)).unwrap());
+    close.assessment = Some(
+        runtime
+            .assess(CloseRequest::Session(session))
+            .result
+            .unwrap(),
+    );
     assert_eq!(
         close.checked(true),
         Some(CloseDecision::Confirm(target.clone()))
@@ -128,6 +132,27 @@ fn emptied_closes_wait_behind_user_closes_and_wider_closes_absorb_them() {
     assert_eq!(
         close.checked(false),
         Some(CloseDecision::Check(CloseTarget::Window))
+    );
+}
+
+#[test]
+fn dismissing_a_stale_confirmation_keeps_the_queued_close() {
+    let (first, second) = (TabId::new(1), TabId::new(2));
+    let mut close = CloseState::default();
+    close.begin_check(CloseTarget::Tab(first));
+    close.queue(CloseTarget::Tab(second));
+    assert_eq!(
+        close.checked(true),
+        Some(CloseDecision::Confirm(CloseTarget::Tab(first)))
+    );
+    let drawn = close.generation;
+    close.dismiss_confirmation();
+    assert!(!close.can_cancel_confirmation());
+    assert!(!close.can_confirm(&CloseTarget::Tab(first), drawn));
+    assert!(close.assessment.is_none() && close.current.is_none());
+    assert_eq!(
+        close.next_request(false, |_| true, || None),
+        Some(CloseTarget::Tab(second))
     );
 }
 
@@ -959,7 +984,7 @@ fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
         sidebar_width: px(220.0),
         quake_profile: None,
     }];
-    let assessment = runtime.assess(CloseRequest::Application).unwrap();
+    let assessment = runtime.assess(CloseRequest::Application).result.unwrap();
     runtime
         .commit(&assessment, false, Some(windows))
         .result
@@ -993,9 +1018,12 @@ fn a_session_its_last_window_closed_is_absent_from_a_later_quit_capture() {
         let unviewed = mux.create_session(Some("unviewed")).unwrap();
         (closed, unviewed, attachment)
     };
-    let window = runtime.assess(CloseRequest::Window(attachment)).unwrap();
+    let window = runtime
+        .assess(CloseRequest::Window(attachment))
+        .result
+        .unwrap();
     runtime.commit(&window, false, None).result.unwrap();
-    let quit = runtime.assess(CloseRequest::Application).unwrap();
+    let quit = runtime.assess(CloseRequest::Application).result.unwrap();
     runtime
         .commit(&quit, false, Some(Vec::new()))
         .result
@@ -1017,7 +1045,7 @@ fn a_session_its_last_window_closed_is_absent_from_a_later_quit_capture() {
 fn rejected_quit_never_sets_termination_gate_or_capture() {
     let runtime = DesktopRuntime::default();
     runtime.mux.lock().unwrap().create_session(None).unwrap();
-    let assessment = runtime.assess(CloseRequest::Application).unwrap();
+    let assessment = runtime.assess(CloseRequest::Application).result.unwrap();
     runtime
         .mux
         .lock()
@@ -1031,7 +1059,7 @@ fn rejected_quit_never_sets_termination_gate_or_capture() {
     assert!(!runtime.terminating.load(Ordering::Acquire));
     assert!(runtime.restore.lock().unwrap().is_none());
     assert_eq!(runtime.mux.lock().unwrap().sessions().len(), 2);
-    let assessment = runtime.assess(CloseRequest::Application).unwrap();
+    let assessment = runtime.assess(CloseRequest::Application).result.unwrap();
     runtime
         .commit(&assessment, false, Some(Vec::new()))
         .result
@@ -1183,7 +1211,10 @@ fn queued_quit_after_final_window_close_admits_a_confirmation_host() {
     let attachment = mux.attach_session(visible).unwrap();
     let unviewed = mux.create_session(Some("keep alive")).unwrap();
     drop(mux);
-    let assessment = runtime.assess(CloseRequest::Window(attachment)).unwrap();
+    let assessment = runtime
+        .assess(CloseRequest::Window(attachment))
+        .result
+        .unwrap();
     let mut close = CloseState::default();
     close.begin_check(CloseTarget::Window);
     close.current = Some(CloseTarget::Window);

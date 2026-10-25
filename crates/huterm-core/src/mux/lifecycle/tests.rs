@@ -308,6 +308,17 @@ fn emptied_window_closes_stop_no_terminal_and_never_need_consent() {
     ));
     answers(&opened.client, "ALIVE");
     assert_eq!(mux.terminal_count(), 2);
+
+    // A workspace of another runtime is foreign.
+    let mut foreign = Mux::default();
+    let foreign_session = foreign.create_session(None).unwrap();
+    let foreign_workspace =
+        foreign.create_workspace(foreign_session, None).unwrap();
+    assert!(matches!(
+        emptied(&mux, attachment, foreign_workspace),
+        Err(MuxError::ForeignRuntime(runtime))
+            if runtime == foreign_workspace.runtime()
+    ));
     mux.shutdown().unwrap();
 }
 #[test]
@@ -512,11 +523,18 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
         .unwrap()
         .check_jobs();
     assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
-    exited.client.close().unwrap();
-    while exited.client.job_context().is_some() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // A live runtime that does not answer is unknown, unlike a stopped one.
+    let (entered, paused) = std::sync::mpsc::channel();
+    let (resume, release) = std::sync::mpsc::channel::<()>();
+    exited
+        .client
+        .control
+        .send_control(crate::terminal::RuntimeControl::Pause {
+            entered,
+            release,
+        })
+        .unwrap();
+    paused.recv_timeout(Duration::from_secs(3)).unwrap();
     let assessment = mux
         .prepare_close(CloseRequest::Application)
         .unwrap()
@@ -526,8 +544,87 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
         mux.commit_close(&assessment, &assessment.recheck(), false),
         Err(MuxError::ConfirmationRequired)
     ));
+    drop(resume);
     mux.commit_close(&assessment, &assessment.recheck(), true)
         .unwrap();
+}
+/// Panics `client`'s runtime and waits until it stopped.
+fn panic_runtime(client: &crate::test_support::TestClient) {
+    client
+        .control
+        .send_control(crate::terminal::RuntimeControl::Panic)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !client.control.registry().is_closed() {
+        assert!(Instant::now() < deadline, "the runtime never stopped");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+#[test]
+fn a_panicked_tab_closes_without_consent_or_failure_and_spares_its_sibling() {
+    let steps = "printf READY; read value; printf ALIVE; read value";
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let panicked = mux.open_test_tab(workspace, &command(steps)).unwrap();
+    let sibling = mux.open_test_tab(workspace, &command(steps)).unwrap();
+    ready(&panicked.client, "READY");
+    ready(&sibling.client, "READY");
+    let pid = pid_of(&panicked.client);
+    panic_runtime(&panicked.client);
+    let assessment = mux
+        .prepare_close(CloseRequest::Tab {
+            workspace,
+            tab: panicked.tab.id,
+        })
+        .unwrap()
+        .check_jobs();
+    assert_eq!(assessment.jobs(), &[JobState::Idle]);
+    mux.commit_close(&assessment, &assessment.recheck(), false)
+        .expect("closing a stopped terminal reported a failure");
+    assert_eq!(tab_ids(&mux, workspace), vec![sibling.tab.id]);
+    answers(&sibling.client, "ALIVE");
+    // The panicked runtime's own teardown reaps its shell.
+    assert_eq!(
+        nix::sys::signal::kill(pid, None),
+        Err(nix::errno::Errno::ESRCH),
+        "the panicked tab's shell survived"
+    );
+    mux.shutdown().unwrap();
+}
+#[test]
+fn window_session_and_quit_closes_need_no_consent_for_a_panicked_member() {
+    fn panicked_session(
+        mux: &mut Mux,
+    ) -> (SessionId, Vec<crate::mux::TestTab>) {
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let tabs = open_idle_tabs(mux, workspace, 2);
+        panic_runtime(&tabs[0].client);
+        (session, tabs)
+    }
+    let mut mux = Mux::default();
+    // The last window's close terminates the session.
+    let (closed, _tabs) = panicked_session(&mut mux);
+    let attachment = mux.attach_session(closed).unwrap();
+    let assessment = mux
+        .prepare_close(CloseRequest::Window(attachment))
+        .unwrap()
+        .check_jobs();
+    assert_eq!(assessment.jobs(), &[JobState::Idle, JobState::Idle]);
+    mux.commit_close(&assessment, &assessment.recheck(), false)
+        .expect("a window close with a stopped terminal reported a failure");
+    assert!(mux.session(closed).is_none());
+    // Quit needs no consent for it, and its shutdown reports no failure.
+    let (_kept, _tabs) = panicked_session(&mut mux);
+    let assessment = mux
+        .prepare_close(CloseRequest::Application)
+        .unwrap()
+        .check_jobs();
+    assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
+    mux.shutdown()
+        .expect("shutdown with a stopped terminal reported a failure");
+    assert_eq!(mux.terminal_count(), 0);
 }
 
 #[test]

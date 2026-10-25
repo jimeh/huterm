@@ -10,13 +10,16 @@ use std::sync::Mutex;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Stage {
     Assess,
+    /// A close assessment that returned, before its result reaches the
+    /// window.
+    Assessed,
     Commit,
     /// Subscribing viewers for installs and replacements.
     Subscribe,
 }
 
 #[derive(Default)]
-pub(super) struct WorkerHooks(Mutex<[StageHooks; 3]>);
+pub(super) struct WorkerHooks(Mutex<[StageHooks; 4]>);
 
 #[derive(Default)]
 struct StageHooks {
