@@ -92,9 +92,15 @@ struct State {
     callbacks: usize,
     stage: Stage,
 }
+/// The active tab's state, which after the detachment is the replacement.
 fn state(cx: &mut App) -> anyhow::Result<State> {
     workspace(cx, |view, _, cx| {
-        let tab = view.tabs.first().context("no smoke tab")?;
+        let active = view.active_tab(cx);
+        let tab = view
+            .tabs
+            .iter()
+            .find(|tab| Some(tab.id) == active)
+            .context("no active smoke tab")?;
         let terminal = tab.view.read(cx);
         let text =
             terminal
@@ -537,7 +543,31 @@ fn detach_by_move(
     Ok(viewer)
 }
 
+/// Opens a second tab and selects the probed first tab again. A window whose
+/// last tab moves away closes, so the second tab keeps the window open once
+/// the detachment moves the probed tab elsewhere.
+async fn open_keeper_tab(cx: &mut AsyncApp) -> anyhow::Result<()> {
+    let probed = cx.update(|cx| workspace(cx, |view, _, _| view.tabs[0].id))?;
+    cx.update(|cx| workspace(cx, WorkspaceView::new_tab))??;
+    wait(cx, "keeper tab", |cx| {
+        workspace(cx, |view, _, _| {
+            let tabs = view.tabs.len();
+            (
+                tabs == 2 && !view.busy,
+                format!("tabs={tabs} busy={}", view.busy),
+            )
+        })
+    })
+    .await?;
+    cx.update(|cx| {
+        workspace(cx, |view, window, cx| {
+            view.select_tab(probed, true, window, cx);
+        })
+    })
+}
+
 async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
+    open_keeper_tab(cx).await?;
     // Typing returns the shared viewport to live on the runtime, which
     // publishes separately from the echo. Starting at live leaves the echo
     // as the paused frame's only invalidation.

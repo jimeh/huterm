@@ -113,7 +113,10 @@ checks.
 An attached window installs a view for every tab in its workspace, so a
 smoke that drops a view while keeping its terminal alive must move the tab
 out of the window's workspace, as the refresh smoke's detach does. A view
-dropped while its tab stays is installed again at the next reconcile.
+dropped while its tab stays is installed again at the next reconcile. Keep
+another tab in the window first: a window whose last tab moves away takes an
+emptied close, which detaches its attachment and revokes every viewer
+subscribed through it.
 
 Smoke state is sampled from the model, which can run ahead of the drawn frame.
 Before a smoke presses on a newly opened overlay, wait for a field set during
