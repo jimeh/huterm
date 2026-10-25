@@ -87,7 +87,7 @@ test("check mode never writes the stamp", async () => {
   const stamp = join(root, "source.manifest.json");
   rmSync(stamp);
   await prepareSource(item, root, true, manifest);
-  expect(existsSync(stamp)).toBe(false);
+  expect(readdirSync(root)).not.toContain("source.manifest.json");
   writeFileSync(stamp, "stale");
   await prepareSource(item, root, true, manifest);
   expect(readFileSync(stamp, "utf8")).toBe("stale");

@@ -146,7 +146,13 @@ async function download(item: Source, directory: string, reuse: string[]): Promi
  * unchanged stamp keeps its mtime, so Cargo does not rerun the build script.
  */
 function writeStamp(stamp: string, manifest: Uint8Array): void {
-  if (lstatSync(stamp, { throwIfNoEntry: false })?.isFile() && readFileSync(stamp).equals(manifest)) return;
+  let current: Buffer | undefined;
+  try {
+    current = readFileSync(stamp);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (current?.equals(manifest)) return;
   const stage = mkdtempSync(join(dirname(stamp), ".stamp-"));
   try {
     const temporary = join(stage, "manifest.json");
