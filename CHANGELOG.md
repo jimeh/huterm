@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.19.0](https://github.com/jimeh/huterm/compare/v0.18.0...v0.19.0) (2026-10-25)
+
+
+### Features
+
+* map terminal views against the grid they display ([#225](https://github.com/jimeh/huterm/issues/225)) ([fe7c3d6](https://github.com/jimeh/huterm/commit/fe7c3d6c3800163b06d586905d9481026d82d6d3))
+* show one terminal in several desktop windows ([#226](https://github.com/jimeh/huterm/issues/226)) ([475b1f4](https://github.com/jimeh/huterm/commit/475b1f402e356b8585aecb598556444ed6a6e793))
+
+
+### Bug Fixes
+
+* keep rewritten OSC 8 links from redrawing the whole terminal ([#235](https://github.com/jimeh/huterm/issues/235)) ([792f4f0](https://github.com/jimeh/huterm/commit/792f4f00689d00da779e8eb7ef5b2a62c9bfd74c))
+* reject Ghostty source that does not match the pinned manifest ([#234](https://github.com/jimeh/huterm/issues/234)) ([cde18ce](https://github.com/jimeh/huterm/commit/cde18ce6660e3c569380540add14747104179d95))
+
 ## [0.18.0](https://github.com/jimeh/huterm/compare/v0.17.0...v0.18.0) (2026-10-23)
 
 
