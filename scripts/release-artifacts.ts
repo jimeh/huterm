@@ -492,9 +492,10 @@ export function validateRuntimeSpdx(value: unknown, version: string): void {
   for (const [name, expectedVersion] of [
     ["huterm", version],
     ["Sparkle", "2.10.0"],
-    ["ghostty", "e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110"],
+    ["ghostty", "cec8b92f1ecd176a20a56aa405021e7ae991b996"],
     ["uucode", "0.2.0"],
     ["highway", "66486a10623fa0d72fe91260f96c892e41aceb06"],
+    ["wuffs", "7411f488fe2e2c205c3d3b3d28638b7356522930"],
     ["gpui-pre", "0.3.9"],
   ] as const) {
     if (!packages.some(pkg => pkg.name === name && pkg.versionInfo === expectedVersion)) {

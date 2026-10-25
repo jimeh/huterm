@@ -59,8 +59,8 @@ state; it never connects to the user's tmux server.
 ## Native inputs and policy
 
 Huterm binds the C API through its own `huterm-ghostty` crate. Native Ghostty
-is pinned to `e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110` and built with Zig
-0.16.0 using static linking. The crate's FFI declarations are generated from
+is pinned to `cec8b92f1ecd176a20a56aa405021e7ae991b996` and built with Zig
+0.17.0 using static linking. The crate's FFI declarations are generated from
 the pinned headers with `mise run ghostty:bindings` and checked with
 `mise run ghostty:bindings:check`. `scripts/ghostty-source.json` records the
 reviewed archive and source-tree hashes. Required notices and provenance live
@@ -197,7 +197,7 @@ state at the time and do not define the shipped runtime after issue #118.
 ## Pin and native build
 
 Ghostty builds use native revision
-`e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110` and Zig 0.16.0. Keep its
+`cec8b92f1ecd176a20a56aa405021e7ae991b996` and Zig 0.17.0. Keep its
 `memset` C ABI fix: the first Zig 0.16 migration pin mishandled negative fill
 values and corrupted Rust hash-table control bytes. Run
 `mise run ghostty:prepare` before direct Cargo build commands; it checks the
@@ -219,14 +219,15 @@ has no repository, and Ghostty otherwise discovers Huterm's enclosing release
 tag and panics because it does not match Ghostty's version. The ceiling preserves
 Git discovery from Huterm's root and uses Ghostty's archive-version fallback.
 
-Zig 0.16 creates mutable `zig-pkg` dependencies beside `build.zig`. Build from a
-fresh private source copy under `huterm-ghostty`'s `OUT_DIR`, with the Zig child's
-Git discovery ceiling set there. Keep the verified `.native/ghostty/source`
-unchanged and compilation caches outside the refreshed copy.
+Zig 0.16 and later create mutable `zig-pkg` dependencies beside `build.zig`.
+Build from a fresh private source copy under `huterm-ghostty`'s `OUT_DIR`, with
+the Zig child's Git discovery ceiling set there. Keep the verified
+`.native/ghostty/source` unchanged and compilation caches outside the refreshed
+copy.
 
 Build commands retain `scripts/build-exec.sh` as their shared entrypoint and
 preserve the selected Xcode, including explicit `DEVELOPER_DIR` overrides.
-The pinned Ghostty source and Zig 0.16 support Xcode 27 without SDK fallback or
+The pinned Ghostty source and Zig 0.17 support Xcode 27 without SDK fallback or
 an `xcrun` shim. Check that `xcrun metal --version` actually runs: the launcher
 can exist even when Xcode's optional Metal Toolchain is missing.
 
@@ -245,7 +246,8 @@ archive built against a newer glibc must never reach a 2.35-ceiling package.
 
 Before `zig build`, the build script runs `zig build --fetch` with the same
 arguments and retries it after 5 and 20 seconds. Ghostty's Zig packages come
-from upstream hosts such as codeberg.org, and one 503 from them once failed
+from upstream hosts: most from deps.files.ghostty.org, and translate-c's `aro`
+dependency from codeberg.org over Git. One 503 from codeberg.org once failed
 every compiling CI job in a run. Fetch with the build's exact arguments: a
 separate prefetch with default options missed lazy packages, such as
 `pixels`, that the real build needs. Zig keeps fetched packages as tarballs in

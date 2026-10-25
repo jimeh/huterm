@@ -164,8 +164,8 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
   // The Linux backend is vendored but absent from the macOS binaries.
   expect(packages.some(pkg => pkg.name === "gpui-pre-linux")).toBe(false);
   expect(described).not.toContain("SPDXRef-Package-gpui-pre-linux");
-  expect(packages.find(pkg => pkg.name === "ghostty")?.versionInfo).toBe("e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110");
-  for (const name of ["Sparkle", "ghostty", "uucode", "highway"]) {
+  expect(packages.find(pkg => pkg.name === "ghostty")?.versionInfo).toBe("cec8b92f1ecd176a20a56aa405021e7ae991b996");
+  for (const name of ["Sparkle", "ghostty", "uucode", "highway", "wuffs"]) {
     expect(packages.some(pkg => pkg.name === name)).toBe(true);
   }
 });

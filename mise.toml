@@ -15,7 +15,7 @@ rust = { version = "1.99.1", components = ["clippy", "rustfmt"], profile = "mini
 "pipx:spdx-tools" = "0.8.5"
 syft = "1.54.1"
 taplo = "0.10.0"
-zig = "0.16.0"
+zig = "0.17.0"
 zizmor = "1.31.1"
 
 [tasks.setup]

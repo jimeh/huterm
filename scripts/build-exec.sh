@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Preserve the shared build entrypoint without overriding the selected Apple SDK.
-# Ghostty's pinned Zig 0.16 build handles Xcode 27 headers and native linking.
+# Ghostty's pinned Zig 0.17 build handles Xcode 27 headers and native linking.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then

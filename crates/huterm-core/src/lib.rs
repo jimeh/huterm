@@ -42,4 +42,4 @@ pub use viewer::{
 };
 
 /// Immutable native revision used by the Ghostty adapter.
-pub const GHOSTTY_REVISION: &str = "e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110";
+pub const GHOSTTY_REVISION: &str = "cec8b92f1ecd176a20a56aa405021e7ae991b996";
