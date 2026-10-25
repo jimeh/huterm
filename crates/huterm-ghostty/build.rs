@@ -1,10 +1,13 @@
 //! Builds the static libghostty-vt archive from the verified Ghostty source.
 //!
 //! Mise prepares and hash-checks the source tree, and Cargo configuration
-//! points `GHOSTTY_SOURCE_DIR` at it. Zig writes mutable `zig-pkg`
-//! directories beside `build.zig`, so every build runs from a fresh private
-//! copy under `OUT_DIR` and never touches the verified tree. Zig's caches sit
-//! beside that copy, or in Zig's global cache, so they survive a refresh.
+//! points `GHOSTTY_SOURCE_DIR` at it. Preparation then copies the manifest it
+//! verified against into a stamp beside the tree, and the build rejects a
+//! tree whose stamp differs from the current manifest. Zig writes mutable
+//! `zig-pkg` directories beside `build.zig`, so every build runs from a fresh
+//! private copy under `OUT_DIR` and never touches the verified tree. Zig's
+//! caches sit beside that copy, or in Zig's global cache, so they survive a
+//! refresh.
 //!
 //! With `HUTERM_GHOSTTY_ARTIFACT_CACHE` set, a build first looks there for an
 //! archive built from the same inputs and links it instead of running Zig.
@@ -14,9 +17,9 @@
 //! host libc or SDK. A different fingerprint means a rebuild, never reuse.
 //! CI sets the variable; release builds and local builds leave it unset.
 //!
-//! The staging, option parsing, and cache handling below are plain functions
-//! with unit tests; `scripts/ghostty-build.test.ts` compiles this file with
-//! `rustc --test`.
+//! The stamp check, staging, option parsing, and cache handling below are
+//! plain functions with unit tests; `scripts/ghostty-build.test.ts` compiles
+//! this file with `rustc --test`.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -214,6 +217,50 @@ fn parse_version(version: &str) -> Option<(u32, u32)> {
         return None;
     }
     Some((major, minor))
+}
+
+/// The stamp `ghostty:prepare` writes beside the source directory once the
+/// tree verifies: `<source dir name>.manifest.json` in the same parent.
+fn stamp_path(source: &Path) -> Result<PathBuf, BuildError> {
+    let name = source.file_name().ok_or_else(|| {
+        BuildError::Option(format!(
+            "{SOURCE_VAR}={} does not name a directory",
+            source.display()
+        ))
+    })?;
+    let mut stamp = name.to_os_string();
+    stamp.push(".manifest.json");
+    Ok(source.with_file_name(stamp))
+}
+
+/// Rejects a source tree that `ghostty:prepare` did not verify against the
+/// current manifest: the stamp must hold the manifest's exact bytes.
+fn check_stamp(manifest: &Path, stamp: &Path) -> Result<(), BuildError> {
+    let expected = fs::read(manifest).map_err(|error| {
+        BuildError::Io(format!("reading {}", manifest.display()), error)
+    })?;
+    let state = match fs::read(stamp) {
+        Ok(actual) if actual == expected => return Ok(()),
+        Ok(_) => "differs from",
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            "is missing for"
+        }
+        Err(error) => {
+            return Err(BuildError::Io(
+                format!(
+                    "reading {}; run `mise run ghostty:prepare`",
+                    stamp.display()
+                ),
+                error,
+            ));
+        }
+    };
+    Err(BuildError::Option(format!(
+        "the Ghostty source stamp {} {state} {}, so the source may not match \
+         the pin; run `mise run ghostty:prepare`",
+        stamp.display(),
+        manifest.display()
+    )))
 }
 
 /// Replaces `destination` with a copy of `source`, preserving symbolic
@@ -629,6 +676,11 @@ fn build() -> Result<(), BuildError> {
              workspace after `mise run ghostty:prepare`"
         ))
     })?;
+    let stamp = stamp_path(&source)?;
+    println!("cargo:rerun-if-changed={}", stamp.display());
+    // Before any cache lookup: a cached archive fingerprints the manifest,
+    // but only the stamp shows that this source tree is the verified one.
+    check_stamp(&manifest, &stamp)?;
     let target = std::env::var("TARGET").unwrap_or_default();
     let host = std::env::var("HOST").unwrap_or_default();
     let options = Options::from_values(
@@ -933,6 +985,34 @@ mod tests {
         fs::create_dir_all(&empty).unwrap();
         let error = stage_source(&empty, &destination).unwrap_err();
         assert!(error.to_string().contains("ghostty:prepare"), "{error}");
+    }
+
+    #[test]
+    fn builds_require_a_stamp_beside_the_source_matching_the_manifest() {
+        let temp = TempDir::new("stamp");
+        let manifest = temp.0.join("ghostty-source.json");
+        fs::write(&manifest, "{\"revision\": \"new\"}\n").unwrap();
+        let stamp = stamp_path(&temp.0.join("native/source")).unwrap();
+        assert_eq!(stamp, temp.0.join("native/source.manifest.json"));
+        fs::create_dir_all(temp.0.join("native")).unwrap();
+
+        let rejected = |state: &str| {
+            let error = check_stamp(&manifest, &stamp).unwrap_err().to_string();
+            assert!(error.contains(state), "{error}");
+            assert!(error.contains(&stamp.display().to_string()), "{error}");
+            assert!(error.contains(&manifest.display().to_string()), "{error}");
+            assert!(error.contains("mise run ghostty:prepare"), "{error}");
+        };
+        rejected("is missing for");
+        // A stamp from the previous pin, or one byte off, does not vouch for
+        // the tree.
+        fs::write(&stamp, "{\"revision\": \"old\"}\n").unwrap();
+        rejected("differs from");
+        fs::write(&stamp, "{\"revision\": \"new\"}\n\n").unwrap();
+        rejected("differs from");
+
+        fs::copy(&manifest, &stamp).unwrap();
+        check_stamp(&manifest, &stamp).unwrap();
     }
 
     #[test]

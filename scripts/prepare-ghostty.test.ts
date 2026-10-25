@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileHash, otherCheckouts, prepareSource, treeHash, verifyTree, withPrepareLock } from "./prepare-ghostty.ts";
@@ -12,6 +12,8 @@ function temporary(): string {
   return directory;
 }
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
+// Preparation records these bytes beside a verified tree.
+const manifest = Buffer.from('{"revision": "fixture"}\n');
 
 test("tree hash retains top-down ordering and hashes symlink targets without following them", () => {
   const root = temporary();
@@ -38,36 +40,81 @@ async function fixture(entries: Record<string, string> = { "upstream/file.txt": 
 
 test("extracts verified archive then verifies retained source without downloading", async () => {
   const { root, item } = await fixture();
-  await prepareSource(item, root, false);
+  await prepareSource(item, root, false, manifest);
   expect(readFileSync(join(root, "source", "file.txt"), "utf8")).toBe("reviewed");
-  await prepareSource(item, root, true);
+  await prepareSource(item, root, true, manifest);
   writeFileSync(join(root, "source", "file.txt"), "tampered");
-  await expect(prepareSource(item, root, false)).rejects.toThrow("source contents differ");
+  await expect(prepareSource(item, root, false, manifest)).rejects.toThrow("source contents differ");
   expect(readFileSync(join(root, "source", "file.txt"), "utf8")).toBe("tampered");
+});
+
+test("records the manifest beside freshly extracted source", async () => {
+  const { root, item } = await fixture();
+  await prepareSource(item, root, false, manifest);
+  expect(readFileSync(join(root, "source.manifest.json"))).toEqual(manifest);
+  expect(readdirSync(root).sort()).toEqual(["archives", "source", "source.manifest.json"]);
+});
+
+test("creates or refreshes the stamp only when the retained source verifies", async () => {
+  const { root, item } = await fixture();
+  await prepareSource(item, root, false, manifest);
+  const stamp = join(root, "source.manifest.json");
+  rmSync(stamp);
+  await prepareSource(item, root, false, manifest);
+  expect(readFileSync(stamp)).toEqual(manifest);
+  // A manifest edit that keeps the pin, such as a new package entry.
+  const edited = Buffer.from('{"revision": "fixture", "packages": []}\n');
+  await prepareSource(item, root, false, edited);
+  expect(readFileSync(stamp)).toEqual(edited);
+  writeFileSync(join(root, "source", "file.txt"), "tampered");
+  await expect(prepareSource(item, root, false, manifest)).rejects.toThrow("source contents differ");
+  expect(readFileSync(stamp)).toEqual(edited);
+});
+
+test("leaves a matching stamp and its mtime untouched", async () => {
+  const { root, item } = await fixture();
+  await prepareSource(item, root, false, manifest);
+  const stamp = join(root, "source.manifest.json");
+  const past = new Date("2026-01-01T00:00:00Z");
+  utimesSync(stamp, past, past);
+  await prepareSource(item, root, false, manifest);
+  expect(statSync(stamp).mtimeMs).toBe(past.getTime());
+});
+
+test("check mode never writes the stamp", async () => {
+  const { root, item } = await fixture();
+  await prepareSource(item, root, false, manifest);
+  const stamp = join(root, "source.manifest.json");
+  rmSync(stamp);
+  await prepareSource(item, root, true, manifest);
+  expect(existsSync(stamp)).toBe(false);
+  writeFileSync(stamp, "stale");
+  await prepareSource(item, root, true, manifest);
+  expect(readFileSync(stamp, "utf8")).toBe("stale");
 });
 
 test("check mode never materializes missing sources", async () => {
   const { root, item } = await fixture();
-  await expect(prepareSource(item, root, true)).rejects.toThrow("missing native source");
+  await expect(prepareSource(item, root, true, manifest)).rejects.toThrow("missing native source");
   expect(existsSync(join(root, "source"))).toBe(false);
 });
 
 test("rejects archive checksum and tree checksum mismatches without publishing source", async () => {
   const { root, item } = await fixture();
-  await expect(prepareSource({ ...item, sha256: "0".repeat(64) }, root, false)).rejects.toThrow("archive checksum mismatch");
-  await expect(prepareSource({ ...item, tree_sha256: "0".repeat(64) }, root, false)).rejects.toThrow("source contents differ");
+  await expect(prepareSource({ ...item, sha256: "0".repeat(64) }, root, false, manifest)).rejects.toThrow("archive checksum mismatch");
+  await expect(prepareSource({ ...item, tree_sha256: "0".repeat(64) }, root, false, manifest)).rejects.toThrow("source contents differ");
   expect(existsSync(join(root, "source"))).toBe(false);
 });
 
 test("rejects a source symlink, including a dangling one", async () => {
   const { root, item } = await fixture();
   symlinkSync("missing", join(root, "source"));
-  await expect(prepareSource(item, root, false)).rejects.toThrow("source contents differ");
+  await expect(prepareSource(item, root, false, manifest)).rejects.toThrow("source contents differ");
 });
 
 test("archive traversal cannot write outside the extraction directory", async () => {
   const { root, item } = await fixture({ "../../escaped": "bad" });
-  await expect(prepareSource(item, root, false)).rejects.toThrow();
+  await expect(prepareSource(item, root, false, manifest)).rejects.toThrow();
   expect(existsSync(join(root, "escaped"))).toBe(false);
   expect(existsSync(join(root, "source"))).toBe(false);
 });
@@ -118,12 +165,12 @@ test("preserves safe archive symlinks and rejects escaping targets", async () =>
     expect(result.exitCode).toBe(0);
     return { name: "ghostty", url: "https://invalid.example", sha256: fileHash(archive), tree_sha256: treeHash(upstream) };
   };
-  await prepareSource(makeArchive(), root, false);
+  await prepareSource(makeArchive(), root, false, manifest);
   expect(treeHash(join(root, "source"))).toBe(treeHash(upstream));
   rmSync(join(root, "source"), { recursive: true });
   rmSync(join(upstream, "link"));
   symlinkSync("../../outside", join(upstream, "link"));
-  await expect(prepareSource(makeArchive(), root, false)).rejects.toThrow();
+  await expect(prepareSource(makeArchive(), root, false, manifest)).rejects.toThrow();
   expect(existsSync(join(root, "source"))).toBe(false);
   expect(existsSync(join(root, "outside"))).toBe(false);
 });
@@ -136,13 +183,13 @@ test("downloads verified bytes and rejects HTTP and checksum failures", async ()
   try {
     const item = { ...fixtureData.item, url: server.url.toString() };
     const root = temporary();
-    await prepareSource(item, root, false);
+    await prepareSource(item, root, false, manifest);
     expect(fileHash(join(root, "archives", "ghostty.tar.gz"))).toBe(item.sha256);
     const corrupt = temporary();
-    await expect(prepareSource({ ...item, sha256: "0".repeat(64) }, corrupt, false)).rejects.toThrow("archive checksum mismatch");
+    await expect(prepareSource({ ...item, sha256: "0".repeat(64) }, corrupt, false, manifest)).rejects.toThrow("archive checksum mismatch");
     expect(existsSync(join(corrupt, "archives", "ghostty.tar.gz"))).toBe(false);
     status = 500;
-    await expect(prepareSource(item, temporary(), false)).rejects.toThrow("HTTP 500");
+    await expect(prepareSource(item, temporary(), false, manifest)).rejects.toThrow("HTTP 500");
   } finally {
     server.stop(true);
   }
@@ -160,7 +207,7 @@ test("reuses another checkout's archive only when it matches the pin", async () 
     mkdirSync(join(stale, "archives"));
     writeFileSync(join(stale, "archives", "ghostty.tar.gz"), "another pin");
     const root = temporary();
-    await prepareSource(item, root, false, [temporary(), stale, other.root]);
+    await prepareSource(item, root, false, manifest, [temporary(), stale, other.root]);
     expect(requests).toBe(0);
     expect(fileHash(join(root, "archives", "ghostty.tar.gz"))).toBe(item.sha256);
     expect(readFileSync(join(root, "source", "file.txt"), "utf8")).toBe("reviewed");
@@ -170,7 +217,7 @@ test("reuses another checkout's archive only when it matches the pin", async () 
     writeFileSync(join(unreadable, "archives", "ghostty.tar.gz"), "denied");
     chmodSync(join(unreadable, "archives", "ghostty.tar.gz"), 0o000);
     const fresh = temporary();
-    await prepareSource(item, fresh, false, [unreadable, stale]);
+    await prepareSource(item, fresh, false, manifest, [unreadable, stale]);
     expect(requests).toBe(1);
     expect(fileHash(join(fresh, "archives", "ghostty.tar.gz"))).toBe(item.sha256);
   } finally {
