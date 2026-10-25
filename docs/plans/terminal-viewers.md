@@ -1,9 +1,9 @@
 # Terminal viewers
 
-Status: in progress. Approved for [issue #22][issue-22] after three
-adversarial review rounds. PR 1 (#208) delivered [#205][issue-205].
-[#206][issue-206] ships as two PRs, A and B (see Delivery); PR A (#225) is
-in review and PR B is in progress.
+Status: implemented. Approved for [issue #22][issue-22] after three adversarial
+review rounds. PR 1 (#208) delivered [#205][issue-205]. PR A (#225) and
+PR B (#226) delivered [#206][issue-206] (see Delivery). Deferred work has
+owners in the Scope section.
 
 A terminal can be shown by more than one view at once: two desktop windows
 on one session today through a smoke fixture, and later panes, browser pages,
