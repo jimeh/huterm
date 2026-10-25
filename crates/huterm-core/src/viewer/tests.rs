@@ -240,8 +240,7 @@ fn a_spawning_viewer_sees_an_exit_that_beat_its_subscription() {
 fn geometry_still_resizes_the_emulator_after_root_exit() {
     // In-band size reports make the resize produce a reply, which the
     // closed writer must never receive. Enabling them replies at once, so
-    // the shell exits only after reading input: a reply written as the
-    // shell exits races the exit observation.
+    // the shell exits only after reading input, after that reply.
     let runtime = spawn(203, "printf '\\033[?2048hDONE'; read l; exit 0");
     let only = viewer(&runtime);
     wait_for_text(&only, "DONE");
@@ -255,6 +254,34 @@ fn geometry_still_resizes_the_emulator_after_root_exit() {
         only.read_snapshot().unwrap().size == GridSize::clamped(60, 12)
     });
     assert_eq!(runtime.registry().status().failures, []);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn finalizing_a_viewer_after_root_exit_writes_nothing() {
+    // Finalizing a focused viewer that holds a press writes a release and
+    // a focus report, which the closed writer must never receive. The shell
+    // exits only after reading the focus report and the press.
+    let runtime = spawn(
+        243,
+        "stty raw -echo; printf '\\033[?1004h\\033[?1000h\\033[?1006hREADY'; dd bs=1 count=12 >/dev/null 2>&1; exit 0",
+    );
+    let keeper = viewer(&runtime);
+    let leaver = viewer(&runtime);
+    wait_for_text(&keeper, "READY");
+    leaver.set_focus(true).unwrap();
+    leaver.send_input(press(MouseButton::Left, 2)).unwrap();
+    wait_until("exit", || {
+        runtime.registry().status().lifecycle != TerminalLifecycle::Running
+    });
+    let registry = runtime.registry();
+    let id = leaver.id();
+    drop(leaver);
+    wait_until("dropped viewer finalized", || {
+        registry.slots().iter().all(|slot| slot.id != id)
+    });
+    wait_for_text(&keeper, "READY");
+    assert_eq!(registry.status().failures, []);
     runtime.shutdown().unwrap();
 }
 

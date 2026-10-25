@@ -139,6 +139,9 @@ impl RawPty {
                 ReadinessOutcome::Cancelled => {
                     panic!("fill observed an unexpected cancellation")
                 }
+                ReadinessOutcome::HungUp => {
+                    panic!("fill observed a hangup with the slave open")
+                }
             }
         }
     }
@@ -318,6 +321,33 @@ fn read_readiness_above_fd_setsize_waits_for_slave_output() {
         .unwrap();
     assert_eq!(outcome, ReadinessOutcome::Ready);
     worker.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn write_readiness_reports_a_hangup_once_the_slave_closes() {
+    let RawPty { master, slave, .. } = RawPty::open();
+    let waiter =
+        ReadinessWaiter::new(master.as_ref(), Readiness::Write).unwrap();
+    assert_eq!(
+        waiter.wait(Some(Duration::ZERO)).unwrap(),
+        ReadinessOutcome::Ready
+    );
+    // Linux keeps reporting the master writable after the hangup, so only
+    // the hangup itself tells a writer to stop. It can follow the close by
+    // a moment, so poll for it.
+    drop(slave);
+    let deadline = Instant::now() + WAIT_DEADLINE;
+    loop {
+        match waiter.wait(Some(Duration::ZERO)).unwrap() {
+            ReadinessOutcome::HungUp => break,
+            outcome => assert!(
+                Instant::now() < deadline,
+                "closing the slave reported {outcome:?}, not a hangup"
+            ),
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
 }
 
 #[cfg(unix)]

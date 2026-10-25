@@ -66,10 +66,13 @@ bounded so output cannot starve. Client input, resize, and presentation
 messages have their own bounded queue, taken ahead of PTY output and
 alternating with it when both wait, so an output flood cannot refuse input.
 Writer dequeue wakes the runtime only after the runtime has spilled writes,
-recorded the request, and retried them once. Unix PTY readiness waits include
-cancellation descriptors; signal them and drop the data receiver before
-joining workers. The child waiter owns the physical child without holding a
-shared lock across `wait`; bounded teardown uses its cached-status proxy.
+recorded the request, and retried them once. A reader failure parses at most
+one queue of output already read before the runtime reports it and stops, so
+that output reaches history and a flood cannot delay teardown. Unix PTY
+readiness waits include cancellation descriptors; signal them and drop the data
+receiver before joining workers. The child waiter owns the physical child
+without holding a shared lock across `wait`; bounded teardown uses its
+cached-status proxy.
 Never join it before signalling and closing PTY handles.
 
 ## Terminal viewers
@@ -136,6 +139,11 @@ Ghostty native OSC 8 parser uses a fixed 2,048-byte capture: parameters plus URI
 may occupy 2,046 bytes; larger sequences are discarded, not truncated.
 
 ## Shutdown and reaping
+
+`run_terminal` runs the same teardown when its loop panics, then resumes the
+panic, so `shutdown` still returns `ThreadPanic` and every wake closes. After a
+panic it publishes no status, and signals only the shell, foreground, and
+already recorded close groups; it runs no process-table scan.
 
 Reap the child again after closing the master and joining I/O workers. The last
 master descriptor can deliver the hangup that exits the shell; reaping only
@@ -223,3 +231,12 @@ unique shell ACK after cancel and retry; an exited terminal retains snapshots.
 Core drops queued input and terminal replies after root exit, stops the writer,
 and keeps final-output parsing, snapshot/selection requests, and emulator resize.
 A late writer failure after observed exit must not destroy retained history.
+A write that finds the terminal hung up (macOS `EIO`; Linux `POLLHUP` once its
+buffer fills) ends input the same way without failing the runtime, because the
+shell's exit can hang the terminal up before `try_wait` reports it. The writer
+closes input before reporting the hangup. Every write passes through
+`Owner::queue_write`, which drops it once input closes; do not add per-path
+exit checks. A process that reopens `/dev/tty` after a hangup gets neither input
+nor output, as the reader also stops at end-of-file. A macOS session leader's
+terminal hangs up only at its exit; tests revoke the slave to hang it up
+earlier.

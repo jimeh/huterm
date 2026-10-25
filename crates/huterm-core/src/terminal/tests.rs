@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use huterm_protocol::{TerminalLifecycle, ViewerCapabilities};
+use huterm_protocol::{TerminalLifecycle, TerminalStatus, ViewerCapabilities};
 
 use super::*;
 
@@ -606,7 +606,232 @@ fn writer_failure_with_live_root_remains_observable_and_stops_runtime() {
         );
         thread::sleep(Duration::from_millis(2));
     }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while client.read_snapshot().is_ok() {
+        assert!(Instant::now() < deadline, "the runtime kept running");
+        thread::sleep(Duration::from_millis(5));
+    }
     runtime.shutdown().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hangup_before_root_exit_ends_input_and_the_exit_completes_normally() {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let fifo = std::env::temp_dir()
+        .join(format!("huterm-hangup-{}.fifo", std::process::id()));
+    let _ = std::fs::remove_file(&fifo);
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+    // The root closes the terminal and waits to be released: the window
+    // between the hangup at a shell's exit and the runtime observing that
+    // exit, held open for as long as the test needs it. A macOS session
+    // leader's controlling terminal stays open until the leader exits, so
+    // there the test revokes it, which hangs it up the same way.
+    let script = format!(
+        "printf 'READY:%s;' \"$(tty)\"; exec </dev/null >/dev/null 2>&1; read line < {}; exit 3",
+        fifo.display()
+    );
+    let runtime =
+        TerminalRuntime::spawn(TerminalId::new(107), &command(&script))
+            .unwrap();
+    let client = test_client(&runtime);
+    let snapshot = wait_for_text(&client, ";");
+    let text: String =
+        snapshot.cells().map(|cell| cell.text.as_str()).collect();
+    let tty = text
+        .split_once("READY:")
+        .and_then(|(_, rest)| rest.split_once(';'))
+        .map(|(tty, _)| tty.to_owned())
+        .unwrap();
+    // The libc crate does not bind revoke(2), and the crate forbids the
+    // unsafe code a binding would need, so call it through Python.
+    #[cfg(target_os = "macos")]
+    {
+        let revoke = std::process::Command::new("python3")
+            .args([
+                "-I",
+                "-c",
+                "import ctypes, os, sys; libc = ctypes.CDLL(None, use_errno=True); libc.revoke(os.fsencode(sys.argv[1])) == 0 or sys.exit(os.strerror(ctypes.get_errno()))",
+            ])
+            .arg(&tty)
+            .output()
+            .unwrap();
+        assert!(
+            revoke.status.success(),
+            "revoking {tty} failed: {}",
+            String::from_utf8_lossy(&revoke.stderr)
+        );
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !client.job_context().unwrap().pty_eof {
+        assert!(Instant::now() < deadline, "{tty} did not hang up");
+        thread::sleep(Duration::from_millis(5));
+    }
+    // A cursor report's reply fails at once on macOS. Linux accepts writes
+    // until its buffer fills, so keep pasting until the writer stops.
+    let workers = workers(&client);
+    client.control.output.send(b"\x1b[6n".to_vec()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while workers.strong_count() > 0 {
+        assert!(Instant::now() < deadline, "the writer outlived the hangup");
+        match client.send_input(TerminalInput::Paste("x".repeat(64 * 1024))) {
+            Ok(()) | Err(RuntimeError::Busy) => {}
+            Err(error) => panic!("paste refused: {error}"),
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    // The runtime handles the hangup before this snapshot request, and
+    // still serves the terminal and accepts input it now drops.
+    wait_for_text(&client, "READY:");
+    client
+        .send_input(TerminalInput::Text("late\n".into()))
+        .unwrap();
+    assert_eq!(client.status().failures, []);
+    // Opening without blocking fails if the root is not waiting to read.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+        .open(&fifo)
+        .unwrap()
+        .write_all(b"\n")
+        .unwrap();
+    assert_eq!(wait_for_exit(&client).code, Some(3));
+    wait_for_text(&client, "READY");
+    assert_eq!(client.status().failures, []);
+    runtime.shutdown().unwrap();
+    std::fs::remove_file(fifo).unwrap();
+}
+
+/// Holds the runtime owner inside its control drain, so output and controls
+/// sent before the returned sender is used are all queued when it resumes.
+fn pause_runtime(client: &TestClient) -> Sender<()> {
+    let (entered, paused) = mpsc::channel();
+    let (resume, release) = mpsc::channel();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::Pause { entered, release })
+        .unwrap();
+    paused.recv_timeout(Duration::from_secs(2)).unwrap();
+    resume
+}
+
+/// Waits for `message` to be published, returning the status that holds it.
+fn wait_for_failure(client: &TestClient, message: &str) -> Arc<TerminalStatus> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = client.status();
+        if status
+            .failures
+            .iter()
+            .any(|failure| failure.message == message)
+        {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "{message:?} was never published");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+// Snapshots stop once the runtime stops, so these tests observe parsed
+// output through the bells it rings, which the status keeps.
+
+#[test]
+fn a_reader_failure_parses_the_output_queued_before_it() {
+    let runtime = TerminalRuntime::spawn(
+        TerminalId::new(108),
+        &command("printf READY; read line"),
+    )
+    .unwrap();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    // As when a reader fails mid-batch: output, then the failure behind it.
+    let resume = pause_runtime(&client);
+    for _ in 0..3 {
+        client.control.output.send(b"\x07".to_vec()).unwrap();
+    }
+    client
+        .control
+        .controls
+        .send(RuntimeControl::WorkerFailed("test read failure".into()))
+        .unwrap();
+    resume.send(()).unwrap();
+    let status = wait_for_failure(&client, "test read failure");
+    assert_eq!(status.bells, 3, "output before the failure was not parsed");
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_reader_failure_parses_queued_output_past_a_failed_writer() {
+    let runtime = TerminalRuntime::spawn(
+        TerminalId::new(110),
+        &command("printf READY; read line"),
+    )
+    .unwrap();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    // Both workers fail together. The queued query's reply must not end
+    // the parsing at the stopped writer.
+    let resume = pause_runtime(&client);
+    client
+        .control
+        .controls
+        .send(RuntimeControl::StopWriter)
+        .unwrap();
+    client.control.output.send(b"\x1b[6n".to_vec()).unwrap();
+    client.control.output.send(b"\x07".to_vec()).unwrap();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::WorkerFailed("test read failure".into()))
+        .unwrap();
+    resume.send(()).unwrap();
+    let status = wait_for_failure(&client, "test read failure");
+    assert_eq!(status.bells, 1, "output after the query was not parsed");
+    assert_eq!(status.failures.len(), 1, "{:?}", status.failures);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_reader_failure_parses_at_most_one_queue_of_output() {
+    let runtime = TerminalRuntime::spawn(
+        TerminalId::new(109),
+        &command("printf READY; read line"),
+    )
+    .unwrap();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    let resume = pause_runtime(&client);
+    for _ in 0..OUTPUT_CAPACITY {
+        client.control.output.send(b"\x07".to_vec()).unwrap();
+    }
+    // Unlike the reader, these senders keep queueing output after the
+    // failure until teardown drops the queue. Several of them make it
+    // likely that a freed slot is refilled at once, which an unbounded
+    // drain would keep parsing.
+    let floods: Vec<_> = (0..4)
+        .map(|_| {
+            let output = client.control.output.clone();
+            thread::spawn(
+                move || {
+                    while output.send(b"\x07".to_vec()).is_ok() {}
+                },
+            )
+        })
+        .collect();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::WorkerFailed("test read failure".into()))
+        .unwrap();
+    resume.send(()).unwrap();
+    let status = wait_for_failure(&client, "test read failure");
+    assert_eq!(status.bells, OUTPUT_CAPACITY as u64);
+    runtime.shutdown().unwrap();
+    for flood in floods {
+        flood.join().unwrap();
+    }
 }
 
 #[test]
@@ -1611,37 +1836,113 @@ fn shutdown_should_escalate_for_a_hup_resistant_child() {
     );
 }
 
-#[test]
-fn a_runtime_panic_releases_the_pty_and_hangs_up_a_writing_child() {
-    let runtime = TerminalRuntime::spawn(
-        TerminalId::new(102),
-        &command("printf READY; while :; do printf .; sleep 0.1; done"),
-    )
-    .unwrap();
-    let client = test_client(&runtime);
-    wait_for_text(&client, "READY");
-    let root = client.job_context().unwrap().shell.unwrap();
-    let root = nix::unistd::Pid::from_raw(i32::try_from(root).unwrap());
+/// Sends the test-only panic and waits until the runtime stops serving
+/// snapshots. Shutting down first would close the runtime before the panic.
+fn panic_runtime(client: &TestClient) {
     client.control.controls.send(RuntimeControl::Panic).unwrap();
-    // Shutting down first would close the runtime before the panic.
     let deadline = Instant::now() + Duration::from_secs(5);
     while client.read_snapshot().is_ok() {
         assert!(Instant::now() < deadline, "the runtime did not panic");
         thread::sleep(Duration::from_millis(5));
     }
-    assert!(matches!(runtime.shutdown(), Err(RuntimeError::ThreadPanic)));
-    // Unwinding signals no one (issue #211). It drops the runtime's PTY
-    // descriptor, the writer's queue, and the output queue, so the writer
-    // stops, the reader stops at the child's next output, and the PTY's
-    // last descriptor closes, which hangs the child up.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while nix::sys::signal::kill(root, None).is_ok() {
-        assert!(
-            Instant::now() < deadline,
-            "the panic left the PTY open or the child unreaped"
+}
+
+/// A handle each running PTY worker keeps alive.
+fn workers(client: &TestClient) -> std::sync::Weak<()> {
+    let (reply, receiver) = mpsc::channel();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::Workers(reply))
+        .unwrap();
+    receiver.recv_timeout(Duration::from_secs(2)).unwrap()
+}
+
+#[cfg(unix)]
+fn root_pid(client: &TestClient) -> nix::unistd::Pid {
+    let root = client.job_context().unwrap().shell.unwrap();
+    nix::unistd::Pid::from_raw(i32::try_from(root).unwrap())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_runtime_panic_terminates_and_reaps_the_child_and_stops_its_workers() {
+    for (id, script) in [
+        (102, "printf READY; read line"),
+        (
+            105,
+            "trap '' HUP TERM; printf READY; while :; do sleep 30; done",
+        ),
+    ] {
+        let runtime =
+            TerminalRuntime::spawn(TerminalId::new(id), &command(script))
+                .unwrap();
+        let client = test_client(&runtime);
+        wait_for_text(&client, "READY");
+        let root = root_pid(&client);
+        let workers = workers(&client);
+        let started = Instant::now();
+        panic_runtime(&client);
+        assert!(matches!(runtime.shutdown(), Err(RuntimeError::ThreadPanic)));
+        // The child writes nothing, so neither a hangup nor a failed
+        // output send can stop the reader: only the teardown can.
+        assert_eq!(workers.strong_count(), 0, "{script}");
+        assert_eq!(
+            nix::sys::signal::kill(root, None),
+            Err(nix::errno::Errno::ESRCH),
+            "{script}: the panic left the child running or unreaped"
         );
-        thread::sleep(Duration::from_millis(5));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{script}: teardown after the panic was not bounded"
+        );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_runtime_panic_signals_the_process_groups_recorded_for_close() {
+    use nix::errno::Errno;
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    let pid_path = std::env::temp_dir()
+        .join(format!("huterm-panic-job-{}.pid", std::process::id()));
+    let _ = std::fs::remove_file(&pid_path);
+    // The job has its own group, ignores the hangup the shell's death
+    // delivers, and holds no terminal descriptor, so only a signal to its
+    // recorded group ends it.
+    let script = format!(
+        "set -m; (trap '' HUP; exec sleep 30) </dev/null >/dev/null 2>&1 & printf %s \"$!\" > {}; printf READY; read line",
+        pid_path.display()
+    );
+    let runtime =
+        TerminalRuntime::spawn(TerminalId::new(106), &command(&script))
+            .unwrap();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    let job: i32 = std::fs::read_to_string(&pid_path).unwrap().parse().unwrap();
+    client.control.record_shutdown_groups(vec![job]);
+    panic_runtime(&client);
+    assert!(matches!(runtime.shutdown(), Err(RuntimeError::ThreadPanic)));
+    // The job's parent died with the shell; its new parent reaps it.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match kill(Pid::from_raw(job), None) {
+            Err(Errno::ESRCH) => break,
+            result => {
+                if Instant::now() >= deadline {
+                    let _ = kill(
+                        Pid::from_raw(job),
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
+                    panic!("recorded job {job} survived the panic: {result:?}");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+    std::fs::remove_file(pid_path).unwrap();
 }
 
 #[test]
@@ -1896,6 +2197,7 @@ fn idle_writer_closes_without_an_input_message() {
         Arc::new(WriterCapacity::default()),
         Arc::new(AtomicBool::new(false)),
         Arc::clone(&input_closed),
+        Arc::default(),
     )
     .unwrap();
     sender
@@ -1908,6 +2210,65 @@ fn idle_writer_closes_without_an_input_message() {
         .recv_timeout(Duration::from_secs(2))
         .expect("idle writer did not release its descriptor on input closure");
     worker.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn writer_ends_input_at_a_hangup_and_reports_other_write_errors() {
+    struct FailingWriter(fn() -> io::Error);
+    impl Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err((self.0)())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let hangup: fn() -> io::Error =
+        || io::Error::from_raw_os_error(nix::errno::Errno::EIO as i32);
+    let failure: fn() -> io::Error = || io::Error::other("disk on fire");
+    for (error, hung_up) in [(hangup, true), (failure, false)] {
+        let (sender, receiver) = async_channel::bounded(1);
+        let (controls, reports) = mpsc::channel();
+        let controls = crate::wake::Sender::new(
+            controls,
+            Arc::new(crate::wake::Wake::default()),
+        );
+        let input_closed = Arc::new(AtomicBool::new(false));
+        let join = spawn_writer(
+            TerminalId::new(21),
+            Box::new(FailingWriter(error)),
+            WriterReadiness::Immediate,
+            receiver,
+            controls,
+            Arc::new(WriterCapacity::default()),
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&input_closed),
+            Arc::default(),
+        )
+        .unwrap();
+        sender
+            .send_blocking(WriterMessage::Write(b"x".to_vec()))
+            .unwrap();
+        let control = reports
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the writer reported nothing");
+        if hung_up {
+            assert!(matches!(control, RuntimeControl::WriterHangup));
+            // The writer closes input itself, before it exits and closes its
+            // queue, so a write queued meanwhile is dropped rather than
+            // failing the runtime.
+            assert!(input_closed.load(Ordering::Acquire));
+        } else {
+            assert!(matches!(
+                control,
+                RuntimeControl::WriterFailed(message)
+                    if message.contains("disk on fire")
+            ));
+            assert!(!input_closed.load(Ordering::Acquire));
+        }
+        join.join().unwrap();
+    }
 }
 
 #[test]
@@ -1938,6 +2299,7 @@ fn writer_wakes_the_runtime_only_after_it_requests_capacity() {
         Arc::clone(&capacity),
         Arc::clone(&closing),
         Arc::new(AtomicBool::new(false)),
+        Arc::default(),
     )
     .expect("writer worker should start");
     // The writer dequeues each message before writing it, so an observed
@@ -2012,6 +2374,7 @@ fn writer_should_resume_after_partial_would_block_without_repeating_bytes() {
         Arc::new(WriterCapacity::default()),
         Arc::clone(&closing),
         Arc::new(AtomicBool::new(false)),
+        Arc::default(),
     )
     .expect("writer worker should start");
     sender

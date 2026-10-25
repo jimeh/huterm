@@ -125,9 +125,13 @@ enum Readiness {
 /// after every outcome; tests use it to tell the events apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReadinessOutcome {
-    /// The descriptor reported readiness, hangup, or an error, or a signal
+    /// The descriptor reported readiness or an error, or a signal
     /// interrupted the wait.
     Ready,
+    /// The descriptor reported hangup: no process holds the terminal's
+    /// other side open. A reader still has output to drain before
+    /// end-of-file; a writer cannot make progress.
+    HungUp,
     Cancelled,
     TimedOut,
 }
@@ -228,6 +232,13 @@ impl ReadinessWaiter {
                 Ok(0) => Ok(ReadinessOutcome::TimedOut),
                 Ok(_) if descriptors[1].any().unwrap_or(true) => {
                     Ok(ReadinessOutcome::Cancelled)
+                }
+                Ok(_)
+                    if descriptors[0].revents().is_some_and(|events| {
+                        events.contains(PollFlags::POLLHUP)
+                    }) =>
+                {
+                    Ok(ReadinessOutcome::HungUp)
                 }
                 // A signal interruption is a spurious wake; callers retry.
                 Ok(_) | Err(nix::errno::Errno::EINTR) => {
