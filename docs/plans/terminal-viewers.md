@@ -1,9 +1,9 @@
 # Terminal viewers
 
-Status: in progress. Approved for [issue #22][issue-22] after three
+Status: implemented. Approved for [issue #22][issue-22] after three
 adversarial review rounds. PR 1 (#208) delivered [#205][issue-205].
-[#206][issue-206] ships as two PRs, A and B (see Delivery); PR A (#225) is
-in review and PR B is in progress.
+[#206][issue-206] shipped as two PRs, A and B (see Delivery): PR A (#225)
+and PR B (#226).
 
 A terminal can be shown by more than one view at once: two desktop windows
 on one session today through a smoke fixture, and later panes, browser pages,
@@ -1333,8 +1333,8 @@ window show a session, through the fixture only, and closes both problems
 that a second window brings: a tab closed by two windows, and a revoked view
 left without a viewer.
 
-PR B starts from PR A's branch and targets `main` once PR A merges. Plain
-branches suffice; the stack needs no `gh stack`.
+PR B started from PR A's branch and targeted `main` after PR A merged.
+Plain branches sufficed; the stack needed no `gh stack`.
 
 #### PR A: requested and displayed grids
 
