@@ -24,7 +24,7 @@ test("huterm-ghostty build script unit tests pass", () => {
   const declared = readFileSync(buildScript, "utf8").match(/^\s*#\[test\]$/gm)?.length ?? 0;
   expect(declared).toBeGreaterThanOrEqual(8);
   expect(Number(summary![1])).toBe(declared);
-  for (const name of ["staging_copies_a_fresh_tree_and_leaves_the_source_unchanged", "targets_map_to_zig_and_keep_linux_host_builds_native"]) {
+  for (const name of ["staging_copies_a_fresh_tree_and_leaves_the_source_unchanged", "targets_map_to_zig_and_keep_linux_host_builds_native", "patches_apply_to_the_copy_inside_an_enclosing_repository"]) {
     expect(output).toContain(`test tests::${name} ... ok`);
   }
 }, 120_000);

@@ -76,7 +76,8 @@ mise run build:exec -- cargo build --locked
 
 Preparation verifies the ignored `.native/ghostty` tree rather than accepting
 local drift. The `huterm-ghostty` build script copies it into a private Cargo
-build directory so Zig-generated state cannot modify the verified source. Build
+build directory and applies Huterm's [native patches](#native-patches) there,
+so neither they nor Zig-generated state modify the verified source. Build
 isolation also prevents enclosing Git tags from changing Ghostty's generated
 version data. In a repository with several checkouts, preparation reuses a
 matching archive from another one instead of downloading; see
@@ -263,6 +264,56 @@ so jobs share a namespace only when they build the same slots on the same
 runner image. Release workflows leave the variable unset and always build from
 the verified source.
 
+## Native patches
+
+Reviewed fixes to Ghostty's native source live as Git-style patches, with
+`a/` and `b/` prefixes against the source root, in
+`third-party/ghostty-patches`.
+They stay out of `third-party/ghostty` because `Cargo.toml` bundles that
+directory into `Huterm.app`. `scripts/ghostty-source.json` lists them in
+application order with a name, file, SHA-256, description, and an upstream link
+once one exists. [Their README](../../third-party/ghostty-patches/README.md)
+records why each patch exists and when to drop it.
+
+`ghostty:prepare` checks each patch's SHA-256 and the paths it touches, then
+publishes verified copies and an ordered `series` file to
+`.native/ghostty/patches` before it writes the stamp. It writes the series even
+when the list is empty, leaves unchanged files and their mtimes alone, and
+removes the stamp before it replaces a changed set. `ghostty:check` compares the
+published copies without writing. Prepare rejects paths that leave the source
+root, and paths under `include/`: bindgen reads the pristine headers in
+`GHOSTTY_SOURCE_DIR`, so a header patch would not reach the generated bindings.
+
+The build script applies the series to its private `OUT_DIR` copy with
+`git apply`, so a source build needs Git whenever the list is non-empty;
+`mise run doctor` checks for it. A missing series or a failing patch stops the
+build with the patch's path and Git's output. `git apply` exits successfully
+and changes nothing when it discovers an enclosing repository and runs from a
+subdirectory, which is where Cargo's `target` sits in Huterm's checkout. The
+build therefore removes inherited `GIT_*` variables, sets the discovery ceiling
+at the copy's parent, ignores system and global Git configuration, and requires
+every path a patch touches to differ from the pristine source afterward.
+
+The series is not a Cargo rerun trigger. The manifest and stamp already change
+with any patch edit, and a trigger path that can be missing reruns Zig on every
+build. Because the manifest records patch hashes, a patch-only edit also
+changes the cached archive fingerprint and every CI cache key hashed from the
+manifest: CI rebuilds Ghostty and refetches its Zig packages once.
+
+To add a patch, extract the pinned archive into a scratch directory, commit it
+to a new Git repository there, make the fix, and save `git diff` output as
+`third-party/ghostty-patches/<name>.patch`. Add its manifest entry with the
+file's SHA-256 and its README notes, then run `mise run ghostty:prepare` and
+Huterm tests that fail without it. Huterm builds only lib-vt and never runs
+Ghostty's Zig tests, so run the patch's own tests in the scratch tree with
+`zig build test-lib-vt -Dtest-filter=<test name>`.
+
+On a pin bump, rebase each patch in order the same way: commit the new source
+in a scratch repository, `git apply --3way` the patch, resolve conflicts,
+regenerate it with `git diff`, update its SHA-256, and rerun its Zig tests
+there. Drop a patch, with its manifest entry and README notes, once the pin
+includes an equivalent upstream fix.
+
 ## The huterm-ghostty crate
 
 `huterm-ghostty` owns everything that changes with the pin: native build, FFI,
@@ -310,16 +361,17 @@ reruns only when those, itself, `scripts/ghostty-source.json`, or the stamp
 beside the source directory change. `ghostty:prepare` writes that stamp,
 `.native/ghostty/source.manifest.json`, with the manifest's bytes once the tree
 verifies. The build fails, even before reusing a cached archive, unless the
-stamp matches the manifest. `scripts/ghostty-build.test.ts` runs its unit
-tests. The crate's contract tests pin each C behavior the engine relies on, and
-the ABI test checks every emitted FFI type against `ghostty_type_json()`. After
-a pin bump, fix a failing contract test's assumption before changing engine
-code. Allocator vtable callbacks receive log2 alignments, not the byte counts
-`allocator.h` describes. Set history through Ghostty's scrollback byte limit;
-the engine retains a 16 MiB budget and reports actual retained rows. Set
-Ghostty device attributes explicitly: a declining callback still gets
-Ghostty's default VT220 replies at this pin, as a `huterm-ghostty` contract
-test shows.
+stamp matches the manifest. A source build also reads the patch series beside
+the stamp, without a rerun trigger; see [native patches](#native-patches).
+`scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract
+tests pin each C behavior the engine relies on, and the ABI test checks every
+emitted FFI type against `ghostty_type_json()`. After a pin bump, fix a failing
+contract test's assumption before changing engine code. Allocator vtable
+callbacks receive log2 alignments, not the byte counts `allocator.h` describes.
+Set history through Ghostty's scrollback byte limit; the engine retains a
+16 MiB budget and reports actual retained rows. Set Ghostty device attributes
+explicitly: a declining callback still gets Ghostty's default VT220 replies at
+this pin, as a `huterm-ghostty` contract test shows.
 
 ## Color and mouse state
 

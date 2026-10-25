@@ -35,5 +35,6 @@
       "zig_hash": "N-V-__8AAP5JWgCGP_AD0teWpa4krRvE9VPZzvviGdbmN4jI",
       "tree_sha256": "78eef5c7f600c60bafe7935779cb27fa7c228be6d7b0e47742af08bfa31cb024"
     }
-  ]
+  ],
+  "patches": []
 }

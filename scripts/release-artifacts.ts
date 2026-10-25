@@ -1,4 +1,5 @@
 import { createPrivateKey, createPublicKey, randomBytes, verify as verifySignature } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
@@ -392,6 +393,23 @@ export function ghosttyNativePackage(packageValue: unknown): SpdxObject {
   );
 }
 
+/** Patch files the Ghostty source manifest lists, in application order. */
+export function ghosttyPatchFiles(manifestValue: unknown): string[] {
+  const manifest = objectValue(manifestValue, "Ghostty source manifest");
+  if (!Array.isArray(manifest.patches)) throw new Error("Ghostty manifest has no patch list");
+  return manifest.patches.map(patch => stringValue(objectValue(patch, "Ghostty patch").file, "Ghostty patch file"));
+}
+
+export function ghosttySourceInfo(patches: string[]): string {
+  return patches.length === 0
+    ? "Statically linked source at the reviewed native revision."
+    : `Locally patched source at the reviewed native revision, statically linked; reviewed patches: ${patches.join(", ")}.`;
+}
+
+function ghosttyManifest(): unknown {
+  return JSON.parse(readFileSync(join(repoRoot, "scripts/ghostty-source.json"), "utf8"));
+}
+
 export async function augmentSpdx(
   applicationDocument: unknown,
   slices: Record<"arm64" | "x86_64", unknown>,
@@ -432,7 +450,7 @@ export async function augmentSpdx(
   const ghosttySource = objectValue(ghostty.source, "Ghostty source");
   const nativePackages = [
     nativePackage("Sparkle", stringValue(sparkle.version, "Sparkle version"), stringValue(sparkleSource.url, "Sparkle URL"), stringValue(sparkleSource.sha256, "Sparkle digest"), "MIT", "Pinned official Sparkle binary distribution."),
-    nativePackage("ghostty", stringValue(ghostty.revision, "Ghostty revision"), stringValue(ghosttySource.url, "Ghostty URL"), stringValue(ghosttySource.sha256, "Ghostty digest"), "MIT", "Statically linked source at the reviewed native revision."),
+    nativePackage("ghostty", stringValue(ghostty.revision, "Ghostty revision"), stringValue(ghosttySource.url, "Ghostty URL"), stringValue(ghosttySource.sha256, "Ghostty digest"), "MIT", ghosttySourceInfo(ghosttyPatchFiles(ghostty))),
   ];
   if (!Array.isArray(ghostty.packages)) throw new Error("Ghostty manifest has no native packages");
   for (const packageValue of ghostty.packages) {
@@ -477,7 +495,8 @@ export async function augmentSpdx(
   return document;
 }
 
-export function validateRuntimeSpdx(value: unknown, version: string): void {
+/** `ghosttyPatches` defaults to the patches the Ghostty manifest lists. */
+export function validateRuntimeSpdx(value: unknown, version: string, ghosttyPatches = ghosttyPatchFiles(ghosttyManifest())): void {
   const document = objectValue(value, "SPDX document");
   if (document.spdxVersion !== "SPDX-2.3") throw new Error("SBOM must use SPDX 2.3");
   if (!Array.isArray(document.packages)) throw new Error("SBOM has no packages");
@@ -507,6 +526,12 @@ export function validateRuntimeSpdx(value: unknown, version: string): void {
     const pkg = packages.find(candidate => candidate.name === patched);
     if (typeof pkg?.sourceInfo !== "string" || !pkg.sourceInfo.startsWith("Locally patched runtime crate")) {
       throw new Error(`SBOM lacks patched-crate provenance for ${patched}`);
+    }
+  }
+  if (ghosttyPatches.length > 0) {
+    const sourceInfo = packages.find(pkg => pkg.name === "ghostty")?.sourceInfo;
+    if (typeof sourceInfo !== "string" || !sourceInfo.startsWith("Locally patched") || !ghosttyPatches.every(patch => sourceInfo.includes(patch))) {
+      throw new Error("SBOM lacks patched-source provenance for ghostty");
     }
   }
   for (const forbidden of ["cargo-packager", "cargo-auditable", "syft", "zig", "bun"]) {

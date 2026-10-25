@@ -25,8 +25,9 @@ upstream package manifests. No native Ghostty renderer or font stack is linked.
 Huterm's Rust terminal graphics port has [separate notices](../terminal-graphics/README.md).
 
 The `huterm-ghostty` build script builds libghostty-vt from a private copy of
-the verified source and links the static archive, which needs only libc. Cargo
-forces `HUTERM_GHOSTTY_OPTIMIZE=ReleaseFast` and a portable
-`HUTERM_GHOSTTY_CPU=baseline` target. Record CPU and optimization when comparing
-measurements. The crate's generated FFI declarations derive from the MIT
-licensed Ghostty headers covered by `ghostty-MIT.txt`.
+the verified source, after applying the reviewed patches that
+`scripts/ghostty-source.json` lists, and links the static archive, which needs
+only libc. Cargo forces `HUTERM_GHOSTTY_OPTIMIZE=ReleaseFast` and a portable
+`HUTERM_GHOSTTY_CPU=baseline` target. Record CPU and optimization when
+comparing measurements. The crate's generated FFI declarations derive from the
+MIT licensed Ghostty headers covered by `ghostty-MIT.txt`.

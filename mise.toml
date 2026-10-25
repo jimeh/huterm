@@ -25,6 +25,11 @@ run = ["mise install", "mise run scripts:install", "mise run doctor", "lefthook 
 [tasks.doctor]
 description = "Check platform development prerequisites"
 run = '''
+if ! git --version >/dev/null 2>&1; then
+  echo "missing Git, required to apply Huterm's Ghostty patches" >&2
+  echo "see docs/agents/terminal-engines.md#native-patches" >&2
+  exit 1
+fi
 if [ "$(uname -s)" = Darwin ]; then
   if ! xcodebuild -version >/dev/null 2>&1; then
     echo "Xcode is not installed or selected for Huterm's macOS build" >&2
