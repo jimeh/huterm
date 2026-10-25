@@ -1858,11 +1858,13 @@ fn workers(client: &TestClient) -> std::sync::Weak<()> {
     receiver.recv_timeout(Duration::from_secs(2)).unwrap()
 }
 
+#[cfg(unix)]
 fn root_pid(client: &TestClient) -> nix::unistd::Pid {
     let root = client.job_context().unwrap().shell.unwrap();
     nix::unistd::Pid::from_raw(i32::try_from(root).unwrap())
 }
 
+#[cfg(unix)]
 #[test]
 fn a_runtime_panic_terminates_and_reaps_the_child_and_stops_its_workers() {
     for (id, script) in [
