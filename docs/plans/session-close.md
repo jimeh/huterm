@@ -254,17 +254,17 @@ Attachment events are deferred to #26 with the shape above.
 
 ## Implementation
 
-### PR 1: `fix: ignore a Confirm click on a close dialog that was already dismissed`
+Decided on 2026-10-25: one PR delivers everything below. Release Please's
+commit override can split its changelog entry into several user-facing items
+after merge.
+
+### Stale Confirm guard
 
 - Add `CloseState::can_confirm(target, generation)` and
   `WorkspaceView::confirm_confirmation`; capture the generation in the
   Confirm listener at render.
-- Tests: a tier 1 `CloseState` test (show, cancel, stale confirm refused;
-  show again with the same target, old generation refused) and a tier 2
-  test that clicks Confirm through the listener after Cancel and asserts
-  that no assessment or commit ran, using `worker_hooks` counts.
 
-### PR 2: `fix: close a window after another window removes its tabs or session`
+### Emptied windows
 
 - Mark a window emptied when a reconcile removal takes its last view; offer
   the emptied close through `next_request` after queued closes and exit
@@ -277,20 +277,12 @@ Attachment events are deferred to #26 with the shape above.
 - Files: `desktop/windows.rs` (`CloseState`, `WorkspaceView` reconcile and
   close paths), `desktop/windows/projection.rs` (report removal of the last
   view), `desktop/windows/model.rs` if the model needs an emptied flag.
-- Tier 2 tests and the viewers smoke steps below.
 
-### PR 3: `test: prove the embedded session lifecycle on native close paths`
+### Evidence and docs
 
-- Core PTY tests and the extended core race test.
-- The native close and AppKit terminate smoke steps.
-- Tier 1 Quit-versus-close capture test.
-- Docs: README lifecycle paragraph (emptied windows, `huterm-procinfo`
-  instead of `ps`, detection limits), the Close and Quit section of
-  `docs/agents/desktop-client.md`, this plan's status, and the
-  `workspaces-windows-tabs.md` pointer to it.
-
-PR 1 and PR 2 are independent. PR 3 can land in any order, but its smoke
-steps assume PR 2's emptied-window behavior, so it goes last.
+- The core PTY tests, the tier 1 and tier 2 desktop tests, and the native
+  smoke steps under Verification.
+- The documentation changes under Documentation.
 
 ## Verification
 
@@ -336,10 +328,14 @@ harness session:
 - With `Stage::Assess` held on an emptied close, the harness opens a tab in
   the session. After release the window stays, installs the tab, and the
   tab's child is alive.
-- The stale Confirm test from PR 1.
+- The stale Confirm guard: after Cancel, a click through the Confirm
+  listener starts no assessment and no commit (`worker_hooks` counts).
 
 Tier 1 (`desktop/windows/tests.rs`):
 
+- `CloseState` refuses a stale Confirm: show, cancel, and confirm with the
+  old generation; then show again with the same target and confirm with the
+  old generation.
 - A session terminated by a window close is absent from a later Quit
   capture, while an unviewed session is present. This distinguishes Quit
   from last-window close.
@@ -348,8 +344,8 @@ Existing and cited: idle shells, foreground jobs, background groups,
 orphans, and unknown state in `mux/lifecycle/tests.rs`; Quit capture and
 rejected Quit in `desktop/windows/tests.rs`.
 
-Each new test must fail at its assertion before its fix lands. For PR 1 and
-PR 2 that comes from writing the test first. For PR 3's tests over existing
+Each new test must fail at its assertion before its fix lands. For the two
+fixes that comes from writing the test first. For tests over existing
 behavior, one perturbation (skipping the retarget's preservation, or closing
 both sessions) confirms the sibling test can fail.
 
@@ -386,7 +382,7 @@ Run `smoke:macos-palette` on the host. Check `df -h` before
   `cargo test -p huterm-gpui --features test-support windows::` while
   iterating, confirming the new tests appear in the runner's output.
 - `mise run check` early and `mise run verify` before each handoff.
-- `mise run test:ghostty-releasesafe` for PR 3, which adds `huterm-core`
+- `mise run test:ghostty-releasesafe`, because the PR adds `huterm-core`
   PTY tests.
 
 ### Residual risk
@@ -404,28 +400,24 @@ Run `smoke:macos-palette` on the host. Check `df -h` before
 - `docs/agents/desktop-client.md`, Close and Quit: the emptied-window edge
   trigger, the no-terminal commit rule, and the Confirm generation guard,
   each next to the related rule.
-- This plan: `Status: implemented` in PR 3, with deviations recorded.
+- This plan: `Status: implemented` in the PR, with deviations recorded.
+
+## Settled decisions
+
+Agreed with the maintainer on 2026-10-25:
+
+- An externally emptied window closes; retargeting it waits for #26.
+- Attachment events move to #26, with the event shape recorded above.
+- Runtime-owned `close_on_exit` belongs to #21's server half, delivered
+  with #45.
+- One PR, not three.
+- The app keeps running with no windows while unviewed sessions survive,
+  as `maybe_exit` does today. Dock reopen opens a fresh session and Linux
+  keeps a windowless process; #26 decides how such sessions are reached.
 
 ## Open questions
 
-1. **Should an externally emptied window close?** Recommendation: yes, as
-   above. The alternatives are keeping it open and empty with New Tab, or
-   retargeting it to another session, which needs #26.
-2. **Attachment events: defer to #26?** Recommendation: defer, with the
-   event shape recorded above. The alternative adds them in PR 2 with no
-   consumer, behind `#[expect(dead_code)]`.
-3. **`close_on_exit` ownership: the server half of #21 rather than #45?**
-   Recommendation: #21's server half, delivered with #45, for the reason
-   above.
-4. **Three PRs or one?** Recommendation: three, so the two `fix:` titles
-   become separate release notes and PR 3's smoke work does not hold up the
-   fixes.
-5. **After #26, should the app stay running with no windows while unviewed
-   sessions survive?** Today `maybe_exit` keeps it running, and macOS Dock
-   reopen opens a fresh session, leaving the old one unreachable. On Linux
-   the process lingers with no window. Recommendation: leave the current
-   behavior and have #26 decide reachability, since this plan creates no
-   unviewed sessions.
+None.
 
 [issue-9]: https://github.com/jimeh/huterm/issues/9
 [issue-20]: https://github.com/jimeh/huterm/issues/20
