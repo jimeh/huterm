@@ -114,6 +114,23 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** rerun once before suspecting the change. A fix would replace the
   fixed deadline with a condition-driven wait.
 
+## huterm-procinfo live group leader arguments on Linux
+
+- **Label:**
+  `tests::reads_a_live_process_group_leader_and_its_arguments` in
+  `Checks (Linux x86_64)`, panicking at `arguments(pid).unwrap()` with
+  "called `Option::unwrap()` on a `None` value".
+- **Occurrences:** once, 2026-10-21 (PR #226, attempt 1 of run 39695920472);
+  the rerun passed.
+- **Evidence:** the test had already seen the child named `sleep`, so the
+  exec had started. The Linux reader returns `None` only when reading
+  `/proc/<pid>/cmdline` fails; an empty read returns an empty list. Why the
+  read failed is unconfirmed. One candidate is a read that races the end of
+  the exec.
+- **Triage:** rerun once. A repeat should capture the read error before
+  changing the test, for example by retrying `arguments` inside the existing
+  `eventually` wait.
+
 ## huterm-gpui terminfo temp-directory abort on hosted macOS
 
 - **Label:**

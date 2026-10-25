@@ -296,6 +296,10 @@ holds its own viewer with its own wake and reads terminal status as state.
 
 ### One consumer of terminal events, at the window
 
+Superseded: the [terminal viewers plan](terminal-viewers.md) replaced
+terminal events with revisioned status and gave each view its own viewer
+and wake. This section records the single-consumer design as it shipped.
+
 Move the per-tab body of the pump into `WorkspaceView::refresh_tab(tab_id)`:
 drain terminal events and host effects, apply the refresh result, feed
 `exited_tabs`, notify on a change, then call `resume_close`. `WorkspaceView`

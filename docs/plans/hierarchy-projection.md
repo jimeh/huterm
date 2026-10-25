@@ -656,8 +656,9 @@ Protocol reducer unit tests:
   sequence, which only the envelope check can reject.
 - Two projections seeded from the same snapshot and fed the same stream end
   equal, with equal digests. This covers the criterion that two windows on
-  one session observe the same changes in the same order; shared attachments
-  arrive with #22.
+  one session observe the same changes in the same order. Since #22, the
+  palette smoke fixture attaches two windows to one session; a production
+  path to do so belongs to [#26][issue-26].
 - The digest is stable for equal states and changes for each kind of
   difference: names, order, membership, and parentage.
 
