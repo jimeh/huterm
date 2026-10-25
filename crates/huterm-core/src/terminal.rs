@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{self, AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{
     self, Receiver, Sender, SyncSender, TryRecvError, TrySendError,
@@ -665,6 +666,14 @@ pub(crate) enum RuntimeControl {
     /// Reports how many writes wait behind a full writer queue.
     #[cfg(test)]
     PendingWrites(Sender<usize>),
+    /// Reports a handle that each running PTY worker keeps alive, so tests
+    /// can see the workers stop without relying on the child's output.
+    #[cfg(test)]
+    Workers(Sender<std::sync::Weak<()>>),
+    /// Closes the writer's queue without closing input, as a writer that
+    /// stopped on a genuine failure leaves it.
+    #[cfg(test)]
+    StopWriter,
     PtyEof,
     Snapshot {
         slot: Arc<Slot>,
@@ -683,6 +692,9 @@ pub(crate) enum RuntimeControl {
     },
     WorkerFailed(String),
     WriterFailed(String),
+    /// The writer stopped because the terminal hung up: no process holds
+    /// it open any more, as when the shell has just exited.
+    WriterHangup,
     Wake,
 }
 
@@ -801,6 +813,10 @@ struct Owner<'a> {
     engine: TerminalEngine,
     master: Box<dyn portable_pty::MasterPty + Send>,
     writer: async_channel::Sender<WriterMessage>,
+    writer_cancel: pty::IoCancellation,
+    /// Set once the root exits or the writer finds the terminal hung up.
+    /// Shared with the writer, which sets it before it stops on a hangup.
+    input_closed: Arc<AtomicBool>,
     pending_writes: VecDeque<Vec<u8>>,
     status: StatusPublisher,
     metadata: PublishedMetadata,
@@ -860,9 +876,7 @@ impl Owner<'_> {
             }
             self.publish();
         }
-        if self.child_exited
-            || (effects.releases.is_empty() && effects.focus.is_none())
-        {
+        if effects.releases.is_empty() && effects.focus.is_none() {
             return true;
         }
         let modes = match self.engine.modes() {
@@ -894,15 +908,81 @@ impl Owner<'_> {
             .publish(self.registry, None, self.engine.generation());
     }
 
+    fn input_closed(&self) -> bool {
+        self.input_closed.load(Ordering::Acquire)
+    }
+
+    /// Ends input to the PTY, at root exit or when the terminal hangs up:
+    /// drops spilled writes and stops the writer, which sees its queue
+    /// close even while idle. [`Owner::queue_write`] drops every later
+    /// write.
+    fn close_input(&mut self) {
+        self.input_closed.store(true, Ordering::Release);
+        self.pending_writes.clear();
+        self.writer.close();
+        self.writer_cancel.cancel();
+    }
+
+    /// The one path to the writer. Once input has closed, nothing reaches
+    /// the PTY: typing, replies to output or a resize, and the releases and
+    /// focus report that finalizing a viewer writes are all dropped here.
+    fn queue_write(&mut self, bytes: Vec<u8>) -> WriterQueueState {
+        if self.input_closed() {
+            return WriterQueueState::Drained;
+        }
+        match queue_write(bytes, &self.writer, &mut self.pending_writes) {
+            // A writer that found the terminal hung up closes input before
+            // it stops, possibly before the runtime has handled the hangup.
+            WriterQueueState::Disconnected if self.input_closed() => {
+                self.pending_writes.clear();
+                WriterQueueState::Drained
+            }
+            state => state,
+        }
+    }
+
+    /// Moves spilled writes into the writer's queue, treating a writer that
+    /// stopped at a hangup as [`Owner::queue_write`] does.
+    fn flush_pending_writes(&mut self) -> WriterQueueState {
+        match flush_pending_write(&self.writer, &mut self.pending_writes) {
+            WriterQueueState::Disconnected if self.input_closed() => {
+                self.pending_writes.clear();
+                WriterQueueState::Drained
+            }
+            state => state,
+        }
+    }
+
     fn write(&mut self, bytes: Vec<u8>, failure: &str) -> bool {
         if bytes.is_empty()
-            || queue_write(bytes, &self.writer, &mut self.pending_writes)
-                != WriterQueueState::Disconnected
+            || self.queue_write(bytes) != WriterQueueState::Disconnected
         {
             return true;
         }
         self.status.failure(failure.into());
         false
+    }
+
+    /// Records the root's exit if it has happened, which closes input.
+    fn observe_child_exit(
+        &mut self,
+        child: &mut dyn portable_pty::Child,
+        lifecycle: &crate::jobs::JobLifecycle,
+    ) -> Result<(), String> {
+        if self.child_exited {
+            return Ok(());
+        }
+        let exit = child.try_wait().map_err(|error| error.to_string())?;
+        if let Some(exit) = exit {
+            self.child_exited = true;
+            lifecycle.observe_exit();
+            self.close_input();
+            self.status.exit(ExitStatus {
+                code: Some(exit.exit_code()),
+                success: exit.success(),
+            });
+        }
+        Ok(())
     }
 
     /// Runs an engine operation's effects in order. `output` carries the
@@ -916,12 +996,6 @@ impl Owner<'_> {
         failure: &str,
     ) -> bool {
         for effect in effects {
-            // The writer closes at root exit, so a reply such as an in-band
-            // size report from a resize would otherwise stop the runtime.
-            if self.child_exited && matches!(effect, EngineEffect::PtyWrite(_))
-            {
-                continue;
-            }
             // Programs can re-send an unchanged title on every chunk; only
             // new text can mean a new program.
             if let Some((probes, now)) = &mut output
@@ -930,20 +1004,106 @@ impl Owner<'_> {
             {
                 probes.title(*now);
             }
-            if handle_effect(
-                effect,
-                &self.writer,
-                &mut self.pending_writes,
-                &mut self.status,
-                &mut self.metadata,
-                self.master.as_ref(),
-            ) == WriterQueueState::Disconnected
-            {
+            if self.handle_effect(effect) == WriterQueueState::Disconnected {
                 self.status.failure(failure.into());
                 return false;
             }
         }
         true
+    }
+
+    fn handle_effect(&mut self, effect: EngineEffect) -> WriterQueueState {
+        let master = self.master.as_ref();
+        let metadata = &mut self.metadata;
+        let status = &mut self.status;
+        match effect {
+            EngineEffect::PtyWrite(bytes) => self.queue_write(bytes),
+            EngineEffect::Title(title) => {
+                // Titles can arrive on every output chunk; read the
+                // foreground group only when the text or its attribution
+                // may have changed.
+                let now = Instant::now();
+                if metadata.reports.title_needs_group(&title, now) {
+                    metadata.reports.report_title(
+                        title.clone(),
+                        master.process_group_leader(),
+                        now,
+                    );
+                    let process = metadata
+                        .current
+                        .foreground_process()
+                        .map(str::to_owned);
+                    metadata.publish(process, status);
+                }
+                status.title(title);
+                WriterQueueState::Drained
+            }
+            EngineEffect::Directory(directory) => {
+                // The report belongs to whichever group holds the
+                // foreground now.
+                metadata
+                    .reports
+                    .report_directory(directory, master.process_group_leader());
+                let process =
+                    metadata.current.foreground_process().map(str::to_owned);
+                metadata.publish(process, status);
+                WriterQueueState::Drained
+            }
+            EngineEffect::Bell => {
+                status.bell();
+                WriterQueueState::Drained
+            }
+        }
+    }
+}
+
+/// Parses one chunk of PTY output and applies its effects. Returns false
+/// when the runtime must close.
+fn process_output(
+    owner: &mut Owner<'_>,
+    arbiter: &mut Arbiter,
+    probes: &mut ProbeSchedule,
+    bytes: &[u8],
+) -> bool {
+    let now = Instant::now();
+    probes.output(now);
+    let effects = match owner.engine.process(bytes) {
+        Ok(effects) => effects,
+        Err(error) => {
+            owner.status.failure(error.to_string());
+            return false;
+        }
+    };
+    let healthy = owner.handle_effects(
+        effects,
+        Some((probes, now)),
+        "PTY writer stopped before a terminal reply was written",
+    );
+    owner.publish();
+    healthy && end_untracked_gesture(owner, arbiter)
+}
+
+/// Parses output the reader queued before it failed, so that output reaches
+/// history before the runtime stops. The reader sends each batch before its
+/// failure and stops after it, so the queue holds at most `OUTPUT_CAPACITY`
+/// messages; the bound keeps teardown prompt even if another sender floods.
+fn process_queued_output(
+    owner: &mut Owner<'_>,
+    arbiter: &mut Arbiter,
+    probes: &mut ProbeSchedule,
+    output: &Receiver<Vec<u8>>,
+    closing: &AtomicBool,
+) {
+    for _ in 0..OUTPUT_CAPACITY {
+        if closing.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(bytes) = output.try_recv() else {
+            return;
+        };
+        if !process_output(owner, arbiter, probes, &bytes) {
+            return;
+        }
     }
 }
 
@@ -1009,6 +1169,10 @@ fn run_terminal(
     let mut process_groups = pty::process_groups(child.process_id());
     pty::record_foreground_group(master.as_ref(), &mut process_groups);
     let reader_cancel = reader_waiter.cancellation();
+    #[cfg(test)]
+    let workers = Arc::new(());
+    #[cfg(test)]
+    let worker_handle = Arc::downgrade(&workers);
     let reader_join = match spawn_reader(
         terminal_id,
         reader,
@@ -1016,6 +1180,8 @@ fn run_terminal(
         output_sender,
         control_sender.clone(),
         Arc::clone(&closing),
+        #[cfg(test)]
+        Arc::clone(&workers),
     ) {
         Ok(join) => join,
         Err(error) => {
@@ -1048,6 +1214,8 @@ fn run_terminal(
         Arc::clone(&writer_capacity),
         Arc::clone(&closing),
         Arc::clone(&input_closed),
+        #[cfg(test)]
+        workers,
     ) {
         Ok(join) => join,
         Err(error) => {
@@ -1074,6 +1242,8 @@ fn run_terminal(
         engine,
         master,
         writer: writer_sender,
+        writer_cancel,
+        input_closed,
         pending_writes: VecDeque::new(),
         status,
         metadata: PublishedMetadata::default(),
@@ -1089,274 +1259,282 @@ fn run_terminal(
     let mut output_turn = false;
     let mut probes = ProbeSchedule::default();
     let root = child.process_id();
-    while !closing.load(Ordering::Acquire) {
-        if !owner.reconcile(&mut arbiter) {
-            closing.store(true, Ordering::Release);
-            continue;
-        }
-        if let Err(error) = observe_child_exit(
-            child.as_mut(),
-            &lifecycle,
-            &mut owner.status,
-            &mut owner.child_exited,
-            &input_closed,
-            &mut owner.pending_writes,
-        ) {
-            owner.status.failure(error);
-            closing.store(true, Ordering::Release);
-        }
-        // Root exit clears the name; the exited terminal is never probed.
-        if owner.child_exited {
-            probes.stop();
-            owner.metadata.publish(None, &mut owner.status);
-        } else {
-            let now = Instant::now();
-            if probes.due(now) {
-                let probe = crate::foreground::probe(
-                    owner.master.process_group_leader(),
-                    root,
-                );
-                probes.probed(now, probe.job);
-                owner.metadata.reports.probed(probe.group, probe.directory);
-                owner.metadata.publish(probe.name, &mut owner.status);
-            }
-        }
-        owner.status.flush(registry);
-        let mut controls_drained = 0;
-        while controls_drained < MESSAGE_CAPACITY {
-            let Ok(control) = controls.try_recv() else {
-                break;
-            };
-            controls_drained += 1;
-            if closing.load(Ordering::Acquire) {
-                break;
-            }
-            match control {
-                RuntimeControl::Snapshot {
-                    slot,
-                    scroll,
-                    point,
-                    reply,
-                    #[cfg(test)]
-                    fail_lookup,
-                } => {
-                    // Revocation and refused scrolls answer only this viewer
-                    // and never reach the fatal path below.
-                    if slot.is_revoked() {
-                        let _ = reply.try_send(Err(RuntimeError::Revoked));
-                        continue;
-                    }
-                    if scroll.is_some() && !slot.capabilities.viewport {
-                        let _ = reply.try_send(Err(RuntimeError::NotPermitted));
-                        continue;
-                    }
-                    let result = build_snapshot(
-                        &mut owner.engine,
-                        &mut owner.publication,
-                        &mut arbiter,
-                        registry,
-                        &slot,
-                        scroll,
-                        point,
-                        #[cfg(test)]
-                        fail_lookup,
-                    );
-                    complete_snapshot_request(
-                        result,
-                        &reply,
-                        &mut owner.status,
-                        &closing,
-                    );
-                }
-                RuntimeControl::Selection {
-                    slot,
-                    generation,
-                    range,
-                    reply,
-                } => {
-                    let result = if slot.is_revoked() {
-                        Err(RuntimeError::Revoked)
-                    } else {
-                        owner.engine.extract_text(generation, range)
-                    };
-                    let _ = reply.try_send(result);
-                }
-                RuntimeControl::WriterFailed(message) => {
-                    // Exit may have happened since the loop's initial poll.
-                    if let Err(error) = observe_child_exit(
-                        child.as_mut(),
-                        &lifecycle,
-                        &mut owner.status,
-                        &mut owner.child_exited,
-                        &input_closed,
-                        &mut owner.pending_writes,
-                    ) {
-                        owner.status.failure(error);
-                        closing.store(true, Ordering::Release);
-                    } else if !owner.child_exited {
-                        owner.status.failure(message);
-                        closing.store(true, Ordering::Release);
-                    }
-                }
-                RuntimeControl::WorkerFailed(message) => {
-                    owner.status.failure(message);
-                    closing.store(true, Ordering::Release);
-                }
-                RuntimeControl::PtyEof => {
-                    #[cfg(test)]
-                    {
-                        pty_eof = true;
-                    }
-                }
-                RuntimeControl::JobContext(reply) => {
-                    let _ = reply.send(crate::jobs::JobContext {
-                        lifecycle: Arc::clone(&lifecycle),
-                        shell: child.process_id(),
-                        foreground: (!owner.child_exited)
-                            .then(|| owner.master.process_group_leader())
-                            .flatten(),
-                        #[cfg(test)]
-                        exited: owner.child_exited,
-                        #[cfg(test)]
-                        pty_eof,
-                        tty: owner.master.tty_name().and_then(|name| {
-                            huterm_procinfo::tty_device(&name)
-                        }),
-                    });
-                }
-                #[cfg(test)]
-                RuntimeControl::Presentation(reply) => {
-                    let _ = reply.send((
-                        owner.engine.presentation().clone(),
-                        owner.engine.size(),
-                        owner.engine.cell_size(),
-                    ));
-                }
-                #[cfg(test)]
-                RuntimeControl::PendingWrites(reply) => {
-                    let _ = reply.send(owner.pending_writes.len());
-                }
-                #[cfg(test)]
-                RuntimeControl::Probes(reply) => {
-                    let _ = reply.send((
-                        probes.deadline().is_some(),
-                        probes.last_probe(),
-                    ));
-                }
-                #[cfg(test)]
-                RuntimeControl::Pause { entered, release } => {
-                    let _ = entered.send(());
-                    let _ = release.recv();
-                }
-                #[cfg(test)]
-                RuntimeControl::Panic => panic!("injected runtime panic"),
-                #[cfg(test)]
-                RuntimeControl::ForegroundJob(reply) => {
-                    let busy = !owner.child_exited && {
-                        let shell = child
-                            .process_id()
-                            .and_then(|id| i32::try_from(id).ok());
-                        let foreground = owner.master.process_group_leader();
-                        foreground.zip(shell).is_none_or(
-                            |(foreground, shell)| foreground != shell,
-                        )
-                    };
-                    let _ = reply.try_send(busy);
-                }
-                RuntimeControl::Wake => {}
-            }
-        }
-        if closing.load(Ordering::Acquire) {
-            break;
-        }
-        if owner.child_exited {
-            // Closing the channel wakes an idle writer even when no input
-            // arrives after root exit. Queued writes are rejected by input_closed.
-            owner.writer.close();
-            writer_cancel.cancel();
-        }
-        let mut writer_state =
-            flush_pending_write(&owner.writer, &mut owner.pending_writes);
-        if writer_state == WriterQueueState::Full {
-            writer_capacity.request_wake();
-            // The writer may have dequeued before it saw the request.
-            writer_state =
-                flush_pending_write(&owner.writer, &mut owner.pending_writes);
-        }
-        match writer_state {
-            WriterQueueState::Drained => {}
-            WriterQueueState::Full => {
-                owner.status.flush(registry);
-                if controls_drained < MESSAGE_CAPACITY {
-                    wake.wait_until(probes.deadline());
-                }
-                continue;
-            }
-            WriterQueueState::Disconnected => {
-                owner.status.failure(
-                    "PTY writer stopped before queued input was written".into(),
-                );
+    // The teardown below must also run when the loop panics: unwinding
+    // would otherwise leave the child running and the reader waiting.
+    let unwound = panic::catch_unwind(AssertUnwindSafe(|| {
+        while !closing.load(Ordering::Acquire) {
+            if !owner.reconcile(&mut arbiter) {
                 closing.store(true, Ordering::Release);
                 continue;
             }
-        }
-        let message = match next_message(&messages, &output, &mut output_turn) {
-            Ok(message) => message,
-            // A backlog of writes consumes the notification that asked for
-            // a reconcile, so nothing else is certain to wake this thread
-            // for it once they drain.
-            Err(TryRecvError::Empty) if registry.has_pending_change() => {
-                continue;
+            if let Err(error) =
+                owner.observe_child_exit(child.as_mut(), &lifecycle)
+            {
+                owner.status.failure(error);
+                closing.store(true, Ordering::Release);
             }
-            Err(TryRecvError::Empty) => {
-                owner.status.flush(registry);
-                if controls_drained < MESSAGE_CAPACITY {
-                    wake.wait_until(probes.deadline());
-                }
-                continue;
-            }
-            Err(TryRecvError::Disconnected) => break,
-        };
-        let healthy = match message {
-            NextMessage::Output(bytes) => {
+            // Root exit clears the name; the exited terminal is never probed.
+            if owner.child_exited {
+                probes.stop();
+                owner.metadata.publish(None, &mut owner.status);
+            } else {
                 let now = Instant::now();
-                probes.output(now);
-                let effects = match owner.engine.process(&bytes) {
-                    Ok(effects) => effects,
-                    Err(error) => {
-                        owner.status.failure(error.to_string());
+                if probes.due(now) {
+                    let probe = crate::foreground::probe(
+                        owner.master.process_group_leader(),
+                        root,
+                    );
+                    probes.probed(now, probe.job);
+                    owner.metadata.reports.probed(probe.group, probe.directory);
+                    owner.metadata.publish(probe.name, &mut owner.status);
+                }
+            }
+            owner.status.flush(registry);
+            let mut controls_drained = 0;
+            while controls_drained < MESSAGE_CAPACITY {
+                let Ok(control) = controls.try_recv() else {
+                    break;
+                };
+                controls_drained += 1;
+                if closing.load(Ordering::Acquire) {
+                    break;
+                }
+                match control {
+                    RuntimeControl::Snapshot {
+                        slot,
+                        scroll,
+                        point,
+                        reply,
+                        #[cfg(test)]
+                        fail_lookup,
+                    } => {
+                        // Revocation and refused scrolls answer only this
+                        // viewer and never reach the fatal path below.
+                        if slot.is_revoked() {
+                            let _ = reply.try_send(Err(RuntimeError::Revoked));
+                            continue;
+                        }
+                        if scroll.is_some() && !slot.capabilities.viewport {
+                            let _ =
+                                reply.try_send(Err(RuntimeError::NotPermitted));
+                            continue;
+                        }
+                        let result = build_snapshot(
+                            &mut owner.engine,
+                            &mut owner.publication,
+                            &mut arbiter,
+                            registry,
+                            &slot,
+                            scroll,
+                            point,
+                            #[cfg(test)]
+                            fail_lookup,
+                        );
+                        complete_snapshot_request(
+                            result,
+                            &reply,
+                            &mut owner.status,
+                            &closing,
+                        );
+                    }
+                    RuntimeControl::Selection {
+                        slot,
+                        generation,
+                        range,
+                        reply,
+                    } => {
+                        let result = if slot.is_revoked() {
+                            Err(RuntimeError::Revoked)
+                        } else {
+                            owner.engine.extract_text(generation, range)
+                        };
+                        let _ = reply.try_send(result);
+                    }
+                    RuntimeControl::WriterFailed(message) => {
+                        // Exit may have happened since the loop's initial
+                        // poll.
+                        if let Err(error) =
+                            owner.observe_child_exit(child.as_mut(), &lifecycle)
+                        {
+                            owner.status.failure(error);
+                            closing.store(true, Ordering::Release);
+                        } else if !owner.child_exited {
+                            owner.status.failure(message);
+                            closing.store(true, Ordering::Release);
+                        }
+                    }
+                    // Like end-of-file on the reader, a hangup ends input
+                    // without failing the runtime: the root's exit, or a
+                    // close, still ends the terminal.
+                    RuntimeControl::WriterHangup => owner.close_input(),
+                    RuntimeControl::WorkerFailed(message) => {
+                        // The runtime stops after this, so replies are moot,
+                        // and a writer that failed too must not cut the
+                        // parsing short.
+                        owner.close_input();
+                        process_queued_output(
+                            &mut owner,
+                            &mut arbiter,
+                            &mut probes,
+                            &output,
+                            &closing,
+                        );
+                        owner.status.failure(message);
                         closing.store(true, Ordering::Release);
+                    }
+                    RuntimeControl::PtyEof => {
+                        #[cfg(test)]
+                        {
+                            pty_eof = true;
+                        }
+                    }
+                    RuntimeControl::JobContext(reply) => {
+                        let _ = reply.send(crate::jobs::JobContext {
+                            lifecycle: Arc::clone(&lifecycle),
+                            shell: child.process_id(),
+                            foreground: (!owner.child_exited)
+                                .then(|| owner.master.process_group_leader())
+                                .flatten(),
+                            #[cfg(test)]
+                            exited: owner.child_exited,
+                            #[cfg(test)]
+                            pty_eof,
+                            tty: owner.master.tty_name().and_then(|name| {
+                                huterm_procinfo::tty_device(&name)
+                            }),
+                        });
+                    }
+                    #[cfg(test)]
+                    RuntimeControl::Presentation(reply) => {
+                        let _ = reply.send((
+                            owner.engine.presentation().clone(),
+                            owner.engine.size(),
+                            owner.engine.cell_size(),
+                        ));
+                    }
+                    #[cfg(test)]
+                    RuntimeControl::PendingWrites(reply) => {
+                        let _ = reply.send(owner.pending_writes.len());
+                    }
+                    #[cfg(test)]
+                    RuntimeControl::Workers(reply) => {
+                        let _ = reply.send(worker_handle.clone());
+                    }
+                    #[cfg(test)]
+                    RuntimeControl::StopWriter => {
+                        owner.writer.close();
+                    }
+                    #[cfg(test)]
+                    RuntimeControl::Probes(reply) => {
+                        let _ = reply.send((
+                            probes.deadline().is_some(),
+                            probes.last_probe(),
+                        ));
+                    }
+                    #[cfg(test)]
+                    RuntimeControl::Pause { entered, release } => {
+                        let _ = entered.send(());
+                        let _ = release.recv();
+                    }
+                    #[cfg(test)]
+                    RuntimeControl::Panic => panic!("injected runtime panic"),
+                    #[cfg(test)]
+                    RuntimeControl::ForegroundJob(reply) => {
+                        let busy = !owner.child_exited && {
+                            let shell = child
+                                .process_id()
+                                .and_then(|id| i32::try_from(id).ok());
+                            let foreground =
+                                owner.master.process_group_leader();
+                            foreground.zip(shell).is_none_or(
+                                |(foreground, shell)| foreground != shell,
+                            )
+                        };
+                        let _ = reply.try_send(busy);
+                    }
+                    RuntimeControl::Wake => {}
+                }
+            }
+            if closing.load(Ordering::Acquire) {
+                break;
+            }
+            let mut writer_state = owner.flush_pending_writes();
+            if writer_state == WriterQueueState::Full {
+                writer_capacity.request_wake();
+                // The writer may have dequeued before it saw the request.
+                writer_state = owner.flush_pending_writes();
+            }
+            match writer_state {
+                WriterQueueState::Drained => {}
+                WriterQueueState::Full => {
+                    owner.status.flush(registry);
+                    if controls_drained < MESSAGE_CAPACITY {
+                        wake.wait_until(probes.deadline());
+                    }
+                    continue;
+                }
+                WriterQueueState::Disconnected => {
+                    owner.status.failure(
+                        "PTY writer stopped before queued input was written"
+                            .into(),
+                    );
+                    closing.store(true, Ordering::Release);
+                    continue;
+                }
+            }
+            let message =
+                match next_message(&messages, &output, &mut output_turn) {
+                    Ok(message) => message,
+                    // A backlog of writes consumes the notification that
+                    // asked for a reconcile, so nothing else is certain to
+                    // wake this thread for it once they drain.
+                    Err(TryRecvError::Empty)
+                        if registry.has_pending_change() =>
+                    {
                         continue;
                     }
+                    Err(TryRecvError::Empty) => {
+                        owner.status.flush(registry);
+                        if controls_drained < MESSAGE_CAPACITY {
+                            wake.wait_until(probes.deadline());
+                        }
+                        continue;
+                    }
+                    Err(TryRecvError::Disconnected) => break,
                 };
-                let healthy = owner.handle_effects(
-                    effects,
-                    Some((&mut probes, now)),
-                    "PTY writer stopped before a terminal reply was written",
-                );
-                owner.publish();
-                healthy && end_untracked_gesture(&mut owner, &mut arbiter)
+            let healthy = match message {
+                NextMessage::Output(bytes) => process_output(
+                    &mut owner,
+                    &mut arbiter,
+                    &mut probes,
+                    &bytes,
+                ),
+                NextMessage::Client(message) => handle_client_message(
+                    &mut owner,
+                    &mut arbiter,
+                    &mut probes,
+                    &queued_input_bytes,
+                    message,
+                ),
+            };
+            if !healthy {
+                closing.store(true, Ordering::Release);
             }
-            NextMessage::Client(message) => handle_client_message(
-                &mut owner,
-                &mut arbiter,
-                &mut probes,
-                &queued_input_bytes,
-                message,
-            ),
-        };
-        if !healthy {
-            closing.store(true, Ordering::Release);
+            // A snapshot that shows this message's output is never ahead of
+            // the status the same output produced.
+            owner.status.flush(registry);
         }
-        // A snapshot that shows this message's output is never ahead of the
-        // status the same output produced.
-        owner.status.flush(registry);
-    }
+    }))
+    .err();
 
     closing.store(true, Ordering::Release);
     // A failure that ended the loop reaches viewers now, not after the
-    // bounded teardown below.
-    owner.status.flush(registry);
+    // bounded teardown below. After a panic, publish nothing: the owner's
+    // state may be inconsistent, and teardown reads only the PTY's
+    // foreground group and the groups recorded for close.
+    if unwound.is_none() {
+        owner.status.flush(registry);
+    }
     lifecycle.retire();
     if owner.child_exited {
         // Root exit completes the terminal. Never signal historical groups
@@ -1375,7 +1553,7 @@ fn run_terminal(
             .collect();
     }
     pty::terminate_child(child.as_mut(), killer.as_mut(), &process_groups);
-    writer_cancel.cancel();
+    owner.writer_cancel.cancel();
     drop(owner.writer);
     drop(owner.master);
     drop(messages);
@@ -1383,7 +1561,13 @@ fn run_terminal(
     reader_cancel.cancel();
     join_worker(reader_join);
     join_worker(writer_join);
-    let result = if pty::reap_child(child) {
+    let reaped = pty::reap_child(child);
+    // Resuming the panic keeps it reported: `shutdown` returns
+    // `ThreadPanic`, and unwinding closes every viewer's wake.
+    if let Some(payload) = unwound {
+        panic::resume_unwind(payload);
+    }
+    let result = if reaped {
         Ok(())
     } else {
         owner
@@ -1540,9 +1724,11 @@ fn handle_input(
             }
         }
     }
-    // After root exit, typing still moves control and returns the viewport
-    // to live, but nothing reaches the application.
-    if owner.child_exited {
+    // After root exit or a hangup, typing still moves control and returns
+    // the viewport to live, but nothing reaches the application. Writes are
+    // dropped at `Owner::queue_write` regardless; returning here also keeps
+    // a press from taking a gesture and input from arming probes.
+    if owner.input_closed() {
         return true;
     }
     let modes = match owner.engine.modes() {
@@ -1614,6 +1800,7 @@ fn spawn_reader(
     output: crate::wake::SyncSender<Vec<u8>>,
     controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
+    #[cfg(test)] running: Arc<()>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
     thread::Builder::new()
         .name(format!("huterm-reader-{}", terminal_id.get()))
@@ -1625,6 +1812,8 @@ fn spawn_reader(
                 &controls,
                 &closing,
             );
+            #[cfg(test)]
+            drop(running);
         })
         .map_err(|error| RuntimeError::Thread(error.to_string()))
 }
@@ -1734,31 +1923,6 @@ fn read_ready(
     ReadyEnd::Full
 }
 
-fn observe_child_exit(
-    child: &mut dyn portable_pty::Child,
-    lifecycle: &crate::jobs::JobLifecycle,
-    status: &mut StatusPublisher,
-    exited: &mut bool,
-    input_closed: &AtomicBool,
-    pending_writes: &mut VecDeque<Vec<u8>>,
-) -> Result<(), String> {
-    if *exited {
-        return Ok(());
-    }
-    let exit = child.try_wait().map_err(|error| error.to_string())?;
-    if let Some(exit) = exit {
-        *exited = true;
-        lifecycle.observe_exit();
-        input_closed.store(true, Ordering::Release);
-        pending_writes.clear();
-        status.exit(ExitStatus {
-            code: Some(exit.exit_code()),
-            success: exit.success(),
-        });
-    }
-    Ok(())
-}
-
 /// Wakes the runtime when the writer frees queue capacity, but only while the
 /// runtime holds spilled writes. Waking on every dequeue would wake the
 /// runtime a second time for each keystroke.
@@ -1793,12 +1957,27 @@ enum WriterReadiness {
 }
 
 impl WriterReadiness {
-    fn wait(&self) -> std::io::Result<()> {
+    fn wait(&self) -> std::io::Result<pty::ReadinessOutcome> {
         match self {
-            Self::Pty(waiter) => waiter.wait(None).map(drop),
+            Self::Pty(waiter) => waiter.wait(None),
             #[cfg(test)]
-            Self::Immediate => Ok(()),
+            Self::Immediate => Ok(pty::ReadinessOutcome::Ready),
         }
+    }
+}
+
+/// Whether a PTY write failed because no process holds the terminal open
+/// any more. macOS reports that as `EIO`; Linux keeps accepting writes until
+/// its buffer fills and then reports the hangup through readiness.
+fn hung_up(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(nix::errno::Errno::EIO as i32)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
     }
 }
 
@@ -1815,10 +1994,19 @@ fn spawn_writer(
     capacity: Arc<WriterCapacity>,
     closing: Arc<AtomicBool>,
     input_closed: Arc<AtomicBool>,
+    #[cfg(test)] running: Arc<()>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
     thread::Builder::new()
         .name(format!("huterm-writer-{}", terminal_id.get()))
         .spawn(move || {
+            // A hangup closes input before the runtime hears of it, so a
+            // write queued in between is dropped rather than failing.
+            let stop = |control: RuntimeControl| {
+                if matches!(control, RuntimeControl::WriterHangup) {
+                    input_closed.store(true, Ordering::Release);
+                }
+                let _ = controls.send(control);
+            };
             let mut current: Option<(Vec<u8>, usize)> = None;
             while !closing.load(Ordering::Acquire)
                 && !input_closed.load(Ordering::Acquire)
@@ -1840,109 +2028,55 @@ fn spawn_writer(
                 let Some((bytes, offset)) = current.as_mut() else {
                     continue;
                 };
-                if *offset == bytes.len() {
-                    match writer.flush() {
-                        Ok(()) => current = None,
-                        Err(error)
-                            if error.kind()
-                                == std::io::ErrorKind::WouldBlock =>
-                        {
-                            if let Err(error) = readiness.wait() {
-                                let message = format!(
-                                    "PTY write readiness wait failed: {error}"
-                                );
-                                let _ = controls.send(
-                                    RuntimeControl::WriterFailed(message),
-                                );
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            let _ =
-                                controls.send(RuntimeControl::WriterFailed(
-                                    format!("PTY flush failed: {error}"),
-                                ));
-                            break;
-                        }
-                    }
-                    continue;
-                }
-                match writer.write(&bytes[*offset..]) {
-                    Ok(0) => {
-                        let _ = controls.send(RuntimeControl::WriterFailed(
+                let flushing = *offset == bytes.len();
+                let result = if flushing {
+                    writer.flush().map(|()| None)
+                } else {
+                    writer.write(&bytes[*offset..]).map(Some)
+                };
+                match result {
+                    Ok(None) => current = None,
+                    Ok(Some(0)) => {
+                        stop(RuntimeControl::WriterFailed(
                             "PTY write returned zero bytes".into(),
                         ));
                         break;
                     }
-                    Ok(count) => *offset += count,
+                    Ok(Some(count)) => *offset += count,
                     Err(error)
                         if error.kind() == std::io::ErrorKind::WouldBlock =>
                     {
-                        if let Err(error) = readiness.wait() {
-                            let message = format!(
-                                "PTY write readiness wait failed: {error}"
-                            );
-                            let _ = controls
-                                .send(RuntimeControl::WriterFailed(message));
-                            break;
+                        match readiness.wait() {
+                            Ok(pty::ReadinessOutcome::HungUp) => {
+                                stop(RuntimeControl::WriterHangup);
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                stop(RuntimeControl::WriterFailed(format!(
+                                    "PTY write readiness wait failed: {error}"
+                                )));
+                                break;
+                            }
                         }
                     }
                     Err(error) => {
-                        let _ = controls.send(RuntimeControl::WriterFailed(
-                            format!("PTY write failed: {error}"),
-                        ));
+                        let action = if flushing { "flush" } else { "write" };
+                        stop(if hung_up(&error) {
+                            RuntimeControl::WriterHangup
+                        } else {
+                            RuntimeControl::WriterFailed(format!(
+                                "PTY {action} failed: {error}"
+                            ))
+                        });
                         break;
                     }
                 }
             }
+            #[cfg(test)]
+            drop(running);
         })
         .map_err(|error| RuntimeError::Thread(error.to_string()))
-}
-
-fn handle_effect(
-    effect: EngineEffect,
-    writer: &async_channel::Sender<WriterMessage>,
-    pending_writes: &mut VecDeque<Vec<u8>>,
-    status: &mut StatusPublisher,
-    metadata: &mut PublishedMetadata,
-    master: &dyn portable_pty::MasterPty,
-) -> WriterQueueState {
-    match effect {
-        EngineEffect::PtyWrite(bytes) => {
-            queue_write(bytes, writer, pending_writes)
-        }
-        EngineEffect::Title(title) => {
-            // Titles can arrive on every output chunk; read the foreground
-            // group only when the text or its attribution may have changed.
-            let now = Instant::now();
-            if metadata.reports.title_needs_group(&title, now) {
-                metadata.reports.report_title(
-                    title.clone(),
-                    master.process_group_leader(),
-                    now,
-                );
-                let process =
-                    metadata.current.foreground_process().map(str::to_owned);
-                metadata.publish(process, status);
-            }
-            status.title(title);
-            WriterQueueState::Drained
-        }
-        EngineEffect::Directory(directory) => {
-            // The report belongs to whichever group holds the foreground now.
-            metadata
-                .reports
-                .report_directory(directory, master.process_group_leader());
-            let process =
-                metadata.current.foreground_process().map(str::to_owned);
-            metadata.publish(process, status);
-            WriterQueueState::Drained
-        }
-        EngineEffect::Bell => {
-            status.bell();
-            WriterQueueState::Drained
-        }
-    }
 }
 
 /// Metadata last published to clients, and the reports behind it.
