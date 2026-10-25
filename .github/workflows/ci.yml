@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
@@ -48,7 +48,7 @@ jobs:
 
       - name: Cache Cargo dependencies and build artifacts
         id: policy-setup
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: policy
           # PRs restore main's caches; per-PR copies overflow the repository limit.
@@ -148,7 +148,7 @@ jobs:
           echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           # Rustup state must remain complete when Mise's install state is restored.
           cache: ${{ runner.os != 'macOS' }}
@@ -174,7 +174,7 @@ jobs:
         run: mise run ci:toolchain
 
       - name: Cache Cargo dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: checks-debug-${{ runner.arch }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -293,7 +293,7 @@ jobs:
           echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           # Rustup state must remain complete when Mise's install state is restored.
           cache: ${{ runner.os != 'macOS' }}
@@ -319,7 +319,7 @@ jobs:
         run: mise run ci:toolchain
 
       - name: Cache Cargo dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Avoid keys drifting with unrelated Rust versions on hosted images.
           add-rust-environment-hash-key: false
@@ -532,7 +532,7 @@ jobs:
             mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
@@ -557,7 +557,7 @@ jobs:
         run: mise run ci:toolchain
 
       - name: Cache Cargo dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: benchmarks-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -596,7 +596,7 @@ jobs:
           persist-credentials: false
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
@@ -621,7 +621,7 @@ jobs:
         run: mise run ci:toolchain
 
       - name: Cache Cargo dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ghostty-releasesafe
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -698,7 +698,7 @@ jobs:
 
       - name: Install macOS package tools with Mise
         if: runner.os == 'macOS'
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           cache: false
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
@@ -708,7 +708,7 @@ jobs:
 
       - name: Install Linux package tools with Mise
         if: runner.os == 'Linux'
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           cache: true
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
@@ -738,7 +738,7 @@ jobs:
           mise install --locked cargo:cargo-packager
 
       - name: Cache Cargo dependencies and build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: package-release-${{ runner.arch }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
