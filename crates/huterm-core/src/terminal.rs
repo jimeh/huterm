@@ -670,6 +670,10 @@ pub(crate) enum RuntimeControl {
     /// can see the workers stop without relying on the child's output.
     #[cfg(test)]
     Workers(Sender<std::sync::Weak<()>>),
+    /// Closes the writer's queue without closing input, as a writer that
+    /// stopped on a genuine failure leaves it.
+    #[cfg(test)]
+    StopWriter,
     PtyEof,
     Snapshot {
         slot: Arc<Slot>,
@@ -1364,6 +1368,10 @@ fn run_terminal(
                     // close, still ends the terminal.
                     RuntimeControl::WriterHangup => owner.close_input(),
                     RuntimeControl::WorkerFailed(message) => {
+                        // The runtime stops after this, so replies are moot,
+                        // and a writer that failed too must not cut the
+                        // parsing short.
+                        owner.close_input();
                         process_queued_output(
                             &mut owner,
                             &mut arbiter,
@@ -1411,6 +1419,10 @@ fn run_terminal(
                     #[cfg(test)]
                     RuntimeControl::Workers(reply) => {
                         let _ = reply.send(worker_handle.clone());
+                    }
+                    #[cfg(test)]
+                    RuntimeControl::StopWriter => {
+                        owner.writer.close();
                     }
                     #[cfg(test)]
                     RuntimeControl::Probes(reply) => {

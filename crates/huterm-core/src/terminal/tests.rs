@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use huterm_protocol::{TerminalLifecycle, ViewerCapabilities};
+use huterm_protocol::{TerminalLifecycle, TerminalStatus, ViewerCapabilities};
 
 use super::*;
 
@@ -694,6 +694,40 @@ fn a_hangup_before_root_exit_ends_input_and_the_exit_completes_normally() {
     std::fs::remove_file(fifo).unwrap();
 }
 
+/// Holds the runtime owner inside its control drain, so output and controls
+/// sent before the returned sender is used are all queued when it resumes.
+fn pause_runtime(client: &TestClient) -> Sender<()> {
+    let (entered, paused) = mpsc::channel();
+    let (resume, release) = mpsc::channel();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::Pause { entered, release })
+        .unwrap();
+    paused.recv_timeout(Duration::from_secs(2)).unwrap();
+    resume
+}
+
+/// Waits for `message` to be published, returning the status that holds it.
+fn wait_for_failure(client: &TestClient, message: &str) -> Arc<TerminalStatus> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = client.status();
+        if status
+            .failures
+            .iter()
+            .any(|failure| failure.message == message)
+        {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "{message:?} was never published");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+// Snapshots stop once the runtime stops, so these tests observe parsed
+// output through the bells it rings, which the status keeps.
+
 #[test]
 fn a_reader_failure_parses_the_output_queued_before_it() {
     let runtime = TerminalRuntime::spawn(
@@ -703,16 +737,8 @@ fn a_reader_failure_parses_the_output_queued_before_it() {
     .unwrap();
     let client = test_client(&runtime);
     wait_for_text(&client, "READY");
-    // Hold the runtime so the output and the failure behind it are both
-    // queued when it resumes, as when a reader fails mid-batch.
-    let (entered, paused) = mpsc::channel();
-    let (resume, release) = mpsc::channel();
-    client
-        .control
-        .controls
-        .send(RuntimeControl::Pause { entered, release })
-        .unwrap();
-    paused.recv_timeout(Duration::from_secs(2)).unwrap();
+    // As when a reader fails mid-batch: output, then the failure behind it.
+    let resume = pause_runtime(&client);
     for _ in 0..3 {
         client.control.output.send(b"\x07".to_vec()).unwrap();
     }
@@ -722,20 +748,39 @@ fn a_reader_failure_parses_the_output_queued_before_it() {
         .send(RuntimeControl::WorkerFailed("test read failure".into()))
         .unwrap();
     resume.send(()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        let status = client.status();
-        if status
-            .failures
-            .iter()
-            .any(|failure| failure.message == "test read failure")
-        {
-            break status;
-        }
-        assert!(Instant::now() < deadline, "the reader failure was lost");
-        thread::sleep(Duration::from_millis(5));
-    };
+    let status = wait_for_failure(&client, "test read failure");
     assert_eq!(status.bells, 3, "output before the failure was not parsed");
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_reader_failure_parses_queued_output_past_a_failed_writer() {
+    let runtime = TerminalRuntime::spawn(
+        TerminalId::new(110),
+        &command("printf READY; read line"),
+    )
+    .unwrap();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    // Both workers fail together. The queued query's reply must not end
+    // the parsing at the stopped writer.
+    let resume = pause_runtime(&client);
+    client
+        .control
+        .controls
+        .send(RuntimeControl::StopWriter)
+        .unwrap();
+    client.control.output.send(b"\x1b[6n".to_vec()).unwrap();
+    client.control.output.send(b"\x07".to_vec()).unwrap();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::WorkerFailed("test read failure".into()))
+        .unwrap();
+    resume.send(()).unwrap();
+    let status = wait_for_failure(&client, "test read failure");
+    assert_eq!(status.bells, 1, "output after the query was not parsed");
+    assert_eq!(status.failures.len(), 1, "{:?}", status.failures);
     runtime.shutdown().unwrap();
 }
 
@@ -748,45 +793,36 @@ fn a_reader_failure_parses_at_most_one_queue_of_output() {
     .unwrap();
     let client = test_client(&runtime);
     wait_for_text(&client, "READY");
-    let (entered, paused) = mpsc::channel();
-    let (resume, release) = mpsc::channel();
-    client
-        .control
-        .controls
-        .send(RuntimeControl::Pause { entered, release })
-        .unwrap();
-    paused.recv_timeout(Duration::from_secs(2)).unwrap();
+    let resume = pause_runtime(&client);
     for _ in 0..OUTPUT_CAPACITY {
         client.control.output.send(b"\x07".to_vec()).unwrap();
     }
-    // Unlike the reader, this sender keeps queueing output after the
-    // failure, refilling each slot the runtime frees until teardown drops
-    // the queue.
-    let output = client.control.output.clone();
-    let flood =
-        thread::spawn(move || while output.send(b"\x07".to_vec()).is_ok() {});
+    // Unlike the reader, these senders keep queueing output after the
+    // failure until teardown drops the queue. Several of them make it
+    // likely that a freed slot is refilled at once, which an unbounded
+    // drain would keep parsing.
+    let floods: Vec<_> = (0..4)
+        .map(|_| {
+            let output = client.control.output.clone();
+            thread::spawn(
+                move || {
+                    while output.send(b"\x07".to_vec()).is_ok() {}
+                },
+            )
+        })
+        .collect();
     client
         .control
         .controls
         .send(RuntimeControl::WorkerFailed("test read failure".into()))
         .unwrap();
     resume.send(()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        let status = client.status();
-        if status
-            .failures
-            .iter()
-            .any(|failure| failure.message == "test read failure")
-        {
-            break status;
-        }
-        assert!(Instant::now() < deadline, "the reader failure was lost");
-        thread::sleep(Duration::from_millis(5));
-    };
+    let status = wait_for_failure(&client, "test read failure");
     assert_eq!(status.bells, OUTPUT_CAPACITY as u64);
     runtime.shutdown().unwrap();
-    flood.join().unwrap();
+    for flood in floods {
+        flood.join().unwrap();
+    }
 }
 
 #[test]
@@ -2206,11 +2242,11 @@ fn writer_ends_input_at_a_hangup_and_reports_other_write_errors() {
         let control = reports
             .recv_timeout(Duration::from_secs(2))
             .expect("the writer reported nothing");
-        join.join().unwrap();
         if hung_up {
             assert!(matches!(control, RuntimeControl::WriterHangup));
-            // Closed before the report, so a write queued meanwhile is
-            // dropped rather than failing the runtime.
+            // The writer closes input itself, before it exits and closes its
+            // queue, so a write queued meanwhile is dropped rather than
+            // failing the runtime.
             assert!(input_closed.load(Ordering::Acquire));
         } else {
             assert!(matches!(
@@ -2220,6 +2256,7 @@ fn writer_ends_input_at_a_hangup_and_reports_other_write_errors() {
             ));
             assert!(!input_closed.load(Ordering::Acquire));
         }
+        join.join().unwrap();
     }
 }
 
