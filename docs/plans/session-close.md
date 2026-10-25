@@ -205,9 +205,14 @@ Outcomes:
 
 - Detach or Session: the window clears its attachment in the model and is
   removed, as a committed `Window` close is today.
-- `ViewNotEmpty`: the request is dropped and the window stays. A tab whose
-  install fails leaves the window empty until a later batch retries it, as
-  installs already do.
+- `ViewNotEmpty`: the window stays and remains marked emptied until a view
+  installs or an emptied close succeeds. While marked, every hierarchy batch
+  that touches its workspace, and every install completion that installs
+  nothing, requests the emptied close again, but only when the window shows
+  no view and the projection holds no tab in its workspace. A tab still
+  installing therefore never triggers a retry, and one that vanishes before
+  it installs does. A tab whose install fails leaves the window empty until
+  a later batch retries it, as installs already do.
 - `UnknownAttachment`: the window's session is gone. The window clears its
   attachment and is removed without a notice.
 - Another assessment failure raises one notice and is not retried; the
@@ -325,7 +330,8 @@ after merge.
   `next_request` after queued closes; `merge_close` lets Window and
   Application absorb it.
 - Request it on the three edges above; `remove_closed_tabs` requests it
-  instead of `CloseTarget::Window`.
+  instead of `CloseTarget::Window`. Keep the window marked emptied after
+  `ViewNotEmpty` and request it again as the outcomes describe.
 - Handle the outcomes above in `request_close` and `finish_close`.
 - Cancel a tab confirmation whose tabs all left the window.
 - Files: `desktop/windows.rs` (`CloseState`, `WorkspaceView` reconcile and
@@ -397,7 +403,9 @@ first or drive input through the windows.
 - With `Stage::Subscribe` held so a newly opened tab is still installing,
   the window closes its last other tab. The window stays, the install
   completes, and the installing tab's child is alive. This fails on `main`,
-  where the follow-up is a full `Window` close.
+  where the follow-up is a full `Window` close. A second case closes the
+  installing tab through Mux before releasing `Stage::Subscribe`: the
+  window then closes, so a refused emptied close is not lost.
 - With the window as the session's sole attachment, the harness moves its
   last tab to a sibling workspace. The window closes by Detach, the session
   survives with zero attachments, and the moved tab's child is alive.
