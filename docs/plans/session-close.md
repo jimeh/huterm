@@ -61,7 +61,13 @@ The gaps:
    (`removals`, `crates/huterm-gpui/src/desktop/windows/projection.rs:318`).
    `drop_tabs` never closes the window, so it stays open with no tabs. When
    its session closed, its window record still names an attachment that
-   core has invalidated.
+   core has invalidated. The window's own last-tab follow-up has a related
+   race: `remove_closed_tabs` (`windows.rs:6691`) requests a full
+   `CloseTarget::Window` close whenever `self.tabs` is empty, even while a
+   tab that another client just opened in the workspace is still installing
+   (`finish_install`, `desktop/windows/view_install.rs:265`). For the last
+   attachment that close terminates the arriving tab, without a prompt when
+   it is idle.
 2. **A stale Confirm click.** The Confirm button's listener
    (`windows.rs:8376`) calls `finish_close` with the target captured at
    render. A click dispatched against a frame drawn before Cancel finds no
@@ -111,13 +117,13 @@ TTY, or unknown process state. An idle shell never prompts.
 | Event | Trigger today | Runtime effect | Window effect | Prompt |
 | --- | --- | --- | --- | --- |
 | Close a tab, others remain | `close_tab`, tab button, tab menu | `close_tab` stops and reaps the terminal | View dropped, next tab activated | Yes, for that tab |
-| Close a window's last tab | Same | As above, then a window close | Window close, below | For the tab; the window close then covers no terminal |
+| Close a window's last tab | Same | As above, then an emptied-window close | See the emptied row | For the tab only |
 | Close a window, another attachment holds the session | `close_window`, title-bar button, WM close, menu | `detach_session`: viewers revoked, terminals untouched | Window removed | Never: no terminal is affected |
-| Close a window, last attachment | Same | `close_session`: every terminal stopped and reaped | Window removed; the app exits when no window and no session remain | Yes, across every terminal in the session |
+| Close a window, last attachment | Same | `close_session`: every terminal stopped and reaped | Window removed; the app exits when no window, no session, and no quake hotkey registration remain | Yes, across every terminal in the session |
 | Root shell exits, `close_on_exit = true` | Shell exit | One window commits `close_tab` | Tab removed; last tab closes the window | Never |
 | Root shell exits, `close_on_exit = false` | Shell exit | None; the child is reaped, history kept | Exited tab retained | Not applicable |
-| Window emptied by another client (new) | Its tabs closed or moved elsewhere | Window close, committed only if it stops no terminal | Window removed | Never |
-| Window's session closed by another client (new) | `SessionClosed` | None; core already invalidated the attachment | Window removed without a Mux call | Never |
+| Window emptied (new) | Its last tab closed here or by another client, moved elsewhere, or exited | `CloseRequest::EmptiedWindow`: refused while Mux holds tabs in the window's workspace; Detach while another attachment holds the session or the session keeps terminals elsewhere; otherwise deletes the empty session | Window removed, or kept when refused | Never: it stops no terminal |
+| Window's session closed by another client (new) | `SessionClosed` | The same request fails with `UnknownAttachment`; core already invalidated the attachment | Window removed without a notice once its close pipeline is idle | Never |
 | Switch a window to another session | Fixture only until #26 | `retarget_attachment`: viewers revoked, both sessions survive | Window shows the new session | Never |
 | View destruction | Dropping a `TerminalView` | Viewer dropped; attachment and terminals untouched | None | Never |
 | Quake hide or show | Hotkey, `toggle_quake` | None | Hidden or shown; attachment and PTYs kept | Never; hiding is refused while a confirmation shows |
@@ -134,50 +140,89 @@ Rules that hold across rows:
   never appear in a later capture. Quit replaces nothing on disk yet (#42).
 - A zero-view session survives until Quit. Today no production path creates
   one, because each window owns a private session and nothing retargets.
+  An emptied close creates one only for a session with several workspaces,
+  which no production path creates either.
+- Automatic closes, emptied windows and exit-closes, run only while the
+  window's close pipeline is idle: not busy and no confirmation showing.
+  They wait behind queued user closes and never remove a window that hosts
+  an Application close.
 
 ## Decisions
 
-### An emptied window closes
+### An emptied window closes without stopping a terminal
 
-When reconcile removes a window's last tab view, the window closes as if
-its own last tab had closed: it sends `CloseRequest::Window`. If another
-attachment holds the session, that detaches; otherwise it terminates the
-now-empty session. This matches the local last-tab rule and tmux's default
-`detach-on-destroy on`. Keeping an empty window open would leave a view with
-nothing to show and no way to choose a session until #26. Retargeting to
-another session belongs with the session switcher in #26, which may revisit
-this rule.
+A window whose last tab view goes away closes as an automatic request,
+`CloseTarget::Emptied`, which maps to a new core request,
+`CloseRequest::EmptiedWindow { attachment, workspace }`. This matches the
+local last-tab rule and tmux's default `detach-on-destroy on`. Keeping an
+empty window open would leave a view with nothing to show and no way to
+choose a session until #26. Retargeting to another session belongs with the
+session switcher in #26, which may revisit this rule.
 
-The trigger is the edge, not the state. A window counts as emptied only
-when a reconcile removal took its last view. New windows before their first
-spawn, `attach-window` fixture windows before their installs, and the no-PTY
-Quit host have no views to remove, so they never trigger it.
+`prepare_close` resolves the request under the Mux lock:
 
-The emptied close must never stop a terminal. Between the projection
-showing an empty window and the assessment, a tab may arrive in the session,
-for example through a later move. The window therefore commits an emptied
-close only when the assessment covers no terminal
-(`CloseAssessment::terminals()` is empty). Otherwise it drops the close, and
-reconcile installs the arriving tab. The commit's revision check covers
-changes after the assessment: any `open_tab` or move bumps the revision, the
-commit returns `StaleClose`, and the retry checks emptiness again before it
-assesses. This needs no core change. A dedicated `CloseRequest::EmptiedWindow`
-was considered and rejected: the existing assessment and revision check give
-the same guarantee without widening the API.
+1. An invalidated attachment fails with `UnknownAttachment`.
+2. When the workspace still exists in the attachment's session and holds
+   tabs, the request fails with a new `MuxError::ViewNotEmpty`. The window
+   keeps running, and reconcile installs the tabs the projection has not
+   shown yet.
+3. When another attachment holds the session, the effect is Detach.
+4. When the session still holds terminals in other workspaces, the effect
+   is Detach too, which leaves the session unviewed rather than terminating
+   terminals the window never showed.
+5. Otherwise the effect is Session, which deletes the empty session.
 
-The emptied close is an automatic request, like an exit-close. It waits
-behind queued user closes and a showing confirmation in `next_request`, and
-it is never merged into a user's confirmation. A tab confirmation whose tabs
-all left the window is cancelled, since its commit could only go stale.
+Every resolution stops no terminal, so the request never needs consent.
+The commit's revision check covers changes after the assessment: an
+`open_tab` or move bumps the revision, the commit returns `StaleClose`, and
+the retry prepares the request again. The decision has to be canonical. A
+client-side check against the projection was considered and rejected: the
+projection can lag Mux, a tab that is still installing has no view, and a
+`Window` assessment covers terminals in every workspace of the session, so
+the client cannot tell an arriving tab from one moved to a sibling
+workspace.
 
-### A window whose session closed is removed locally
+The trigger is an edge. A window requests an emptied close when:
 
-When the projection no longer holds the window's attached session, core has
-already invalidated the attachment. The window clears its attachment in the
-model and removes itself without assessing, so it raises no "Cannot assess
-close" notice. If an emptied close was already assessing when the session
-closed, an `UnknownAttachment` result takes the same silent path. Any
-confirmation the window showed is dropped with it.
+- a reconcile removal took its last view;
+- its own close or exit-close removed its last tab, replacing the
+  `CloseTarget::Window` follow-up in `remove_closed_tabs`; or
+- the projection no longer holds its attached session.
+
+New windows before their first spawn, `attach-window` fixture windows
+before their installs, and the no-PTY Quit host have no views to remove and
+an attached session that still exists, so they never request one.
+
+The emptied close is automatic, like an exit-close. `next_request` takes it
+after queued user closes and only while no confirmation shows. A user's
+Window or Application close absorbs it, and it never prompts. A tab
+confirmation whose tabs all left the window is cancelled first, since its
+commit could only go stale. Reconcile only marks the window emptied; it
+never removes a window itself, so no assessment or commit continuation runs
+after its window is gone.
+
+Outcomes:
+
+- Detach or Session: the window clears its attachment in the model and is
+  removed, as a committed `Window` close is today.
+- `ViewNotEmpty`: the request is dropped and the window stays. A tab whose
+  install fails leaves the window empty until a later batch retries it, as
+  installs already do.
+- `UnknownAttachment`: the window's session is gone. The window clears its
+  attachment and is removed without a notice.
+- Another assessment failure raises one notice and is not retried; the
+  window stays, and a user close still works. A teardown error after the
+  runtime accepted the close raises one notice and still removes the window.
+
+### Removing a window never abandons Quit
+
+Because an emptied close runs only while the pipeline is idle, a window
+showing, assessing, or committing an Application close stays open even when
+its session closes underneath it. The Application ticket covers every
+terminal, so the session's removal makes its commit go stale and the Quit
+assesses again. A confirmed Quit tears everything down. A cancelled Quit
+clears `quitting` and the native request through `cancel_close`, as today,
+and only then does the window take its emptied close.
 
 ### Confirm acts only on the confirmation it was drawn for
 
@@ -239,8 +284,11 @@ blocks the other. No change to `mux.rs` termination paths is planned.
 | --- | --- | --- |
 | Two windows of one session close at once | Both tickets resolve to Detach. The first commit bumps the revision; the second gets `StaleClose`, assesses again, and now resolves to Session. It prompts if a job runs. The session terminates once. | Core: `concurrent_window_tickets_reassess_when_last_attachment_changes`. New tier 2 test. |
 | A close while a move changes the session | Moves bump the revision, so the ticket goes stale and the retry assesses the new scope. Moves are one Mux operation and one hierarchy event, so no client sees an intermediate empty state. The desktop has no move trigger until #26. | Core: `structural_changes_invalidate_consent_without_consuming_attachment`, extended with a cross-session `move_tab`. |
-| A tab arrives in an emptied window's session | The emptied close commits only when it stops no terminal; otherwise it is dropped and the tab installs. | New tier 2 test. |
+| A tab arrives in an emptied window's workspace | `EmptiedWindow` fails with `ViewNotEmpty` before the commit, or goes stale at it; the window stays and installs the tab. | New core and tier 2 tests. |
+| A window closes its last tab while another tab is still installing | The follow-up is an emptied close, so Mux sees the installing tab and refuses it. | New tier 2 test. |
+| The last tab moves to a sibling workspace of a sole-attachment session | `EmptiedWindow` detaches; the moved terminal survives in an unviewed session. | New core and tier 2 tests. |
 | An emptied window's session closes during its assessment | `UnknownAttachment` removes the window silently. | New tier 2 test. |
+| A window's session closes while it hosts Quit | The emptied close waits for the idle pipeline; the Quit goes stale and reassesses. | New tier 2 tests for confirming and committing. |
 | A stale Confirm after Cancel | The generation guard ignores it: no assessment and no commit. | New tier 1 and tier 2 tests. |
 | A stale Cancel after Confirm | Already guarded by `can_cancel_confirmation`. | `a_stale_cancel_after_confirm_cannot_reach_the_commit`. |
 | Job evidence changes after consent | `covered_by` and the two-second age limit reject the commit, and the desktop prompts again only if the evidence widened. | Core: `new_background_job_requires_renewed_consent_and_quit_includes_zero_views`, `consent_survives_child_replacement_inside_the_same_live_job_group`. |
@@ -249,8 +297,13 @@ blocks the other. No change to `mux.rs` termination paths is planned.
 
 ## Protocol and hierarchy changes
 
-None. No new `HierarchyEvent`, `CloseRequest`, or `MuxError` variant.
-Attachment events are deferred to #26 with the shape above.
+No `huterm-protocol` change: no new `HierarchyEvent`. Attachment events are
+deferred to #26 with the shape above.
+
+`huterm-core` gains `CloseRequest::EmptiedWindow { attachment, workspace }`
+and `MuxError::ViewNotEmpty(WorkspaceId)`. Both are in-process Mux APIs. The
+future IPC contract in #44 carries close requests, so it inherits the
+variant.
 
 ## Implementation
 
@@ -266,13 +319,14 @@ after merge.
 
 ### Emptied windows
 
-- Mark a window emptied when a reconcile removal takes its last view; offer
-  the emptied close through `next_request` after queued closes and exit
-  closes.
-- Commit the emptied close only for an assessment with no terminals; drop it
-  otherwise.
-- Remove a window locally when its attached session left the projection,
-  and handle `UnknownAttachment` from an emptied close the same way.
+- Core: `CloseRequest::EmptiedWindow` and `MuxError::ViewNotEmpty` in
+  `mux/lifecycle.rs` and `mux.rs`, resolved as above.
+- Desktop: `CloseTarget::Emptied` in `CloseState`, offered through
+  `next_request` after queued closes; `merge_close` lets Window and
+  Application absorb it.
+- Request it on the three edges above; `remove_closed_tabs` requests it
+  instead of `CloseTarget::Window`.
+- Handle the outcomes above in `request_close` and `finish_close`.
 - Cancel a tab confirmation whose tabs all left the window.
 - Files: `desktop/windows.rs` (`CloseState`, `WorkspaceView` reconcile and
   close paths), `desktop/windows/projection.rs` (report removal of the last
@@ -307,35 +361,67 @@ Mapped to #21's acceptance criteria. "Existing" means the evidence is on
   one behavior.
 - Extended: `structural_changes_invalidate_consent_without_consuming_attachment`
   gains a cross-session `move_tab` between assessment and commit.
+- New core test for `EmptiedWindow` resolution, one behavior with each
+  case asserted: a workspace with tabs refuses with `ViewNotEmpty` and
+  changes nothing; another attachment gives Detach; a sole attachment whose
+  session keeps a live child in a sibling workspace gives Detach, and that
+  child still answers afterwards; an empty session is deleted; an
+  invalidated attachment fails with `UnknownAttachment`; a tab opened
+  between prepare and commit makes the commit `StaleClose`; no resolution
+  needs confirmation.
 - Synchronize on shell ACK output through the test client, as the existing
   lifecycle tests do, never on sleeps.
 
 ### Two viewers, races, confirmations, jobs, and Quit versus close
 
 Tier 2 (`desktop/windows/window_tests.rs`), with two windows attached to the
-harness session:
+harness session. `DesktopHarness::send_line` and `canonical` create their
+own attachments, so tests about the last attachment detach that observer
+first or drive input through the windows.
 
 - Closing one of two windows detaches it with no prompt, even while a job
   runs. The other window keeps its tabs and its shell answers.
-- Both windows request `close_window` while `Stage::Assess` is held. After
-  release, the second commit is refused and assessed again, the session
-  terminates once, and neither window shows a close-failure notice.
-  With a running job, the surviving request prompts after its retry.
+- Concurrent closes: hold `Stage::Assess` and `Stage::Commit`, request
+  `close_window` in both windows, release assessments, and wait until both
+  commits are held. Releasing them, one commit returns `StaleClose` and
+  assesses again (three assessments in all), the session terminates once,
+  and neither window shows a close-failure notice. With a running job, the
+  surviving request prompts after its retry.
 - One window closes the shared workspace's last tab. The other window
   closes, the session is gone, and no notice appears.
 - The harness closes the session through Mux, as another client would.
-  Both windows close without a Mux call failing and without a notice.
+  Both windows close without a notice.
 - With `Stage::Assess` held on an emptied close, the harness opens a tab in
-  the session. After release the window stays, installs the tab, and the
+  the workspace. After release the window stays, installs the tab, and the
   tab's child is alive.
+- With `Stage::Subscribe` held so a newly opened tab is still installing,
+  the window closes its last other tab. The window stays, the install
+  completes, and the installing tab's child is alive. This fails on `main`,
+  where the follow-up is a full `Window` close.
+- With the window as the session's sole attachment, the harness moves its
+  last tab to a sibling workspace. The window closes by Detach, the session
+  survives with zero attachments, and the moved tab's child is alive.
+- Quit hosting: a window shows a Quit confirmation when the harness closes
+  its session. The confirmation stays; Cancel clears `quitting`, and then
+  the window closes. Separately, with `Stage::Commit` held on a confirmed
+  Quit, closing the session does not lose the Quit: after release the
+  application quits.
+- An emptied close whose assessment fails (`WorkerHooks::fail`) raises one
+  notice and is not retried; the window stays.
 - The stale Confirm guard: after Cancel, a click through the Confirm
-  listener starts no assessment and no commit (`worker_hooks` counts).
+  listener starts no assessment and no commit. The test first observes that
+  the listener ran, then runs the executor until parked before reading the
+  `worker_hooks` counts. A current-generation click through the same
+  listener commits exactly once, so a guard that always refuses fails.
 
 Tier 1 (`desktop/windows/tests.rs`):
 
 - `CloseState` refuses a stale Confirm: show, cancel, and confirm with the
   old generation; then show again with the same target and confirm with the
-  old generation.
+  old generation. The current generation is accepted.
+- `merge_close` lets Window and Application absorb `Emptied`, and
+  `next_request` offers `Emptied` only after queued user closes and while
+  no confirmation shows.
 - A session terminated by a window close is absent from a later Quit
   capture, while an unviewed session is present. This distinguishes Quit
   from last-window close.
@@ -352,9 +438,9 @@ both sessions) confirms the sibling test can fail.
 ### Native window, menu, and application-close paths
 
 The menu items and shortcuts dispatch the same catalog invocations the
-smokes already use, and `smoke:macos-menus` checks their native shortcuts. The
-native close button and AppKit terminate have their own entry points, so
-they get smoke steps in `scripts/check-viewers.ts`, which runs in both
+smokes already use, and `smoke:macos-menus` checks their native shortcuts.
+The native close button and AppKit terminate have their own entry points,
+so they get smoke steps in `scripts/check-viewers.ts`, which runs in both
 palette smokes:
 
 - Step 7 closes window 1 through the native path instead of `invoke-in`:
@@ -362,16 +448,21 @@ palette smokes:
   client message on X11, sent by a new `native-close\t<index>` fixture
   command. It still asserts that window 0's shell answers.
 - On macOS, a new `native-terminate` fixture command calls
-  `[NSApp terminate:nil]` with a live job in window 0. The check waits for
-  the confirmation, cancels, and requires a shell ACK afterwards.
+  `[NSApp terminate:nil]` while window 0 runs a live job. The viewers
+  fixture shell gains a line that starts a foreground job and a line that
+  ends it, since its loop runs no arbitrary commands. The check waits for
+  the confirmation, cancels, ends the job, and requires a shell ACK.
 - A new final step attaches a fresh window 1, closes the last tab there,
   and asserts that both windows close, neither reports a close failure, and
-  the app exits with code 0 on its own (no window and no session left).
+  the app exits with code 0 on its own. This holds only while no quake
+  hotkey is registered, which the step checks through smoke state.
 
-The X11 client message needs the window's XID from GPUI's raw window handle
-and an `x11rb` connection, which `huterm-gpui` already depends on. If that
-proves unreliable under Xvfb, fall back to the catalog path on Linux and say
-so in the PR.
+Both fixture commands run their AppKit or X11 call outside any GPUI
+window update, deferred as the native Quit bridge already requires. The X11
+client message needs the window's XID from GPUI's raw window handle and an
+`x11rb` connection, which `huterm-gpui` already depends on. If that proves
+unreliable under Xvfb, the Linux step falls back to the catalog path, and
+the PR reports the native X11 close path as unverified.
 
 Run `smoke:macos-palette` on the host. Check `df -h` before
 `mise run linux:smoke`. Never run `vm:macos:smoke`.
@@ -394,12 +485,14 @@ Run `smoke:macos-palette` on the host. Check `df -h` before
 
 ## Documentation
 
-- README: rewrite the window-lifecycle paragraph to match the table, add the
-  emptied-window rule, replace the `ps` description with `huterm-procinfo`,
-  and keep the detection limits.
-- `docs/agents/desktop-client.md`, Close and Quit: the emptied-window edge
-  trigger, the no-terminal commit rule, and the Confirm generation guard,
-  each next to the related rule.
+- README: rewrite the window-lifecycle paragraph to match the table, add
+  the emptied-window rule and the quake keep-alive exception, replace the
+  `ps` description with `huterm-procinfo`, and keep the detection limits.
+- `docs/agents/desktop-client.md`, Close and Quit: the emptied-window edges,
+  the idle-pipeline rule for automatic closes, and the Confirm generation
+  guard, each next to the related rule.
+- `docs/agents/core-runtime.md`, Attachments and close consent: the
+  `EmptiedWindow` resolution order.
 - This plan: `Status: implemented` in the PR, with deviations recorded.
 
 ## Settled decisions
