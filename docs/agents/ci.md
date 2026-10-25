@@ -111,7 +111,9 @@ those files for archive verification instead of rewriting their action pins.
 in CI without one. Dependabot alerts skip SHA-pinned actions, so zizmor's
 `known-vulnerable-actions` audit is the only advisory check these pins get.
 A newly published advisory can therefore fail the Policy job on an unrelated
-pull request. The pre-commit hook stays `--offline` for speed.
+pull request. Bump the affected pin, or add a scoped ignore to `zizmor.yml`
+until a fixed release clears the cooldown. The pre-commit hook stays
+`--offline` for speed.
 
 actionlint lints only workflow files, using whichever `shellcheck` is on
 `PATH`: the runner image's copy in CI, and none at all on a machine without
