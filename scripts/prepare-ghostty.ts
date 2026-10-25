@@ -1,13 +1,17 @@
 /** Prepare and verify the pinned native source without changing reviewed inputs. */
 import { createHash } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, posix, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { dlopen } from "bun:ffi";
 
 type Source = { name: string; url: string; sha256: string; tree_sha256: string };
-type Manifest = { revision: string; zig: string; source: Source };
+type Patch = { name: string; file: string; sha256: string; description: string; upstream?: string };
+type Manifest = { revision: string; zig: string; source: Source; patches: Patch[] };
+/** A manifest patch whose bytes matched its recorded checksum. */
+export type VerifiedPatch = { name: string; bytes: Buffer };
 const repository = resolve(import.meta.dir, "..");
+const patchDirectory = "third-party/ghostty-patches";
 
 export function fileHash(filePath: string): string {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
@@ -164,16 +168,181 @@ function writeStamp(stamp: string, manifest: Uint8Array): void {
 }
 
 /**
+ * The source paths a Git-style patch touches. Hunk bodies are skipped by their
+ * line counts, so a removed line that starts with `--` is never a header.
+ * Rejects paths that escape the source root or that lie under `include/`:
+ * bindgen reads the pristine headers, not the patched build copy.
+ */
+export function patchPaths(text: string): string[] {
+  const paths = new Set<string>();
+  let oldLines = 0;
+  let newLines = 0;
+  for (const line of text.split("\n")) {
+    if (oldLines > 0 || newLines > 0) {
+      if (line.startsWith("\\")) continue;
+      if (!line.startsWith("+")) oldLines -= 1;
+      if (!line.startsWith("-")) newLines -= 1;
+      continue;
+    }
+    const hunk = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+    if (hunk) {
+      oldLines = Number(hunk[1] ?? 1);
+      newLines = Number(hunk[2] ?? 1);
+    } else if (line.startsWith("GIT binary patch") || line.startsWith("Binary files ")) {
+      throw new Error("binary patches are not supported");
+    } else {
+      // A hunk-less entry, such as a new empty file, names its path only here.
+      const git = /^diff --git a\/(\S+) b\/(\S+)$/.exec(line);
+      const header = /^(?:--- a\/|\+\+\+ b\/|rename from |rename to |copy from |copy to )(.*)$/.exec(line);
+      if (git) {
+        paths.add(git[1]!);
+        paths.add(git[2]!);
+      } else if (line.startsWith("diff --git ")) {
+        throw new Error(`unsupported patch header: ${line}`);
+      } else if (header) paths.add(header[1]!);
+      else if (/^(?:---|\+\+\+) /.test(line) && !/^(?:---|\+\+\+) \/dev\/null$/.test(line)) {
+        throw new Error(`unsupported patch header: ${line}`);
+      }
+    }
+  }
+  if (paths.size === 0) throw new Error("patch touches no files");
+  for (const path of paths) {
+    if (path.startsWith("\"") || path.includes("\t")) throw new Error(`unsupported patch path: ${path}`);
+    if (posix.isAbsolute(path) || posix.normalize(path) !== path || path === ".." || path.startsWith("../")) {
+      throw new Error(`patch path escapes the Ghostty source: ${path}`);
+    }
+    if (path === "include" || path.startsWith("include/")) {
+      throw new Error(`patch path ${path} is under include/, but bindgen reads the unpatched headers`);
+    }
+  }
+  return [...paths];
+}
+
+export function parsePatches(value: unknown): Patch[] {
+  if (!Array.isArray(value)) throw new Error("invalid Ghostty patch list");
+  const names = new Set<string>();
+  return value.map((entry: unknown) => {
+    if (!entry || typeof entry !== "object") throw new Error("invalid Ghostty patch entry");
+    const { name, file, sha256, description, upstream } = entry as Record<string, unknown>;
+    if (typeof name !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error(`invalid Ghostty patch name: ${String(name)}`);
+    if (names.has(name)) throw new Error(`duplicate Ghostty patch: ${name}`);
+    names.add(name);
+    if (file !== `${patchDirectory}/${name}.patch`) throw new Error(`Ghostty patch ${name} must be ${patchDirectory}/${name}.patch`);
+    if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) throw new Error(`invalid sha256 for Ghostty patch ${name}`);
+    if (typeof description !== "string" || description.trim() === "") throw new Error(`Ghostty patch ${name} needs a description`);
+    if (upstream !== undefined && (typeof upstream !== "string" || !upstream.startsWith("https://"))) {
+      throw new Error(`Ghostty patch ${name} upstream must be an https URL`);
+    }
+    return { name, file, sha256, description, ...(upstream === undefined ? {} : { upstream }) };
+  });
+}
+
+/** Reads each patch under `root` and checks its bytes and paths. */
+export function loadPatches(patches: Patch[], root: string): VerifiedPatch[] {
+  return patches.map(patch => {
+    const path = join(root, patch.file);
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(path);
+    } catch (error) {
+      throw new Error(`cannot read Ghostty patch ${patch.name}: ${error instanceof Error ? error.message : error}`);
+    }
+    if (createHash("sha256").update(bytes).digest("hex") !== patch.sha256) {
+      throw new Error(`Ghostty patch checksum mismatch: ${patch.file}; review the patch and update its manifest sha256`);
+    }
+    try {
+      patchPaths(bytes.toString("utf8"));
+    } catch (error) {
+      throw new Error(`invalid Ghostty patch ${patch.name}: ${error instanceof Error ? error.message : error}`);
+    }
+    return { name: patch.name, bytes };
+  });
+}
+
+/** The published patch directory's contents: verified copies and their order. */
+function publishedFiles(patches: VerifiedPatch[]): Map<string, Buffer> {
+  const files = new Map(patches.map(patch => [`${patch.name}.patch`, patch.bytes]));
+  files.set("series", Buffer.from(patches.map(patch => `${patch.name}.patch\n`).join("")));
+  return files;
+}
+
+/**
+ * The bytes of `path` when it is a regular file, or undefined. It checks the
+ * opened descriptor, never following a symbolic link, so the bytes it returns
+ * come from the file it checked.
+ */
+function readRegularFile(path: string): Buffer | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return undefined;
+  }
+  try {
+    return fstatSync(fd).isFile() ? readFileSync(fd) : undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Entries of `directory` that are missing, differ from `files`, or are stale. */
+function publishedDifferences(directory: string, files: Map<string, Buffer>): string[] {
+  if (!lstatSync(directory, { throwIfNoEntry: false })?.isDirectory()) return [...files.keys()];
+  return [...new Set([...files.keys(), ...readdirSync(directory)])].sort().filter(name => {
+    const expected = files.get(name);
+    return !expected || !readRegularFile(join(directory, name))?.equals(expected);
+  });
+}
+
+/**
+ * Publishes verified patch copies and `series` for the build script. Unchanged
+ * files keep their mtimes. A changed set removes the stamp first, so builds
+ * reject the tree until the caller writes the stamp after a complete publish.
+ */
+function publishPatches(root: string, stamp: string, patches: VerifiedPatch[]): void {
+  const directory = join(root, "patches");
+  const files = publishedFiles(patches);
+  const differences = publishedDifferences(directory, files);
+  if (differences.length === 0) return;
+  rmSync(stamp, { force: true });
+  if (!lstatSync(directory, { throwIfNoEntry: false })?.isDirectory()) rmSync(directory, { force: true });
+  mkdirSync(directory, { recursive: true });
+  const stage = mkdtempSync(join(root, ".patches-"));
+  try {
+    for (const name of differences) {
+      const target = join(directory, name);
+      const bytes = files.get(name);
+      if (!bytes || !lstatSync(target, { throwIfNoEntry: false })?.isFile()) rmSync(target, { recursive: true, force: true });
+      if (!bytes) continue;
+      const temporary = join(stage, name);
+      writeFileSync(temporary, bytes);
+      renameSync(temporary, target);
+    }
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
+}
+
+/**
  * `manifest` holds the manifest file's bytes, recorded beside a verified tree
  * except in check mode. `reuse` lists other checkouts' preparation
  * directories, searched in order for a matching archive before downloading.
+ * `patches` are published beside the tree, or only compared in check mode.
  */
-export async function prepareSource(item: Source, root: string, check: boolean, manifest: Uint8Array, reuse: string[] = []): Promise<void> {
+export async function prepareSource(item: Source, root: string, check: boolean, manifest: Uint8Array, reuse: string[] = [], patches: VerifiedPatch[] = []): Promise<void> {
   const source = join(root, "source");
   const stamp = join(root, "source.manifest.json");
   if (lstatSync(source, { throwIfNoEntry: false })) {
     verifyTree(source, item.tree_sha256);
-    if (!check) writeStamp(stamp, manifest);
+    if (check) {
+      const differences = publishedDifferences(join(root, "patches"), publishedFiles(patches));
+      if (differences.length > 0) {
+        throw new Error(`published Ghostty patches differ from the manifest (${differences.join(", ")}); run \`mise run ghostty:prepare\``);
+      }
+    } else {
+      publishPatches(root, stamp, patches);
+      writeStamp(stamp, manifest);
+    }
     return;
   }
   if (check) throw new Error(`missing native source: ${source}`);
@@ -191,6 +360,7 @@ export async function prepareSource(item: Source, root: string, check: boolean, 
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
+  publishPatches(root, stamp, patches);
   writeStamp(stamp, manifest);
 }
 
@@ -209,7 +379,8 @@ function parseManifest(bytes: Buffer): Manifest {
       !("tree_sha256" in source) || typeof source.tree_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(source.tree_sha256)) {
     throw new Error("invalid Ghostty source manifest");
   }
-  return { revision, zig, source: { name: source.name, url: source.url, sha256: source.sha256, tree_sha256: source.tree_sha256 } };
+  const patches = parsePatches("patches" in manifest ? manifest.patches : undefined);
+  return { revision, zig, source: { name: source.name, url: source.url, sha256: source.sha256, tree_sha256: source.tree_sha256 }, patches };
 }
 
 function verifyRevision(manifest: Manifest): void {
@@ -235,6 +406,7 @@ if (import.meta.main) {
       const manifestBytes = readFileSync(resolve(values.manifest ?? join(import.meta.dir, "ghostty-source.json")));
       const manifest = parseManifest(manifestBytes);
       verifyRevision(manifest);
+      const patches = loadPatches(manifest.patches, repository);
       const root = resolve(values.directory ?? join(repository, ".native/ghostty"));
       const reuse = otherCheckouts(repository).map(checkout => join(checkout, ".native/ghostty"));
       mkdirSync(root, { recursive: true });
@@ -245,7 +417,7 @@ if (import.meta.main) {
           const version = result.stdout.toString().trim();
           if (version !== manifest.zig) throw new Error(`expected Zig ${manifest.zig}, got ${version}`);
         }
-        await prepareSource(manifest.source, root, values.check ?? false, manifestBytes, reuse);
+        await prepareSource(manifest.source, root, values.check ?? false, manifestBytes, reuse, patches);
       });
       console.log(`verified Ghostty ${manifest.revision} at ${join(root, "source")}`);
     }

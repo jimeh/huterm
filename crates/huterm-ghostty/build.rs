@@ -9,6 +9,10 @@
 //! caches sit beside that copy, or in Zig's global cache, so they survive a
 //! refresh.
 //!
+//! Preparation also publishes verified copies of the manifest's patches and
+//! their `series` beside the tree. The build applies them to the private copy
+//! with Git, and fails rather than build without one.
+//!
 //! With `HUTERM_GHOSTTY_ARTIFACT_CACHE` set, a build first looks there for an
 //! archive built from the same inputs and links it instead of running Zig.
 //! Otherwise it builds from source and stores the result for the next build.
@@ -17,9 +21,9 @@
 //! host libc or SDK. A different fingerprint means a rebuild, never reuse.
 //! CI sets the variable; release builds and local builds leave it unset.
 //!
-//! The stamp check, staging, option parsing, and cache handling below are
-//! plain functions with unit tests; `scripts/ghostty-build.test.ts` compiles
-//! this file with `rustc --test`.
+//! The stamp check, staging, patching, option parsing, and cache handling
+//! below are plain functions with unit tests;
+//! `scripts/ghostty-build.test.ts` compiles this file with `rustc --test`.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -81,14 +85,15 @@ enum BuildError {
     Option(String),
     Io(String, io::Error),
     Zig(String),
+    Patch(String),
 }
 
 impl fmt::Display for BuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Option(message) | Self::Zig(message) => {
-                formatter.write_str(message)
-            }
+            Self::Option(message)
+            | Self::Zig(message)
+            | Self::Patch(message) => formatter.write_str(message),
             Self::Io(context, error) => write!(formatter, "{context}: {error}"),
         }
     }
@@ -317,6 +322,171 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), BuildError> {
             return Err(BuildError::Option(format!(
                 "unexpected source entry {}",
                 from.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The verified patch copies `ghostty:prepare` publishes in `patches/`
+/// beside the source directory, in application order. Preparation always
+/// writes the series, empty when the manifest lists no patches.
+fn patch_series(source: &Path) -> Result<Vec<PathBuf>, BuildError> {
+    let directory = source.with_file_name("patches");
+    let series = directory.join("series");
+    match fs::read_to_string(&series) {
+        Ok(text) => Ok(text
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|name| directory.join(name))
+            .collect()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(BuildError::Option(format!(
+                "the Ghostty patch series {} is missing; run `mise run \
+                 ghostty:prepare`",
+                series.display()
+            )))
+        }
+        Err(error) => Err(BuildError::Io(
+            format!("reading {}", series.display()),
+            error,
+        )),
+    }
+}
+
+/// Removes every inherited `GIT_*` variable, which commit hooks export with
+/// Huterm's repository paths, and stops Git discovery above `directory`.
+fn isolate_git(
+    command: &mut Command,
+    directory: &Path,
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+) {
+    for (key, _) in inherited {
+        if key.to_str().is_some_and(|key| key.starts_with("GIT_")) {
+            command.env_remove(key);
+        }
+    }
+    if let Some(parent) = directory.parent() {
+        command.env("GIT_CEILING_DIRECTORIES", parent);
+    }
+}
+
+/// A `git apply` run from `staged` that reads no user or system
+/// configuration.
+fn git_apply(
+    git: &OsString,
+    staged: &Path,
+    inherited: &[(OsString, OsString)],
+) -> Command {
+    let mut command = Command::new(git);
+    command.current_dir(staged);
+    isolate_git(&mut command, staged, inherited.iter().cloned());
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args(["-c", "core.autocrlf=false", "apply"]);
+    command
+}
+
+fn git_output(
+    mut command: Command,
+    patch: &Path,
+) -> Result<Vec<u8>, BuildError> {
+    let output = command.output().map_err(|error| {
+        BuildError::Io(
+            format!(
+                "running git to apply Ghostty patch {}; install Git",
+                patch.display()
+            ),
+            error,
+        )
+    })?;
+    if !output.status.success() {
+        return Err(BuildError::Patch(format!(
+            "Ghostty patch {} did not apply: {}",
+            patch.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(output.stdout)
+}
+
+/// The paths a patch touches, from `git apply --numstat -z`: each record is
+/// `added\tdeleted\tpath`, or an empty path followed by a rename's source
+/// and destination.
+fn numstat_paths(output: &[u8]) -> Vec<String> {
+    let mut fields = output
+        .split(|byte| *byte == 0)
+        .map(|field| String::from_utf8_lossy(field).into_owned());
+    let mut paths = Vec::new();
+    while let Some(record) = fields.next() {
+        let Some(path) = record.splitn(3, '\t').nth(2) else {
+            continue;
+        };
+        if path.is_empty() {
+            paths.extend(fields.by_ref().take(2));
+        } else {
+            paths.push(path.to_owned());
+        }
+    }
+    paths
+}
+
+/// Applies each patch to the staged copy, in order. `git apply` exits
+/// successfully without changing anything when it runs in a subdirectory of
+/// a repository it discovered, so every path a patch touches must then
+/// differ from its bytes before that patch. Comparing with the state before
+/// each patch, not the pristine source, lets a later patch restore pristine
+/// bytes and still catches a skipped patch to a file an earlier one changed.
+/// Runs Git only when there are patches.
+fn apply_patches(
+    git: &OsString,
+    patches: &[PathBuf],
+    staged: &Path,
+    inherited: &[(OsString, OsString)],
+) -> Result<(), BuildError> {
+    for patch in patches {
+        let mut numstat = git_apply(git, staged, inherited);
+        numstat.args(["--numstat", "-z"]).arg(patch);
+        let paths = numstat_paths(&git_output(numstat, patch)?);
+        let before = file_states(staged, &paths);
+        let mut apply = git_apply(git, staged, inherited);
+        apply.arg("--whitespace=nowarn").arg(patch);
+        git_output(apply, patch)?;
+        check_patched(patch, &paths, &before, staged)?;
+        println!("applied Ghostty patch {}", patch.display());
+    }
+    Ok(())
+}
+
+/// The bytes of each path under `root`, or `None` where it cannot be read,
+/// as before a file is created.
+fn file_states(root: &Path, paths: &[String]) -> Vec<Option<Vec<u8>>> {
+    paths
+        .iter()
+        .map(|path| fs::read(root.join(path)).ok())
+        .collect()
+}
+
+fn check_patched(
+    patch: &Path,
+    paths: &[String],
+    before: &[Option<Vec<u8>>],
+    staged: &Path,
+) -> Result<(), BuildError> {
+    if paths.is_empty() {
+        return Err(BuildError::Patch(format!(
+            "Ghostty patch {} touches no files",
+            patch.display()
+        )));
+    }
+    let after = file_states(staged, paths);
+    for ((path, before), after) in paths.iter().zip(before).zip(&after) {
+        if before == after {
+            return Err(BuildError::Patch(format!(
+                "Ghostty patch {} left {path} unchanged in {}",
+                patch.display(),
+                staged.display()
             )));
         }
     }
@@ -564,8 +734,7 @@ const FETCH_RETRY_DELAYS: [Duration; 2] =
 /// fetches the packages that exact build needs into Zig's global cache.
 ///
 /// Commit hooks export repository paths that would point Ghostty's version
-/// probe at Huterm, so every inherited `GIT_*` variable is removed, and the
-/// ceiling stops discovery above the private copy.
+/// probe at Huterm, so Git state is isolated to the private copy.
 fn zig_command(
     zig: &OsString,
     layout: &Layout,
@@ -581,14 +750,7 @@ fn zig_command(
     }
     let mut command = Command::new(zig);
     command.current_dir(&layout.source).args(arguments);
-    for (key, _) in inherited {
-        if key.to_str().is_some_and(|key| key.starts_with("GIT_")) {
-            command.env_remove(key);
-        }
-    }
-    if let Some(parent) = layout.source.parent() {
-        command.env("GIT_CEILING_DIRECTORIES", parent);
-    }
+    isolate_git(&mut command, &layout.source, inherited);
     command
 }
 
@@ -714,6 +876,12 @@ fn build() -> Result<(), BuildError> {
         );
     } else {
         stage_source(&source, &layout.source)?;
+        apply_patches(
+            &OsString::from("git"),
+            &patch_series(&source)?,
+            &layout.source,
+            &std::env::vars_os().collect::<Vec<_>>(),
+        )?;
         // Fetch first, with retries, so a transient package-host failure
         // cannot fail the build itself.
         retry(&FETCH_RETRY_DELAYS, std::thread::sleep, || {
@@ -1056,6 +1224,165 @@ mod tests {
                 ("GIT_DIR", None),
                 ("GIT_INDEX_FILE", None),
             ]
+        );
+    }
+
+    const FIX: &str = "diff --git a/src/file.zig b/src/file.zig\n\
+        --- a/src/file.zig\n+++ b/src/file.zig\n@@ -1,3 +1,3 @@\n one\n\
+        -two\n+patched\n three\n";
+
+    /// Runs Git for a fixture without the caller's repository state.
+    fn fixture_git(directory: &Path, arguments: &[&str]) {
+        let mut command = Command::new("git");
+        command.current_dir(directory).args(arguments);
+        for (key, _) in std::env::vars_os() {
+            if key.to_str().is_some_and(|key| key.starts_with("GIT_")) {
+                command.env_remove(key);
+            }
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A prepared tree at `root/native/source` with `patches` published
+    /// beside it in order.
+    fn prepared(root: &Path, patches: &[(&str, &str)]) -> PathBuf {
+        let source = root.join("native/source");
+        fs::create_dir_all(source.join("src")).unwrap();
+        fs::write(source.join("build.zig"), "pub fn build() void {}").unwrap();
+        fs::write(source.join("src/file.zig"), "one\ntwo\nthree\n").unwrap();
+        let directory = root.join("native/patches");
+        fs::create_dir_all(&directory).unwrap();
+        let mut series = String::new();
+        for (name, text) in patches {
+            fs::write(directory.join(name), text).unwrap();
+            series.push_str(name);
+            series.push('\n');
+        }
+        fs::write(directory.join("series"), series).unwrap();
+        source
+    }
+
+    #[test]
+    fn patches_apply_to_the_copy_inside_an_enclosing_repository() {
+        let temp = TempDir::new("patch-apply");
+        // Without the ceiling, Git discovers this repository and silently
+        // skips every path outside the copy's subdirectory.
+        fixture_git(&temp.0, &["init", "--quiet"]);
+        let source = prepared(&temp.0, &[("fix.patch", FIX)]);
+        let staged = temp.0.join("out/ghostty-source");
+        stage_source(&source, &staged).unwrap();
+        let inherited: Vec<_> = std::env::vars_os().collect();
+        let patches = patch_series(&source).unwrap();
+        apply_patches(&"git".into(), &patches, &staged, &inherited).unwrap();
+        assert_eq!(
+            fs::read_to_string(staged.join("src/file.zig")).unwrap(),
+            "one\npatched\nthree\n"
+        );
+        assert_eq!(
+            fs::read_to_string(source.join("src/file.zig")).unwrap(),
+            "one\ntwo\nthree\n"
+        );
+
+        let inherited = [(OsString::from("GIT_DIR"), OsString::from("/repo"))];
+        let command = git_apply(&"git".into(), &staged, &inherited);
+        let mut environment: Vec<_> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_str().unwrap().to_owned(),
+                    value.map(|value| value.to_str().unwrap().to_owned()),
+                )
+            })
+            .collect();
+        environment.sort_unstable();
+        let ceiling = temp.0.join("out").display().to_string();
+        assert_eq!(
+            environment,
+            [
+                ("GIT_CEILING_DIRECTORIES".to_owned(), Some(ceiling)),
+                ("GIT_CONFIG_GLOBAL".to_owned(), Some("/dev/null".to_owned())),
+                ("GIT_CONFIG_NOSYSTEM".to_owned(), Some("1".to_owned())),
+                ("GIT_DIR".to_owned(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_patch_that_fails_or_changes_nothing_names_the_patch() {
+        let temp = TempDir::new("patch-fail");
+        let stale = FIX.replace("-two", "-missing");
+        let source = prepared(&temp.0, &[("stale.patch", &stale)]);
+        let staged = temp.0.join("out/ghostty-source");
+        stage_source(&source, &staged).unwrap();
+        let patches = patch_series(&source).unwrap();
+        let error = apply_patches(&"git".into(), &patches, &staged, &[])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&patches[0].display().to_string()), "{error}");
+        assert!(error.contains("patch does not apply"), "{error}");
+
+        // Git can exit successfully without changing the files it names.
+        let paths = ["src/file.zig".to_owned()];
+        let error = check_patched(
+            Path::new("noop.patch"),
+            &paths,
+            &file_states(&staged, &paths),
+            &staged,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("noop.patch"), "{error}");
+        assert!(error.contains("left src/file.zig unchanged"), "{error}");
+    }
+
+    #[test]
+    fn a_later_patch_may_restore_bytes_an_earlier_patch_changed() {
+        let temp = TempDir::new("patch-restore");
+        let revert = "diff --git a/src/file.zig b/src/file.zig\n\
+            --- a/src/file.zig\n+++ b/src/file.zig\n@@ -1,3 +1,3 @@\n one\n\
+            -patched\n+two\n three\n";
+        let source =
+            prepared(&temp.0, &[("fix.patch", FIX), ("revert.patch", revert)]);
+        let staged = temp.0.join("out/ghostty-source");
+        stage_source(&source, &staged).unwrap();
+        let patches = patch_series(&source).unwrap();
+        apply_patches(&"git".into(), &patches, &staged, &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(staged.join("src/file.zig")).unwrap(),
+            "one\ntwo\nthree\n"
+        );
+    }
+
+    #[test]
+    fn builds_read_the_series_prepare_publishes() {
+        let temp = TempDir::new("patch-series");
+        let error = patch_series(&temp.0.join("native/source"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("mise run ghostty:prepare"), "{error}");
+
+        let source = prepared(&temp.0, &[]);
+        assert!(patch_series(&source).unwrap().is_empty());
+        // An empty series never runs Git.
+        let missing = OsString::from("/nonexistent/git");
+        apply_patches(&missing, &[], &temp.0.join("unstaged"), &[]).unwrap();
+
+        let source = prepared(&temp.0, &[("b.patch", FIX), ("a.patch", FIX)]);
+        let directory = temp.0.join("native/patches");
+        assert_eq!(
+            patch_series(&source).unwrap(),
+            [directory.join("b.patch"), directory.join("a.patch")]
+        );
+        assert_eq!(
+            numstat_paths(
+                b"1\t1\tsrc/a.zig\x002\t0\t\x00old.zig\x00new.zig\x00"
+            ),
+            ["src/a.zig", "old.zig", "new.zig"]
         );
     }
 

@@ -4,6 +4,8 @@ import {
   augmentSpdx,
   generateAppcast,
   ghosttyNativePackage,
+  ghosttyPatchFiles,
+  ghosttySourceInfo,
   sparklePublicKeyFromPrivateKey,
   validateAppcast,
   validateRuntimeSpdx,
@@ -164,8 +166,8 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
   // The Linux backend is vendored but absent from the macOS binaries.
   expect(packages.some(pkg => pkg.name === "gpui-pre-linux")).toBe(false);
   expect(described).not.toContain("SPDXRef-Package-gpui-pre-linux");
-  expect(packages.find(pkg => pkg.name === "ghostty")?.versionInfo).toBe("e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110");
-  for (const name of ["Sparkle", "ghostty", "uucode", "highway"]) {
+  expect(packages.find(pkg => pkg.name === "ghostty")?.versionInfo).toBe("cec8b92f1ecd176a20a56aa405021e7ae991b996");
+  for (const name of ["Sparkle", "ghostty", "uucode", "highway", "wuffs"]) {
     expect(packages.some(pkg => pkg.name === name)).toBe(true);
   }
 });
@@ -228,6 +230,31 @@ test("Ghostty native SPDX metadata is explicit for every package", () => {
   expect(() => ghosttyNativePackage({ ...source, license: undefined })).toThrow(
     "future-native-package license must be a non-empty string",
   );
+});
+
+test("Ghostty SPDX source names the reviewed native patches", async () => {
+  const result = await augmentSpdx({
+    SPDXID: "SPDXRef-DOCUMENT",
+    spdxVersion: "SPDX-2.3",
+    creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
+    packages: [cargoPackage("huterm", "0.4.0"), cargoPackage("gpui-pre", "0.3.9"), cargoPackage("gpui-pre-macos", "0.3.9")],
+    documentDescribes: ["SPDXRef-huterm"],
+  }, {
+    arm64: { packages: [] },
+    x86_64: { packages: [] },
+  });
+  const patches = ["third-party/ghostty-patches/first.patch", "third-party/ghostty-patches/second.patch"];
+  expect(ghosttyPatchFiles({ patches: patches.map(file => ({ name: "patch", file })) })).toEqual(patches);
+  expect(() => ghosttyPatchFiles({})).toThrow("Ghostty manifest has no patch list");
+  const ghostty = (result.packages as Record<string, unknown>[]).find(pkg => pkg.name === "ghostty")!;
+  ghostty.sourceInfo = ghosttySourceInfo([]);
+  expect(() => validateRuntimeSpdx(result, "0.4.0", [])).not.toThrow();
+  expect(() => validateRuntimeSpdx(result, "0.4.0", patches)).toThrow("SBOM lacks patched-source provenance for ghostty");
+  ghostty.sourceInfo = ghosttySourceInfo(patches.slice(0, 1));
+  expect(() => validateRuntimeSpdx(result, "0.4.0", patches)).toThrow("SBOM lacks patched-source provenance for ghostty");
+  ghostty.sourceInfo = ghosttySourceInfo(patches);
+  expect(ghostty.sourceInfo).toStartWith("Locally patched");
+  expect(() => validateRuntimeSpdx(result, "0.4.0", patches)).not.toThrow();
 });
 
 test("runtime SPDX validation rejects malformed and dangling document descriptions", async () => {

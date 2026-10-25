@@ -1,18 +1,18 @@
 {
   "ghostty-MIT.txt": {
-    "url": "https://github.com/ghostty-org/ghostty/blob/e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110/LICENSE",
+    "url": "https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/LICENSE",
     "sha256": "386211873e5b7a02f663ae4d7adf96285999f91608f8f9f31fecfd0f4095e6f1"
   },
   "uucode-MIT.md": {
-    "url": "https://github.com/jacobsandlund/uucode/blob/9d55524551411b493cca41ca06363625d90aff1e/LICENSE.md",
+    "url": "https://github.com/jacobsandlund/uucode/blob/ea62149739404a73c202b48a33bf6dd2af4bd9b0/LICENSE.md",
     "sha256": "312e901e142be2477b4ca859e9311f9e3f80d33372991759b7921c1893605f33"
   },
   "unicode.txt": {
-    "url": "https://github.com/jacobsandlund/uucode/blob/9d55524551411b493cca41ca06363625d90aff1e/licenses/LICENSE_unicode",
+    "url": "https://github.com/jacobsandlund/uucode/blob/ea62149739404a73c202b48a33bf6dd2af4bd9b0/licenses/LICENSE_unicode",
     "sha256": "1eda5a3b026870c737b22e8bcd4954338612c790db688242e003f41a4fa95175"
   },
   "uucode-utf8.txt": {
-    "url": "https://github.com/jacobsandlund/uucode/blob/9d55524551411b493cca41ca06363625d90aff1e/licenses/LICENSE_Bjoern_Hoehrmann",
+    "url": "https://github.com/jacobsandlund/uucode/blob/ea62149739404a73c202b48a33bf6dd2af4bd9b0/licenses/LICENSE_Bjoern_Hoehrmann",
     "sha256": "de219cece932aad5a817bf763393d8d149d378a15d2ad5320e3331eac07626dd"
   },
   "simdutf-MIT.txt": {
@@ -26,5 +26,9 @@
   "highway-BSD-3-Clause.txt": {
     "url": "https://github.com/google/highway/blob/66486a10623fa0d72fe91260f96c892e41aceb06/LICENSE-BSD3",
     "sha256": "d25e82e26acd42ca3ccc9993622631163425b869b9e16284226d534cff6470f2"
+  },
+  "wuffs-MIT.txt": {
+    "url": "https://github.com/google/wuffs-mirror-release-c/blob/7411f488fe2e2c205c3d3b3d28638b7356522930/LICENSE-MIT",
+    "sha256": "bb811a4b485eac3caeb8bdc58bbafb355fbcb6116010a7ea9179e5c70b0bc878"
   }
 }

@@ -649,6 +649,9 @@ pub const GHOSTTY_RENDER_STATE_DATA_COLORS: GhosttyRenderStateData = 19;
 pub const GHOSTTY_RENDER_STATE_DATA_OVERSCAN: GhosttyRenderStateData = 20;
 pub const GHOSTTY_RENDER_STATE_DATA_OVERSCAN_REQUEST: GhosttyRenderStateData =
     21;
+pub const GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR: GhosttyRenderStateData = 22;
+pub const GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION:
+    GhosttyRenderStateData = 23;
 pub const GHOSTTY_RENDER_STATE_DATA_MAX_VALUE: GhosttyRenderStateData =
     2147483647;
 pub const GHOSTTY_RENDER_STATE_ROW_DATA_INVALID: GhosttyRenderStateRowData = 0;

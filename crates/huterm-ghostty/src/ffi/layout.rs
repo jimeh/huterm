@@ -1444,6 +1444,15 @@ pub(crate) const ENUMS: &[Enum] = &[
                 ffi::GHOSTTY_RENDER_STATE_DATA_OVERSCAN_REQUEST as i64,
             ),
             (
+                "GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR",
+                ffi::GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR as i64,
+            ),
+            (
+                "GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION",
+                ffi::GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION
+                    as i64,
+            ),
+            (
                 "GHOSTTY_RENDER_STATE_DATA_MAX_VALUE",
                 ffi::GHOSTTY_RENDER_STATE_DATA_MAX_VALUE as i64,
             ),

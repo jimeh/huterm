@@ -372,14 +372,14 @@ mod tests {
             vec![
                 ("Identifier", "app.huterm.dev".to_owned()),
                 ("Platform", "Ubuntu 24.04.4 LTS, x86_64, X11".to_owned()),
-                ("Terminal engine", "libghostty-vt e3ebb1d".to_owned()),
+                ("Terminal engine", "libghostty-vt cec8b92".to_owned()),
                 ("Build", "release, cdb720d".to_owned()),
             ]
         );
         assert_eq!(
             with.text(),
             format!(
-                "Huterm {}\nIdentifier: app.huterm.dev\nPlatform: Ubuntu 24.04.4 LTS, x86_64, X11\nTerminal engine: libghostty-vt e3ebb1d\nBuild: release, cdb720d\n",
+                "Huterm {}\nIdentifier: app.huterm.dev\nPlatform: Ubuntu 24.04.4 LTS, x86_64, X11\nTerminal engine: libghostty-vt cec8b92\nBuild: release, cdb720d\n",
                 env!("CARGO_PKG_VERSION")
             )
         );
