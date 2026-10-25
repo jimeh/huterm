@@ -83,8 +83,9 @@ const FIXTURES: &[Fixture] = &[
         expected: "entry-",
         fill_scrollback: false,
     },
-    // Explicit IDs rule out implicit-ID growth as the cause: once cells
-    // are re-linked, Ghostty reports a full redraw for both fixtures.
+    // Alternating explicit IDs kill the old link below a live one, as
+    // implicit IDs do. Without Huterm's `ref-counted-set-dead-id-reuse`
+    // Ghostty patch, both fixtures redraw every row.
     Fixture {
         name: "osc8-id",
         chunk: |iteration| {

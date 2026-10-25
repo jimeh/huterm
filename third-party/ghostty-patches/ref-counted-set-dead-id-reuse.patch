@@ -1,0 +1,93 @@
+diff --git a/src/terminal/ref_counted_set.zig b/src/terminal/ref_counted_set.zig
+index 669c2c575..137ae950b 100644
+--- a/src/terminal/ref_counted_set.zig
++++ b/src/terminal/ref_counted_set.zig
+@@ -296,16 +296,30 @@ pub fn RefCountedSet(
+ 
+             // If the item doesn't exist, we need an available ID.
+             if (self.next_id >= self.layout.cap) {
+-                // Arbitrarily chosen, threshold for rehashing.
++                // Arbitrarily chosen threshold for reusing dead IDs.
+                 // If less than 90% of currently allocated IDs
+-                // correspond to living items, we should rehash.
++                // correspond to living items, reuse a dead ID.
+                 // Otherwise, claim we're out of memory because
+-                // we assume that we'll end up running out of
+-                // memory or rehashing again very soon if we
+-                // rehash with only a few IDs left.
+-                const rehash_threshold = 0.9;
+-                if (self.living < @as(Id, @intFromFloat(@as(f64, @floatFromInt(self.layout.cap)) * rehash_threshold))) {
+-                    return AddError.NeedsRehash;
++                // we assume that we'll run out of IDs again very
++                // soon with only a few left.
++                const reuse_threshold = 0.9;
++                if (self.living < @as(Id, @intFromFloat(@as(f64, @floatFromInt(self.layout.cap)) * reuse_threshold))) {
++                    // Reuse a dead ID in place, as `addWithId` does.
++                    // Callers reference items by ID, and dead items
++                    // have no references, so this needs no renumbering.
++                    // `living` is below the threshold, so a dead ID
++                    // exists below `next_id`.
++                    const dead_id: Id = for (items[1..self.next_id], 1..) |item, i| {
++                        if (item.meta.ref == 0) break @intCast(i);
++                    } else unreachable;
++
++                    self.deleteItem(base, dead_id, ctx);
++                    const id = self.insert(base, value, dead_id, ctx);
++                    items[id].meta.ref += 1;
++                    assert(items[id].meta.ref == 1);
++                    self.living += 1;
++
++                    return id;
+                 }
+ 
+                 // If we don't have at least 10% dead items then
+@@ -888,3 +902,49 @@ test "iterator visits live entries in ID order" {
+ 
+     try testing.expect(it.next() == null);
+ }
++
++test "add reuses dead IDs below a live item at capacity" {
++    const alloc = testing.allocator;
++    const TestSet = RefCountedSet(
++        u32,
++        u16,
++        u16,
++        struct {
++            pub fn hash(_: *const @This(), value: u32) u64 {
++                return std.hash.int(value);
++            }
++
++            pub fn eql(_: *const @This(), a: u32, b: u32) bool {
++                return a == b;
++            }
++        },
++    );
++
++    // A page's default hyperlink set: IDs 1 and 2 are usable.
++    const layout: TestSet.Layout = .init(4);
++    const buf = try alloc.alignedAlloc(
++        u8,
++        TestSet.base_align,
++        layout.total_size,
++    );
++    defer alloc.free(buf);
++
++    var set: TestSet = .init(.init(buf), layout, .{});
++
++    // Alternate two values, releasing the old one after adding the new
++    // one, as rewriting a row with a different hyperlink does. The dead
++    // ID sits below a live one, so the trim loop in `add` can't reap it.
++    var prev = try set.add(buf, 0);
++    for (1..16) |i| {
++        const value: u32 = @intCast(i);
++        const id = try set.add(buf, value);
++        set.release(buf, prev);
++
++        try testing.expect(id != prev);
++        try testing.expectEqual(@as(usize, 1), set.count());
++        try testing.expectEqual(@as(?u16, id), set.lookup(buf, value));
++        try testing.expectEqual(@as(?u16, null), set.lookup(buf, value - 1));
++        try testing.expectEqual(@as(u16, 1), set.refCount(buf, id));
++        prev = id;
++    }
++}

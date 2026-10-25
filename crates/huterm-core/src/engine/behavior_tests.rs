@@ -421,12 +421,32 @@ fn non_color_osc_and_utf8_output_keep_snapshots_partial() {
     .unwrap();
     engine.process(b"first\r\nsecond\r\nthird").unwrap();
     engine.snapshot().unwrap();
-    // OSC 8 is absent: Ghostty's own damage still rebuilds most rows.
+    // Rewriting one row's linked text drops its old hyperlink below a live
+    // ID. Each form repeats enough to reuse the dead ID several times. The
+    // texts have equal lengths: a leftover cell would keep the old link
+    // alive, fill the page's two-link set, and correctly grow the page once.
+    let links = (0..8).flat_map(|iteration| {
+        let alternate = iteration % 2;
+        [
+            "\x1b[2;1H\x1b]8;;file:///tmp/same\x07same\x1b]8;;\x07".to_owned(),
+            format!(
+                "\x1b[2;1H\x1b]8;;file:///tmp/{alternate}\x07uri{alternate}\x1b]8;;\x07"
+            ),
+            format!(
+                "\x1b[2;1H\x1b]8;id=link-{alternate};file:///tmp/id\x07id-{alternate}\x1b]8;;\x07"
+            ),
+        ]
+    });
     for chunk in [
-        "\x1b]2;title\x07\x1b[2;1Hx".as_bytes(),
-        b"\x1b]133;A\x07\x1b[2;1H$ \x1b]133;B\x07\x1b]7;file:///tmp\x07",
-        "\x1b[2;1H\x1b[31m\u{255d}\u{5e1d}\x1b[0m".as_bytes(),
-    ] {
+        "\x1b]2;title\x07\x1b[2;1Hx".to_owned(),
+        "\x1b]133;A\x07\x1b[2;1H$ \x1b]133;B\x07\x1b]7;file:///tmp\x07"
+            .to_owned(),
+        "\x1b[2;1H\x1b[31m\u{255d}\u{5e1d}\x1b[0m".to_owned(),
+    ]
+    .into_iter()
+    .chain(links)
+    {
+        let chunk = chunk.as_bytes();
         engine.process(chunk).unwrap();
         engine.snapshot().unwrap();
         let extracted = engine.last_snapshot_stats().extracted;

@@ -36,5 +36,12 @@
       "tree_sha256": "78eef5c7f600c60bafe7935779cb27fa7c228be6d7b0e47742af08bfa31cb024"
     }
   ],
-  "patches": []
+  "patches": [
+    {
+      "name": "ref-counted-set-dead-id-reuse",
+      "file": "third-party/ghostty-patches/ref-counted-set-dead-id-reuse.patch",
+      "sha256": "1789853cd2a7ad255ab773074dd7845aed3e4c9925675cff19d81b321e7a2bd0",
+      "description": "Reuse a dead ID in place when a full RefCountedSet has enough dead IDs, instead of returning NeedsRehash, so rewriting a row's OSC 8 linked text no longer clones the page and forces a full RenderState redraw."
+    }
+  ]
 }
