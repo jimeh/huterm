@@ -1,6 +1,7 @@
 # Embedded session close
 
-Status: proposed for the embedded half of [issue #21][issue-21].
+Status: approved for the embedded half of [issue #21][issue-21] after three
+Codex review rounds.
 
 Closing, detaching, switching, and quitting are separate lifecycle events.
 This plan covers them in embedded mode, where the desktop owns the runtime
