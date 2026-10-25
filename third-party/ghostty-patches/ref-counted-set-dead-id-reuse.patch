@@ -1,8 +1,74 @@
+diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
+index 8203178..4f508a7 100644
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -11519,6 +11519,36 @@ test "Screen: hyperlink reuse" {
+     }
+ }
+ 
++test "Screen: rewriting a hyperlink reuses dead IDs without growing the page" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++
++    var s = try init(io, alloc, .{ .cols = 10, .rows = 5, .max_scrollback_bytes = 0 });
++    defer s.deinit();
++
++    const node = s.cursor.page_pin.node;
++    const cap = node.page().hyperlink_set.layout.cap;
++
++    // Rewrite the same cells with a different hyperlink each time.
++    // Whenever the replaced link dies below the live one, the set's trim
++    // loop can't reap it, so a full set must reuse its ID rather than
++    // make the screen clone the page.
++    for (0..16) |i| {
++        var uri_buf: [32]u8 = undefined;
++        const uri = try std.fmt.bufPrint(&uri_buf, "http://example.com/{}", .{i});
++        s.cursorAbsolute(0, 0);
++        try s.startHyperlink(uri, null);
++        try s.testWriteString("link");
++        s.endHyperlink();
++
++        try testing.expectEqual(node, s.cursor.page_pin.node);
++        const page = node.page();
++        try testing.expectEqual(cap, page.hyperlink_set.layout.cap);
++        try testing.expectEqual(1, page.hyperlink_set.count());
++    }
++}
++
+ test "Screen: hyperlink cursor state on resize" {
+     const testing = std.testing;
+     const alloc = testing.allocator;
 diff --git a/src/terminal/ref_counted_set.zig b/src/terminal/ref_counted_set.zig
-index 669c2c5..ea307d5 100644
+index d90a17e..fc8f725 100644
 --- a/src/terminal/ref_counted_set.zig
 +++ b/src/terminal/ref_counted_set.zig
-@@ -296,16 +296,43 @@ pub fn RefCountedSet(
+@@ -12,9 +12,10 @@ const OffsetBuf = size.OffsetBuf;
+ /// the exact memory requirement of a given capacity by calling `layout`
+ /// and checking the total size.
+ ///
+-/// When the set exceeds capacity, an `OutOfMemory` or `NeedsRehash` error
+-/// is returned from any memory-using methods. The caller is responsible
+-/// for determining a path forward.
++/// When the set exceeds capacity, an `OutOfMemory` error is returned from
++/// any memory-using methods. The caller is responsible for determining a
++/// path forward. A full set reuses the IDs of dead items in place while
++/// fewer than 90% of its IDs are live.
+ ///
+ /// This set is reference counted. Each item in the set has an associated
+ /// reference count. The caller is responsible for calling release for an
+@@ -250,8 +251,8 @@ pub fn RefCountedSet(
+             /// Remove items or grow and reinitialize.
+             OutOfMemory,
+ 
+-            /// The set needs to be rehashed, as there are many dead
+-            /// items with lower IDs which are inaccessible for reuse.
++            /// Not returned by `add` or `addWithId`: a full set reuses
++            /// dead item IDs in place instead of needing a rehash.
+             NeedsRehash,
+         };
+ 
+@@ -296,16 +297,32 @@ pub fn RefCountedSet(
  
              // If the item doesn't exist, we need an available ID.
              if (self.next_id >= self.layout.cap) {
@@ -26,24 +92,13 @@ index 669c2c5..ea307d5 100644
 +                    // Callers reference items by ID, and dead items
 +                    // have no references, so this needs no renumbering.
 +                    // `living` is below the threshold, so a dead ID
-+                    // exists below `next_id`.
++                    // should exist below `next_id`. If the living count
++                    // ever drifts, fail like a full set instead.
 +                    const dead_id: Id = for (items[1..self.next_id], 1..) |item, i| {
 +                        if (item.meta.ref == 0) break @intCast(i);
-+                    } else unreachable;
++                    } else return AddError.OutOfMemory;
 +
 +                    self.deleteItem(base, dead_id, ctx);
-+
-+                    // `insert` can leave a live item behind a reused
-+                    // dead bucket with a longer probe sequence, where
-+                    // lookups miss it. The delete's backward shift can
-+                    // make such an item reachable again, so look again
-+                    // before inserting a duplicate.
-+                    if (self.lookupContext(base, value, ctx)) |id| {
-+                        if (comptime @hasDecl(Context, "deleted")) ctx.deleted(value);
-+
-+                        items[id].meta.ref += 1;
-+                        return id;
-+                    }
 +
 +                    const id = self.insert(base, value, dead_id, ctx);
 +                    items[id].meta.ref += 1;
@@ -54,9 +109,9 @@ index 669c2c5..ea307d5 100644
                  }
  
                  // If we don't have at least 10% dead items then
-@@ -888,3 +915,115 @@ test "iterator visits live entries in ID order" {
- 
-     try testing.expect(it.next() == null);
+@@ -1013,3 +1030,207 @@ test "RefCountedSet dead item replacement preserves probe invariant" {
+     try testing.expectEqual(id_b, try set.add(buf, 1));
+     try testing.expectEqual(@as(u16, 2), set.refCount(buf, id_b));
  }
 +
 +test "add reuses dead IDs below a live item at capacity" {
@@ -88,8 +143,9 @@ index 669c2c5..ea307d5 100644
 +    var set: TestSet = .init(.init(buf), layout, .{});
 +
 +    // Alternate two values, releasing the old one after adding the new
-+    // one, as rewriting a row with a different hyperlink does. The dead
-+    // ID sits below a live one, so the trim loop in `add` can't reap it.
++    // one, as rewriting a row with a different hyperlink does. Whenever
++    // the dead ID sits below the live one, the trim loop in `add` can't
++    // reap it.
 +    var prev = try set.add(buf, 0);
 +    for (1..16) |i| {
 +        const value: u32 = @intCast(i);
@@ -105,7 +161,7 @@ index 669c2c5..ea307d5 100644
 +    }
 +}
 +
-+test "add keeps IDs and ref counts consistent under churn at capacity" {
++test "add returns OutOfMemory until enough IDs are dead to reuse" {
 +    const alloc = testing.allocator;
 +    const TestSet = RefCountedSet(
 +        u32,
@@ -122,6 +178,71 @@ index 669c2c5..ea307d5 100644
 +        },
 +    );
 +
++    const layout: TestSet.Layout = .init(16);
++    const buf = try alloc.alignedAlloc(
++        u8,
++        TestSet.base_align,
++        layout.total_size,
++    );
++    defer alloc.free(buf);
++
++    var set: TestSet = .init(.init(buf), layout, .{});
++    try testing.expectEqual(@as(usize, 13), set.layout.cap);
++
++    // Use every ID.
++    var value: u32 = 0;
++    while (set.next_id < set.layout.cap) : (value += 1) {
++        _ = try set.add(buf, value);
++    }
++    const next_id = set.next_id;
++
++    // Release IDs from the front, below live items, so the trim loop
++    // in `add` can't reap them. IDs 1 through 12 are usable. While 11
++    // or more are live, 90% of the capacity of 13, a new value doesn't
++    // fit.
++    var released: u16 = 1;
++    while (set.count() >= 11) : (released += 1) {
++        try testing.expectError(error.OutOfMemory, set.add(buf, value));
++        set.release(buf, released);
++    }
++    try testing.expectEqual(@as(usize, 10), set.count());
++
++    // With 10 live, the new value takes the lowest dead ID.
++    try testing.expectEqual(@as(u16, 1), try set.add(buf, value));
++    try testing.expectEqual(next_id, set.next_id);
++    try testing.expectEqual(@as(?u16, 1), set.lookup(buf, value));
++    try testing.expectEqual(@as(?u16, null), set.lookup(buf, 0));
++}
++
++test "add keeps references and value ownership consistent under churn at capacity" {
++    const alloc = testing.allocator;
++
++    // Values carry a key, which the set compares, and a unique serial,
++    // which the deletion callback counts. The set owns every value handed
++    // to `add` and must delete it exactly once: right away when an equal
++    // value is already resident, or when its item is finally reaped.
++    // Hyperlink sets free page memory in this callback.
++    const TestSet = RefCountedSet(
++        u64,
++        u16,
++        u16,
++        struct {
++            deletions: []u8,
++
++            pub fn hash(_: *const @This(), value: u64) u64 {
++                return std.hash.int(value & 0xff);
++            }
++
++            pub fn eql(_: *const @This(), a: u64, b: u64) bool {
++                return a & 0xff == b & 0xff;
++            }
++
++            pub fn deleted(self: *const @This(), value: u64) void {
++                self.deletions[@intCast(value >> 8)] += 1;
++            }
++        },
++    );
++
 +    // Longer probe sequences than a default hyperlink set, as in grown
 +    // hyperlink sets and style sets.
 +    const layout: TestSet.Layout = .init(64);
@@ -132,25 +253,36 @@ index 669c2c5..ea307d5 100644
 +    );
 +    defer alloc.free(buf);
 +
-+    // The expected ref count of every ID, and the value it holds.
-+    var refs: [64]u16 = @splat(0);
-+    var values: [64]u32 = @splat(0);
++    const ops = 4000;
++    const deletions = try alloc.alloc(u8, ops + 1);
++    defer alloc.free(deletions);
 +
 +    for (0..8) |seed| {
-+        var set: TestSet = .init(.init(buf), layout, .{});
-+        refs = @splat(0);
++        @memset(deletions, 0);
++        var set: TestSet = .init(.init(buf), layout, .{ .deletions = deletions });
 +        var prng = std.Random.DefaultPrng.init(seed);
 +        const random = prng.random();
 +
-+        for (0..4000) |_| {
++        // The expected ref count of every ID, and the key it holds.
++        var refs: [64]u16 = @splat(0);
++        var keys: [64]u64 = @splat(0);
++        var serial: u64 = 0;
++
++        for (0..ops) |_| {
 +            if (random.boolean()) {
-+                const value = random.uintLessThan(u32, 96);
++                const key = random.uintLessThan(u64, 96);
++                const value = serial << 8 | key;
++                serial += 1;
 +                const id = set.add(buf, value) catch |err| switch (err) {
-+                    error.OutOfMemory => continue,
++                    error.OutOfMemory => {
++                        // The set didn't take this value.
++                        deletions[@intCast(value >> 8)] += 1;
++                        continue;
++                    },
 +                    error.NeedsRehash => return err,
 +                };
-+                if (refs[id] > 0) try testing.expectEqual(values[id], value);
-+                values[id] = value;
++                if (refs[id] > 0) try testing.expectEqual(keys[id], key);
++                keys[id] = key;
 +                refs[id] += 1;
 +            } else {
 +                const id = random.uintLessThan(u16, 64);
@@ -161,12 +293,88 @@ index 669c2c5..ea307d5 100644
 +        }
 +
 +        var living: usize = 0;
-+        for (refs, values, 0..) |ref, value, id| {
++        for (refs, keys, 0..) |ref, key, id| {
 +            if (ref == 0) continue;
 +            living += 1;
 +            try testing.expectEqual(ref, set.refCount(buf, @intCast(id)));
-+            try testing.expectEqual(value, set.get(buf, @intCast(id)).*);
++            try testing.expectEqual(key, set.get(buf, @intCast(id)).* & 0xff);
 +        }
 +        try testing.expectEqual(living, set.count());
++        var it = set.iterator(buf);
++        var iterated: usize = 0;
++        while (it.next()) |_| iterated += 1;
++        try testing.expectEqual(living, iterated);
++
++        // Release everything. The next add reaps every dead item, so each
++        // earlier value has now been deleted exactly once.
++        for (refs, 0..) |ref, id| {
++            if (ref > 0) set.releaseMultiple(buf, @intCast(id), ref);
++        }
++        _ = try set.add(buf, serial << 8);
++        for (deletions[0..serial]) |count| {
++            try testing.expectEqual(@as(u8, 1), count);
++        }
++        try testing.expectEqual(@as(u8, 0), deletions[serial]);
 +    }
++}
+diff --git a/src/terminal/render.zig b/src/terminal/render.zig
+index e1ace34..95e2bda 100644
+--- a/src/terminal/render.zig
++++ b/src/terminal/render.zig
+@@ -6038,3 +6038,56 @@ test "placements_generation: changes on a region scroll that moves a fixed place
+     try testing.expectEqual(2, (try testOnlyPlacement(&state)).y);
+     try testing.expect(generation != state.imagePlacementsGeneration());
+ }
++
++/// Rewrites one row with each chunk in turn. Every update must stay
++/// partial and keep the viewport's page node.
++fn testRewritesStayPartial(chunks: []const []const u8) !void {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++
++    var t = try Terminal.init(io, alloc, .{
++        .cols = 40,
++        .rows = 10,
++    });
++    defer t.deinit(alloc);
++
++    var s = t.vtStream();
++    defer s.deinit();
++
++    var state: RenderState = .empty;
++    defer state.deinit(alloc);
++    try state.update(alloc, &t);
++    state.clean();
++
++    const node = t.screens.active.pages.getTopLeft(.viewport).node;
++    for (chunks) |chunk| {
++        s.nextSlice(chunk);
++        try state.update(alloc, &t);
++        try testing.expectEqual(
++            node,
++            t.screens.active.pages.getTopLeft(.viewport).node,
++        );
++        try testing.expectEqual(.partial, state.dirty);
++        state.clean();
++    }
++}
++
++test "rewriting a row with alternating hyperlinks stays partial" {
++    const link_0 = "\x1b[5;1H\x1b]8;;http://example.com/0\x07entry-0\x1b]8;;\x07";
++    const link_1 = "\x1b[5;1H\x1b]8;;http://example.com/1\x07entry-1\x1b]8;;\x07";
++    try testRewritesStayPartial(&.{ link_0, link_1, link_0, link_1, link_0, link_1 });
++}
++
++test "rewriting a row with alternating explicit-id hyperlinks stays partial" {
++    const link_0 = "\x1b[5;1H\x1b]8;id=link-0;http://example.com/0\x07entry-0\x1b]8;;\x07";
++    const link_1 = "\x1b[5;1H\x1b]8;id=link-1;http://example.com/1\x07entry-1\x1b]8;;\x07";
++    try testRewritesStayPartial(&.{ link_0, link_1, link_0, link_1, link_0, link_1 });
++}
++
++test "rewriting a row with the same implicit-id hyperlink stays partial" {
++    // Each OSC 8 start without an id takes a new implicit id, so these
++    // are distinct hyperlinks even though the URI never changes.
++    const link = "\x1b[5;1H\x1b]8;;http://example.com/0\x07entry-0\x1b]8;;\x07";
++    try testRewritesStayPartial(&.{ link, link, link, link, link, link });
 +}

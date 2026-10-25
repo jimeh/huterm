@@ -1,0 +1,142 @@
+diff --git a/src/terminal/ref_counted_set.zig b/src/terminal/ref_counted_set.zig
+index 669c2c5..d90a17e 100644
+--- a/src/terminal/ref_counted_set.zig
++++ b/src/terminal/ref_counted_set.zig
+@@ -668,7 +668,14 @@ pub fn RefCountedSet(
+                 // for our value so that we can reuse its ID,
+                 // unless its ID is greater than the one we're
+                 // given (i.e. prefer smaller IDs).
+-                if (item.meta.ref == 0) {
++                //
++                // Replacing it with an item that has a shorter probe
++                // sequence would break the Robin Hood lookup invariant:
++                // lookups stop when an occupant's PSL is shorter than their
++                // current probe distance, making later entries unreachable.
++                if (item.meta.ref == 0 and
++                    held_item.meta.psl >= item.meta.psl)
++                {
+                     // Dead items aren't super common relative
+                     // to other places to insert/swap the held
+                     // item in to the set.
+@@ -888,3 +895,121 @@ test "iterator visits live entries in ID order" {
+ 
+     try testing.expect(it.next() == null);
+ }
++
++test "RefCountedSet random high-load operations against live-value oracle" {
++    const alloc = testing.allocator;
++    const TestSet = RefCountedSet(
++        u64,
++        u16,
++        u16,
++        struct {
++            pub fn hash(_: *const @This(), value: u64) u64 {
++                return std.hash.int(value);
++            }
++
++            pub fn eql(_: *const @This(), a: u64, b: u64) bool {
++                return a == b;
++            }
++        },
++    );
++
++    const layout: TestSet.Layout = .init(128);
++    const buf = try alloc.alignedAlloc(
++        u8,
++        TestSet.base_align,
++        layout.total_size,
++    );
++    defer alloc.free(buf);
++    var set: TestSet = .init(.init(buf), layout, .{});
++
++    var prng = std.Random.DefaultPrng.init(0xcafef00d);
++    const random = prng.random();
++    var oracle: std.AutoHashMapUnmanaged(u64, struct {
++        id: u16,
++        refs: u16,
++    }) = .empty;
++    defer oracle.deinit(alloc);
++
++    const key_space: u64 = 96;
++    for (0..10_000) |_| {
++        const value = random.uintLessThan(u64, key_space) + 1;
++        const gop = try oracle.getOrPut(alloc, value);
++        if (!gop.found_existing or gop.value_ptr.refs == 0) {
++            if (set.add(buf, value)) |id| {
++                gop.value_ptr.* = .{ .id = id, .refs = 1 };
++            } else |_| {
++                if (!gop.found_existing) _ = oracle.remove(value);
++                continue;
++            }
++        } else if (random.boolean()) {
++            set.release(buf, gop.value_ptr.id);
++            gop.value_ptr.refs -= 1;
++        } else {
++            try testing.expectEqual(
++                gop.value_ptr.id,
++                try set.add(buf, value),
++            );
++            gop.value_ptr.refs += 1;
++        }
++    }
++
++    var living: usize = 0;
++    var it = oracle.iterator();
++    while (it.next()) |entry| {
++        if (entry.value_ptr.refs > 0) {
++            living += 1;
++            try testing.expectEqual(
++                @as(?u16, entry.value_ptr.id),
++                set.lookup(buf, entry.key_ptr.*),
++            );
++            try testing.expectEqual(
++                entry.value_ptr.refs,
++                set.refCount(buf, entry.value_ptr.id),
++            );
++        } else {
++            try testing.expectEqual(
++                @as(?u16, null),
++                set.lookup(buf, entry.key_ptr.*),
++            );
++        }
++    }
++    try testing.expectEqual(living, set.count());
++}
++
++test "RefCountedSet dead item replacement preserves probe invariant" {
++    const alloc = testing.allocator;
++    const IdentityContext = struct {
++        pub fn hash(_: *const @This(), value: u64) u64 {
++            return value;
++        }
++
++        pub fn eql(_: *const @This(), a: u64, b: u64) bool {
++            return a == b;
++        }
++    };
++    const Set = RefCountedSet(u64, u16, u16, IdentityContext);
++
++    const layout: Set.Layout = .init(64);
++    const buf = try alloc.alignedAlloc(
++        u8,
++        Set.base_align,
++        layout.total_size,
++    );
++    defer alloc.free(buf);
++    var set: Set = .init(.init(buf), layout, .{});
++
++    // Build: b0=A(psl 0), b1=X(psl 1), b2=C(psl 1), b3=B(psl 2).
++    _ = try set.add(buf, 0);
++    const id_b = try set.add(buf, 1);
++    const id_c = try set.add(buf, 65);
++    _ = try set.add(buf, 64);
++
++    // A value homed at b2 must not replace the dead C with a shorter PSL.
++    // Doing so would make B unreachable through the Robin Hood early exit.
++    set.release(buf, id_c);
++    _ = try set.add(buf, 2);
++
++    try testing.expectEqual(@as(?u16, id_b), set.lookup(buf, 1));
++    try testing.expectEqual(id_b, try set.add(buf, 1));
++    try testing.expectEqual(@as(u16, 2), set.refCount(buf, id_b));
++}

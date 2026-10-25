@@ -38,9 +38,16 @@
   ],
   "patches": [
     {
+      "name": "ref-counted-set-probe-invariant",
+      "file": "third-party/ghostty-patches/ref-counted-set-probe-invariant.patch",
+      "sha256": "54d7dbcec506e3a41339881fb504763c175125f3c9f3f0416b32f2f99e34fc5a",
+      "description": "Upstream's fix for RefCountedSet.insert: reclaim a dead bucket only for an item whose probe sequence is at least as long, so live entries further along the chain stay reachable and are never duplicated.",
+      "upstream": "https://github.com/ghostty-org/ghostty/commit/3267b63ef9c3154c7c239ba71b378d8a663f0d98"
+    },
+    {
       "name": "ref-counted-set-dead-id-reuse",
       "file": "third-party/ghostty-patches/ref-counted-set-dead-id-reuse.patch",
-      "sha256": "9cebca5a61fd3c1d9ecaedc80c4f5c153351204c0b8a2a0b9acd018546c23d26",
+      "sha256": "a92f1123c27dc294416d645af4b49b047a4d6a20b60bb338e9049edccb723e84",
       "description": "Reuse a dead ID in place when a full RefCountedSet has enough dead IDs, instead of returning NeedsRehash, so rewriting a row's OSC 8 linked text no longer clones the page and forces a full RenderState redraw."
     }
   ]
