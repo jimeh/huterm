@@ -644,22 +644,22 @@ fn a_hangup_before_root_exit_ends_input_and_the_exit_completes_normally() {
         .and_then(|(_, rest)| rest.split_once(';'))
         .map(|(tty, _)| tty.to_owned())
         .unwrap();
-    // revoke(2) is system call 56 on macOS; libc does not bind it.
+    // The libc crate does not bind revoke(2), and the crate forbids the
+    // unsafe code a binding would need, so call it through Python.
     #[cfg(target_os = "macos")]
     {
-        use std::os::unix::fs::MetadataExt;
-
-        let revoke = std::process::Command::new("perl")
-            .args(["-e", "syscall(56, $ARGV[0]) == 0 or die \"revoke: $!\\n\""])
+        let revoke = std::process::Command::new("python3")
+            .args([
+                "-I",
+                "-c",
+                "import ctypes, os, sys; libc = ctypes.CDLL(None, use_errno=True); libc.revoke(os.fsencode(sys.argv[1])) == 0 or sys.exit(os.strerror(ctypes.get_errno()))",
+            ])
             .arg(&tty)
             .output()
             .unwrap();
-        let owner =
-            std::fs::metadata(&tty).map(|meta| (meta.uid(), meta.mode()));
         assert!(
             revoke.status.success(),
-            "revoking {tty} (owner and mode {owner:?}, test uid {:?}) failed: {}",
-            std::fs::metadata(&fifo).map(|meta| meta.uid()),
+            "revoking {tty} failed: {}",
             String::from_utf8_lossy(&revoke.stderr)
         );
     }
