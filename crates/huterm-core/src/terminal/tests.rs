@@ -646,14 +646,23 @@ fn a_hangup_before_root_exit_ends_input_and_the_exit_completes_normally() {
         .unwrap();
     // revoke(2) is system call 56 on macOS; libc does not bind it.
     #[cfg(target_os = "macos")]
-    assert!(
-        std::process::Command::new("perl")
-            .args(["-e", "syscall(56, $ARGV[0]) == 0 or die \"revoke: $!\""])
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let revoke = std::process::Command::new("perl")
+            .args(["-e", "syscall(56, $ARGV[0]) == 0 or die \"revoke: $!\\n\""])
             .arg(&tty)
-            .status()
-            .unwrap()
-            .success()
-    );
+            .output()
+            .unwrap();
+        let owner =
+            std::fs::metadata(&tty).map(|meta| (meta.uid(), meta.mode()));
+        assert!(
+            revoke.status.success(),
+            "revoking {tty} (owner and mode {owner:?}, test uid {:?}) failed: {}",
+            std::fs::metadata(&fifo).map(|meta| meta.uid()),
+            String::from_utf8_lossy(&revoke.stderr)
+        );
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     while !client.job_context().unwrap().pty_eof {
         assert!(Instant::now() < deadline, "{tty} did not hang up");
