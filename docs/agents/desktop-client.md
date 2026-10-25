@@ -187,8 +187,11 @@ A window removed with a queued Quit (`quit_after`) continues through the
 internal `request_quit`, deferred outside the window update. Dispatching the
 `quit` command instead is refused by `app_command_availability` while
 `quitting` is set, which abandons the Quit with `quitting` stuck.
-`request_quit` skips an active window the platform still names after its
-removal.
+`quit_host` picks the host, the active window and then the first open one,
+skipping a removed window the platform still names as active and every
+window marked `closing`: on macOS a closing window's removal is already
+scheduled and would drop the Quit with it. A refused emptied close whose
+sequence wait is cancelled by teardown decides nothing.
 
 Automatic closes, exit-closes and emptied closes, start only from
 `next_request`: after queued user closes, while the pipeline is idle (not busy

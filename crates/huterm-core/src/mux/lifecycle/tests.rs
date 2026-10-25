@@ -628,6 +628,38 @@ fn window_session_and_quit_closes_need_no_consent_for_a_panicked_member() {
 }
 
 #[test]
+fn a_stopped_terminal_keeps_job_evidence_aligned_with_a_busy_sibling() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let stopped = open_idle_tabs(&mut mux, workspace, 1).remove(0);
+    let busy = mux
+        .open_test_tab(
+            workspace,
+            &command("set -m; sleep 30 & printf BUSY; read value"),
+        )
+        .unwrap();
+    ready(&busy.client, "BUSY");
+    panic_runtime(&stopped.client);
+    let assessment = mux
+        .prepare_close(CloseRequest::Session(session))
+        .unwrap()
+        .check_jobs();
+    let jobs: Vec<_> = assessment.terminal_jobs().collect();
+    // The stopped terminal skips inspection, but its sibling's evidence
+    // still lines up with the sibling.
+    assert_eq!(jobs[0], (stopped.tab.terminal_id, &JobState::Idle));
+    assert!(
+        matches!(jobs[1], (id, JobState::Running(_)) if id == busy.tab.terminal_id),
+        "{jobs:?}"
+    );
+    assert!(assessment.needs_confirmation());
+    mux.commit_close(&assessment, &assessment.recheck(), true)
+        .expect("a session close with a stopped terminal reported a failure");
+    assert_eq!(mux.terminal_count(), 0);
+}
+
+#[test]
 fn ghostty_root_exit_completes_the_terminal_even_with_a_surviving_slave_holder()
 {
     exited_holder();

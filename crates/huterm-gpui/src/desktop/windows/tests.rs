@@ -25,6 +25,21 @@ fn a_cancelled_spawn_publishes_nothing_and_cleans_up_only_before_teardown() {
 }
 
 #[test]
+fn quit_is_hosted_by_an_open_window_that_is_not_closing() {
+    let closing = |handle: u8| handle == 2;
+    // The active window hosts Quit while it stays open and is not closing.
+    assert_eq!(quit_host(Some(1), &[1, 2, 3], closing), Some(1));
+    // A closing active window, whose removal is already scheduled, would
+    // drop the Quit, so the first window that is not closing hosts it.
+    assert_eq!(quit_host(Some(2), &[2, 3], closing), Some(3));
+    // So does a removed window the platform still names as active.
+    assert_eq!(quit_host(Some(4), &[2, 3], closing), Some(3));
+    // With only closing windows left, Quit opens its own host.
+    assert_eq!(quit_host(Some(2), &[2], closing), None);
+    assert_eq!(quit_host(None, &[], closing), None);
+}
+
+#[test]
 fn quit_from_a_sibling_waits_for_a_spawn_still_waiting_on_the_projection() {
     let mut pending_spawns = 0;
     let mut quit_pending = false;

@@ -1512,6 +1512,21 @@ fn settle_spawn(pending_spawns: &mut usize, quit_pending: &mut bool) -> bool {
     *pending_spawns == 0 && std::mem::take(quit_pending)
 }
 
+/// The window that hosts Quit's assessment: the active window, else the
+/// first open one, skipping windows that are `closing`. A closing window's
+/// removal is already scheduled and would drop the Quit with it; the
+/// platform can also still name a window removed this turn as active.
+fn quit_host<H: Copy + PartialEq>(
+    active: Option<H>,
+    windows: &[H],
+    closing: impl Fn(H) -> bool,
+) -> Option<H> {
+    let eligible = |handle: &H| windows.contains(handle) && !closing(*handle);
+    active
+        .filter(eligible)
+        .or_else(|| windows.iter().copied().find(eligible))
+}
+
 /// Whether Quit may proceed now; otherwise it waits for pending spawns to
 /// publish or fail.
 fn quit_now(pending_spawns: usize, quit_pending: &mut bool) -> bool {
@@ -1571,13 +1586,14 @@ fn request_quit(cx: &mut App) {
     if !quit_now(desktop.pending_spawns, &mut desktop.quit_pending) {
         return;
     }
-    // The platform can still name a window removed this turn as active.
-    let windows = cx.windows();
-    if let Some(handle) = cx
-        .active_window()
-        .filter(|active| windows.contains(active))
-        .or_else(|| windows.into_iter().next())
-    {
+    let desktop = cx.global::<Desktop>();
+    let host = quit_host(cx.active_window(), &cx.windows(), |handle| {
+        desktop
+            .windows
+            .record(handle.window_id())
+            .is_some_and(|record| record.closing)
+    });
+    if let Some(handle) = host {
         let _ = handle.update(cx, |root, window, cx| {
             if let Ok(view) = root.downcast::<WorkspaceView>() {
                 window.activate_window();
@@ -6558,16 +6574,23 @@ impl WorkspaceView {
             // A refused emptied close decides from batches up to the
             // hierarchy core refused it at, so none that arrived during the
             // assessment is lost.
-            if checking == CloseTarget::Emptied
+            let resolution = if checking == CloseTarget::Emptied
                 && matches!(result, Err(MuxError::ViewNotEmpty(_)))
             {
-                projected(&app, seq).await;
-            }
+                projected(&app, seq).await
+            } else {
+                Resolution::Ready
+            };
             let _ = view.update_in(cx, |view, window, cx| {
                 if view.close.generation != generation {
                     return;
                 }
                 view.busy = false;
+                if resolution == Resolution::Cancelled {
+                    // Teardown owns removal; decide nothing.
+                    view.close.current = None;
+                    return;
+                }
                 view.reconcile_own(window, cx);
                 let assessment = match result {
                     Ok(assessment) => assessment,

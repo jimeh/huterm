@@ -624,7 +624,11 @@ Recorded with the review round 1 corrections and the stopped-terminal rules:
   refused emptied close waits on it.
 - `request_quit` also skips an active window the platform still names after
   its removal, which GPUI's test platform does; without this the continued
-  Quit could still find no host.
+  Quit could still find no host. After review round 2 it also skips every
+  window marked `closing`, whose scheduled removal would drop the Quit, and
+  opens its own host when none is left (`quit_host`).
+- A refused emptied close whose sequence wait teardown cancels decides
+  nothing, as commits already do.
 - Tests gain `Stage::Assessed`, held after an assessment returns, and
   `Desktop::close_failures`, a test-only count of close failure notices.
 - An explicit `RuntimeClient::close` outside Mux now counts as a stopped
