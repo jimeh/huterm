@@ -107,6 +107,7 @@ Deferred, with owners:
 | Runtime-owned `close_on_exit` | #21 server half, delivered with #45 | See the decision below. |
 | Durable restore writer and restore on launch | #42 | The capture already exists; persistence is separate. |
 | Reaching an unviewed session after its last window closes | #26 | Nothing in embedded mode creates one until switching exists. |
+| Presenting a terminal whose runtime stopped (tab state, one notice, `close_on_exit`) | A new issue | Terminal-failure presentation, not session close; see the stopped-terminal decision. |
 | An explicit Terminate Session command | #26 or #45 | Closing the last window already terminates; a picker is where a separate command belongs. |
 
 ## Lifecycle rules
@@ -230,6 +231,68 @@ assesses again. A confirmed Quit tears everything down. A cancelled Quit
 clears `quitting` and the native request through `cancel_close`, as today,
 and only then does the window take its emptied close.
 
+### A terminal whose runtime stopped closes without consent or a failure
+
+Added on 2026-10-25 from the deferred item in #237. A terminal's runtime can
+stop while Mux still owns its tab: the owner thread panicked, or a fatal
+reader or writer failure ended it. In both cases the runtime's own teardown
+has already signalled and reaped its child; #237 makes that true for a
+panic too. Today such a terminal misbehaves on every close path:
+
+- The assessment asks for consent. The runtime no longer answers its
+  controls, so `RuntimeClient::job_context` returns `None` and `inspect`
+  reports `JobState::Unknown`, which needs confirmation, although nothing is
+  left to stop.
+- The commit reports a failure. `close_tab` and `close_terminals` remove the
+  structure, then `TerminalRuntime::shutdown` returns the stopped runtime's
+  own result, such as `ThreadPanic`, and the desktop shows "Close failed:
+  terminal runtime worker panicked" for a tab that did close.
+- Quit and a window close of its session inherit both problems.
+
+The rules:
+
+1. **Stopped is observable in Mux without `terminal.rs`.** The viewer
+   `Registry` closes whenever the runtime stops, through a guard that also
+   runs on panic, and only explicit close otherwise closes it.
+   `Registry::is_closed` (in `viewer.rs`) therefore means "stopped on its
+   own" for any terminal Mux still owns.
+2. **Assessment.** `CloseTicket::check_jobs` assesses a terminal whose
+   runtime has stopped by the time it checks as `JobState::Idle`, without
+   asking the runtime. It reads the stop from the client's registry at
+   check time, so the commit's recheck also sees a runtime that stopped
+   after the first assessment, and `covered_by` accepts `Idle` against any
+   earlier consent, as it does for a completed job.
+3. **Commit.** For a terminal that had stopped before the close,
+   `close_tab` and `close_terminals` drop the runtime's join error, which
+   was already surfaced to its viewers as `Stopped`. `ShutdownTimedOut`
+   still reports, because it means a child may still be alive. A runtime
+   that panics during the close still reports `ThreadPanic`.
+4. **Quit.** `shutdown` follows the same rule, so an approved Quit with a
+   stopped terminal neither prompts for it nor reports a cleanup failure, and
+   `on_app_quit` logs nothing for it.
+5. **Hierarchy.** Mux keeps the tab and emits nothing when a runtime stops.
+   Structure changes only through explicit close, as for an exited root
+   shell; dropping the tab on its own would merge two lifecycle events that
+   AGENTS.md keeps distinct and would remove the tab the user is looking at
+   without an action. The window keeps showing it until the user closes it.
+
+Deferred, outside #21: how the desktop presents a stopped terminal. Today
+each failed request raises a "Terminal error" notice, and the tab looks
+live. A clearer state, such as marking the tab stopped like an exited tab,
+raising one notice, and whether `close_on_exit` applies, is terminal-failure
+presentation rather than session close. It needs its own issue.
+
+Residual risk, from #237's limitations: a panic's teardown signals only the
+shell, the foreground group, and groups recorded before the panic. A
+background job in its own group survives until the terminal hangs it up,
+and closing the tab cannot reach it, because the stopped runtime holds no
+process context. Assessing that terminal as `Idle` does not hide a process
+the close could have stopped.
+
+Dependency: rules 2 to 4 are correct only once #237's panic teardown is on
+`main`. Before it, a panicked runtime leaves its child running. This PR
+rebases onto `main` after #237 merges and before it leaves draft.
+
 ### Confirm acts only on the confirmation it was drawn for
 
 The Confirm button's listener captures the target and `CloseState::generation`
@@ -278,11 +341,12 @@ a missing tab.
 ### Coordination with the runtime robustness work
 
 Another thread owns `crates/huterm-core/src/terminal.rs` for #209, #168,
-and #211. This plan changes nothing there. Termination evidence depends on its
-teardown: `close_session` and `shutdown` call `TerminalRuntime::shutdown`,
-and the new PTY tests assert reaping through it. If #211 changes the
-teardown order, these tests are regression evidence for it; neither change
-blocks the other. No change to `mux.rs` termination paths is planned.
+and #211, delivered in #237. This plan changes nothing there. Termination
+evidence depends on its teardown: `close_session` and `shutdown` call
+`TerminalRuntime::shutdown`, and the new PTY tests assert reaping through
+it. The stopped-terminal rules above change only how `mux.rs` reports a
+runtime that had already stopped; they depend on #237's panic teardown, so
+this work lands after it.
 
 ## Races
 
@@ -552,6 +616,27 @@ Recorded when the plan shipped:
   the next typed line ends. Smoke state gains `quake_hotkeys=`, which the
   final step checks. `native_quit::request_termination` lost its dead-code
   allowance, since the palette smoke now calls it.
+
+## Review round 1 corrections
+
+Decided on 2026-10-25 after the first Codex and Claude review of PR #238:
+
+- A window removed with a queued Quit continues through `request_quit`
+  instead of dispatching the `quit` command, which `app_command_availability`
+  refuses while `quitting` is set. This also fixes the same loss on the
+  existing Window-close path.
+- The emptied close's assessment carries the hierarchy sequence read under
+  the Mux lock. On `ViewNotEmpty` the window waits for the projection to
+  reach it, then removes itself if its attached session is gone, requests
+  the close again if it shows no view and the projection holds no tab in its
+  workspace, and otherwise marks it refused. Events that arrived during the
+  assessment are therefore never lost.
+- A `CloseTarget::Window` close that fails with `UnknownAttachment` removes
+  the window without a notice, as an emptied close does.
+- Cancelling a tab confirmation whose tabs all left the window clears only
+  that confirmation; queued closes stay queued.
+- A failed emptied assessment raises its notice without cancelling a queued
+  Quit or other queued close.
 
 [issue-9]: https://github.com/jimeh/huterm/issues/9
 [issue-20]: https://github.com/jimeh/huterm/issues/20
