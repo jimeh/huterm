@@ -310,7 +310,9 @@ projection and converges the window's views and `WindowModel` record:
    is normal while the window's own spawn is in flight, because core emits
    `TabOpened` before the worker returns, and after a view is destroyed,
    which only detaches it. Reconcile never installs views; installing views
-   for tabs the window did not spawn belongs to [#22][issue-22].
+   for tabs the window did not spawn belongs to [#22][issue-22]. Done in
+   [#206][issue-206]; [the terminal viewers plan](terminal-viewers.md)
+   describes how reconcile now installs them.
 2. **Order.** Compute the installed order (see "Tab order follows the
    projection") and apply it only when it differs from the current order.
 3. **Titles.** Recompute labels for touched tabs the projection still holds
@@ -463,7 +465,7 @@ spawn, cannot happen yet. Reconcile still removes the view in the first case,
 because removal is derived from state; the window's aftermath for an
 externally emptied window belongs to [#21][issue-21]. The second case leaves
 the projection correct and installs nothing until [#22][issue-22] defines
-it.
+it. (Both now happen: [#206][issue-206] installs views for such tabs.)
 
 The palette smoke's `delete-target` command
 (`crates/huterm-gpui/src/desktop/palette_smoke.rs`) closes a displayed tab
@@ -831,3 +833,4 @@ verify` before handoff.
 [issue-44]: https://github.com/jimeh/huterm/issues/44
 [issue-97]: https://github.com/jimeh/huterm/issues/97
 [issue-98]: https://github.com/jimeh/huterm/issues/98
+[issue-206]: https://github.com/jimeh/huterm/issues/206

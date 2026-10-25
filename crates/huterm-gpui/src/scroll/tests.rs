@@ -329,3 +329,23 @@ fn return_to_bottom_wins_over_growth_during_an_older_request() {
     assert_eq!(controller.desired(), 0);
     assert_eq!(controller.begin_request(), Some(Viewport::default()));
 }
+
+#[test]
+fn a_restart_after_a_revoked_request_lets_the_next_invalidation_request() {
+    let mut scroll = ScrollController::default();
+    scroll.invalidate();
+    scroll.begin_request().unwrap();
+    // The old viewer's request answers `Revoked`, which latches.
+    scroll.fail();
+    scroll.invalidate();
+    assert_eq!(scroll.begin_request(), None);
+    scroll.restart();
+    scroll.invalidate();
+    assert_eq!(scroll.begin_request(), Some(Viewport { bottom_offset: 0 }));
+    // A request still in flight for the old viewer does not hold back the
+    // new viewer's first one.
+    scroll.invalidate();
+    scroll.restart();
+    scroll.invalidate();
+    assert!(scroll.begin_request().is_some());
+}

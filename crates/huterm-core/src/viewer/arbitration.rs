@@ -435,7 +435,11 @@ impl MouseArbiter {
                 true
             }
             MouseAction::Motion(_) if owned => true,
-            MouseAction::Motion(_) | MouseAction::Wheel(_) => {
+            // Drag motion without the press it continues: the press was
+            // refused or the gesture has ended, so the application never
+            // saw a press for this drag.
+            MouseAction::Motion(Some(_)) => false,
+            MouseAction::Motion(None) | MouseAction::Wheel(_) => {
                 !foreign && !stale
             }
         };

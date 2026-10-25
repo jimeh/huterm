@@ -31,6 +31,38 @@ workspace, active tab, and history. `WorkspaceView` keeps its tab entities
 aligned with the model through `push_tab_view`, `apply_tab_view_order`, and
 `drop_tab_views`.
 
+Reconcile installs views for tabs a window did not spawn, such as a tab
+another window opened in a shared workspace (`windows/view_install.rs`). It
+skips a busy window, whose own spawn holds `busy` until it pushes its view,
+a window without an attachment, and teardown. A worker subscribes the
+viewers under one Mux lock, the completion waits for the projection to reach
+the worker's sequence, and the window then pushes only the tabs it still
+shows no view of, without activating them unless it has no active tab. A
+failed install waits for a later batch that touches the workspace. A window
+that gains an attachment runs its own full reconcile, because attaching
+emits no hierarchy event. A view installed after its tab exited shows the
+exit from status but announces nothing: only the exit transition raises a
+notice or records an exit-close.
+
+A view whose viewer reports revocation while its tab stays in the window's
+workspace is replaced in place by the same worker and sequence wait. The tab's
+activity drain runs `reconcile_own` on seeing it, because a revocation emits
+no hierarchy event, and replacements share `PendingInstalls` with installs.
+The new viewer starts unfocused with the view's requested geometry and
+presentation. Registering it focused would make it the newest focus gain under
+the `latest` policy and take control even if its window blurred meanwhile.
+Swapping it in discards queued input and mouse ownership, re-sends geometry
+and presentation that changed since the replacement started, sends the focus
+the view last reported (`reported_focus`) through the input queue, since GPUI
+raises no focus event for a view that stays focused, restarts
+`ScrollController`, ignores replies to the old viewer by `viewer_epoch` (a
+late `Revoked` would otherwise latch the scroll failure), and replaces the
+tab's activity task, which waits on the old viewer's wake. A view that a
+poll showed running (`seen_running`) treats an exit it first sees from status
+as the exit transition, so a shell that exits while the replacement is in
+flight still closes or announces. A revoked viewer's `poll` still reports the
+exit until its slot is finalized. A failed replacement removes the view.
+
 ## Activity tasks and frame scheduling
 
 Each TerminalView holds one `TerminalViewer`, its own registration with the
@@ -101,11 +133,25 @@ remain blocked. Use commit_close_with for capture and termination-gate changes:
 validate once before side effects, then capture before teardown. A second
 freshness check after capture can strand a half-accepted Quit.
 
-The terminal activity drain queues shell-exit transitions once for assessed tab
-close.
-Keep automatic exit requests separate from the merged manual close intent, so
-canceling one prompt does not lose inactive siblings. Config reload changes only
-future exit events. Exited tabs retain history and local selection/scrolling;
+`Desktop::exit_closes` owns exit-closes, one record per tab, and the window
+close pipeline is the only actor that assesses and commits them. The first
+view to report a tab's exit transition records it, owed under that window's
+`close_on_exit` and settled otherwise, so a reload changes only future exits.
+An idle window that shows an owed tab takes it in `next_request`, after
+queued user closes, and starts its assessment at once; any window showing the
+tab may take it, and a window holds one at a time. Keep automatic exit
+requests separate from the merged manual close intent, so canceling one prompt
+does not lose inactive siblings. A close that never reached Mux for its tab
+(cancelled, merged into a wider target that left the tab, or found gone on a
+stale retry) returns to owed and is offered to the other windows through
+`cx.defer` and window handles, never by reading their entities from inside an
+update. Once its commit starts, the commit's completion records the result by
+tab in application context, so closing the window cannot let a second window
+close the same tab. Removing a window returns a close it took but had not
+started committing. A failed assessment or commit settles with one notice and
+is not retried. Tier 2 tests hold and fail both stages through
+`windows/worker_hooks.rs`, which compiles only for tests with `test-support`.
+Exited tabs retain history and local selection/scrolling;
 close their input queue and reset mouse ownership without emitting releases.
 
 ## Rendering

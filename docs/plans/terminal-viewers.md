@@ -2,8 +2,8 @@
 
 Status: in progress. Approved for [issue #22][issue-22] after three
 adversarial review rounds. PR 1 (#208) delivered [#205][issue-205].
-[#206][issue-206] ships as two PRs, A and B (see Delivery); PR A is in
-progress.
+[#206][issue-206] ships as two PRs, A and B (see Delivery); PR A (#225) is
+in review and PR B is in progress.
 
 A terminal can be shown by more than one view at once: two desktop windows
 on one session today through a smoke fixture, and later panes, browser pages,
@@ -56,9 +56,12 @@ landed and the code on `main` at `8dfb406c` was read again:
   field for the grid it displays.
 - Cancelling an exit-close confirmation clears the owed close for every
   window. A window closed while its confirmation shows returns the close to
-  owed.
-- Whether `Desktop` owns an exit-close outright, instead of a window
-  claiming it, is decided in PR B.
+  owed. Changed before PR B: an exit-close never prompts, so these rules
+  apply only if that changes (see the exit-close decision).
+- Decided on 2026-10-21 in PR B part 2: `Desktop` does not own an
+  exit-close outright. It owns the owed exit-closes, and the window close
+  pipeline that takes one assesses and commits it (see the exit-close
+  decision).
 - In-place re-subscription (PR B) is covered through the smoke fixture only.
   The desktop never calls `retarget_attachment`, `move_tab`, or
   `move_workspace`, so a revoked viewer whose tab stays in the window's
@@ -575,8 +578,11 @@ A `MouseArbiter` on the owner thread holds the policy:
 - Releases from the owner end its buttons, matched by button only. The
   gesture ends when none remain. A release with no matching held button is
   discarded.
-- Motion and wheel reports with no gesture held are accepted from any viewer
-  with `input`.
+- Hover motion and wheel reports with no gesture held are accepted from any
+  viewer with `input`. Motion that names a held button is accepted only from
+  the owner, so a drag whose press was refused, or whose gesture has ended,
+  never reaches the application without its press. (Decided before PR B;
+  PR 1 accepted it from any viewer when no gesture was held.)
 - Every input carries an `InputStamp` recorded when the user acted. Its
   optional geometry revision names the snapshot that mouse coordinates came
   from. If the canonical geometry changed since, presses, motion with no
@@ -605,7 +611,8 @@ A `MouseArbiter` on the owner thread holds the policy:
   press computed against an older display, writes nothing and takes no gesture.
 
 A view whose press was discarded keeps its local ownership state until its
-own release and gets no feedback; that is acceptable for the default. The
+own release and gets no feedback; its drag motion and release are discarded
+with it. That is acceptable for the default. The
 arbiter runs before encoding, on structured `TerminalInput::Mouse` values.
 Experimenting with another rule changes only this type.
 
@@ -836,9 +843,10 @@ table above follows the displayed grid through it:
 - The view cannot tell this interval from another viewer controlling, so it
   has no special case for it.
 - A press discarded this way leaves the view owning the button locally, as
-  PR 1 accepted for refused presses. Its release is discarded too, and with
-  drag tracking the application can see that drag's motion without a press,
-  because the arbiter admits motion from a viewer that owns no gesture.
+  PR 1 accepted for refused presses. Its release is discarded too. Until
+  PR B, with drag tracking the application could see that drag's motion
+  without a press, because the arbiter admitted held-button motion from a
+  viewer that owned no gesture; PR B's first commit discards it.
 
 Smoke state keeps `grid=`, and the integration smoke's `columns=` and
 `rows=`, as the requested grid, so existing assertions keep meaning the size
@@ -941,6 +949,17 @@ refresh, and leaves typed text to tier 2.
 Tier 2, in PR B, hosts `Desktop` and `WorkspaceView` with two windows on one
 session, which reconcile, exit-close, and replacement tests need.
 
+Tier 2 result, PR B part 1: it works on macOS. `install_desktop`, split out
+of `run_with_startup`, installs the production `Desktop` global in a test
+app, and `open_window_inner` opens real `WorkspaceView` windows on GPUI's
+test platform. The harness builds a session and its tabs through Mux and
+attaches each window to it, so every view is installed rather than spawned;
+the spawn path stays covered by the smokes. Typed keys reach a terminal only
+once its window reports itself active and the terminal is focused, which
+the harness waits for after activating a window. Each test takes under one
+second, and the leak detector passes with the windows and runtimes still
+open at the end.
+
 The harness is the first implementation step of PR A, as a spike. PR B's
 test plan depends on its answer, so if a real `TerminalView` cannot be built
 and driven in a test window, the work stops and the maintainer decides
@@ -997,19 +1016,28 @@ The window installs those tabs as follows:
    the projection still holds in the window's workspace without a view and
    whose viewer is not revoked, and drops the other viewers. It applies the
    installed order and selects a tab only when the window has no active
-   tab, without taking focus from an overlay.
+   tab, without taking focus from an overlay. That tab is the window's
+   first in installed order.
+
+Core offers no way to read a viewer's revocation without polling it, and a
+poll would consume the status the view's first refresh needs. The window
+therefore builds the `TerminalView`, whose constructor already submits the
+initial presentation, and drops it when that request answers `Revoked`.
 
 A subscription that fails because its target is stale is dropped silently
 and not retried until a later batch touches that workspace, so a failure
-cannot loop. Once the runtime is terminating, install failures show nothing;
-before that, unexpected errors show a notice. Closing the window drops the
-in-flight task and the viewers it returns.
+cannot loop. Other failures wait for such a batch too. Once the runtime is
+terminating, install failures show nothing; before that, unexpected errors
+show a notice. Closing the window drops the in-flight task and the viewers
+it returns.
 
 When a view's viewer reports revocation and the projection still holds its
 tab in the window's workspace, the window re-subscribes **in place**: the
 same worker and sequence wait produce a new viewer, which replaces the old
 one inside the existing `TerminalView`. Selection, scroll state, and the
-active tab are kept. The new viewer is created with the view's current
+active tab are kept; the selection is kept only while the content
+generation is unchanged (see below). The new viewer is created with the
+view's current
 focus, geometry, and presentation as its initial state, because
 GPUI raises no new focus event for a view that stays focused; otherwise the
 old viewer's finalization would leave the application believing the
@@ -1020,6 +1048,14 @@ would have no consumer. Input still waiting in the view's `InputQueue` is
 discarded, since the old viewer's authority ended. If re-subscription fails,
 the view is removed.
 
+Decided before PR B: issue #206's "revoking a viewer keeps the selection"
+holds while the content generation is unchanged. Replacing the controlling
+viewer beside a viewer of another size hands control to that viewer and
+back, so the terminal resizes twice; each resize advances the generation,
+and the view clears its selection as it does for any resize. Avoiding that
+would need a control handoff in core, which nothing needs until replacement
+has a production trigger ([#21][issue-21], [#26][issue-26]).
+
 Removal gains one case: a tab whose workspace now belongs to a session other
 than the window's attachment session is removed, as a tab moved to another
 workspace is. What the window does once emptied belongs to
@@ -1029,59 +1065,168 @@ A window that gains an attachment, including the smoke fixture's, runs its
 own full reconcile. Attaching emits no hierarchy event, so nothing else
 would visit it.
 
+Found in PR B part 1: a view installed after its tab exited never learned
+that it had exited, because the refresh reacted only to the viewer's exit
+transition, so its tab lacked the exited state, label, and key context. The
+refresh now also takes the exited lifecycle from status. Only the
+transition is reported to the window, so such a view still announces
+nothing and queues no exit-close.
+
+Built in PR B part 3, on 2026-10-22:
+
+- Reconcile derives replacements beside installs (`projection::replacements`):
+  installed views whose viewer reported revocation and whose tab the
+  projection still holds in the window's workspace, skipping a busy or
+  terminating window. They share `PendingInstalls` with installs, so a
+  replacement in flight is not started twice. A revocation emits no
+  hierarchy event, so the tab's activity drain runs `reconcile_own` when it
+  sees its view revoked.
+- `subscribe_tabs` takes each tab's starting state. Installs start with no
+  geometry; a replacement starts with the view's requested grid and cell
+  size and its presentation. Every desktop viewer starts unfocused. The
+  completion swaps the viewer into the same `TerminalView` only while the
+  view is still revoked and the tab still belongs to the window.
+- Changed in review on 2026-10-22: the state a replacement started with
+  can be stale by the time it is swapped in, because focus, size, and theme
+  can change during the worker and the sequence wait. The view records
+  them even though its revoked viewer refuses the reports. The swap
+  therefore compares the start state with the view's current state and
+  re-sends geometry and presentation that differ, and the view sends its
+  current focus through the input queue, in order with later input. A
+  replacement no longer registers focused: under the `latest` policy a
+  focused registration is the newest focus gain and takes control, and a
+  blur sent afterwards would not give control back to the window that
+  became active meanwhile.
+- Also changed in review: an exit that a view first sees from status is
+  its exit transition when an earlier poll showed the terminal running
+  (`seen_running`), as happens for a replaced view. The root shell can
+  exit after the old viewer's last poll and before the replacement
+  subscribes, and core reports `exited` only to a viewer subscribed while
+  the shell ran, so the exit-close or the exit notice would otherwise
+  never happen. A view first installed after the exit still announces
+  nothing, even if its viewer is revoked and replaced before its first
+  poll: it never saw the terminal running. A revoked viewer's `poll`
+  still reports the exit, so the exit tests await the old activity task's
+  completion, which follows the slot's finalization, before the shell
+  exits.
+- Swapping discards the view's `InputQueue`, pending geometry and
+  presentation, mouse ownership, and a pending context-menu lookup. It
+  restarts `ScrollController` (`restart` clears the latched failure and the
+  old viewer's request in flight) and requests a snapshot. A counter of
+  the viewers the view has held makes it ignore snapshot and selection
+  replies to the old viewer, which would otherwise latch a `Revoked`
+  failure on the new one. The window then replaces the tab's activity task
+  with one on the new viewer.
+- A failed replacement removes the view. A stale error, such as an
+  attachment that now belongs to another session, raises nothing; others
+  raise "Cannot show tab". The tab then waits, like a failed install, for a
+  batch that touches the workspace before an install tries it again.
+- The tier 2 test shows the revoked viewer's focus ending and the
+  replacement's beginning: the child reads `ESC [ O` then `ESC [ I`. That
+  holds when the runtime syncs the revocation before the replacement
+  registers, the usual order because the replacement waits for the window's
+  drain and a worker. If the owner thread sees both in one batch,
+  `Effects::merge` cancels the focus out and in and control passes straight
+  to the replacement: the program sees no focus change and the terminal
+  does not resize. The tier 2 tests that assert the transitions hold
+  replacement by marking the window busy until a fresh observer shows the
+  runtime processed the revocation; ten parallel runs without that hold
+  failed twice.
+
+Also found in part 1: the refresh smoke detached a view by dropping it while
+its tab stayed in the window's workspace, which reconcile now installs
+again. The smoke instead moves the tab to another workspace of the session,
+so reconcile drops the view as it would after another client's move, and
+the terminal stays alive.
+
 ### Desktop: exit close has one actor (PR B)
 
-`Desktop` keeps an **owed exit-close** per tab. The first window whose view
-observes the tab's exit transition while its config has `close_on_exit` set
-records it, as `ExitQueue::observe` decides today. A reload therefore
-still affects only future exits, and a tab retained by
-`close_on_exit = false` is never closed later.
+Decided on 2026-10-21 in PR B part 2: `Desktop` does not own an exit-close
+outright. The window close pipeline stays the only actor that assesses and
+commits a close; `Desktop` owns the owed exit-closes instead of each
+window's `ExitQueue`, which is gone. The gating that keeps single-window
+behavior correct lives in the window: a busy window, a confirmation that
+is showing, merging into a wider `Tabs`, `Window`, or `Application` target,
+retrying a refused commit (`close_commit_retries`), the failure notice, and
+closing an emptied window (`remove_closed_tabs`). If `Desktop` ran closes
+itself, it would have to duplicate all of that or change single-window
+behavior. For example, an exit that closed a tab behind a showing
+window-close confirmation would make the confirmed commit go stale and
+assess again.
 
-An owed close moves through three states:
+`Desktop::exit_closes` (`windows/exit_closes.rs`) keeps one record per
+tab, in exit order:
 
-1. **Owed:** any window showing the tab may claim it, however late its view
-   was installed. The first to do so queues the close in its `ExitQueue`;
-   other windows do not.
-2. **Claimed:** the claiming window holds it until its close operation
-   starts. If the window drops its view or closes first, the close returns
-   to owed, and the window visits the others showing the tab through
-   `cx.defer` and `update_windows`, as `reconcile` does, never reading
-   another window's entity from inside its own update.
-3. **Submitted:** once the assessment or commit has started on a worker,
-   the operation owns the close until its worker returns, even if its view
-   is dropped or its window closes, so a second window can never assess or
-   commit the same close. An application-level completion keyed by tab,
-   independent of the window, records the worker's result:
-   - success clears the close, and `TabClosed` lets reconcile drop the
-     other windows' views;
-   - a failure clears it with the failure notice and is not retried, as
-     today;
-   - an assessment whose window closed before it could start the commit
-     reached nothing in Mux, so the close returns to owed for the remaining
-     windows. A commit that started always runs to its result, because the
-     worker does not depend on the window.
+1. **Owed:** the first window whose view reports the tab's exit transition
+   records it, owed when that window's config has `close_on_exit` set and
+   settled otherwise. A reload therefore affects only future exits, and a
+   tab retained by `close_on_exit = false` is never closed later, even by
+   a window whose view reports the same exit after a reload. A report for
+   a tab the projection no longer holds records nothing, and a record goes
+   away when the projection drops its tab, so a busy window that keeps a
+   closed tab's view cannot revive its close.
+2. **Taken:** `CloseState::next_request` keeps its precedence, queued user
+   closes first, then exits. When the window's pipeline is idle, not busy
+   and with no confirmation showing, it takes the first owed tab the window
+   shows and starts its assessment in the same update. Any window showing
+   the tab may take it, however late its view was installed. A window holds
+   at most one, and a closing window or teardown takes none. The plan's
+   former claimed state, a claim held before the operation starts, does not
+   exist: taking starts the operation.
+3. **Settled:** the close is done, failed, or retained. Later reports of
+   the same exit change nothing.
+
+A taken close ends when the window operation that took it ends:
+
+- A commit that closes the tab settles it, and `TabClosed` lets reconcile
+  drop the other windows' views.
+- A commit refused with `StaleClose` or `ConfirmationRequired` stays with
+  the window while it assesses again.
+- A failed assessment or commit settles it with the window's single failure
+  notice, and nothing retries it.
+- A close that never reached Mux for the tab returns to owed: its target
+  merged into a wider one that did not close the tab, such as a window
+  close that only detached; the user cancelled a merged confirmation; or
+  the retry after a stale commit found the tab gone from the window, as
+  when the tab moved to another workspace. The window then offers it,
+  through `cx.defer` and window handles as `reconcile` does, to the other
+  windows showing the tab, which run `resume_close`. It never reads
+  another window's entity from inside its own update.
+- Once a commit has started, its worker runs to its result even if the
+  window closes. The commit's completion records the result keyed by tab in
+  application context, before and regardless of the window's view update,
+  so a second window can never assess or commit the same close, and a
+  commit that succeeded raises no stale-close notice anywhere.
+- When the window is removed, a close it took and had not started
+  committing returns to owed and is offered to the others.
+
+A window that drops its view of the tab while its own assessment runs
+still commits the close; the runtime decides whether the tab is still
+there. Only the stale-commit path above returns such a close to owed.
 
 Exit notices stay per window, based on the viewer's exit transition, so a
 view installed after the exit announces nothing. Failure notices stay per
 window too.
 
-Two rules cover a confirmation dialog raised for an exit-close. Cancelling
-it clears the owed close for every window, so no other window raises the
-same prompt. A window closed while its confirmation shows returns the close
-to owed, like a claim whose window closed.
+An exit-close never asks for confirmation. An exited terminal's job
+assessment is always idle (`JobLifecycle::assess` in `huterm-core`), and
+only a non-idle assessment asks, so no production path raises a dialog for
+an exit-close. Decided before PR B: PR B adds no confirmation rules for
+exit-closes and no test-only way to produce a confirming assessment.
+Instead, the tier 2 tests pin that an exit-close shown in two windows
+closes without prompting. If an exited terminal can ever assess as
+non-idle, the two rules agreed on 2026-10-03 return with it: cancelling
+clears the owed close for every window, and a window closed while its
+confirmation shows returns the close to owed. Today a cancelled merged
+confirmation returns the exit-close to owed, which a later refresh of that
+window takes again.
 
-PR B must first establish which path raises that dialog. An exited
-terminal's job assessment is always idle (`JobLifecycle::assess` in
-`huterm-core`), and only a non-idle assessment asks for confirmation, so an
-exit-close alone does not prompt today. The tests for the two rules need a
-controlled, test-only way to produce a confirming assessment, and the plan
-for PR B names it.
-
-The three states exist because a window owns the operation. PR B decides
-whether `Desktop` can own an exit-close outright, checked against
-`ExitQueue` and the close assessment, once its two-window harness shows
-whether today's single-window exit behavior can be pinned first. If
-`Desktop` owns it, the claimed state goes away.
+Tier 2 tests hold or fail the assessment and the commit through a
+test-only hook in `DesktopRuntime` (`windows/worker_hooks.rs`, compiled
+only for tests with the `test-support` feature). It counts both stages,
+holds either until released, and fails the next worker that passes. A
+failed commit runs the real commit first, as a teardown failure after the
+runtime accepted the close would.
 
 ### Smoke fixture (PR B)
 
@@ -1093,15 +1238,41 @@ reconcile, which installs the views. Production code gains no command for
 this.
 
 A second fixture command revokes a window's viewers, the only way to reach
-in-place re-subscription before [#21][issue-21] and [#26][issue-26].
+in-place re-subscription before [#21][issue-21] and [#26][issue-26]. Built
+in part 3 as `revoke-window\t<index>`: on a worker, under one Mux lock, it
+creates a session without workspaces, retargets the window's attachment to
+it and straight back, and closes it. Retargeting revokes the attachment's
+viewers and emits no hierarchy event, and the temporary session closes with
+nothing attached, so the projection's structure is unchanged; the tier 2
+test checks its digest. Tier 2 tests call the same function,
+`palette_smoke::revoke_viewers`.
 
 A new `check-viewers.ts` runs inside the macOS and Linux palette smokes, as
-`check-overlays.ts` does (see Verification).
+`check-overlays.ts` does (see Verification), as its own `viewers` CI step.
+It addresses windows by index through fixture commands instead of native
+input, so it never needs a particular window to hold native keyboard focus:
+`type-in` sends a line through a window's input queue, `invoke-in` runs a
+catalog command in a window, `resize-window` resizes one, and `activate`
+activates one. `viewport` reads the shared viewport and the canonical grid
+through a fresh observing viewer, so the read rearms neither window and
+needs no frames. The PTY size comes from the shell, which appends
+`stty size` to a file on request; a request typed in the controlling window
+is ordered behind every geometry report queued before it, which makes it
+the boundary for "the size did not change".
+
+Decided on 2026-10-21 in PR B part 1: the snapshot counter is derived in the
+desktop instead of core, so PR B keeps one core change. Under the smoke, a
+global counts each terminal's snapshot replies across views: a reply that
+carries the same `Arc` as that terminal's previous reply reused the cache,
+and any other built a snapshot. Replies to requests outside the desktop's
+views are not seen, which a report, not a gate, can accept. Smoke state
+reports it as `w<i>.snapshots=<builds>,<reuses>`, next to
+`w<i>.clipboard_writes` for the OSC 52 check.
 
 The palette smoke fixture is the production application plus file-driven
 commands, so PR B also adds a helper script that launches it and attaches a
 second window, for manual checks of Cmd-Tab, Mission Control, and occluded
-windows.
+windows: `mise run smoke:manual-viewers`.
 
 ### Contract items for #44
 
@@ -1206,24 +1377,30 @@ the test feature needs. No core or protocol change is expected.
 
 #### PR B: installing, closing, and replacing views
 
-Three parts, landed in this order as separate commits, so each part's tests
-pass before the next begins:
+A core commit, then three parts, landed in this order as separate commits,
+so each part's tests pass before the next begins:
+
+0. Arbiter. `MouseArbiter` accepts motion that names a held button only
+   from the gesture's owner, with its unit test. This is PR B's only core
+   change, so `mise run test:ghostty-releasesafe` runs for it.
 
 1. Installing views. Add install and session-change removal to reconcile
    and `WorkspaceView`, and the full reconcile for a window that gains an
    attachment. Add the `attach-window` fixture command, `check-viewers.ts`
-   steps 1 to 5 and 7 wired into the macOS and Linux palette smokes, a debug
-   counter in core for snapshot builds and cache reuses reported in smoke
-   state, and the helper script for native two-window checks. Extend the
-   harness to tier 2.
-2. Exit close. Decide whether `Desktop` owns an exit-close outright. Add
-   owed exit-closes, with claims unless `Desktop` owns them, the two
-   confirmation rules, and `check-viewers.ts` step 6.
+   steps 1 to 5 and 7 wired into the macOS and Linux palette smokes, a
+   debug counter for snapshot builds and cache reuses reported in smoke
+   state, derived in the desktop (see "Smoke fixture"), and the helper
+   script for native two-window checks. Extend the harness to tier 2.
+2. Exit close. `Desktop` owns the owed exit-closes and the window close
+   pipeline takes them; `Desktop` does not own the close itself. Pin the
+   single-window exit behavior in tier 2 first, then add the exit-close
+   test hook, the tier 2 exit-close tests including the one that an
+   exit-close never prompts, and `check-viewers.ts` step 6.
 3. Replacement. Re-subscribe a revoked view in place from reconcile. Give
-   `ScrollController` a way to clear its latched failure, or skip it for
-   `Revoked`, so a replaced viewer resumes snapshots. Add the fixture
-   command that revokes a window's viewers, and cover replacement through
-   it.
+   `ScrollController` a way to clear its latched failure (`restart`), so a
+   replaced viewer resumes snapshots. Add the `revoke-window` fixture
+   command, cover replacement through it in tier 2, and add a replacement
+   check to `check-viewers.ts`.
 
 ### Follow-up issue: sizing policies ([#207][issue-207])
 
@@ -1504,57 +1681,88 @@ working, and `mise run verify` before handoff. Run
 
 Installing views:
 
-- The view-level tests moved from PR 1, listed above.
+- The view-level tests moved from PR 1, listed above, in the tier 2 harness,
+  plus one that two attached windows install and show a session's tab,
+  typing in one reaches the other, and a tab opened later installs in both
+  behind the tab each shows.
 - Reconcile tests in `windows/projection.rs`: a projected tab without a view
   yields one install; an install in flight, a busy window, or a terminating
   runtime yields none; reconciling twice yields no duplicate; a tab removed,
   or whose viewer was revoked, before the completion is not pushed; a tab
-  whose workspace moved to another session is removed.
+  whose workspace moved to another session is removed. A failed install
+  waits for a batch that touches its workspace. The revoked case has no
+  test: nothing deterministic can revoke a viewer between the worker and
+  its completion, and the check reuses the constructor's request.
 - `check-viewers.ts` steps 1 to 5 and 7, below, and the OSC 52 assertion.
 
 Exit close:
 
-- Exit-close tests, with both windows observing the exit before either close
-  starts:
-  - exactly one close is assessed;
-  - the claim returns to owed when the claiming window drops its view before
-    starting, and a view installed after the exit takes it over;
-  - with the assessment held and then the commit held, dropping the claiming
-    view starts no second operation;
-  - an assessment failure and a commit failure each clear the close with one
-    notice;
+- Tier 2 tests that pin today's single-window behavior, added before the
+  refactor and passing on both sides of it: an exited tab closes under
+  `close_on_exit`, the last tab's exit closes its window, and an exit while
+  the window is busy closes once the busy close ends.
+- Tier 2 exit-close tests, with both windows observing the exit before the
+  close is decided unless noted:
+  - exactly one close is assessed and committed, and the other window takes
+    nothing while the first holds it;
+  - a view installed after the exit takes a close that its busy window
+    cannot, and takes it over when the claiming window closes during its
+    assessment, then closes the tab;
+  - with the assessment held and then the commit held, dropping the
+    claiming view starts no second operation;
   - closing the claiming window after its commit starts and before the
-    commit returns leads to one close and no stale-close notice in the other
-    window; closing it during the assessment returns the close to owed, and
-    the other window then closes the tab;
-  - a tab that exited under `close_on_exit = false` stays open after a
-    reload enables it, as the existing reload test requires;
-  - a view installed after the exit announces nothing;
-  - cancelling the confirmation clears the close in both windows, and
-    neither prompts again;
-  - closing the window whose confirmation shows returns the close to owed,
-    and the other window then prompts.
-
-  The last two need the confirming assessment described under the exit-close
-  decision; an exited shell does not produce one.
+    commit returns leads to one close and no notice in the other window;
+  - an assessment failure and a commit failure each settle the close with
+    one notice in the claiming window and none in the other;
+  - a tab that exited under `close_on_exit = false` stays open after both
+    windows enable it;
+  - a view installed after the exit announces nothing (part 1's test);
+  - no window shows a confirmation for any of these closes;
+  - cancelling a window-close confirmation that absorbed an exit-close
+    leaves the close owed, and the window then closes the exited tab once
+    and stays open (added after review).
+- Unit tests for `ExitCloses`: the first report decides, takes follow exit
+  order with one close per window, an uncommitted close returns to owed
+  while a committing one waits for its result, a refused commit stays with
+  an open window, and records end with their tabs.
 - `check-viewers.ts` step 6, below.
 
 Replacement:
 
-- Replacement tests through the fixture's revoke command: a revoked view is
-  re-subscribed in place, keeping the active tab, focus, and selection, and
-  its focused replacement writes `ESC [ I` and regains control; after
-  replacement, new output, a title change, an exit, and a clipboard write
-  each reach the view through its restarted activity task without display
-  frames; a view whose re-subscription fails is removed.
-- A `ScrollController` unit test: clearing the latch after `Revoked` lets
-  the next invalidation start a snapshot request.
-- Replacement of the controlling viewer while another viewer has a
-  different size. Revocation hands control to the other viewer and the
-  focused replacement takes it back, so the terminal resizes twice, each
-  resize advances the content generation, and the view clears its
-  selection. Whether "keeps the selection" holds only when no resize
-  happens is an unresolved question below.
+- Tier 2 replacement tests through `revoke_viewers`, the fixture command's
+  mechanism:
+  - a revoked view is replaced in place, keeping its entity, the active
+    tab, and focus; the child reads `ESC [ O` then `ESC [ I`; the hierarchy
+    digest is unchanged; and the replacement controls the size again after
+    a window resize;
+  - a replacement that does not resize keeps the selection;
+  - after replacement, new output, a title change, a clipboard write, and
+    an exit each reach the view with no display frame delivered, under
+    `refresh = "unlimited"` so snapshots wait only for the activity drain;
+  - a view whose re-subscription fails is removed without a notice. The
+    test retargets the window's attachment to another session and leaves
+    it there, a real path that emits no hierarchy event;
+  - replacing the controlling viewer while another window's viewer has a
+    different size advances the geometry revision by exactly two and clears
+    the selection;
+  - with the replacement held between its start and its subscription by a
+    `Subscribe` gate in the test-only worker hooks
+    (`windows/worker_hooks.rs`), a window that blurs while the other
+    window takes focus leaves focus and the size with the active window,
+    a window resized meanwhile gets the current size, and a theme changed
+    meanwhile reaches the child's color query (added after review);
+  - a shell that exits while its only live view is being replaced still
+    closes the tab under `close_on_exit` and raises the exit notice
+    without it.
+- A `ScrollController` unit test: restarting after `Revoked` lets the next
+  invalidation start a snapshot request, also while a request was in
+  flight.
+- A reconcile unit test: a revoked view whose tab stays is replaced once,
+  not while busy and not again while in flight; one whose tab moved is
+  removed; a failed replacement waits for a batch that touches the
+  workspace.
+- `check-viewers.ts` revokes window 1's viewers and asserts that output
+  from typing in window 0 still reaches window 1.
 
 ### The viewers smoke
 
@@ -1576,6 +1784,8 @@ Replacement:
      both windows lose that tab, keep the second tab, and show no
      stale-close notice.
   7. Close window 1 and assert window 0's shell still answers.
+- Between steps 6 and 7, revoke window 1's viewers with `revoke-window`
+  and assert that output typed in window 0 still reaches window 1.
 - Write OSC 52 from the shared terminal and assert from smoke state that
   exactly one window delivered it. The core test owns the exact-once
   guarantee across handoff; the smoke proves the desktop wiring.
@@ -1594,7 +1804,8 @@ changes input mapping and page scrolling and nothing an idle terminal runs.
   that a hidden viewer receives no wake after its first.
 - For PR B, report snapshot builds and cache reuses for scrolling and for
   an output burst with one and two visible viewers, from the debug counter
-  in smoke state. This is a report, not a gate.
+  in smoke state. This is a report, not a gate. `check-viewers.ts` prints
+  it as its `VIEWERS_SMOKE` line.
 
 Commands for PR 1 and PR B: `mise run check`, `mise run test`,
 `mise run test:ghostty-releasesafe` when core changes, the macOS host smokes
@@ -1686,18 +1897,12 @@ PR A adds:
 - None blocking. Mouse arbitration may change after experiments, within
   `MouseArbiter`, and the stale-display wheel limitation above is accepted
   unless the maintainer objects.
-- Should `MouseArbiter` discard motion that names a held button from a
-  viewer that owns no gesture? Today it admits it, so a drag whose press was
-  refused, by another viewer's gesture or by a stale revision, reaches the
-  application as motion without a press. This is a core change outside
-  PR A.
-- For PR B's exit close: which path raises a confirmation for an
-  exit-close, given that an exited terminal always assesses as idle?
-- For PR B's replacement: issue #206 requires that revoking a viewer keeps
-  the selection. A selection is bound to the content generation, which
-  every resize advances, and replacing the controlling viewer beside a
-  differently sized one resizes twice. Is the criterion conditional on an
-  unchanged generation, or does replacement need to avoid the resize?
+
+The three questions raised during PR A were decided by the maintainer
+before PR B: the arbiter discards held-button motion from a viewer that owns
+no gesture, an exit-close never prompts, and replacement keeps the selection
+only while the content generation is unchanged. Each decision is recorded
+in its section above.
 
 [issue-9]: https://github.com/jimeh/huterm/issues/9
 [issue-20]: https://github.com/jimeh/huterm/issues/20
