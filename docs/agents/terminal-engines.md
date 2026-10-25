@@ -201,7 +201,9 @@ Ghostty builds use native revision
 `memset` C ABI fix: the first Zig 0.16 migration pin mishandled negative fill
 values and corrupted Rust hash-table control bytes. Run
 `mise run ghostty:prepare` before direct Cargo build commands; it checks the
-full native source tree against `scripts/ghostty-source.json`. Keep that
+full native source tree against `scripts/ghostty-source.json`. The build script
+rejects source that prepare did not verify against the current manifest, such
+as a stale tree that rust-analyzer builds right after a pull. Keep that
 source, `huterm-ghostty`'s generated bindings, and bundled notices aligned. All
 builds require the pinned Ghostty source and Zig toolchain. Native source
 dependencies use Zig's content hashes; their notices are in `third-party/ghostty`
@@ -302,16 +304,20 @@ uninitialized.
 The build script reads `GHOSTTY_SOURCE_DIR`, `HUTERM_GHOSTTY_OPTIMIZE` (Debug,
 ReleaseSafe, ReleaseFast, or ReleaseSmall), `HUTERM_GHOSTTY_CPU`,
 `MACOSX_DEPLOYMENT_TARGET`, `ZIG`, and `HUTERM_GHOSTTY_ARTIFACT_CACHE`, and
-reruns only when those, itself, or `scripts/ghostty-source.json` change;
-`scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract
-tests pin each C behavior the engine relies on, and the ABI test checks every
-emitted FFI type against `ghostty_type_json()`. After a pin bump, fix a
-failing contract test's assumption before changing engine code. Allocator vtable
-callbacks receive log2 alignments, not the byte counts `allocator.h` describes.
-Set history through Ghostty's scrollback byte limit; the engine retains a 16 MiB
-budget and reports actual retained rows. Set Ghostty device attributes
-explicitly: a declining callback still gets Ghostty's default VT220 replies at
-this pin, as a `huterm-ghostty` contract test shows.
+reruns only when those, itself, `scripts/ghostty-source.json`, or the stamp
+beside the source directory change. `ghostty:prepare` writes that stamp,
+`.native/ghostty/source.manifest.json`, with the manifest's bytes once the tree
+verifies. The build fails, even before reusing a cached archive, unless the
+stamp matches the manifest. `scripts/ghostty-build.test.ts` runs its unit
+tests. The crate's contract tests pin each C behavior the engine relies on, and
+the ABI test checks every emitted FFI type against `ghostty_type_json()`. After
+a pin bump, fix a failing contract test's assumption before changing engine
+code. Allocator vtable callbacks receive log2 alignments, not the byte counts
+`allocator.h` describes. Set history through Ghostty's scrollback byte limit;
+the engine retains a 16 MiB budget and reports actual retained rows. Set
+Ghostty device attributes explicitly: a declining callback still gets
+Ghostty's default VT220 replies at this pin, as a `huterm-ghostty` contract
+test shows.
 
 ## Color and mouse state
 

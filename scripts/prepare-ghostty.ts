@@ -1,6 +1,6 @@
 /** Prepare and verify the pinned native source without changing reviewed inputs. */
 import { createHash } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { dlopen } from "bun:ffi";
@@ -140,11 +140,40 @@ async function download(item: Source, directory: string, reuse: string[]): Promi
   return destination;
 }
 
-/** `reuse` lists other checkouts' preparation directories, searched in order for a matching archive before downloading. */
-export async function prepareSource(item: Source, root: string, check: boolean, reuse: string[] = []): Promise<void> {
+/**
+ * Records the manifest bytes a verified source tree matched. The Ghostty build
+ * script rejects the tree unless this stamp matches the current manifest. An
+ * unchanged stamp keeps its mtime, so Cargo does not rerun the build script.
+ */
+function writeStamp(stamp: string, manifest: Uint8Array): void {
+  let current: Buffer | undefined;
+  try {
+    current = readFileSync(stamp);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (current?.equals(manifest)) return;
+  const stage = mkdtempSync(join(dirname(stamp), ".stamp-"));
+  try {
+    const temporary = join(stage, "manifest.json");
+    writeFileSync(temporary, manifest);
+    renameSync(temporary, stamp);
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
+}
+
+/**
+ * `manifest` holds the manifest file's bytes, recorded beside a verified tree
+ * except in check mode. `reuse` lists other checkouts' preparation
+ * directories, searched in order for a matching archive before downloading.
+ */
+export async function prepareSource(item: Source, root: string, check: boolean, manifest: Uint8Array, reuse: string[] = []): Promise<void> {
   const source = join(root, "source");
+  const stamp = join(root, "source.manifest.json");
   if (lstatSync(source, { throwIfNoEntry: false })) {
     verifyTree(source, item.tree_sha256);
+    if (!check) writeStamp(stamp, manifest);
     return;
   }
   if (check) throw new Error(`missing native source: ${source}`);
@@ -162,10 +191,11 @@ export async function prepareSource(item: Source, root: string, check: boolean, 
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
+  writeStamp(stamp, manifest);
 }
 
-function readManifest(manifestPath: string): Manifest {
-  const manifest: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+function parseManifest(bytes: Buffer): Manifest {
+  const manifest: unknown = JSON.parse(bytes.toString("utf8"));
   if (!manifest || typeof manifest !== "object" || !("revision" in manifest) || !("zig" in manifest) || !("source" in manifest)) {
     throw new Error("invalid Ghostty source manifest");
   }
@@ -201,7 +231,9 @@ if (import.meta.main) {
     if (values.help) {
       console.log("Prepare verified Ghostty sources: [--directory DIR] [--manifest FILE] [--check]");
     } else {
-      const manifest = readManifest(resolve(values.manifest ?? join(import.meta.dir, "ghostty-source.json")));
+      // Parse the bytes the stamp records, so they are the ones verified.
+      const manifestBytes = readFileSync(resolve(values.manifest ?? join(import.meta.dir, "ghostty-source.json")));
+      const manifest = parseManifest(manifestBytes);
       verifyRevision(manifest);
       const root = resolve(values.directory ?? join(repository, ".native/ghostty"));
       const reuse = otherCheckouts(repository).map(checkout => join(checkout, ".native/ghostty"));
@@ -213,7 +245,7 @@ if (import.meta.main) {
           const version = result.stdout.toString().trim();
           if (version !== manifest.zig) throw new Error(`expected Zig ${manifest.zig}, got ${version}`);
         }
-        await prepareSource(manifest.source, root, values.check ?? false, reuse);
+        await prepareSource(manifest.source, root, values.check ?? false, manifestBytes, reuse);
       });
       console.log(`verified Ghostty ${manifest.revision} at ${join(root, "source")}`);
     }
