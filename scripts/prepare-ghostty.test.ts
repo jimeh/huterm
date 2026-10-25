@@ -136,6 +136,8 @@ test("patch paths come from file headers, never from hunk bodies", () => {
   ].join("\n");
   expect(patchPaths(text).sort()).toEqual(["src/a.zig", "src/new.zig"]);
   expect(() => patchPaths(patchText("include/ghostty/vt.h"))).toThrow("under include/");
+  // A new empty file has no hunk or ---/+++ lines, only its diff header.
+  expect(() => patchPaths("diff --git a/include/x.h b/include/x.h\nnew file mode 100644\nindex 0000000..e69de29\n")).toThrow("under include/");
   for (const path of ["../outside", "src/../../outside", "/absolute", "./src/file.zig"]) {
     expect(() => patchPaths(patchText(path)), path).toThrow("escapes the Ghostty source");
   }
@@ -199,6 +201,13 @@ test("check mode compares published patches without writing", async () => {
   writeFileSync(series, "");
   await expect(prepareSource(item, root, true, manifest, [], [patch("fix")])).rejects.toThrow("published Ghostty patches differ from the manifest (series)");
   expect(readFileSync(series, "utf8")).toBe("");
+  // A symbolic link to identical bytes is not a published copy.
+  writeFileSync(series, "fix.patch\n");
+  const copy = join(root, "elsewhere.patch");
+  writeFileSync(copy, patchText("src/file.zig"));
+  rmSync(join(root, "patches", "fix.patch"));
+  symlinkSync(copy, join(root, "patches", "fix.patch"));
+  await expect(prepareSource(item, root, true, manifest, [], [patch("fix")])).rejects.toThrow("(fix.patch)");
   rmSync(join(root, "patches"), { recursive: true });
   await expect(prepareSource(item, root, true, manifest)).rejects.toThrow("(series)");
   expect(existsSync(join(root, "patches"))).toBe(false);

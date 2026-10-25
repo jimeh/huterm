@@ -41,8 +41,16 @@ its IDs are live, with the same `deleteItem` and `insert` steps that
 `addWithIdContext` uses for a dead requested ID
 ([L363-L364](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/ref_counted_set.zig#L363-L364)).
 Dead items have no cell references, so nothing is renumbered. Style sets use
-the same type, so a full style set also stops cloning its page. The patch adds
-a set-level Zig test. Huterm's
+the same type, so a full style set also stops cloning its page.
+
+Upstream's `insert` can put an item into a reaped dead bucket ahead of a live
+item with a longer probe sequence, where lookups stop early and miss the live
+item. Deleting the dead item shifts that chain back and can make the live
+value reachable, which would trip `insert`'s runtime-safety assertion in Debug
+and ReleaseSafe builds. The patch therefore looks the value up again after the
+delete and reuses a live match. Its Zig tests cover the two-link set and seeded
+add and release churn on a 64-item set; the churn test aborts at that
+assertion without the second lookup. Huterm's
 `non_color_osc_and_utf8_output_keep_snapshots_partial` engine test and the
 `osc8` and `osc8-id` fixtures of `mise run bench:engine` fail without it.
 

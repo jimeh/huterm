@@ -1,6 +1,6 @@
 /** Prepare and verify the pinned native source without changing reviewed inputs. */
 import { createHash } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, posix, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { dlopen } from "bun:ffi";
@@ -191,8 +191,15 @@ export function patchPaths(text: string): string[] {
     } else if (line.startsWith("GIT binary patch") || line.startsWith("Binary files ")) {
       throw new Error("binary patches are not supported");
     } else {
+      // A hunk-less entry, such as a new empty file, names its path only here.
+      const git = /^diff --git a\/(\S+) b\/(\S+)$/.exec(line);
       const header = /^(?:--- a\/|\+\+\+ b\/|rename from |rename to |copy from |copy to )(.*)$/.exec(line);
-      if (header) paths.add(header[1]!);
+      if (git) {
+        paths.add(git[1]!);
+        paths.add(git[2]!);
+      } else if (line.startsWith("diff --git ")) {
+        throw new Error(`unsupported patch header: ${line}`);
+      } else if (header) paths.add(header[1]!);
       else if (/^(?:---|\+\+\+) /.test(line) && !/^(?:---|\+\+\+) \/dev\/null$/.test(line)) {
         throw new Error(`unsupported patch header: ${line}`);
       }
@@ -259,13 +266,31 @@ function publishedFiles(patches: VerifiedPatch[]): Map<string, Buffer> {
   return files;
 }
 
+/**
+ * The bytes of `path` when it is a regular file, or undefined. It checks the
+ * opened descriptor, never following a symbolic link, so the bytes it returns
+ * come from the file it checked.
+ */
+function readRegularFile(path: string): Buffer | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return undefined;
+  }
+  try {
+    return fstatSync(fd).isFile() ? readFileSync(fd) : undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** Entries of `directory` that are missing, differ from `files`, or are stale. */
 function publishedDifferences(directory: string, files: Map<string, Buffer>): string[] {
   if (!lstatSync(directory, { throwIfNoEntry: false })?.isDirectory()) return [...files.keys()];
   return [...new Set([...files.keys(), ...readdirSync(directory)])].sort().filter(name => {
     const expected = files.get(name);
-    const entry = join(directory, name);
-    return !expected || !lstatSync(entry, { throwIfNoEntry: false })?.isFile() || !readFileSync(entry).equals(expected);
+    return !expected || !readRegularFile(join(directory, name))?.equals(expected);
   });
 }
 

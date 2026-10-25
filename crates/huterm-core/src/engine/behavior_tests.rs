@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use huterm_protocol::{
-    CellColor, CellSize, GridSize, Rgb, TerminalId, TerminalPresentation,
-    TerminalRow, TerminalSnapshot,
+    CellColor, CellSize, GridSize, LinkLookup, MousePosition, Rgb, TerminalId,
+    TerminalPresentation, TerminalRow, TerminalSnapshot,
 };
 
 use super::{EngineEffect, TerminalEngine};
@@ -422,39 +422,64 @@ fn non_color_osc_and_utf8_output_keep_snapshots_partial() {
     engine.process(b"first\r\nsecond\r\nthird").unwrap();
     engine.snapshot().unwrap();
     // Rewriting one row's linked text drops its old hyperlink below a live
-    // ID. Each form repeats enough to reuse the dead ID several times. The
-    // texts have equal lengths: a leftover cell would keep the old link
-    // alive, fill the page's two-link set, and correctly grow the page once.
+    // ID. Each form repeats enough to reuse the dead ID several times, and
+    // the row must still resolve to its newest destination. The texts have
+    // equal lengths: a leftover cell would keep the old link alive, fill the
+    // page's two-link set, and correctly grow the page once.
     let links = (0..8).flat_map(|iteration| {
         let alternate = iteration % 2;
         [
-            "\x1b[2;1H\x1b]8;;file:///tmp/same\x07same\x1b]8;;\x07".to_owned(),
-            format!(
-                "\x1b[2;1H\x1b]8;;file:///tmp/{alternate}\x07uri{alternate}\x1b]8;;\x07"
+            ("same".to_owned(), String::new(), "https://example.test/same".to_owned()),
+            (
+                format!("uri{alternate}"),
+                String::new(),
+                format!("https://example.test/{alternate}"),
             ),
-            format!(
-                "\x1b[2;1H\x1b]8;id=link-{alternate};file:///tmp/id\x07id-{alternate}\x1b]8;;\x07"
+            (
+                format!("id-{alternate}"),
+                format!("id=link-{alternate}"),
+                format!("https://example.test/id{alternate}"),
             ),
         ]
+        .map(|(text, params, destination)| {
+            (
+                format!(
+                    "\x1b[2;1H\x1b]8;{params};{destination}\x07{text}\x1b]8;;\x07"
+                ),
+                Some(destination),
+            )
+        })
     });
-    for chunk in [
+    for (chunk, destination) in [
         "\x1b]2;title\x07\x1b[2;1Hx".to_owned(),
         "\x1b]133;A\x07\x1b[2;1H$ \x1b]133;B\x07\x1b]7;file:///tmp\x07"
             .to_owned(),
         "\x1b[2;1H\x1b[31m\u{255d}\u{5e1d}\x1b[0m".to_owned(),
     ]
+    .map(|chunk| (chunk, None))
     .into_iter()
     .chain(links)
     {
         let chunk = chunk.as_bytes();
         engine.process(chunk).unwrap();
-        engine.snapshot().unwrap();
+        let snapshot = engine.snapshot().unwrap();
         let extracted = engine.last_snapshot_stats().extracted;
         assert!(
             extracted <= 2,
             "{:?} extracted {extracted} of 10 rows",
             String::from_utf8_lossy(chunk)
         );
+        if let Some(destination) = destination {
+            let lookup = engine
+                .lookup_link(&snapshot, MousePosition { row: 1, column: 0 });
+            let LinkLookup::Match(link) = lookup else {
+                panic!(
+                    "{:?} left no link: {lookup:?}",
+                    String::from_utf8_lossy(chunk)
+                )
+            };
+            assert_eq!(link.destination, destination);
+        }
     }
     // Shows the fixture detects a full redraw. OSC 4 dirties Ghostty's
     // palette on its own, so this does not test the hint; the full-probe
