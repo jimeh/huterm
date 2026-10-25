@@ -435,11 +435,13 @@ fn numstat_paths(output: &[u8]) -> Vec<String> {
 /// Applies each patch to the staged copy, in order. `git apply` exits
 /// successfully without changing anything when it runs in a subdirectory of
 /// a repository it discovered, so every path a patch touches must then
-/// differ from the pristine source. Runs Git only when there are patches.
+/// differ from its bytes before that patch. Comparing with the state before
+/// each patch, not the pristine source, lets a later patch restore pristine
+/// bytes and still catches a skipped patch to a file an earlier one changed.
+/// Runs Git only when there are patches.
 fn apply_patches(
     git: &OsString,
     patches: &[PathBuf],
-    pristine: &Path,
     staged: &Path,
     inherited: &[(OsString, OsString)],
 ) -> Result<(), BuildError> {
@@ -447,19 +449,29 @@ fn apply_patches(
         let mut numstat = git_apply(git, staged, inherited);
         numstat.args(["--numstat", "-z"]).arg(patch);
         let paths = numstat_paths(&git_output(numstat, patch)?);
+        let before = file_states(staged, &paths);
         let mut apply = git_apply(git, staged, inherited);
         apply.arg("--whitespace=nowarn").arg(patch);
         git_output(apply, patch)?;
-        check_patched(patch, &paths, pristine, staged)?;
+        check_patched(patch, &paths, &before, staged)?;
         println!("applied Ghostty patch {}", patch.display());
     }
     Ok(())
 }
 
+/// The bytes of each path under `root`, or `None` where it cannot be read,
+/// as before a file is created.
+fn file_states(root: &Path, paths: &[String]) -> Vec<Option<Vec<u8>>> {
+    paths
+        .iter()
+        .map(|path| fs::read(root.join(path)).ok())
+        .collect()
+}
+
 fn check_patched(
     patch: &Path,
     paths: &[String],
-    pristine: &Path,
+    before: &[Option<Vec<u8>>],
     staged: &Path,
 ) -> Result<(), BuildError> {
     if paths.is_empty() {
@@ -468,10 +480,9 @@ fn check_patched(
             patch.display()
         )));
     }
-    for path in paths {
-        if fs::read(pristine.join(path)).ok()
-            == fs::read(staged.join(path)).ok()
-        {
+    let after = file_states(staged, paths);
+    for ((path, before), after) in paths.iter().zip(before).zip(&after) {
+        if before == after {
             return Err(BuildError::Patch(format!(
                 "Ghostty patch {} left {path} unchanged in {}",
                 patch.display(),
@@ -868,7 +879,6 @@ fn build() -> Result<(), BuildError> {
         apply_patches(
             &OsString::from("git"),
             &patch_series(&source)?,
-            &source,
             &layout.source,
             &std::env::vars_os().collect::<Vec<_>>(),
         )?;
@@ -1268,8 +1278,7 @@ mod tests {
         stage_source(&source, &staged).unwrap();
         let inherited: Vec<_> = std::env::vars_os().collect();
         let patches = patch_series(&source).unwrap();
-        apply_patches(&"git".into(), &patches, &source, &staged, &inherited)
-            .unwrap();
+        apply_patches(&"git".into(), &patches, &staged, &inherited).unwrap();
         assert_eq!(
             fs::read_to_string(staged.join("src/file.zig")).unwrap(),
             "one\npatched\nthree\n"
@@ -1311,24 +1320,42 @@ mod tests {
         let staged = temp.0.join("out/ghostty-source");
         stage_source(&source, &staged).unwrap();
         let patches = patch_series(&source).unwrap();
-        let error =
-            apply_patches(&"git".into(), &patches, &source, &staged, &[])
-                .unwrap_err()
-                .to_string();
+        let error = apply_patches(&"git".into(), &patches, &staged, &[])
+            .unwrap_err()
+            .to_string();
         assert!(error.contains(&patches[0].display().to_string()), "{error}");
         assert!(error.contains("patch does not apply"), "{error}");
 
         // Git can exit successfully without changing the files it names.
+        let paths = ["src/file.zig".to_owned()];
         let error = check_patched(
             Path::new("noop.patch"),
-            &["src/file.zig".to_owned()],
-            &source,
+            &paths,
+            &file_states(&staged, &paths),
             &staged,
         )
         .unwrap_err()
         .to_string();
         assert!(error.contains("noop.patch"), "{error}");
         assert!(error.contains("left src/file.zig unchanged"), "{error}");
+    }
+
+    #[test]
+    fn a_later_patch_may_restore_bytes_an_earlier_patch_changed() {
+        let temp = TempDir::new("patch-restore");
+        let revert = "diff --git a/src/file.zig b/src/file.zig\n\
+            --- a/src/file.zig\n+++ b/src/file.zig\n@@ -1,3 +1,3 @@\n one\n\
+            -patched\n+two\n three\n";
+        let source =
+            prepared(&temp.0, &[("fix.patch", FIX), ("revert.patch", revert)]);
+        let staged = temp.0.join("out/ghostty-source");
+        stage_source(&source, &staged).unwrap();
+        let patches = patch_series(&source).unwrap();
+        apply_patches(&"git".into(), &patches, &staged, &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(staged.join("src/file.zig")).unwrap(),
+            "one\ntwo\nthree\n"
+        );
     }
 
     #[test]
@@ -1343,8 +1370,7 @@ mod tests {
         assert!(patch_series(&source).unwrap().is_empty());
         // An empty series never runs Git.
         let missing = OsString::from("/nonexistent/git");
-        apply_patches(&missing, &[], &source, &temp.0.join("unstaged"), &[])
-            .unwrap();
+        apply_patches(&missing, &[], &temp.0.join("unstaged"), &[]).unwrap();
 
         let source = prepared(&temp.0, &[("b.patch", FIX), ("a.patch", FIX)]);
         let directory = temp.0.join("native/patches");

@@ -292,7 +292,8 @@ and changes nothing when it discovers an enclosing repository and runs from a
 subdirectory, which is where Cargo's `target` sits in Huterm's checkout. The
 build therefore removes inherited `GIT_*` variables, sets the discovery ceiling
 at the copy's parent, ignores system and global Git configuration, and requires
-every path a patch touches to differ from the pristine source afterward.
+every path a patch touches to differ afterward from its bytes before that
+patch, so a later patch may restore pristine bytes.
 
 The series is not a Cargo rerun trigger. The manifest and stamp already change
 with any patch edit, and a trigger path that can be missing reruns Zig on every
