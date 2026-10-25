@@ -418,7 +418,18 @@ run = "cargo deny --locked check"
 
 [tasks."ci:workflows"]
 description = "Validate and secure GitHub Actions workflows"
-run = ["actionlint", "zizmor --offline .github", "pinact run --check --verify-comment"]
+run = '''
+set -eu
+actionlint
+# Without a token zizmor skips its online audits, including advisory checks
+# that Dependabot alerts do not perform for SHA-pinned actions.
+if [ -n "${CI:-}" ] && [ -z "${ZIZMOR_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}" ]; then
+  echo "ci:workflows: set ZIZMOR_GITHUB_TOKEN in CI so zizmor runs its online audits" >&2
+  exit 1
+fi
+zizmor .github
+pinact run --check --verify-comment
+'''
 
 [tasks."ci:workflows:staged"]
 description = "Validate workflows, verifying only staged action pins unless pinact's config is staged"

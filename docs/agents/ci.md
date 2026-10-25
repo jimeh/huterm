@@ -24,7 +24,8 @@ Cargo component is dispatchable.
 
 Pass `${{ github.token }}` to Pinact as `PINACT_GITHUB_TOKEN` in CI. The Mise
 action's token environment is Mise-specific, so Pinact otherwise uses GitHub's
-anonymous API limit while verifying action pins.
+anonymous API limit while verifying action pins. Pass it to zizmor as
+`ZIZMOR_GITHUB_TOKEN` as well; see [workflow policy](#workflow-policy).
 
 Every `jdx/mise-action` step pins the same explicit mise `version`. Without
 a pin, a restored Mise cache holding an older binary makes the action run
@@ -105,3 +106,22 @@ matrix fail-fast so each reports its own failure instead of cancelling its sibli
 Keep workflow scanning scoped to the root `.github` directory. Published vendor
 archives can contain upstream workflows that Huterm does not execute. Preserve
 those files for archive verification instead of rewriting their action pins.
+
+`ci:workflows` runs zizmor's online audits whenever a token is set, and fails
+in CI without one. Dependabot alerts skip SHA-pinned actions, so zizmor's
+`known-vulnerable-actions` audit is the only advisory check these pins get.
+A newly published advisory can therefore fail the Policy job on an unrelated
+pull request. The pre-commit hook stays `--offline` for speed.
+
+actionlint lints only workflow files, using whichever `shellcheck` is on
+`PATH`: the runner image's copy in CI, and none at all on a machine without
+it. The `run:` scripts in composite actions under `.github/actions` get
+zizmor's security audits but no shell linting.
+
+Runners force Node 20 actions onto Node 24 and annotate each run with a
+deprecation warning. Check `runs.using` in an action's `action.yml` at its
+pinned SHA rather than relying on annotations, which cover only workflows that
+ran. `mlugg/setup-zig` v2.2.1 still declares `node20` and runs correctly on
+Node 24. Its GitHub repository is a read-only mirror, so track the upgrade in
+[codeberg.org/mlugg/setup-zig#55](https://codeberg.org/mlugg/setup-zig/pulls/55)
+and let `actions:update` pick up the release once it clears the cooldown.

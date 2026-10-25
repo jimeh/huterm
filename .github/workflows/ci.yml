@@ -68,6 +68,7 @@ jobs:
         if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
         env:
           PINACT_GITHUB_TOKEN: ${{ github.token }}
+          ZIZMOR_GITHUB_TOKEN: ${{ github.token }}
         run: mise run ci:workflows
 
       - name: Smoke config schema in Taplo
