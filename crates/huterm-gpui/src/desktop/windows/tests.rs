@@ -927,7 +927,13 @@ fn orphaned_publication_preserves_another_attachment_and_transferred_tab() {
         .result
         .unwrap();
     let second = runtime.mux.lock().unwrap().attach_session(session).unwrap();
-    runtime.cleanup_spawn(session, workspace, opened.tab.id, attachment);
+    runtime.cleanup_spawn(
+        session,
+        workspace,
+        opened.tab.id,
+        opened.tab.first_pane().id,
+        attachment,
+    );
     assert_eq!(
         runtime
             .mux
@@ -952,6 +958,7 @@ fn orphaned_publication_preserves_another_attachment_and_transferred_tab() {
         source,
         source_workspace,
         transferred.tab.id,
+        transferred.tab.first_pane().id,
         initial,
     );
     let mux = runtime.mux.lock().unwrap();
@@ -980,11 +987,68 @@ fn orphaned_publication_never_terminates_a_retargeted_destination() {
         .unwrap()
         .retarget_attachment(attachment.unwrap(), destination)
         .unwrap();
-    runtime.cleanup_spawn(source, workspace, opened.tab.id, attachment);
+    runtime.cleanup_spawn(
+        source,
+        workspace,
+        opened.tab.id,
+        opened.tab.first_pane().id,
+        attachment,
+    );
     let mux = runtime.mux.lock().unwrap();
     assert!(mux.session(source).is_none());
     assert!(mux.session(destination).is_some());
     assert_eq!(mux.capture_hierarchy().attachments, []);
+}
+
+#[test]
+fn orphaned_publication_spares_a_pane_moved_into_its_tab() {
+    let runtime = DesktopRuntime::default();
+    // Another client moves a pane into the spawn's tab before the spawn's
+    // window publishes it.
+    let (session, workspace, opened, attachment, _authority) = runtime
+        .open_tab(None, None, &lifecycle_command(), true)
+        .result
+        .unwrap();
+    let spawned = opened.tab.first_pane().clone();
+    let (moved, other_session) = {
+        let mut mux = runtime.mux.lock().unwrap();
+        let other_session = mux.create_session(None).unwrap();
+        let other = mux.create_workspace(other_session, None).unwrap();
+        let tab = mux.open_tab(other, &lifecycle_command()).unwrap().tab;
+        let moved = tab.first_pane().clone();
+        mux.move_pane(
+            huterm_core::PaneRef {
+                workspace: other,
+                tab: tab.id,
+                pane: moved.id,
+            },
+            huterm_core::MoveDestination::Beside(huterm_core::Beside {
+                target: huterm_core::PaneRef {
+                    workspace,
+                    tab: opened.tab.id,
+                    pane: spawned.id,
+                },
+                side: SplitDirection::Right,
+            }),
+        )
+        .unwrap();
+        (moved, other_session)
+    };
+    runtime.cleanup_spawn(
+        session,
+        workspace,
+        opened.tab.id,
+        spawned.id,
+        attachment,
+    );
+    let mux = runtime.mux.lock().unwrap();
+    // Only the spawned pane closed; the moved one keeps running there.
+    assert!(mux.select_pane(spawned.id).is_err());
+    assert_eq!(mux.select_pane(moved.id).unwrap().session, session);
+    assert_eq!(mux.terminal_count(), 1);
+    assert!(mux.session(other_session).is_some());
+    drop(mux);
+    runtime.terminate().unwrap();
 }
 
 #[test]

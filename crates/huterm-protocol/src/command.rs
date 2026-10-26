@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use crate::{SessionId, TabId, WorkspaceId};
+use crate::{PaneId, SessionId, TabId, WorkspaceId};
 
 /// Stable identifier of a catalog command, such as `select_tab`.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -70,7 +70,15 @@ pub enum ArgumentKind {
     Workspace,
     /// Session identity, supplied from client context.
     Session,
+    /// Pane identity, supplied from client context.
+    Pane,
+    /// A side of a pane: `left`, `right`, `up`, or `down`; carried as
+    /// [`CommandValue::Text`].
+    Side,
 }
+
+/// The names a [`ArgumentKind::Side`] value accepts, in picker order.
+pub const SIDES: [&str; 4] = ["left", "right", "up", "down"];
 
 /// Whether an invocation must supply one command argument.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -204,6 +212,8 @@ pub enum CommandValue {
     Workspace(WorkspaceId),
     /// Session identity.
     Session(SessionId),
+    /// Pane identity.
+    Pane(PaneId),
 }
 
 impl CommandValue {
@@ -216,9 +226,13 @@ impl CommandValue {
                     Self::Text(_),
                     ArgumentKind::Text | ArgumentKind::QuakeProfile
                 )
+                | (Self::Pane(_), ArgumentKind::Pane)
                 | (Self::Tab(_), ArgumentKind::Tab)
                 | (Self::Workspace(_), ArgumentKind::Workspace)
                 | (Self::Session(_), ArgumentKind::Session)
+        ) || matches!(
+            (self, kind),
+            (Self::Text(side), ArgumentKind::Side) if SIDES.contains(&side.as_str())
         )
     }
 }
@@ -300,6 +314,15 @@ impl CommandInvocation {
     pub fn tab(&self, name: &str) -> Option<TabId> {
         match self.argument(name)? {
             CommandValue::Tab(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Reads a pane argument; absent or mistyped values read as `None`.
+    #[must_use]
+    pub fn pane(&self, name: &str) -> Option<PaneId> {
+        match self.argument(name)? {
+            CommandValue::Pane(value) => Some(*value),
             _ => None,
         }
     }
@@ -472,6 +495,8 @@ fn describe_kind(kind: ArgumentKind) -> &'static str {
         ArgumentKind::Tab => "a tab",
         ArgumentKind::Workspace => "a workspace",
         ArgumentKind::Session => "a session",
+        ArgumentKind::Pane => "a pane",
+        ArgumentKind::Side => "left, right, up, or down",
     }
 }
 
@@ -729,6 +754,40 @@ pub mod ids {
     pub const RESIZE_PANE_DOWN: CommandId = CommandId::new("resize_pane_down");
     /// Zooms the focused pane across its tab, or unzooms it.
     pub const TOGGLE_PANE_ZOOM: CommandId = CommandId::new("toggle_pane_zoom");
+    /// Swaps the focused pane with the next one in its tab, wrapping.
+    pub const SWAP_PANE_NEXT: CommandId = CommandId::new("swap_pane_next");
+    /// Swaps the focused pane with the previous one in its tab, wrapping.
+    pub const SWAP_PANE_PREVIOUS: CommandId =
+        CommandId::new("swap_pane_previous");
+    /// Swaps the focused pane with the pane to its left.
+    pub const SWAP_PANE_LEFT: CommandId = CommandId::new("swap_pane_left");
+    /// Swaps the focused pane with the pane to its right.
+    pub const SWAP_PANE_RIGHT: CommandId = CommandId::new("swap_pane_right");
+    /// Swaps the focused pane with the pane above it.
+    pub const SWAP_PANE_UP: CommandId = CommandId::new("swap_pane_up");
+    /// Swaps the focused pane with the pane below it.
+    pub const SWAP_PANE_DOWN: CommandId = CommandId::new("swap_pane_down");
+    /// Moves the focused pane one place forward in its tab, wrapping.
+    pub const MOVE_PANE_NEXT: CommandId = CommandId::new("move_pane_next");
+    /// Moves the focused pane one place back in its tab, wrapping.
+    pub const MOVE_PANE_PREVIOUS: CommandId =
+        CommandId::new("move_pane_previous");
+    /// Moves the focused pane past the pane to its left.
+    pub const MOVE_PANE_LEFT: CommandId = CommandId::new("move_pane_left");
+    /// Moves the focused pane past the pane to its right.
+    pub const MOVE_PANE_RIGHT: CommandId = CommandId::new("move_pane_right");
+    /// Moves the focused pane past the pane above it.
+    pub const MOVE_PANE_UP: CommandId = CommandId::new("move_pane_up");
+    /// Moves the focused pane past the pane below it.
+    pub const MOVE_PANE_DOWN: CommandId = CommandId::new("move_pane_down");
+    /// Moves the focused pane beside a chosen pane in any tab.
+    pub const MOVE_PANE_TO_PANE: CommandId =
+        CommandId::new("move_pane_to_pane");
+    /// Moves the focused pane into a new tab.
+    pub const MOVE_PANE_TO_NEW_TAB: CommandId =
+        CommandId::new("move_pane_to_new_tab");
+    /// Moves a whole tab beside a chosen pane of another tab.
+    pub const MOVE_TAB_TO_PANE: CommandId = CommandId::new("move_tab_to_pane");
     /// Opens the window's application menu.
     pub const OPEN_MENU: CommandId = CommandId::new("open_menu");
     /// Focuses the window's notice list.
@@ -912,6 +971,22 @@ const PROFILE: &[ArgumentSpec] = &[ArgumentSpec {
     required: Requirement::Optional,
     prompt: true,
 }];
+
+/// The pane a move lands beside, chosen in the palette.
+const TARGET_PANE: ArgumentSpec = ArgumentSpec {
+    name: "pane",
+    kind: ArgumentKind::Pane,
+    required: Requirement::Always,
+    prompt: true,
+};
+
+/// The side of the target pane a move takes.
+const SIDE: ArgumentSpec = ArgumentSpec {
+    name: "side",
+    kind: ArgumentKind::Side,
+    required: Requirement::Always,
+    prompt: true,
+};
 
 /// Tab-targeted commands default to the active tab. The argument is not
 /// prompted so the palette runs them immediately; tab-strip menus and
@@ -1332,6 +1407,126 @@ const CATALOG: &[CommandSpec] = &[
         "Toggle Pane Zoom",
         "Show the focused pane across its whole tab, or show every pane again.",
         &[],
+    ),
+    spec(
+        ids::SWAP_PANE_NEXT,
+        CommandScope::Window,
+        "Swap Pane with Next",
+        "Swap the focused pane with the next pane in its tab, wrapping.",
+        &[],
+    ),
+    spec(
+        ids::SWAP_PANE_PREVIOUS,
+        CommandScope::Window,
+        "Swap Pane with Previous",
+        "Swap the focused pane with the previous pane in its tab, wrapping.",
+        &[],
+    ),
+    spec(
+        ids::SWAP_PANE_LEFT,
+        CommandScope::Window,
+        "Swap Pane Left",
+        "Swap the focused pane with the pane to its left.",
+        &[],
+    ),
+    spec(
+        ids::SWAP_PANE_RIGHT,
+        CommandScope::Window,
+        "Swap Pane Right",
+        "Swap the focused pane with the pane to its right.",
+        &[],
+    ),
+    spec(
+        ids::SWAP_PANE_UP,
+        CommandScope::Window,
+        "Swap Pane Up",
+        "Swap the focused pane with the pane above it.",
+        &[],
+    ),
+    spec(
+        ids::SWAP_PANE_DOWN,
+        CommandScope::Window,
+        "Swap Pane Down",
+        "Swap the focused pane with the pane below it.",
+        &[],
+    ),
+    spec(
+        ids::MOVE_PANE_NEXT,
+        CommandScope::Window,
+        "Move Pane Forward",
+        "Move the focused pane one place forward in its tab, wrapping.",
+        &[],
+    ),
+    spec(
+        ids::MOVE_PANE_PREVIOUS,
+        CommandScope::Window,
+        "Move Pane Back",
+        "Move the focused pane one place back in its tab, wrapping.",
+        &[],
+    ),
+    spec(
+        ids::MOVE_PANE_LEFT,
+        CommandScope::Window,
+        "Move Pane Left",
+        "Move the focused pane past the pane to its left.",
+        &[],
+    ),
+    spec(
+        ids::MOVE_PANE_RIGHT,
+        CommandScope::Window,
+        "Move Pane Right",
+        "Move the focused pane past the pane to its right.",
+        &[],
+    ),
+    spec(
+        ids::MOVE_PANE_UP,
+        CommandScope::Window,
+        "Move Pane Up",
+        "Move the focused pane past the pane above it.",
+        &[],
+    ),
+    spec(
+        ids::MOVE_PANE_DOWN,
+        CommandScope::Window,
+        "Move Pane Down",
+        "Move the focused pane past the pane below it.",
+        &[],
+    ),
+    spec(
+        ids::MOVE_PANE_TO_PANE,
+        CommandScope::Window,
+        "Move Pane to Another Pane",
+        "Move the focused pane beside a pane in any tab, keeping its \
+         terminal running.",
+        &[TARGET_PANE, SIDE],
+    ),
+    spec(
+        ids::MOVE_PANE_TO_NEW_TAB,
+        CommandScope::Window,
+        "Move Pane to New Tab",
+        "Move the focused pane into a new tab, in this workspace or another.",
+        &[ArgumentSpec {
+            name: "workspace",
+            kind: ArgumentKind::Workspace,
+            required: Requirement::Optional,
+            prompt: true,
+        }],
+    ),
+    spec(
+        ids::MOVE_TAB_TO_PANE,
+        CommandScope::Window,
+        "Move Tab into Pane",
+        "Move a whole tab beside a pane of another tab, keeping its layout.",
+        &[
+            ArgumentSpec {
+                name: "tab",
+                kind: ArgumentKind::Tab,
+                required: Requirement::Optional,
+                prompt: false,
+            },
+            TARGET_PANE,
+            SIDE,
+        ],
     ),
     spec(
         ids::OPEN_MENU,

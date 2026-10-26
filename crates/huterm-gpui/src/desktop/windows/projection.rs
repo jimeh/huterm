@@ -551,6 +551,38 @@ pub(super) trait ReconcileTarget {
     fn installed_panes(&self, tab: TabId) -> Vec<(PaneId, u64)>;
     /// Drops pane views of `tab` without closing anything.
     fn drop_panes(&mut self, tab: TabId, panes: &[PaneId]);
+    /// Moves the view of `pane` from `from` into `to`, building `to`'s
+    /// view when the window has none and dropping `from`'s once it holds
+    /// no pane. The view keeps its terminal view, viewer, and state.
+    fn adopt_pane(&mut self, pane: PaneId, from: TabId, to: TabId);
+    /// Puts `tab`'s pane views in the projected traversal order; returns
+    /// whether any moved.
+    fn order_panes(&mut self, tab: TabId) -> bool;
+}
+
+/// The pane views a window must move between its tabs: each view whose
+/// pane the projection, at or past the view's sequence, now holds in
+/// another tab of `workspace`, with the tab it leaves and the tab it
+/// joins. A pane that left the workspace is not adopted; removal drops it.
+pub(super) fn adoptions(
+    state: &HierarchyState,
+    workspace: Option<WorkspaceId>,
+    installed: &[(TabId, Vec<(PaneId, u64)>)],
+) -> Vec<(PaneId, TabId, TabId)> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+    installed
+        .iter()
+        .flat_map(|(tab, panes)| panes.iter().map(move |pane| (*tab, *pane)))
+        .filter_map(|(from, (pane, committed))| {
+            let to = state.pane_tab(pane)?;
+            (committed <= state.seq()
+                && to != from
+                && state.tab_workspace(to) == Some(workspace))
+            .then_some((pane, from, to))
+        })
+        .collect()
 }
 
 /// The pane views of an installed `tab` that reconcile removes: those whose
@@ -604,6 +636,10 @@ pub(super) fn reactivation(
 
 /// What reconciling one window changed.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "redraws, titles, emptying and adoption are independent outcomes"
+)]
 pub(super) struct WindowChange {
     /// Something the window renders changed; notify it once.
     pub(super) changed: bool,
@@ -611,6 +647,9 @@ pub(super) struct WindowChange {
     pub(super) titles: bool,
     /// The removals took the window's last view.
     pub(super) emptied: bool,
+    /// A pane view moved between tabs, so the window must reapply which
+    /// views show even when its active tab and pane stay the same.
+    pub(super) adopted: bool,
 }
 
 /// Drops the pane views whose panes left their tabs once the projection
@@ -632,8 +671,45 @@ fn drop_left_panes(target: &mut impl ReconcileTarget) -> bool {
     dropped
 }
 
-/// Brings one window in line with the projection: removals, then order,
-/// then the titles of touched tabs, then installs and replacements. Derived
+/// Moves the views of panes that moved between tabs this window shows,
+/// reporting whether any moved.
+fn adopt_moved_panes(target: &mut impl ReconcileTarget) -> bool {
+    let installed: Vec<_> = target
+        .installed()
+        .into_iter()
+        .map(|(tab, _)| (tab, target.installed_panes(tab)))
+        .collect();
+    let moved = adoptions(target.projection(), target.workspace(), &installed);
+    for &(pane, from, to) in &moved {
+        target.adopt_pane(pane, from, to);
+    }
+    !moved.is_empty()
+}
+
+/// Republishes the titles of the `touched` tabs among `current` that the
+/// projection still `held` in this window's workspace, reporting whether
+/// any title changed.
+fn publish_touched_titles(
+    target: &mut impl ReconcileTarget,
+    touched: &Touched,
+    current: &[TabId],
+    held: &[TabId],
+) -> bool {
+    let mut changed = false;
+    for &tab in current {
+        if !touched.contains_tab(tab) || !held.contains(&tab) {
+            continue;
+        }
+        target.remember_names(tab);
+        let title = target.title(tab);
+        changed |= target.publish_title(tab, &title);
+    }
+    changed
+}
+
+/// Brings one window in line with the projection: pane order, adoptions,
+/// removals, then tab order, then the titles of touched tabs, then installs
+/// and replacements. Derived
 /// from state and compared before every write, so running it again changes
 /// nothing.
 pub(super) fn reconcile_window(
@@ -641,6 +717,21 @@ pub(super) fn reconcile_window(
     touched: &Touched,
     terminating: bool,
 ) -> WindowChange {
+    let mut change = WindowChange::default();
+    // A swap or a move within a tab changes no membership, only order. The
+    // views follow it first, so a pane that adoption or removal takes away
+    // hands focus to the first pane in the new order.
+    for (tab, _) in target.installed() {
+        change.changed |= target.order_panes(tab);
+    }
+    // Panes that moved between tabs this window shows keep their views,
+    // before removal could drop them; never in a busy window, whose own
+    // completion reconciles once it ends.
+    if !target.busy() && !terminating && adopt_moved_panes(target) {
+        change.changed = true;
+        change.titles = true;
+        change.adopted = true;
+    }
     let installed = target.installed();
     let remove = removals(
         target.projection(),
@@ -650,7 +741,6 @@ pub(super) fn reconcile_window(
         target.busy(),
         terminating,
     );
-    let mut change = WindowChange::default();
     if !remove.is_empty() {
         target.drop_tabs(&remove);
         // The removed tabs' published titles are gone too, so title
@@ -687,16 +777,9 @@ pub(super) fn reconcile_window(
                 && target.projection().tab_workspace(*tab) == workspace
         })
         .collect();
-    for tab in current {
-        if !touched.contains_tab(tab) || !held.contains(&tab) {
-            continue;
-        }
-        target.remember_names(tab);
-        let title = target.title(tab);
-        if target.publish_title(tab, &title) {
-            change.changed = true;
-            change.titles = true;
-        }
+    if publish_touched_titles(target, touched, &current, &held) {
+        change.changed = true;
+        change.titles = true;
     }
     target.pending_installs().touched(touched, workspace);
     let pending = target.pending_installs().excluded();

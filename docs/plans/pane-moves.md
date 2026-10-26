@@ -2,13 +2,13 @@
 
 Status: in progress. Approved on 2026-10-26 after a Claude review and four
 Codex review rounds, then revised with Jim's settled decisions and two more
-Codex review rounds. PR 1 (runtime moves) is in progress. Plans
-[issue #29][issue-29] within [epic #12][issue-12]. Builds on [the split panes
-plan](split-panes.md), which fixed the drop zone geometry, the title bar as
-a drag handle, and its settled decisions 1 to 3 for this issue, cited here
-as "split panes decision N". Layout undo is [#256][issue-256], a related
-issue with [its own plan](layout-undo.md) and no ordering dependency
-(settled decision 1).
+Codex review rounds. PR 1 (runtime moves) merged in #257; PR 2 (commands) is
+in progress. Plans [issue #29][issue-29] within [epic #12][issue-12]. Builds
+on [the split panes plan](split-panes.md), which fixed the drop zone
+geometry, the title bar as a drag handle, and its settled decisions 1 to 3
+for this issue, cited here as "split panes decision N". Layout undo is
+[#256][issue-256], a related issue with [its own plan](layout-undo.md) and
+no ordering dependency (settled decision 1).
 
 A pane can swap places with a sibling, move beside another pane in the same
 tab or in any other tab on the same runtime, or leave its tab for a new one.
@@ -1003,6 +1003,9 @@ names the alternatives he considered.
 
 ## Open questions
 
+Both questions concern only the drag PR, and the drag PR implements each
+recommendation as a default pending Jim's confirmation.
+
 1. **The centre zone in a spring-loaded tab.** Recommend offering nothing
    on a pane outside the source pane's tab, as for tab drags, so
    `swap_panes` stays a single-tab operation. A drag that springs back to
@@ -1042,6 +1045,46 @@ Recorded with PR 1:
   existing split therefore works even with no identity left, and one that
   needs a split is refused before any change, including a shape-equal
   no-op that would need one.
+
+Recorded with PR 2:
+
+- Pane picker rows follow their tab's most-recently-used order, then the
+  tab's traversal order, rather than each pane's own focus recency, which
+  only the window that focused it knows. A row is labelled by the title a
+  window published for its terminal, else its program name, under
+  "session › workspace › tab".
+- The move-next and move-previous rule is `PaneLayout::step_target` in the
+  protocol, so its examples are unit tests. Directional moves and swaps
+  take their target from `TabView::neighbor`, which the pane key contexts
+  of #255 also use, so `has_pane_*` matches the move and swap commands.
+- A pane's activity drain finds the pane by ID in `refresh_pane` instead of
+  being restarted on adoption: reconcile has no `Window` to start a task
+  with, and the drain then follows any later move too.
+- Move Pane to New Tab stays available in a tab of one pane: extracting it
+  within its workspace changes nothing, and into another workspace it moves
+  the whole tab. The Window menu lists it after Split Down on both
+  platforms, and the tab menu lists Move Tab into Pane… after the close
+  items.
+- `cleanup_spawn` spares moved-in panes on both of its paths. With an
+  attachment it used to close the spawn's whole private session; when that
+  session holds any pane other than the spawned one, it now closes only the
+  spawned pane.
+- No new tier 1 selection test: a moved pane keeps its `TerminalView`
+  entity, which the tier 2 adoption test checks, and selection then
+  follows the view's existing resize rules unchanged.
+- The `check-viewers.ts` step moves the focused pane into a new tab with
+  `move_pane_to_new_tab` rather than between existing tabs, so the second
+  window installs the new tab and adopts the pane, and the shell reports
+  the whole tab's size.
+- A pane close whose assessment fails with `UnknownPane` or `UnknownTab`
+  waits for the projection before deciding, as an emptied close's
+  `ViewNotEmpty` does, so the move it raced is adopted first.
+- Move Tab into Pane's pane picker leaves out the moving tab's own panes
+  rather than the focused pane, so a tab moved from its context menu while
+  another tab is active can go beside the focused pane.
+- Reconcile orders pane views before adoption and removal, and reselects
+  the active tab after an adoption, so an adopted view takes its new tab's
+  visibility and a removed focused pane falls back in the new order.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-29]: https://github.com/jimeh/huterm/issues/29

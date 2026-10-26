@@ -71,6 +71,11 @@ pub(super) fn tab_menu_model(
         MenuRow::Item(close_tab),
         MenuRow::Item(close_others),
         MenuRow::Item(close_after),
+        MenuRow::Separator,
+        MenuRow::Item(MenuItem::new(
+            ids::MOVE_TAB_TO_PANE.as_str(),
+            "Move Tab into Pane…",
+        )),
     ])
 }
 
@@ -136,13 +141,18 @@ mod tests {
                 ("close_tab", "Close Tab", true),
                 ("close_other_tabs", "Close Other Tabs", true),
                 ("close_tabs_after", "Close Tabs to the Right", true),
+                ("move_tab_to_pane", "Move Tab into Pane…", true),
             ]
         );
         assert!(
             matches!(model.rows[2], MenuRow::Separator),
             "one separator after the second item"
         );
-        assert_eq!(model.rows.len(), 6);
+        assert!(
+            matches!(model.rows[6], MenuRow::Separator),
+            "one separator before the move"
+        );
+        assert_eq!(model.rows.len(), 8);
     }
 
     #[test]
@@ -153,17 +163,18 @@ mod tests {
                 .map(|item| item.enabled)
                 .collect()
         };
-        assert_eq!(enabled(&input(0, 3)), [true, true, true, true, true]);
-        assert_eq!(enabled(&input(1, 3)), [true, true, true, true, true]);
+        assert_eq!(enabled(&input(0, 3)), [true, true, true, true, true, true]);
+        assert_eq!(enabled(&input(1, 3)), [true, true, true, true, true, true]);
         assert_eq!(
             enabled(&input(2, 3)),
-            [true, true, true, true, false],
+            [true, true, true, true, false, true],
             "the last tab has nothing to its right"
         );
         assert_eq!(
             enabled(&input(0, 1)),
-            [true, true, true, false, false],
-            "a single tab has no others and nothing after it"
+            [true, true, true, false, false, true],
+            "a single tab has no others and nothing after it, and can still \
+             move into a pane of another workspace"
         );
         let single = model(&input(0, 1));
         let closers = items(&single);

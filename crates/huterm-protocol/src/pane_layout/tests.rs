@@ -991,3 +991,76 @@ fn an_insertion_forms_a_split_only_at_the_root_or_across_the_parent_axis() {
         );
     }
 }
+
+/// The layout after moving `source` beside `target` on `side`.
+fn moved(
+    layout: &PaneLayout,
+    source: u64,
+    (target, side): (PaneId, SplitDirection),
+) -> PaneLayout {
+    layout
+        .without_pane(pane_id(source))
+        .unwrap()
+        .with_inserted(target, side, leaf(source), split_id(30))
+        .unwrap()
+}
+
+#[test]
+fn stepping_a_pane_moves_it_one_place_in_traversal_order_with_wrap() {
+    let row = layout(split(
+        10,
+        SplitAxis::Columns,
+        vec![(333_334, leaf(1)), (333_333, leaf(2)), (333_333, leaf(3))],
+    ));
+    // C forward wraps to the front; A back wraps to the end.
+    let step = row.step_target(pane_id(3), true).unwrap();
+    assert_eq!(step, (pane_id(1), SplitDirection::Left));
+    assert_eq!(order(&moved(&row, 3, step)), [3, 1, 2]);
+    let step = row.step_target(pane_id(1), false).unwrap();
+    assert_eq!(step, (pane_id(3), SplitDirection::Right));
+    assert_eq!(order(&moved(&row, 1, step)), [2, 3, 1]);
+    // Without a wrap, one place along the row.
+    let step = row.step_target(pane_id(1), true).unwrap();
+    assert_eq!(step, (pane_id(2), SplitDirection::Right));
+    assert_eq!(order(&moved(&row, 1, step)), [2, 1, 3]);
+    // A forward from [(A over B) | C]: removing A collapses the stack, so
+    // A joins the columns to the right of B.
+    let nested = layout(split(
+        10,
+        SplitAxis::Columns,
+        vec![
+            (
+                HALF,
+                split(
+                    11,
+                    SplitAxis::Rows,
+                    vec![(HALF, leaf(1)), (HALF, leaf(2))],
+                ),
+            ),
+            (HALF, leaf(3)),
+        ],
+    ));
+    let step = nested.step_target(pane_id(1), true).unwrap();
+    assert_eq!(step, (pane_id(2), SplitDirection::Right));
+    assert_eq!(order(&moved(&nested, 1, step)), [2, 1, 3]);
+    // A two-pane layout keeps its axis when the target becomes the root.
+    let pair = layout(split(
+        10,
+        SplitAxis::Rows,
+        vec![(HALF, leaf(1)), (HALF, leaf(2))],
+    ));
+    assert_eq!(
+        pair.step_target(pane_id(1), true),
+        Some((pane_id(2), SplitDirection::Down))
+    );
+    // Moving 2 forward wraps to before 1, on the leading side.
+    assert_eq!(
+        pair.step_target(pane_id(2), true),
+        Some((pane_id(1), SplitDirection::Up))
+    );
+    assert_eq!(
+        PaneLayout::single(info(1)).step_target(pane_id(1), true),
+        None
+    );
+    assert_eq!(row.step_target(pane_id(9), true), None);
+}

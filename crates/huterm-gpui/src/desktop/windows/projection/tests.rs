@@ -246,6 +246,14 @@ impl ReconcileTarget for Target<'_> {
     fn replace(&mut self, tabs: &[TabId]) {
         self.window.replaced.push(tabs.to_vec());
     }
+
+    fn adopt_pane(&mut self, _: PaneId, _: TabId, _: TabId) {
+        unreachable!("fake views show every projected pane, so none moves");
+    }
+
+    fn order_panes(&mut self, _: TabId) -> bool {
+        false
+    }
 }
 
 fn layout() -> WindowLayout {

@@ -189,6 +189,7 @@ fn window_scoped_commands_list_only_this_windows_tabs() {
         profiles: &[],
         target: &target,
         window_only: true,
+        moving_tab: None,
     };
     assert_eq!(
         window_only.values(ArgumentKind::Tab),
@@ -241,6 +242,7 @@ fn identity_replacement_and_duplicate_labels_keep_scoped_ids() {
         profiles: &[],
         target: &target,
         window_only: false,
+        moving_tab: None,
     };
     let mut editor = SlotEditor::new(rename, &[], &domain, false);
     editor.set_text("chosen");
@@ -276,6 +278,7 @@ fn rename_targets_prefill_from_the_projected_session_and_workspace() {
         profiles: &[],
         target: &target,
         window_only: false,
+        moving_tab: None,
     };
     for (command, kind, name) in [
         (ids::RENAME_SESSION, ArgumentKind::Session, "named session"),
@@ -323,6 +326,7 @@ fn palette_invocation_renames_exact_tab_and_stale_target_changes_nothing() {
         profiles: &[],
         target: &target,
         window_only: false,
+        moving_tab: None,
     };
     let mut editor = SlotEditor::new(rename, &[], &domain, false);
     editor.set_text("chosen");
@@ -364,6 +368,7 @@ fn quake_profiles_form_a_strict_domain_with_a_default() {
         profiles: &profiles,
         target: &target,
         window_only: false,
+        moving_tab: None,
     };
     let toggle = huterm_protocol::lookup(ids::TOGGLE_QUAKE.as_str()).unwrap();
     assert!(slots::runs_without_prompt(toggle, &domain));
@@ -689,6 +694,7 @@ fn a_rebuild_moves_window_scoped_pickers_and_defaults_to_the_current_scope() {
         profiles: &[],
         target: &target,
         window_only: true,
+        moving_tab: None,
     };
     assert_eq!(
         domain.values(ArgumentKind::Tab),
@@ -717,4 +723,122 @@ fn owned_history_ranks_recent_commands_first() {
     let mut engine = CommandSearch::new();
     let ranked = engine.rank("", catalog().iter(), &history);
     assert_eq!(ranked[0].spec.id, ids::RENAME_TAB);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one hierarchy drives the pane picker of both move commands"
+)]
+fn pane_and_side_pickers_build_the_explicit_move_invocation() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let tab = mux.open_tab(workspace, &terminal_command()).unwrap().tab;
+    let focused = tab.first_pane().clone();
+    let other = mux
+        .split_pane(
+            workspace,
+            tab.id,
+            focused.id,
+            huterm_protocol::SplitDirection::Right,
+            &terminal_command(),
+        )
+        .unwrap()
+        .pane;
+    let third = mux
+        .split_pane(
+            workspace,
+            tab.id,
+            other.id,
+            huterm_protocol::SplitDirection::Down,
+            &terminal_command(),
+        )
+        .unwrap()
+        .pane;
+    let second = mux.open_tab(workspace, &terminal_command()).unwrap().tab;
+    let (state, _) = mux.subscribe_hierarchy();
+    let published =
+        |terminal: TerminalId| (terminal == other.terminal_id).then_some("vim");
+    let hierarchy = PaletteHierarchy::from_projection_with(
+        &state,
+        |_| None,
+        published,
+        &[],
+    );
+    let target = PaletteTarget {
+        session: Some(session),
+        workspace: Some(workspace),
+        tab: Some(tab.id),
+        terminal: Some(focused.terminal_id),
+        ..target()
+    };
+    let domain = DomainView {
+        hierarchy: &hierarchy,
+        profiles: &[],
+        target: &target,
+        window_only: true,
+        moving_tab: None,
+    };
+    // The pane being moved is never offered; another pane is labelled by
+    // its published title, else its program name.
+    assert_eq!(
+        domain.values(ArgumentKind::Pane),
+        vec![
+            CommandValue::Pane(other.id),
+            CommandValue::Pane(third.id),
+            CommandValue::Pane(second.first_pane().id),
+        ]
+    );
+    // A tab move leaves out the moving tab's own panes instead, so moving
+    // an inactive tab offers the focused pane.
+    let moving = |tab: TabId| DomainView {
+        moving_tab: Some(tab),
+        ..domain
+    };
+    assert_eq!(
+        moving(second.id).values(ArgumentKind::Pane),
+        [focused.id, other.id, third.id].map(CommandValue::Pane)
+    );
+    assert_eq!(
+        moving(tab.id).values(ArgumentKind::Pane),
+        vec![CommandValue::Pane(second.first_pane().id)]
+    );
+    assert_eq!(
+        domain.label(ArgumentKind::Pane, &CommandValue::Pane(third.id)),
+        Some("sh".to_owned())
+    );
+    assert_eq!(
+        domain.label(ArgumentKind::Pane, &CommandValue::Pane(other.id)),
+        Some("vim".to_owned())
+    );
+    assert_eq!(
+        domain.values(ArgumentKind::Side),
+        ["left", "right", "up", "down"]
+            .map(|side| CommandValue::Text(side.to_owned()))
+    );
+    let spec =
+        huterm_protocol::lookup(ids::MOVE_PANE_TO_PANE.as_str()).unwrap();
+    let mut editor = SlotEditor::new(spec, &[], &domain, false);
+    assert_eq!(editor.active().spec.name, "pane");
+    assert!(matches!(
+        editor.commit(Some(CommandValue::Pane(other.id))),
+        Ok(Commit::Next)
+    ));
+    assert_eq!(editor.active().spec.name, "side");
+    let Ok(Commit::Run(invocation)) =
+        editor.commit(Some(CommandValue::Text("down".to_owned())))
+    else {
+        panic!("picking the side runs the move");
+    };
+    let explicit = CommandInvocation::new(
+        ids::MOVE_PANE_TO_PANE,
+        vec![
+            CommandArgument::new("pane", CommandValue::Pane(other.id)),
+            CommandArgument::new("side", CommandValue::Text("down".into())),
+        ],
+    );
+    assert_eq!(invocation, explicit);
+    assert!(huterm_protocol::validate(&invocation).is_ok());
+    mux.close_session(session).unwrap();
 }
