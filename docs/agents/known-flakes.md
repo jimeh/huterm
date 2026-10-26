@@ -248,6 +248,21 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** keep the failing step, its expected and received bytes, and a
   list of what else was running on the host; record them here, then rerun.
 
+## `smoke-process.test.ts` retained-pipe deadline
+
+- **Label:** `smoke deadline closes pipes retained by a descendant after
+  parent exit` in `scripts/smoke-process.test.ts`, with `timedOut` false
+  where the test expects true, after 179.50ms.
+- **Occurrences:** once in a local `mise run test` on macOS, 2026-10-26,
+  while Cargo compiled the workspace in the same run; the same file passed
+  alone right after, and the run before passed it too.
+- **Evidence:** the fixture spawns `sh -c "sleep 30"` with inherited stdio
+  and exits at once. Ending well before the 1,500ms deadline means both
+  pipes closed early, as if the descendant never held them; no output from
+  the descendant was kept.
+- **Triage:** rerun the file alone. If it recurs, record whether the
+  descendant started, for example by having it write a marker file.
+
 ## CI tool installation
 
 `Install job tools with Mise` and Zig installation steps can fail on Zig
