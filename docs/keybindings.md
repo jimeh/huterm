@@ -7,11 +7,11 @@ live in the same file as the other settings; see
 
 ## Command palette
 
-Open the command palette with Cmd+Shift+P on macOS or Ctrl+Shift+P on Linux, or
-choose **View > Open Command Palette**. Search is fuzzy across command titles,
-IDs, and descriptions, so `tfs` finds Toggle Fullscreen. Results rank by match
-quality, then this window's recent commands, then how often the app has run
-each command, then catalog order. Unavailable commands stay visible with the
+Open the command palette with Cmd+Shift+P on macOS or Ctrl+Shift+P on Linux, or,
+on macOS, choose **View > Open Command Palette**. Search is fuzzy across command
+titles, IDs, and descriptions, so `tfs` finds Toggle Fullscreen. Results rank by
+match quality, then this window's recent commands, then how often the app has
+run each command, then catalog order. Unavailable commands stay visible with the
 reason they are unavailable.
 
 Enter takes the most likely action. It runs a command whose arguments have

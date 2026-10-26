@@ -9,7 +9,7 @@ their own page: [Commands and keybindings](keybindings.md).
 
 Huterm reads `$HUTERM_CONFIG_FILE` when it is set. Otherwise it reads
 `$XDG_CONFIG_HOME/huterm/config.toml`, falling back to
-`~/.config/huterm/config.toml`, on both macOS and Linux. The **Settings**
+`~/.config/huterm/config.toml`, on both macOS and Linux. The **Open Settings**
 command (`open_settings`) creates a documented default file if none exists and
 opens it in the system editor.
 
@@ -141,11 +141,11 @@ new-tab button stays visible and follows the last tab in a vertical bar.
 
 With one tab the bar stays hidden unless `always_show = true`.
 `auto_hide_in_fullscreen = true` hides the bar in fullscreen until the pointer
-reaches its edge, even with several tabs. The bar then slides over the
-terminal without changing the grid and hides again when the pointer leaves.
-Dragging a tab or resizing the sidebar keeps it open, and switching, creating,
-or closing tabs reveals it for a second. A top bar beside a display notch has
-nowhere to hide and stays in place.
+reaches its edge, whatever the tab count or `always_show`. The bar then slides
+over the terminal without changing the grid and hides again when the pointer
+leaves. Dragging a tab or resizing the sidebar keeps it open, and switching,
+creating, or closing tabs reveals it for a second. A top bar beside a display
+notch has nowhere to hide and stays in place.
 
 In non-native fullscreen on a notched display, `notch = "left"` or `"right"`
 moves a top bar beside the camera housing and gives its height back to the

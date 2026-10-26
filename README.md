@@ -27,8 +27,8 @@ GPUI for rendering.
 - **Commands:** every action is a catalog command with typed arguments. The
   command palette finds commands by fuzzy search and prompts for arguments, and
   keybindings can bind any command with arguments and `when` conditions.
-- **Presentation:** native and non-native fullscreen, and quake windows summoned
-  by global shortcuts on macOS and native X11.
+- **Presentation:** native fullscreen, non-native fullscreen on macOS, and
+  quake windows summoned by global shortcuts on macOS and native X11.
 - **Safe close and Quit:** Huterm inspects each terminal's processes and asks
   before closing anything with running jobs. An idle shell closes without a
   prompt.
@@ -74,7 +74,8 @@ checks instead.
 Each release has two packages for x86_64 and for aarch64:
 
 - `Huterm-<version>-Linux-<arch>.AppImage` runs directly. Make it executable
-  first. If FUSE is unavailable, run it with `--appimage-extract-and-run`.
+  first. If FUSE is unavailable, run it with `--appimage-extract-and-run` or
+  use the tarball.
 - `Huterm-<version>-Linux-<arch>.tar.gz` holds the same payload for manual
   installation: `bin/huterm`, a desktop entry, AppStream metadata, an icon,
   and license notices. It has no AppImage runtime.
@@ -87,11 +88,11 @@ XWayland. Linux builds do not update themselves.
 
 Huterm reads `$HUTERM_CONFIG_FILE` when it is set. Otherwise it reads
 `$XDG_CONFIG_HOME/huterm/config.toml`, falling back to
-`~/.config/huterm/config.toml`, on both macOS and Linux. The **Settings**
+`~/.config/huterm/config.toml`, on both macOS and Linux. The **Open Settings**
 command (`open_settings`) creates a documented default file if none exists and
-opens it in the system editor. Add this header to get completion and
-validation from the published JSON Schema in Taplo or the Even Better TOML
-editor extension:
+opens it in the system editor. Add this header to get completion and validation
+from the published JSON Schema in Taplo or the Even Better TOML editor
+extension:
 
 ```toml
 #:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
@@ -110,11 +111,11 @@ the running settings in place and shows an error.
 
 ## Windows, sessions, and tabs
 
-Each window owns a private session with one workspace of ordered tabs. Each tab
-holds one pane with its own terminal and shell. Hidden tabs keep processing
-output without building snapshots or painting. A tab closes when its shell
-exits, unless `close_on_exit = false` keeps it for its history; see
-[Shells](docs/configuration.md#shells). The configuration guide also covers
+Each window creates and attaches to a private session with one workspace of
+ordered tabs. Each tab holds one pane with its own terminal and shell. Hidden
+tabs keep processing output without building snapshots or painting. A tab closes
+when its shell exits, unless `close_on_exit = false` keeps it for its history;
+see [Shells](docs/configuration.md#shells). The configuration guide also covers
 [the tab bar](docs/configuration.md#tab-bar),
 [fullscreen](docs/configuration.md#fullscreen), and
 [quake windows](docs/configuration.md#quake-windows).
