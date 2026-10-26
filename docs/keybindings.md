@@ -64,7 +64,8 @@ command = "unbind"
 The fields are:
 
 - `key` (required): the keystroke or chord.
-- `command` (required): a command ID from the [table below](#commands).
+- `command` (required): a command ID from the [table below](#commands), or
+  the reserved `unbind` described below.
 - `args`: a table of named arguments. Arrays are rejected.
 - `when`: an optional context predicate.
 - `description`: an optional label for the palette; blank text is rejected.
@@ -133,9 +134,11 @@ descendant context (`Workspace > Terminal`). The contexts are:
 ## Commands
 
 A command's scope says who runs it. Runtime commands run in the core against
-the canonical session structure; their ID arguments cannot be written in the
-config and are filled from the invoking window. Palette-scope commands imply
-the `Palette` context, and dialog, menu, and notice commands imply
+the canonical session structure. The `tab`, `workspace`, and `session`
+arguments cannot be written in the config for any command. The palette
+prompts for them where a command needs one, and omitted targets default to the
+invoking window's active tab, workspace, or session. Palette-scope commands
+imply the `Palette` context, and dialog, menu, and notice commands imply
 `confirming`, `menu`, and `notices`. User bindings for them need no `when`.
 
 | Command | Scope | Arguments |
