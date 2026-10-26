@@ -149,7 +149,15 @@ fn launched_from_appimage() -> bool {
         return false;
     };
     std::env::current_exe()
-        .is_ok_and(|executable| executable.starts_with(Path::new(&appdir)))
+        .is_ok_and(|executable| runs_under(Path::new(&appdir), &executable))
+}
+
+/// Whether `executable`, which the OS reports with symlinks resolved, lies
+/// under `appdir`, which may name a symlinked temporary directory.
+fn runs_under(appdir: &Path, executable: &Path) -> bool {
+    let appdir =
+        std::fs::canonicalize(appdir).unwrap_or_else(|_| appdir.to_path_buf());
+    executable.starts_with(appdir)
 }
 
 /// Why no notices could be shown.
@@ -218,8 +226,12 @@ fn locations(executable: Option<&Path>, is_macos: bool) -> Vec<PathBuf> {
     } else {
         Some(directory)
     };
-    if let Some(checkout) =
-        profile.and_then(Path::parent).and_then(Path::parent)
+    // Only Cargo's own `target` directory, so a packaged executable never
+    // reads a stray file beside its package.
+    if let Some(checkout) = profile
+        .and_then(Path::parent)
+        .filter(|target| target.file_name() == Some(OsStr::new("target")))
+        .and_then(Path::parent)
     {
         locations.push(checkout.join("third-party/licenses").join(FILE_NAME));
     }
@@ -366,10 +378,13 @@ mod tests {
                 ),
             ]
         );
+        assert_eq!(mac.len(), 2, "{mac:?}");
         let linux = locations(Some(Path::new("/opt/huterm/bin/huterm")), false);
         assert_eq!(
-            linux[0],
-            PathBuf::from("/opt/huterm/share/licenses/huterm/licenses.json")
+            linux,
+            [PathBuf::from(
+                "/opt/huterm/share/licenses/huterm/licenses.json"
+            )]
         );
         assert_eq!(locations(None, false), Vec::<PathBuf>::new());
     }
@@ -387,6 +402,24 @@ mod tests {
             let found = locations(Some(Path::new(executable)), false);
             assert_eq!(found.last(), Some(&checkout), "{executable}");
         }
+    }
+
+    #[test]
+    fn an_appimage_launch_is_recognized_through_a_symlinked_appdir() {
+        let root = std::env::temp_dir()
+            .join(format!("huterm-appdir-{}", std::process::id()));
+        let real = root.join("real");
+        std::fs::create_dir_all(real.join("usr/bin")).unwrap();
+        let link = root.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let executable =
+            std::fs::canonicalize(&real).unwrap().join("usr/bin/huterm");
+        let inside = runs_under(&link, &executable);
+        let elsewhere = runs_under(&link, Path::new("/opt/huterm/bin/huterm"));
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(inside);
+        assert!(!elsewhere);
     }
 
     #[test]

@@ -96,8 +96,9 @@ script dependency, Mise tools, Zig's build-time fetches.
   lookup order (the macOS `Resources`, then `share/licenses/huterm` relative
   to the executable, then the checkout copy that an unpackaged build in
   Cargo's `target/<profile>` layout finds from its executable), the
-  filter for this build (target, `macos-updater` feature, `APPIMAGE`, and
-  packaged files that exist), and the search.
+  filter for this build (target, `macos-updater` feature, an `AppImage`
+  launch with the executable under `APPDIR`, and packaged files that
+  exist), and the search.
 - Loading runs on the background executor when the view opens. Errors become
   an unavailable state; they never panic.
 - `desktop/licenses.rs` holds the `LicensesView` entity: search `TextField`,
