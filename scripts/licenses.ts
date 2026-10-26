@@ -489,7 +489,7 @@ function resolveVersion(value: string | undefined, packages: Map<string, CargoPa
 /** The standard text of `license` naming `item`'s authors, or `override`, as copyright holders. */
 function standardText(license: string, item: CargoPackage, override?: string): Text {
   if (license !== "MIT") throw new Error(`${item.name}: no standard template for ${license}`);
-  const holders = override ? [override] : item.authors.map(author => author.replace(/\s*<[^>]*>/, "").trim()).filter(Boolean);
+  const holders = override ? [override] : item.authors.map(author => author.split("<")[0]!.trim()).filter(Boolean);
   if (holders.length === 0) throw new Error(`${item.name} ${item.version} lists no authors to name as copyright holders`);
   const template = readText(join(repoRoot, "third-party/licenses/canonical/MIT.txt"));
   if (!template.includes("<year> <copyright holders>")) throw new Error("canonical/MIT.txt lacks its copyright placeholder");
