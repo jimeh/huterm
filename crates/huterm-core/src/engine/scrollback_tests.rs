@@ -15,9 +15,17 @@ use super::TerminalEngine;
 const PAGE_ROWS_AT_80: usize = 650;
 
 fn engine(columns: u16, limit: ScrollbackLimit) -> TerminalEngine {
+    sized_engine(columns, 4, limit)
+}
+
+fn sized_engine(
+    columns: u16,
+    rows: u16,
+    limit: ScrollbackLimit,
+) -> TerminalEngine {
     let mut engine = TerminalEngine::new(
         TerminalId::new(1),
-        GridSize::clamped(columns, 4),
+        GridSize::clamped(columns, rows),
         CellSize {
             width: 8,
             height: 16,
@@ -140,6 +148,28 @@ fn plain_output_keeps_up_to_the_row_limit_and_less_than_a_page_fewer() {
 }
 
 #[test]
+fn small_limits_on_wide_tall_screens_keep_the_row_guarantee() {
+    // A 400-column page holds about 115 rows, and the screen's own pages
+    // count toward the byte cap too.
+    for screen_rows in [60, 150] {
+        let mut engine = sized_engine(400, screen_rows, limit(350));
+        let line = format!("{}\r\n", "w".repeat(400));
+        let (mut peak, mut floor, mut previous) = (0, usize::MAX, 0);
+        for _ in 0..3000 {
+            engine.process(line.as_bytes()).unwrap();
+            let kept = history(&engine);
+            peak = peak.max(kept);
+            if kept < previous || floor != usize::MAX {
+                floor = floor.min(kept);
+            }
+            previous = kept;
+        }
+        assert_eq!(peak, 350, "{screen_rows} screen rows");
+        assert!(floor > 350 - 130, "{screen_rows} screen rows kept {floor}");
+    }
+}
+
+#[test]
 fn rows_too_wide_for_the_byte_cap_keep_fewer_rows_than_the_limit() {
     // A 1,000-column row needs about 8 KiB, twice the cap's allowance.
     let mut engine = engine(1000, ScrollbackLimit::DEFAULT);
@@ -156,9 +186,12 @@ fn shrinking_keeps_a_scrolled_viewport_on_its_rows_or_moves_it_to_the_top() {
     let before = engine.snapshot().unwrap();
     assert_eq!(before.viewport.bottom_offset, 1000);
 
-    // Resending the current limit changes nothing.
+    // Resending the current limit or raising it evicts nothing, so neither
+    // is a content change.
     assert!(!engine.set_scrollback(ScrollbackLimit::DEFAULT).unwrap());
+    assert!(!engine.set_scrollback(ScrollbackLimit::MAX).unwrap());
     assert_eq!(engine.generation(), before.generation);
+    assert_eq!(history(&engine), before.history_size);
 
     // The viewport's rows survive: it stays on them, and the shrink counts
     // as a content change so selections and cached rows are dropped.

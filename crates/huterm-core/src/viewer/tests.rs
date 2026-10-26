@@ -1634,8 +1634,9 @@ fn shrinking_scrollback_evicts_history_for_every_viewer() {
     assert_eq!(rows_text(&shrunk), rows_before_ready(&shrunk));
     assert_eq!(rows_text(&shrunk), rows_text(&back));
     // Text selected before the shrink is no longer offered.
+    // The row survives the shrink, so only the generation refuses it.
     let row = BufferPoint {
-        rows_from_live_bottom: 2500,
+        rows_from_live_bottom: 500,
         column: 0,
     };
     let selection = hidden
@@ -1689,7 +1690,7 @@ fn an_exited_terminal_takes_a_smaller_limit() {
 }
 
 #[test]
-fn resending_the_current_limit_wakes_no_viewer() {
+fn resending_or_raising_the_limit_wakes_no_viewer() {
     let runtime = spawn(246, ROWS_SCRIPT);
     let watcher = viewer(&runtime);
     let typist = prober(&runtime);
@@ -1698,6 +1699,8 @@ fn resending_the_current_limit_wakes_no_viewer() {
     assert!(watcher.poll().invalidated.is_none());
 
     typist.set_scrollback(ScrollbackLimit::DEFAULT).unwrap();
+    // A higher limit evicts nothing, so it is no content change either.
+    typist.set_scrollback(ScrollbackLimit::MAX).unwrap();
     // Messages run in order, and this empty text, from a viewer that can
     // neither take control nor move a live viewport, publishes nothing.
     typist

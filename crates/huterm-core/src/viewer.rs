@@ -736,8 +736,9 @@ impl TerminalViewer {
 
     /// Sets how much history the terminal keeps, after earlier input. The
     /// limit belongs to the terminal, not this viewer: the latest request
-    /// from any viewer that may send input applies. Shrinking it evicts the
-    /// oldest rows at once and invalidates every viewer's snapshot.
+    /// from any viewer that may send input applies. Lowering it evicts the
+    /// oldest rows at once and invalidates every viewer's snapshot; raising
+    /// it changes nothing they show.
     ///
     /// # Errors
     ///

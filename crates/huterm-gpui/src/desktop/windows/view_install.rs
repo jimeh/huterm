@@ -67,10 +67,8 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         let attachment = self.attachment_id(cx);
-        let fresh = ViewerStart::fresh(
-            terminal_presentation(&self.config.theme),
-            self.config.terminal.scrollback,
-        );
+        let fresh =
+            ViewerStart::fresh(terminal_presentation(&self.config.theme));
         let mut targets = Vec::with_capacity(tabs.len());
         let mut gone = Vec::new();
         for &tab in tabs {

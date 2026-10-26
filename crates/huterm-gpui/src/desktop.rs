@@ -525,19 +525,14 @@ fn reported_exit(
 struct ViewerStart {
     geometry: Option<(GridSize, CellSize)>,
     presentation: TerminalPresentation,
-    scrollback: ScrollbackLimit,
 }
 
 impl ViewerStart {
     /// A viewer for a view that has shown nothing yet.
-    fn fresh(
-        presentation: TerminalPresentation,
-        scrollback: ScrollbackLimit,
-    ) -> Self {
+    fn fresh(presentation: TerminalPresentation) -> Self {
         Self {
             geometry: None,
             presentation,
-            scrollback,
         }
     }
 }
@@ -1078,7 +1073,6 @@ impl TerminalView {
                 .last_cell_size
                 .map(|cell| (self.requested_grid, cell)),
             presentation: terminal_presentation(&self.theme),
-            scrollback: self.scrollback,
         }
     }
 
@@ -1114,7 +1108,10 @@ impl TerminalView {
         self.pending_presentation = (current.presentation
             != start.presentation)
             .then_some(current.presentation);
-        self.pending_scrollback = current.scrollback != start.scrollback;
+        // The runtime may never have applied this view's limit: the revoked
+        // viewer's queued requests were discarded, and a subscription does
+        // not carry the limit. The runtime ignores one it already applies.
+        self.pending_scrollback = true;
         self.mouse = MouseState::default();
         self.context_lookup = None;
         self.links.invalidate();

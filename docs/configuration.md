@@ -440,25 +440,28 @@ rather than an exact count:
 - `0` keeps no history.
 
 The limit counts rows, not memory. A row's memory grows with the terminal's
-width and with the styles, combined characters, and links it holds. Huterm also
-caps each terminal's history at 4 KiB per configured row, about 40 MB at the
-default, so unusual output cannot grow it without bound. Plain output up to
-about 400 columns wide stays under that cap. Wider rows, or rows with many
-distinct styles or combining characters, can reach it first and keep fewer
-rows than the limit. The 50,000-row maximum keeps link detection quick:
+width and with the styles, combined characters, and links it holds. So that
+unusual output cannot grow a terminal without bound, Huterm also gives Ghostty
+an allocation limit of 4 KiB per configured row plus 4 MiB, about 45 MB at the
+default. It is a heuristic, not a memory budget: Ghostty applies it a whole page
+at a time, counts the visible screen's pages too, raises it when the screen
+alone needs more, and covers only the terminal grid. Plain output up to about
+400 columns wide stays within it, so the row limit applies. Wider rows, or rows
+with many distinct styles or combining characters, can reach it first and keep
+fewer rows than the limit. The 50,000-row maximum keeps link detection quick:
 finding a link that starts above the visible rows reads history from its oldest
 row.
 
 Reload applies a new limit to every open terminal, including tabs in the
-background and tabs whose shell has exited. Lowering it discards the oldest
-rows at once. Raising it lets history grow again but does not restore rows
-already discarded. The limit applies to the normal screen's history even while
-a full-screen program such as vim shows the alternate screen. Narrowing a
-window or enlarging its font rewraps long lines onto more rows, which can also
-discard the oldest rows. When history shrinks, a view scrolled into history
-stays on the same rows if they remain and otherwise moves to the oldest row
-left, and any selection is cleared. **Clear Scrollback** and **Reset Terminal**
-keep the limit.
+background and tabs whose shell has exited. Lowering it discards the oldest rows
+at once. Raising it lets history grow again but does not restore rows already
+discarded, and leaves views and selections as they were. The limit applies to
+the normal screen's history even while a full-screen program such as vim shows
+the alternate screen. Narrowing a window or enlarging its font rewraps long
+lines onto more rows, which can also discard the oldest rows. When history
+shrinks, a view scrolled into history stays on the same rows if they remain and
+otherwise moves to the oldest row left, and any selection is cleared. **Clear
+Scrollback** and **Reset Terminal** keep the limit.
 
 This setting covers only the history a running terminal holds in memory.
 Huterm does not save history across restarts; saved history will have its own

@@ -1692,6 +1692,34 @@ fn a_replacement_started_before_a_scrollback_change_takes_the_current_limit(
     });
 }
 
+#[gpui::test]
+fn a_limit_refused_before_a_replacement_starts_reaches_the_replacement(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(PRINTS_HISTORY);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    harness.hold_replacements(window, true);
+    harness.revoke(window);
+    // A reload reaches the revoked viewer before its replacement starts,
+    // so the replacement starts with the new limit already in the view.
+    harness.cx.update(|cx| {
+        terminal(cx, window, tab).unwrap().update(cx, |view, _| {
+            view.scrollback = scrollback(1000);
+            view.publish_scrollback();
+        });
+    });
+    harness.hold_replacements(window, false);
+    harness.wait_for("the replacement", |cx| {
+        replaced(cx, window, tab, 1).is_some()
+    });
+    harness.wait_canonical(tab, "the refused limit", |snapshot| {
+        snapshot.history_size <= 1000
+    });
+}
+
 /// `text` as the lowercase hex a hex-echo child prints for it.
 fn hex_of(text: &str) -> String {
     text.bytes().fold(String::new(), |mut hex, byte| {

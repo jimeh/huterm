@@ -103,7 +103,10 @@ A terminal's scrollback limit is terminal state, not presentation.
 `TerminalViewer::set_scrollback` is an ordered buffer edit, so it needs the
 `input` capability, follows earlier input, and applies once queued writes
 drain; the latest request from any viewer wins. It publishes only when the
-limit changes, so a reload that resends it to every tab wakes no hidden viewer.
+limit drops, the one change that can evict rows, so a reload that resends or
+raises it wakes no hidden viewer. Views resend it after every viewer
+replacement: the revoked viewer's queued requests are discarded, and a
+subscription does not carry the limit.
 `TerminalCommand::scrollback` applies before the child spawns.
 
 Rearm a viewer's invalidation on the runtime owner thread when constructing

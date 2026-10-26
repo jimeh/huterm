@@ -231,7 +231,7 @@ impl TerminalEngine {
         self.inner.last_snapshot_stats()
     }
 
-    /// Applies a history limit and returns whether it changed.
+    /// Applies a history limit and returns whether it dropped.
     pub(crate) fn set_scrollback(
         &mut self,
         limit: ScrollbackLimit,

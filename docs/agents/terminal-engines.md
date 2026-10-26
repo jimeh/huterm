@@ -368,26 +368,29 @@ beside the source directory change. `ghostty:prepare` writes that stamp,
 verifies. The build fails, even before reusing a cached archive, unless the
 stamp matches the manifest. A source build also reads the patch series beside
 the stamp, without a rerun trigger; see [native patches](#native-patches).
-`scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract
-tests pin each C behavior the engine relies on, and the ABI test checks every
-emitted FFI type against `ghostty_type_json()`. After a pin bump, fix a failing
-contract test's assumption before changing engine code. Allocator vtable
-callbacks receive log2 alignments, not the byte counts `allocator.h` describes.
-Set history only through `apply_scrollback` in the engine, and set both
-Ghostty limits every time: the C default is a 10,000-byte budget. A nonzero row
-limit sets the line limit plus a byte cap of 4 KiB per row, which bounds pages
-that grow for styles, graphemes, and hyperlinks. Zero sets the byte limit to
-zero, because Ghostty never limits lines below one page of rows at the current
-width. Line pruning removes only whole historical pages, so history stays at or
-below the limit and less than a page under it; contract tests pin those bounds,
-eviction and viewport fixup when the limit drops, the primary-screen target
-while the alternate screen shows, reflow enforcement, and that RIS and ED 3
-keep the limits. A limit change counts as a content change even when nothing
-visible moved, because the alternate screen hides the primary history it
-prunes. Ghostty's render state rebuilds every row when the viewport pin moves,
-so eviction needs no forced snapshot rebuild. Set Ghostty device attributes
-explicitly: a declining callback still gets Ghostty's default VT220 replies at
-this pin, as a `huterm-ghostty` contract test shows.
+`scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract tests
+pin each C behavior the engine relies on, and the ABI test checks every emitted
+FFI type against `ghostty_type_json()`. After a pin bump, fix a failing contract
+test's assumption before changing engine code. Allocator vtable callbacks
+receive log2 alignments, not the byte counts `allocator.h` describes. Set
+history only through `apply_scrollback` in the engine, and set both Ghostty
+limits every time: the C default is a 10,000-byte budget. A nonzero row limit
+sets the line limit plus a byte cap of 4 KiB per row and 4 MiB of headroom,
+which bounds pages that grow for styles, graphemes, and hyperlinks. The byte
+limit also counts the screen's pages and whole partly filled pages, so without
+the headroom a 350-row limit on a 400 by 60 screen held only 297 rows. Zero sets
+the byte limit to zero, because Ghostty never limits lines below one page of
+rows at the current width. Line pruning removes only whole historical pages, so
+history stays at or below the limit and less than a page under it; contract
+tests pin those bounds, eviction and viewport fixup when the limit drops, the
+primary-screen target while the alternate screen shows, reflow enforcement, and
+that RIS and ED 3 keep the limits. Only a lower limit can evict, so only it
+counts as a content change, even when nothing visible moved, because the
+alternate screen hides the primary history it prunes. A raised limit leaves the
+generation alone. Ghostty's render state rebuilds every row when the viewport
+pin moves, so eviction needs no forced snapshot rebuild. Set Ghostty device
+attributes explicitly: a declining callback still gets Ghostty's default VT220
+replies at this pin, as a `huterm-ghostty` contract test shows.
 
 ## Color and mouse state
 

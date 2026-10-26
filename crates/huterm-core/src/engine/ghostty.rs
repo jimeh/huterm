@@ -31,10 +31,14 @@ use crate::host_effects::{
 };
 use crate::terminal::RuntimeError;
 
-/// Scrollback allocation allowed per configured row. Pages that grow for
-/// styles, graphemes, and hyperlinks are bounded only by bytes; plain rows
-/// up to about 400 columns fit, so the row limit applies first for them.
+/// Page allocation allowed per configured row. Pages that grow for styles,
+/// graphemes, and hyperlinks are bounded only by bytes; plain rows up to
+/// about 400 columns fit, so the row limit applies first for them.
 const SCROLLBACK_BYTES_PER_ROW: usize = 4 * 1024;
+/// Page allocation allowed beyond the rows: Ghostty's byte limit also counts
+/// the screen's pages and whole partly filled pages, which would otherwise
+/// cut small limits on wide screens short.
+const SCROLLBACK_BYTES_HEADROOM: usize = 4 * 1024 * 1024;
 /// ED 3: erase scrollback only.
 const CLEAR_HISTORY: &[u8] = b"\x1b[3J";
 /// Longest grapheme cluster a link scan reads from one cell.
@@ -419,10 +423,10 @@ impl TerminalEngine {
         self.stats
     }
 
-    /// Applies a history limit; shrinking it evicts the oldest rows at
-    /// once. Returns whether the limit changed. A change counts as a content
-    /// change even when nothing was evicted, because the alternate screen
-    /// hides the primary history it prunes.
+    /// Applies a history limit; lowering it evicts the oldest rows at once.
+    /// Returns whether the limit dropped, the only change that can evict.
+    /// A drop counts as a content change even when nothing was evicted,
+    /// because the alternate screen hides the primary history it prunes.
     pub(super) fn set_scrollback(
         &mut self,
         limit: ScrollbackLimit,
@@ -431,9 +435,12 @@ impl TerminalEngine {
             return Ok(false);
         }
         apply_scrollback(&mut self.terminal, limit)?;
+        let lowered = limit < self.scrollback;
         self.scrollback = limit;
-        self.generation = self.generation.saturating_add(1);
-        Ok(true)
+        if lowered {
+            self.generation = self.generation.saturating_add(1);
+        }
+        Ok(lowered)
     }
 
     fn drain_effects(&mut self) -> Result<Vec<EngineEffect>, RuntimeError> {
@@ -707,7 +714,8 @@ fn apply_scrollback(
     } else {
         terminal.set_scrollback_lines(Some(rows))?;
         terminal.set_scrollback_bytes(Some(
-            rows.saturating_mul(SCROLLBACK_BYTES_PER_ROW),
+            rows.saturating_mul(SCROLLBACK_BYTES_PER_ROW)
+                .saturating_add(SCROLLBACK_BYTES_HEADROOM),
         ))?;
     }
     Ok(())
