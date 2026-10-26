@@ -640,7 +640,9 @@ label = "title"
     const grabX = grab!.x + grab!.w / 2;
     const grabY = grab!.y + grab!.h / 2;
     await native().drag(grabX, grabY, grabX - 80, grabY);
-    await stateWhere((text) => columnsOf(text) <= leftColumns - 8, "the divider drag to narrow the first pane");
+    // 80 points, less a cell for rounding at the new boundary.
+    const narrowed = Math.floor(80 / Number(field(split, "cell").split(",")[0])) - 1;
+    await stateWhere((text) => columnsOf(text) <= leftColumns - narrowed, "the divider drag to narrow the first pane");
     await ack("ackafterdrag");
     // The title bar's zoom toggle zooms its pane and unzooms it again.
     const clickZoom = async () => {

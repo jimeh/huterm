@@ -173,7 +173,7 @@ imply the `Palette` context, and dialog, menu, and notice commands imply
 | `focus_next_pane` / `focus_previous_pane` | Window | Focuses panes in layout order, wrapping. |
 | `focus_pane_left` / `focus_pane_right` / `focus_pane_up` / `focus_pane_down` | Window | Focuses the adjacent pane in that direction; does nothing at the tab's edge. |
 | `resize_pane_left` / `resize_pane_right` / `resize_pane_up` / `resize_pane_down` | Window | Optional `amount` in cells (1 to 100), default 5. Moves the focused pane's edge that way, keeping every pane at least 4 columns by 2 rows; does nothing without a neighbour on that side. |
-| `toggle_pane_zoom` | Window | Shows the focused pane across its tab, or every pane again. Focus commands and splits unzoom first. |
+| `toggle_pane_zoom` | Window | Shows the focused pane across its tab, or every pane again. Focus, split, and resize commands unzoom first. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enters native mode, or exits any active fullscreen mode. |
 | `toggle_non_native_fullscreen` | Window | macOS only. Enters current-Space mode, or exits any active fullscreen mode. |

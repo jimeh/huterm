@@ -281,6 +281,8 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     const split = await currentState();
     const [leftGrid] = field(split, "pane_grids").split(";");
     const leftColumns = Number(leftGrid!.split(",")[0]);
+    // 80 points, less a cell for rounding at the new boundary.
+    const narrowed = Math.floor(80 / Number(field(split, "cell").split(",")[0])) - 1;
     const [grab] = rects(field(split, "pane_dividers"));
     const grabX = grab!.x + grab!.w / 2;
     const grabY = grab!.y + grab!.h / 2;
@@ -290,7 +292,7 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await send(`mouse\t2\t${grabX - 80}\t${grabY}`);
     await waitFor(async () => {
       const [grid] = field(await currentState(), "pane_grids").split(";");
-      return Number(grid!.split(",")[0]) <= leftColumns - 8;
+      return Number(grid!.split(",")[0]) <= leftColumns - narrowed;
     }, "the divider drag to narrow the left pane");
     await check("divider-drag-reaches-no-shell", "");
     // The title bar's zoom toggle zooms its pane and unzooms it again.

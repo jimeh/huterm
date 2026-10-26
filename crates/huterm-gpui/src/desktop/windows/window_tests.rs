@@ -3549,3 +3549,228 @@ fn a_selection_drag_stops_at_its_panes_edge(cx: &mut TestAppContext) {
         );
     });
 }
+
+#[gpui::test]
+fn queued_resize_commands_land_in_order(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, _) = harness.split_window(tab);
+    let columns =
+        |cx: &mut App| pane_shown(cx, window, tab, first).unwrap().1.columns;
+    let before = harness.cx.update(columns);
+    {
+        // Both commits wait on the Mux, so only their order decides the
+        // weights they leave.
+        let runtime = Arc::clone(&harness.runtime);
+        let _held = runtime.lock();
+        harness.invoke(window, ids::RESIZE_PANE_RIGHT).unwrap();
+        harness.invoke(window, ids::RESIZE_PANE_RIGHT).unwrap();
+    }
+    harness.wait_for("both steps to land", |cx| {
+        columns(cx) == before + 10
+            && window
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                        view.read(cx).resize_commits.is_empty()
+                    })
+                })
+                .unwrap_or(false)
+    });
+    assert_eq!(harness.cx.update(columns), before + 10);
+}
+
+#[gpui::test]
+fn a_drag_carries_its_boundary_over_another_windows_resize(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    let third = harness.split(tab, second, SplitDirection::Right, ECHO);
+    harness.wait_for("the third pane to show", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(panes, _)| panes.len() == 3)
+    });
+    let start = harness.divider_center(window);
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(
+        start,
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_move(
+        start + gpui::point(px(-40.0), px(0.0)),
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    // Another client moves the boundary between the second and third panes.
+    let (split, children, mut weights) = harness.cx.update(|cx| {
+        match &cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab)
+            .unwrap()
+            .layout
+            .root()
+        {
+            huterm_protocol::PaneNode::Split(split) => (
+                split.id,
+                split
+                    .children
+                    .iter()
+                    .map(|child| child.node.id())
+                    .collect::<Vec<_>>(),
+                split
+                    .children
+                    .iter()
+                    .map(|child| child.weight)
+                    .collect::<Vec<_>>(),
+            ),
+            huterm_protocol::PaneNode::Pane(_) => panic!("not split"),
+        }
+    });
+    let moved = weights[2] / 2;
+    weights[1] += moved;
+    weights[2] -= moved;
+    let elsewhere = weights.clone();
+    harness
+        .runtime
+        .lock()
+        .resize_split(harness.workspace, tab, split, &children, &elsewhere)
+        .unwrap();
+    harness.wait_for("the projection to hold the other resize", |cx| {
+        root_weights(cx, tab).as_deref() == Some(&elsewhere[..])
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_move(
+        start + gpui::point(px(-60.0), px(0.0)),
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_up(
+        start + gpui::point(px(-60.0), px(0.0)),
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    harness.wait_for("the drag to commit over the other resize", |cx| {
+        root_weights(cx, tab)
+            .is_some_and(|now| now[0] < elsewhere[0] && now[2] == elsewhere[2])
+    });
+    harness.cx.update(|cx| {
+        assert!(pane_shown(cx, window, tab, third).is_some());
+        assert!(pane_shown(cx, window, tab, first).is_some());
+    });
+}
+
+#[gpui::test]
+fn a_shared_zoom_from_elsewhere_cancels_a_divider_drag(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.panes.zoom = huterm_config::PaneZoomScope::Shared;
+    });
+    let tab = harness.open_tab(ECHO);
+    let (window, _, second) = harness.split_window(tab);
+    let start = harness.divider_center(window);
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(
+        start,
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    let dragging = |cx: &mut App| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .is_ok_and(|view| view.read(cx).divider_drag.is_some())
+            })
+            .unwrap_or(false)
+    };
+    harness.wait_for("the drag to start", dragging);
+    harness
+        .runtime
+        .lock()
+        .set_pane_zoom(harness.workspace, tab, Some(second))
+        .unwrap();
+    harness.wait_for("the zoom to cancel the drag", |cx| {
+        !dragging(cx)
+            && pane_shown(cx, window, tab, second)
+                .is_some_and(|(visible, _)| visible)
+    });
+}
+
+#[gpui::test]
+fn a_rejected_resize_drops_its_preview_for_the_new_layout(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    let start = harness.divider_center(window);
+    let end = start + gpui::point(px(-80.0), px(0.0));
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(
+        start,
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_move(
+        end,
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    let runtime = Arc::clone(&harness.runtime);
+    {
+        // The release queues the commit without running it, and another
+        // client then splits the first pane across the same axis, changing
+        // the split's children before the commit reaches the Mux. Tests run
+        // workers on this thread, so nothing may run while the lock is held.
+        let mut mux = runtime.lock();
+        harness.cx.update(|cx| {
+            window
+                .update(cx, |_, window, cx| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::MouseUp(MouseUpEvent {
+                            button: MouseButton::Left,
+                            position: end,
+                            modifiers: gpui::Modifiers::none(),
+                            click_count: 1,
+                        }),
+                        cx,
+                    );
+                })
+                .unwrap();
+        });
+        mux.split_pane(
+            harness.workspace,
+            tab,
+            first,
+            SplitDirection::Right,
+            &fixture(ECHO),
+        )
+        .unwrap();
+    }
+    harness.wait_for("the rejected commit to show the new layout", |cx| {
+        let settled = window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    let view = view.read(cx);
+                    view.resize_commits.is_empty()
+                        && view.divider_drag.is_none()
+                })
+            })
+            .unwrap_or(false);
+        settled
+            && panes_shown(cx, window, tab)
+                .is_some_and(|(panes, _)| panes.len() == 3)
+            && root_weights(cx, tab).is_some_and(|weights| weights.len() == 3)
+    });
+    // The other client's split of the undragged halves stands.
+    assert_eq!(
+        harness.cx.update(|cx| root_weights(cx, tab)),
+        Some(vec![250_000, 250_000, 500_000])
+    );
+    harness
+        .cx
+        .update(|cx| assert!(pane_shown(cx, window, tab, second).is_some()));
+}

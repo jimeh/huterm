@@ -1121,12 +1121,18 @@ impl WorkspaceView {
         self.sync_tab_layout(window, cx);
         let active_tab = self.active_tab(cx);
         let mut changed_any = false;
-        for (tab, view) in self
+        let panes: Vec<_> = self
             .tabs
             .iter()
-            .flat_map(|tab| tab.views().map(move |view| (tab, view)))
-        {
-            let active = visible && Some(tab.id) == active_tab;
+            .flat_map(|tab| tab.panes.iter().map(move |pane| (tab, pane)))
+            .map(|(tab, pane)| {
+                let shown = visible
+                    && Some(tab.id) == active_tab
+                    && self.zoom_shows(tab, pane.pane, cx);
+                (pane.view.clone(), shown)
+            })
+            .collect();
+        for (view, active) in panes {
             view.update(cx, |terminal, cx| {
                 let changed = terminal.visible != active;
                 changed_any |= changed;

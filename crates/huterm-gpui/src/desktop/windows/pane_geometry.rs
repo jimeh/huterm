@@ -92,25 +92,37 @@ pub(super) fn dragged_weights(
     span: Bounds<Pixels>,
     position: Pixels,
 ) -> Vec<u32> {
+    let (start, extent) = axis_range(span, split.axis);
+    let gaps = count(split.children.len().saturating_sub(1));
+    let available = f32::from(extent - DIVIDER_WIDTH * gaps);
+    if available <= 0.0 {
+        return split.children.iter().map(|child| child.weight).collect();
+    }
+    // The boundary sits after `index` dividers, centred on its own line.
+    let offset = f32::from(
+        position - start - DIVIDER_WIDTH * count(index) - DIVIDER_WIDTH / 2.0,
+    );
+    with_boundary(split, index, units(offset / available))
+}
+
+/// The weights of `split`'s children with the boundary after child `index`
+/// at `boundary`, the sum of the weights through that child. Only the two
+/// children beside it change, and each keeps at least one weight unit, so
+/// a boundary carried across another change to the split keeps the other
+/// children's weights.
+pub(super) fn with_boundary(
+    split: &SplitNode,
+    index: usize,
+    boundary: u32,
+) -> Vec<u32> {
     let mut weights: Vec<u32> =
         split.children.iter().map(|child| child.weight).collect();
     if index + 1 >= weights.len() {
         return weights;
     }
-    let (start, extent) = axis_range(span, split.axis);
-    let gaps = count(weights.len() - 1);
-    let available = f32::from(extent - DIVIDER_WIDTH * gaps);
-    if available <= 0.0 {
-        return weights;
-    }
     let before: u32 = weights[..index].iter().sum();
     let pair = weights[index] + weights[index + 1];
-    // The boundary sits after `index` dividers, centred on its own line.
-    let offset = f32::from(
-        position - start - DIVIDER_WIDTH * count(index) - DIVIDER_WIDTH / 2.0,
-    );
-    let wanted = units(offset / available).saturating_sub(before);
-    let first = wanted.clamp(1, pair - 1);
+    let first = boundary.saturating_sub(before).clamp(1, pair - 1);
     weights[index] = first;
     weights[index + 1] = pair - first;
     weights

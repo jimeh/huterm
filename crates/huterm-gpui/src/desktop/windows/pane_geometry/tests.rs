@@ -266,3 +266,17 @@ fn a_resize_moves_the_nearest_boundary_on_its_axis_beside_the_pane() {
     assert_eq!(found(1, SplitAxis::Rows, true), None);
     assert_eq!(found(9, SplitAxis::Columns, true), None);
 }
+
+#[test]
+fn a_carried_boundary_keeps_the_other_childrens_weights() {
+    // The boundary after child 0 sits at 300,000; child 2 changed elsewhere.
+    let layout = columns(&[400_000, 100_000, 500_000]);
+    let split = root_split(&layout);
+    assert_eq!(
+        with_boundary(split, 0, 300_000),
+        [300_000, 200_000, 500_000]
+    );
+    // Past the neighbour the boundary stops one unit short of it.
+    assert_eq!(with_boundary(split, 0, 900_000), [499_999, 1, 500_000]);
+    assert_eq!(with_boundary(split, 1, 0), [400_000, 1, 599_999]);
+}
