@@ -3774,3 +3774,93 @@ fn a_rejected_resize_drops_its_preview_for_the_new_layout(
         .cx
         .update(|cx| assert!(pane_shown(cx, window, tab, second).is_some()));
 }
+
+#[gpui::test]
+fn a_carried_drag_never_shrinks_a_neighbour_under_the_minimum(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, _, second) = harness.split_window(tab);
+    let third = harness.split(tab, second, SplitDirection::Right, ECHO);
+    harness.wait_for("the third pane to show", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(panes, _)| panes.len() == 3)
+    });
+    let (split, children) = harness.cx.update(|cx| {
+        match cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab)
+            .unwrap()
+            .layout
+            .root()
+        {
+            huterm_protocol::PaneNode::Split(split) => (
+                split.id,
+                split
+                    .children
+                    .iter()
+                    .map(|child| child.node.id())
+                    .collect::<Vec<_>>(),
+            ),
+            huterm_protocol::PaneNode::Pane(_) => panic!("not split"),
+        }
+    });
+    let resize = |harness: &mut DesktopHarness, weights: &[u32]| {
+        harness
+            .runtime
+            .lock()
+            .resize_split(harness.workspace, tab, split, &children, weights)
+            .unwrap();
+        let weights = weights.to_vec();
+        harness.wait_for("the projection to hold the resize", |cx| {
+            root_weights(cx, tab) == Some(weights.clone())
+        });
+    };
+    resize(&mut harness, &[400_000, 300_000, 300_000]);
+    // Drag the first boundary as far right as the middle pane allows.
+    let start = harness.divider_center(window);
+    let end = start + gpui::point(px(400.0), px(0.0));
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(
+        start,
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_move(
+        end,
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    // Another client moves the middle pane's right edge past the dragged
+    // boundary, which carried over would leave the middle pane empty.
+    resize(&mut harness, &[400_000, 100_000, 500_000]);
+    let middle =
+        |cx: &mut App| pane_shown(cx, window, tab, second).unwrap().1.columns;
+    harness
+        .wait_for("the middle pane to keep the minimum while dragged", |cx| {
+            middle(cx) >= MIN_PANE_COLUMNS
+        });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_up(end, MouseButton::Left, gpui::Modifiers::none());
+    harness.wait_for("the release to commit", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    let view = view.read(cx);
+                    view.divider_drag.is_none()
+                        && view.resize_commits.is_empty()
+                })
+            })
+            .unwrap_or(false)
+    });
+    harness.cx.update(|cx| {
+        assert!(
+            middle(cx) >= MIN_PANE_COLUMNS,
+            "{:?}",
+            root_weights(cx, tab)
+        );
+        assert!(pane_shown(cx, window, tab, third).is_some());
+    });
+}

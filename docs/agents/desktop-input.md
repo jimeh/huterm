@@ -160,10 +160,11 @@ GPUI's focus tracking. A divider's grab zone is 8 points across its line,
 clipped to its split. Each zone is an occluding element with the resize
 cursor that claims a left press itself: occlusion keeps the panes beneath
 from seeing it, so no terminal starts a selection or reports the press, and
-overlays drawn later (toasts, the scroll pill, a revealed fullscreen tab bar)
-keep theirs. A window-level capture listener would claim presses those
-overlays own. The window's capture listeners own motion and release once a
-drag starts.
+overlays drawn later (toasts, a revealed fullscreen tab bar, menus and
+dialogs) keep theirs. A window-level capture listener would claim presses
+those overlays own. A pane's scroll pill is drawn inside its terminal, below
+the zones, so a zone wins where a pane is narrower than the pill. The
+window's capture listeners own motion and release once a drag starts.
 
 A drag holds its boundary, the sum of the weights before it, and applies it
 over the split as other changes leave it, so another window's resize of a

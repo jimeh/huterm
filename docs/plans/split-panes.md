@@ -1016,7 +1016,12 @@ Recorded with PR 4:
   not a window-level capture listener. Occlusion keeps the terminals beneath
   from seeing the press, and overlays drawn later, such as toasts and a
   revealed fullscreen tab bar, keep their presses, which a capture listener
-  would take. Capture listeners still own a drag's motion and release.
+  would take. Capture listeners still own a drag's motion and release. The
+  scroll pill, drawn inside its pane's terminal, sits below the zones, so a
+  zone wins where a pane is narrower than the pill.
+- A drag measures each move and its release from the split as other changes
+  left it, and clamps its carried boundary there, so another window's resize
+  never leaves a neighbour under the minimum.
 - A drag holds its boundary rather than the split's weights and applies it
   over the split as other changes leave it, so another window's resize of a
   sibling boundary carries through, as the races table requires. The span

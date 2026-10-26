@@ -61,8 +61,9 @@ use huterm_core::{
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, HierarchyState, NodeId,
     PaneId, PaneInfo, PaneLayout, RuntimeId, SessionId, SplitAxis,
-    SplitDirection, SplitId, TerminalId, Touched, ViewerCapabilities,
-    WorkspaceId, catalog, resolve_tab_name, validate, validate_supplied,
+    SplitDirection, SplitId, SplitNode, TerminalId, Touched,
+    ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name, validate,
+    validate_supplied,
 };
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -2161,6 +2162,7 @@ fn open_window_with_profile(
                 quake_windows::start(view, window, cx);
                 cx.observe_in(&cx.entity(), window, |view, _, window, cx| {
                     view.prune_divider_drag(cx);
+                    view.reclamp_divider_drag(window, cx);
                     view.sync_zoom(window, cx);
                     view.refresh_tab_visibility(window, cx);
                     if let Some(state) = &view.quake {
@@ -4316,11 +4318,13 @@ impl WorkspaceView {
             SplitAxis::Columns => pointer.x,
             SplitAxis::Rows => pointer.y,
         };
+        // From the split as other changes left it, which met the minimum,
+        // not from the carried boundary, which may not.
         let from = ResizePreview {
             tab: drag.tab,
             split: drag.split,
             children: drag.children.clone(),
-            weights: with_boundary(&split, drag.index, drag.boundary),
+            weights: split.children.iter().map(|child| child.weight).collect(),
         };
         let target = dragged_weights(&split, drag.index, span, position);
         let weights = self.clamp_resize(&from, drag.index, target, window, cx);
@@ -4399,25 +4403,20 @@ impl WorkspaceView {
         let Some(drag) = self.divider_drag.take() else {
             return;
         };
-        let projected = cx
-            .global::<Desktop>()
-            .hierarchy
-            .state()
-            .tab(drag.tab)
-            .and_then(|info| info.layout.split_node(drag.split))
-            .map(|split| {
-                split
-                    .children
-                    .iter()
-                    .map(|child| child.weight)
-                    .collect::<Vec<_>>()
-            });
-        let weights = self
+        // Against the layout with this window's queued commits, so a drag
+        // back to the projection's position still lands after them.
+        let Some(split) = self
             .committed_layout(drag.tab, cx)
             .and_then(|layout| layout.split_node(drag.split).cloned())
-            .map(|split| with_boundary(&split, drag.index, drag.boundary));
-        if let Some(weights) =
-            weights.filter(|weights| Some(weights) != projected.as_ref())
+        else {
+            return;
+        };
+        let weights = self.drag_weights(&drag, &split, window, cx);
+        if !split
+            .children
+            .iter()
+            .map(|child| child.weight)
+            .eq(weights.iter().copied())
         {
             let preview = ResizePreview {
                 tab: drag.tab,
@@ -4452,6 +4451,56 @@ impl WorkspaceView {
                 });
         if !applies {
             self.cancel_divider_drag(cx);
+        }
+    }
+
+    /// The weights a drag shows over `split` as other changes left it: its
+    /// boundary carried over `split`, moved back as far as the minimum pane
+    /// size requires against `split`'s own weights.
+    fn drag_weights(
+        &self,
+        drag: &DividerDrag,
+        split: &SplitNode,
+        window: &Window,
+        cx: &App,
+    ) -> Vec<u32> {
+        let base = ResizePreview {
+            tab: drag.tab,
+            split: drag.split,
+            children: drag.children.clone(),
+            weights: split.children.iter().map(|child| child.weight).collect(),
+        };
+        let carried = with_boundary(split, drag.index, drag.boundary);
+        self.clamp_resize(&base, drag.index, carried, window, cx)
+    }
+
+    /// Clamps a drag's carried boundary after another change to its split,
+    /// so a neighbour that change shrank is never drawn or committed under
+    /// the minimum pane size.
+    fn reclamp_divider_drag(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(drag) = self.divider_drag.clone() else {
+            return;
+        };
+        let Some(split) = self
+            .committed_layout(drag.tab, cx)
+            .and_then(|layout| layout.split_node(drag.split).cloned())
+        else {
+            return;
+        };
+        let boundary: u32 = self
+            .drag_weights(&drag, &split, window, cx)
+            .iter()
+            .take(drag.index + 1)
+            .sum();
+        if let Some(current) = &mut self.divider_drag
+            && current.boundary != boundary
+        {
+            current.boundary = boundary;
+            cx.notify();
         }
     }
 
@@ -4496,13 +4545,12 @@ impl WorkspaceView {
                     if result.is_ok() {
                         projected(&app, seq).await;
                     }
-                    let updated = view.update(cx, |view, cx| {
+                    // A closed window still sends the commits it queued; the
+                    // loop ends once its sender is dropped.
+                    let _ = view.update(cx, |view, cx| {
                         view.resize_commits.retain(|(commit, _)| *commit != id);
                         cx.notify();
                     });
-                    if updated.is_err() {
-                        return;
-                    }
                 }
             })
             .detach();
