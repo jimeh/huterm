@@ -3218,9 +3218,18 @@ impl DesktopHarness {
         self.activate(window, tab);
         let first = self.first_pane(tab);
         let second = self.split(tab, first, SplitDirection::Right, ECHO);
-        self.wait_for("the second pane to show", |cx| {
+        // The first pane shows its full-width snapshot until the runtime
+        // applies its narrower grid, and pointer input maps against the
+        // displayed snapshot.
+        self.wait_for("both panes to show their own grids", |cx| {
             pane_screen(cx, window, tab, second)
                 .is_some_and(|text| text.contains("READY"))
+                && [first, second].into_iter().all(|pane| {
+                    pane_view(cx, window, tab, pane).is_some_and(|view| {
+                        let view = view.read(cx);
+                        view.displayed_grid() == Some(view.requested_grid)
+                    })
+                })
         });
         (window, first, second)
     }

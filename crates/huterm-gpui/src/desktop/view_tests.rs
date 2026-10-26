@@ -168,13 +168,17 @@ impl ViewHarness {
         harness
     }
 
-    /// Waits until the child is ready and its mouse tracking mode shows.
+    /// Waits until the child is ready, its mouse tracking mode shows, and
+    /// the view displays the grid it requested. The child can print
+    /// `READY` before the runtime applies the view's first resize, and the
+    /// runtime discards a press mapped against the initial grid.
     fn wait_ready(&mut self, tracking: MouseTracking) {
         self.wait_for("the child to be ready", |view, _| {
             view.snapshot.as_ref().is_some_and(|snapshot| {
                 snapshot.modes.mouse_tracking == tracking
             }) && received(view).is_some()
                 && view.input_queue.is_empty()
+                && view.displayed_grid() == Some(view.requested_grid)
         });
     }
 
@@ -390,9 +394,6 @@ fn a_press_mapped_against_a_grid_the_runtime_has_left_is_discarded(
 ) {
     let mut harness = ViewHarness::new(cx, &echo_fixture(0, BUTTONS));
     harness.wait_ready(MouseTracking::Buttons);
-    harness.wait_for("the view to settle", |view, _| {
-        view.displayed_grid() == Some(view.requested_grid)
-    });
     let revision = harness
         .read(|view, _| view.snapshot.as_ref().unwrap().geometry_revision);
     harness.update(|view, window, cx| {

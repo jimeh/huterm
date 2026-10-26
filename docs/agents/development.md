@@ -339,6 +339,15 @@ and `scripts/policy-alignment.test.ts` checks that they do. A bare
   still.
 - To place steps where no snapshot can be applied between them, call the
   view's handlers directly inside one `ViewHarness::update`.
+- Pointer input maps against the displayed snapshot, and the runtime
+  discards a press stamped with a grid it has since left. A child can print
+  `READY` before the view's first resize applies, and a split leaves the
+  first pane showing its full-width snapshot for a while. After a geometry
+  change, wait for a snapshot whose `geometry_revision` is newer than the
+  one shown before the change; when the view controls the size, its
+  displayed grid must also equal `requested_grid`. `ViewHarness::wait_ready`
+  and `DesktopHarness::split_window` wait for the requested grid, which
+  differs from the initial one.
 
 Tier 2, `crates/huterm-gpui/src/desktop/windows/window_tests.rs`, hosts the
 production `Desktop` global and `WorkspaceView` roots. `DesktopHarness`
