@@ -1079,6 +1079,12 @@ Recorded with PR 2:
 - A pane close whose assessment fails with `UnknownPane` or `UnknownTab`
   waits for the projection before deciding, as an emptied close's
   `ViewNotEmpty` does, so the move it raced is adopted first.
+- Move Tab into Pane's pane picker leaves out the moving tab's own panes
+  rather than the focused pane, so a tab moved from its context menu while
+  another tab is active can go beside the focused pane.
+- Reconcile orders pane views before adoption and removal, and reselects
+  the active tab after an adoption, so an adopted view takes its new tab's
+  visibility and a removed focused pane falls back in the new order.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-29]: https://github.com/jimeh/huterm/issues/29

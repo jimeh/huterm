@@ -636,6 +636,10 @@ pub(super) fn reactivation(
 
 /// What reconciling one window changed.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "redraws, titles, emptying and adoption are independent outcomes"
+)]
 pub(super) struct WindowChange {
     /// Something the window renders changed; notify it once.
     pub(super) changed: bool,
@@ -643,6 +647,9 @@ pub(super) struct WindowChange {
     pub(super) titles: bool,
     /// The removals took the window's last view.
     pub(super) emptied: bool,
+    /// A pane view moved between tabs, so the window must reapply which
+    /// views show even when its active tab and pane stay the same.
+    pub(super) adopted: bool,
 }
 
 /// Drops the pane views whose panes left their tabs once the projection
@@ -700,9 +707,9 @@ fn publish_touched_titles(
     changed
 }
 
-/// Brings one window in line with the projection: adoptions, removals,
-/// then order, then the titles of touched tabs, then installs and
-/// replacements. Derived
+/// Brings one window in line with the projection: pane order, adoptions,
+/// removals, then tab order, then the titles of touched tabs, then installs
+/// and replacements. Derived
 /// from state and compared before every write, so running it again changes
 /// nothing.
 pub(super) fn reconcile_window(
@@ -711,12 +718,19 @@ pub(super) fn reconcile_window(
     terminating: bool,
 ) -> WindowChange {
     let mut change = WindowChange::default();
+    // A swap or a move within a tab changes no membership, only order. The
+    // views follow it first, so a pane that adoption or removal takes away
+    // hands focus to the first pane in the new order.
+    for (tab, _) in target.installed() {
+        change.changed |= target.order_panes(tab);
+    }
     // Panes that moved between tabs this window shows keep their views,
     // before removal could drop them; never in a busy window, whose own
     // completion reconciles once it ends.
     if !target.busy() && !terminating && adopt_moved_panes(target) {
         change.changed = true;
         change.titles = true;
+        change.adopted = true;
     }
     let installed = target.installed();
     let remove = removals(
@@ -740,10 +754,6 @@ pub(super) fn reconcile_window(
     if !target.busy() && !terminating && drop_left_panes(target) {
         change.changed = true;
         change.titles = true;
-    }
-    // A swap or a move within a tab changes no membership, only order.
-    for (tab, _) in target.installed() {
-        change.changed |= target.order_panes(tab);
     }
     let current: Vec<TabId> =
         target.installed().into_iter().map(|(tab, _)| tab).collect();

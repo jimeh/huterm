@@ -1,6 +1,6 @@
 //! Tier 2 tests for pane moves: the commands, reconcile adopting a moved
-//! pane's view, pane order after a swap, and pane closes that follow their
-//! pane into another tab.
+//! pane's view with its new tab's visibility, pane order after a swap, and
+//! closes that follow their pane into another tab or let it go.
 
 use gpui::EntityId;
 use huterm_core::{Beside, MoveDestination, PaneRef};
@@ -382,4 +382,189 @@ fn a_move_that_would_leave_a_pane_under_the_minimum_is_refused(
             && panes_shown(cx, window, second)
                 .is_some_and(|(panes, _)| panes == [target, moving])
     });
+}
+
+#[gpui::test]
+fn an_adopted_pane_takes_its_new_tab_s_visibility(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let shown = harness.open_tab(ECHO);
+    let hidden = harness.open_tab(ECHO);
+    let other = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.activate(window, shown);
+    let kept = harness.first_pane(shown);
+    let arriving = harness.first_pane(hidden);
+    let target = harness.first_pane(other);
+    harness.wait_for("every tab to install", |cx| {
+        pane_view(cx, window, hidden, arriving).is_some()
+            && pane_view(cx, window, other, target).is_some()
+    });
+    harness.focus(window, shown, kept);
+    assert_eq!(
+        harness
+            .cx
+            .update(|cx| pane_shown(cx, window, hidden, arriving))
+            .map(|(visible, _)| visible),
+        Some(false)
+    );
+    // Another client moves a hidden pane into the active tab. The active
+    // tab and its focused pane stay, yet the arriving view must show.
+    harness.move_beside(arriving, kept, SplitDirection::Right);
+    harness.wait_for("the arriving pane to show and draw", |cx| {
+        pane_shown(cx, window, shown, arriving)
+            .is_some_and(|(visible, _)| visible)
+            && pane_screen(cx, window, shown, arriving)
+                .is_some_and(|text| text.contains("READY"))
+    });
+    // Moved on into a hidden tab, the same view hides again.
+    harness.move_beside(arriving, target, SplitDirection::Right);
+    harness.wait_for("the departed pane to hide", |cx| {
+        pane_shown(cx, window, other, arriving)
+            .is_some_and(|(visible, _)| !visible)
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(active(cx, window), Some(shown));
+        assert!(pane_focused(cx, window, shown, kept));
+    });
+}
+
+#[gpui::test]
+fn a_swap_and_a_close_in_one_batch_fall_back_in_the_new_order(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    let left = harness.first_pane(tab);
+    let middle = harness.split(tab, left, SplitDirection::Right, ECHO);
+    let right = harness.split(tab, middle, SplitDirection::Right, ECHO);
+    harness.wait_for("three panes to install", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(panes, _)| panes.len() == 3)
+    });
+    harness.update_view(window, |view, _, _| {
+        if let Some(view) = view.tabs.iter_mut().find(|view| view.id == tab) {
+            view.focus_history = vec![left];
+        }
+    });
+    // Both land in one drain: the focused pane closes as the other two
+    // trade places, so focus falls back to the first pane after the swap.
+    {
+        let mut mux = harness.runtime.lock();
+        mux.swap_panes(harness.workspace, tab, middle, right)
+            .unwrap();
+        mux.close_pane(harness.workspace, tab, left).unwrap();
+    }
+    harness.wait_for("focus to fall back to the new first pane", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![right, middle], right))
+    });
+}
+
+#[gpui::test]
+fn a_pane_close_whose_pane_leaves_the_window_ends_without_a_notice(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let source = harness.open_tab(RUNS_JOB);
+    let staying = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    let leaving = harness.first_pane(source);
+    let stays = harness.first_pane(staying);
+    harness.wait_for("both tabs to install", |cx| {
+        pane_screen(cx, window, source, leaving)
+            .is_some_and(|text| text.contains("READY"))
+            && pane_view(cx, window, staying, stays).is_some()
+    });
+    let elsewhere = harness
+        .runtime
+        .lock()
+        .create_workspace(harness.session, None)
+        .unwrap();
+    harness.focus(window, source, leaving);
+    // The close is held before its assessment while another client moves
+    // the pane into a workspace this window does not show.
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Assess);
+    harness.invoke(window, ids::CLOSE_PANE).unwrap();
+    harness.wait_for("the close to wait before its assessment", |_| {
+        runtime.worker_hooks.held(Stage::Assess) > 0
+    });
+    let from = harness.pane_ref(leaving);
+    harness
+        .runtime
+        .lock()
+        .move_pane(
+            from,
+            MoveDestination::NewTab {
+                workspace: elsewhere,
+                before: None,
+            },
+        )
+        .unwrap();
+    runtime.worker_hooks.release(Stage::Assess);
+    // The close never reached Mux; it ends quietly and the pane lives on.
+    // A tab's only pane takes the tab with it, so the window drops the tab.
+    harness.wait_for("the close to end and the source tab to go", |cx| {
+        panes_shown(cx, window, source).is_none()
+            && active(cx, window) == Some(staying)
+            && window
+                .update(cx, |root, _, cx| {
+                    let view = root.downcast::<WorkspaceView>().unwrap();
+                    let view = view.read(cx);
+                    !view.busy && view.close.current.is_none()
+                })
+                .unwrap()
+    });
+    harness.cx.update(|cx| {
+        assert!(!confirming(cx, window));
+        assert_eq!(notices(cx, window), Vec::<String>::new());
+        let state = cx.global::<Desktop>().hierarchy.state();
+        assert!(state.pane_tab(leaving).is_some());
+    });
+}
+
+#[gpui::test]
+fn a_tab_closed_after_its_pane_moved_out_keeps_the_moved_view(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let closing = harness.open_tab(ECHO);
+    let receiving = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.activate(window, closing);
+    let gone = harness.first_pane(closing);
+    let moving = harness.split(closing, gone, SplitDirection::Right, ECHO);
+    let target = harness.first_pane(receiving);
+    harness.wait_for("every pane to install", |cx| {
+        pane_screen(cx, window, closing, moving)
+            .is_some_and(|text| text.contains("READY"))
+            && pane_view(cx, window, receiving, target).is_some()
+    });
+    let before = harness
+        .cx
+        .update(|cx| identity(cx, window, closing, moving))
+        .unwrap();
+    // The tab close is held before its assessment, so the window stays
+    // busy and defers reconcile, while another client moves a pane out.
+    // The assessment then covers only the pane left behind, and the window
+    // adopts the moved view before the close commits.
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Assess);
+    harness.invoke(window, ids::CLOSE_TAB).unwrap();
+    harness.wait_for("the close to wait before its assessment", |_| {
+        runtime.worker_hooks.held(Stage::Assess) > 0
+    });
+    harness.move_beside(moving, target, SplitDirection::Right);
+    runtime.worker_hooks.release(Stage::Assess);
+    harness.wait_for("the tab to close and the moved pane to join", |cx| {
+        !projected(cx, closing)
+            && panes_shown(cx, window, receiving)
+                .is_some_and(|(panes, _)| panes == [target, moving])
+    });
+    assert_eq!(
+        harness
+            .cx
+            .update(|cx| identity(cx, window, receiving, moving)),
+        Some(before)
+    );
 }

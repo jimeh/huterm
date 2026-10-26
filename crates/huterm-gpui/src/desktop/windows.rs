@@ -1567,7 +1567,13 @@ fn reconcile(cx: &mut App, touched: &Touched) {
         let before = view.active_pane(cx);
         let change = view.reconcile(touched, terminating, cx);
         if let Some(tab) = reactivation(before, view.active_pane(cx)) {
-            activate.push((view.window, tab));
+            activate.push((view.window, tab, true));
+        } else if change.adopted
+            && let Some(tab) = view.active_tab(cx)
+        {
+            // A pane view that changed tabs takes its new tab's visibility;
+            // keyboard focus stays where it is.
+            activate.push((view.window, tab, false));
         }
         if change.titles {
             retitled.insert(view.window);
@@ -1590,11 +1596,14 @@ fn reconcile(cx: &mut App, touched: &Touched) {
 
 /// Shows the tabs reconcile made active by removing the active tab or its
 /// focused pane, as `reconcile_own` does for a window's own completion, and
-/// focuses them
+/// focuses them when `refocus` is set,
 /// unless an overlay holds the window's focus. A window whose active tab
 /// changed again meanwhile is left alone.
-fn activate_reconciled_tabs(cx: &mut App, tabs: &[(gpui::WindowId, TabId)]) {
-    for &(id, tab) in tabs {
+fn activate_reconciled_tabs(
+    cx: &mut App,
+    tabs: &[(gpui::WindowId, TabId, bool)],
+) {
+    for &(id, tab, refocus) in tabs {
         let Some(handle) = cx
             .windows()
             .into_iter()
@@ -1608,7 +1617,7 @@ fn activate_reconciled_tabs(cx: &mut App, tabs: &[(gpui::WindowId, TabId)]) {
             };
             view.update(cx, |view, cx| {
                 if view.active_tab(cx) == Some(tab) {
-                    let focus = !view.overlay_holds_focus();
+                    let focus = refocus && !view.overlay_holds_focus();
                     view.measure_tab_widths(window, cx);
                     view.select_tab(tab, focus, window, cx);
                 }
@@ -3886,6 +3895,11 @@ impl WorkspaceView {
         if let Some(next) = reactivation(active, self.active_pane(cx)) {
             self.measure_tab_widths(window, cx);
             self.select(next, window, cx);
+        } else if change.adopted
+            && let Some(tab) = self.active_tab(cx)
+        {
+            // A pane view that changed tabs takes its new tab's visibility.
+            self.select_tab(tab, false, window, cx);
         }
         cx.notify();
     }
@@ -8848,6 +8862,15 @@ impl WorkspaceView {
                     pane: *pane,
                 };
                 self.request_close(target, window, cx);
+            }
+            // The pane left this window before its close was assessed; the
+            // close never reached Mux, so an exit-close returns to owed for
+            // the window that shows the pane now.
+            (
+                CloseTarget::Pane { pane, .. },
+                MuxError::UnknownPane(_) | MuxError::UnknownTab(_),
+            ) if self.tab_showing(*pane).is_none() => {
+                self.cancel_close(window, cx);
             }
             (CloseTarget::Emptied, _) => {
                 self.report_close_failure(

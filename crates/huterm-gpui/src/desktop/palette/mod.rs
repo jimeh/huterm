@@ -189,6 +189,9 @@ struct IdentityRow {
     /// A pane's terminal, so a move's pane picker can leave out the pane
     /// being moved.
     terminal: Option<TerminalId>,
+    /// A pane's tab, so a tab move's pane picker can leave out the tab's
+    /// own panes.
+    tab: Option<TabId>,
     custom_name: bool,
 }
 
@@ -202,6 +205,7 @@ fn profile_rows(profiles: Vec<QuakeProfileRow>) -> Vec<IdentityRow> {
             position: None,
             workspace: None,
             terminal: None,
+            tab: None,
             custom_name: false,
         })
         .collect()
@@ -221,6 +225,7 @@ fn side_rows() -> Vec<IdentityRow> {
             position: None,
             workspace: None,
             terminal: None,
+            tab: None,
             custom_name: false,
         })
         .collect()
@@ -276,6 +281,7 @@ impl PaletteHierarchy {
                 position: None,
                 workspace: None,
                 terminal: None,
+                tab: None,
                 custom_name: session.custom_name.is_some(),
             });
             for &workspace_id in
@@ -291,6 +297,7 @@ impl PaletteHierarchy {
                     position: None,
                     workspace: Some(workspace_id),
                     terminal: None,
+                    tab: None,
                     custom_name: workspace.custom_name.is_some(),
                 });
                 let members =
@@ -315,6 +322,7 @@ impl PaletteHierarchy {
                         position: i64::try_from(index + 1).ok(),
                         workspace: Some(workspace_id),
                         terminal: None,
+                        tab: None,
                         custom_name: tab.custom_name.is_some(),
                     });
                     let tab_label = &tabs[tabs.len() - 1].label;
@@ -332,6 +340,7 @@ impl PaletteHierarchy {
                             position: None,
                             workspace: Some(workspace_id),
                             terminal: Some(pane.terminal_id),
+                            tab: Some(tab_id),
                             custom_name: false,
                         });
                     }
@@ -380,12 +389,15 @@ impl PaletteHierarchy {
 
 /// The slot editor's view of identity domains: the hierarchy projection for
 /// sessions, workspaces, and tabs; configured profiles for quake commands.
+#[derive(Clone, Copy)]
 struct DomainView<'a> {
     hierarchy: &'a PaletteHierarchy,
     profiles: &'a [IdentityRow],
     target: &'a PaletteTarget,
     /// Window-scoped commands can only act on this window's tabs.
     window_only: bool,
+    /// The tab a tab move moves, whose own panes are no destination.
+    moving_tab: Option<TabId>,
 }
 
 impl DomainView<'_> {
@@ -394,14 +406,15 @@ impl DomainView<'_> {
         match kind {
             ArgumentKind::QuakeProfile => self.profiles.iter().collect(),
             ArgumentKind::Side => SIDE_ROWS.iter().collect(),
-            // A pane is never moved beside itself.
+            // A pane is never moved beside itself, nor a tab into one of
+            // its own panes.
             ArgumentKind::Pane => self
                 .hierarchy
                 .rows(kind)
                 .iter()
-                .filter(|row| {
-                    row.terminal.is_none()
-                        || row.terminal != self.target.terminal
+                .filter(|row| match self.moving_tab {
+                    Some(tab) => row.tab != Some(tab),
+                    None => row.terminal != self.target.terminal,
                 })
                 .collect(),
             ArgumentKind::Session
@@ -737,7 +750,7 @@ impl CommandPalette {
             let editor = SlotEditor::new(
                 spec,
                 &request.args,
-                &palette.domain_for(spec),
+                &palette.domain_for(spec, &request.args),
                 true,
             );
             if editor.slots().is_empty() {
@@ -869,13 +882,34 @@ impl CommandPalette {
         self.hierarchy.lists_workspace(workspace)
     }
 
-    fn domain_for(&self, spec: &CommandSpec) -> DomainView<'_> {
+    fn domain_for(
+        &self,
+        spec: &CommandSpec,
+        args: &[CommandArgument],
+    ) -> DomainView<'_> {
+        let tab = args.iter().find_map(|arg| match arg.value {
+            CommandValue::Tab(tab) if arg.name == "tab" => Some(tab),
+            _ => None,
+        });
         DomainView {
             hierarchy: &self.hierarchy,
             profiles: &self.profiles,
             target: &self.target,
             window_only: spec.scope == CommandScope::Window,
+            moving_tab: self.moving_tab(spec, tab),
         }
+    }
+
+    /// The tab `spec` moves when it is a tab move: its `tab` argument, else
+    /// the active tab.
+    fn moving_tab(
+        &self,
+        spec: &CommandSpec,
+        tab: Option<TabId>,
+    ) -> Option<TabId> {
+        (spec.id == ids::MOVE_TAB_TO_PANE)
+            .then(|| tab.or(self.target.tab))
+            .flatten()
     }
 
     /// Whether the slot stage's command may only target this window.
@@ -888,11 +922,27 @@ impl CommandPalette {
 
     /// The domain for the slot stage's command.
     fn domain(&self) -> DomainView<'_> {
+        let moving_tab = match &self.stage {
+            Stage::Slots(editor) => {
+                let tab =
+                    editor.slots().iter().find_map(|slot| match slot.value {
+                        Some(CommandValue::Tab(tab))
+                            if slot.spec.name == "tab" =>
+                        {
+                            Some(tab)
+                        }
+                        _ => None,
+                    });
+                self.moving_tab(editor.spec(), tab)
+            }
+            Stage::Search(_) => None,
+        };
         DomainView {
             hierarchy: &self.hierarchy,
             profiles: &self.profiles,
             target: &self.target,
             window_only: self.window_only(),
+            moving_tab,
         }
     }
 
@@ -1069,11 +1119,12 @@ impl CommandPalette {
             )));
             return;
         }
-        if !slots::runs_without_prompt(spec, &self.domain_for(spec)) {
+        if !slots::runs_without_prompt(spec, &self.domain_for(spec, &[])) {
             self.expand_search(cx);
             return;
         }
-        let editor = SlotEditor::new(spec, &[], &self.domain_for(spec), false);
+        let editor =
+            SlotEditor::new(spec, &[], &self.domain_for(spec, &[]), false);
         match editor.invocation() {
             Ok(invocation) => {
                 cx.emit(PaletteEvent::Execute(invocation));
@@ -1102,7 +1153,8 @@ impl CommandPalette {
             cx.notify();
             return;
         }
-        let editor = SlotEditor::new(spec, &[], &self.domain_for(spec), false);
+        let editor =
+            SlotEditor::new(spec, &[], &self.domain_for(spec, &[]), false);
         if editor.slots().is_empty() {
             return;
         }
@@ -1710,7 +1762,10 @@ impl CommandPalette {
             let hovered = self.hover == Some(row);
             let badge = if spec.args.is_empty() {
                 None
-            } else if slots::runs_without_prompt(spec, &self.domain_for(spec)) {
+            } else if slots::runs_without_prompt(
+                spec,
+                &self.domain_for(spec, &[]),
+            ) {
                 Some((
                     KeyHint::keys(&["tab"], Platform::current())
                         .with_suffix(" options"),
@@ -1816,7 +1871,7 @@ impl CommandPalette {
         let has_args = selected_spec.is_some_and(|spec| !spec.args.is_empty());
         let runs = selected_spec.is_some_and(|spec| {
             spec.args.is_empty()
-                || slots::runs_without_prompt(spec, &self.domain_for(spec))
+                || slots::runs_without_prompt(spec, &self.domain_for(spec, &[]))
         });
         let platform = Platform::current();
         let mut hints = vec![

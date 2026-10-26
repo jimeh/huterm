@@ -29,7 +29,7 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
 }
 
 type OverlayKey =
-  | "enter" | "escape" | "tab" | "shift-tab" | "left" | "right" | "down" | "end" | "page-up"
+  | "enter" | "escape" | "tab" | "shift-tab" | "left" | "right" | "up" | "down" | "end" | "page-up"
   | "new-tab" | "close-tab" | "select-1" | "select-2" | "select-3"
   | "split-right" | "focus-next-pane" | "focus-pane-left";
 type PointerButton = "left" | "middle" | "right";
@@ -49,7 +49,7 @@ type OverlayInput = {
 
 const x11Keys: Record<OverlayKey, string> = {
   enter: "Return", escape: "Escape", tab: "Tab", "shift-tab": "shift+Tab", left: "Left", right: "Right",
-  down: "Down", end: "End", "page-up": "shift+Prior", "new-tab": "ctrl+shift+t", "close-tab": "ctrl+shift+w",
+  up: "Up", down: "Down", end: "End", "page-up": "shift+Prior", "new-tab": "ctrl+shift+t", "close-tab": "ctrl+shift+w",
   "select-1": "alt+1", "select-2": "alt+2", "select-3": "alt+3",
   // Openbox grabs Ctrl+Alt+arrows for desktop switching, so the X11 run
   // invokes focus_pane_left instead of sending this key.
@@ -86,7 +86,8 @@ function x11Input(windowId: string, scale: number): OverlayInput {
 // the characters, so arrows and End carry their function-key characters.
 const macKeys: Record<OverlayKey, [number, number, string]> = {
   enter: [36, 0, "\r"], escape: [53, 0, "\x1b"], tab: [48, 0, "\\t"], "shift-tab": [48, shiftFlag, "\\t"],
-  left: [123, 0, "\uF702"], right: [124, 0, "\uF703"], down: [125, 0, "\uF701"], end: [119, 0, "\uF72B"],
+  left: [123, 0, "\uF702"], right: [124, 0, "\uF703"], up: [126, 0, "\uF700"],
+  down: [125, 0, "\uF701"], end: [119, 0, "\uF72B"],
   "page-up": [116, shiftFlag, "\uF72C"], "new-tab": [17, commandFlag, "t"], "close-tab": [13, commandFlag, "w"],
   "select-1": [18, commandFlag, "1"], "select-2": [19, commandFlag, "2"], "select-3": [20, commandFlag, "3"],
   "split-right": [2, commandFlag, "d"], "focus-next-pane": [30, commandFlag, "]"],
@@ -418,6 +419,8 @@ label = "title"
     await click(firstTab.x, firstTab.y, "right");
     await state("w0.menu=true", "w0.menu_kind=tab", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=0", "w0.active_index=2", "w0.menu_button_open=false");
     await key("end");
+    await state("w0.menu=true", "w0.menu_selection=move_tab_to_pane");
+    await key("up");
     await state("w0.menu=true", "w0.menu_selection=close_tabs_after");
     await key("enter");
     await state("w0.menu=false", "w0.tabs=1", "w0.active_index=0", "w0.confirming=false", "w0.terminal_focused=true", 'w0.window_title="alpha — Huterm"');

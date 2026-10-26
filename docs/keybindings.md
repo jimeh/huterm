@@ -178,12 +178,13 @@ between a layout change and that frame matches the previous contexts.
 ## Commands
 
 A command's scope says who runs it. Runtime commands run in the core against
-the canonical session structure. The `tab`, `workspace`, and `session`
-arguments cannot be written in the config for any command. The palette
-prompts for them where a command needs one, and omitted targets default to the
-invoking window's active tab, workspace, or session. Palette-scope commands
-imply the `Palette` context, and dialog, menu, and notice commands imply
-`confirming`, `menu`, and `notices`. User bindings for them need no `when`.
+the canonical session structure. The `pane`, `tab`, `workspace`, and
+`session` arguments cannot be written in the config for any command. The
+palette prompts for them where a command needs one, and omitted targets
+default to the invoking window's active tab, workspace, or session.
+Palette-scope commands imply the `Palette` context, and dialog, menu, and
+notice commands imply `confirming`, `menu`, and `notices`. User bindings for
+them need no `when`.
 
 | Command | Scope | Arguments |
 | --- | --- | --- |
@@ -222,9 +223,9 @@ imply the `Palette` context, and dialog, menu, and notice commands imply
 | `swap_pane_left` / `swap_pane_right` / `swap_pane_up` / `swap_pane_down` | Window | Swaps the focused pane with the pane `focus_pane_*` would move to; does nothing at the tab's edge. |
 | `move_pane_next` / `move_pane_previous` | Window | Moves the focused pane one place forward or back in layout order, wrapping. |
 | `move_pane_left` / `move_pane_right` / `move_pane_up` / `move_pane_down` | Window | Moves the focused pane past the adjacent pane on that side; does nothing at the tab's edge. |
-| `move_pane_to_pane` | Window | `pane` and `side` (`left`, `right`, `up`, or `down`). Moves the focused pane beside a pane in any tab, workspace, or session. Without them, prompts. |
+| `move_pane_to_pane` | Window | `pane` and `side` (`left`, `right`, `up`, or `down`). Moves the focused pane beside a pane in any tab, workspace, or session. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `move_pane_to_new_tab` | Window | Optional `workspace`; defaults to the window's, where the new tab opens after the pane's tab. A tab's only pane moves its whole tab to another workspace. |
-| `move_tab_to_pane` | Window | `pane` and `side`; `tab` defaults to the active tab. Moves the whole tab beside a pane of another tab, keeping its layout. Without them, prompts. |
+| `move_tab_to_pane` | Window | `pane` and `side`; `tab` defaults to the active tab. Moves the whole tab beside a pane of another tab, keeping its layout. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enters native mode, or exits any active fullscreen mode. |
 | `toggle_non_native_fullscreen` | Window | macOS only. Enters current-Space mode, or exits any active fullscreen mode. |
