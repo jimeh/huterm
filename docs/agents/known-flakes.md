@@ -129,18 +129,24 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 
 - **Label:**
   `tests::reads_a_live_process_group_leader_and_its_arguments` in
-  `Checks (Linux x86_64)`, panicking at `arguments(pid).unwrap()` with
-  "called `Option::unwrap()` on a `None` value".
-- **Occurrences:** once, 2026-10-21 (PR #226, attempt 1 of run 39695920472);
-  the rerun passed.
-- **Evidence:** the test had already seen the child named `sleep`, so the
-  exec had started. The Linux reader returns `None` only when reading
-  `/proc/<pid>/cmdline` fails; an empty read returns an empty list. Why the
-  read failed is unconfirmed. One candidate is a read that races the end of
-  the exec.
-- **Triage:** rerun once. A repeat should capture the read error before
-  changing the test, for example by retrying `arguments` inside the existing
-  `eventually` wait.
+  `Checks (Linux x86_64)` or `Checks (Linux aarch64)`, panicking at
+  `arguments(pid).unwrap()` with "called `Option::unwrap()` on a `None`
+  value". After the fix, a failure there times out with "condition never
+  held; last observed" and the process facts and arguments it last read.
+- **Occurrences:** four, each at `lib.rs:262:35`: 2026-10-21 on x86_64
+  (PR #226, run 39695920472), then on aarch64 on 2026-10-25 (Release Please,
+  run 40219352235) and 2026-10-26 (Dependabot run 40266500383, and main run
+  40320456365). Reruns passed.
+- **Cause:** Linux renames the process `sleep` before the exec records where
+  its arguments are, and `cmdline` reads as empty until then. The public
+  `arguments` turns an empty list into `None`. Reading `cmdline` the moment
+  `stat` first named `sleep` returned nothing in 494 of 500 tries in Docker
+  on arm64. The test now waits for the name and the arguments in one poll.
+  With that poll running without a pause, the old test failed 174 of 200
+  runs and the new one passed 200 of 200.
+- **Triage:** a failure at this test after the fix landed is new; read the
+  last observed facts and arguments in its panic before rerunning. Remove
+  this entry once the fixed test has passed in about 20 Linux check jobs.
 
 ## huterm-gpui replaced view's clipboard write on Linux aarch64
 
