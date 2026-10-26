@@ -344,6 +344,20 @@ impl WindowModel {
         })
     }
 
+    /// Every pane title an open window published, by terminal.
+    pub(super) fn published_pane_titles(
+        &self,
+    ) -> impl Iterator<Item = (TerminalId, &str)> {
+        self.records.iter().flat_map(|record| {
+            record.tabs.iter().flat_map(|entry| {
+                entry
+                    .panes
+                    .iter()
+                    .map(|pane| (pane.terminal, pane.title.as_str()))
+            })
+        })
+    }
+
     /// The open window serving quake profile `name`.
     pub(super) fn quake_window(&self, name: &str) -> Option<WindowId> {
         self.open_records()

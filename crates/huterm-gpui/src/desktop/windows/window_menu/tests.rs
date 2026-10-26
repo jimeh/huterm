@@ -138,6 +138,7 @@ fn the_window_menu_lists_the_plan_items_with_platform_shortcuts() {
             ("new_window", Some("⌘N".to_owned())),
             ("split_right", Some("⌘D".to_owned())),
             ("split_down", Some("⇧⌘D".to_owned())),
+            ("move_pane_to_new_tab", None),
             ("rename_tab", None),
             ("close_pane", Some("⌘W".to_owned())),
             ("close_tab", None),
@@ -158,9 +159,10 @@ fn the_window_menu_lists_the_plan_items_with_platform_shortcuts() {
         })
         .collect();
     assert_eq!(labels[0], "Command Palette…");
-    assert_eq!(labels[5], "Rename Tab…");
-    assert_eq!(labels[12], "About Huterm");
-    assert_eq!(labels[13], "Quit Huterm");
+    assert_eq!(labels[5], "Move Pane to New Tab");
+    assert_eq!(labels[6], "Rename Tab…");
+    assert_eq!(labels[13], "About Huterm");
+    assert_eq!(labels[14], "Quit Huterm");
     let separators = model
         .rows
         .iter()
@@ -183,18 +185,18 @@ fn the_window_menu_lists_the_plan_items_with_platform_shortcuts() {
         ("split_right", Some("Ctrl+Shift+O".to_owned()))
     );
     assert_eq!(
-        linux_items[6],
+        linux_items[7],
         ("close_pane", Some("Ctrl+Shift+W".to_owned()))
     );
     assert_eq!(
-        linux_items[9],
+        linux_items[10],
         ("toggle_fullscreen", Some("F11".to_owned()))
     );
     assert_eq!(
-        linux_items[10],
+        linux_items[11],
         ("open_settings", Some("Ctrl+,".to_owned()))
     );
-    assert_eq!(linux_items[13], ("quit", None), "Linux has no quit binding");
+    assert_eq!(linux_items[14], ("quit", None), "Linux has no quit binding");
 }
 
 #[test]
@@ -289,5 +291,5 @@ fn user_bindings_replace_default_shortcut_text() {
         window_menu_model(&input, &keymap(Platform::MacOs, &user), &contexts());
     let shortcuts = items(&model);
     assert_eq!(shortcuts[1], ("new_tab", Some("⌃⌥T".to_owned())));
-    assert_eq!(shortcuts[8], ("close_window", None), "unbound shows none");
+    assert_eq!(shortcuts[9], ("close_window", None), "unbound shows none");
 }

@@ -218,6 +218,13 @@ imply the `Palette` context, and dialog, menu, and notice commands imply
 | `focus_pane_left` / `focus_pane_right` / `focus_pane_up` / `focus_pane_down` | Window | Focuses the adjacent pane in that direction; does nothing at the tab's edge. |
 | `resize_pane_left` / `resize_pane_right` / `resize_pane_up` / `resize_pane_down` | Window | Optional `amount` in cells (1 to 100), default 5. Moves the focused pane's edge that way, keeping every pane at least 4 columns by 2 rows; does nothing without a neighbour on that side. |
 | `toggle_pane_zoom` | Window | Shows the focused pane across its tab, or every pane again. Focus, split, and resize commands unzoom first. |
+| `swap_pane_next` / `swap_pane_previous` | Window | Swaps the focused pane with the next or previous pane in layout order, wrapping. Each pane keeps its terminal; the two trade places. |
+| `swap_pane_left` / `swap_pane_right` / `swap_pane_up` / `swap_pane_down` | Window | Swaps the focused pane with the pane `focus_pane_*` would move to; does nothing at the tab's edge. |
+| `move_pane_next` / `move_pane_previous` | Window | Moves the focused pane one place forward or back in layout order, wrapping. |
+| `move_pane_left` / `move_pane_right` / `move_pane_up` / `move_pane_down` | Window | Moves the focused pane past the adjacent pane on that side; does nothing at the tab's edge. |
+| `move_pane_to_pane` | Window | `pane` and `side` (`left`, `right`, `up`, or `down`). Moves the focused pane beside a pane in any tab, workspace, or session. Without them, prompts. |
+| `move_pane_to_new_tab` | Window | Optional `workspace`; defaults to the window's, where the new tab opens after the pane's tab. A tab's only pane moves its whole tab to another workspace. |
+| `move_tab_to_pane` | Window | `pane` and `side`; `tab` defaults to the active tab. Moves the whole tab beside a pane of another tab, keeping its layout. Without them, prompts. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enters native mode, or exits any active fullscreen mode. |
 | `toggle_non_native_fullscreen` | Window | macOS only. Enters current-Space mode, or exits any active fullscreen mode. |

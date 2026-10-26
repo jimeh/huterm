@@ -3,9 +3,9 @@
  * second window to the first window's session, then check shared output,
  * the shared viewport, control of the PTY size, installing a tab opened
  * later, single delivery of a clipboard write, one close for a shell that
- * exits, replacing revoked viewers in place, splitting, focusing, and
- * closing panes with each pane's shell at its own size, closing the second
- * window
+ * exits, replacing revoked viewers in place, splitting, focusing, moving
+ * a pane into a tab of its own, and closing panes with each pane's shell at
+ * its own size, closing the second window
  * through the platform's close path, cancelling `AppKit` termination on
  * macOS, and that closing the session's last tab closes both windows and
  * ends the app. Input goes through fixture commands addressed to a window,
@@ -287,15 +287,27 @@ always_show = true
     await focusedPaneSized(0, "left");
     await command("invoke-in\t0\tfocus_next_pane");
     await stateWhere((state) => windowField(state, 0, "pane_focus") === "1", "focus to move to the new pane");
+    // Moving the new pane into a tab of its own keeps its shell running: both
+    // windows show the new tab, and the shell takes the whole tab's size.
+    const tabsBefore = Number(windowField(await current(), 0, "tabs"));
+    await command("invoke-in\t0\tmove_pane_to_new_tab");
+    await stateWhere((state) => windowField(state, 0, "tabs") === String(tabsBefore + 1)
+      && windowField(state, 1, "tabs") === String(tabsBefore + 1) && windowField(state, 0, "panes") === "1",
+    "both windows to show the extracted pane's tab");
+    const extracted = await focusedPaneSized(0, "extracted");
+    if (extracted.columns !== unsplit.columns || extracted.rows !== unsplit.rows) {
+      throw new Error(`the extracted pane did not take a whole tab: ${JSON.stringify(extracted)} vs ${JSON.stringify(unsplit)}`);
+    }
     await command("invoke-in\t0\tclose_pane");
-    const joined = await stateWhere((state) => windowField(state, 0, "panes") === "1"
-      && windowField(state, 1, "panes") === "1", "both windows to drop the closed pane");
+    const joined = await stateWhere((state) => windowField(state, 0, "tabs") === String(tabsBefore)
+      && windowField(state, 0, "panes") === "1" && windowField(state, 1, "panes") === "1",
+    "both windows to drop the extracted pane's tab");
     if (windowField(joined, 0, "confirming") !== "false") throw new Error(`closing an idle pane asked first: ${joined}`);
     const merged = await focusedPaneSized(0, "merged");
     if (merged.columns !== unsplit.columns || merged.rows !== unsplit.rows) {
       throw new Error(`the remaining pane did not take the tab back: ${JSON.stringify(merged)} vs ${JSON.stringify(unsplit)}`);
     }
-    report.push(`panes=${left.columns}+${right.columns}/${unsplit.columns}`);
+    report.push(`panes=${left.columns}+${right.columns}/${unsplit.columns} extracted=${extracted.columns}`);
 
     // 7. Closing window 1 through the platform's close path detaches it;
     // window 0's shell still answers.

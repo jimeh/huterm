@@ -14,7 +14,7 @@ pub use cell_text::CellText;
 pub use command::{
     ArgumentKind, ArgumentSpec, CommandArgument, CommandError, CommandId,
     CommandInvocation, CommandOutcome, CommandScope, CommandSpec, CommandValue,
-    Requirement, catalog, ids, lookup, validate, validate_supplied,
+    Requirement, SIDES, catalog, ids, lookup, validate, validate_supplied,
 };
 pub use hierarchy::{
     ApplyOutcome, HierarchyEnvelope, HierarchyEvent, HierarchyState,

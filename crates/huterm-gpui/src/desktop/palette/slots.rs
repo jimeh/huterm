@@ -79,6 +79,8 @@ pub(super) fn is_identity(kind: ArgumentKind) -> bool {
         ArgumentKind::Session
             | ArgumentKind::Workspace
             | ArgumentKind::Tab
+            | ArgumentKind::Pane
+            | ArgumentKind::Side
             | ArgumentKind::QuakeProfile
     )
 }
@@ -453,7 +455,8 @@ fn scalar_text(value: &CommandValue) -> String {
         CommandValue::Text(value) => value.clone(),
         CommandValue::Session(_)
         | CommandValue::Workspace(_)
-        | CommandValue::Tab(_) => String::new(),
+        | CommandValue::Tab(_)
+        | CommandValue::Pane(_) => String::new(),
     }
 }
 
@@ -482,7 +485,9 @@ fn parse_scalar(
         ArgumentKind::QuakeProfile
         | ArgumentKind::Tab
         | ArgumentKind::Workspace
-        | ArgumentKind::Session => {
+        | ArgumentKind::Session
+        | ArgumentKind::Pane
+        | ArgumentKind::Side => {
             Err(format!("{label} must be chosen from the list"))
         }
     }

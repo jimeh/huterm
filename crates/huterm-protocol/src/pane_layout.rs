@@ -487,6 +487,47 @@ impl PaneLayout {
         Some(panes[next].id)
     }
 
+    /// Where moving `source` one place forward or back in traversal order
+    /// inserts it: the pane it lands beside and the side it takes, or
+    /// `None` for an unknown pane or a layout of one pane.
+    ///
+    /// The target is the next or previous pane, wrapping. The side runs
+    /// along the axis of the split that holds the target once `source` is
+    /// removed, or along `source`'s former axis when the target is then the
+    /// only pane: trailing for forward and leading for back, reversed when
+    /// the move wraps. In `[A | B | C]`, moving C forward gives
+    /// `[C | A | B]` and moving A back gives `[B | C | A]`.
+    #[must_use]
+    pub fn step_target(
+        &self,
+        source: PaneId,
+        forward: bool,
+    ) -> Option<(PaneId, SplitDirection)> {
+        let target = self.cycle(source, forward)?;
+        let panes = self.panes();
+        let wrapped = if forward {
+            panes.first()?.id == target
+        } else {
+            panes.last()?.id == target
+        };
+        let remaining = self.without_pane(source).ok()?;
+        let axis = match remaining.root() {
+            PaneNode::Split(root) => parent_axis(root, target)?,
+            PaneNode::Pane(_) => match self.root() {
+                PaneNode::Split(root) => parent_axis(root, source)?,
+                PaneNode::Pane(_) => return None,
+            },
+        };
+        let trailing = forward != wrapped;
+        let side = match (axis, trailing) {
+            (SplitAxis::Columns, true) => SplitDirection::Right,
+            (SplitAxis::Columns, false) => SplitDirection::Left,
+            (SplitAxis::Rows, true) => SplitDirection::Down,
+            (SplitAxis::Rows, false) => SplitDirection::Up,
+        };
+        Some((target, side))
+    }
+
     /// The pane `direction` moves to from `from`, without wrapping.
     ///
     /// Candidates lie wholly beyond `from`'s edge on that side in

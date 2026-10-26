@@ -25,7 +25,7 @@ use huterm_config::PalettePlacement;
 use huterm_protocol::{
     ArgumentKind, CommandArgument, CommandError, CommandId, CommandInvocation,
     CommandOutcome, CommandScope, CommandSpec, CommandValue, HierarchyState,
-    SessionId, TabId, TerminalId, WorkspaceId, catalog, ids,
+    SIDES, SessionId, TabId, TerminalId, WorkspaceId, catalog, ids,
 };
 use search::{CommandHistory, CommandMatch, CommandSearch, PickerMatcher};
 use slots::{
@@ -186,6 +186,9 @@ struct IdentityRow {
     position: Option<i64>,
     /// Owning workspace, so window-scoped commands list only their own tabs.
     workspace: Option<WorkspaceId>,
+    /// A pane's terminal, so a move's pane picker can leave out the pane
+    /// being moved.
+    terminal: Option<TerminalId>,
     custom_name: bool,
 }
 
@@ -198,33 +201,70 @@ fn profile_rows(profiles: Vec<QuakeProfileRow>) -> Vec<IdentityRow> {
             detail: row.detail,
             position: None,
             workspace: None,
+            terminal: None,
             custom_name: false,
         })
         .collect()
 }
 
-/// Session, workspace, and tab rows for identity pickers.
+/// The rows a side picker offers, in [`SIDES`] order.
+static SIDE_ROWS: std::sync::LazyLock<Vec<IdentityRow>> =
+    std::sync::LazyLock::new(side_rows);
+
+fn side_rows() -> Vec<IdentityRow> {
+    SIDES
+        .iter()
+        .map(|side| IdentityRow {
+            value: CommandValue::Text((*side).to_owned()),
+            label: capitalize(side),
+            detail: "side".to_owned(),
+            position: None,
+            workspace: None,
+            terminal: None,
+            custom_name: false,
+        })
+        .collect()
+}
+
+/// Session, workspace, tab, and pane rows for identity pickers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct PaletteHierarchy {
     sessions: Vec<IdentityRow>,
     workspaces: Vec<IdentityRow>,
     tabs: Vec<IdentityRow>,
+    panes: Vec<IdentityRow>,
 }
 
 impl PaletteHierarchy {
-    /// Builds rows from a hierarchy projection, in session, workspace, and
-    /// tab order. A tab is labelled by its custom name, then `title`, the
-    /// title its window published, then its fallback name. Tabs follow
-    /// `tab_order`, most recently used first; tabs it omits keep their
-    /// structural order after the ordered ones.
+    /// Builds rows from a hierarchy projection with panes labelled by
+    /// their launched program names; see [`Self::from_projection_with`].
+    #[cfg(test)]
     pub(super) fn from_projection<'t>(
         state: &HierarchyState,
         title: impl Fn(TabId) -> Option<&'t str>,
         tab_order: &[TabId],
     ) -> Self {
+        Self::from_projection_with(state, title, |_| None, tab_order)
+    }
+
+    /// Builds rows from a hierarchy projection, in session, workspace, and
+    /// tab order. A tab is labelled by its custom name, then `title`, the
+    /// title its window published, then its fallback name; a pane by
+    /// `pane_title`, the title a window published for its terminal, then
+    /// its fallback name. Tabs follow `tab_order`, most recently used
+    /// first, and tabs it omits keep their structural order after the
+    /// ordered ones; panes follow their tabs, in traversal order within
+    /// each.
+    pub(super) fn from_projection_with<'t>(
+        state: &HierarchyState,
+        title: impl Fn(TabId) -> Option<&'t str>,
+        pane_title: impl Fn(TerminalId) -> Option<&'t str>,
+        tab_order: &[TabId],
+    ) -> Self {
         let mut sessions = Vec::new();
         let mut workspaces = Vec::new();
         let mut tabs = Vec::new();
+        let mut panes = Vec::new();
         for &session_id in state.sessions() {
             let Some(session) = state.session(session_id) else {
                 continue;
@@ -235,6 +275,7 @@ impl PaletteHierarchy {
                 detail: "session".to_owned(),
                 position: None,
                 workspace: None,
+                terminal: None,
                 custom_name: session.custom_name.is_some(),
             });
             for &workspace_id in
@@ -249,6 +290,7 @@ impl PaletteHierarchy {
                     detail: session.display_name().to_owned(),
                     position: None,
                     workspace: Some(workspace_id),
+                    terminal: None,
                     custom_name: workspace.custom_name.is_some(),
                 });
                 let members =
@@ -272,25 +314,49 @@ impl PaletteHierarchy {
                         ),
                         position: i64::try_from(index + 1).ok(),
                         workspace: Some(workspace_id),
+                        terminal: None,
                         custom_name: tab.custom_name.is_some(),
                     });
+                    let tab_label = &tabs[tabs.len() - 1].label;
+                    for pane in tab.layout.panes() {
+                        panes.push(IdentityRow {
+                            value: CommandValue::Pane(pane.id),
+                            label: pane_title(pane.terminal_id)
+                                .unwrap_or(&pane.fallback_name)
+                                .to_owned(),
+                            detail: format!(
+                                "{} › {} › {tab_label}",
+                                session.display_name(),
+                                workspace.display_name(),
+                            ),
+                            position: None,
+                            workspace: Some(workspace_id),
+                            terminal: Some(pane.terminal_id),
+                            custom_name: false,
+                        });
+                    }
                 }
             }
         }
         // Most recently used first; tabs the window never activated keep
-        // their structural order after the ordered ones.
-        let rank = |value: &CommandValue| match value {
-            CommandValue::Tab(id) => tab_order
-                .iter()
-                .position(|ordered| ordered == id)
-                .unwrap_or(usize::MAX),
-            _ => usize::MAX,
+        // their structural order after the ordered ones, and panes follow
+        // their tabs.
+        let rank = |value: &CommandValue| {
+            let tab = match value {
+                CommandValue::Tab(id) => Some(*id),
+                CommandValue::Pane(id) => state.pane_tab(*id),
+                _ => None,
+            };
+            tab.and_then(|tab| tab_order.iter().position(|id| *id == tab))
+                .unwrap_or(usize::MAX)
         };
         tabs.sort_by_key(|row| rank(&row.value));
+        panes.sort_by_key(|row| rank(&row.value));
         Self {
             sessions,
             workspaces,
             tabs,
+            panes,
         }
     }
 
@@ -306,6 +372,7 @@ impl PaletteHierarchy {
             ArgumentKind::Session => &self.sessions,
             ArgumentKind::Workspace => &self.workspaces,
             ArgumentKind::Tab => &self.tabs,
+            ArgumentKind::Pane => &self.panes,
             _ => &[],
         }
     }
@@ -326,6 +393,17 @@ impl DomainView<'_> {
     fn rows(&self, kind: ArgumentKind) -> Vec<&IdentityRow> {
         match kind {
             ArgumentKind::QuakeProfile => self.profiles.iter().collect(),
+            ArgumentKind::Side => SIDE_ROWS.iter().collect(),
+            // A pane is never moved beside itself.
+            ArgumentKind::Pane => self
+                .hierarchy
+                .rows(kind)
+                .iter()
+                .filter(|row| {
+                    row.terminal.is_none()
+                        || row.terminal != self.target.terminal
+                })
+                .collect(),
             ArgumentKind::Session
             | ArgumentKind::Workspace
             | ArgumentKind::Tab => self
@@ -375,7 +453,9 @@ impl SlotDomain for DomainView<'_> {
             ArgumentKind::QuakeProfile => {
                 Some(CommandValue::Text("default".to_owned()))
             }
-            ArgumentKind::Bool
+            ArgumentKind::Pane
+            | ArgumentKind::Side
+            | ArgumentKind::Bool
             | ArgumentKind::Integer { .. }
             | ArgumentKind::Text => None,
         }
@@ -1207,6 +1287,8 @@ impl CommandPalette {
             ArgumentKind::Workspace => "Filter workspaces…".to_owned(),
             ArgumentKind::Session => "Filter sessions…".to_owned(),
             ArgumentKind::QuakeProfile => "Filter profiles…".to_owned(),
+            ArgumentKind::Pane => "Filter panes…".to_owned(),
+            ArgumentKind::Side => "Choose a side…".to_owned(),
             ArgumentKind::Integer { min, max } => format!("{min} to {max}"),
             ArgumentKind::Bool => "true or false".to_owned(),
             ArgumentKind::Text => match self.rename_target(editor) {
@@ -1416,6 +1498,7 @@ fn display_value(value: &CommandValue) -> String {
         CommandValue::Session(id) => format!("session {}", id.get()),
         CommandValue::Workspace(id) => format!("workspace {}", id.get()),
         CommandValue::Tab(id) => format!("tab {}", id.get()),
+        CommandValue::Pane(id) => format!("pane {}", id.get()),
     }
 }
 

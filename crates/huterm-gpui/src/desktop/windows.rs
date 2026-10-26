@@ -102,6 +102,52 @@ fn keeps_minimum(
     })
 }
 
+/// Whether a close decides only once the projection reaches the hierarchy
+/// core assessed it at: a refused emptied close decides from batches up to
+/// that hierarchy, so none that arrived during the assessment is lost, and a
+/// pane close whose pane moved finds the pane's new tab.
+fn close_waits_for_projection<T>(
+    checking: &CloseTarget,
+    result: &Result<T, MuxError>,
+) -> bool {
+    matches!(
+        (checking, result),
+        (CloseTarget::Emptied, Err(MuxError::ViewNotEmpty(_)))
+            | (
+                CloseTarget::Pane { .. },
+                Err(MuxError::UnknownPane(_) | MuxError::UnknownTab(_))
+            )
+    )
+}
+
+/// Whether `session` holds a pane other than `spawned`, which another
+/// client moved in while a spawn's publication was pending.
+fn holds_other_panes(mux: &Mux, session: SessionId, spawned: PaneId) -> bool {
+    mux.session(session).is_some_and(|record| {
+        record.workspaces.iter().any(|workspace| {
+            mux.workspace(*workspace).is_some_and(|workspace| {
+                workspace.tabs.iter().any(|tab| {
+                    tab.layout()
+                        .panes()
+                        .into_iter()
+                        .any(|pane| pane.id != spawned)
+                })
+            })
+        })
+    })
+}
+
+/// Closes an unpublished spawn's own pane when it is still in `session`,
+/// leaving the rest of the session to the panes moved into it.
+fn close_spawned_pane(mux: &mut Mux, session: SessionId, pane: PaneId) {
+    if let Ok(target) = mux.select_pane(pane)
+        && target.session == session
+        && let (Some(workspace), Some(tab)) = (target.workspace, target.tab)
+    {
+        let _ = mux.close_pane(workspace, tab, pane);
+    }
+}
+
 /// Whether every grid is at least the minimum pane size.
 fn fits_minimum(grids: &[(PaneId, GridSize)]) -> bool {
     grids.iter().all(|(_, grid)| {
@@ -114,6 +160,7 @@ mod client_frame;
 mod exit_closes;
 mod model;
 mod pane_geometry;
+mod pane_moves;
 mod projection;
 mod tab_bar;
 mod tab_menu;
@@ -540,24 +587,30 @@ impl DesktopRuntime {
     }
 
     /// Removes an unpublished spawn's resources; returns the sequence the
-    /// cleanup committed at.
+    /// cleanup committed at. `pane` is the pane the spawn created.
     fn cleanup_spawn(
         &self,
         original_session: SessionId,
         workspace: WorkspaceId,
         tab: TabId,
+        pane: PaneId,
         attachment: Option<AttachmentId>,
     ) -> u64 {
         let mut mux = self.lock();
         // Never tear down a resource another attachment has adopted, including
-        // a tab moved to another session while its UI publication was pending.
+        // a tab moved to another session while its UI publication was pending,
+        // or a pane another client moved in.
         if let Some(attachment) = attachment {
             let _ = mux.detach_session(attachment);
             if mux.session(original_session).is_some() {
                 let session = original_session;
                 let snapshot = mux.capture_hierarchy();
                 if !snapshot.attachments.iter().any(|(_, id)| *id == session) {
-                    let _ = mux.close_session(session);
+                    if holds_other_panes(&mux, session, pane) {
+                        close_spawned_pane(&mut mux, session, pane);
+                    } else {
+                        let _ = mux.close_session(session);
+                    }
                 }
             }
         } else if let Ok(target) = mux.select_tab(tab) {
@@ -568,7 +621,18 @@ impl DesktopRuntime {
                     .iter()
                     .any(|(_, id)| *id == target.session)
             {
-                let _ = mux.close_tab(workspace, tab);
+                // A spawned pane that moved elsewhere stays; panes moved
+                // into its tab survive the cleanup.
+                let layout = mux.tab(tab).map(|tab| tab.layout().clone());
+                match layout {
+                    Some(layout) if layout.pane(pane).is_none() => {}
+                    Some(layout) if layout.pane_count() > 1 => {
+                        let _ = mux.close_pane(workspace, tab, pane);
+                    }
+                    _ => {
+                        let _ = mux.close_tab(workspace, tab);
+                    }
+                }
             }
         }
         mux.hierarchy_seq()
@@ -3722,12 +3786,11 @@ impl CloseState {
             CloseTarget::Tab(id) => {
                 contains(id).then_some(CloseTarget::Tab(id))
             }
-            CloseTarget::Pane { tab, pane } => {
-                contains(tab).then_some(CloseTarget::Pane { tab, pane })
-            }
             CloseTarget::Tabs(ids) => tabs_target(
                 ids.into_iter().filter(|id| contains(*id)).collect(),
             ),
+            // A pane close follows its pane, which may have moved to
+            // another tab; the request resolves its current tab.
             target => Some(target),
         }
     }
@@ -4680,6 +4743,78 @@ impl WorkspaceView {
         }
     }
 
+    /// Moves the view of `pane` from tab `from` into tab `to`, keeping its
+    /// terminal view, viewer, scroll, selection, and exit state. The pane
+    /// joins the end of `to`'s focus history and takes its place in `to`'s
+    /// traversal order; a `to` this window had no view of gets one, and a
+    /// `from` left empty is dropped, handing the window's activation to
+    /// `to` when `from` was active.
+    fn adopt_pane_view(
+        &mut self,
+        pane: PaneId,
+        from: TabId,
+        to: TabId,
+        cx: &mut App,
+    ) {
+        let Some(source) = self.tabs.iter_mut().find(|view| view.id == from)
+        else {
+            return;
+        };
+        let Some(index) =
+            source.panes.iter().position(|view| view.pane == pane)
+        else {
+            return;
+        };
+        let moved = source.panes.remove(index);
+        let committed = moved.committed;
+        let emptied = source.panes.is_empty();
+        if !emptied {
+            // The pane left, so focus falls back as for a closed pane.
+            source.remove_panes(&[pane]);
+            let titles = source.pane_titles(self.config.tabs, cx);
+            let title = source.title(self.config.tabs, cx);
+            let windows = &mut cx.global_mut::<Desktop>().windows;
+            if windows.set_pane_titles(self.window, from, titles)
+                | windows.set_tab_title(self.window, from, &title)
+            {
+                mark_titles_changed(self.window, cx);
+            }
+        }
+        if let Some(target) = self.tabs.iter_mut().find(|view| view.id == to) {
+            target.panes.push(moved);
+            target.focus_history.push(pane);
+            view_install::in_layout_order(&mut target.panes, to, cx);
+            let titles = target.pane_titles(self.config.tabs, cx);
+            let title = target.title(self.config.tabs, cx);
+            let windows = &mut cx.global_mut::<Desktop>().windows;
+            if windows.set_pane_titles(self.window, to, titles)
+                | windows.set_tab_title(self.window, to, &title)
+            {
+                mark_titles_changed(self.window, cx);
+            }
+        } else {
+            let names = cx
+                .global::<Desktop>()
+                .hierarchy
+                .state()
+                .tab(to)
+                .map(TabNames::from_info)
+                .unwrap_or_default();
+            self.push_tab_view(
+                TabView::new(to, committed, names, vec![moved]),
+                false,
+                cx,
+            );
+        }
+        if emptied {
+            // The tab that took the last pane takes over as active.
+            if self.active_tab(cx) == Some(from) {
+                cx.global_mut::<Desktop>().windows.select(self.window, to);
+            }
+            self.drop_tab_views(&[from], cx);
+        }
+    }
+
     /// Drops pane views of `tab` without closing anything, and republishes
     /// the tab's pane titles. A tab left without a view of any pane goes
     /// too. Returns whether anything was dropped.
@@ -4890,6 +5025,32 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
 
     fn drop_panes(&mut self, tab: TabId, panes: &[PaneId]) {
         self.view.remove_pane_views(tab, panes, self.cx);
+    }
+
+    fn adopt_pane(&mut self, pane: PaneId, from: TabId, to: TabId) {
+        self.view.adopt_pane_view(pane, from, to, self.cx);
+    }
+
+    fn order_panes(&mut self, tab: TabId) -> bool {
+        let Some(view) = self.view.tabs.iter_mut().find(|view| view.id == tab)
+        else {
+            return false;
+        };
+        let before: Vec<PaneId> =
+            view.panes.iter().map(|pane| pane.pane).collect();
+        view_install::in_layout_order(&mut view.panes, tab, self.cx);
+        if view.panes.iter().map(|pane| pane.pane).eq(before) {
+            return false;
+        }
+        let titles = view.pane_titles(self.view.config.tabs, self.cx);
+        if self.cx.global_mut::<Desktop>().windows.set_pane_titles(
+            self.view.window,
+            tab,
+            titles,
+        ) {
+            mark_titles_changed(self.view.window, self.cx);
+        }
+        true
     }
 }
 
@@ -5802,6 +5963,9 @@ impl WorkspaceView {
         self.tabs.iter().find(|tab| tab.id == active)
     }
 
+    /// Drains `pane_id`'s viewer and publishes what changed. `tab_id` is
+    /// the tab the drain started in; a pane that has since moved to another
+    /// tab of this window refreshes there, so its drain needs no restart.
     fn refresh_pane(
         &mut self,
         tab_id: TabId,
@@ -5809,7 +5973,14 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<bool> {
-        let tab = self.tabs.iter().find(|tab| tab.id == tab_id)?;
+        let tab = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id && tab.pane(pane_id).is_some())
+            .or_else(|| {
+                self.tabs.iter().find(|tab| tab.pane(pane_id).is_some())
+            })?;
+        let tab_id = tab.id;
         let pane = tab.pane(pane_id)?;
         let result = pane
             .view
@@ -5998,6 +6169,7 @@ impl WorkspaceView {
                             session,
                             workspace,
                             opened.tab.id,
+                            opened.tab.first_pane().id,
                             attachment,
                         )
                     })
@@ -6688,10 +6860,13 @@ impl WorkspaceView {
         let desktop = cx.global::<Desktop>();
         let titles: HashMap<TabId, &str> =
             desktop.windows.published_titles().collect();
+        let pane_titles: HashMap<TerminalId, &str> =
+            desktop.windows.published_pane_titles().collect();
         let state = desktop.hierarchy.state();
-        let hierarchy = PaletteHierarchy::from_projection(
+        let hierarchy = PaletteHierarchy::from_projection_with(
             state,
             |tab| titles.get(&tab).copied(),
+            |terminal| pane_titles.get(&terminal).copied(),
             &desktop.windows.palette_tab_order(self.window),
         );
         (hierarchy, state.seq())
@@ -7035,6 +7210,9 @@ impl WorkspaceView {
                 }
                 ids::CLOSE_WINDOW => self.check_close_window_available(),
                 ids::ABOUT | ids::OPEN_SETTINGS => Ok(()),
+                other if pane_moves::is_pane_move_command(other) => {
+                    self.pane_move_availability(other, cx)
+                }
                 other => Err(CommandError::UnknownCommand(other)),
             },
             CommandScope::Runtime => {
@@ -7599,6 +7777,9 @@ impl WorkspaceView {
             ids::NEXT_TAB => self.navigate(true, window, cx),
             id if is_pane_command(id) => {
                 self.run_pane_command(invocation, window, cx)
+            }
+            id if pane_moves::is_pane_move_command(id) => {
+                self.run_pane_move(invocation, window, cx)
             }
             ids::PREVIOUS_TAB => self.navigate(false, window, cx),
             ids::SELECT_TAB => self.select_target(invocation, window, cx),
@@ -8576,12 +8757,7 @@ impl WorkspaceView {
         let app = cx.to_async();
         cx.spawn_in(window, async move |view, cx| {
             let Committed { result, seq } = task.await;
-            // A refused emptied close decides from batches up to the
-            // hierarchy core refused it at, so none that arrived during the
-            // assessment is lost.
-            let resolution = if checking == CloseTarget::Emptied
-                && matches!(result, Err(MuxError::ViewNotEmpty(_)))
-            {
+            let resolution = if close_waits_for_projection(&checking, &result) {
                 projected(&app, seq).await
             } else {
                 Resolution::Ready
@@ -8657,6 +8833,21 @@ impl WorkspaceView {
             ) => self.remove_detached_window(window, cx),
             (CloseTarget::Emptied, MuxError::ViewNotEmpty(_)) => {
                 self.emptied_close_refused(window, cx);
+            }
+            // The pane moved to another tab this window shows between the
+            // close's request and its assessment; assess it there.
+            (
+                CloseTarget::Pane { tab, pane },
+                MuxError::UnknownPane(_) | MuxError::UnknownTab(_),
+            ) if self
+                .tab_showing(*pane)
+                .is_some_and(|current| current != *tab) =>
+            {
+                let target = CloseTarget::Pane {
+                    tab: self.tab_showing(*pane).unwrap_or(*tab),
+                    pane: *pane,
+                };
+                self.request_close(target, window, cx);
             }
             (CloseTarget::Emptied, _) => {
                 self.report_close_failure(
@@ -8752,7 +8943,7 @@ impl WorkspaceView {
             },
             CloseTarget::Pane { tab, pane } => CloseRequest::Pane {
                 workspace: self.workspace_id(cx)?,
-                tab: *tab,
+                tab: self.tab_showing(*pane).unwrap_or(*tab),
                 pane: *pane,
             },
             CloseTarget::Tabs(tabs) => CloseRequest::Tabs {
@@ -8779,8 +8970,18 @@ impl WorkspaceView {
         }
     }
 
-    /// Restricts tab targets to current tabs, in window order; `None` when
-    /// nothing remains to close.
+    /// The tab whose view in this window shows `pane`, wherever the pane
+    /// moved.
+    fn tab_showing(&self, pane: PaneId) -> Option<TabId> {
+        self.tabs
+            .iter()
+            .find(|view| view.pane(pane).is_some())
+            .map(|view| view.id)
+    }
+
+    /// Restricts tab targets to current tabs, in window order, and points a
+    /// pane target at the tab now showing its pane; `None` when nothing
+    /// remains to close.
     fn current_close_target(&self, target: CloseTarget) -> Option<CloseTarget> {
         match target {
             CloseTarget::Tab(id) => self
@@ -8788,11 +8989,9 @@ impl WorkspaceView {
                 .iter()
                 .any(|tab| tab.id == id)
                 .then_some(CloseTarget::Tab(id)),
-            CloseTarget::Pane { tab, pane } => self
-                .tabs
-                .iter()
-                .any(|view| view.id == tab && view.pane(pane).is_some())
-                .then_some(CloseTarget::Pane { tab, pane }),
+            CloseTarget::Pane { pane, .. } => self
+                .tab_showing(pane)
+                .map(|tab| CloseTarget::Pane { tab, pane }),
             CloseTarget::Tabs(ids) => tabs_target(
                 self.tabs
                     .iter()
@@ -8863,10 +9062,7 @@ impl WorkspaceView {
     /// window-wide targets always apply.
     fn shows_none_of(&self, target: &CloseTarget) -> bool {
         match target {
-            CloseTarget::Pane { tab, pane } => !self
-                .tabs
-                .iter()
-                .any(|view| view.id == *tab && view.pane(*pane).is_some()),
+            CloseTarget::Pane { pane, .. } => self.tab_showing(*pane).is_none(),
             target => target.tabs().is_some_and(|tabs| {
                 !tabs
                     .iter()
@@ -11130,6 +11326,9 @@ impl WorkspaceView {
             selection: terminal.command_availability(ids::COPY).is_ok(),
             exited: terminal.command_availability(ids::PASTE).is_err(),
             scrolled_back: terminal.scrolled_back(),
+            split: self
+                .active_tab_view(cx)
+                .is_some_and(|tab| tab.panes.len() > 1),
             directory,
         };
         Some(terminal_menu_model(

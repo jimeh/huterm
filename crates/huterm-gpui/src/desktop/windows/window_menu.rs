@@ -169,6 +169,7 @@ pub(super) fn window_menu_model(
         item(ids::NEW_WINDOW),
         item(ids::SPLIT_RIGHT),
         item(ids::SPLIT_DOWN),
+        item(ids::MOVE_PANE_TO_NEW_TAB),
         MenuRow::Separator,
         item(ids::RENAME_TAB),
         item(ids::CLOSE_PANE),

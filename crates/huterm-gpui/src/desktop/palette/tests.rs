@@ -718,3 +718,97 @@ fn owned_history_ranks_recent_commands_first() {
     let ranked = engine.rank("", catalog().iter(), &history);
     assert_eq!(ranked[0].spec.id, ids::RENAME_TAB);
 }
+
+#[test]
+fn pane_and_side_pickers_build_the_explicit_move_invocation() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let tab = mux.open_tab(workspace, &terminal_command()).unwrap().tab;
+    let focused = tab.first_pane().clone();
+    let other = mux
+        .split_pane(
+            workspace,
+            tab.id,
+            focused.id,
+            huterm_protocol::SplitDirection::Right,
+            &terminal_command(),
+        )
+        .unwrap()
+        .pane;
+    let third = mux
+        .split_pane(
+            workspace,
+            tab.id,
+            other.id,
+            huterm_protocol::SplitDirection::Down,
+            &terminal_command(),
+        )
+        .unwrap()
+        .pane;
+    let (state, _) = mux.subscribe_hierarchy();
+    let published =
+        |terminal: TerminalId| (terminal == other.terminal_id).then_some("vim");
+    let hierarchy = PaletteHierarchy::from_projection_with(
+        &state,
+        |_| None,
+        published,
+        &[],
+    );
+    let target = PaletteTarget {
+        session: Some(session),
+        workspace: Some(workspace),
+        tab: Some(tab.id),
+        terminal: Some(focused.terminal_id),
+        ..target()
+    };
+    let domain = DomainView {
+        hierarchy: &hierarchy,
+        profiles: &[],
+        target: &target,
+        window_only: true,
+    };
+    // The pane being moved is never offered; another pane is labelled by
+    // its published title, else its program name.
+    assert_eq!(
+        domain.values(ArgumentKind::Pane),
+        vec![CommandValue::Pane(other.id), CommandValue::Pane(third.id)]
+    );
+    assert_eq!(
+        domain.label(ArgumentKind::Pane, &CommandValue::Pane(third.id)),
+        Some("sh".to_owned())
+    );
+    assert_eq!(
+        domain.label(ArgumentKind::Pane, &CommandValue::Pane(other.id)),
+        Some("vim".to_owned())
+    );
+    assert_eq!(
+        domain.values(ArgumentKind::Side),
+        ["left", "right", "up", "down"]
+            .map(|side| CommandValue::Text(side.to_owned()))
+    );
+    let spec =
+        huterm_protocol::lookup(ids::MOVE_PANE_TO_PANE.as_str()).unwrap();
+    let mut editor = SlotEditor::new(spec, &[], &domain, false);
+    assert_eq!(editor.active().spec.name, "pane");
+    assert!(matches!(
+        editor.commit(Some(CommandValue::Pane(other.id))),
+        Ok(Commit::Next)
+    ));
+    assert_eq!(editor.active().spec.name, "side");
+    let Ok(Commit::Run(invocation)) =
+        editor.commit(Some(CommandValue::Text("down".to_owned())))
+    else {
+        panic!("picking the side runs the move");
+    };
+    let explicit = CommandInvocation::new(
+        ids::MOVE_PANE_TO_PANE,
+        vec![
+            CommandArgument::new("pane", CommandValue::Pane(other.id)),
+            CommandArgument::new("side", CommandValue::Text("down".into())),
+        ],
+    );
+    assert_eq!(invocation, explicit);
+    assert!(huterm_protocol::validate(&invocation).is_ok());
+    mux.close_session(session).unwrap();
+}

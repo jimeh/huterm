@@ -4417,3 +4417,5 @@ fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
     harness.press(window, "enter");
     assert!(harness.cx.update(|cx| licenses_state(cx, window)).is_some());
 }
+
+mod pane_moves;

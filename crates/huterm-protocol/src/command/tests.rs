@@ -542,3 +542,45 @@ fn errors_display_their_context() {
     let source: &dyn std::error::Error = &error;
     assert!(source.source().is_none());
 }
+
+#[test]
+fn a_side_takes_only_the_four_side_names_and_a_pane_only_a_pane() {
+    let pane = CommandValue::Pane(PaneId::new(7));
+    for side in SIDES {
+        let invocation = CommandInvocation::new(
+            ids::MOVE_PANE_TO_PANE,
+            vec![
+                CommandArgument::new("pane", pane.clone()),
+                text("side", side),
+            ],
+        );
+        assert!(validate(&invocation).is_ok(), "{side}");
+    }
+    let diagonal = CommandInvocation::new(
+        ids::MOVE_PANE_TO_PANE,
+        vec![CommandArgument::new("pane", pane), text("side", "upleft")],
+    );
+    assert_eq!(
+        validate(&diagonal),
+        Err(CommandError::ArgumentType {
+            command: ids::MOVE_PANE_TO_PANE,
+            name: "side",
+            expected: ArgumentKind::Side,
+        })
+    );
+    let tab_as_pane = CommandInvocation::new(
+        ids::MOVE_PANE_TO_PANE,
+        vec![
+            CommandArgument::new("pane", CommandValue::Tab(TabId::new(7))),
+            text("side", "left"),
+        ],
+    );
+    assert!(matches!(
+        validate(&tab_as_pane),
+        Err(CommandError::ArgumentType { name: "pane", .. })
+    ));
+    // Both arguments are prompted, so a binding may leave them out.
+    let bare = CommandInvocation::new(ids::MOVE_PANE_TO_PANE, vec![]);
+    assert!(validate_supplied(&bare).is_ok());
+    assert!(validate(&bare).is_err());
+}

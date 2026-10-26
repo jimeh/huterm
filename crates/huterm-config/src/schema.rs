@@ -89,9 +89,14 @@ fn keybindings(base: &Value, global: bool) -> Value {
                 ArgumentKind::Integer { min, max } => {
                     json!({"type":"integer", "minimum":min, "maximum":max})
                 }
+                ArgumentKind::Side => json!({
+                    "type":"string",
+                    "enum": huterm_protocol::SIDES,
+                }),
                 ArgumentKind::Tab
                 | ArgumentKind::Workspace
-                | ArgumentKind::Session => continue,
+                | ArgumentKind::Session
+                | ArgumentKind::Pane => continue,
             };
             properties.insert(arg.name.into(), schema);
             match arg.required {

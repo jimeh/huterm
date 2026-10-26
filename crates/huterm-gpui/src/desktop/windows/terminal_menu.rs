@@ -42,6 +42,9 @@ pub(super) struct TerminalMenuInput {
     pub(super) exited: bool,
     /// The view shows history rather than live output.
     pub(super) scrolled_back: bool,
+    /// The tab holds more than one pane, so its pane can move to a tab of
+    /// its own.
+    pub(super) split: bool,
     pub(super) directory: DirectoryState,
 }
 
@@ -121,6 +124,11 @@ pub(super) fn terminal_menu_model(
         MenuRow::Item(item(ids::SPLIT_RIGHT)),
         MenuRow::Item(item(ids::SPLIT_DOWN)),
         MenuRow::Item(item(ids::CLOSE_PANE)),
+    ]);
+    if input.split {
+        rows.push(MenuRow::Item(item(ids::MOVE_PANE_TO_NEW_TAB)));
+    }
+    rows.extend([
         MenuRow::Separator,
         MenuRow::Item(item(ids::NEW_TAB)),
         MenuRow::Item(item(ids::RENAME_TAB)),
@@ -153,6 +161,7 @@ mod tests {
             selection: true,
             exited: false,
             scrolled_back: false,
+            split: false,
             directory: DirectoryState::Local,
         }
     }
@@ -202,6 +211,7 @@ mod tests {
         let rows = rows(TerminalMenuInput {
             link: true,
             scrolled_back: true,
+            split: false,
             ..input()
         });
         assert_eq!(rows[..3], ["open_link", "copy_link", "-"]);

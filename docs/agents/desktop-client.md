@@ -44,6 +44,19 @@ reactivates the tab as losing the active tab does, so keyboard focus follows.
 A finished install reconciles again, since reconcile skips a tab whose
 install is in flight.
 
+A pane that moves between two tabs a window shows keeps its view:
+reconcile adopts the `PaneView`, with its viewer, scroll, and selection,
+into the destination `TabView` before removal could drop it, building that
+tab's view when the window had none. An emptied source tab view goes, and
+the receiving tab takes over as active when the source was. Reconcile also
+sorts every tab's pane views into the projected traversal order, because a
+swap or a move within a tab changes order without changing membership. A
+pane's activity drain finds the pane by ID, so it needs no restart after a
+move. A pane close follows its pane: `CloseTarget::Pane` resolves its tab
+from the views each time it is requested, and an assessment refused with
+`UnknownPane` or `UnknownTab` for a pane this window now shows in another
+tab waits for the projection and assesses again there.
+
 What a window draws for a tab comes from `shown_layout` and `shown_zoom`. The
 layout is the projection's, with the window's divider drag and the resizes it
 committed but the projection does not hold yet applied. The zoom is the tab

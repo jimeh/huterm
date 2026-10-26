@@ -419,7 +419,7 @@ impl WorkspaceView {
 /// Orders `panes` as `tab`'s projected layout traverses them, so focus falls
 /// back to the first pane in traversal order and later panes paint above
 /// earlier ones. Panes the layout no longer holds go last.
-fn in_layout_order(panes: &mut [PaneView], tab: TabId, cx: &App) {
+pub(super) fn in_layout_order(panes: &mut [PaneView], tab: TabId, cx: &App) {
     let Some(info) = cx.global::<Desktop>().hierarchy.state().tab(tab) else {
         return;
     };

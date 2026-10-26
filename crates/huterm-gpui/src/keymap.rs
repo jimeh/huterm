@@ -454,6 +454,7 @@ fn resolve_command(
                 ArgumentKind::Tab
                     | ArgumentKind::Workspace
                     | ArgumentKind::Session
+                    | ArgumentKind::Pane
             )
         {
             return Err(format!(
@@ -502,7 +503,8 @@ fn describe(title: &str, args: &[CommandArgument]) -> String {
                 CommandValue::Text(value) => value.clone(),
                 CommandValue::Tab(_)
                 | CommandValue::Workspace(_)
-                | CommandValue::Session(_) => "<id>".to_owned(),
+                | CommandValue::Session(_)
+                | CommandValue::Pane(_) => "<id>".to_owned(),
             };
             format!("{}: {value}", argument.name)
         })
