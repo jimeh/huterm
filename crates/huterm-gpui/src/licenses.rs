@@ -1,10 +1,11 @@
 //! The open source license notices this build ships, read from the
 //! `licenses.json` artifact that `scripts/licenses.ts` generates. Packages
-//! carry it beside the executable; unpackaged builds read the source tree's
+//! carry it beside the executable; unpackaged builds read the checkout's
 //! copy. Loading is plain file work without GPUI, so the Licenses view runs
 //! it off the UI thread.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,11 +13,6 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 const FILE_NAME: &str = "licenses.json";
-/// The committed artifact, for builds that run outside a package.
-const SOURCE_TREE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../third-party/licenses/licenses.json"
-);
 
 /// The release targets whose components this executable contains. The
 /// macOS package is universal, so a macOS build lists both architectures.
@@ -188,17 +184,35 @@ pub(crate) fn load() -> Result<Catalog, LoadError> {
 }
 
 /// Where the artifact may be, in order: the macOS bundle's resources, the
-/// Linux package's license directory, then the source tree.
+/// Linux package's license directory, then, for an unpackaged build in
+/// Cargo's `target/<profile>` layout, the checkout's committed copy. The
+/// checkout is found from the executable rather than compiled in, because
+/// package checks reject an executable that contains its build path.
 fn locations(executable: Option<&Path>, is_macos: bool) -> Vec<PathBuf> {
     let mut locations = Vec::with_capacity(3);
-    if let Some(root) = executable.and_then(Path::parent).and_then(Path::parent)
-    {
+    let Some(directory) = executable.and_then(Path::parent) else {
+        return locations;
+    };
+    if let Some(root) = directory.parent() {
         if is_macos {
             locations.push(root.join("Resources").join(FILE_NAME));
         }
         locations.push(root.join("share/licenses/huterm").join(FILE_NAME));
     }
-    locations.push(PathBuf::from(SOURCE_TREE));
+    // Examples and test binaries sit one level below the profile directory.
+    let profile = if matches!(
+        directory.file_name().and_then(OsStr::to_str),
+        Some("examples" | "deps")
+    ) {
+        directory.parent()
+    } else {
+        Some(directory)
+    };
+    if let Some(checkout) =
+        profile.and_then(Path::parent).and_then(Path::parent)
+    {
+        locations.push(checkout.join("third-party/licenses").join(FILE_NAME));
+    }
     locations
 }
 
@@ -319,35 +333,50 @@ mod tests {
         components.iter().map(|item| item.name.as_str()).collect()
     }
 
+    /// The committed artifact in this checkout.
+    const SOURCE_TREE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../third-party/licenses/licenses.json"
+    );
+
     #[test]
-    fn packaged_locations_come_before_the_source_tree() {
+    fn packaged_locations_come_before_the_checkout_copy() {
         let mac = locations(
             Some(Path::new("/Applications/Huterm.app/Contents/MacOS/huterm")),
             true,
         );
         assert_eq!(
-            mac,
-            vec![
+            mac[..2],
+            [
                 PathBuf::from(
                     "/Applications/Huterm.app/Contents/Resources/licenses.json"
                 ),
                 PathBuf::from(
                     "/Applications/Huterm.app/Contents/share/licenses/huterm/licenses.json"
                 ),
-                PathBuf::from(SOURCE_TREE),
             ]
         );
         let linux = locations(Some(Path::new("/opt/huterm/bin/huterm")), false);
         assert_eq!(
-            linux,
-            vec![
-                PathBuf::from(
-                    "/opt/huterm/share/licenses/huterm/licenses.json"
-                ),
-                PathBuf::from(SOURCE_TREE),
-            ]
+            linux[0],
+            PathBuf::from("/opt/huterm/share/licenses/huterm/licenses.json")
         );
-        assert_eq!(locations(None, false), vec![PathBuf::from(SOURCE_TREE)]);
+        assert_eq!(locations(None, false), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn unpackaged_builds_find_the_checkout_copy_from_the_target_directory() {
+        let checkout =
+            PathBuf::from("/src/huterm/third-party/licenses/licenses.json");
+        for executable in [
+            "/src/huterm/target/debug/huterm",
+            "/src/huterm/target/release/huterm",
+            "/src/huterm/target/debug/examples/palette_smoke",
+            "/src/huterm/target/debug/deps/huterm_gpui-0123456789abcdef",
+        ] {
+            let found = locations(Some(Path::new(executable)), false);
+            assert_eq!(found.last(), Some(&checkout), "{executable}");
+        }
     }
 
     #[test]

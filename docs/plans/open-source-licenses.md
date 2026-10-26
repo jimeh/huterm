@@ -94,7 +94,8 @@ script dependency, Mise tools, Zig's build-time fetches.
 
 - `src/licenses.rs` is pure data with no GPUI. It holds the serde model, the
   lookup order (the macOS `Resources`, then `share/licenses/huterm` relative
-  to the executable, then the source-tree copy for unpackaged builds), the
+  to the executable, then the checkout copy that an unpackaged build in
+  Cargo's `target/<profile>` layout finds from its executable), the
   filter for this build (target, `macos-updater` feature, `APPIMAGE`, and
   packaged files that exist), and the search.
 - Loading runs on the background executor when the view opens. Errors become
@@ -210,6 +211,10 @@ script dependency, Mise tools, Zig's build-time fetches.
   review found that Copy and Website were then unreachable by keyboard, which
   the brief requires, so Tab, Shift-Tab, and Enter now move and press button
   focus.
+
+- The checkout copy was first a path compiled in from `CARGO_MANIFEST_DIR`.
+  The Linux package check rejects executables that contain their build path,
+  so unpackaged builds now find it from the executable's location instead.
 
 ## Open questions
 
