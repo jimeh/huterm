@@ -468,7 +468,7 @@ impl LicensesView {
                 div()
                     .p(px(14.0))
                     .text_size(px(12.0))
-                    .text_color(swatch.muted)
+                    .text_color(swatch.fg)
                     .child(format!("No matches for “{}”", self.query)),
             );
         }
