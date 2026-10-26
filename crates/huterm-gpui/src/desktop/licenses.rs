@@ -435,7 +435,7 @@ fn message(swatch: Swatch, text: &str, detail: Option<String>) -> gpui::Div {
                 div()
                     .max_w(px(520.0))
                     .text_size(px(11.5))
-                    .text_color(swatch.dim)
+                    .text_color(swatch.muted)
                     .font_family(mono_font_family())
                     .child(detail),
             )
@@ -879,10 +879,20 @@ impl Render for LicensesView {
                     .flex()
                     .flex_col()
                     .text_color(swatch.fg)
-                    // Clicks anywhere in the panel keep keys in the search.
-                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                        input_focus.focus(window, cx);
-                    })
+                    // A press anywhere in the panel returns keys and keyboard
+                    // focus to the search; a button's click still acts.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(
+                            move |view, _: &MouseDownEvent, window, cx| {
+                                input_focus.focus(window, cx);
+                                if view.focus != LicensesFocus::Search {
+                                    view.focus = LicensesFocus::Search;
+                                    cx.notify();
+                                }
+                            },
+                        ),
+                    )
                     .child(header)
                     .child(body)
                     .child(self.render_footer(swatch, cx)),

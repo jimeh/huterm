@@ -7,7 +7,9 @@ import {
   formatExpression,
   normalizeText,
   parseExpression,
+  parseFileReference,
   renderArtifact,
+  selectLines,
   versionMatches,
   type Text,
 } from "./licenses";
@@ -79,7 +81,7 @@ describe("crateTexts", () => {
   test("uses a clarification and fails naming the crate when nothing grants its license", () => {
     const upstream = [{ title: "LICENSE", text: MIT }];
     expect(texts("MIT", [], new Map([["MIT", upstream]])).texts).toEqual(upstream);
-    expect(() => texts("MIT", [])).toThrow("demo 1.0.0 (MIT) ships no license text Huterm can use; add a clarification");
+    expect(() => texts("MIT", [])).toThrow("demo 1.0.0 (MIT) ships no text for a license deny.toml allows; add a clarification");
   });
 });
 
@@ -126,4 +128,20 @@ test("describeDrift reports nothing for a current artifact and names changed com
   expect(describeDrift(before, before)).toBeUndefined();
   expect(describeDrift(before, after)).toBe("third-party/licenses/licenses.json is out of date; run mise run licenses:generate\n  added: b@2\n  changed: a@1");
   expect(describeDrift("{", after)).toBe("third-party/licenses/licenses.json is not valid JSON");
+});
+
+test("an alternative outside the allow list never wins an OR", () => {
+  const allowed = new Set(["MIT", "Apache-2.0"]);
+  const gpl = { title: "LICENSE-GPL", text: "GNU GENERAL PUBLIC LICENSE\nVersion 2, June 1991" };
+  const input = { name: "demo", version: "1.0.0", files: [gpl], clarified: new Map(), canonical: new Map(), allowed };
+  expect(() => crateTexts({ ...input, license: "MIT OR GPL-2.0-only" })).toThrow("ships no text for a license deny.toml allows");
+  expect(crateTexts({ ...input, license: "MIT OR GPL-2.0-only", files: [gpl, { title: "LICENSE-MIT", text: MIT }] }).used).toBe("MIT");
+});
+
+test("file references take an optional inclusive line range", () => {
+  expect(parseFileReference("freetype-sys/zlib.h#L1-L3")).toEqual({ path: "freetype-sys/zlib.h", lines: [1, 3] });
+  expect(parseFileReference("freetype-sys/LICENSE.TXT")).toEqual({ path: "freetype-sys/LICENSE.TXT" });
+  expect(() => parseFileReference("x#L3-L1")).toThrow("invalid line range");
+  expect(selectLines("a\r\nb\nc\nd", [2, 3])).toBe("b\nc");
+  expect(() => selectLines("a\nb", [1, 5])).toThrow("passes the end");
 });

@@ -186,6 +186,12 @@ export function classifyFile(title: string, text: string, declared: string[]): C
 export type Resolution = { expression: Expression; texts: Text[]; quality: number };
 export type Sources = {
   files: ClassifiedFile[];
+  /**
+   * The licenses `deny.toml` allows. An alternative outside it never wins an
+   * `OR`, so a crate that ships only a GPL text fails instead of being listed
+   * under GPL. Absent means every license is allowed.
+   */
+  allowed?: ReadonlySet<string>;
   /** Upstream texts committed for a crate that ships none, by license. */
   clarified: Map<string, Text[]>;
   canonical: Map<string, Text>;
@@ -208,6 +214,7 @@ function firstId(expression: Expression): string {
  */
 export function resolveExpression(expression: Expression, sources: Sources): Resolution | undefined {
   if (expression.kind === "license") {
+    if (sources.allowed && !sources.allowed.has(expression.id)) return undefined;
     const id = baseLicense(expression.id);
     const own = sources.files.filter(file => !file.notice && file.licenses.has(id));
     if (own.length > 0) return { expression, texts: own.map(({ title, text }) => ({ title, text })), quality: 2 };
@@ -235,6 +242,7 @@ export type CrateInput = {
   version: string;
   license: string;
   files: Text[];
+  allowed?: ReadonlySet<string>;
   clarified: Map<string, Text[]>;
   canonical: Map<string, Text>;
 };
@@ -249,9 +257,9 @@ export function crateTexts(input: CrateInput): { used: string; texts: Text[] } {
   } catch (error) {
     throw new Error(`${input.name} ${input.version}: ${error instanceof Error ? error.message : error}`);
   }
-  const resolution = resolveExpression(expression, { files, clarified: input.clarified, canonical: input.canonical });
+  const resolution = resolveExpression(expression, { files, clarified: input.clarified, canonical: input.canonical, allowed: input.allowed });
   if (!resolution) {
-    throw new Error(`${input.name} ${input.version} (${input.license}) ships no license text Huterm can use; add a clarification to ${clarificationsPath}`);
+    throw new Error(`${input.name} ${input.version} (${input.license}) ships no text for a license deny.toml allows; add a clarification to ${clarificationsPath}`);
   }
   const used = licenseIds(resolution.expression);
   // Apache-2.0 section 4(d) carries NOTICE files; COPYRIGHT files attribute.
@@ -494,6 +502,24 @@ function crateDirectory(name: string, packages: Map<string, CargoPackage>): stri
   return dirname(matches[0]!.manifest_path);
 }
 
+/** Splits an optional `#L<first>-L<last>` line range off a file reference. */
+export function parseFileReference(reference: string): { path: string; lines?: [number, number] } {
+  const match = /^(.*)#L(\d+)-L(\d+)$/.exec(reference);
+  if (!match) return { path: reference };
+  const first = Number(match[2]);
+  const last = Number(match[3]);
+  if (first < 1 || last < first) throw new Error(`invalid line range in ${reference}`);
+  return { path: match[1]!, lines: [first, last] };
+}
+
+/** Lines `first` through `last` of `text`, one-based and inclusive. */
+export function selectLines(text: string, lines?: [number, number]): string {
+  if (!lines) return text;
+  const all = text.split(/\r?\n/);
+  if (lines[1] > all.length) throw new Error(`line range ${lines[0]}-${lines[1]} passes the end of a ${all.length}-line file`);
+  return all.slice(lines[0] - 1, lines[1]).join("\n");
+}
+
 /** Generates the artifact from the lockfile, crate sources, and committed notices. */
 export function generate(): string {
   const provenance = verifyProvenance();
@@ -502,6 +528,9 @@ export function generate(): string {
     if (record.rust !== undefined && record.rust !== channel) throw new Error(`${file} comes from Rust ${record.rust}, but rust-toolchain.toml pins ${channel}; refresh it`);
   }
   const { packages, targets } = shippedPackages();
+  const allowed = new Set((Bun.TOML.parse(readFileSync(join(repoRoot, "deny.toml"), "utf8")) as { licenses: { allow: string[] } }).licenses.allow);
+  const policy = JSON.parse(readFileSync(join(repoRoot, "assets/linux/package-policy.json"), "utf8")) as { privateLibraries: Record<string, { licenseFile: string }> };
+  const packagedFiles = new Set(Object.values(policy.privateLibraries).map(library => library.licenseFile));
   const canonical = new Map(Object.entries(CANONICAL).map(([id, path]) => [id, { title: `${id} standard text`, text: readText(join(repoRoot, path)) }]));
   const clarifications = (JSON.parse(readFileSync(join(repoRoot, clarificationsPath), "utf8")) as { crates: Clarification[] }).crates;
   const usedClarifications = new Set<Clarification>();
@@ -532,7 +561,7 @@ export function generate(): string {
         return { title: file.path.split("/").at(-1)!, text: readText(join(repoRoot, file.path)) };
       }));
     }
-    const { used, texts } = crateTexts({ name: item.name, version: item.version, license, files, clarified, canonical });
+    const { used, texts } = crateTexts({ name: item.name, version: item.version, license, files, clarified, canonical, allowed });
     components.push({
       id: key,
       name: item.name,
@@ -565,10 +594,18 @@ export function generate(): string {
       targets: spec.targets ?? [...TARGETS],
       ...(spec.condition === undefined ? {} : { condition: spec.condition }),
       texts: spec.files.map(file => {
-        if (file.startsWith("packaged:")) return { title: file.slice("packaged:".length), file: file.slice("packaged:".length) };
+        if (file.startsWith("packaged:")) {
+          const name = file.slice("packaged:".length);
+          if (!packagedFiles.has(name)) throw new Error(`${spec.id} lists packaged:${name}, which assets/linux/package-policy.json does not copy`);
+          return { title: name, file: name };
+        }
         if (file.startsWith("crate:")) {
-          const [crate, ...rest] = file.slice("crate:".length).split("/");
-          return { title: rest.join("/"), text: readText(join(crateDirectory(crate!, packages), ...rest)) };
+          const { path: relativePath, lines } = parseFileReference(file.slice("crate:".length));
+          const [crate, ...rest] = relativePath.split("/");
+          const text = selectLines(readText(join(crateDirectory(crate!, packages), ...rest)), lines);
+          // A dependency bump can move a header; a range must still hold a notice.
+          if (lines && !/copyright/i.test(text)) throw new Error(`${spec.id}: ${file} no longer selects a copyright notice`);
+          return { title: lines ? `${rest.join("/")} (lines ${lines[0]}-${lines[1]})` : rest.join("/"), text };
         }
         if (!existsSync(join(repoRoot, file))) throw new Error(`${spec.id} lists missing ${file}`);
         return { title: file.split("/").at(-1)!, text: readText(join(repoRoot, file)) };

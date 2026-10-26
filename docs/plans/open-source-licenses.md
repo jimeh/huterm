@@ -1,6 +1,6 @@
 # Open source licenses plan
 
-Status: approved
+Status: implemented
 
 ## Objective
 

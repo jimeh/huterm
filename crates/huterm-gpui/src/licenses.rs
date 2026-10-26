@@ -122,8 +122,7 @@ impl Build {
         Self {
             targets: CURRENT_TARGETS,
             updater: cfg!(feature = "macos-updater"),
-            appimage: cfg!(target_os = "linux")
-                && std::env::var_os("APPIMAGE").is_some(),
+            appimage: cfg!(target_os = "linux") && launched_from_appimage(),
         }
     }
 
@@ -140,6 +139,17 @@ impl Build {
                 Some(_) => false,
             }
     }
+}
+
+/// Whether this executable runs from an `AppImage` mount. The runtime sets
+/// `APPDIR`, but terminals inherit it, so a Huterm started from a shell
+/// inside an `AppImage` Huterm must also run from that directory.
+fn launched_from_appimage() -> bool {
+    let Some(appdir) = std::env::var_os("APPDIR") else {
+        return false;
+    };
+    std::env::current_exe()
+        .is_ok_and(|executable| executable.starts_with(Path::new(&appdir)))
 }
 
 /// Why no notices could be shown.

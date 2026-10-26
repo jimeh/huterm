@@ -410,8 +410,8 @@ packager copies it to `Huterm.app/Contents/Resources/licenses.json`, and the
 Linux package policy copies it to `share/licenses/huterm/licenses.json`; both
 package checks compare its bytes with the committed file. Its `packaged:`
 entries name notices the Linux packager copies into that directory, such as
-the private XKB libraries' Debian copyright files; keep those names in step
-with `assets/linux/package-policy.json`.
+the private XKB libraries' Debian copyright files; generation fails when one
+is not a `licenseFile` in `assets/linux/package-policy.json`.
 
 ### Linux packaging
 

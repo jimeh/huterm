@@ -4075,3 +4075,54 @@ fn licenses_buttons_take_keyboard_focus_and_enter_presses_the_focused_one(
     assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
     assert_eq!(harness.about_focus(window), Some(AboutFocus::Licenses));
 }
+
+#[gpui::test]
+fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    // The About command, as from the macOS application menu, must not pull
+    // focus from the view it replaced.
+    harness.invoke(window, ids::ABOUT).unwrap();
+    for key in "ghostty".chars() {
+        harness.press(window, &key.to_string());
+    }
+    let Some(LicensesState::Ready { matches, .. }) =
+        harness.cx.update(|cx| licenses_state(cx, window))
+    else {
+        panic!("the view closed");
+    };
+    assert_eq!(matches, 2);
+    // A press inside the panel moves keyboard focus back to the search, so
+    // Enter no longer presses the button Tab reached.
+    harness.press(window, "tab tab tab");
+    let focus = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, cx| {
+            view.licenses
+                .as_ref()
+                .map(|licenses| licenses.read(cx).focus())
+        })
+    };
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Done));
+    let centre = harness.update_view(window, |_, window, _| {
+        let size = window.viewport_size();
+        gpui::point(size.width / 2.0, size.height / 2.0)
+    });
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_click(centre, gpui::Modifiers::none());
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Search));
+    harness.press(window, "enter");
+    assert!(harness.cx.update(|cx| licenses_state(cx, window)).is_some());
+}

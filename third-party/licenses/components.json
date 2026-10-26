@@ -160,14 +160,15 @@
       "name": "FreeType",
       "version": "$freetype",
       "kind": "Library",
-      "license": "FTL",
+      "license": "FTL AND MIT AND Zlib",
       "url": "https://freetype.org",
       "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
       "files": [
         "crate:freetype-sys/freetype2/LICENSE.TXT",
         "crate:freetype-sys/freetype2/docs/FTL.TXT",
         "crate:freetype-sys/freetype2/src/bdf/README",
-        "crate:freetype-sys/freetype2/src/pcf/README"
+        "crate:freetype-sys/freetype2/src/pcf/README",
+        "crate:freetype-sys/freetype2/src/gzip/zlib.h#L1-L23"
       ]
     },
     {

@@ -7818,7 +7818,8 @@ fn close_dialog_input<'a>(
 }
 
 impl WorkspaceView {
-    /// Shows the About panel, or refocuses it when it is already showing.
+    /// Shows the About panel, or refocuses it, or the Licenses view over it,
+    /// when it is already showing.
     /// It takes the root focus so the `confirming` bindings close it, and
     /// blocks terminal input while it is up.
     fn show_about(
@@ -7827,7 +7828,13 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         if self.about.is_some() {
-            self.focus.focus(window, cx);
+            // The Licenses view replaces the panel; keep its search focused.
+            match &self.licenses {
+                Some(licenses) => {
+                    licenses.read(cx).focus_handle(cx).focus(window, cx);
+                }
+                None => self.focus.focus(window, cx),
+            }
             cx.notify();
             return Ok(CommandOutcome::Completed);
         }

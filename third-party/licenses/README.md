@@ -14,7 +14,8 @@ toolchain, or notice change.
   Workspace crates are Huterm's own; vendored patched crates are included.
 - Each crate's own license files. For an `OR` expression the generator takes
   the alternative the crate ships a text for, preferring MIT, then
-  Apache-2.0. Apache-2.0 also carries a crate's `NOTICE` file.
+  Apache-2.0, and never one outside `deny.toml`'s allow list. Apache-2.0 also
+  carries a crate's `NOTICE` file.
 - `canonical/`: standard texts of licenses without a per-work copyright line,
   used when a crate ships no file for them, and the MIT template.
 - `crates.json` and `crates/`: clarifications for crates that ship no license
@@ -27,9 +28,11 @@ toolchain, or notice change.
   Bumping `rust-toolchain.toml` requires refreshing them and their
   `provenance.json` records.
 - `components.json`: everything that is not a crate. Files are repository
-  paths, `crate:<name>/<path>` inside a crate's source, or `packaged:<file>`
-  for a notice the Linux packager copies beside `licenses.json` at package time.
-  A `$name` version reads the pinned version from its source manifest.
+  paths, `crate:<name>/<path>` inside a crate's source, optionally narrowed to
+  a header with `#L<first>-L<last>`, or `packaged:<file>` for a notice the
+  Linux packager copies beside `licenses.json` at package time; generation
+  checks each `packaged:` name against `assets/linux/package-policy.json`. A
+  `$name` version reads the pinned version from its source manifest.
 
 `provenance.json` here and in `third-party/ghostty/` record each fetched
 file's origin and SHA-256; generation verifies them.
