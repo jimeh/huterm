@@ -226,13 +226,15 @@ fn locations(executable: Option<&Path>, is_macos: bool) -> Vec<PathBuf> {
     } else {
         Some(directory)
     };
-    // Only Cargo's own `target` directory, so a packaged executable never
+    // Only Cargo's own `target` directory, directly above the profile or
+    // above a `--target` triple directory, so a packaged executable never
     // reads a stray file beside its package.
-    if let Some(checkout) = profile
-        .and_then(Path::parent)
-        .filter(|target| target.file_name() == Some(OsStr::new("target")))
-        .and_then(Path::parent)
-    {
+    let is_target = |dir: &&Path| dir.file_name() == Some(OsStr::new("target"));
+    let above_profile = profile.and_then(Path::parent);
+    let target = above_profile
+        .filter(is_target)
+        .or_else(|| above_profile.and_then(Path::parent).filter(is_target));
+    if let Some(checkout) = target.and_then(Path::parent) {
         locations.push(checkout.join("third-party/licenses").join(FILE_NAME));
     }
     locations
@@ -398,6 +400,7 @@ mod tests {
             "/src/huterm/target/release/huterm",
             "/src/huterm/target/debug/examples/palette_smoke",
             "/src/huterm/target/debug/deps/huterm_gpui-0123456789abcdef",
+            "/src/huterm/target/aarch64-apple-darwin/release/huterm",
         ] {
             let found = locations(Some(Path::new(executable)), false);
             assert_eq!(found.last(), Some(&checkout), "{executable}");
