@@ -1006,6 +1006,10 @@ Run `mise run bench:idle -- --arms arms.json --output target/bench/paired.json`.
 Arm order reverses across repetitions and scenarios. `--tabs 1,50`, `--windows
 1,2`, `--duration`, `--repeats`, and `--settle` select the matrix. A third arm can
 reuse a binary with a different explicit `env` to isolate a development switch.
+An arm's `HUTERM_IDLE_PANES` (1 to 8) splits each window's active tab with the
+production `split_right` command until it holds that many panes. Use
+`--settle 5` for split arms: the panes' size panels fade out for about three
+seconds after the splits and would otherwise land in the sample.
 
 The report retains executable hashes, revision labels, runner dirt, configuration,
 load averages, host/display context, startup window scale/bounds, and per-sample
