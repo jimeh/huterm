@@ -6,6 +6,8 @@ import { join, resolve } from "node:path";
 const option = 1 << 19;
 const control = 1 << 18;
 const command = 1 << 20;
+/** AppKit's function-key flag, which arrow keys carry. */
+const arrow = 1 << 23;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 async function waitFor(check: () => Promise<boolean>, label: string, timeout = 10_000): Promise<void> {
@@ -63,7 +65,13 @@ const fd = openSync(${JSON.stringify(bytes)}, "a");
 const deadline = setTimeout(() => process.exit(2), 45000);
 for await (const chunk of Bun.stdin.stream()) {
   const end = chunk.indexOf(4);
-  writeSync(fd, end < 0 ? chunk : chunk.subarray(0, end));
+  let input = end < 0 ? chunk : chunk.subarray(0, end);
+  // Ctrl-T asks for SGR button reporting and is not recorded.
+  if (input.includes(20)) {
+    process.stdout.write("\\x1b[?1000h\\x1b[?1006h");
+    input = input.filter((byte) => byte !== 20);
+  }
+  writeSync(fd, input);
   if (end >= 0) break;
 }
 clearTimeout(deadline);
@@ -92,24 +100,45 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     }, `state ${values.join(", ")}`);
   }
   let sequence = 0;
-  let expected = "";
+  // The bytes each recorder file should hold. Every recorder appends to the
+  // file it opened, so renaming `bytes` before a split gives the new pane's
+  // shell a file of its own.
+  const expected = new Map([[bytes, ""]]);
   async function send(event: string) {
     const index = sequence++;
     await writeFile(join(directory, "event-next"), event);
     await rename(join(directory, "event-next"), join(directory, `event-${index}`));
     await waitFor(() => Bun.file(join(directory, `posted-${index}`)).exists(), `event ${index}`);
   }
+  async function currentState(): Promise<string> {
+    return readFile(join(directory, "state"), "utf8").catch(() => "");
+  }
+  /** A `name=` field of the state, which holds no spaces. */
+  function field(text: string, name: string): string {
+    const value = text.match(new RegExp(`(?:^|\\s)${name}=(\\S+)`))?.[1];
+    if (value === undefined) throw new Error(`no ${name} in ${text}`);
+    return value;
+  }
+  /** The `;`-separated `x,y,w,h` rectangles of a field. */
+  function rects(value: string): { x: number; y: number; w: number; h: number }[] {
+    return value.split(";").map((rect) => {
+      const [x, y, w, h] = rect.split(",").map(Number);
+      return { x: x!, y: y!, w: w!, h: h! };
+    });
+  }
   async function key(code: number, flags: number, text: string, plain = text) {
     await send(`${code}\t${flags}\t${text}\t${plain}`);
   }
-  async function check(label: string, addition: string) {
+  /** Types a barrier into the focused shell, which records to `file`. */
+  async function check(label: string, addition: string, file = bytes) {
     // A printable barrier follows no-output actions in the same AppKit queue.
     await key(7, 0, "x");
-    expected += `${addition}x`;
-    const wanted = Buffer.from(expected);
-    await waitFor(async () => (await readFile(bytes).catch(() => Buffer.alloc(0))).length >= wanted.length, label);
-    const actual = await readFile(bytes);
-    checkNativeInputBytes(actual, expected, `${engine} ${label}`);
+    const text = `${expected.get(file) ?? ""}${addition}x`;
+    expected.set(file, text);
+    const wanted = Buffer.from(text);
+    await waitFor(async () => (await readFile(file).catch(() => Buffer.alloc(0))).length >= wanted.length, label);
+    const actual = await readFile(file);
+    checkNativeInputBytes(actual, text, `${engine} ${label}`);
     console.log(`NATIVE_INPUT_SMOKE ${engine} ${label} exact-bytes=${actual.toString("hex")}`);
   }
   try {
@@ -205,6 +234,56 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await state("active=1");
     await key(14, 0, "e");
     await check("returning-tab-has-no-composition", "e");
+
+    // Panes: Cmd-D splits the tab and focuses the new pane's shell. The pane
+    // keys move focus without reaching either shell, a native click focuses
+    // the pane it lands in, application mouse reports use the pane's own
+    // cells, and a title bar's close button closes only its pane, asking
+    // first because its recorder is a foreground job.
+    const first = join(directory, "bytes-first");
+    await rename(bytes, first);
+    expected.set(first, expected.get(bytes) ?? "");
+    expected.set(bytes, "");
+    await rm(ready);
+    await key(2, command, "d");
+    await waitFor(() => Bun.file(ready).exists(), "the split pane's raw PTY");
+    await state("panes=2", "pane_focus=1", "ready=true");
+    await check("split-focuses-new-pane", "");
+    await key(33, command, "[");
+    await state("pane_focus=0");
+    await key(30, command, "]");
+    await state("pane_focus=1");
+    await key(123, command | option | arrow, "\uF702");
+    await state("pane_focus=0");
+    await key(124, command | option | arrow, "\uF703");
+    await state("pane_focus=1");
+    await check("pane-keys-consumed", "");
+    const panes = await currentState();
+    const [leftRect] = rects(field(panes, "pane_rects"));
+    await send(`mouse\t1\t${leftRect!.x + leftRect!.w / 2}\t${leftRect!.y + leftRect!.h / 2}`);
+    await send(`mouse\t2\t${leftRect!.x + leftRect!.w / 2}\t${leftRect!.y + leftRect!.h / 2}`);
+    await state("pane_focus=0");
+    await check("click-focuses-pane", "", first);
+    await key(30, command, "]");
+    await state("pane_focus=1");
+    await key(17, control, "\x14", "t");
+    await state("tracking=Some(Buttons)");
+    const tracking = await currentState();
+    const [originX, originY] = field(tracking, "grid_origin").split(",").map(Number);
+    const [cellWidth, cellHeight] = field(tracking, "cell").split(",").map(Number);
+    const cellX = originX! + cellWidth! * 2.5;
+    const cellY = originY! + cellHeight! * 1.5;
+    await send(`mouse\t1\t${cellX}\t${cellY}`);
+    await send(`mouse\t2\t${cellX}\t${cellY}`);
+    await check("pane-mouse-cells", "\x1b[<0;3;2M\x1b[<0;3;2m");
+    const [, close] = field(tracking, "pane_close").split(";");
+    const [closeX, closeY] = close!.split(",").map(Number);
+    await send(`mouse\t1\t${closeX}\t${closeY}`);
+    await send(`mouse\t2\t${closeX}\t${closeY}`);
+    await state("confirming=true");
+    await key(36, 0, "\r");
+    await state("panes=1", "pane_focus=0", "pane_close=none", "confirming=false");
+    await check("title-bar-closes-pane", "", first);
     await key(2, control, "\x04", "d");
     await state("exited=true");
     await key(13, command, "w");

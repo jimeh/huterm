@@ -115,7 +115,52 @@ fn read_state(cx: &mut gpui::App) -> String {
             .update(cx, |_, window, _| window.has_pending_keystrokes())
             .unwrap_or(false)
     });
+    let panes = cx
+        .windows()
+        .first()
+        .copied()
+        .and_then(|window| window.update(cx, pane_state).ok())
+        .unwrap_or_default();
     format!(
-        "policy={policy} reloading={reloading} bindings={bindings} tabs={tabs} selection={selection} pending={pending} exited={exited} ready={ready} active={active}"
+        "policy={policy} reloading={reloading} bindings={bindings} tabs={tabs} selection={selection} pending={pending} exited={exited} ready={ready} active={active} {panes}"
+    )
+}
+
+/// The active tab's panes, the focused pane's grid (its painted origin in
+/// window points, its cell size, and its mouse tracking mode), and whether
+/// a close is running or asking for confirmation.
+fn pane_state(
+    root: gpui::AnyView,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) -> String {
+    let Ok(view) = root.downcast::<super::WorkspaceView>() else {
+        return String::new();
+    };
+    let view = view.read(cx);
+    let grid = view.active_view(cx).map_or_else(
+        || "grid_origin=none cell=0,0 tracking=None".to_owned(),
+        |terminal| {
+            let terminal = terminal.read(cx);
+            let content = terminal.content_bounds(window);
+            let grid = terminal.terminal_layout(window).bounds;
+            let tracking = terminal
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.modes.mouse_tracking);
+            format!(
+                "grid_origin={},{} cell={},{} tracking={tracking:?}",
+                f32::from(content.origin.x + grid.origin.x),
+                f32::from(content.origin.y + grid.origin.y),
+                f32::from(terminal.metrics.cell_width),
+                f32::from(terminal.metrics.cell_height),
+            )
+        },
+    );
+    format!(
+        "{} {grid} busy={} confirming={}",
+        view.pane_smoke_state("", window, cx),
+        view.busy,
+        view.close.confirmation.is_some(),
     )
 }

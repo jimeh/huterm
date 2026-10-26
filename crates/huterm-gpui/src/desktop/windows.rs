@@ -10642,6 +10642,70 @@ impl WorkspaceView {
     /// points, the window scale, the sampled frame (granted client decorations, applied inset,
     /// maximized, observed fullscreen mode), and the content bounds inside
     /// the frame. Quoted values may contain spaces.
+    /// The active tab's panes for smoke fixtures, as `<prefix>` fields:
+    /// `panes` counts them and `pane_focus` is the focused pane's index.
+    /// In layout order and `;`-separated, `pane_grids` holds each pane's
+    /// requested grid as `columns,rows`, `pane_rects` its terminal bounds in
+    /// window points, and `pane_close` its title bar close button's centre
+    /// as `x,y`, or `none` while the tab is not split.
+    pub(super) fn pane_smoke_state(
+        &self,
+        prefix: &str,
+        window: &Window,
+        cx: &App,
+    ) -> String {
+        let tab = self.active_tab_view(cx);
+        let rects = tab.zip(self.terminal_geometry(window).bounds).and_then(
+            |(tab, bounds)| Self::tab_panes(tab.id, bounds, window, cx),
+        );
+        let panes: Vec<_> = rects
+            .iter()
+            .flat_map(|rects| &rects.panes)
+            .filter_map(|rect| Some((rect, tab?.pane(rect.pane)?)))
+            .collect();
+        let focus = tab
+            .and_then(|tab| {
+                let focused = tab.focused().pane;
+                panes.iter().position(|(rect, _)| rect.pane == focused)
+            })
+            .map_or_else(|| "none".to_owned(), |index| index.to_string());
+        let joined =
+            |field: &dyn Fn(&pane_geometry::PaneRect, &PaneView) -> String| {
+                panes
+                    .iter()
+                    .map(|(rect, pane)| field(rect, pane))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            };
+        let grids = joined(&|_, pane| {
+            let grid = pane.view.read(cx).requested_grid;
+            format!("{},{}", grid.columns, grid.rows)
+        });
+        let terminals = joined(&|rect, _| {
+            let bounds = rect.terminal;
+            format!(
+                "{},{},{},{}",
+                f32::from(bounds.origin.x),
+                f32::from(bounds.origin.y),
+                f32::from(bounds.size.width),
+                f32::from(bounds.size.height)
+            )
+        });
+        let closes = joined(&|rect, _| {
+            rect.title_bar.map_or_else(
+                || "none".to_owned(),
+                |bar| {
+                    let center = Self::pane_close_center(bar);
+                    format!("{},{}", f32::from(center.x), f32::from(center.y))
+                },
+            )
+        });
+        format!(
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes}",
+            panes.len()
+        )
+    }
+
     pub(super) fn ui_smoke_state(
         &self,
         prefix: &str,

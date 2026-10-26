@@ -3,7 +3,9 @@
  * second window to the first window's session, then check shared output,
  * the shared viewport, control of the PTY size, installing a tab opened
  * later, single delivery of a clipboard write, one close for a shell that
- * exits, replacing revoked viewers in place, closing the second window
+ * exits, replacing revoked viewers in place, splitting, focusing, and
+ * closing panes with each pane's shell at its own size, closing the second
+ * window
  * through the platform's close path, cancelling `AppKit` termination on
  * macOS, and that closing the session's last tab closes both windows and
  * ends the app. Input goes through fixture commands addressed to a window,
@@ -45,6 +47,11 @@ export function sizeLine(sizes: string, token: string): { columns: number; rows:
   const line = sizes.split("\n").find((entry) => entry.startsWith(`${token} `));
   const [, rows, columns] = line?.split(" ").map(Number) ?? [];
   return rows === undefined || columns === undefined ? undefined : { columns, rows };
+}
+
+/** The `;`-separated `columns,rows` grids of a `pane_grids` field. */
+export function parsePaneGrids(value: string | undefined): { columns: number; rows: number }[] {
+  return value ? value.split(";").map(parseGrid) : [];
 }
 
 /** Window `window`'s notices about a close that failed or could not be assessed. */
@@ -133,6 +140,33 @@ always_show = true
     await action();
     const [afterBuilds, afterReuses] = snapshots(await current()).split(",").map(Number);
     return `${afterBuilds! - builds!},${afterReuses! - reuses!}`;
+  }
+  /**
+   * Waits until the shell of `window`'s focused pane reports the grid that
+   * pane requests: a resize reaches the PTY after the layout that asked for
+   * it, so each attempt records a fresh size.
+   */
+  async function focusedPaneSized(window: number, label: string): Promise<{ columns: number; rows: number }> {
+    let attempt = 0;
+    let last = "";
+    let sized: { columns: number; rows: number } | undefined;
+    await waitFor(async () => {
+      const token = `${label}-${attempt++}`;
+      await command(`type-in\t${window}\tsize ${token}`);
+      await send(window, `ack ${token}`, `ACK:${token}`);
+      const state = await current();
+      const focus = Number(windowField(state, window, "pane_focus"));
+      const expected = parsePaneGrids(windowField(state, window, "pane_grids"))[focus];
+      const reported = sizeLine(await readFile(sizes, "utf8"), token);
+      last = `${JSON.stringify(reported)} vs ${JSON.stringify(expected)}`;
+      if (expected !== undefined && reported?.columns === expected.columns && reported.rows === expected.rows) {
+        sized = expected;
+      }
+      return sized !== undefined;
+    }, `${label}'s shell to report its pane's grid`).catch((error: unknown) => {
+      throw new Error(`${String(error)}; last ${last}`, { cause: error });
+    });
+    return sized!;
   }
   async function scrollReport(window: number): Promise<string> {
     return measure(async () => {
@@ -232,6 +266,36 @@ always_show = true
     const revoked = await stateWhere((state) => text(state, 1).includes("ACK:after-revoke"),
       "window 1's replaced viewer to show new output");
     if (windowField(revoked, 1, "tabs") !== "1") throw new Error(`window 1 lost its view: ${revoked}`);
+
+    // Splitting in window 0 runs the user's shell in a new, focused pane
+    // that installs in window 1 too. Each pane's shell sees its own pane's
+    // size, focus commands route typing, and closing a pane gives its space
+    // back to its sibling.
+    const unsplit = parseGrid(windowField(await current(), 0, "grid"));
+    await command("invoke-in\t0\tsplit_right");
+    const split = await stateWhere((state) => windowField(state, 0, "panes") === "2"
+      && windowField(state, 1, "panes") === "2" && windowField(state, 0, "pane_focus") === "1"
+      && text(state, 0).includes("READY"), "the split's shell in both windows");
+    const [left, right] = parsePaneGrids(windowField(split, 0, "pane_grids"));
+    if (!left || !right || left.columns + right.columns >= unsplit.columns || left.rows >= unsplit.rows) {
+      throw new Error(`the split panes do not share the tab: ${JSON.stringify({ left, right, unsplit })}`);
+    }
+    await focusedPaneSized(0, "right");
+    await command("invoke-in\t0\tfocus_previous_pane");
+    await stateWhere((state) => windowField(state, 0, "pane_focus") === "0"
+      && text(state, 0).includes("ACK:after-revoke"), "focus to return to the first pane");
+    await focusedPaneSized(0, "left");
+    await command("invoke-in\t0\tfocus_next_pane");
+    await stateWhere((state) => windowField(state, 0, "pane_focus") === "1", "focus to move to the new pane");
+    await command("invoke-in\t0\tclose_pane");
+    const joined = await stateWhere((state) => windowField(state, 0, "panes") === "1"
+      && windowField(state, 1, "panes") === "1", "both windows to drop the closed pane");
+    if (windowField(joined, 0, "confirming") !== "false") throw new Error(`closing an idle pane asked first: ${joined}`);
+    const merged = await focusedPaneSized(0, "merged");
+    if (merged.columns !== unsplit.columns || merged.rows !== unsplit.rows) {
+      throw new Error(`the remaining pane did not take the tab back: ${JSON.stringify(merged)} vs ${JSON.stringify(unsplit)}`);
+    }
+    report.push(`panes=${left.columns}+${right.columns}/${unsplit.columns}`);
 
     // 7. Closing window 1 through the platform's close path detaches it;
     // window 0's shell still answers.

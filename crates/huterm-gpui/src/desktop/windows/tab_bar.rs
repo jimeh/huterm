@@ -1,6 +1,6 @@
 //! Theme-derived tab bar colors and tab item presentation.
 
-use gpui::{Div, Hsla, Stateful, Svg, TextRun, svg};
+use gpui::{Div, Hsla, Point, Stateful, Svg, TextRun, point, svg};
 use huterm_config::{Rgba, TabCloseButton, TabStyle, TabWidth, TabsConfig};
 
 use crate::assets::Icon;
@@ -28,6 +28,8 @@ const ICON_SIZE: Pixels = px(12.0);
 /// The running dot shown while a program holds the foreground.
 const DOT_SIZE: Pixels = px(6.0);
 const CLOSE_SIZE: Pixels = px(18.0);
+/// The pane title bar's padding after its close button.
+const PANE_TITLE_PADDING_RIGHT: Pixels = px(3.0);
 const STRIP_GAP: Pixels = px(7.0);
 const STRIP_PADDING_LEFT: Pixels = px(12.0);
 const STRIP_PADDING_RIGHT: Pixels = px(6.0);
@@ -425,6 +427,14 @@ impl WorkspaceView {
 }
 
 impl WorkspaceView {
+    /// The centre of the close button in a pane title bar at `bounds`.
+    pub(super) fn pane_close_center(bounds: Bounds<Pixels>) -> Point<Pixels> {
+        point(
+            bounds.right() - PANE_TITLE_PADDING_RIGHT - CLOSE_SIZE / 2.0,
+            bounds.center().y,
+        )
+    }
+
     /// One pane's title bar in a split tab: its status, its title, and a
     /// close button. A press focuses the pane and never reaches the
     /// terminal; the focused pane uses the active tab colours.
@@ -455,7 +465,7 @@ impl WorkspaceView {
             .items_center()
             .gap(px(6.0))
             .pl(px(8.0))
-            .pr(px(3.0))
+            .pr(PANE_TITLE_PADDING_RIGHT)
             .overflow_hidden()
             .bg(if focused { colors.active } else { colors.bar })
             .border_b_1()

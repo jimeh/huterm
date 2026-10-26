@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { closeFailureNotices, parseGrid, parseViewport, sizeLine, windowField } from "./check-viewers";
+import { closeFailureNotices, parseGrid, parsePaneGrids, parseViewport, sizeLine, windowField } from "./check-viewers";
 
 test("window fields are read by exact window and name", () => {
   const state = "w0.tabs=2 w0.tabs_rects=1,0,96,34\nw1.tabs=1 w10.tabs=9";
@@ -12,6 +12,12 @@ test("grids parse two integers and reject anything else", () => {
   expect(parseGrid("80,24")).toEqual({ columns: 80, rows: 24 });
   expect(() => parseGrid("80,24,1")).toThrow("invalid grid");
   expect(() => parseGrid(undefined)).toThrow("invalid grid");
+});
+
+test("pane grids parse in layout order, and an unsplit field holds none", () => {
+  expect(parsePaneGrids("40,23;39,23")).toEqual([{ columns: 40, rows: 23 }, { columns: 39, rows: 23 }]);
+  expect(parsePaneGrids("")).toEqual([]);
+  expect(() => parsePaneGrids("40,23;")).toThrow("invalid grid");
 });
 
 test("size lines are found by token and swap stty's rows-first order", () => {

@@ -935,9 +935,10 @@ fn ui_state(
             },
         );
         format!(
-            "{} {prefix}tabs_rects={} {terminal_line}",
+            "{} {prefix}tabs_rects={} {} {terminal_line}",
             view.ui_smoke_state(&prefix, window, cx),
-            view.tab_smoke_rects(window)
+            view.tab_smoke_rects(window),
+            view.pane_smoke_state(&prefix, window, cx)
         )
     })
 }

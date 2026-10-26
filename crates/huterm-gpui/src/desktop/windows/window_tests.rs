@@ -3013,3 +3013,31 @@ fn a_split_that_would_leave_a_pane_under_the_minimum_is_refused(
     let beside = fits(&mut harness, SplitDirection::Right).unwrap();
     assert!(beside.rows >= 2, "{beside:?}");
 }
+
+#[gpui::test]
+fn a_pane_title_bars_close_button_closes_only_its_pane(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("the second pane to show", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    let close = harness.update_view(window, |view, window, cx| {
+        let bounds = view.terminal_geometry(window).bounds.unwrap();
+        let rects = WorkspaceView::tab_panes(tab, bounds, window, cx).unwrap();
+        let title_bar = rects.pane(second).unwrap().title_bar.unwrap();
+        WorkspaceView::pane_close_center(title_bar)
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_click(close, gpui::Modifiers::none());
+    harness.wait_for("the clicked pane to close", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![first], first))
+    });
+}
