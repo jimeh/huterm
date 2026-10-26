@@ -142,6 +142,20 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   changing the test, for example by retrying `arguments` inside the existing
   `eventually` wait.
 
+## huterm-gpui replaced view's clipboard write on Linux aarch64
+
+- **Label:**
+  `desktop::windows::window_tests::a_replaced_view_receives_output_status_exit_and_clipboard_without_frames`
+  in `Checks (Linux aarch64)`, "timed out waiting for the clipboard write".
+- **Occurrences:** twice, 2026-10-26: on `main` (run 40211388780) and on
+  PR #243 (run 40264983260, head `0ddb1fa4`). It passed 20 of 20 isolated
+  runs on a macOS host.
+- **Evidence:** the output and title steps before it passed, so the
+  replacement viewer was live. Why the clipboard host effect did not reach the
+  replaced view without frames is unconfirmed.
+- **Triage:** rerun once. A repeat should record whether the host effect was
+  admitted for the replacement's recipient before changing the test.
+
 ## huterm-gpui terminfo temp-directory abort on hosted macOS
 
 - **Label:**

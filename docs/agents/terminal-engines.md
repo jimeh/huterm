@@ -375,13 +375,16 @@ test's assumption before changing engine code. Allocator vtable callbacks
 receive log2 alignments, not the byte counts `allocator.h` describes. Set
 history only through `apply_scrollback` in the engine, and set both Ghostty
 limits every time: the C default is a 10,000-byte budget. A nonzero row limit
-sets the line limit plus a byte cap of 4 KiB per row and 4 MiB of headroom,
-which bounds pages that grow for styles, graphemes, and hyperlinks. The byte
-limit also counts the screen's pages and whole partly filled pages, so without
-the headroom a 350-row limit on a 400 by 60 screen held only 297 rows. Zero sets
-the byte limit to zero, because Ghostty never limits lines below one page of
-rows at the current width. Line pruning removes only whole historical pages, so
-history stays at or below the limit and less than a page under it; contract
+sets the line limit plus a byte cap of 4 KiB per history and screen row and
+4 MiB of headroom, which bounds pages that grow for styles, graphemes, and
+hyperlinks. The byte limit also counts the screen's pages and whole partly
+filled pages: without the headroom a 350-row limit on a 400 by 60 screen held
+only 297 rows, and without the screen rows it held 166 on a 400 by 1500 screen.
+`resize` raises the cap for the taller screen before resizing and settles it
+afterward, so a growing screen does not prune history the row limit keeps. Zero
+sets the byte limit to zero, because Ghostty never limits lines below one page
+of rows at the current width. Line pruning removes only whole historical pages,
+so history stays at or below the limit and less than a page under it; contract
 tests pin those bounds, eviction and viewport fixup when the limit drops, the
 primary-screen target while the alternate screen shows, reflow enforcement, and
 that RIS and ED 3 keep the limits. Only a lower limit can evict, so only it

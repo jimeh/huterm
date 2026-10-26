@@ -147,26 +147,49 @@ fn plain_output_keeps_up_to_the_row_limit_and_less_than_a_page_fewer() {
     assert_eq!(history(&engine), 30_000 - 3);
 }
 
+/// Writes 400-column lines and returns the most and, once pruning began,
+/// the fewest rows of history kept.
+fn wide_history_range(engine: &mut TerminalEngine) -> (usize, usize) {
+    let line = format!("{}\r\n", "w".repeat(400));
+    let (mut peak, mut floor, mut previous) = (0, usize::MAX, 0);
+    for _ in 0..3000 {
+        engine.process(line.as_bytes()).unwrap();
+        let kept = history(engine);
+        peak = peak.max(kept);
+        if kept < previous || floor != usize::MAX {
+            floor = floor.min(kept);
+        }
+        previous = kept;
+    }
+    (peak, floor)
+}
+
 #[test]
 fn small_limits_on_wide_tall_screens_keep_the_row_guarantee() {
-    // A 400-column page holds about 115 rows, and the screen's own pages
+    // A 400-column page holds about 119 rows, and the screen's own pages
     // count toward the byte cap too.
-    for screen_rows in [60, 150] {
+    for screen_rows in [60, 150, 1500] {
         let mut engine = sized_engine(400, screen_rows, limit(350));
-        let line = format!("{}\r\n", "w".repeat(400));
-        let (mut peak, mut floor, mut previous) = (0, usize::MAX, 0);
-        for _ in 0..3000 {
-            engine.process(line.as_bytes()).unwrap();
-            let kept = history(&engine);
-            peak = peak.max(kept);
-            if kept < previous || floor != usize::MAX {
-                floor = floor.min(kept);
-            }
-            previous = kept;
-        }
+        let (peak, floor) = wide_history_range(&mut engine);
         assert_eq!(peak, 350, "{screen_rows} screen rows");
-        assert!(floor > 350 - 130, "{screen_rows} screen rows kept {floor}");
+        assert!(floor > 350 - 120, "{screen_rows} screen rows kept {floor}");
     }
+
+    // Growing the screen raises the allowance with it.
+    let mut engine = sized_engine(400, 60, limit(350));
+    wide_history_range(&mut engine);
+    engine
+        .resize(
+            GridSize::clamped(400, 1500),
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+        )
+        .unwrap();
+    let (peak, floor) = wide_history_range(&mut engine);
+    assert_eq!(peak, 350, "after growing the screen");
+    assert!(floor > 350 - 120, "kept {floor} after growing the screen");
 }
 
 #[test]

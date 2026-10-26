@@ -442,15 +442,15 @@ rather than an exact count:
 The limit counts rows, not memory. A row's memory grows with the terminal's
 width and with the styles, combined characters, and links it holds. So that
 unusual output cannot grow a terminal without bound, Huterm also gives Ghostty
-an allocation limit of 4 KiB per configured row plus 4 MiB, about 45 MB at the
-default. It is a heuristic, not a memory budget: Ghostty applies it a whole page
-at a time, counts the visible screen's pages too, raises it when the screen
-alone needs more, and covers only the terminal grid. Plain output up to about
-400 columns wide stays within it, so the row limit applies. Wider rows, or rows
-with many distinct styles or combining characters, can reach it first and keep
-fewer rows than the limit. The 50,000-row maximum keeps link detection quick:
-finding a link that starts above the visible rows reads history from its oldest
-row.
+an allocation limit of 4 KiB for each configured row and each visible row, plus
+4 MiB, about 45 MB at the default. It follows the window's height as it resizes.
+It is a heuristic, not a memory budget: Ghostty applies it a whole page at a
+time, raises it when the screen alone needs more, and covers only the terminal
+grid. Plain output up to about 400 columns wide stays within it, so the row
+limit applies. Wider rows, or rows with many distinct styles or combining
+characters, can reach it first and keep fewer rows than the limit. The
+50,000-row maximum keeps link detection quick: finding a link that starts above
+the visible rows reads history from its oldest row.
 
 Reload applies a new limit to every open terminal, including tabs in the
 background and tabs whose shell has exited. Lowering it discards the oldest rows
