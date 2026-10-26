@@ -5290,7 +5290,7 @@ impl WorkspaceView {
         let mut command = shell_command(
             self.metrics.at_scale(window.scale_factor()),
             &self.config.theme,
-            self.config.terminal.term,
+            self.config.terminal,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
         command.grid_size = grid;
