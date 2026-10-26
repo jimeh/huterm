@@ -288,11 +288,15 @@ always_show = true
     await command("invoke-in\t0\tfocus_next_pane");
     await stateWhere((state) => windowField(state, 0, "pane_focus") === "1", "focus to move to the new pane");
     // Moving the new pane into a tab of its own keeps its shell running: both
-    // windows show the new tab, and the shell takes the whole tab's size.
-    const tabsBefore = Number(windowField(await current(), 0, "tabs"));
+    // windows show the new tab, right after the source tab; window 0, which
+    // ran the command, activates it, and the shell takes the whole tab's size.
+    const beforeExtract = await current();
+    const tabsBefore = Number(windowField(beforeExtract, 0, "tabs"));
+    const extractedIndex = String(Number(windowField(beforeExtract, 0, "active_index")) + 1);
     await command("invoke-in\t0\tmove_pane_to_new_tab");
     await stateWhere((state) => windowField(state, 0, "tabs") === String(tabsBefore + 1)
-      && windowField(state, 1, "tabs") === String(tabsBefore + 1) && windowField(state, 0, "panes") === "1",
+      && windowField(state, 1, "tabs") === String(tabsBefore + 1)
+      && windowField(state, 0, "active_index") === extractedIndex && windowField(state, 0, "panes") === "1",
     "both windows to show the extracted pane's tab");
     const extracted = await focusedPaneSized(0, "extracted");
     if (extracted.columns !== unsplit.columns || extracted.rows !== unsplit.rows) {
@@ -300,6 +304,7 @@ always_show = true
     }
     await command("invoke-in\t0\tclose_pane");
     const joined = await stateWhere((state) => windowField(state, 0, "tabs") === String(tabsBefore)
+      && windowField(state, 1, "tabs") === String(tabsBefore)
       && windowField(state, 0, "panes") === "1" && windowField(state, 1, "panes") === "1",
     "both windows to drop the extracted pane's tab");
     if (windowField(joined, 0, "confirming") !== "false") throw new Error(`closing an idle pane asked first: ${joined}`);
