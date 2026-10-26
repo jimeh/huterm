@@ -29,7 +29,9 @@ RUN case "$TARGETARCH" in \
 RUN useradd --create-home --shell /bin/bash huterm \
     && install -d -o huterm -g huterm /opt/huterm-tools /workspace /cache
 
-ENV MISE_AUTO_INSTALL=false MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/opt/huterm-tools:/workspace \
+# Set HOME explicitly: not every builder derives it from USER for RUN steps.
+ENV HOME=/home/huterm \
+    MISE_AUTO_INSTALL=false MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/opt/huterm-tools:/workspace \
     LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 SHELL=/bin/bash
 USER huterm
 WORKDIR /opt/huterm-tools
