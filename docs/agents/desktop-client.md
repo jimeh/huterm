@@ -60,8 +60,8 @@ move. A pane close follows its pane: `CloseTarget::Pane` resolves its tab
 from the views each time it is requested, and an assessment refused with
 `UnknownPane` or `UnknownTab` for a pane this window now shows in another
 tab waits for the projection and assesses again there. When the pane left
-the window instead, the close ends without a notice, which returns an
-exit-close to owed.
+the window instead, only that close ends, without a notice: an exit-close
+returns to owed, and closes queued behind it still run.
 
 What a window draws for a tab comes from `shown_layout` and `shown_zoom`. The
 layout is the projection's, with the window's divider drag and the resizes it

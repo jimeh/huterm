@@ -3899,6 +3899,7 @@ impl WorkspaceView {
             && let Some(tab) = self.active_tab(cx)
         {
             // A pane view that changed tabs takes its new tab's visibility.
+            self.measure_tab_widths(window, cx);
             self.select_tab(tab, false, window, cx);
         }
         cx.notify();
@@ -8865,12 +8866,16 @@ impl WorkspaceView {
             }
             // The pane left this window before its close was assessed; the
             // close never reached Mux, so an exit-close returns to owed for
-            // the window that shows the pane now.
+            // the window that shows the pane now. Queued closes still run.
             (
                 CloseTarget::Pane { pane, .. },
                 MuxError::UnknownPane(_) | MuxError::UnknownTab(_),
             ) if self.tab_showing(*pane).is_none() => {
-                self.cancel_close(window, cx);
+                self.close.current = None;
+                self.release_exit_close_if_idle(cx);
+                self.restore_tab_focus(window, cx);
+                self.resume_close(window, cx);
+                cx.notify();
             }
             (CloseTarget::Emptied, _) => {
                 self.report_close_failure(

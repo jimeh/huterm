@@ -461,12 +461,13 @@ fn a_swap_and_a_close_in_one_batch_fall_back_in_the_new_order(
 }
 
 #[gpui::test]
-fn a_pane_close_whose_pane_leaves_the_window_ends_without_a_notice(
+fn a_pane_close_whose_pane_leaves_the_window_ends_quietly_and_keeps_the_queue(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let source = harness.open_tab(RUNS_JOB);
     let staying = harness.open_tab(ECHO);
+    let queued = harness.open_tab(ECHO);
     let window = harness.attach_window();
     let leaving = harness.first_pane(source);
     let stays = harness.first_pane(staying);
@@ -489,6 +490,15 @@ fn a_pane_close_whose_pane_leaves_the_window_ends_without_a_notice(
     harness.wait_for("the close to wait before its assessment", |_| {
         runtime.worker_hooks.held(Stage::Assess) > 0
     });
+    // A tab close requested meanwhile queues behind it.
+    let queued_close = harness.invoke_with(
+        window,
+        &CommandInvocation::new(
+            ids::CLOSE_TAB,
+            vec![CommandArgument::new("tab", CommandValue::Tab(queued))],
+        ),
+    );
+    assert!(queued_close.is_ok(), "{queued_close:?}");
     let from = harness.pane_ref(leaving);
     harness
         .runtime
@@ -502,10 +512,12 @@ fn a_pane_close_whose_pane_leaves_the_window_ends_without_a_notice(
         )
         .unwrap();
     runtime.worker_hooks.release(Stage::Assess);
-    // The close never reached Mux; it ends quietly and the pane lives on.
-    // A tab's only pane takes the tab with it, so the window drops the tab.
+    // The close never reached Mux; it ends quietly and the pane lives on,
+    // and the queued close still runs. A tab's only pane takes the tab with
+    // it, so the window drops the tab.
     harness.wait_for("the close to end and the source tab to go", |cx| {
         panes_shown(cx, window, source).is_none()
+            && !projected(cx, queued)
             && active(cx, window) == Some(staying)
             && window
                 .update(cx, |root, _, cx| {
