@@ -4,8 +4,10 @@ Huterm is a Rust terminal emulator whose runtime owns PTYs, emulator state,
 sessions, workspaces, tabs, and panes. GPUI is one client. The runtime boundary
 must remain usable by a future local server and text client.
 
-Read [README.md](README.md) for product scope and behavior. The boundaries
-below and the topic guides in `docs/agents/` describe the current architecture.
+Read [README.md](README.md) for product scope and behavior, and
+[configuration](docs/configuration.md) and [keybindings](docs/keybindings.md)
+for user-facing settings and commands. The boundaries below and the topic
+guides in `docs/agents/` describe the current architecture.
 Plans in `docs/plans/` record design decisions as they were made; implemented
 and superseded plans are history, not current rules. Each plan opens with a
 `Status:` line (proposed, approved, in progress, implemented, or superseded);
