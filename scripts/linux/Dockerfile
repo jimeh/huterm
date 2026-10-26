@@ -23,13 +23,22 @@ RUN case "$TARGETARCH" in \
     && install /tmp/mise/bin/mise /usr/local/bin/mise \
     && rm -rf /tmp/mise /tmp/mise.tar.gz
 
-ENV MISE_AUTO_INSTALL=false MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/opt/huterm-tools:/workspace \
+# Commands run as an unprivileged user, as on CI runners: root ignores file
+# permissions, which tests of unreadable or unusable paths depend on. The
+# mount points belong to that user, so Docker seeds new volumes with it.
+RUN useradd --create-home --shell /bin/bash huterm \
+    && install -d -o huterm -g huterm /opt/huterm-tools /workspace /cache
+
+# Set HOME explicitly: not every builder derives it from USER for RUN steps.
+ENV HOME=/home/huterm \
+    MISE_AUTO_INSTALL=false MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/opt/huterm-tools:/workspace \
     LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 SHELL=/bin/bash
+USER huterm
 WORKDIR /opt/huterm-tools
-COPY mise.toml mise.lock rust-toolchain.toml ./
+COPY --chown=huterm:huterm mise.toml mise.lock rust-toolchain.toml ./
 RUN mise install rust bun zig \
-    && ln -s /cache/cargo-registry /root/.cargo/registry \
-    && ln -s /cache/cargo-git /root/.cargo/git
+    && ln -s /cache/cargo-registry "$HOME/.cargo/registry" \
+    && ln -s /cache/cargo-git "$HOME/.cargo/git"
 
 # Limit concurrent rustc memory use in a desktop Docker VM. Callers can
 # override this per command with linux:exec -- env CARGO_BUILD_JOBS=...
@@ -37,4 +46,7 @@ ENV CARGO_BUILD_JOBS=4 ZIG_GLOBAL_CACHE_DIR=/cache/zig \
     BUN_INSTALL_CACHE_DIR=/cache/bun MISE_CACHE_DIR=/cache/mise
 COPY entrypoint.sh /usr/local/bin/huterm-linux
 WORKDIR /workspace
+# The entrypoint starts as root to copy the source and fix volume ownership,
+# then runs the command as that user.
+USER root
 ENTRYPOINT ["/bin/bash", "/usr/local/bin/huterm-linux"]

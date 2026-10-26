@@ -238,12 +238,23 @@ mod tests {
     }
 
     fn eventually<T>(mut read: impl FnMut() -> Option<T>) -> T {
+        observed(|| read().ok_or(()))
+    }
+
+    /// Polls `read` until it returns `Ok`, failing with its last `Err`.
+    fn observed<T, E: std::fmt::Debug>(
+        mut read: impl FnMut() -> Result<T, E>,
+    ) -> T {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if let Some(value) = read() {
-                return value;
-            }
-            assert!(Instant::now() < deadline, "condition never held");
+            let last = match read() {
+                Ok(value) => return value,
+                Err(last) => last,
+            };
+            assert!(
+                Instant::now() < deadline,
+                "condition never held; last observed {last:?}"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -252,14 +263,22 @@ mod tests {
     fn reads_a_live_process_group_leader_and_its_arguments() {
         let child = ready_child(sleeper().process_group(0));
         let pid = child.0.id();
-        // The shell prints before exec; wait for sleep to replace it.
-        let facts = eventually(|| process(pid).filter(|p| p.name == "sleep"));
+        // The shell prints before exec; wait for sleep to replace it. Linux
+        // names the process `sleep` before the exec records where its
+        // arguments are, and they read as empty, so as `None`, until then.
+        let (facts, arguments) =
+            observed(|| match (process(pid), arguments(pid)) {
+                (Some(facts), Some(arguments)) if facts.name == "sleep" => {
+                    Ok((facts, arguments))
+                }
+                last => Err(last),
+            });
         assert_eq!(facts.pid, pid);
         assert_eq!(facts.parent, std::process::id());
         assert_eq!(facts.group, pid);
         assert!(!facts.zombie);
         assert!(facts.started.is_some());
-        assert_eq!(arguments(pid).unwrap(), ["sleep", "30"]);
+        assert_eq!(arguments, ["sleep", "30"]);
         assert_eq!(process(pid).unwrap().started, facts.started);
     }
 

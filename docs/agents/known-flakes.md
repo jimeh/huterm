@@ -42,14 +42,28 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 
 ## Linux renderer smoke startup hang
 
-- **Label:** `Smoke renderer` in `Rust smoke (Linux x86_64)` times out at 15
-  seconds with empty stdout and stderr and no `RENDERER_SMOKE` marker.
-- **Occurrences:** 2026-09-27 (PR #175) and 2026-09-30 (PR #196), unrelated
-  PRs, every other Linux smoke in the job passing. Reruns passed.
-- **Triage:** download the `smoke-evidence-Linux-X64-*` artifact and read
-  `renderer-process/events.jsonl` and stdout. No markers means the process hung
-  before its first paint under Xvfb; rerun once. A failure with markers, or a
-  repeat on the same head, needs investigation of Linux event-loop startup.
+- **Label:** `Smoke renderer` in `Rust smoke (Linux x86_64)` or
+  `Rust smoke (Linux aarch64)` times out at 15 seconds with empty stdout and
+  stderr.
+- **Occurrences:** 2026-09-27 (PR #175) and 2026-09-30 (PR #196) on x86_64,
+  then on main: 2026-10-25 on x86_64 (run 40211388780) and 2026-10-26 on
+  aarch64 (run 40346320545). Every other Linux smoke in those jobs passed,
+  and reruns passed.
+- **Evidence:** the smoke prints its first `RENDERER_SMOKE prepared` line
+  during the first prepare, and Rust line-buffers stdout even into a pipe,
+  so an empty stdout means the process hung before its first prepare. It
+  did not reproduce in 460 local runs under Xvfb in Docker on arm64,
+  including 400 pinned to four cores with eight running at once. Since
+  2026-10-26 the smoke prints `RENDERER_SMOKE launching` before creating
+  the application and `application started` inside it; `prepared` lines
+  come from the first draw inside `open_window`, and `window opened` after
+  it returns. At its deadline the smoke supervisor also records a `threads`
+  event in `events.jsonl` with each thread's name, state, kernel wait
+  channel, and current syscall.
+- **Triage:** download the `smoke-evidence-Linux-*` artifact and read
+  `renderer-process/stdout.log` for the last marker and
+  `renderer-process/events.jsonl` for the `threads` event. Record both here,
+  then rerun once.
 
 ## `smoke:linux-integration` held-link hover timeout
 
@@ -97,16 +111,28 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Not this flake:** "missing pending_work_cancellation success" failed twice
   on feature branches (2026-10-01 alongside a `projection.rs` panic, and
   2026-10-02 on in-progress shared-viewer work). Treat that signature as a
-  regression on the branch, not as this flake.
+  regression on the branch, not as this flake. Read the `REFRESH_SMOKE
+  failed:` line above it. "this terminal viewer was revoked" failed three
+  times on one branch (2026-10-25, before PR #238 merged) and not since.
+  "detached pending worker retained its receiver" failed once on main
+  (2026-10-26, run 40320456365): the smoke checked the receiver once, but
+  the executor drops a canceled task's future, and the receiver it holds,
+  only when it next runs that task. The smoke now waits for the receiver
+  to close, so its timeout, "detached pending worker to release its
+  receiver: last observed receiver_closed=false", is a real leak.
 
 ## huterm-core foreground-job tests under full local runs
 
 - **Label:**
   `terminal::tests::close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`,
   `mux::lifecycle::tests::orphans_holding_the_terminal_need_consent_and_are_cleaned_up`
-  ("orphan missing"), and
+  ("orphan missing" or `!orphan.foreground`), and
   `mux::lifecycle::tests::foreground_exit_and_unavailable_runtime_are_assessed_conservatively`
-  ("foreground job not observed").
+  ("foreground job not observed"). Under heavier load other job-control
+  tests in `terminal::tests` fail the same way, among them
+  `foreground_jobs_are_named_while_running_and_cleared_on_return`,
+  `osc7_reports_apply_only_while_their_reporter_holds_the_foreground`, and
+  `shutdown_should_terminate_a_distinct_foreground_process_group`.
 - **Rate:** about 1 in 3 full `cargo test -p huterm-core --lib` runs on a
   developer Mac, at the 3-second "foreground job not detected" deadline. All
   three pass alone and in CI. On 2026-10-20, during the dependency refresh, 4
@@ -122,39 +148,71 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   and `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
   in the same run; the rerun passed. A `mise run verify` run on the
   scrollback branch (PR #243) also failed that test once that day.
-- **Triage:** rerun once before suspecting the change. A fix would replace the
-  fixed deadline with a condition-driven wait.
+- **Cause:** the system shell's job control, not Huterm. These tests already
+  poll their conditions. With the load average around 90 on a 16-core Mac
+  (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.
+  With every deadline in `terminal/tests.rs` and `mux/lifecycle/tests.rs`
+  raised to 60 seconds, 8 of 24 still failed, so the jobs were stuck, not
+  slow. The failing screens showed macOS `/bin/sh` (bash 3.2) printing
+  `child setpgid (N to N): Operation not permitted`, or `fg` running
+  `sleep 30` to completion while the terminal never named a separate
+  foreground group. The `foreground_reporter` comment in `terminal/tests.rs`
+  describes the same shell behavior. Longer deadlines would not help; a fix
+  would give these fixtures a process group that they create and hand the
+  terminal to themselves, rather than relying on `/bin/sh` job control.
+- **Triage:** rerun once, and check `uptime` before suspecting the change.
+  CI has not failed these.
 
 ## huterm-procinfo live group leader arguments on Linux
 
 - **Label:**
   `tests::reads_a_live_process_group_leader_and_its_arguments` in
-  `Checks (Linux x86_64)`, panicking at `arguments(pid).unwrap()` with
-  "called `Option::unwrap()` on a `None` value".
-- **Occurrences:** once, 2026-10-21 (PR #226, attempt 1 of run 39695920472);
-  the rerun passed.
-- **Evidence:** the test had already seen the child named `sleep`, so the
-  exec had started. The Linux reader returns `None` only when reading
-  `/proc/<pid>/cmdline` fails; an empty read returns an empty list. Why the
-  read failed is unconfirmed. One candidate is a read that races the end of
-  the exec.
-- **Triage:** rerun once. A repeat should capture the read error before
-  changing the test, for example by retrying `arguments` inside the existing
-  `eventually` wait.
+  `Checks (Linux x86_64)` or `Checks (Linux aarch64)`, panicking at
+  `arguments(pid).unwrap()` with "called `Option::unwrap()` on a `None`
+  value". After the fix, a failure there times out with "condition never
+  held; last observed" and the process facts and arguments it last read.
+- **Occurrences:** four, each at `lib.rs:262:35`: 2026-10-21 on x86_64
+  (PR #226, run 39695920472), then on aarch64 on 2026-10-25 (Release Please,
+  run 40219352235) and 2026-10-26 (Dependabot run 40266500383, and main run
+  40320456365). Reruns passed.
+- **Cause:** Linux renames the process `sleep` before the exec records where
+  its arguments are, and `cmdline` reads as empty until then. The public
+  `arguments` turns an empty list into `None`. Reading `cmdline` the moment
+  `stat` first named `sleep` returned nothing in 494 of 500 tries in Docker
+  on arm64. The test now waits for the name and the arguments in one poll.
+  With that poll running without a pause, the old test failed 174 of 200
+  runs and the new one passed 200 of 200.
+- **Triage:** a failure at this test after the fix landed is new; read the
+  last observed facts and arguments in its panic before rerunning. Remove
+  this entry once the fixed test has passed in about 20 Linux check jobs.
 
 ## huterm-gpui replaced view's clipboard write on Linux aarch64
 
 - **Label:**
   `desktop::windows::window_tests::a_replaced_view_receives_output_status_exit_and_clipboard_without_frames`
   in `Checks (Linux aarch64)`, "timed out waiting for the clipboard write".
-- **Occurrences:** twice, 2026-10-26: on `main` (run 40211388780) and on
-  PR #243 (run 40264983260, head `0ddb1fa4`). It passed 20 of 20 isolated
-  runs on a macOS host.
+- **Occurrences:** three, all on aarch64: on `main` (run 40211388780,
+  2026-10-25), on PR #243 (run 40264983260, head `0ddb1fa4`), and on `main`
+  again (run 40308946971, 2026-10-26). It passed 20 of 20 isolated runs on
+  a macOS host.
 - **Evidence:** the output and title steps before it passed, so the
-  replacement viewer was live. Why the clipboard host effect did not reach the
-  replaced view without frames is unconfirmed.
-- **Triage:** rerun once. A repeat should record whether the host effect was
-  admitted for the replacement's recipient before changing the test.
+  replacement viewer was live. It did not reproduce in Docker on arm64:
+  700 isolated runs, including 300 pinned to one CPU, and about 100 full
+  `huterm-gpui` suite runs under load. Temporary logging in the engine's
+  clipboard callback saw only accepted admissions. Admission is
+  nonblocking: a contended lock answers `Busy`, and Ghostty drops the write,
+  so a lost race would also lose a real OSC 52 write. That remains a
+  candidate, not a finding.
+- **Triage:** since 2026-10-26 the window-test failure state lists each
+  tab's focused view with its `epoch`, `revoked`, `title`,
+  `clipboard_writes`, and `text_tail`, and the fixture prints `CLIPPED`
+  right after its OSC 52 write. The PTY echoes the typed `clip` before the
+  shell reads it, so `clip` alone shows only that the input arrived.
+  `CLIPPED` with `clipboard_writes=0` at `epoch=1` means the terminal
+  parsed the write and it never reached the view. `clip` without `CLIPPED`
+  means the shell had not printed it, or that output had not reached the
+  view either. A higher epoch means a second replacement. Record which,
+  then rerun once.
 
 ## huterm-gpui terminfo temp-directory abort on hosted macOS
 
@@ -167,6 +225,23 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** check whether the change touches `terminfo.rs` or temp-directory
   handling, then rerun. A non-panicking cleanup in the drop would keep one
   failure from aborting the binary.
+
+## `smoke:macos-palette` stray DEL at an early step
+
+- **Label:** an early terminal-bytes check in `scripts/check-palette.ts`
+  received an unexpected DEL (`\x7f`).
+- **Occurrences:** local runs only, 2026-09-16 and 2026-10-26; reruns
+  passed, and 3 of 3 host runs passed later on 2026-10-26. The 2026-09-16
+  report put it down to other Huterm instances running on the host. Neither
+  failure's output was kept.
+- **Evidence:** the smoke sends Backspace as DEL. If the failing check was
+  step 1's `terminalBytes("e")`, the Backspace sent just before it does not
+  explain the DEL: the `query="tfs"` check between them passes only if that
+  Backspace reached the palette. Real HID events from another process on
+  the host, such as the quake witness's global shortcuts, go to whichever
+  window is frontmost.
+- **Triage:** keep the failing step, its expected and received bytes, and a
+  list of what else was running on the host; record them here, then rerun.
 
 ## CI tool installation
 
