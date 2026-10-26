@@ -68,7 +68,12 @@ before requesting platform quit; a fixed post-launch readiness timer is not pain
 evidence.
 
 Use Bun's process timeout and output checks for portable smoke runners. CI's
-macOS smoke job has no `timeout`, and its Linux smoke job has no `rg`.
+macOS smoke job has no `timeout`, and its Linux smoke job has no `rg`. On
+Linux, `runSmokeProcess` records a `threads` event before it signals a smoke
+that reached its deadline, listing the state, kernel wait channel, and
+syscall of each thread in the smoke's process group, so a hang that printed
+nothing still shows where it waited. Descendants in their own process group,
+such as PTY shells, are not listed.
 
 ## Synchronizing with the app
 

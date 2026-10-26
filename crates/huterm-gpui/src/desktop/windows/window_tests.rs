@@ -524,7 +524,7 @@ fn notices(cx: &mut App, window: AnyWindowHandle) -> Vec<String> {
 
 fn describe(cx: &App) -> String {
     let desktop = cx.global::<Desktop>();
-    desktop
+    let records = desktop
         .windows
         .records()
         .map(|record| {
@@ -541,7 +541,39 @@ fn describe(cx: &App) -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join("; ")
+        .join("; ");
+    let views = cx
+        .windows()
+        .into_iter()
+        .filter_map(|handle| handle.downcast::<WorkspaceView>()?.read(cx).ok())
+        .flat_map(|view| &view.tabs)
+        .map(|tab| describe_view(tab.id, tab.focused_view().read(cx)))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("{records}; views: {views}")
+}
+
+/// A view's viewer, polled status, and the end of its screen: output a
+/// fixture prints after a host effect shows whether the terminal parsed it.
+fn describe_view(tab: TabId, view: &TerminalView) -> String {
+    let text = view.snapshot.as_ref().map_or_else(String::new, |snapshot| {
+        snapshot.cells().map(|cell| cell.text.as_str()).collect()
+    });
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let tail = text
+        .char_indices()
+        .rev()
+        .nth(59)
+        .map_or(text.as_str(), |(index, _)| &text[index..]);
+    format!(
+        "tab {}: epoch={} revoked={} exited={} title={:?} clipboard_writes={} text_tail={tail:?}",
+        tab.get(),
+        view.viewer_epoch,
+        view.revoked,
+        view.exited,
+        view.title,
+        view.clipboard_writes,
+    )
 }
 
 #[gpui::test]
@@ -1299,11 +1331,11 @@ fn a_replacement_that_does_not_resize_keeps_the_selection(
 
 /// A child that prints `READY`, then answers `out` with `OUT`, `title` by
 /// setting its title to `two`, `clip` by writing `clip` to the clipboard
-/// through OSC 52, and `exit` by exiting.
+/// through OSC 52 and then printing `CLIPPED`, and `exit` by exiting.
 const REPLIES: &str = "printf READY; while read line; do case \"$line\" in \
      out) printf OUT;; \
      title) printf '\\033]0;two\\007';; \
-     clip) printf '\\033]52;c;Y2xpcA==\\007';; \
+     clip) printf '\\033]52;c;Y2xpcA==\\007CLIPPED';; \
      exit) exit 0;; \
      esac; done";
 
