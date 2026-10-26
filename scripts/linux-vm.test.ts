@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BASE_IMAGE, argumentsFor, imageName, tryLock, vmName } from "./linux-vm";
@@ -11,6 +11,17 @@ const root = resolve(import.meta.dir, "..");
 const image = imageName(root);
 const vm = vmName(root);
 const macos = process.platform === "darwin" && process.arch === "arm64";
+
+/** Polls until `done` accepts a reading or two seconds pass, returning the last reading. */
+async function settle<T>(read: () => T, done: (value: T) => boolean): Promise<T> {
+  const deadline = Date.now() + 2_000;
+  let value = read();
+  while (!done(value) && Date.now() < deadline) {
+    await Bun.sleep(20);
+    value = read();
+  }
+  return value;
+}
 
 function fixture(overrides: Record<string, string> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "huterm-linux-vm-test-"));
@@ -48,11 +59,18 @@ switch (args[0]) {
     rmSync(env.TART_TEST_VMS + '.' + args.at(-1) + '.booted', { force: true });
     writeFileSync(marker(args.at(-1)), '');
     break;
-  case 'run':
+  case 'run': {
     rmSync(marker(args[1]), { force: true });
     writeFileSync(env.TART_TEST_VMS + '.' + args[1] + '.booted', '');
-    while (!existsSync(marker(args[1]))) await Bun.sleep(20);
+    // A VM left running outlives its runner, so it also ends with the fixture
+    // or the test process, even if that crashes before cleaning up.
+    const owned = () => {
+      try { process.kill(Number(env.TART_TEST_OWNER), 0); } catch { return false; }
+      return existsSync(env.TART_TEST_VMS);
+    };
+    while (!existsSync(marker(args[1])) && owned()) await Bun.sleep(20);
     break;
+  }
   case 'exec': {
     // 'tart exec <vm> true' is the guest-agent probe; a VM is reachable only
     // once it has been started, unless the fixture declares it already running.
@@ -83,13 +101,16 @@ exit 0
   const state = join(directory, "state");
   const env = {
     ...process.env, PATH: `${directory}:${process.env.PATH}`,
-    TART_TEST_LOG: log, TART_TEST_VMS: vms, HUTERM_LINUX_VM_STATE: state, ...overrides,
+    TART_TEST_LOG: log, TART_TEST_VMS: vms, TART_TEST_OWNER: String(process.pid),
+    HUTERM_LINUX_VM_STATE: state, ...overrides,
   };
   return {
+    directory,
     state,
     vms: () => readFileSync(vms, "utf8").split("\n").filter(Boolean),
     seed: (...entries: string[]) => writeFileSync(vms, entries.map((name) => `${name}\n`).join("")),
     boot: (name: string) => writeFileSync(`${vms}.${name}.booted`, ""),
+    tart: (...args: string[]) => Bun.spawn([tart, ...args], { env, stdout: "ignore", stderr: "ignore" }),
     calls: () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]),
     run: (...args: string[]) => Bun.spawnSync([process.execPath, join(import.meta.dir, "linux-vm.ts"), ...args], { env, stdout: "pipe", stderr: "pipe" }),
     // A VM deliberately left running inherits the runner's stdio, so a piped
@@ -180,6 +201,43 @@ describe("Linux VM runner", () => {
       expect(fake.runDetached("exec", "--", "true").exitCode).toBe(0);
     } finally { other(); }
     expect(fake.calls().some((args) => args[0] === "stop" && args.at(-1) === vm)).toBe(false);
+  });
+
+  test("a VM left running does not outlive its fixture", async () => {
+    if (!macos) return;
+    const fake = fixture();
+    fake.seed(image);
+    mkdirSync(fake.state, { recursive: true });
+    const other = tryLock(join(fake.state, `${vm}.active.lock`), true)!;
+    try {
+      expect(fake.runDetached("exec", "--", "true").exitCode).toBe(0);
+    } finally { other(); }
+    const fakeRun = `${fake.directory}/tart run`;
+    const running = () => Bun.spawnSync(["ps", "-axww", "-o", "command="], { stdout: "pipe" })
+      .stdout.toString().split("\n").filter((line) => line.includes(fakeRun));
+    expect(running()).toHaveLength(1);
+    rmSync(fake.directory, { recursive: true, force: true });
+    expect(await settle(running, (survivors) => survivors.length === 0)).toEqual([]);
+  });
+
+  test("a VM left running ends with the test process that owns it", async () => {
+    // A crashed test run never reaches afterEach, so its fixture stays on disk.
+    const owner = Bun.spawn(["sleep", "30"]);
+    const fake = fixture({ TART_TEST_OWNER: String(owner.pid) });
+    const machine = fake.tart("run", vm);
+    let exited = false;
+    void machine.exited.then(() => { exited = true; });
+    try {
+      // The fake is polling once it reports the VM booted.
+      expect(await settle(() => existsSync(join(fake.directory, `vms.${vm}.booted`)), Boolean)).toBe(true);
+      expect(exited).toBe(false);
+      owner.kill("SIGKILL");
+      expect(await settle(() => exited, Boolean)).toBe(true);
+      expect(machine.exitCode).toBe(0);
+    } finally {
+      owner.kill("SIGKILL");
+      machine.kill("SIGKILL");
+    }
   });
 
   test("a container export failure ends the run instead of crashing it", () => {

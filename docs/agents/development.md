@@ -705,6 +705,11 @@ Temporary Git fixtures must clear inherited `GIT_*` variables before invoking
 Git. Commit hooks export repository and index paths that override a fixture's
 working directory and can redirect its commits into the caller's worktree.
 
+A fake command that a test leaves running, such as the Linux VM fixture's
+`tart run`, must exit by itself once its fixture directory or the test process
+is gone. Deleting the fixture in `afterEach` does not stop a process the code
+under test detached, and a crashed run never reaches `afterEach`.
+
 Repository scripts use Bun with TypeScript 7 for type checking, and Bash for the
 build wrapper. Pin Bun and Zig in Mise and JavaScript dependencies in bun.lock;
 keep bunfig.toml's minimum release age aligned with the three-day policy.
