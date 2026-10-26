@@ -287,3 +287,109 @@ fn narrowing_evicts_rows_that_rewrapping_pushes_past_the_limit() {
     let kept = history(&engine);
     assert!(kept > 0 && kept <= 2000, "kept {kept} rows");
 }
+
+fn with_bytes(rows: u32, bytes: u64) -> ScrollbackLimit {
+    limit(rows).with_bytes(bytes).unwrap()
+}
+
+/// Writes `count` lines of `width` cells one at a time and returns the most
+/// history kept at any point.
+fn peak_history(
+    engine: &mut TerminalEngine,
+    width: usize,
+    count: usize,
+) -> usize {
+    let line = format!("{}\r\n", "w".repeat(width));
+    let mut peak = 0;
+    for _ in 0..count {
+        engine.process(line.as_bytes()).unwrap();
+        peak = peak.max(history(engine));
+    }
+    peak
+}
+
+#[test]
+fn whichever_of_the_row_and_byte_limits_is_reached_first_applies() {
+    // Two MiB is about five 80-column pages, far fewer rows than the limit.
+    let mut by_bytes = engine(80, with_bytes(50_000, 2 << 20));
+    let peak = peak_history(&mut by_bytes, 8, 10_000);
+    assert!(peak > 1000 && peak < 4000, "bytes kept {peak} rows");
+
+    // A byte limit that is never reached leaves the rows to bind.
+    let mut by_rows = engine(80, with_bytes(1000, 1 << 30));
+    assert_eq!(peak_history(&mut by_rows, 8, 5000), 1000);
+}
+
+#[test]
+fn either_zero_limit_keeps_no_history() {
+    for limit in [with_bytes(0, 1 << 30), with_bytes(10_000, 0)] {
+        let mut engine = engine(80, limit);
+        write_lines(&mut engine, 0, 50);
+        assert_eq!(history(&engine), 0, "{limit:?}");
+    }
+}
+
+#[test]
+fn a_byte_limit_below_the_screen_and_a_page_keeps_at_most_two_pages() {
+    // Ghostty raises it to the screen's pages plus one more, and a short
+    // screen shares its page with history.
+    let mut tiny = engine(80, with_bytes(10_000, 1));
+    let peak = peak_history(&mut tiny, 8, 3000);
+    assert!(peak <= 2 * PAGE_ROWS_AT_80, "kept {peak} rows");
+}
+
+#[test]
+fn only_a_smaller_row_or_byte_allowance_counts_as_a_drop() {
+    let mut engine = engine(80, ScrollbackLimit::DEFAULT);
+    write_lines(&mut engine, 0, 5000);
+    let generation = engine.generation();
+    let kept = history(&engine);
+
+    // A gibibyte is above the default's derived allowance.
+    assert!(!engine.set_scrollback(with_bytes(10_000, 1 << 30)).unwrap());
+    // More rows under the same explicit bytes.
+    assert!(!engine.set_scrollback(with_bytes(50_000, 1 << 30)).unwrap());
+    assert_eq!(engine.generation(), generation);
+    assert_eq!(history(&engine), kept);
+
+    // Lowering only the bytes evicts.
+    assert!(engine.set_scrollback(with_bytes(50_000, 1 << 20)).unwrap());
+    assert!(engine.generation() > generation);
+    assert!(history(&engine) < kept, "kept {} rows", history(&engine));
+
+    // Dropping the explicit bytes for the larger derived allowance is a
+    // raise; returning from a gibibyte to it is a drop.
+    assert!(!engine.set_scrollback(ScrollbackLimit::MAX).unwrap());
+    engine.set_scrollback(with_bytes(50_000, 1 << 30)).unwrap();
+    assert!(engine.set_scrollback(ScrollbackLimit::MAX).unwrap());
+}
+
+#[test]
+fn explicit_bytes_stay_fixed_and_enforced_across_resizes() {
+    let cell = CellSize {
+        width: 8,
+        height: 16,
+    };
+    // A taller screen gets no more bytes, so history stays within them.
+    let mut taller = engine(80, with_bytes(50_000, 4 << 20));
+    let before = peak_history(&mut taller, 8, 20_000);
+    taller.resize(GridSize::clamped(80, 400), cell).unwrap();
+    assert!(history(&taller) <= before, "kept {}", history(&taller));
+    let after = peak_history(&mut taller, 8, 20_000);
+    assert!(after <= before, "kept {after} rows, {before} before");
+
+    // Widening rewraps 300-cell lines from four rows onto one, which costs
+    // more bytes per row. Ghostty checks bytes only when they are set or a
+    // page is allocated, not after a reflow, so the limit is applied again
+    // afterward; without that, history stays above what the bytes hold.
+    let mut steady = sized_engine(400, 4, with_bytes(50_000, 2 << 20));
+    let most = peak_history(&mut steady, 300, 5000);
+    let mut widened = engine(80, with_bytes(50_000, 2 << 20));
+    peak_history(&mut widened, 300, 5000);
+    widened.resize(GridSize::clamped(400, 4), cell).unwrap();
+    let kept = history(&widened);
+    assert!(
+        kept <= most,
+        "kept {kept} rows after widening; at most {most}"
+    );
+}

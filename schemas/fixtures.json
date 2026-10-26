@@ -90,6 +90,60 @@
     "theme": false
   },
   {
+    "name": "scrollback bytes integer",
+    "toml": "[terminal]\nscrollback_bytes = 1048576",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "scrollback bytes size string",
+    "toml": "[terminal]\nscrollback_bytes = \"64MiB\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "scrollback bytes decimal unit with space",
+    "toml": "[terminal]\nscrollback_bytes = \"50 MB\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "scrollback bytes lowercase unit",
+    "toml": "[terminal]\nscrollback_bytes = \"64mib\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "scrollback bytes negative",
+    "toml": "[terminal]\nscrollback_bytes = -1",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "scrollback bytes integer above maximum",
+    "toml": "[terminal]\nscrollback_bytes = 17179869185",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "scrollback bytes fraction",
+    "toml": "[terminal]\nscrollback_bytes = \"1.5GiB\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "scrollback bytes unknown unit",
+    "toml": "[terminal]\nscrollback_bytes = \"64XB\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "scrollback bytes boolean",
+    "toml": "[terminal]\nscrollback_bytes = true",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "visual bell disabled",
     "toml": "[terminal.bell]\nvisual = false",
     "valid": true,

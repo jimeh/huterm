@@ -158,6 +158,114 @@ impl ClipboardWritePolicy {
     }
 }
 
+/// A size in bytes: a byte count, or a string of digits followed,
+/// optionally after one space, by a unit. B, KB, MB, and GB count in powers
+/// of 1000; KiB, MiB, and GiB in powers of 1024. Units ignore case, so `b`
+/// also means bytes. Sizes above [`ScrollbackLimit::MAX_BYTES`] are invalid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ScrollbackSize(u64);
+
+impl ScrollbackSize {
+    /// What a valid size looks like, for error messages.
+    const EXPECTED: &'static str =
+        "a byte count or a size such as \"64MiB\" or \"50MB\", at most 16GiB";
+
+    /// The size in bytes.
+    #[must_use]
+    pub const fn bytes(self) -> u64 {
+        self.0
+    }
+
+    /// Parses a size string such as `"64MiB"`.
+    ///
+    /// # Errors
+    /// Returns an error when the text is not a size or exceeds 16 GiB.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let invalid =
+            || format!("invalid size {text:?}; expected {}", Self::EXPECTED);
+        let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+        let (number, unit) = text.split_at(digits);
+        let unit = unit
+            .strip_prefix(' ')
+            .filter(|unit| !unit.is_empty())
+            .unwrap_or(unit);
+        let scale: u64 = match unit.to_ascii_lowercase().as_str() {
+            "" | "b" => 1,
+            "kb" => 1000,
+            "mb" => 1000 * 1000,
+            "gb" => 1000 * 1000 * 1000,
+            "kib" => 1 << 10,
+            "mib" => 1 << 20,
+            "gib" => 1 << 30,
+            _ => return Err(invalid()),
+        };
+        number
+            .parse::<u64>()
+            .ok()
+            .and_then(|number| number.checked_mul(scale))
+            .and_then(Self::checked)
+            .ok_or_else(invalid)
+    }
+
+    const fn checked(bytes: u64) -> Option<Self> {
+        if bytes > ScrollbackLimit::MAX_BYTES {
+            None
+        } else {
+            Some(Self(bytes))
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ScrollbackSize {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = ScrollbackSize;
+            fn expecting(
+                &self,
+                formatter: &mut fmt::Formatter<'_>,
+            ) -> fmt::Result {
+                formatter.write_str(ScrollbackSize::EXPECTED)
+            }
+            fn visit_u64<E: serde::de::Error>(
+                self,
+                bytes: u64,
+            ) -> Result<Self::Value, E> {
+                ScrollbackSize::checked(bytes).ok_or_else(|| {
+                    E::custom(format!(
+                        "size {bytes} is too large; expected {}",
+                        ScrollbackSize::EXPECTED
+                    ))
+                })
+            }
+            fn visit_i64<E: serde::de::Error>(
+                self,
+                bytes: i64,
+            ) -> Result<Self::Value, E> {
+                u64::try_from(bytes).map_or_else(
+                    |_| {
+                        Err(E::custom(format!(
+                            "size {bytes} is negative; expected {}",
+                            ScrollbackSize::EXPECTED
+                        )))
+                    },
+                    |bytes| self.visit_u64(bytes),
+                )
+            }
+            fn visit_str<E: serde::de::Error>(
+                self,
+                text: &str,
+            ) -> Result<Self::Value, E> {
+                ScrollbackSize::parse(text).map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String")]
 pub struct LinkModifiers(u8);
@@ -895,13 +1003,17 @@ pub struct RawTerminal {
     /// application takes the mouse, Shift+right-click applies it.
     pub right_click: RightClickAction,
     /// Live history each terminal keeps above its screen, in screen rows: a
-    /// line that wraps counts once for each row it fills. 0 keeps none. The
-    /// oldest history is freed a page at a time, about 570 rows at 80
-    /// columns, so a terminal can hold up to a page fewer, and a smaller
-    /// nonzero limit keeps up to one page. It counts rows, not memory.
-    /// Reload applies it to open terminals; lowering it discards the oldest
-    /// rows at once.
+    /// line that wraps counts once for each row it fills. 0 keeps none,
+    /// whatever `scrollback_bytes` says. The oldest history is freed a page
+    /// at a time, about 570 rows at 80 columns, so a terminal can hold up to
+    /// a page fewer, and a smaller nonzero limit keeps up to one page. It
+    /// counts rows; `scrollback_bytes` limits size. Reload applies it to open
+    /// terminals; lowering it discards the oldest rows at once.
     pub scrollback_rows: u32,
+    /// An optional size limit on each terminal's screen and history, such as
+    /// "64MiB"; whichever of it and `scrollback_rows` is reached first
+    /// applies.
+    pub scrollback_bytes: Option<ScrollbackSize>,
 }
 impl Default for RawTerminal {
     fn default() -> Self {
@@ -918,19 +1030,31 @@ impl Default for RawTerminal {
             macos_option_as_alt: MacosOptionAsAlt::Off,
             right_click: RightClickAction::Menu,
             scrollback_rows: ScrollbackLimit::DEFAULT.rows(),
+            scrollback_bytes: None,
         }
     }
 }
 
 impl RawTerminal {
-    /// The validated `scrollback_rows` limit.
+    /// The validated `scrollback_rows` limit, with `scrollback_bytes` when
+    /// it is set.
     ///
     /// # Errors
-    /// Returns an error when the limit exceeds [`ScrollbackLimit::MAX`].
+    /// Returns an error when the row limit exceeds [`ScrollbackLimit::MAX`].
     pub fn scrollback(&self) -> Result<ScrollbackLimit, ConfigError> {
-        ScrollbackLimit::new(self.scrollback_rows).ok_or(ConfigError::Invalid(
-            "terminal.scrollback_rows must be between 0 and 50000",
-        ))
+        let rows = ScrollbackLimit::new(self.scrollback_rows).ok_or(
+            ConfigError::Invalid(
+                "terminal.scrollback_rows must be between 0 and 50000",
+            ),
+        )?;
+        match self.scrollback_bytes {
+            None => Ok(rows),
+            Some(size) => {
+                rows.with_bytes(size.bytes()).ok_or(ConfigError::Invalid(
+                    "terminal.scrollback_bytes must be at most 16GiB",
+                ))
+            }
+        }
     }
 }
 
@@ -1521,6 +1645,61 @@ mod tests {
                 ))
                 .is_err(),
                 "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrollback_bytes_accept_counts_and_sizes_up_to_16_gib() {
+        let bytes = |value: &str| {
+            let raw: RawConfig = toml::from_str(&format!(
+                "[terminal]\nscrollback_bytes = {value}"
+            ))?;
+            raw.validate_values().unwrap();
+            Ok::<_, toml::de::Error>(
+                raw.terminal.scrollback().unwrap().bytes().unwrap(),
+            )
+        };
+        for (value, expected) in [
+            ("0", 0),
+            ("1048576", 1 << 20),
+            ("'2048'", 2048),
+            ("'0B'", 0),
+            ("'64MiB'", 64 << 20),
+            ("'64 MiB'", 64 << 20),
+            ("'64mib'", 64 << 20),
+            ("'50MB'", 50_000_000),
+            ("'50mb'", 50_000_000),
+            ("'3KB'", 3000),
+            ("'3KiB'", 3072),
+            ("'2GB'", 2_000_000_000),
+            ("'16GiB'", 16 << 30),
+            ("17179869184", 16 << 30),
+        ] {
+            assert_eq!(bytes(value).unwrap(), expected, "{value}");
+        }
+        let defaults: RawConfig = toml::from_str("").unwrap();
+        assert_eq!(defaults.terminal.scrollback().unwrap().bytes(), None);
+
+        for invalid in [
+            "-1",
+            "17179869185",
+            "'17GiB'",
+            "'1.5GiB'",
+            "'64XB'",
+            "'64 '",
+            "' 64MiB'",
+            "'64  MiB'",
+            "'MiB'",
+            "''",
+            "'99999999999999999999'",
+            "true",
+        ] {
+            let error = bytes(invalid).unwrap_err().to_string();
+            assert!(
+                error.contains("scrollback_bytes")
+                    && error.contains("\"64MiB\""),
+                "{invalid}: {error}"
             );
         }
     }

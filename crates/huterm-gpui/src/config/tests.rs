@@ -17,7 +17,7 @@ fn schema_fixtures_match_application_parsing_and_keymap_compilation() {
         serde_json::from_str(include_str!("../../../../schemas/fixtures.json"))
             .unwrap();
     let fixtures = fixtures.as_array().unwrap();
-    assert_eq!(fixtures.len(), 200);
+    assert_eq!(fixtures.len(), 209);
     for fixture in fixtures {
         let source = fixture["toml"].as_str().unwrap();
         let expected = fixture["valid"].as_bool().unwrap();
@@ -60,6 +60,19 @@ fn parse(source: &str) -> Result<Config, ConfigError> {
     let result = parse_at(source, &directory.join("config.toml"));
     fs::remove_dir(directory).expect("remove empty config directory");
     result
+}
+
+#[test]
+fn scrollback_rows_and_bytes_reach_the_terminal_limit() {
+    let defaults = parse("").unwrap().terminal.scrollback;
+    assert_eq!((defaults.rows(), defaults.bytes()), (10_000, None));
+    let both = parse(
+        "[terminal]\nscrollback_rows = 50000\nscrollback_bytes = '64MiB'",
+    )
+    .unwrap()
+    .terminal
+    .scrollback;
+    assert_eq!((both.rows(), both.bytes()), (50_000, Some(64 << 20)));
 }
 
 #[test]

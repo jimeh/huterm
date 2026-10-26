@@ -4711,9 +4711,19 @@
           "default": "menu",
           "description": "What a right-click on the terminal does: open the context menu,\npaste, copy the selection or else paste, or nothing. While an\napplication takes the mouse, Shift+right-click applies it."
         },
+        "scrollback_bytes": {
+          "description": "Optional size limit on each terminal's screen and history: a byte count, or digits and a unit such as \"64MiB\" or \"50MB\" (B, KB, MB, GB in powers of 1000; KiB, MiB, GiB in powers of 1024; units ignore case, so b also means bytes), at most 16GiB. 0 keeps no history. Whichever of it and scrollback_rows is reached first applies. Ghostty frees history a page at a time and always allows the visible screen plus one page. Reload applies it to open terminals.",
+          "maximum": 17179869184,
+          "minimum": 0,
+          "pattern": "^[0-9]+( ?([bB]|[kKmMgG][iI]?[bB]))?$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
         "scrollback_rows": {
           "default": 10000,
-          "description": "Live history each terminal keeps above its screen, in screen rows: a\nline that wraps counts once for each row it fills. 0 keeps none. The\noldest history is freed a page at a time, about 570 rows at 80\ncolumns, so a terminal can hold up to a page fewer, and a smaller\nnonzero limit keeps up to one page. It counts rows, not memory.\nReload applies it to open terminals; lowering it discards the oldest\nrows at once.",
+          "description": "Live history each terminal keeps above its screen, in screen rows: a\nline that wraps counts once for each row it fills. 0 keeps none,\nwhatever `scrollback_bytes` says. The oldest history is freed a page\nat a time, about 570 rows at 80 columns, so a terminal can hold up to\na page fewer, and a smaller nonzero limit keeps up to one page. It\ncounts rows; `scrollback_bytes` limits size. Reload applies it to open\nterminals; lowering it discards the oldest rows at once.",
           "format": "uint32",
           "maximum": 50000,
           "minimum": 0,

@@ -1713,6 +1713,33 @@ fn resending_or_raising_the_limit_wakes_no_viewer() {
     runtime.shutdown().unwrap();
 }
 
+#[test]
+fn lowering_only_the_byte_limit_evicts_history_for_every_viewer() {
+    let runtime = spawn(247, ROWS_SCRIPT);
+    let typist = viewer(&runtime);
+    let watcher = viewer(&runtime);
+    let live = wait_for_text(&typist, "READY");
+    assert!(live.history_size > 2900, "history {}", live.history_size);
+    watcher.read_snapshot().unwrap();
+    while watcher.wake_pending() {}
+    assert!(watcher.poll().invalidated.is_none());
+
+    // One mebibyte holds about two 40-column pages, under 3,000 rows.
+    let limit = ScrollbackLimit::DEFAULT.with_bytes(1 << 20).unwrap();
+    typist.set_scrollback(limit).unwrap();
+    wait_until("the byte limit to invalidate the watcher", || {
+        watcher.poll().invalidated.is_some()
+    });
+    let shrunk = watcher.read_snapshot().unwrap();
+    assert!(
+        shrunk.history_size < live.history_size,
+        "history {}",
+        shrunk.history_size
+    );
+    assert!(text(&shrunk).contains("READY"));
+    runtime.shutdown().unwrap();
+}
+
 /// Polls a future that must already be ready.
 fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
     let mut future = std::pin::pin!(future);

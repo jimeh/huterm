@@ -778,6 +778,30 @@ fn line_limits_prune_whole_pages_and_keep_at_least_one_page() {
 }
 
 #[test]
+fn the_first_reached_of_the_line_and_byte_limits_applies() {
+    let page = page_rows(80);
+    let peak = |terminal: &mut Terminal<Recorder>| {
+        let mut peak = 0;
+        for _ in 0..page * 8 {
+            terminal.write(b"x\r\n").unwrap();
+            peak = peak.max(terminal.scrollback_rows().unwrap());
+        }
+        peak
+    };
+
+    // Two mebibytes is about five pages, far below eight pages of lines.
+    let mut by_bytes = row_limited(80, Some(page * 8));
+    by_bytes.set_scrollback_bytes(Some(2 << 20)).unwrap();
+    let kept = peak(&mut by_bytes);
+    assert!(kept < page * 6, "kept {kept} rows under the byte limit");
+
+    // A byte limit that is never reached leaves the line limit to bind.
+    let mut by_lines = row_limited(80, Some(page * 2));
+    by_lines.set_scrollback_bytes(Some(1 << 30)).unwrap();
+    assert_eq!(peak(&mut by_lines), page * 2);
+}
+
+#[test]
 fn lowering_the_line_limit_evicts_at_once_and_fixes_up_the_viewport() {
     let page = page_rows(80);
     let mut terminal = row_limited(80, None);

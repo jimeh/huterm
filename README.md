@@ -15,8 +15,8 @@ GPUI for rendering.
 
 ## What works today
 
-- **Terminals:** 24-bit color, runtime-owned scrollback with a configurable
-  row limit, selection, copy and
+- **Terminals:** 24-bit color, runtime-owned scrollback with configurable row
+  and size limits, selection, copy and
   paste, application mouse reporting, clickable links, file drops, clipboard
   writes from applications (OSC 52, OSC 1337 `Copy`, and Kitty's OSC 5522),
   color and geometry queries, a visual bell, and a private `xterm-huterm`

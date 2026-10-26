@@ -31,10 +31,11 @@ use crate::host_effects::{
 };
 use crate::terminal::RuntimeError;
 
-/// Page allocation allowed per configured history row and per screen row,
-/// since Ghostty's byte limit counts the screen's pages too. Pages that grow
-/// for styles, graphemes, and hyperlinks are bounded only by bytes; plain
-/// rows up to about 400 columns fit, so the row limit applies first for them.
+/// Page allocation allowed, without an explicit byte limit, per configured
+/// history row and per screen row, since Ghostty's byte limit counts the
+/// screen's pages too. Pages that grow for styles, graphemes, and
+/// hyperlinks are bounded only by bytes; plain rows up to about 400 columns
+/// fit, so the row limit applies first for them.
 const SCROLLBACK_BYTES_PER_ROW: usize = 4 * 1024;
 /// Page allocation allowed beyond the rows, for whole partly filled pages,
 /// which would otherwise cut small limits on wide screens short.
@@ -399,13 +400,16 @@ impl TerminalEngine {
         cell: CellSize,
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
         self.generation = self.generation.saturating_add(1);
-        // The byte allowance follows the screen's height. During the resize
-        // it allows for the taller of both screens, so neither prunes
-        // history the row limit would keep.
-        let resized =
+        // A derived byte allowance follows the screen's height. During the
+        // resize it allows for the taller of both screens, so neither prunes
+        // history the row limit would keep. Ghostty enforces bytes only when
+        // they are set or a page is allocated, not after a reflow, so the
+        // allowance is set again afterward, explicit or not.
+        let allowance =
             |screen_rows| scrollback_bytes(self.scrollback, screen_rows);
-        if let Some(bytes) = resized(self.size.rows.max(size.rows)) {
-            self.terminal.set_scrollback_bytes(Some(bytes))?;
+        let during = allowance(self.size.rows.max(size.rows));
+        if during > 0 {
+            self.terminal.set_scrollback_bytes(Some(during))?;
         }
         self.terminal.resize(
             size.columns,
@@ -413,8 +417,9 @@ impl TerminalEngine {
             u32::from(cell.width),
             u32::from(cell.height),
         )?;
-        if let Some(bytes) = resized(size.rows) {
-            self.terminal.set_scrollback_bytes(Some(bytes))?;
+        let after = allowance(size.rows);
+        if after > 0 {
+            self.terminal.set_scrollback_bytes(Some(after))?;
         }
         self.size = size;
         self.cell = cell;
@@ -435,9 +440,10 @@ impl TerminalEngine {
     }
 
     /// Applies a history limit; lowering it evicts the oldest rows at once.
-    /// Returns whether the limit dropped, the only change that can evict.
-    /// A drop counts as a content change even when nothing was evicted,
-    /// because the alternate screen hides the primary history it prunes.
+    /// Returns whether the limit dropped: fewer rows or a smaller byte
+    /// allowance, the only changes that can evict. A drop counts as a
+    /// content change even when nothing was evicted, because the alternate
+    /// screen hides the primary history it prunes.
     pub(super) fn set_scrollback(
         &mut self,
         limit: ScrollbackLimit,
@@ -445,8 +451,11 @@ impl TerminalEngine {
         if limit == self.scrollback {
             return Ok(false);
         }
-        apply_scrollback(&mut self.terminal, limit, self.size.rows)?;
-        let lowered = limit < self.scrollback;
+        let screen_rows = self.size.rows;
+        apply_scrollback(&mut self.terminal, limit, screen_rows)?;
+        let lowered = limit.rows() < self.scrollback.rows()
+            || scrollback_bytes(limit, screen_rows)
+                < scrollback_bytes(self.scrollback, screen_rows);
         self.scrollback = limit;
         if lowered {
             self.generation = self.generation.saturating_add(1);
@@ -711,38 +720,44 @@ impl TerminalEngine {
     }
 }
 
-/// Maps a row limit onto Ghostty's line and byte limits. Ghostty keeps at
-/// least one page of rows under any line limit, so only a zero byte limit
-/// keeps no history.
+/// Maps a history limit onto Ghostty's line and byte limits, which apply
+/// together: whichever is reached first prunes. Ghostty keeps at least one
+/// page of rows under any line limit, so only a zero byte limit keeps no
+/// history.
 fn apply_scrollback(
     terminal: &mut ghostty::Terminal<EngineHost>,
     limit: ScrollbackLimit,
     screen_rows: u16,
 ) -> Result<(), RuntimeError> {
-    match scrollback_bytes(limit, screen_rows) {
-        None => {
-            terminal.set_scrollback_bytes(Some(0))?;
-            terminal.set_scrollback_lines(None)?;
-        }
-        Some(bytes) => {
-            terminal.set_scrollback_lines(Some(
-                usize::try_from(limit.rows()).unwrap_or(usize::MAX),
-            ))?;
-            terminal.set_scrollback_bytes(Some(bytes))?;
-        }
+    let bytes = scrollback_bytes(limit, screen_rows);
+    if bytes == 0 {
+        terminal.set_scrollback_bytes(Some(0))?;
+        terminal.set_scrollback_lines(None)?;
+    } else {
+        terminal.set_scrollback_lines(Some(
+            usize::try_from(limit.rows()).unwrap_or(usize::MAX),
+        ))?;
+        terminal.set_scrollback_bytes(Some(bytes))?;
     }
     Ok(())
 }
 
-/// The byte allowance for a nonzero limit on a screen of `screen_rows`, or
-/// `None` for a zero limit.
-fn scrollback_bytes(limit: ScrollbackLimit, screen_rows: u16) -> Option<usize> {
+/// The byte allowance for `limit` on a screen of `screen_rows`: zero when
+/// either limit keeps no history, the explicit byte limit when one is set,
+/// and otherwise an allowance derived from the rows.
+fn scrollback_bytes(limit: ScrollbackLimit, screen_rows: u16) -> usize {
     let rows = usize::try_from(limit.rows()).unwrap_or(usize::MAX);
-    (rows > 0).then(|| {
-        rows.saturating_add(usize::from(screen_rows))
-            .saturating_mul(SCROLLBACK_BYTES_PER_ROW)
-            .saturating_add(SCROLLBACK_BYTES_HEADROOM)
-    })
+    if rows == 0 {
+        return 0;
+    }
+    limit.bytes().map_or_else(
+        || {
+            rows.saturating_add(usize::from(screen_rows))
+                .saturating_mul(SCROLLBACK_BYTES_PER_ROW)
+                .saturating_add(SCROLLBACK_BYTES_HEADROOM)
+        },
+        |bytes| usize::try_from(bytes).unwrap_or(usize::MAX),
+    )
 }
 
 fn snapshot_cursor(cursor: ghostty::Cursor) -> Option<Cursor> {

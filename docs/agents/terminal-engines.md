@@ -84,7 +84,7 @@ matching archive from another one instead of downloading; see
 [linked worktrees](development.md#linked-worktrees).
 The adapter disables Kitty graphics, the Glyph protocol, APC buffering, and
 scrollback compression, uses the portable CPU baseline, and limits history by
-the configured row count, as
+the configured rows and optional size, as
 [the huterm-ghostty crate](#the-huterm-ghostty-crate) describes.
 
 ## Runtime behavior
@@ -374,26 +374,32 @@ FFI type against `ghostty_type_json()`. After a pin bump, fix a failing contract
 test's assumption before changing engine code. Allocator vtable callbacks
 receive log2 alignments, not the byte counts `allocator.h` describes. Set
 history only through `apply_scrollback` in the engine, and set both Ghostty
-limits every time: the C default is a 10,000-byte budget. A nonzero row limit
-sets the line limit plus a byte cap of 4 KiB per history and screen row and
-4 MiB of headroom, which bounds pages that grow for styles, graphemes, and
-hyperlinks. The byte limit also counts the screen's pages and whole partly
-filled pages: without the headroom a 350-row limit on a 400 by 60 screen held
-only 297 rows, and without the screen rows it held 166 on a 400 by 1500 screen.
-`resize` raises the cap for the taller screen before resizing and settles it
-afterward, so a growing screen does not prune history the row limit keeps. Zero
-sets the byte limit to zero, because Ghostty never limits lines below one page
-of rows at the current width. Line pruning removes only whole historical pages,
-so history stays at or below the limit and less than a page under it; contract
-tests pin those bounds, eviction and viewport fixup when the limit drops, the
-primary-screen target while the alternate screen shows, reflow enforcement, and
-that RIS and ED 3 keep the limits. Only a lower limit can evict, so only it
-counts as a content change, even when nothing visible moved, because the
-alternate screen hides the primary history it prunes. A raised limit leaves the
-generation alone. Ghostty's render state rebuilds every row when the viewport
-pin moves, so eviction needs no forced snapshot rebuild. Set Ghostty device
-attributes explicitly: a declining callback still gets Ghostty's default VT220
-replies at this pin, as a `huterm-ghostty` contract test shows.
+limits every time: the C default is a 10,000-byte budget. Ghostty applies both
+together, and whichever is reached first prunes. A nonzero row limit sets the
+line limit, plus either the configured `scrollback_bytes` or, without one, a
+derived byte cap of 4 KiB per history and screen row and 4 MiB of headroom,
+which bounds pages that grow for styles, graphemes, and hyperlinks. The byte
+limit also counts the screen's pages and whole partly filled pages: without the
+headroom a 350-row limit on a 400 by 60 screen held only 297 rows, and without
+the screen rows it held 166 on a 400 by 1500 screen. `resize` raises a derived
+cap for the taller screen before resizing and settles it afterward, so a growing
+screen does not prune history the row limit keeps. It sets explicit bytes again
+after resizing too: Ghostty enforces bytes only when they are set or a page is
+allocated, so a widening reflow, whose rows cost more, otherwise left 713 rows
+where 2 MiB holds 591. Zero rows or zero bytes set the byte limit to zero,
+because Ghostty never limits lines below one page of rows at the current width.
+Line pruning removes only whole historical pages, so history stays at or below
+the limit and less than a page under it; contract tests pin those bounds,
+eviction and viewport fixup when the limit drops, the primary-screen target
+while the alternate screen shows, reflow enforcement, and that RIS and ED 3 keep
+the limits, and that the first-reached limit applies. Only fewer rows or a
+smaller byte allowance at the current height can evict, so only that counts as a
+content change, even when nothing visible moved, because the alternate screen
+hides the primary history it prunes. A raised limit leaves the generation alone.
+Ghostty's render state rebuilds every row when the viewport pin moves, so
+eviction needs no forced snapshot rebuild. Set Ghostty device attributes
+explicitly: a declining callback still gets Ghostty's default VT220 replies at
+this pin, as a `huterm-ghostty` contract test shows.
 
 ## Color and mouse state
 

@@ -423,47 +423,63 @@ attribution and palette import details.
 ## Scrollback
 
 Each terminal keeps the output that scrolls off its screen, up to a limit in
-screen rows. A long line that wraps across three rows counts as three.
+screen rows and, optionally, a limit on size. Whichever is reached first
+applies.
 
 ```toml
 [terminal]
-scrollback_rows = 10000 # 0 through 50000; 0 keeps no history
+scrollback_rows = 10000    # 0 through 50000; 0 keeps no history
+scrollback_bytes = "64MiB" # optional; up to "16GiB"; 0 keeps no history
 ```
 
-Huterm frees history a page at a time, oldest first, so the limit is a ceiling
-rather than an exact count:
+A long line that wraps across three rows counts as three rows. Huterm frees
+history a page at a time, oldest first, so both limits are ceilings rather
+than exact counts:
 
-- Once output passes the limit, a terminal keeps at most `scrollback_rows`
+- Once output passes the row limit, a terminal keeps at most `scrollback_rows`
   rows, and less than one page fewer. A page holds about 570 rows at 80
   columns and about 230 at 200 columns, and more on narrower terminals.
-- A nonzero limit smaller than one page keeps up to one page.
-- `0` keeps no history.
+- A nonzero row limit smaller than one page keeps up to one page.
+- `0` in either setting keeps no history, whatever the other says.
 
-The limit counts rows, not memory. A row's memory grows with the terminal's
-width and with the styles, combined characters, and links it holds. So that
-unusual output cannot grow a terminal without bound, Huterm also gives Ghostty
-an allocation limit of 4 KiB for each configured row and each visible row, plus
-4 MiB, about 45 MB at the default. It follows the window's height as it resizes.
-It is a heuristic, not a memory budget: Ghostty applies it a whole page at a
-time, raises it when the screen alone needs more, and covers only the terminal
-grid. Plain output up to about 400 columns wide stays within it, so the row
-limit applies. Wider rows, or rows with many distinct styles or combining
-characters, can reach it first and keep fewer rows than the limit. The
-50,000-row maximum keeps link detection quick: finding a link that starts above
-the visible rows reads history from its oldest row.
+`scrollback_bytes` takes a byte count or a string of digits and a unit, with
+at most one space between them: `B`, `KB`, `MB`, and `GB` count in powers of
+1000, and `KiB`, `MiB`, and `GiB` in powers of 1024. Units ignore case, so `b`
+also means bytes. Fractions such as `"1.5GiB"` are not accepted. The size
+covers the memory Ghostty allocates for the terminal's grid: the visible
+screen as well as its history, so a taller window leaves less of it for
+history. Ghostty always allows the visible screen plus one page, so a very
+small value still keeps up to about one page of history, or two on a short
+screen. It is a page-granular limit, not a memory budget: Ghostty checks it
+when it allocates a page and when the limit changes, and it does not count
+memory outside the grid.
 
-Reload applies a new limit to every open terminal, including tabs in the
-background and tabs whose shell has exited. Lowering it discards the oldest rows
-at once. Raising it lets history grow again but does not restore rows already
-discarded, and leaves views and selections as they were. The limit applies to
-the normal screen's history even while a full-screen program such as vim shows
-the alternate screen. Narrowing a window or enlarging its font rewraps long
-lines onto more rows, which can also discard the oldest rows. When history
-shrinks, a view scrolled into history stays on the same rows if they remain and
-otherwise moves to the oldest row left, and any selection is cleared. **Clear
-Scrollback** and **Reset Terminal** keep the limit.
+Without `scrollback_bytes`, Huterm still gives Ghostty a size allowance, so
+that unusual output cannot grow a terminal without bound: 4 KiB for each
+configured row and each visible row, plus 4 MiB, about 45 MB at the default.
+It follows the window's height as it resizes. Plain output up to about 400
+columns wide stays within it, so the row limit applies. Wider rows, or rows
+with many distinct styles or combining characters, can reach it first and keep
+fewer rows than the limit. Setting `scrollback_bytes` replaces this allowance,
+and the configured size stays fixed as the window resizes.
 
-This setting covers only the history a running terminal holds in memory.
+The 50,000-row maximum holds even under a large `scrollback_bytes`. It keeps
+link detection quick: finding a link that starts above the visible rows reads
+history from its oldest row.
+
+Reload applies new limits to every open terminal, including tabs in the
+background and tabs whose shell has exited. Lowering either limit discards the
+oldest rows at once. Raising one lets history grow again but does not restore
+rows already discarded, and leaves views and selections as they were. The
+limits apply to the normal screen's history even while a full-screen program
+such as vim shows the alternate screen. Narrowing a window or enlarging its
+font rewraps long lines onto more rows, and widening it makes each row larger,
+so either can also discard the oldest rows. When history shrinks, a view
+scrolled into history stays on the same rows if they remain and otherwise
+moves to the oldest row left, and any selection is cleared. **Clear
+Scrollback** and **Reset Terminal** keep the limits.
+
+These settings cover only the history a running terminal holds in memory.
 Huterm does not save history across restarts; saved history will have its own
 limit.
 
