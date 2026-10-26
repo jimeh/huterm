@@ -166,7 +166,7 @@ fn scroll_chunk(iteration: usize) -> String {
     chunk
 }
 
-/// Writes history until the byte budget stops `history_size` growing.
+/// Writes history until the row limit stops `history_size` growing.
 fn fill_scrollback(engine: &mut TerminalEngine) {
     let mut previous = 0;
     for batch in 0..1000 {
@@ -181,7 +181,7 @@ fn fill_scrollback(engine: &mut TerminalEngine) {
         }
         previous = history;
     }
-    panic!("scrollback never reached its byte budget");
+    panic!("scrollback never reached its row limit");
 }
 
 #[test]

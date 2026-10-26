@@ -512,6 +512,81 @@ pub struct TerminalCommand {
     pub cell_size: CellSize,
     /// Initial presentation published before the child process starts.
     pub presentation: TerminalPresentation,
+    /// History limit applied before the child process starts.
+    pub scrollback: ScrollbackLimit,
+}
+
+/// How much live history a terminal keeps above its screen: a row limit,
+/// counted in physical rows so a line that soft-wraps counts once for each
+/// screen row it fills, and an optional limit on the bytes the engine
+/// allocates for the screen and its history. Whichever is reached first
+/// applies.
+///
+/// Neither is a memory budget. The runtime frees history in blocks of rows,
+/// so retention can fall somewhat short of either limit; the configuration
+/// reference states the guarantees.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ScrollbackLimit {
+    rows: u32,
+    bytes: Option<u64>,
+}
+
+impl ScrollbackLimit {
+    /// Keeps no history.
+    pub const NONE: Self = Self::rows_only(0);
+    /// The default limit, 10,000 rows.
+    pub const DEFAULT: Self = Self::rows_only(10_000);
+    /// The largest row limit, 50,000 rows.
+    pub const MAX: Self = Self::rows_only(50_000);
+    /// The largest byte limit, 16 GiB.
+    pub const MAX_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
+    const fn rows_only(rows: u32) -> Self {
+        Self { rows, bytes: None }
+    }
+
+    /// A limit of `rows` with no byte limit, or `None` when it exceeds
+    /// [`Self::MAX`].
+    #[must_use]
+    pub const fn new(rows: u32) -> Option<Self> {
+        if rows > Self::MAX.rows {
+            None
+        } else {
+            Some(Self::rows_only(rows))
+        }
+    }
+
+    /// This limit with a byte limit as well, or `None` when `bytes` exceeds
+    /// [`Self::MAX_BYTES`].
+    #[must_use]
+    pub const fn with_bytes(self, bytes: u64) -> Option<Self> {
+        if bytes > Self::MAX_BYTES {
+            None
+        } else {
+            Some(Self {
+                rows: self.rows,
+                bytes: Some(bytes),
+            })
+        }
+    }
+
+    /// The limit in physical rows.
+    #[must_use]
+    pub const fn rows(self) -> u32 {
+        self.rows
+    }
+
+    /// The byte limit, when one is set.
+    #[must_use]
+    pub const fn bytes(self) -> Option<u64> {
+        self.bytes
+    }
+}
+
+impl Default for ScrollbackLimit {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// RGB color independent of a renderer.
@@ -849,6 +924,28 @@ pub enum LinkLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrollback_limits_accept_zero_through_the_maximum() {
+        assert_eq!(ScrollbackLimit::new(0), Some(ScrollbackLimit::NONE));
+        assert_eq!(ScrollbackLimit::new(50_000), Some(ScrollbackLimit::MAX));
+        assert_eq!(ScrollbackLimit::new(50_001), None);
+        assert_eq!(ScrollbackLimit::default().rows(), 10_000);
+        assert_eq!(ScrollbackLimit::default().bytes(), None);
+    }
+
+    #[test]
+    fn scrollback_byte_limits_accept_zero_through_16_gib() {
+        let rows = ScrollbackLimit::DEFAULT;
+        assert_eq!(
+            rows.with_bytes(0).and_then(ScrollbackLimit::bytes),
+            Some(0)
+        );
+        let largest = rows.with_bytes(16 << 30).unwrap();
+        assert_eq!(largest.bytes(), Some(16 << 30));
+        assert_eq!(largest.rows(), 10_000);
+        assert_eq!(rows.with_bytes((16 << 30) + 1), None);
+    }
 
     #[test]
     fn buffer_ranges_are_ordered_by_reading_position() {

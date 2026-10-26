@@ -22,6 +22,12 @@ term = "auto"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.
 close_on_exit = true
+# Live history per terminal in screen rows, 0 to 50000; 0 keeps none.
+# Reload applies it to open tabs; shrinking it discards the oldest rows.
+scrollback_rows = 10000
+# Optionally also limit history by size, such as "64MiB" or "50MB", up to
+# "16GiB". Whichever limit is reached first applies.
+# scrollback_bytes = "64MiB"
 # Snapshot pacing: display follows frame delivery; unlimited removes that cap.
 refresh = "display"
 # Open new tabs in a usable local directory reported by the active terminal.
@@ -373,6 +379,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
             link_modifiers: raw.terminal.link_modifiers,
             macos_option_as_alt: raw.terminal.macos_option_as_alt,
             right_click: raw.terminal.right_click,
+            scrollback: raw.terminal.scrollback()?,
         },
         font: FontConfig {
             family: raw.font.family,

@@ -5,7 +5,7 @@ use huterm_protocol::{ArgumentKind, Requirement, catalog};
 use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
 
-use crate::{LinkModifiers, RawConfig, ThemeFile};
+use crate::{LinkModifiers, RawConfig, ScrollbackSize, ThemeFile};
 
 pub const CONFIG_ASSET: &str = "huterm.schema.json";
 pub const THEME_ASSET: &str = "huterm-theme.schema.json";
@@ -21,6 +21,35 @@ impl JsonSchema for LinkModifiers {
             "description":"Modifiers joined with hyphens, without duplicates. Defaults to cmd on macOS and ctrl on Linux. macOS rejects ctrl; this platform restriction is checked at runtime."})
     }
 }
+impl JsonSchema for ScrollbackSize {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ScrollbackSize".into()
+    }
+    // `constrain_ranges` writes the property itself; a shared definition
+    // would be left unused.
+    fn inline_schema() -> bool {
+        true
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        Schema::try_from(scrollback_size_schema())
+            .expect("the scrollback size schema is an object")
+    }
+}
+
+/// One object for either form: `minimum` and `maximum` apply only to
+/// integers and `pattern` only to strings. JSON Schema patterns take no
+/// flags, so the unit spells out both cases. The 16 GiB bound on strings is
+/// checked at runtime.
+fn scrollback_size_schema() -> Value {
+    json!({
+        "type": ["integer", "string"],
+        "minimum": 0,
+        "maximum": huterm_protocol::ScrollbackLimit::MAX_BYTES,
+        "pattern": "^[0-9]+( ?([bB]|[kKmMgG][iI]?[bB]))?$",
+        "description": "Optional size limit on each terminal's screen and history: a byte count, or digits and a unit such as \"64MiB\" or \"50MB\" (B, KB, MB, GB in powers of 1000; KiB, MiB, GiB in powers of 1024; units ignore case, so b also means bytes), at most 16GiB. 0 keeps no history. Whichever of it and scrollback_rows is reached first applies. Ghostty frees history a page at a time and always allows the visible screen rounded up to whole pages plus one more, so a tiny value keeps up to about two pages. Reload applies it to open terminals."
+    })
+}
+
 fn modifier_combinations(
     output: &mut Vec<String>,
     prefix: &mut Vec<&'static str>,
@@ -275,6 +304,12 @@ fn generate<T: JsonSchema>() -> Result<Value, serde_json::Error> {
     )
 }
 fn constrain_ranges(definitions: &mut Value) {
+    // Replace the generated optional wrapper, whose null branch would
+    // otherwise survive cleaning.
+    definitions["RawTerminal"]["properties"]["scrollback_bytes"] =
+        scrollback_size_schema();
+    definitions["RawTerminal"]["properties"]["scrollback_rows"]["maximum"] =
+        json!(huterm_protocol::ScrollbackLimit::MAX.rows());
     definitions["PaletteConfig"]["properties"]["retain_query_seconds"]["maximum"] =
         json!(3600);
     for name in ["padding_x", "padding_y"] {

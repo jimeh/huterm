@@ -856,6 +856,7 @@ fn lifecycle_command() -> TerminalCommand {
             height: 16,
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
+        scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
     }
 }
 
@@ -1119,6 +1120,7 @@ fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
             height: 16,
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
+        scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
     };
     assert!(runtime.open_tab(None, None, &command, true).result.is_err());
     assert_eq!(runtime.mux.lock().unwrap().sessions(), []);
@@ -1182,6 +1184,7 @@ fn native_termination_drains_existing_terminals_and_rejects_queued_spawns() {
             height: 16,
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
+        scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
     };
     let (_, _, _, _, viewer) =
         runtime.open_tab(None, None, &command, true).result.unwrap();

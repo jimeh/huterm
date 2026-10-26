@@ -688,6 +688,207 @@ fn ed3_erases_scrollback_and_keeps_the_screen() {
     assert_eq!(text.as_bytes(), b"3\n4\n5");
 }
 
+/// A four-row terminal of `columns` limited only by physical scrollback
+/// rows; `None` keeps everything.
+fn row_limited(columns: u16, lines: Option<usize>) -> Terminal<Recorder> {
+    let mut terminal = Terminal::new(
+        Options {
+            columns,
+            rows: 4,
+            ..options()
+        },
+        Recorder::default(),
+    )
+    .unwrap();
+    // The C default is a 10,000-byte budget, which would bind first.
+    terminal.set_scrollback_bytes(None).unwrap();
+    terminal.set_scrollback_lines(lines).unwrap();
+    terminal
+}
+
+fn write_lines<H: Host>(terminal: &mut Terminal<H>, count: usize) {
+    for line in 0..count {
+        terminal
+            .write(format!("line {line}\r\n").as_bytes())
+            .unwrap();
+    }
+}
+
+/// Rows in one page of plain text at this width: under a one-row limit,
+/// history grows to a full page and then drops when that page is pruned.
+fn page_rows(columns: u16) -> usize {
+    let mut terminal = row_limited(columns, Some(1));
+    let mut peak = 0;
+    loop {
+        terminal.write(b"x\r\n").unwrap();
+        let history = terminal.scrollback_rows().unwrap();
+        if history < peak {
+            return peak;
+        }
+        peak = history;
+    }
+}
+
+/// Rows between the viewport's bottom and the live bottom.
+fn bottom_offset<H>(terminal: &Terminal<H>) -> u64 {
+    let bar = terminal.scrollbar().unwrap();
+    bar.total - bar.offset - bar.len
+}
+
+fn viewport_top_text<H>(terminal: &Terminal<H>) -> Vec<u8> {
+    terminal
+        .format_plain(Point::viewport(0, 0), Point::viewport(79, 0))
+        .unwrap()
+        .as_bytes()
+        .to_vec()
+}
+
+#[test]
+fn line_limits_prune_whole_pages_and_keep_at_least_one_page() {
+    let page = page_rows(80);
+    // The configuration reference quotes this figure.
+    assert!(
+        (500..=650).contains(&page),
+        "80-column page holds {page} rows"
+    );
+    let wide = page_rows(200);
+    assert!(
+        (200..=260).contains(&wide),
+        "200-column page holds {wide} rows"
+    );
+
+    // A larger limit is a ceiling, and whole-page pruning falls short of
+    // it by less than one page.
+    let limit = page * 3 + page / 2;
+    let mut terminal = row_limited(80, Some(limit));
+    let (mut peak, mut floor, mut previous) = (0, usize::MAX, 0);
+    for _ in 0..limit * 3 {
+        terminal.write(b"x\r\n").unwrap();
+        let history = terminal.scrollback_rows().unwrap();
+        peak = peak.max(history);
+        if history < previous || floor != usize::MAX {
+            floor = floor.min(history);
+        }
+        previous = history;
+    }
+    assert_eq!(peak, limit);
+    assert_eq!(floor, limit + 1 - page);
+    assert_eq!(terminal.scrollback_lines().unwrap(), Some(limit));
+    assert_eq!(terminal.scrollback_bytes().unwrap(), None);
+}
+
+#[test]
+fn the_first_reached_of_the_line_and_byte_limits_applies() {
+    let page = page_rows(80);
+    let peak = |terminal: &mut Terminal<Recorder>| {
+        let mut peak = 0;
+        for _ in 0..page * 8 {
+            terminal.write(b"x\r\n").unwrap();
+            peak = peak.max(terminal.scrollback_rows().unwrap());
+        }
+        peak
+    };
+
+    // Two mebibytes is about five pages, far below eight pages of lines.
+    let mut by_bytes = row_limited(80, Some(page * 8));
+    by_bytes.set_scrollback_bytes(Some(2 << 20)).unwrap();
+    let kept = peak(&mut by_bytes);
+    assert!(kept < page * 6, "kept {kept} rows under the byte limit");
+
+    // A byte limit that is never reached leaves the line limit to bind.
+    let mut by_lines = row_limited(80, Some(page * 2));
+    by_lines.set_scrollback_bytes(Some(1 << 30)).unwrap();
+    assert_eq!(peak(&mut by_lines), page * 2);
+}
+
+#[test]
+fn lowering_the_line_limit_evicts_at_once_and_fixes_up_the_viewport() {
+    let page = page_rows(80);
+    let mut terminal = row_limited(80, None);
+    write_lines(&mut terminal, page * 4);
+    assert!(terminal.scrollback_rows().unwrap() > page * 3);
+    terminal
+        .scroll(Scroll::Delta(-isize::try_from(page).unwrap()))
+        .unwrap();
+    let shown = viewport_top_text(&terminal);
+    assert_eq!(bottom_offset(&terminal), page as u64);
+
+    // The viewport's page survives: it keeps its rows and its distance
+    // from live output.
+    terminal.set_scrollback_lines(Some(page * 2)).unwrap();
+    let history = terminal.scrollback_rows().unwrap();
+    assert!(history <= page * 2 && history > page, "history {history}");
+    assert_eq!(bottom_offset(&terminal), page as u64);
+    assert_eq!(viewport_top_text(&terminal), shown);
+
+    // Scrolled to the top, the viewport's page is evicted and the
+    // viewport moves to the new top.
+    terminal.scroll(Scroll::Top).unwrap();
+    terminal.set_scrollback_lines(Some(1)).unwrap();
+    let history = terminal.scrollback_rows().unwrap();
+    assert!(history <= page, "history {history}");
+    assert_eq!(bottom_offset(&terminal), history as u64);
+}
+
+#[test]
+fn zero_bytes_disables_scrollback_until_the_byte_limit_is_lifted() {
+    let mut terminal = row_limited(80, Some(1000));
+    write_lines(&mut terminal, 20);
+    assert_eq!(terminal.scrollback_rows().unwrap(), 17);
+
+    terminal.set_scrollback_bytes(Some(0)).unwrap();
+    assert_eq!(terminal.scrollback_rows().unwrap(), 0);
+    write_lines(&mut terminal, 20);
+    assert_eq!(terminal.scrollback_rows().unwrap(), 0);
+
+    terminal.set_scrollback_bytes(None).unwrap();
+    write_lines(&mut terminal, 20);
+    assert_eq!(terminal.scrollback_rows().unwrap(), 20);
+}
+
+#[test]
+fn line_limits_reach_the_primary_screen_and_survive_resets() {
+    let page = page_rows(80);
+    let mut terminal = row_limited(80, None);
+    write_lines(&mut terminal, page * 3);
+
+    // Lowered on the alternate screen, the limit prunes primary history.
+    terminal.write(b"\x1b[?1049h").unwrap();
+    assert_eq!(terminal.scrollback_rows().unwrap(), 0);
+    terminal.set_scrollback_lines(Some(page)).unwrap();
+    terminal.write(b"\x1b[?1049l").unwrap();
+    assert!(terminal.scrollback_rows().unwrap() <= page);
+
+    // RIS and ED 3 keep both limits.
+    terminal.reset().unwrap();
+    terminal.write(b"\x1b[3J").unwrap();
+    assert_eq!(terminal.scrollback_lines().unwrap(), Some(page));
+    assert_eq!(terminal.scrollback_bytes().unwrap(), None);
+    write_lines(&mut terminal, page * 3);
+    assert!(terminal.scrollback_rows().unwrap() <= page);
+}
+
+#[test]
+fn narrowing_reflows_history_within_the_line_limit() {
+    let page = page_rows(80);
+    let limit = page * 2;
+    let mut terminal = row_limited(80, Some(limit));
+    let line = format!("{}\r\n", "w".repeat(60));
+    for _ in 0..limit {
+        terminal.write(line.as_bytes()).unwrap();
+    }
+    assert!(terminal.scrollback_rows().unwrap() <= limit);
+
+    // Each line now wraps onto two rows; the oldest pages go.
+    terminal.resize(40, 4, 9, 17).unwrap();
+    let history = terminal.scrollback_rows().unwrap();
+    assert!(
+        history <= limit.max(page_rows(40)),
+        "history {history} after narrowing"
+    );
+    assert!(history > 0);
+}
+
 #[test]
 fn scrollbar_offsets_are_top_based_rows() {
     let mut terminal = terminal();

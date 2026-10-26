@@ -8,8 +8,9 @@ mod row_matcher;
 use crate::host_effects::HostEffectSink;
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
-    BufferRange, CellSize, GridSize, ScrollCommand, TerminalDirectory,
-    TerminalId, TerminalModes, TerminalPresentation, TerminalSnapshot,
+    BufferRange, CellSize, GridSize, ScrollCommand, ScrollbackLimit,
+    TerminalDirectory, TerminalId, TerminalModes, TerminalPresentation,
+    TerminalSnapshot,
 };
 
 const METADATA_BYTE_LIMIT: usize = 4096;
@@ -230,13 +231,12 @@ impl TerminalEngine {
         self.inner.last_snapshot_stats()
     }
 
-    /// Replaces the 16 MiB scrollback budget so tests can reach it quickly.
-    #[cfg(test)]
-    pub(crate) fn set_scrollback_limit(
+    /// Applies a history limit and returns whether it evicted visible rows.
+    pub(crate) fn set_scrollback(
         &mut self,
-        bytes: usize,
-    ) -> Result<(), RuntimeError> {
-        self.inner.set_scrollback_limit(bytes)
+        limit: ScrollbackLimit,
+    ) -> Result<bool, RuntimeError> {
+        self.inner.set_scrollback(limit)
     }
     pub(crate) fn lookup_link(
         &self,
@@ -263,6 +263,9 @@ mod directory_tests;
 
 #[cfg(test)]
 mod clipboard_tests;
+
+#[cfg(test)]
+mod scrollback_tests;
 
 #[cfg(test)]
 mod benchmark;

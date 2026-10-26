@@ -102,6 +102,7 @@ fn height_resize_round_trips_keep_the_top_visible_row_while_scrolled() {
             grid_size: GridSize::clamped(20, 10),
             cell_size: cell,
             presentation: huterm_protocol::TerminalPresentation::default(),
+            scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
         },
     ).unwrap();
     let client = runtime

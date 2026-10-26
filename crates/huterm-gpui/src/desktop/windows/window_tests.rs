@@ -40,6 +40,7 @@ fn fixture(script: &str) -> TerminalCommand {
             height: 32,
         },
         presentation: TerminalPresentation::default(),
+        scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
     }
 }
 
@@ -1599,6 +1600,123 @@ fn a_replacement_started_before_a_theme_change_takes_the_current_colors(
     harness.wait_for("the child to receive the new foreground", |cx| {
         received(cx, window, tab, "ASKED")
             .is_some_and(|hex| hex.contains(&hex_of("rgb:1212/3434/5656")))
+    });
+}
+
+/// A child that prints 3,000 numbered rows, then `READY`, and waits.
+const PRINTS_HISTORY: &str = "i=0; while [ $i -lt 3000 ]; do \
+     printf 'row %s\n' $i; i=$((i+1)); done; printf READY; read line";
+
+fn scrollback(rows: u32) -> huterm_protocol::ScrollbackLimit {
+    huterm_protocol::ScrollbackLimit::new(rows).unwrap()
+}
+
+#[gpui::test]
+fn an_installed_view_applies_the_configured_limit_to_an_older_terminal(
+    cx: &mut TestAppContext,
+) {
+    // The terminal starts under the default limit, as one opened before a
+    // reload or by another client would.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.terminal.scrollback = scrollback(1000);
+    });
+    let tab = harness.open_tab(PRINTS_HISTORY);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    harness.wait_canonical(tab, "the configured limit", |snapshot| {
+        snapshot.history_size <= 1000
+    });
+}
+
+#[gpui::test]
+fn a_reload_shrinks_the_history_of_a_hidden_tab(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let shown = harness.open_tab(ECHO);
+    let hidden = harness.open_tab(PRINTS_HISTORY);
+    let window = harness.attach_window();
+    harness.activate(window, shown);
+    harness.wait_for("the window to install both tabs", |cx| {
+        terminal(cx, window, hidden).is_some()
+    });
+    harness.wait_canonical(hidden, "the history to print", |snapshot| {
+        snapshot.history_size > 2000
+    });
+    // As a reload does for every tab in the window, shown or not.
+    let reloaded = config::TerminalConfig {
+        scrollback: scrollback(1000),
+        ..config::TerminalConfig::default()
+    };
+    harness.cx.update(|cx| {
+        terminal(cx, window, hidden)
+            .unwrap()
+            .update(cx, |view, cx| {
+                assert!(!view.visible);
+                view.reload_terminal_config(reloaded, cx);
+            });
+    });
+    harness.wait_canonical(hidden, "the reloaded limit", |snapshot| {
+        snapshot.history_size <= 1000
+    });
+}
+
+#[gpui::test]
+fn a_replacement_started_before_a_scrollback_change_takes_the_current_limit(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(PRINTS_HISTORY);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Subscribe);
+    harness.revoke(window);
+    harness.wait_for("the replacement to start", |_| {
+        hooks.held(Stage::Subscribe) == 1
+    });
+    // As a reload does: the revoked viewer refuses the new limit.
+    harness.cx.update(|cx| {
+        terminal(cx, window, tab).unwrap().update(cx, |view, _| {
+            view.scrollback = scrollback(1000);
+            view.publish_scrollback();
+        });
+    });
+    hooks.release(Stage::Subscribe);
+    harness.wait_for("the replacement", |cx| {
+        replaced(cx, window, tab, 1).is_some()
+    });
+    harness.wait_canonical(tab, "the current limit", |snapshot| {
+        snapshot.history_size <= 1000
+    });
+}
+
+#[gpui::test]
+fn a_limit_refused_before_a_replacement_starts_reaches_the_replacement(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(PRINTS_HISTORY);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    harness.hold_replacements(window, true);
+    harness.revoke(window);
+    // A reload reaches the revoked viewer before its replacement starts,
+    // so the replacement starts with the new limit already in the view.
+    harness.cx.update(|cx| {
+        terminal(cx, window, tab).unwrap().update(cx, |view, _| {
+            view.scrollback = scrollback(1000);
+            view.publish_scrollback();
+        });
+    });
+    harness.hold_replacements(window, false);
+    harness.wait_for("the replacement", |cx| {
+        replaced(cx, window, tab, 1).is_some()
+    });
+    harness.wait_canonical(tab, "the refused limit", |snapshot| {
+        snapshot.history_size <= 1000
     });
 }
 

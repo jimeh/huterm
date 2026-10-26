@@ -87,6 +87,7 @@ impl ViewHarness {
                 grid_size: GridSize::clamped(INITIAL_COLUMNS, INITIAL_ROWS),
                 cell_size: CELL,
                 presentation: TerminalPresentation::default(),
+                scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
             },
         )
         .unwrap();

@@ -83,8 +83,9 @@ version data. In a repository with several checkouts, preparation reuses a
 matching archive from another one instead of downloading; see
 [linked worktrees](development.md#linked-worktrees).
 The adapter disables Kitty graphics, the Glyph protocol, APC buffering, and
-scrollback compression, uses the
-portable CPU baseline, and retains a 16 MiB scrollback byte budget.
+scrollback compression, uses the portable CPU baseline, and limits history by
+the configured rows and optional size, as
+[the huterm-ghostty crate](#the-huterm-ghostty-crate) describes.
 
 ## Runtime behavior
 
@@ -114,7 +115,9 @@ They occur for every cell of a token that extends above the viewport, and once
 when a token reaches the viewport's top-left cell and the row above must be
 checked for a soft wrap. That check reads the row above's own wrap flag: the
 next row's continuation flag can disagree with it after line insertion or
-deletion.
+deletion. The walks are why `ScrollbackLimit::MAX` is 50,000 rows: the
+`scan-limit-above-viewport` fixture's p95 was 1.9 ms locally with 50,000 rows
+of history and 4.7 ms with 100,000, against the benchmark's 5 ms gate.
 
 Core seeds foreground, background, cursor, palette, grid, and physical cell size
 before spawning the child. It answers native OSC 4,
@@ -173,8 +176,9 @@ The engine benchmark reports the fixed Ghostty revision, p50/p95 elapsed
 processing and snapshot times, row reuse, throughput, and retained history.
 The scroll and link gates keep their existing thresholds and queue limits.
 The link benchmark runs its viewport, above-viewport, long-line, and scrolled
-fixtures with empty and saturated scrollback so their elapsed times can be
-compared.
+fixtures with empty scrollback and with scrollback saturated at the largest
+limit, so their elapsed times can be compared. Raising that limit lengthens the
+above-viewport fixtures' walks.
 Elapsed time includes scheduler preemption; Xvfb snapshot evidence does not
 prove continuous presentation.
 
@@ -364,15 +368,41 @@ beside the source directory change. `ghostty:prepare` writes that stamp,
 verifies. The build fails, even before reusing a cached archive, unless the
 stamp matches the manifest. A source build also reads the patch series beside
 the stamp, without a rerun trigger; see [native patches](#native-patches).
-`scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract
-tests pin each C behavior the engine relies on, and the ABI test checks every
-emitted FFI type against `ghostty_type_json()`. After a pin bump, fix a failing
-contract test's assumption before changing engine code. Allocator vtable
-callbacks receive log2 alignments, not the byte counts `allocator.h` describes.
-Set history through Ghostty's scrollback byte limit; the engine retains a
-16 MiB budget and reports actual retained rows. Set Ghostty device attributes
-explicitly: a declining callback still gets Ghostty's default VT220 replies at
-this pin, as a `huterm-ghostty` contract test shows.
+`scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract tests
+pin each C behavior the engine relies on, and the ABI test checks every emitted
+FFI type against `ghostty_type_json()`. After a pin bump, fix a failing contract
+test's assumption before changing engine code. Allocator vtable callbacks
+receive log2 alignments, not the byte counts `allocator.h` describes. Set
+history only through `apply_scrollback` in the engine, and set both Ghostty
+limits every time: the C default is a 10,000-byte budget. Ghostty applies both
+together, and whichever is reached first prunes. A nonzero row limit sets the
+line limit, plus either the configured `scrollback_bytes` or, without one, a
+derived byte cap of 4 KiB per history and screen row and 4 MiB of headroom,
+which bounds pages that grow for styles, graphemes, and hyperlinks. The byte
+limit also counts the screen's pages and whole partly filled pages: without the
+headroom a 350-row limit on a 400 by 60 screen held only 297 rows, and without
+the screen rows it held 166 on a 400 by 1500 screen. `resize` raises a derived
+cap for the taller screen before resizing and settles it afterward, so a growing
+screen does not prune history the row limit keeps. It sets explicit bytes again
+after resizing too: Ghostty enforces bytes only when they are set or a page is
+allocated, so a widening reflow, whose rows cost more, otherwise left 713 rows
+where 2 MiB holds 591. Zero rows or zero bytes set the byte limit to zero,
+because Ghostty never limits lines below one page of rows at the current width.
+Line pruning removes only whole historical pages, so history stays at or below
+the limit and less than a page under it; contract tests pin those bounds,
+eviction and viewport fixup when the limit drops, the primary-screen target
+while the alternate screen shows, reflow enforcement, and that RIS and ED 3 keep
+the limits, and that the first-reached limit applies. A limit change counts as a
+content change only when it evicts rows the primary screen shows, measured as
+retained history before and after. Inferring eviction from the limits is wrong:
+Ghostty prunes for bytes only when it allocates a page, so a page that grew for
+combining marks can exceed the byte limit, and even raising it then evicts.
+While the alternate screen shows, pruning primary history changes nothing on
+screen, and leaving it is output that advances the generation. Ghostty's render
+state rebuilds every row when the viewport pin moves, so eviction needs no
+forced snapshot rebuild. Set Ghostty device attributes explicitly: a declining
+callback still gets Ghostty's default VT220 replies at this pin, as a
+`huterm-ghostty` contract test shows.
 
 ## Color and mouse state
 

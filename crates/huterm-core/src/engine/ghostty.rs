@@ -17,9 +17,9 @@ use huterm_ghostty::{
 use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellSize, CellStyle, CellText,
     Cursor, CursorShape, GridSize, LinkLookup, MouseEncoding, MouseTracking,
-    Rgb, ScrollCommand, TerminalAppearance, TerminalId, TerminalModes,
-    TerminalPresentation, TerminalRow, TerminalSnapshot, Viewport,
-    appearance_for_background,
+    Rgb, ScrollCommand, ScrollbackLimit, TerminalAppearance, TerminalId,
+    TerminalModes, TerminalPresentation, TerminalRow, TerminalSnapshot,
+    Viewport, appearance_for_background,
 };
 
 use super::escape_hint::EscapeHint;
@@ -31,8 +31,15 @@ use crate::host_effects::{
 };
 use crate::terminal::RuntimeError;
 
-/// History budget; Ghostty prunes whole pages, so retention is approximate.
-const SCROLLBACK_BYTES: usize = 16 * 1024 * 1024;
+/// Page allocation allowed, without an explicit byte limit, per configured
+/// history row and per screen row, since Ghostty's byte limit counts the
+/// screen's pages too. Pages that grow for styles, graphemes, and
+/// hyperlinks are bounded only by bytes; plain rows up to about 400 columns
+/// fit, so the row limit applies first for them.
+const SCROLLBACK_BYTES_PER_ROW: usize = 4 * 1024;
+/// Page allocation allowed beyond the rows, for whole partly filled pages,
+/// which would otherwise cut small limits on wide screens short.
+const SCROLLBACK_BYTES_HEADROOM: usize = 4 * 1024 * 1024;
 /// ED 3: erase scrollback only.
 const CLEAR_HISTORY: &[u8] = b"\x1b[3J";
 /// Longest grapheme cluster a link scan reads from one cell.
@@ -227,6 +234,7 @@ pub(super) struct TerminalEngine {
     size: GridSize,
     cell: CellSize,
     presentation: TerminalPresentation,
+    scrollback: ScrollbackLimit,
     generation: u64,
     modes: StdCell<Option<(u64, TerminalModes)>>,
     hint: EscapeHint,
@@ -268,7 +276,7 @@ impl TerminalEngine {
         };
         let mut terminal =
             ghostty::Terminal::new(options, EngineHost::default())?;
-        terminal.set_scrollback_bytes(Some(SCROLLBACK_BYTES))?;
+        apply_scrollback(&mut terminal, ScrollbackLimit::DEFAULT, size.rows)?;
         terminal.disable_apc_protocols()?;
         // A larger Kitty write could never fit the terminal's host-effect
         // budget, so Ghostty answers it with EFBIG before asking the host.
@@ -282,6 +290,7 @@ impl TerminalEngine {
             size,
             cell,
             presentation,
+            scrollback: ScrollbackLimit::DEFAULT,
             generation: 0,
             modes: StdCell::new(None),
             hint: EscapeHint::Ground,
@@ -391,12 +400,27 @@ impl TerminalEngine {
         cell: CellSize,
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
         self.generation = self.generation.saturating_add(1);
+        // A derived byte allowance follows the screen's height. During the
+        // resize it allows for the taller of both screens, so neither prunes
+        // history the row limit would keep. Ghostty enforces bytes only when
+        // they are set or a page is allocated, not after a reflow, so the
+        // allowance is set again afterward, explicit or not.
+        let allowance =
+            |screen_rows| scrollback_bytes(self.scrollback, screen_rows);
+        let during = allowance(self.size.rows.max(size.rows));
+        if during > 0 {
+            self.terminal.set_scrollback_bytes(Some(during))?;
+        }
         self.terminal.resize(
             size.columns,
             size.rows,
             u32::from(cell.width),
             u32::from(cell.height),
         )?;
+        let after = allowance(size.rows);
+        if after > 0 {
+            self.terminal.set_scrollback_bytes(Some(after))?;
+        }
         self.size = size;
         self.cell = cell;
         self.drain_effects()
@@ -415,12 +439,30 @@ impl TerminalEngine {
         self.stats
     }
 
-    #[cfg(test)]
-    pub(super) fn set_scrollback_limit(
+    /// Applies a history limit, which evicts the oldest rows at once when
+    /// history no longer fits. Returns whether it evicted rows that viewers
+    /// can see. Eviction is measured, not inferred from the limits: Ghostty
+    /// can evict even under a higher byte limit, because pages that grew
+    /// for graphemes or styles may already exceed it. Only the primary
+    /// screen has history, and pruning it while the alternate screen shows
+    /// changes nothing on screen; leaving the alternate screen is output,
+    /// which advances the generation anyway.
+    pub(super) fn set_scrollback(
         &mut self,
-        bytes: usize,
-    ) -> Result<(), RuntimeError> {
-        Ok(self.terminal.set_scrollback_bytes(Some(bytes))?)
+        limit: ScrollbackLimit,
+    ) -> Result<bool, RuntimeError> {
+        if limit == self.scrollback {
+            return Ok(false);
+        }
+        let primary = self.terminal.screen()? == Screen::Primary;
+        let before = self.terminal.scrollback_rows()?;
+        apply_scrollback(&mut self.terminal, limit, self.size.rows)?;
+        self.scrollback = limit;
+        let evicted = primary && self.terminal.scrollback_rows()? < before;
+        if evicted {
+            self.generation = self.generation.saturating_add(1);
+        }
+        Ok(evicted)
     }
 
     fn drain_effects(&mut self) -> Result<Vec<EngineEffect>, RuntimeError> {
@@ -678,6 +720,46 @@ impl TerminalEngine {
         let text = self.terminal.format_plain(start, end)?;
         Ok(Some(String::from_utf8_lossy(text.as_bytes()).into_owned()))
     }
+}
+
+/// Maps a history limit onto Ghostty's line and byte limits, which apply
+/// together: whichever is reached first prunes. Ghostty keeps at least one
+/// page of rows under any line limit, so only a zero byte limit keeps no
+/// history.
+fn apply_scrollback(
+    terminal: &mut ghostty::Terminal<EngineHost>,
+    limit: ScrollbackLimit,
+    screen_rows: u16,
+) -> Result<(), RuntimeError> {
+    let bytes = scrollback_bytes(limit, screen_rows);
+    if bytes == 0 {
+        terminal.set_scrollback_bytes(Some(0))?;
+        terminal.set_scrollback_lines(None)?;
+    } else {
+        terminal.set_scrollback_lines(Some(
+            usize::try_from(limit.rows()).unwrap_or(usize::MAX),
+        ))?;
+        terminal.set_scrollback_bytes(Some(bytes))?;
+    }
+    Ok(())
+}
+
+/// The byte allowance for `limit` on a screen of `screen_rows`: zero when
+/// either limit keeps no history, the explicit byte limit when one is set,
+/// and otherwise an allowance derived from the rows.
+fn scrollback_bytes(limit: ScrollbackLimit, screen_rows: u16) -> usize {
+    let rows = usize::try_from(limit.rows()).unwrap_or(usize::MAX);
+    if rows == 0 {
+        return 0;
+    }
+    limit.bytes().map_or_else(
+        || {
+            rows.saturating_add(usize::from(screen_rows))
+                .saturating_mul(SCROLLBACK_BYTES_PER_ROW)
+                .saturating_add(SCROLLBACK_BYTES_HEADROOM)
+        },
+        |bytes| usize::try_from(bytes).unwrap_or(usize::MAX),
+    )
 }
 
 fn snapshot_cursor(cursor: ghostty::Cursor) -> Option<Cursor> {
