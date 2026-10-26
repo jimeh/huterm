@@ -5,7 +5,7 @@ use gpui::{Application, AssetSource, QuitMode, SharedString};
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
 
-const ASSETS: [(&str, &[u8]); 23] = [
+const ASSETS: [(&str, &[u8]); 25] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -76,6 +76,14 @@ const ASSETS: [(&str, &[u8]); 23] = [
         include_bytes!("../assets/icons/delete.svg"),
     ),
     ("icons/link.svg", include_bytes!("../assets/icons/link.svg")),
+    (
+        "icons/maximize-2.svg",
+        include_bytes!("../assets/icons/maximize-2.svg"),
+    ),
+    (
+        "icons/minimize-2.svg",
+        include_bytes!("../assets/icons/minimize-2.svg"),
+    ),
     (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
 
@@ -103,11 +111,13 @@ pub(crate) enum Icon {
     ArrowRightToLine,
     Delete,
     Link,
+    Maximize,
+    Minimize,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 22] = [
+    const ALL: [Self; 24] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -130,6 +140,8 @@ impl Icon {
         Self::ArrowRightToLine,
         Self::Delete,
         Self::Link,
+        Self::Maximize,
+        Self::Minimize,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -156,6 +168,8 @@ impl Icon {
             Self::ArrowRightToLine => "icons/arrow-right-to-line.svg",
             Self::Delete => "icons/delete.svg",
             Self::Link => "icons/link.svg",
+            Self::Maximize => "icons/maximize-2.svg",
+            Self::Minimize => "icons/minimize-2.svg",
         }
     }
 }

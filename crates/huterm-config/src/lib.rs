@@ -466,6 +466,32 @@ pub enum TabDirectory {
     Short,
 }
 
+/// Who owns a pane's zoom.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum PaneZoomScope {
+    /// Each window zooms panes on its own.
+    #[default]
+    View,
+    /// The tab owns the zoom: every window set to `shared` shows the same
+    /// zoomed pane, and windows set to `view` ignore it.
+    Shared,
+}
+
+/// Split pane behavior.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct PanesConfig {
+    /// Who owns a pane's zoom: `view` or `shared`.
+    pub zoom: PaneZoomScope,
+}
+
 /// Where the command palette sits within its window.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
@@ -895,6 +921,8 @@ pub struct RawConfig {
     pub updates: UpdateConfig,
     #[serde(default)]
     pub palette: PaletteConfig,
+    #[serde(default)]
+    pub panes: PanesConfig,
     #[serde(default)]
     pub theme: ThemeDefinition,
     #[serde(default)]

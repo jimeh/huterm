@@ -1,7 +1,7 @@
 # Desktop input
 
-Rules for keyboard, mouse, scrolling, selection, tab dragging, links, and file
-drops in `huterm-gpui`. Smoke fixtures that exercise this input are in
+Rules for keyboard, mouse, scrolling, selection, tab dragging, panes, links,
+and file drops in `huterm-gpui`. Smoke fixtures that exercise this input are in
 [desktop smokes](desktop-smokes.md).
 
 ## Keyboard and text input
@@ -151,6 +151,38 @@ worker and reorder retained views without selecting or recreating them.
 Keep the sidebar resize handle entirely inside sidebar bounds. A grab zone
 straddling the terminal can start terminal selection or application mouse input
 before resize capture consumes release, leaving that terminal gesture stuck.
+
+## Panes and divider drags
+
+A press in a pane focuses it from a capture listener on the pane's element,
+because the terminal's own press handling calls `prevent_default`, which stops
+GPUI's focus tracking. A divider's grab zone is 8 points across its line,
+clipped to its split. Each zone is an occluding element with the resize
+cursor that claims a left press itself: occlusion keeps the panes beneath
+from seeing it, so no terminal starts a selection or reports the press, and
+overlays drawn later (toasts, a revealed fullscreen tab bar, menus and
+dialogs) keep theirs. A window-level capture listener would claim presses
+those overlays own. A pane's scroll pill is drawn inside its terminal, below
+the zones, so a zone wins where a pane is narrower than the pill. The
+window's capture listeners own motion and release once a drag starts.
+
+A drag holds its boundary, the sum of the weights before it, and applies it
+over the split as other changes leave it, so another window's resize of a
+sibling boundary carries through. Dragging runs the preview through the
+normal geometry path, so both shells reflow, clamped so every pane keeps 4
+columns by 2 rows in this window. Release commits once with `resize_split`.
+One queue per window runs commits in order, so two resize commands cannot
+land out of order. The view keeps showing a commit's weights until the
+projection reaches it, so the divider never snaps back; a rejected commit
+drops them silently. Escape, blur, switching tabs, a zoom change from either
+scope, a close request, and a layout change that removes the split or
+changes its children cancel the drag. Resize commands commit the same way.
+
+Zoom hides the tab's other panes as a hidden tab hides its view: `hide`
+releases accepted gestures and finalizes the selection, and the hidden panes
+keep requesting their split geometry, so zoom resizes only the zoomed pane.
+Every path that sets pane visibility, tab selection and the Quake visibility
+sync alike, asks `zoom_shows`.
 
 ## Links and file drops
 

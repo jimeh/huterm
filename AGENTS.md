@@ -30,7 +30,7 @@ its guide; most of its rules record a failure that already happened once.
 | --- | --- |
 | PTY I/O, process info, runtime workers, shutdown, Mux, IDs, terminal lifecycle, or a new binary that hosts terminals | [Core runtime](docs/agents/core-runtime.md) |
 | GPUI threading, the window model, frame scheduling, close and Quit, rendering, keymap and menus, overlays, configuration, schemas | [Desktop client](docs/agents/desktop-client.md) |
-| Keyboard and text input, mouse reporting, scrolling, selection, tab dragging, links, file drops | [Desktop input](docs/agents/desktop-input.md) |
+| Keyboard and text input, mouse reporting, scrolling, selection, tab dragging, pane focus and divider drags, links, file drops | [Desktop input](docs/agents/desktop-input.md) |
 | Fullscreen, Quake windows, the title row, window decorations, native window handles | [Window presentation](docs/agents/window-presentation.md) |
 | Smoke fixtures, desktop harnesses, benchmarks | [Desktop smokes](docs/agents/desktop-smokes.md) |
 | The Ghostty pin, `huterm-ghostty`, native builds, OSC color and mouse state | [Ghostty engine](docs/agents/terminal-engines.md) |

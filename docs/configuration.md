@@ -81,6 +81,22 @@ exited panes for their history. An exited pane allows selection, copy,
 scrolling, links, and resizing, but sends no input. Reloading this setting
 affects only later exits.
 
+## Panes
+
+A tab splits into panes, each with its own shell; the split, focus, resize,
+and zoom commands are in [Commands and keybindings](keybindings.md). Drag a
+divider to resize the panes beside it. Shells reflow while you drag, and
+other windows show the new sizes once you release.
+
+Zooming shows one pane across its tab. By default each window zooms on its
+own. With `zoom = "shared"` the tab owns the zoom, so every window shows the
+same zoomed pane:
+
+```toml
+[panes]
+zoom = "view" # view or shared
+```
+
 ## Tab bar
 
 Tabs can sit at the top, bottom, left, or right of the window, or in the title

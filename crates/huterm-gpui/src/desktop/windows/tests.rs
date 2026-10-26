@@ -2635,3 +2635,25 @@ fn new_tab_directory_inheritance_accepts_only_local_usable_directories() {
     std::fs::remove_dir(&root).unwrap();
     assert!(!usable_launch_directory(&captured));
 }
+
+#[test]
+fn a_resize_keeps_each_panes_minimum_or_does_not_shrink_one_below_it() {
+    let pane = |value| PaneId::new(value);
+    let grid = |columns, rows| GridSize { columns, rows };
+    // The second pane was already narrower than the minimum.
+    let before = [(pane(1), grid(40, 20)), (pane(2), grid(3, 20))];
+    // A row move that leaves its columns alone fits.
+    assert!(keeps_minimum(
+        &before,
+        &[(pane(1), grid(40, 10)), (pane(2), grid(3, 30))]
+    ));
+    // Narrowing it further, or taking the first under the minimum, does not.
+    assert!(!keeps_minimum(
+        &before,
+        &[(pane(1), grid(41, 20)), (pane(2), grid(2, 20))]
+    ));
+    assert!(!keeps_minimum(
+        &before,
+        &[(pane(1), grid(3, 20)), (pane(2), grid(40, 20))]
+    ));
+}

@@ -172,6 +172,8 @@ imply the `Palette` context, and dialog, menu, and notice commands imply
 | `close_pane` | Window | Closes the focused pane, asking first when it runs a job. Closing a tab's only pane closes the tab. |
 | `focus_next_pane` / `focus_previous_pane` | Window | Focuses panes in layout order, wrapping. |
 | `focus_pane_left` / `focus_pane_right` / `focus_pane_up` / `focus_pane_down` | Window | Focuses the adjacent pane in that direction; does nothing at the tab's edge. |
+| `resize_pane_left` / `resize_pane_right` / `resize_pane_up` / `resize_pane_down` | Window | Optional `amount` in cells (1 to 100), default 5. Moves the focused pane's edge that way, keeping every pane at least 4 columns by 2 rows; does nothing without a neighbour on that side. |
+| `toggle_pane_zoom` | Window | Shows the focused pane across its tab, or every pane again. Focus, split, and resize commands unzoom first. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enters native mode, or exits any active fullscreen mode. |
 | `toggle_non_native_fullscreen` | Window | macOS only. Enters current-Space mode, or exits any active fullscreen mode. |
@@ -249,6 +251,8 @@ menus, or your own bindings.
 | `split_right` / `split_down` | `cmd-d` / `cmd-shift-d` | `ctrl-shift-o` / `ctrl-shift-e` |
 | `focus_next_pane` / `focus_previous_pane` | `cmd-]` / `cmd-[` | `ctrl-super-]` / `ctrl-super-[` |
 | `focus_pane_left` and the other directions | `cmd-alt-` plus an arrow | `ctrl-alt-` plus an arrow |
+| `resize_pane_left` and the other directions | `cmd-ctrl-` plus an arrow | `ctrl-super-shift-` plus an arrow |
+| `toggle_pane_zoom` | `cmd-shift-enter` | `ctrl-shift-enter` |
 | `close_window` | `cmd-shift-w` | `ctrl-shift-q` |
 | `next_tab` / `previous_tab` | `ctrl-tab` / `ctrl-shift-tab` | `ctrl-tab` / `ctrl-shift-tab` |
 | `select_tab` 1 to 9 | `cmd-1` to `cmd-9` | `alt-1` to `alt-9` |

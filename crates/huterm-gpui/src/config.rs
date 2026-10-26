@@ -98,6 +98,11 @@ width = "fit"
 min_width = 96.0
 max_width = 240.0
 
+[panes]
+# Who owns a pane's zoom: view, where each window zooms on its own, or
+# shared, where the tab owns it and every window set to shared shows it.
+zoom = "view"
+
 [updates]
 # true enables scheduled checks and false disables them. Omit this setting to
 # let Sparkle ask on the second launch of a fresh macOS profile. Removing an
@@ -138,6 +143,7 @@ pub(super) struct Config {
     pub(super) tabs: TabsConfig,
     pub(super) updates: UpdateConfig,
     pub(super) palette: huterm_config::PaletteConfig,
+    pub(super) panes: huterm_config::PanesConfig,
     pub(super) terminal: TerminalConfig,
     pub(super) theme: Theme,
     pub(super) keybindings: Vec<KeybindingEntry>,
@@ -164,6 +170,7 @@ impl Default for Config {
             tabs: TabsConfig::default(),
             updates: UpdateConfig::default(),
             palette: huterm_config::PaletteConfig::default(),
+            panes: huterm_config::PanesConfig::default(),
             terminal: TerminalConfig::default(),
             keybindings: Vec::new(),
             quake: crate::quake::Config {
@@ -368,6 +375,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         tabs: raw.tabs,
         updates: raw.updates,
         palette: raw.palette,
+        panes: raw.panes,
         terminal: TerminalConfig {
             term: raw.terminal.term,
             close_on_exit: raw.terminal.close_on_exit,

@@ -559,7 +559,34 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
             "ctrl-alt",
         ),
     };
-    vec![
+    let (resize, zoom) = match platform {
+        Platform::MacOs => ("cmd-ctrl", "cmd-shift-enter"),
+        Platform::Linux => ("ctrl-super-shift", "ctrl-shift-enter"),
+    };
+    let mut bindings = vec![
+        default(
+            &format!("{resize}-left"),
+            ids::RESIZE_PANE_LEFT,
+            "Resize the pane left",
+        ),
+        default(
+            &format!("{resize}-right"),
+            ids::RESIZE_PANE_RIGHT,
+            "Resize the pane right",
+        ),
+        default(
+            &format!("{resize}-up"),
+            ids::RESIZE_PANE_UP,
+            "Resize the pane up",
+        ),
+        default(
+            &format!("{resize}-down"),
+            ids::RESIZE_PANE_DOWN,
+            "Resize the pane down",
+        ),
+        default(zoom, ids::TOGGLE_PANE_ZOOM, "Zoom the pane"),
+    ];
+    bindings.extend(vec![
         default(split_right, ids::SPLIT_RIGHT, "Split the pane to the right"),
         default(split_down, ids::SPLIT_DOWN, "Split the pane downward"),
         default(next, ids::FOCUS_NEXT_PANE, "Focus the next pane"),
@@ -588,7 +615,8 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
             ids::FOCUS_PANE_DOWN,
             "Focus the pane below",
         ),
-    ]
+    ]);
+    bindings
 }
 
 /// The shipped per-platform bindings, in precedence order.

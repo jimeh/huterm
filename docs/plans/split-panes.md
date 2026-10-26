@@ -1,9 +1,9 @@
 # Split panes
 
-Status: in progress. Approved on 2026-10-26 after a Claude review and two
-Codex review rounds. PR 1 (the runtime split tree) merged in #245 and PR 2
-(pushed terminal geometry) in #246; PR 3 (desktop panes) is in progress.
-Plans
+Status: implemented. Approved on 2026-10-26 after a Claude review and two
+Codex review rounds. PR 1 (the runtime split tree) merged in #245, PR 2
+(pushed terminal geometry) in #246, and PR 3 (desktop panes) in #249; PR 4
+(resize and zoom) completes it. Plans
 [issue #28][issue-28] within [epic #12][issue-12], and sets the pane UX that
 [#29][issue-29] and [#30][issue-30] build on.
 
@@ -992,6 +992,56 @@ Recorded with PR 3:
 - The plan's tier 1 clipping check already exists as
   `a_larger_canonical_grid_is_clipped_and_owned_gestures_survive_it`, so this
   PR adds no second one.
+
+Recorded with PR 4:
+
+- View-local zoom lives in the window's `TabView`, as its focus does, not in
+  `TabEntry`. `TabView::applied_zoom` records the zoom the view last applied,
+  so `sync_zoom` notices a change from either scope once.
+- `[panes] zoom` is application-wide, so one Huterm process cannot mix
+  windows in view and shared mode. Tier 2 covers shared mode across two
+  windows; mixed modes wait for a second client.
+- Batch reconcile now notifies every window showing a tab whose layout or
+  shared zoom changed. Before PR 4 no client resized a split, so a weights
+  change from another window changed no structure and never redrew.
+- A drag's grab zone is clipped to its split's bounds, which for a direct
+  child divider are the two panes' frames together.
+- Clamping to the minimum pane size bisects the dragged boundary between the
+  current and the requested weights against the same per-pane grids the
+  split preflight computes, so drags and resize commands share one rule. The
+  rule is relative per pane: a pane that met the minimum keeps it, and one
+  already under it after the window shrank may not shrink further, so it
+  cannot freeze the tab's other boundaries.
+- Each grab zone is an occluding element that claims its own left press,
+  not a window-level capture listener. Occlusion keeps the terminals beneath
+  from seeing the press, and overlays drawn later, such as toasts and a
+  revealed fullscreen tab bar, keep their presses, which a capture listener
+  would take. Capture listeners still own a drag's motion and release. The
+  scroll pill, drawn inside its pane's terminal, sits below the zones, so a
+  zone wins where a pane is narrower than the pill.
+- A drag measures each move and its release from the split as other changes
+  left it, and clamps its carried boundary there, so another window's resize
+  never leaves a neighbour under the minimum.
+- A drag holds its boundary rather than the split's weights and applies it
+  over the split as other changes leave it, so another window's resize of a
+  sibling boundary carries through, as the races table requires. The span
+  refreshes from each drawn frame.
+- Each window runs its resize commits through one ordered queue, so
+  repeated resize commands cannot land out of order.
+- A resize command on a zoomed tab unzooms it first, as navigation does.
+- The plan's tier 1 item for a zoom toggle and a divider move requesting no
+  snapshot does not apply: both change the zoomed or dragged pane's grid, so
+  a snapshot correctly follows when the view controls. Tier 2 covers the
+  drag's live reflow and its single commit.
+- The title bar's zoom toggle uses Lucide's `maximize-2` and `minimize-2`
+  icons.
+- Native coverage: `smoke:macos-input` drags a divider with AppKit events and
+  checks that neither shell, including one reporting mouse buttons, receives
+  a byte, then toggles zoom from a title bar. `check-overlays.ts` repeats the
+  drag and the zoom toggle through AppKit or XTest. The selection drag that
+  stops at a pane's bounds is a tier 2 test rather than a native step,
+  `a_selection_drag_stops_at_its_panes_edge`: the pane's terminal owns the
+  gesture and clamps it to its own grid, as a tab's terminal did.
 
 [issue-8]: https://github.com/jimeh/huterm/issues/8
 [issue-12]: https://github.com/jimeh/huterm/issues/12

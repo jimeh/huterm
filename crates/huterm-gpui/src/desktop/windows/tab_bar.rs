@@ -30,6 +30,19 @@ const DOT_SIZE: Pixels = px(6.0);
 const CLOSE_SIZE: Pixels = px(18.0);
 /// The pane title bar's padding after its close button.
 const PANE_TITLE_PADDING_RIGHT: Pixels = px(3.0);
+/// The space between a pane title bar's items.
+const PANE_TITLE_GAP: Pixels = px(6.0);
+
+/// What one pane's title bar shows.
+pub(super) struct PaneTitleBar {
+    pub(super) tab: TabId,
+    pub(super) pane: PaneId,
+    pub(super) bounds: Bounds<Pixels>,
+    pub(super) title: String,
+    pub(super) status: TabStatus,
+    pub(super) focused: bool,
+    pub(super) zoomed: bool,
+}
 const STRIP_GAP: Pixels = px(7.0);
 const STRIP_PADDING_LEFT: Pixels = px(12.0);
 const STRIP_PADDING_RIGHT: Pixels = px(6.0);
@@ -435,24 +448,32 @@ impl WorkspaceView {
         )
     }
 
-    /// One pane's title bar in a split tab: its status, its title, and a
-    /// close button. A press focuses the pane and never reaches the
-    /// terminal; the focused pane uses the active tab colours.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a title bar renders one pane's identity, place, and state"
-    )]
+    /// The centre of the zoom toggle in a pane title bar at `bounds`, just
+    /// before its close button.
+    pub(super) fn pane_zoom_center(bounds: Bounds<Pixels>) -> Point<Pixels> {
+        let close = Self::pane_close_center(bounds);
+        point(close.x - CLOSE_SIZE - PANE_TITLE_GAP, close.y)
+    }
+
+    /// One pane's title bar in a split tab: its status, its title, a zoom
+    /// toggle, and a close button. A press focuses the pane and never
+    /// reaches the terminal; the focused pane uses the active tab colours,
+    /// and the toggle stays highlighted while the pane is zoomed. Both
+    /// buttons act on release over themselves.
     pub(super) fn pane_title_bar(
-        tab: TabId,
-        pane: PaneId,
-        bounds: Bounds<Pixels>,
-        title: String,
-        status: TabStatus,
-        focused: bool,
+        bar: PaneTitleBar,
         colors: TabColors,
         cx: &mut Context<'_, Self>,
     ) -> Stateful<Div> {
-        let foreground = colors.foreground;
+        let PaneTitleBar {
+            tab,
+            pane,
+            bounds,
+            title,
+            status,
+            focused,
+            zoomed,
+        } = bar;
         div()
             .id(("pane-title", pane.get()))
             .group("pane-title")
@@ -463,7 +484,7 @@ impl WorkspaceView {
             .h(bounds.size.height)
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(PANE_TITLE_GAP)
             .pl(px(8.0))
             .pr(PANE_TITLE_PADDING_RIGHT)
             .overflow_hidden()
@@ -506,35 +527,74 @@ impl WorkspaceView {
                     .child(title),
             )
             .child(
-                div()
-                    .id(("close-pane", pane.get()))
-                    .group("close-pane")
-                    .flex_shrink_0()
-                    .w(CLOSE_SIZE)
-                    .h(CLOSE_SIZE)
-                    .rounded(px(4.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .hover(|style| style.bg(colors.control_hover))
-                    .active(|style| style.bg(colors.control_pressed))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                Self::pane_title_button(
+                    ("zoom-pane", pane.get()),
+                    if zoomed {
+                        Icon::Minimize
+                    } else {
+                        Icon::Maximize
+                    },
+                    zoomed,
+                    colors,
+                )
+                .on_click(cx.listener(
+                    move |view, _, window, cx| {
                         cx.stop_propagation();
-                    })
-                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.toggle_zoom_of(tab, pane, window, cx);
+                    },
+                )),
+            )
+            .child(
+                Self::pane_title_button(
+                    ("close-pane", pane.get()),
+                    Icon::X,
+                    false,
+                    colors,
+                )
+                .on_click(cx.listener(
+                    move |view, _, window, cx| {
                         cx.stop_propagation();
                         view.request_close(
                             CloseTarget::Pane { tab, pane },
                             window,
                             cx,
                         );
-                    }))
-                    .child(
-                        icon_element(Icon::X, colors.inactive)
-                            .group_hover("close-pane", |style| {
-                                style.text_color(foreground)
-                            }),
-                    ),
+                    },
+                )),
+            )
+    }
+
+    /// A square title bar button whose press never reaches the bar or the
+    /// terminal; `active` keeps it highlighted.
+    fn pane_title_button(
+        id: (&'static str, u64),
+        icon: Icon,
+        active: bool,
+        colors: TabColors,
+    ) -> Stateful<Div> {
+        let foreground = colors.foreground;
+        div()
+            .id(id)
+            .group(id.0)
+            .flex_shrink_0()
+            .w(CLOSE_SIZE)
+            .h(CLOSE_SIZE)
+            .rounded(px(4.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(active, |button| button.bg(colors.control_hover))
+            .hover(|style| style.bg(colors.control_hover))
+            .active(|style| style.bg(colors.control_pressed))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
+            .child(
+                icon_element(
+                    icon,
+                    if active { foreground } else { colors.inactive },
+                )
+                .group_hover(id.0, |style| style.text_color(foreground)),
             )
     }
 }

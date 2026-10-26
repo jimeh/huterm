@@ -42,7 +42,17 @@ to the most recently focused remaining pane, else the first in traversal
 order: tab views keep their panes in layout order. Losing the focused pane
 reactivates the tab as losing the active tab does, so keyboard focus follows.
 A finished install reconciles again, since reconcile skips a tab whose
-install is in flight. It skips a busy window, whose own
+install is in flight.
+
+What a window draws for a tab comes from `shown_layout` and `shown_zoom`. The
+layout is the projection's, with the window's divider drag and the resizes it
+committed but the projection does not hold yet applied. The zoom is the tab
+view's own under `[panes] zoom = "view"` and the tab's runtime zoom under
+`"shared"`. `sync_zoom`, run from the view's self-observer, applies a zoom
+change once: the zoomed pane takes the tab's focus and the other panes hide.
+Batch reconcile notifies every window showing a tab whose layout or shared
+zoom changed, since a resize elsewhere changes no structure but changes
+every pane's requested grid. It skips a busy window, whose own
 spawn holds `busy` until it pushes its view, a window without an attachment,
 and teardown. A worker subscribes the viewers under one Mux lock, the
 completion waits for the projection to reach the worker's sequence, and the

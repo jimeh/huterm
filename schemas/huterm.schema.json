@@ -384,6 +384,37 @@
         }
       ]
     },
+    "PaneZoomScope": {
+      "description": "Who owns a pane's zoom.",
+      "oneOf": [
+        {
+          "const": "view",
+          "description": "Each window zooms panes on its own.",
+          "type": "string"
+        },
+        {
+          "const": "shared",
+          "description": "The tab owns the zoom: every window set to `shared` shows the same\nzoomed pane, and windows set to `view` ignore it.",
+          "type": "string"
+        }
+      ]
+    },
+    "PanesConfig": {
+      "additionalProperties": false,
+      "description": "Split pane behavior.",
+      "properties": {
+        "zoom": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PaneZoomScope"
+            }
+          ],
+          "default": "view",
+          "description": "Who owns a pane's zoom: `view` or `shared`."
+        }
+      },
+      "type": "object"
+    },
     "Position": {
       "enum": [
         "top",
@@ -530,6 +561,11 @@
                 "focus_pane_right",
                 "focus_pane_up",
                 "focus_pane_down",
+                "resize_pane_left",
+                "resize_pane_right",
+                "resize_pane_up",
+                "resize_pane_down",
+                "toggle_pane_zoom",
                 "open_menu",
                 "focus_notices",
                 "dismiss_all_notices",
@@ -2817,6 +2853,265 @@
               "command": {
                 "const": "focus_pane_down",
                 "description": "Focus the pane below the focused one.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "resize_pane_left"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move the focused pane's left edge left by `amount` cells, 5 by default.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "resize_pane_left",
+                "description": "Move the focused pane's left edge left by `amount` cells, 5 by default.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "resize_pane_right"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move the focused pane's right edge right by `amount` cells, 5 by default.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "resize_pane_right",
+                "description": "Move the focused pane's right edge right by `amount` cells, 5 by default.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "resize_pane_up"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move the focused pane's top edge up by `amount` cells, 5 by default.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "resize_pane_up",
+                "description": "Move the focused pane's top edge up by `amount` cells, 5 by default.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "resize_pane_down"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move the focused pane's bottom edge down by `amount` cells, 5 by default.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "resize_pane_down",
+                "description": "Move the focused pane's bottom edge down by `amount` cells, 5 by default.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "toggle_pane_zoom"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Show the focused pane across its whole tab, or show every pane again.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "toggle_pane_zoom",
+                "description": "Show the focused pane across its whole tab, or show every pane again.",
                 "type": "string"
               },
               "description": {
@@ -5896,6 +6191,13 @@
       "allOf": [
         {
           "$ref": "#/definitions/PaletteConfig"
+        }
+      ]
+    },
+    "panes": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/PanesConfig"
         }
       ]
     },
