@@ -501,7 +501,7 @@ impl TabNames {
     pub(super) fn from_info(info: &TabInfo) -> Self {
         Self {
             custom: info.custom_name.clone(),
-            fallback: info.fallback_name.clone(),
+            fallback: info.fallback_name().to_owned(),
         }
     }
 
@@ -510,8 +510,8 @@ impl TabNames {
         if self.custom != info.custom_name {
             self.custom.clone_from(&info.custom_name);
         }
-        if self.fallback != info.fallback_name {
-            self.fallback.clone_from(&info.fallback_name);
+        if self.fallback != info.fallback_name() {
+            info.fallback_name().clone_into(&mut self.fallback);
         }
     }
 }
@@ -526,7 +526,7 @@ pub(super) fn tab_names<'a>(
 ) -> (Option<&'a str>, &'a str) {
     state.tab(tab).map_or(
         (remembered.custom.as_deref(), remembered.fallback.as_str()),
-        |info| (info.custom_name.as_deref(), info.fallback_name.as_str()),
+        |info| (info.custom_name.as_deref(), info.fallback_name()),
     )
 }
 

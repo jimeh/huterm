@@ -83,7 +83,11 @@ impl WorkspaceView {
             };
             match (attachment, state.tab(tab), start) {
                 (Some(_), Some(info), Some(start)) => {
-                    targets.push((tab, info.terminal_id, start));
+                    targets.push((
+                        tab,
+                        info.layout.first_pane().terminal_id,
+                        start,
+                    ));
                 }
                 _ => gone.push(tab),
             }
@@ -252,7 +256,9 @@ impl WorkspaceView {
             let installed: Vec<TabId> =
                 self.tabs.iter().map(|tab| tab.id).collect();
             let state = cx.global::<Desktop>().hierarchy.state();
-            let terminal = state.tab(tab).map(|info| info.terminal_id);
+            let terminal = state
+                .tab(tab)
+                .map(|info| info.layout.first_pane().terminal_id);
             let applies = current
                 && install_applies(
                     state,

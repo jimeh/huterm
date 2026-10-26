@@ -648,9 +648,12 @@ fn a_stopped_terminal_keeps_job_evidence_aligned_with_a_busy_sibling() {
     let jobs: Vec<_> = assessment.terminal_jobs().collect();
     // The stopped terminal skips inspection, but its sibling's evidence
     // still lines up with the sibling.
-    assert_eq!(jobs[0], (stopped.tab.terminal_id, &JobState::Idle));
+    assert_eq!(
+        jobs[0],
+        (stopped.tab.first_pane().terminal_id, &JobState::Idle)
+    );
     assert!(
-        matches!(jobs[1], (id, JobState::Running(_)) if id == busy.tab.terminal_id),
+        matches!(jobs[1], (id, JobState::Running(_)) if id == busy.tab.first_pane().terminal_id),
         "{jobs:?}"
     );
     assert!(assessment.needs_confirmation());
@@ -868,7 +871,10 @@ fn tabs_ticket_covers_the_distinct_requested_terminals_and_commit_keeps_siblings
     let assessment = ticket.check_jobs();
     assert_eq!(
         assessment.terminals(),
-        vec![third.tab.terminal_id, first.tab.terminal_id]
+        vec![
+            third.tab.first_pane().terminal_id,
+            first.tab.first_pane().terminal_id
+        ]
     );
     assert_eq!(assessment.jobs().len(), 2);
     assert!(
@@ -943,4 +949,211 @@ fn explicit_session_termination_invalidates_every_view() {
     mux.close_session(session).unwrap();
     assert!(mux.attachment_session(first).is_err());
     assert!(mux.attachment_session(second).is_err());
+}
+
+/// An idle tab split into a second pane running `script`, both ready.
+fn split_tab(
+    mux: &mut Mux,
+    workspace: WorkspaceId,
+    script: &str,
+    marker: &str,
+) -> (crate::mux::TestTab, crate::mux::TestPane) {
+    let first = open_idle_tabs(mux, workspace, 1).remove(0);
+    let second = mux
+        .split_test_pane(
+            workspace,
+            first.tab.id,
+            first.tab.first_pane().id,
+            huterm_protocol::SplitDirection::Right,
+            &command(script),
+        )
+        .unwrap();
+    ready(&second.client, marker);
+    (first, second)
+}
+
+#[test]
+fn a_pane_ticket_covers_its_own_terminal_and_the_last_pane_closes_the_tab() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let (idle, busy) = split_tab(
+        &mut mux,
+        workspace,
+        "set -m; sleep 30 & printf BUSY; read value",
+        "BUSY",
+    );
+    let tab = idle.tab.id;
+    let idle_pane = idle.tab.first_pane().id;
+    // A busy pane's own ticket needs consent while its sibling stays.
+    let busy_ticket = mux
+        .prepare_close(CloseRequest::Pane {
+            workspace,
+            tab,
+            pane: busy.pane.id,
+        })
+        .unwrap();
+    assert!(matches!(busy_ticket.effect(), CloseEffect::Pane { .. }));
+    let busy_assessment = busy_ticket.check_jobs();
+    assert_eq!(busy_assessment.terminals(), [busy.pane.terminal_id]);
+    assert!(busy_assessment.needs_confirmation());
+    let ticket = mux
+        .prepare_close(CloseRequest::Pane {
+            workspace,
+            tab,
+            pane: idle_pane,
+        })
+        .unwrap();
+    assert_eq!(
+        ticket.effect(),
+        CloseEffect::Pane {
+            workspace,
+            tab,
+            pane: idle_pane,
+        }
+    );
+    let assessment = ticket.check_jobs();
+    assert_eq!(assessment.terminals(), [idle.tab.first_pane().terminal_id]);
+    // The busy sibling's job does not make the idle pane's close prompt.
+    assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
+    mux.commit_close(&assessment, &assessment.recheck(), false)
+        .unwrap();
+    assert!(idle.client.read_snapshot().is_err());
+    assert!(busy.client.read_snapshot().is_ok());
+    assert_eq!(mux.tab(tab).unwrap().layout().pane_count(), 1);
+
+    let ticket = mux
+        .prepare_close(CloseRequest::Pane {
+            workspace,
+            tab,
+            pane: busy.pane.id,
+        })
+        .unwrap();
+    assert_eq!(ticket.effect(), CloseEffect::Tab { workspace, tab });
+    let assessment = ticket.check_jobs();
+    assert!(assessment.needs_confirmation());
+    assert!(matches!(
+        mux.commit_close(&assessment, &assessment.recheck(), false),
+        Err(MuxError::ConfirmationRequired)
+    ));
+    mux.commit_close(&assessment, &assessment.recheck(), true)
+        .unwrap();
+    assert!(mux.tab(tab).is_none());
+    assert_eq!(mux.terminal_count(), 0);
+    assert!(matches!(
+        mux.prepare_close(CloseRequest::Pane {
+            workspace,
+            tab,
+            pane: busy.pane.id,
+        }),
+        Err(MuxError::UnknownTab(_))
+    ));
+}
+
+#[test]
+fn a_tab_close_covers_every_pane_and_prompts_for_a_job_in_any_of_them() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let (idle, busy) = split_tab(
+        &mut mux,
+        workspace,
+        "set -m; sleep 30 & printf BUSY; read value",
+        "BUSY",
+    );
+    let assessment = mux
+        .prepare_close(CloseRequest::Tab {
+            workspace,
+            tab: idle.tab.id,
+        })
+        .unwrap()
+        .check_jobs();
+    assert_eq!(
+        assessment.terminals(),
+        [idle.tab.first_pane().terminal_id, busy.pane.terminal_id]
+    );
+    assert!(assessment.needs_confirmation());
+    mux.commit_close(&assessment, &assessment.recheck(), true)
+        .unwrap();
+    assert_eq!(mux.terminal_count(), 0);
+}
+
+#[test]
+fn splits_make_pane_and_tab_closes_stale_but_resizes_and_zoom_do_not() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let (first, second) =
+        split_tab(&mut mux, workspace, "printf READY; read value", "READY");
+    let tab = first.tab.id;
+    let first_pane = first.tab.first_pane().id;
+    let tab_close = CloseRequest::Tab { workspace, tab };
+    let assessment = mux.prepare_close(tab_close.clone()).unwrap().check_jobs();
+    let huterm_protocol::PaneNode::Split(root) =
+        mux.tab(tab).unwrap().layout().root().clone()
+    else {
+        unreachable!()
+    };
+    let children: Vec<_> =
+        root.children.iter().map(|child| child.node.id()).collect();
+    mux.resize_split(workspace, tab, root.id, &children, &[300_000, 700_000])
+        .unwrap();
+    mux.set_pane_zoom(workspace, tab, Some(second.pane.id))
+        .unwrap();
+    // Neither changes what the close covers, so its commit stays valid.
+    mux.validate_close(&assessment, &assessment.recheck(), false)
+        .unwrap();
+
+    // A pane close assessed before another window splits that pane goes
+    // stale, and its retry closes only the original pane.
+    let pane_close = CloseRequest::Pane {
+        workspace,
+        tab,
+        pane: first_pane,
+    };
+    let assessment =
+        mux.prepare_close(pane_close.clone()).unwrap().check_jobs();
+    let added = mux
+        .split_test_pane(
+            workspace,
+            tab,
+            first_pane,
+            huterm_protocol::SplitDirection::Down,
+            &command("printf ADDED; read value"),
+        )
+        .unwrap();
+    ready(&added.client, "ADDED");
+    assert!(matches!(
+        mux.commit_close(&assessment, &assessment.recheck(), false),
+        Err(MuxError::StaleClose)
+    ));
+    let assessment = mux.prepare_close(pane_close).unwrap().check_jobs();
+    mux.commit_close(&assessment, &assessment.recheck(), false)
+        .unwrap();
+    assert!(first.client.read_snapshot().is_err());
+    assert!(added.client.read_snapshot().is_ok());
+    assert!(second.client.read_snapshot().is_ok());
+    assert_eq!(mux.tab(tab).unwrap().layout().pane_count(), 2);
+
+    // A tab close assessed before a split is stale too, and its retry
+    // covers the new pane.
+    let assessment = mux.prepare_close(tab_close.clone()).unwrap().check_jobs();
+    let later = mux
+        .split_pane(
+            workspace,
+            tab,
+            second.pane.id,
+            huterm_protocol::SplitDirection::Down,
+            &command("read value"),
+        )
+        .unwrap();
+    assert!(matches!(
+        mux.commit_close(&assessment, &assessment.recheck(), false),
+        Err(MuxError::StaleClose)
+    ));
+    let assessment = mux.prepare_close(tab_close).unwrap().check_jobs();
+    assert!(assessment.terminals().contains(&later.pane.terminal_id));
+    mux.commit_close(&assessment, &assessment.recheck(), false)
+        .unwrap();
+    assert_eq!(mux.terminal_count(), 0);
 }

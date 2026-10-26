@@ -8,6 +8,7 @@ use std::sync::Arc;
 mod cell_text;
 mod command;
 mod hierarchy;
+mod pane_layout;
 mod viewer;
 pub use cell_text::CellText;
 pub use command::{
@@ -19,6 +20,11 @@ pub use hierarchy::{
     ApplyOutcome, HierarchyEnvelope, HierarchyEvent, HierarchyState,
     ResyncReason, SessionInfo, StreamId, TabInfo, Touched, WorkspaceInfo,
     resolve_tab_name,
+};
+pub use pane_layout::{
+    LayoutError, MAX_SPLIT_CHILDREN, NORMALIZED_EXTENT, NodeId, NormalizedRect,
+    PaneInfo, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis, SplitChild,
+    SplitDirection, SplitNode,
 };
 pub use viewer::{
     InputStamp, TERMINAL_FAILURE_CAPACITY, TerminalFailure, TerminalLifecycle,
@@ -94,7 +100,8 @@ scoped_id!(
     ViewerId,
     "Identifies one client registration that displays a terminal."
 );
-opaque_id!(PaneId, "Identifies a pane within a tab.");
+scoped_id!(PaneId, "Identifies a pane within a tab's layout.");
+scoped_id!(SplitId, "Identifies a split within a tab's layout.");
 opaque_id!(TerminalId, "Identifies a terminal runtime.");
 opaque_id!(
     HostEffectRecipientId,

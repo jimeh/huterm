@@ -3,8 +3,8 @@ use crate::desktop::windows::model::{TabEntry, WindowLayout};
 use gpui::{Bounds, WindowBounds, point, px, size};
 use huterm_core::Mux;
 use huterm_protocol::{
-    HierarchyEnvelope, HierarchyEvent, PaneId, RuntimeId, SessionId,
-    SessionInfo, StreamId, TabInfo, TerminalId, WorkspaceInfo,
+    HierarchyEnvelope, HierarchyEvent, PaneId, PaneInfo, PaneLayout, RuntimeId,
+    SessionId, SessionInfo, StreamId, TabInfo, TerminalId, WorkspaceInfo,
 };
 
 const RUNTIME: RuntimeId = RuntimeId::new(42);
@@ -77,10 +77,13 @@ impl Feed {
             workspace: workspace_id,
             tab: TabInfo {
                 id: tab(value),
-                pane_id: PaneId::new(value),
-                terminal_id: TerminalId::new(value),
                 custom_name: None,
-                fallback_name: "sh".into(),
+                layout: PaneLayout::single(PaneInfo {
+                    id: PaneId::in_runtime(RUNTIME, value),
+                    terminal_id: TerminalId::new(value),
+                    fallback_name: "sh".into(),
+                }),
+                zoomed: None,
             },
             index: u32::try_from(index).unwrap(),
         });
@@ -829,7 +832,7 @@ fn a_resync_snapshot_older_than_an_installed_view_drains_before_reconciling() {
         window(1),
         TabEntry {
             id: opened.tab.id,
-            terminal: opened.tab.terminal_id,
+            terminal: opened.tab.first_pane().terminal_id,
             title: "sh".into(),
         },
     );
@@ -994,7 +997,7 @@ fn a_reset_drained_before_the_teardown_flag_is_seen_freezes_the_projection() {
         window(1),
         TabEntry {
             id: opened.tab.id,
-            terminal: opened.tab.terminal_id,
+            terminal: opened.tab.first_pane().terminal_id,
             title: "custom".into(),
         },
     );
@@ -1241,10 +1244,13 @@ fn a_failed_install_waits_for_a_batch_that_touches_its_workspace() {
         workspace: workspace(10),
         tab: TabInfo {
             id: tab(2),
-            pane_id: PaneId::new(2),
-            terminal_id: TerminalId::new(2),
             custom_name: None,
-            fallback_name: "sh".into(),
+            layout: PaneLayout::single(PaneInfo {
+                id: PaneId::in_runtime(RUNTIME, 2),
+                terminal_id: TerminalId::new(2),
+                fallback_name: "sh".into(),
+            }),
+            zoomed: None,
         },
         index: 1,
     });

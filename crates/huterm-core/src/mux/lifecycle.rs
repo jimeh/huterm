@@ -3,8 +3,8 @@
 mod holder_fixture;
 
 use super::{
-    AttachmentId, Mux, MuxError, RuntimeClient, RuntimeId, Session, SessionId,
-    TabId, TerminalId, Workspace, WorkspaceId,
+    AttachmentId, Mux, MuxError, PaneId, RuntimeClient, RuntimeId, Session,
+    SessionId, Tab, TabId, TerminalId, Workspace, WorkspaceId,
 };
 use crate::JobState;
 use std::time::{Duration, Instant};
@@ -24,6 +24,15 @@ pub enum CloseRequest {
         workspace: WorkspaceId,
         /// Selected tab.
         tab: TabId,
+    },
+    /// Close one pane of a tab; the tab's only pane closes the tab.
+    Pane {
+        /// Expected owning workspace.
+        workspace: WorkspaceId,
+        /// Expected owning tab.
+        tab: TabId,
+        /// Selected pane.
+        pane: PaneId,
     },
     /// Close several tabs of one workspace together.
     Tabs {
@@ -60,6 +69,15 @@ pub enum CloseEffect {
         workspace: WorkspaceId,
         /// Selected tab.
         tab: TabId,
+    },
+    /// Terminate one pane of a tab that keeps other panes.
+    Pane {
+        /// Expected owning workspace.
+        workspace: WorkspaceId,
+        /// Expected owning tab.
+        tab: TabId,
+        /// Selected pane.
+        pane: PaneId,
     },
     /// Terminate several tabs of one workspace.
     Tabs {
@@ -276,7 +294,22 @@ impl Mux {
         &self,
         request: CloseRequest,
     ) -> Result<CloseTicket, MuxError> {
-        let effect = match &request {
+        let effect = self.resolve_close(&request)?;
+        let ids = self.close_terminal_ids(&effect)?;
+        Ok(CloseTicket {
+            runtime: self.runtime_id,
+            revision: self.revision,
+            request,
+            effect,
+            clients: ids.into_iter().filter_map(|id| self.attach(id)).collect(),
+        })
+    }
+    /// Resolves the effect a close request would have now.
+    fn resolve_close(
+        &self,
+        request: &CloseRequest,
+    ) -> Result<CloseEffect, MuxError> {
+        Ok(match request {
             CloseRequest::Window(attachment) => {
                 let session = self.attachment_session(*attachment)?;
                 if self.attachments.values().filter(|s| **s == session).count()
@@ -296,6 +329,25 @@ impl Mux {
                 CloseEffect::Tab {
                     workspace: *workspace,
                     tab: *tab,
+                }
+            }
+            CloseRequest::Pane {
+                workspace,
+                tab,
+                pane,
+            } => {
+                self.select_workspace_pane(*workspace, *tab, *pane)?;
+                if self.tab_record(*workspace, *tab)?.layout.pane_count() == 1 {
+                    CloseEffect::Tab {
+                        workspace: *workspace,
+                        tab: *tab,
+                    }
+                } else {
+                    CloseEffect::Pane {
+                        workspace: *workspace,
+                        tab: *tab,
+                        pane: *pane,
+                    }
                 }
             }
             CloseRequest::Tabs { workspace, tabs } => {
@@ -320,35 +372,50 @@ impl Mux {
                 attachment,
                 workspace,
             } => self.resolve_emptied_window(*attachment, *workspace)?,
-        };
-        let terminal = |tab: &TabId| {
+        })
+    }
+    /// The terminals a close effect stops, in the order its job evidence is
+    /// reported.
+    fn close_terminal_ids(
+        &self,
+        effect: &CloseEffect,
+    ) -> Result<Vec<TerminalId>, MuxError> {
+        let terminals = |tab: &TabId| {
             self.tab(*tab)
-                .map(|tab| tab.terminal_id)
+                .map(Tab::terminals)
                 .ok_or(MuxError::UnknownTab(*tab))
         };
-        let ids: Vec<_> = match &effect {
+        Ok(match effect {
             CloseEffect::Detach(_) => Vec::new(),
             CloseEffect::Session(session) => self
                 .workspaces
                 .values()
                 .filter(|w| w.session_id == *session)
                 .flat_map(|w| &w.tabs)
-                .map(|t| t.terminal_id)
+                .flat_map(Tab::terminals)
                 .collect(),
-            CloseEffect::Tab { tab, .. } => vec![terminal(tab)?],
-            CloseEffect::Tabs { tabs, .. } => {
-                tabs.iter().map(terminal).collect::<Result<_, _>>()?
-            }
+            CloseEffect::Tab { tab, .. } => terminals(tab)?,
+            CloseEffect::Pane {
+                workspace,
+                tab,
+                pane,
+            } => vec![
+                self.tab_record(*workspace, *tab)?
+                    .layout
+                    .pane(*pane)
+                    .ok_or(MuxError::UnknownPane(*pane))?
+                    .terminal_id,
+            ],
+            CloseEffect::Tabs { tabs, .. } => tabs
+                .iter()
+                .map(terminals)
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect(),
             CloseEffect::Application => {
                 self.terminals.keys().copied().collect()
             }
-        };
-        Ok(CloseTicket {
-            runtime: self.runtime_id,
-            revision: self.revision,
-            request,
-            effect,
-            clients: ids.into_iter().filter_map(|id| self.attach(id)).collect(),
         })
     }
     /// Commits only fresh, structurally valid evidence matching the user's consent.
@@ -404,6 +471,11 @@ impl Mux {
             CloseEffect::Tab { workspace, tab } => {
                 self.close_tab(*workspace, *tab)
             }
+            CloseEffect::Pane {
+                workspace,
+                tab,
+                pane,
+            } => self.close_pane(*workspace, *tab, *pane),
             CloseEffect::Tabs { workspace, tabs } => {
                 self.close_tabs(*workspace, tabs)
             }
@@ -442,7 +514,7 @@ impl Mux {
         }
     }
     /// Validates that a tab currently belongs to the workspace.
-    fn select_workspace_tab(
+    pub(super) fn select_workspace_tab(
         &self,
         workspace: WorkspaceId,
         tab: TabId,
