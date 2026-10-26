@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.1](https://github.com/jimeh/huterm/compare/v0.19.0...v0.19.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* close emptied windows without stopping terminals and ignore stale Confirm clicks ([#238](https://github.com/jimeh/huterm/issues/238)) ([b4fe19c](https://github.com/jimeh/huterm/commit/b4fe19c72f3400b73f915d1ae8324f0e632f5ea4))
+* keep terminal history when a shell exits mid-reply, and end a crashed terminal's processes ([#237](https://github.com/jimeh/huterm/issues/237)) ([5fff877](https://github.com/jimeh/huterm/commit/5fff877bc8f134edfce7a23be22dd4f487b6accb))
+
 ## [0.19.0](https://github.com/jimeh/huterm/compare/v0.18.0...v0.19.0) (2026-10-25)
 
 
