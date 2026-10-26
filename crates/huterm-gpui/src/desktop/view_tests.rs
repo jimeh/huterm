@@ -604,7 +604,7 @@ fn a_split_views_focus_change_repaints_its_cursor_without_a_snapshot(
             && view.input_queue.is_empty()
     });
     harness.update(|view, _, cx| {
-        view.split = true;
+        view.pane.split = true;
         cx.notify();
     });
     let (snapshot, sequence) = harness.read(|view, _| {

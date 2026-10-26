@@ -302,6 +302,13 @@ for an action and equal-depth dispatch ties go to the latest, so the compiled
 keymap lists unconditional user bindings first and conditional ones last.
 GPUI's `Not` predicate checks every ancestor context, so
 `Terminal && !confirming` works across the Workspace and Terminal stack.
+Pane layout contexts (`split`, `pane_zoomed`, `has_pane_*`) live in
+TerminalView's own key context, because an identifier matches only the
+innermost context. `sync_tab_layout` pushes them into every pane view as
+`PanePlacement`, alongside geometry. `has_pane_*` must call
+`TabView::neighbor`, the lookup `focus_pane_*` runs: a context that disagrees
+with its command swallows the key without effect. Tier 2 tests read the
+rendered contexts through `Window::context_stack`.
 
 Text arguments accept a blank value: the core executor maps a blank rename name
 to `None`, which clears the custom name, so there are no reset-name commands.

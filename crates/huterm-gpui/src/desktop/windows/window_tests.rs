@@ -3351,6 +3351,8 @@ fn a_shared_zoom_set_in_one_window_moves_the_others_focus(
         }) && panes_shown(cx, other, tab)
             .is_some_and(|(_, focus)| focus == second)
     });
+    // The shared zoom reaches the other window's key contexts.
+    harness.wait_contexts(other, &["split", "pane_zoomed", "has_pane_left"]);
     // Closing the zoomed pane elsewhere clears the zoom.
     harness
         .runtime
@@ -3364,6 +3366,7 @@ fn a_shared_zoom_set_in_one_window_moves_the_others_focus(
                     .is_some_and(|(visible, _)| visible)
         })
     });
+    harness.wait_contexts(other, &[]);
 }
 
 #[gpui::test]
@@ -3396,6 +3399,213 @@ fn a_title_bars_zoom_button_toggles_its_pane(cx: &mut TestAppContext) {
         .simulate_click(unzoom, gpui::Modifiers::none());
     harness.wait_for("the second pane to show again", |cx| {
         pane_shown(cx, window, tab, second).is_some_and(|(visible, _)| visible)
+    });
+}
+
+/// A child that prints nothing until it reads a line, then echoes each
+/// line as `got:<line>` with Escape shown as `^`.
+const KEYS: &str = "while read line; do \
+    printf 'got:%s ' \"$(printf %s \"$line\" | tr '\\033' '^')\"; done";
+
+/// The pane layout contexts, in the order [`pane_contexts`] lists them.
+const PANE_CONTEXTS: [&str; 6] = [
+    "split",
+    "pane_zoomed",
+    "has_pane_left",
+    "has_pane_right",
+    "has_pane_up",
+    "has_pane_down",
+];
+
+/// The pane layout contexts of the terminal context `window` last
+/// rendered on its focus path, which the next keystroke matches bindings
+/// against; `None` while no terminal has focus there.
+fn pane_contexts(
+    cx: &mut App,
+    window: AnyWindowHandle,
+) -> Option<Vec<&'static str>> {
+    let context = window
+        .update(cx, |_, window, _| window.context_stack().pop())
+        .ok()
+        .flatten()
+        .filter(|context| context.contains("Terminal"))?;
+    Some(
+        PANE_CONTEXTS
+            .into_iter()
+            .filter(|name| context.contains(name))
+            .collect(),
+    )
+}
+
+impl DesktopHarness {
+    /// A harness whose `alt-` keys reach the shell as Escape prefixes on
+    /// every platform, with `bindings` as `(key, command, when)` entries.
+    fn with_bindings(
+        cx: &mut TestAppContext,
+        bindings: &[(&str, &str, &str)],
+    ) -> Self {
+        Self::with_config(cx, |config| {
+            config.terminal.macos_option_as_alt =
+                huterm_config::MacosOptionAsAlt::Both;
+            config.keybindings = bindings
+                .iter()
+                .map(|(key, command, when)| huterm_config::KeybindingEntry {
+                    key: (*key).to_owned(),
+                    command: (*command).to_owned(),
+                    args: None,
+                    when: Some((*when).to_owned()),
+                    description: None,
+                })
+                .collect();
+        })
+    }
+
+    /// Presses `key`, a single modified character such as `alt-j`, in
+    /// `window`. The keystroke carries its character, as Linux reports
+    /// it, since Linux encodes Alt from that character.
+    fn press(&mut self, window: AnyWindowHandle, key: &str) {
+        let mut keystroke = Keystroke::parse(key).unwrap();
+        keystroke.key_char = Some(keystroke.key.clone());
+        self.cx.dispatch_keystroke(window, keystroke);
+    }
+
+    /// Waits until `window`'s focused terminal renders exactly `expected`
+    /// of the pane layout contexts.
+    fn wait_contexts(&mut self, window: AnyWindowHandle, expected: &[&str]) {
+        self.wait_for(&format!("pane contexts {expected:?}"), |cx| {
+            pane_contexts(cx, window).as_deref() == Some(expected)
+        });
+    }
+}
+
+#[gpui::test]
+fn a_direction_binding_moves_focus_toward_a_pane_or_reaches_the_shell(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_bindings(
+        cx,
+        &[
+            ("alt-j", "focus_pane_left", "Terminal && has_pane_left"),
+            ("alt-l", "focus_pane_right", "Terminal && has_pane_right"),
+        ],
+    );
+    let tab = harness.open_tab(KEYS);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let focus = |cx: &mut App| {
+        panes_shown(cx, window, tab)
+            .map(|(_, focus)| focus)
+            .filter(|_| focused(cx, window, tab))
+    };
+    // A lone pane has nothing to its left, so the key reaches its shell.
+    harness.wait_contexts(window, &[]);
+    harness.press(window, "alt-j");
+    harness.type_line(window, "a");
+    harness.wait_for("the lone pane's shell to read alt-j", |cx| {
+        pane_screen(cx, window, tab, first)
+            .is_some_and(|text| text.contains("got:^ja"))
+    });
+    let second = harness.split(tab, first, SplitDirection::Right, KEYS);
+    harness.wait_contexts(window, &["split", "has_pane_right"]);
+    harness.press(window, "alt-l");
+    harness.wait_for("focus to move right", |cx| focus(cx) == Some(second));
+    // At the tab's right edge the key reaches the shell and focus stays.
+    harness.wait_contexts(window, &["split", "has_pane_left"]);
+    harness.press(window, "alt-l");
+    harness.type_line(window, "b");
+    harness.wait_for("the right pane's shell to read alt-l", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("got:^lb"))
+    });
+    assert_eq!(harness.cx.update(focus), Some(second));
+    harness.press(window, "alt-j");
+    harness.wait_for("focus to move back left", |cx| focus(cx) == Some(first));
+}
+
+#[gpui::test]
+fn pane_contexts_follow_splits_and_closes_without_terminal_output(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    // Every child stays silent, so only the layout can change a context.
+    let tab = harness.open_tab(KEYS);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_contexts(window, &[]);
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, KEYS);
+    harness.wait_contexts(window, &["split", "has_pane_right"]);
+    // Another client splits the unfocused pane; moving focus onto it
+    // shows the contexts its view took meanwhile.
+    let third = harness.split(tab, second, SplitDirection::Down, KEYS);
+    harness.wait_for("the third pane to install", |cx| {
+        panes_shown(cx, window, tab)
+            .is_some_and(|(panes, _)| panes.contains(&third))
+    });
+    harness.invoke(window, ids::FOCUS_PANE_RIGHT).unwrap();
+    harness.wait_contexts(window, &["split", "has_pane_left", "has_pane_down"]);
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, third)
+        .unwrap();
+    harness.wait_contexts(window, &["split", "has_pane_left"]);
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, second)
+        .unwrap();
+    harness.wait_contexts(window, &[]);
+}
+
+#[gpui::test]
+fn a_zoomed_pane_moves_focus_unless_its_binding_excludes_zoom(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_bindings(
+        cx,
+        &[
+            (
+                "alt-j",
+                "focus_pane_left",
+                "Terminal && has_pane_left && !pane_zoomed",
+            ),
+            ("alt-l", "focus_pane_right", "Terminal && has_pane_right"),
+        ],
+    );
+    let tab = harness.open_tab(KEYS);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, KEYS);
+    harness.wait_contexts(window, &["split", "has_pane_right"]);
+    // Zoom keeps the layout's directions.
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_contexts(window, &["split", "pane_zoomed", "has_pane_right"]);
+    // A binding without `!pane_zoomed` unzooms and moves focus.
+    harness.press(window, "alt-l");
+    harness.wait_for("focus to move right and unzoom", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(_, focus)| focus == second)
+            && pane_shown(cx, window, tab, first)
+                .is_some_and(|(visible, _)| visible)
+    });
+    harness.wait_contexts(window, &["split", "has_pane_left"]);
+    // One with it leaves a zoomed pane alone and reaches the shell.
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_contexts(window, &["split", "pane_zoomed", "has_pane_left"]);
+    harness.press(window, "alt-j");
+    harness.type_line(window, "c");
+    harness.wait_for("the zoomed pane's shell to read alt-j", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("got:^jc"))
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(
+            panes_shown(cx, window, tab).map(|(_, focus)| focus),
+            Some(second)
+        );
+        assert!(!pane_shown(cx, window, tab, first).unwrap().0);
     });
 }
 

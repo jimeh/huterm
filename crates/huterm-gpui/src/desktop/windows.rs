@@ -2820,6 +2820,24 @@ impl TabView {
         self.panes.iter().map(|pane| &pane.view)
     }
 
+    /// The pane `focus_pane_*` toward `direction` moves to from `pane`, in
+    /// the projected layout; ties go to the pane this window focused most
+    /// recently. The pane key contexts ask the same question, so a
+    /// binding they enable always has a target.
+    fn neighbor(
+        &self,
+        pane: PaneId,
+        direction: SplitDirection,
+        cx: &App,
+    ) -> Option<PaneId> {
+        cx.global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(self.id)?
+            .layout
+            .neighbor(pane, direction, &self.focus_history)
+    }
+
     /// Moves focus to `pane`; returns whether it changed.
     fn focus_pane(&mut self, pane: PaneId) -> bool {
         if self.pane(pane).is_none() || self.focused().pane == pane {
@@ -5135,23 +5153,37 @@ impl WorkspaceView {
             .collect()
     }
 
-    /// Every pane view of every tab with its geometry and whether its tab
-    /// is split.
+    /// Every pane view of every tab with its geometry and its place in its
+    /// tab.
     fn pane_views_with_layout(
         &self,
         window: &Window,
         cx: &App,
-    ) -> Vec<(Entity<TerminalView>, TerminalGeometry, bool)> {
+    ) -> Vec<(Entity<TerminalView>, TerminalGeometry, PanePlacement)> {
         let base = self.terminal_geometry(window);
         self.tabs
             .iter()
             .flat_map(|tab| {
                 let geometries = self.pane_geometries(tab, base, window, cx);
                 let split = tab.panes.len() > 1;
-                tab.views()
-                    .cloned()
+                let zoomed = self.shown_zoom(tab, cx);
+                tab.panes
+                    .iter()
                     .zip(geometries)
-                    .map(move |(view, geometry)| (view, geometry, split))
+                    .map(|(pane, geometry)| {
+                        let has_pane = |direction| {
+                            tab.neighbor(pane.pane, direction, cx).is_some()
+                        };
+                        let placement = PanePlacement {
+                            split,
+                            zoomed: zoomed == Some(pane.pane),
+                            has_pane_left: has_pane(SplitDirection::Left),
+                            has_pane_right: has_pane(SplitDirection::Right),
+                            has_pane_up: has_pane(SplitDirection::Up),
+                            has_pane_down: has_pane(SplitDirection::Down),
+                        };
+                        (pane.view.clone(), geometry, placement)
+                    })
                     .collect::<Vec<_>>()
             })
             .collect()
@@ -5176,10 +5208,13 @@ impl WorkspaceView {
                 layout.tabs.intersect(&layout.terminal)
             });
         let mut changed_any = false;
-        for (view, geometry, split) in views {
+        for (view, geometry, placement) in views {
             view.update(cx, |terminal, cx| {
-                if terminal.split != split {
-                    terminal.split = split;
+                // Key contexts render with the view, so a layout or zoom
+                // change notifies every pane it moves, even one whose
+                // terminal and geometry stay the same.
+                if terminal.pane != placement {
+                    terminal.pane = placement;
                     cx.notify();
                 }
                 let scale_changed =
@@ -6028,16 +6063,11 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         let (tab, pane) = self.focused_pane(cx)?;
-        let history = self
+        let next = self
             .tabs
             .iter()
             .find(|view| view.id == tab)
-            .map(|view| view.focus_history.clone())
-            .unwrap_or_default();
-        let next =
-            cx.global::<Desktop>().hierarchy.state().tab(tab).and_then(
-                |info| info.layout.neighbor(pane, direction, &history),
-            );
+            .and_then(|view| view.neighbor(pane, direction, cx));
         if let Some(next) = next {
             self.unzoom(tab, window, cx);
             self.focus_pane(tab, next, window, cx);

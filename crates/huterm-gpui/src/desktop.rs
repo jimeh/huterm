@@ -346,6 +346,26 @@ impl BellPresentation {
     }
 }
 
+/// Where a view's pane sits in its tab as its window shows it, for the
+/// cursor outline and the pane key contexts. The workspace pushes it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent key context"
+)]
+struct PanePlacement {
+    /// The tab has more than one pane, so the cursor is drawn as an outline
+    /// while the view lacks keyboard focus.
+    split: bool,
+    /// The window shows this pane zoomed across its tab.
+    zoomed: bool,
+    /// `focus_pane_*` toward each side finds a pane in the tab's layout.
+    has_pane_left: bool,
+    has_pane_right: bool,
+    has_pane_up: bool,
+    has_pane_down: bool,
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "terminal visibility, lifecycle, and pointer states are independent"
@@ -436,9 +456,7 @@ struct TerminalView {
     /// Where the view sits in its window; the workspace computes it from
     /// the window's chrome and pushes it.
     geometry: TerminalGeometry,
-    /// The view shows one pane of a split tab, so its cursor is drawn as an
-    /// outline while it lacks keyboard focus.
-    split: bool,
+    pane: PanePlacement,
     tab_overlay: Option<Bounds<Pixels>>,
     theme: Theme,
     /// Failures waiting for the window's notice stack, oldest first. The
@@ -738,7 +756,7 @@ impl TerminalView {
             font_size: metrics.font_size,
             window_config: config.window,
             geometry: TerminalGeometry::default(),
-            split: false,
+            pane: PanePlacement::default(),
             tab_overlay: None,
             theme,
             failures: Vec::new(),
@@ -2678,7 +2696,8 @@ impl TerminalView {
         false
     }
     /// Key context for binding predicates: `Terminal`, plus `selection`
-    /// while a range is selected and `exited` after the root shell exits.
+    /// while a range is selected, `exited` after the root shell exits, and
+    /// the pane layout contexts of [`PanePlacement`].
     fn key_context(&self) -> KeyContext {
         let mut context = KeyContext::default();
         context.add("Terminal");
@@ -2689,6 +2708,19 @@ impl TerminalView {
         }
         if self.exited {
             context.add("exited");
+        }
+        let pane = self.pane;
+        for (present, name) in [
+            (pane.split, "split"),
+            (pane.zoomed, "pane_zoomed"),
+            (pane.has_pane_left, "has_pane_left"),
+            (pane.has_pane_right, "has_pane_right"),
+            (pane.has_pane_up, "has_pane_up"),
+            (pane.has_pane_down, "has_pane_down"),
+        ] {
+            if present {
+                context.add(name);
+            }
         }
         context
     }
@@ -3082,9 +3114,9 @@ impl Render for TerminalView {
         if let Some(benchmark) = &mut self.scroll_benchmark {
             benchmark.display_scale = window.scale_factor();
         }
-        self.renderer
-            .borrow_mut()
-            .set_cursor_outline(self.split && !self.focus.is_focused(window));
+        self.renderer.borrow_mut().set_cursor_outline(
+            self.pane.split && !self.focus.is_focused(window),
+        );
         if self.renderer.borrow().requests_continuous_frames() {
             window.request_animation_frame();
         }

@@ -122,6 +122,9 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `Terminal` | A terminal view has focus. |
 | `selection` | That terminal has selected text. |
 | `exited` | That terminal's root shell has exited. |
+| `split` | That terminal's tab has two or more panes, whether or not one is zoomed. |
+| `pane_zoomed` | The window shows that terminal's pane zoomed: the window's own zoom under `[panes] zoom = "view"`, the tab's under `"shared"`. |
+| `has_pane_left`, `has_pane_right`, `has_pane_up`, `has_pane_down` | `focus_pane_left`, or the command for that side, has a pane to move to from that terminal. They follow the layout, so zoom does not change them. |
 | `Workspace` | Always, on the window's root. |
 | `confirming` | A close confirmation or the About panel is open. |
 | `menu` | The window menu has keyboard focus. |
@@ -130,6 +133,47 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `fullscreen` | The window has finished entering native or non-native fullscreen. Pending entry alone does not match. |
 | `palette` | The window owns an open command palette. |
 | `Palette` | The command palette is open and has focus. |
+
+Most contexts are bare words for the state of the view or window, such as
+`selection` and `pane_zoomed`. The `has_` prefix marks a context that says
+something exists elsewhere, such as a pane to the left.
+
+The pane contexts let a key move between panes where it can and reach the
+shell where it cannot, so tmux or another multiplexer running inside a pane
+still receives it. These bindings move focus with Alt and `i`, `j`, `k`, or
+`l`, and send the key to the pane at the tab's edge and in a tab with one
+pane:
+
+```toml
+[[keybinding]]
+key = "alt-i"
+command = "focus_pane_up"
+when = "Terminal && has_pane_up"
+
+[[keybinding]]
+key = "alt-j"
+command = "focus_pane_left"
+when = "Terminal && has_pane_left"
+
+[[keybinding]]
+key = "alt-k"
+command = "focus_pane_down"
+when = "Terminal && has_pane_down"
+
+[[keybinding]]
+key = "alt-l"
+command = "focus_pane_right"
+when = "Terminal && has_pane_right"
+```
+
+Focus commands unzoom first, so these keys still move focus from a zoomed
+pane. To send them to a zoomed pane instead, add `!pane_zoomed`, as in
+`when = "Terminal && has_pane_left && !pane_zoomed"`. On macOS, set
+[`macos_option_as_alt`](configuration.md#option-and-alt-as-meta) so the keys
+that reach the shell arrive as Meta chords.
+
+Key contexts update when the window draws its next frame. A key pressed
+between a layout change and that frame matches the previous contexts.
 
 ## Commands
 
