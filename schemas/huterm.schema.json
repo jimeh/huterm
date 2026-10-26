@@ -384,6 +384,37 @@
         }
       ]
     },
+    "PaneZoomScope": {
+      "description": "Who owns a pane's zoom.",
+      "oneOf": [
+        {
+          "const": "view",
+          "description": "Each window zooms panes on its own.",
+          "type": "string"
+        },
+        {
+          "const": "shared",
+          "description": "The tab owns the zoom: every window set to `shared` shows the same\nzoomed pane, and windows set to `view` ignore it.",
+          "type": "string"
+        }
+      ]
+    },
+    "PanesConfig": {
+      "additionalProperties": false,
+      "description": "Split pane behavior.",
+      "properties": {
+        "zoom": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PaneZoomScope"
+            }
+          ],
+          "default": "view",
+          "description": "Who owns a pane's zoom: `view` or `shared`."
+        }
+      },
+      "type": "object"
+    },
     "Position": {
       "enum": [
         "top",
@@ -5896,6 +5927,13 @@
       "allOf": [
         {
           "$ref": "#/definitions/PaletteConfig"
+        }
+      ]
+    },
+    "panes": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/PanesConfig"
         }
       ]
     },

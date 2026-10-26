@@ -76,6 +76,21 @@ fn scrollback_rows_and_bytes_reach_the_terminal_limit() {
 }
 
 #[test]
+fn pane_zoom_defaults_to_the_view_and_can_be_shared() {
+    use huterm_config::{PaneZoomScope, PanesConfig};
+    assert_eq!(parse(DEFAULT_CONFIG).unwrap().panes, PanesConfig::default());
+    assert_eq!(PanesConfig::default().zoom, PaneZoomScope::View);
+    let shared =
+        parse(&DEFAULT_CONFIG.replace("zoom = \"view\"", "zoom = \"shared\""))
+            .unwrap();
+    assert_eq!(shared.panes.zoom, PaneZoomScope::Shared);
+    assert!(
+        parse(&DEFAULT_CONFIG.replace("zoom = \"view\"", "zoom = \"tab\""))
+            .is_err()
+    );
+}
+
+#[test]
 fn tab_settings_default_and_override_every_field() {
     let config = parse(DEFAULT_CONFIG).unwrap();
     assert_eq!(config.tabs, TabsConfig::default());

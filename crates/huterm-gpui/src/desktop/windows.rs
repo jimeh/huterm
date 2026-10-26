@@ -59,12 +59,13 @@ use huterm_core::{
     MuxError, OpenedPane, OpenedTab, TerminalViewer, ViewerOptions, ViewerWake,
 };
 use huterm_protocol::{
-    AttachmentId, CommandArgument, CommandScope, HierarchyState, PaneId,
-    PaneInfo, RuntimeId, SessionId, SplitDirection, SplitId, TerminalId,
-    Touched, ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name,
-    validate, validate_supplied,
+    AttachmentId, CommandArgument, CommandScope, HierarchyState, NodeId,
+    PaneId, PaneInfo, PaneLayout, RuntimeId, SessionId, SplitAxis,
+    SplitDirection, SplitId, TerminalId, Touched, ViewerCapabilities,
+    WorkspaceId, catalog, resolve_tab_name, validate, validate_supplied,
 };
-use std::cell::Cell;
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -73,6 +74,18 @@ const TAB_HEIGHT: Pixels = px(32.0);
 /// The smallest pane a split or resize leaves, in cells.
 const MIN_PANE_COLUMNS: u16 = 4;
 const MIN_PANE_ROWS: u16 = 2;
+
+/// A divider's grab zone element ID, unique within its tab.
+fn grab_id(divider: &Divider) -> gpui::SharedString {
+    format!("divider-{}-{}", divider.split.get(), divider.index).into()
+}
+
+/// Whether every grid is at least the minimum pane size.
+fn fits_minimum(grids: &[(PaneId, GridSize)]) -> bool {
+    grids.iter().all(|(_, grid)| {
+        grid.columns >= MIN_PANE_COLUMNS && grid.rows >= MIN_PANE_ROWS
+    })
+}
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod button_layout;
 mod client_frame;
@@ -108,7 +121,9 @@ use model::{
     PaneTitle, QuakeRecord, TabEntry, TitleScope, WindowLayout, WindowModel,
     WindowRecord, WindowRestore, apply_tab_order,
 };
-use pane_geometry::{TabPanes, layout_panes};
+use pane_geometry::{
+    Divider, TabPanes, boundary_position, dragged_weights, layout_panes,
+};
 use projection::{
     Drained, Install, PendingInstalls, Projection, ReconcileTarget, Resolution,
     TabNames, TitleConsumers, Wait, WindowChange, holds_no_tabs,
@@ -409,6 +424,38 @@ impl DesktopRuntime {
             result,
             seq: mux.hierarchy_seq(),
         }
+    }
+
+    /// Sets the weights of `split`'s children, which must still be
+    /// `children`, as a divider drag or resize command commits them.
+    fn resize_split(
+        &self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        preview: &ResizePreview,
+    ) -> Committed<Result<(), MuxError>> {
+        let mut mux = self.lock();
+        let result = mux.resize_split(
+            workspace,
+            tab,
+            preview.split,
+            &preview.children,
+            &preview.weights,
+        );
+        Committed {
+            result,
+            seq: mux.hierarchy_seq(),
+        }
+    }
+
+    /// Sets or clears `tab`'s shared zoom.
+    fn set_pane_zoom(
+        &self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        zoomed: Option<PaneId>,
+    ) -> Result<(), MuxError> {
+        self.lock().set_pane_zoom(workspace, tab, zoomed)
     }
 
     /// The options a desktop view's viewer starts with: full capabilities,
@@ -1438,7 +1485,11 @@ fn reconcile(cx: &mut App, touched: &Touched) {
         if change.titles {
             retitled.insert(view.window);
         }
-        if change.changed {
+        // A resize or shared zoom elsewhere changes what this window draws
+        // and the grids its panes request.
+        if change.changed
+            || view.tabs.iter().any(|tab| touched.contains_layout(tab.id))
+        {
             cx.notify();
         }
     });
@@ -2031,6 +2082,10 @@ fn open_window_with_profile(
                 tab_scrollbars: Scrollbars::default(),
                 sidebar_width: SIDEBAR_WIDTH,
                 resizing_sidebar: false,
+                divider_drag: None,
+                resize_commits: Vec::new(),
+                resize_commit_counter: 0,
+                drawn_dividers: RefCell::new(Vec::new()),
                 reveal: Reveal::default(),
                 reveal_context: None,
                 pointer_reveal: PointerReveal::default(),
@@ -2086,6 +2141,8 @@ fn open_window_with_profile(
                 .detach();
                 quake_windows::start(view, window, cx);
                 cx.observe_in(&cx.entity(), window, |view, _, window, cx| {
+                    view.prune_divider_drag(cx);
+                    view.sync_zoom(window, cx);
                     view.refresh_tab_visibility(window, cx);
                     if let Some(state) = &view.quake {
                         state.wake();
@@ -2102,6 +2159,9 @@ fn open_window_with_profile(
                 cx.observe_window_activation(window, |view, window, cx| {
                     if let Some(state) = &view.quake {
                         state.native_wake();
+                    }
+                    if !window.is_window_active() {
+                        view.cancel_divider_drag(cx);
                     }
                     view.refresh_tab_visibility(window, cx);
                     // A failure latched while every window was hidden or
@@ -2584,6 +2644,29 @@ impl WorkspaceView {
     }
 }
 
+/// Weights this window shows for one split before the projection holds
+/// them: a divider drag's, or a committed resize's until the projection
+/// reaches the commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResizePreview {
+    tab: TabId,
+    split: SplitId,
+    /// The split's children the weights were computed for, in order.
+    children: Vec<NodeId>,
+    weights: Vec<u32>,
+}
+
+/// A divider this window is dragging.
+#[derive(Clone, Debug)]
+struct DividerDrag {
+    preview: ResizePreview,
+    /// The boundary after this child index.
+    index: usize,
+    axis: SplitAxis,
+    /// The split's bounds when the drag began.
+    span: Bounds<Pixels>,
+}
+
 /// The identities of one pane: its tab, itself, and its terminal.
 #[derive(Clone, Copy, Debug)]
 struct PaneKey {
@@ -2655,6 +2738,11 @@ struct TabView {
     /// Panes this window focused, most recent first. The first one present
     /// has keyboard focus whenever the tab is active.
     focus_history: Vec<PaneId>,
+    /// The pane this window zooms under `[panes] zoom = "view"`.
+    zoomed: Option<PaneId>,
+    /// The zoom this view last applied to focus and visibility, from either
+    /// scope, so a change made elsewhere is noticed once.
+    applied_zoom: Option<PaneId>,
 }
 
 impl TabView {
@@ -2673,6 +2761,8 @@ impl TabView {
             names,
             panes,
             focus_history,
+            zoomed: None,
+            applied_zoom: None,
         }
     }
 
@@ -2718,6 +2808,9 @@ impl TabView {
     fn remove_panes(&mut self, panes: &[PaneId]) {
         self.panes.retain(|view| !panes.contains(&view.pane));
         self.focus_history.retain(|id| !panes.contains(id));
+        if self.zoomed.is_some_and(|zoomed| panes.contains(&zoomed)) {
+            self.zoomed = None;
+        }
         if let Some(first) = self.panes.first()
             && !self.focus_history.iter().any(|id| self.pane(*id).is_some())
         {
@@ -3003,6 +3096,14 @@ struct WorkspaceView {
     tab_scrollbars: Scrollbars,
     sidebar_width: Pixels,
     resizing_sidebar: bool,
+    divider_drag: Option<DividerDrag>,
+    /// Resizes this window committed, shown until the projection holds
+    /// them, keyed by a per-window counter.
+    resize_commits: Vec<(u64, ResizePreview)>,
+    resize_commit_counter: u64,
+    /// The active tab's dividers as the last frame drew them, which
+    /// presses hit-test against.
+    drawn_dividers: RefCell<Vec<Divider>>,
     reveal: Reveal,
     reveal_context: Option<(TabPosition, bool, bool)>,
     pointer_reveal: PointerReveal,
@@ -3823,12 +3924,17 @@ impl WorkspaceView {
         let tab_id = tab.id;
         // A layout this window shows none of yet, as when a busy window
         // defers removals, is drawn as if the projection held no layout.
-        let rects =
-            Self::tab_panes(tab_id, bounds, window, cx).filter(|rects| {
+        let zoomed = self.shown_zoom(tab, cx);
+        let rects = self.tab_panes(tab_id, bounds, zoomed, window, cx).filter(
+            |rects| {
                 tab.panes.iter().any(|pane| rects.pane(pane.pane).is_some())
-            });
+            },
+        );
         let focused = tab.focused().pane;
-        let split = rects.as_ref().is_some_and(|rects| rects.panes.len() > 1);
+        *self.drawn_dividers.borrow_mut() = rects
+            .as_ref()
+            .map(|rects| rects.dividers.clone())
+            .unwrap_or_default();
         let mut elements = Vec::new();
         for pane in &tab.panes {
             // A view the layout no longer holds, such as one still closing,
@@ -3863,19 +3969,20 @@ impl WorkspaceView {
                     .child(pane.view.clone())
                     .into_any_element(),
             );
-            if let Some(title_bar) = rect.and_then(|rect| rect.title_bar)
-                && split
-            {
+            if let Some(title_bar) = rect.and_then(|rect| rect.title_bar) {
                 let title =
                     pane.label(tab.fallback_name(id, cx), self.config.tabs, cx);
                 elements.push(
                     Self::pane_title_bar(
-                        tab_id,
-                        id,
-                        title_bar,
-                        title,
-                        pane.status(cx),
-                        id == focused,
+                        tab_bar::PaneTitleBar {
+                            tab: tab_id,
+                            pane: id,
+                            bounds: title_bar,
+                            title,
+                            status: pane.status(cx),
+                            focused: id == focused,
+                            zoomed: zoomed == Some(id),
+                        },
                         colors,
                         cx,
                     )
@@ -3893,6 +4000,25 @@ impl WorkspaceView {
                     .w(line.size.width)
                     .h(line.size.height)
                     .bg(colors.border)
+                    .into_any_element(),
+            );
+            // Sets the resize cursor; the window's capture listener claims
+            // a press here before any terminal sees it.
+            let grab = divider.grab;
+            elements.push(
+                div()
+                    .id(grab_id(divider))
+                    .absolute()
+                    .left(grab.origin.x)
+                    .top(grab.origin.y)
+                    .w(grab.size.width)
+                    .h(grab.size.height)
+                    .cursor(match divider.axis {
+                        SplitAxis::Columns => {
+                            gpui::CursorStyle::ResizeLeftRight
+                        }
+                        SplitAxis::Rows => gpui::CursorStyle::ResizeUpDown,
+                    })
                     .into_any_element(),
             );
         }
@@ -3921,6 +4047,432 @@ impl WorkspaceView {
             self.publish_active_title(tab, cx);
             cx.notify();
         }
+    }
+
+    /// Applies zoom changes from either scope once: a newly zoomed pane
+    /// takes its tab's focus, since a hidden pane cannot hold it, and the
+    /// active tab's panes show or hide. Moving GPUI focus inside an
+    /// inactive window reports no focus to the terminal, so a zoom set
+    /// elsewhere never takes size control from the active window.
+    fn sync_zoom(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let zooms: Vec<(TabId, Option<PaneId>)> = self
+            .tabs
+            .iter()
+            .map(|tab| (tab.id, self.shown_zoom(tab, cx)))
+            .collect();
+        let active = self.active_tab(cx);
+        let mut reselect = false;
+        for (id, zoomed) in zooms {
+            let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
+            else {
+                continue;
+            };
+            if tab.applied_zoom == zoomed {
+                continue;
+            }
+            tab.applied_zoom = zoomed;
+            if let Some(zoomed) = zoomed {
+                tab.focus_pane(zoomed);
+            }
+            reselect |= active == Some(id);
+        }
+        if let Some(active) = active.filter(|_| reselect) {
+            let focus = !self.overlay_holds_focus();
+            self.select_tab(active, focus, window, cx);
+            self.publish_active_title(active, cx);
+            cx.notify();
+        }
+    }
+
+    /// Zooms `pane` of `tab`, or unzooms it when it is the zoomed pane,
+    /// as the title bar's toggle does.
+    fn toggle_zoom_of(
+        &mut self,
+        tab: TabId,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let zoomed = self
+            .tabs
+            .iter()
+            .find(|view| view.id == tab)
+            .and_then(|view| self.shown_zoom(view, cx));
+        let next = (zoomed != Some(pane)).then_some(pane);
+        if let Some(view) = self.tabs.iter_mut().find(|view| view.id == tab) {
+            view.focus_pane(pane);
+        }
+        self.set_zoom(tab, next, window, cx);
+    }
+
+    /// Sets `tab`'s zoom in the configured scope. A shared zoom reaches
+    /// this window through the hierarchy, like any other window's.
+    fn set_zoom(
+        &mut self,
+        tab: TabId,
+        zoomed: Option<PaneId>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.cancel_divider_drag(cx);
+        match self.config.panes.zoom {
+            huterm_config::PaneZoomScope::View => {
+                if let Some(view) =
+                    self.tabs.iter_mut().find(|view| view.id == tab)
+                {
+                    view.zoomed = zoomed;
+                }
+                self.sync_zoom(window, cx);
+            }
+            huterm_config::PaneZoomScope::Shared => {
+                let Some(workspace) = self.workspace_id(cx) else {
+                    return;
+                };
+                let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+                let work = cx.background_executor().spawn(async move {
+                    runtime.set_pane_zoom(workspace, tab, zoomed)
+                });
+                cx.spawn_in(window, async move |view, cx| {
+                    if let Err(error) = work.await {
+                        let _ = view.update(cx, |view, cx| {
+                            if !terminating(cx) {
+                                view.report_failure(
+                                    "Zoom pane",
+                                    format!("Cannot zoom pane: {error}"),
+                                    cx,
+                                );
+                            }
+                        });
+                    }
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// Unzooms `tab` before navigation or a split, as tmux does.
+    fn unzoom(
+        &mut self,
+        tab: TabId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let zoomed = self
+            .tabs
+            .iter()
+            .find(|view| view.id == tab)
+            .and_then(|view| self.shown_zoom(view, cx));
+        if zoomed.is_some() {
+            self.set_zoom(tab, None, window, cx);
+        }
+    }
+
+    /// The divider whose grab zone the last frame drew under `point`.
+    fn divider_at(&self, point: gpui::Point<Pixels>) -> Option<Divider> {
+        self.drawn_dividers
+            .borrow()
+            .iter()
+            .find(|divider| divider.grab.contains(&point))
+            .copied()
+    }
+
+    /// Whether a press may grab a divider: no overlay or modal claims it.
+    fn divider_press_allowed(&self) -> bool {
+        self.menu.is_none()
+            && self.palette.is_none()
+            && self.close.confirmation.is_none()
+            && self.about.is_none()
+            && self.reorder.is_none()
+            && !self.resizing_sidebar
+    }
+
+    /// Starts dragging `divider` of the active tab from the weights this
+    /// window shows.
+    fn start_divider_drag(
+        &mut self,
+        divider: Divider,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(tab) = self.active_tab(cx) else {
+            return;
+        };
+        let Some(split) = self
+            .shown_layout(tab, cx)
+            .and_then(|layout| layout.split_node(divider.split).cloned())
+        else {
+            return;
+        };
+        self.divider_drag = Some(DividerDrag {
+            preview: ResizePreview {
+                tab,
+                split: split.id,
+                children: split
+                    .children
+                    .iter()
+                    .map(|child| child.node.id())
+                    .collect(),
+                weights: split
+                    .children
+                    .iter()
+                    .map(|child| child.weight)
+                    .collect(),
+            },
+            index: divider.index,
+            axis: divider.axis,
+            span: divider.span,
+        });
+        cx.notify();
+    }
+
+    /// Moves the dragged boundary toward `pointer`, as far as the minimum
+    /// pane size allows. The previewed panes resize their terminals as a
+    /// window resize does.
+    fn drag_divider_to(
+        &mut self,
+        pointer: gpui::Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(drag) = self.divider_drag.clone() else {
+            return;
+        };
+        let Some(split) = self
+            .shown_layout(drag.preview.tab, cx)
+            .and_then(|layout| layout.split_node(drag.preview.split).cloned())
+        else {
+            self.cancel_divider_drag(cx);
+            return;
+        };
+        let position = match drag.axis {
+            SplitAxis::Columns => pointer.x,
+            SplitAxis::Rows => pointer.y,
+        };
+        let target = dragged_weights(&split, drag.index, drag.span, position);
+        let weights =
+            self.clamp_resize(&drag.preview, drag.index, target, window, cx);
+        if let Some(current) = &mut self.divider_drag
+            && current.preview.weights != weights
+        {
+            current.preview.weights = weights;
+            cx.notify();
+        }
+    }
+
+    /// The weights between `preview`'s and `target`, which differ only
+    /// beside the boundary after child `index`, that come nearest `target`
+    /// while every pane keeps the minimum size in this window. A layout
+    /// already under the minimum, after the window shrank, only accepts
+    /// weights that fit.
+    fn clamp_resize(
+        &self,
+        preview: &ResizePreview,
+        index: usize,
+        target: Vec<u32>,
+        window: &Window,
+        cx: &App,
+    ) -> Vec<u32> {
+        let Some(layout) = self.shown_layout(preview.tab, cx) else {
+            return preview.weights.clone();
+        };
+        let fits = |weights: &[u32]| {
+            layout
+                .with_weights(preview.split, &preview.children, weights)
+                .ok()
+                .and_then(|candidate| self.pane_grids(&candidate, window))
+                .is_some_and(|grids| fits_minimum(&grids))
+        };
+        if fits(&target) {
+            return target;
+        }
+        let from = preview.weights.clone();
+        if !fits(&from) || index + 1 >= from.len() {
+            return from;
+        }
+        let pair = from[index] + from[index + 1];
+        let with = |first: u32| {
+            let mut weights = from.clone();
+            weights[index] = first;
+            weights[index + 1] = pair - first;
+            weights
+        };
+        // The fitting end stays at `good`; the boundary moves toward `bad`.
+        let (mut good, mut bad) = (from[index], target[index]);
+        while good.abs_diff(bad) > 1 {
+            let middle = good.midpoint(bad);
+            if fits(&with(middle)) {
+                good = middle;
+            } else {
+                bad = middle;
+            }
+        }
+        with(good)
+    }
+
+    /// Commits the dragged weights once, on release.
+    fn finish_divider_drag(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(drag) = self.divider_drag.take() else {
+            return;
+        };
+        let unchanged = cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(drag.preview.tab)
+            .and_then(|info| info.layout.split_node(drag.preview.split))
+            .is_some_and(|split| {
+                split.children.iter().map(|child| child.weight).eq(drag
+                    .preview
+                    .weights
+                    .iter()
+                    .copied())
+            });
+        if !unchanged {
+            self.commit_resize(drag.preview, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Cancels a divider drag whose split another change removed or whose
+    /// children changed, or whose tab is no longer active.
+    fn prune_divider_drag(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(drag) = &self.divider_drag else {
+            return;
+        };
+        let applies = self.active_tab(cx) == Some(drag.preview.tab)
+            && cx
+                .global::<Desktop>()
+                .hierarchy
+                .state()
+                .tab(drag.preview.tab)
+                .and_then(|info| info.layout.split_node(drag.preview.split))
+                .is_some_and(|split| {
+                    split.children.iter().map(|child| child.node.id()).eq(drag
+                        .preview
+                        .children
+                        .iter()
+                        .copied())
+                });
+        if !applies {
+            self.cancel_divider_drag(cx);
+        }
+    }
+
+    /// Drops a divider drag and its preview.
+    fn cancel_divider_drag(&mut self, cx: &mut Context<'_, Self>) {
+        if self.divider_drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Commits `preview` with `resize_split` on a worker. The window shows
+    /// the committed weights until the projection holds the commit, so the
+    /// divider never snaps back; a rejected commit drops them silently and
+    /// the projection's layout shows.
+    fn commit_resize(
+        &mut self,
+        preview: ResizePreview,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(workspace) = self.workspace_id(cx) else {
+            return;
+        };
+        self.resize_commit_counter += 1;
+        let id = self.resize_commit_counter;
+        self.resize_commits.push((id, preview.clone()));
+        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+        let tab = preview.tab;
+        let work = cx.background_executor().spawn(async move {
+            runtime.resize_split(workspace, tab, &preview)
+        });
+        let app = cx.to_async();
+        cx.spawn_in(window, async move |view, cx| {
+            let Committed { result, seq } = work.await;
+            if result.is_ok() {
+                projected(&app, seq).await;
+            }
+            let _ = view.update(cx, |view, cx| {
+                view.resize_commits.retain(|(commit, _)| *commit != id);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Moves the focused pane's edge toward `direction` by `amount` cells,
+    /// through the nearest split where the pane has a neighbour on that
+    /// side, and commits it as a divider drag does.
+    fn resize_pane(
+        &mut self,
+        direction: SplitDirection,
+        amount: f32,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let (tab, pane) = self.focused_pane(cx)?;
+        self.unzoom(tab, window, cx);
+        let (axis, leading) = match direction {
+            SplitDirection::Left => (SplitAxis::Columns, true),
+            SplitDirection::Right => (SplitAxis::Columns, false),
+            SplitDirection::Up => (SplitAxis::Rows, true),
+            SplitDirection::Down => (SplitAxis::Rows, false),
+        };
+        let Some(bounds) = self.terminal_geometry(window).bounds else {
+            return Ok(CommandOutcome::Completed);
+        };
+        let Some((split, index, span)) =
+            self.shown_layout(tab, cx).and_then(|layout| {
+                let (split, index) = pane_geometry::resize_boundary(
+                    &layout, pane, axis, leading,
+                )?;
+                let divider =
+                    layout_panes(&layout, bounds, window.scale_factor(), None)
+                        .dividers
+                        .into_iter()
+                        .find(|divider| {
+                            divider.split == split.id && divider.index == index
+                        })?;
+                Some((split.clone(), index, divider.span))
+            })
+        else {
+            return Ok(CommandOutcome::Completed);
+        };
+        let metrics = self.metrics.at_scale(window.scale_factor());
+        let cell = match axis {
+            SplitAxis::Columns => metrics.cell_width,
+            SplitAxis::Rows => metrics.cell_height,
+        };
+        let from = boundary_position(&split, index, span);
+        let to = if leading {
+            from - cell * amount
+        } else {
+            from + cell * amount
+        };
+        let preview = ResizePreview {
+            tab,
+            split: split.id,
+            children: split
+                .children
+                .iter()
+                .map(|child| child.node.id())
+                .collect(),
+            weights: split.children.iter().map(|child| child.weight).collect(),
+        };
+        let target = dragged_weights(&split, index, span, to);
+        let weights = self.clamp_resize(&preview, index, target, window, cx);
+        if weights != preview.weights {
+            self.commit_resize(
+                ResizePreview { weights, ..preview },
+                window,
+                cx,
+            );
+            cx.notify();
+        }
+        Ok(CommandOutcome::Completed)
     }
 
     /// Republishes `tab`'s title, which follows its focused pane.
@@ -4280,13 +4832,57 @@ impl WorkspaceView {
     /// The rectangles of `tab`'s panes inside `base`, from the projected
     /// layout; `None` for a tab the projection no longer holds.
     fn tab_panes(
+        &self,
         tab: TabId,
         base: Bounds<Pixels>,
+        zoomed: Option<PaneId>,
         window: &Window,
         cx: &App,
     ) -> Option<TabPanes> {
-        let layout = &cx.global::<Desktop>().hierarchy.state().tab(tab)?.layout;
-        Some(layout_panes(layout, base, window.scale_factor()))
+        let layout = self.shown_layout(tab, cx)?;
+        Some(layout_panes(&layout, base, window.scale_factor(), zoomed))
+    }
+
+    /// `tab`'s layout as this window shows it: the projection's, with the
+    /// resizes this window committed but the projection does not hold yet
+    /// and its divider drag applied. A preview whose split changed no
+    /// longer applies and is skipped.
+    fn shown_layout<'a>(
+        &self,
+        tab: TabId,
+        cx: &'a App,
+    ) -> Option<Cow<'a, PaneLayout>> {
+        let mut layout = Cow::Borrowed(
+            &cx.global::<Desktop>().hierarchy.state().tab(tab)?.layout,
+        );
+        let previews = self
+            .resize_commits
+            .iter()
+            .map(|(_, preview)| preview)
+            .chain(self.divider_drag.as_ref().map(|drag| &drag.preview))
+            .filter(|preview| preview.tab == tab);
+        for preview in previews {
+            if let Ok(previewed) = layout.with_weights(
+                preview.split,
+                &preview.children,
+                &preview.weights,
+            ) {
+                layout = Cow::Owned(previewed);
+            }
+        }
+        Some(layout)
+    }
+
+    /// The pane `tab` shows across the whole tab in this window, from the
+    /// window's own zoom or, under `[panes] zoom = "shared"`, the tab's.
+    fn shown_zoom(&self, tab: &TabView, cx: &App) -> Option<PaneId> {
+        let zoomed = match self.config.panes.zoom {
+            huterm_config::PaneZoomScope::View => tab.zoomed,
+            huterm_config::PaneZoomScope::Shared => {
+                cx.global::<Desktop>().hierarchy.state().tab(tab.id)?.zoomed
+            }
+        };
+        zoomed.filter(|pane| tab.pane(*pane).is_some() && tab.panes.len() > 1)
     }
 
     /// Each of `tab`'s pane views' geometry, in `tab.panes` order: its
@@ -4296,6 +4892,7 @@ impl WorkspaceView {
     /// holds, such as one still closing, keeps the geometry it has, and so
     /// does every view of a tab the projection no longer holds.
     fn pane_geometries(
+        &self,
         tab: &TabView,
         base: TerminalGeometry,
         window: &Window,
@@ -4304,12 +4901,21 @@ impl WorkspaceView {
         let Some(bounds) = base.bounds else {
             return vec![base; tab.panes.len()];
         };
-        let rects = Self::tab_panes(tab.id, bounds, window, cx);
+        // A zoomed pane takes the whole tab; the panes it hides keep the
+        // geometry of the split, as hidden tabs keep theirs.
+        let rects = self.tab_panes(tab.id, bounds, None, window, cx);
+        let zoomed = self.shown_zoom(tab, cx).and_then(|zoomed| {
+            self.tab_panes(tab.id, bounds, Some(zoomed), window, cx)
+        });
         tab.panes
             .iter()
             .map(|pane| {
-                let Some(rect) =
-                    rects.as_ref().and_then(|rects| rects.pane(pane.pane))
+                let Some(rect) = zoomed
+                    .as_ref()
+                    .and_then(|rects| rects.pane(pane.pane))
+                    .or_else(|| {
+                        rects.as_ref().and_then(|rects| rects.pane(pane.pane))
+                    })
                 else {
                     return pane.view.read(cx).geometry;
                 };
@@ -4350,7 +4956,7 @@ impl WorkspaceView {
         self.tabs
             .iter()
             .flat_map(|tab| {
-                let geometries = Self::pane_geometries(tab, base, window, cx);
+                let geometries = self.pane_geometries(tab, base, window, cx);
                 let split = tab.panes.len() > 1;
                 tab.views()
                     .cloned()
@@ -5217,6 +5823,7 @@ impl WorkspaceView {
             .tab(tab)
             .and_then(|info| info.layout.cycle(pane, forward));
         if let Some(next) = next {
+            self.unzoom(tab, window, cx);
             self.focus_pane(tab, next, window, cx);
         }
         Ok(CommandOutcome::Completed)
@@ -5242,6 +5849,7 @@ impl WorkspaceView {
                 |info| info.layout.neighbor(pane, direction, &history),
             );
         if let Some(next) = next {
+            self.unzoom(tab, window, cx);
             self.focus_pane(tab, next, window, cx);
         }
         Ok(CommandOutcome::Completed)
@@ -5284,24 +5892,43 @@ impl WorkspaceView {
                 SplitId::in_runtime(probe, u64::MAX),
             )
             .map_err(|_| too_small())?;
-        let bounds = self
-            .terminal_geometry(window)
-            .bounds
-            .ok_or_else(too_small)?;
-        let metrics = self.metrics.at_scale(window.scale_factor());
-        let cell = size(metrics.cell_width, metrics.cell_height);
-        let rects = layout_panes(&candidate, bounds, window.scale_factor());
-        let grid = |rect: &pane_geometry::PaneRect| {
-            TerminalLayout::new(rect.terminal.size, cell, self.config.window)
-                .grid
-        };
-        if rects.panes.iter().any(|rect| {
-            let grid = grid(rect);
-            grid.columns < MIN_PANE_COLUMNS || grid.rows < MIN_PANE_ROWS
-        }) {
+        let grids =
+            self.pane_grids(&candidate, window).ok_or_else(too_small)?;
+        if !fits_minimum(&grids) {
             return Err(too_small());
         }
-        rects.pane(added).map(grid).ok_or_else(too_small)
+        grids
+            .into_iter()
+            .find_map(|(pane, grid)| (pane == added).then_some(grid))
+            .ok_or_else(too_small)
+    }
+
+    /// The grid each pane of `layout` would get in this window, unzoomed,
+    /// with title bars, dividers, and padding; `None` for a window that
+    /// hosts no terminal bounds.
+    fn pane_grids(
+        &self,
+        layout: &PaneLayout,
+        window: &Window,
+    ) -> Option<Vec<(PaneId, GridSize)>> {
+        let bounds = self.terminal_geometry(window).bounds?;
+        let metrics = self.metrics.at_scale(window.scale_factor());
+        let cell = size(metrics.cell_width, metrics.cell_height);
+        let rects = layout_panes(layout, bounds, window.scale_factor(), None);
+        Some(
+            rects
+                .panes
+                .iter()
+                .map(|rect| {
+                    let layout = TerminalLayout::new(
+                        rect.terminal.size,
+                        cell,
+                        self.config.window,
+                    );
+                    (rect.pane, layout.grid)
+                })
+                .collect(),
+        )
     }
 
     /// Splits the active tab's focused pane toward `direction`. The new pane
@@ -5316,6 +5943,12 @@ impl WorkspaceView {
         self.check_new_tab_available(cx)?;
         let (tab, pane) = self.focused_pane(cx)?;
         let grid = self.split_grid(tab, pane, direction, window, cx)?;
+        // Splitting a zoomed tab unzooms it; the runtime clears a shared
+        // zoom with the split itself.
+        if let Some(view) = self.tabs.iter_mut().find(|view| view.id == tab) {
+            view.zoomed = None;
+        }
+        self.sync_zoom(window, cx);
         let (Some(workspace), Some(attachment)) =
             (self.workspace_id(cx), self.attachment_id(cx))
         else {
@@ -6117,7 +6750,12 @@ impl WorkspaceView {
                 | ids::FOCUS_PANE_LEFT
                 | ids::FOCUS_PANE_RIGHT
                 | ids::FOCUS_PANE_UP
-                | ids::FOCUS_PANE_DOWN => {
+                | ids::FOCUS_PANE_DOWN
+                | ids::RESIZE_PANE_LEFT
+                | ids::RESIZE_PANE_RIGHT
+                | ids::RESIZE_PANE_UP
+                | ids::RESIZE_PANE_DOWN
+                | ids::TOGGLE_PANE_ZOOM => {
                     self.check_navigation_available(cx)?;
                     if self
                         .active_tab_view(cx)
@@ -6604,12 +7242,17 @@ impl WorkspaceView {
 
     fn run_pane_command(
         &mut self,
-        id: huterm_protocol::CommandId,
+        invocation: &CommandInvocation,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         use SplitDirection::{Down, Left, Right, Up};
-        match id {
+        // Validated to 1..=100 cells.
+        let amount = invocation
+            .integer("amount")
+            .and_then(|amount| u16::try_from(amount).ok())
+            .map_or(5.0, f32::from);
+        match invocation.id {
             ids::SPLIT_RIGHT => self.split_pane(Right, window, cx),
             ids::SPLIT_DOWN => self.split_pane(Down, window, cx),
             ids::SPLIT_LEFT => self.split_pane(Left, window, cx),
@@ -6621,6 +7264,17 @@ impl WorkspaceView {
             ids::FOCUS_PANE_RIGHT => self.focus_neighbor(Right, window, cx),
             ids::FOCUS_PANE_UP => self.focus_neighbor(Up, window, cx),
             ids::FOCUS_PANE_DOWN => self.focus_neighbor(Down, window, cx),
+            ids::RESIZE_PANE_LEFT => self.resize_pane(Left, amount, window, cx),
+            ids::RESIZE_PANE_RIGHT => {
+                self.resize_pane(Right, amount, window, cx)
+            }
+            ids::RESIZE_PANE_UP => self.resize_pane(Up, amount, window, cx),
+            ids::RESIZE_PANE_DOWN => self.resize_pane(Down, amount, window, cx),
+            ids::TOGGLE_PANE_ZOOM => {
+                let (tab, pane) = self.focused_pane(cx)?;
+                self.toggle_zoom_of(tab, pane, window, cx);
+                Ok(CommandOutcome::Completed)
+            }
             other => Err(CommandError::UnknownCommand(other)),
         }
     }
@@ -6683,7 +7337,9 @@ impl WorkspaceView {
                 Ok(CommandOutcome::Accepted)
             }
             ids::NEXT_TAB => self.navigate(true, window, cx),
-            id if is_pane_command(id) => self.run_pane_command(id, window, cx),
+            id if is_pane_command(id) => {
+                self.run_pane_command(invocation, window, cx)
+            }
             ids::PREVIOUS_TAB => self.navigate(false, window, cx),
             ids::SELECT_TAB => self.select_target(invocation, window, cx),
             ids::SELECT_RECENT_TAB => self.select_recent_tab(window, cx),
@@ -7382,15 +8038,29 @@ impl WorkspaceView {
         if !cx.global_mut::<Desktop>().windows.select(self.window, id) {
             return;
         }
+        if self
+            .divider_drag
+            .as_ref()
+            .is_some_and(|drag| drag.preview.tab != id)
+        {
+            self.cancel_divider_drag(cx);
+        }
         self.sync_tab_layout(window, cx);
         self.reveal_active(window, cx);
         let visible = self.quake_visible();
-        for tab in &self.tabs {
+        let zooms: Vec<Option<PaneId>> = self
+            .tabs
+            .iter()
+            .map(|tab| self.shown_zoom(tab, cx))
+            .collect();
+        for (tab, zoomed) in self.tabs.iter().zip(zooms) {
             let focused = tab.focused().pane;
             for pane in &tab.panes {
+                // A zoomed pane hides the others, as a hidden tab does.
+                let shown = zoomed.is_none_or(|zoomed| zoomed == pane.pane);
                 pane.view.update(cx, |view, cx| {
                     let was_visible = view.visible;
-                    view.visible = visible && tab.id == id;
+                    view.visible = visible && tab.id == id && shown;
                     if view.visible {
                         view.bell.viewed(window.is_window_active());
                         view.resize_if_needed(window);
@@ -7530,6 +8200,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         self.cancel_reorder(window, cx);
+        self.cancel_divider_drag(cx);
         self.resizing_sidebar = false;
         let Some(target) = self.current_close_target(target) else {
             self.release_exit_close_if_idle(cx);
@@ -8858,7 +9529,13 @@ impl Render for WorkspaceView {
             })
             .on_key_down(cx.listener(
                 |view, event: &gpui::KeyDownEvent, window, cx| {
-                    if view.reorder.is_some() && event.keystroke.key == "escape"
+                    if view.divider_drag.is_some()
+                        && event.keystroke.key == "escape"
+                    {
+                        view.cancel_divider_drag(cx);
+                        cx.stop_propagation();
+                    } else if view.reorder.is_some()
+                        && event.keystroke.key == "escape"
                     {
                         view.cancel_reorder(window, cx);
                         // GPUI skips raw keystroke observers after propagation
@@ -8912,7 +9589,14 @@ impl Render for WorkspaceView {
                                 let _ = move_view.update(cx, |view, cx| {
                                     view.pointer_reveal.outside = false;
                                     view.defer_pointer_refresh(window, cx);
-                                    if view.resizing_sidebar {
+                                    if view.divider_drag.is_some() {
+                                        view.drag_divider_to(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    } else if view.resizing_sidebar {
                                         view.resize_sidebar(
                                             event.position,
                                             window,
@@ -8969,6 +9653,17 @@ impl Render for WorkspaceView {
                                             cx,
                                         );
                                     }
+                                    // Before any terminal sees the press, so
+                                    // no selection or mouse report starts.
+                                    if event.button == MouseButton::Left
+                                        && view.divider_drag.is_none()
+                                        && view.divider_press_allowed()
+                                        && let Some(divider) =
+                                            view.divider_at(event.position)
+                                    {
+                                        view.start_divider_drag(divider, cx);
+                                        cx.stop_propagation();
+                                    }
                                 });
                             }
                         },
@@ -8996,7 +9691,15 @@ impl Render for WorkspaceView {
                                     if event.button != MouseButton::Left {
                                         return;
                                     }
-                                    if view.resizing_sidebar {
+                                    if view.divider_drag.is_some() {
+                                        view.drag_divider_to(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        view.finish_divider_drag(window, cx);
+                                        cx.stop_propagation();
+                                    } else if view.resizing_sidebar {
                                         view.resize_sidebar(
                                             event.position,
                                             window,
@@ -9827,6 +10530,11 @@ fn is_pane_command(command: huterm_protocol::CommandId) -> bool {
             | ids::FOCUS_PANE_RIGHT
             | ids::FOCUS_PANE_UP
             | ids::FOCUS_PANE_DOWN
+            | ids::RESIZE_PANE_LEFT
+            | ids::RESIZE_PANE_RIGHT
+            | ids::RESIZE_PANE_UP
+            | ids::RESIZE_PANE_DOWN
+            | ids::TOGGLE_PANE_ZOOM
     )
 }
 
@@ -10705,11 +11413,14 @@ impl WorkspaceView {
     }
 
     /// The active tab's panes for smoke fixtures, as `<prefix>` fields:
-    /// `panes` counts them and `pane_focus` is the focused pane's index.
-    /// In layout order and `;`-separated, `pane_grids` holds each pane's
-    /// requested grid as `columns,rows`, `pane_rects` its terminal bounds in
-    /// window points, and `pane_close` its title bar close button's centre
-    /// as `x,y`, or `none` while the tab is not split.
+    /// `panes` counts them, `pane_focus` is the focused pane's index, and
+    /// `pane_zoomed` the zoomed one's, or `none`. In split layout order and
+    /// `;`-separated, `pane_grids` holds each pane's requested grid as
+    /// `columns,rows`, `pane_rects` its drawn terminal bounds in window
+    /// points (a pane a zoom hides keeps its split bounds), and `pane_close`
+    /// and `pane_zoom` its title bar buttons' centres as `x,y`, or `none`
+    /// while the tab is not split. `pane_dividers` lists the drawn
+    /// dividers' grab zones as `x,y,w,h`.
     pub(super) fn pane_smoke_state(
         &self,
         prefix: &str,
@@ -10717,20 +11428,34 @@ impl WorkspaceView {
         cx: &App,
     ) -> String {
         let tab = self.active_tab_view(cx);
-        let rects = tab.zip(self.terminal_geometry(window).bounds).and_then(
-            |(tab, bounds)| Self::tab_panes(tab.id, bounds, window, cx),
-        );
-        let panes: Vec<_> = rects
+        let bounds = self.terminal_geometry(window).bounds;
+        let zoomed = tab.and_then(|tab| self.shown_zoom(tab, cx));
+        let panes_of = |zoom| {
+            tab.zip(bounds).and_then(|(tab, bounds)| {
+                self.tab_panes(tab.id, bounds, zoom, window, cx)
+            })
+        };
+        let split = panes_of(None);
+        let drawn = zoomed.and_then(|zoomed| panes_of(Some(zoomed)));
+        let panes: Vec<_> = split
             .iter()
             .flat_map(|rects| &rects.panes)
-            .filter_map(|rect| Some((rect, tab?.pane(rect.pane)?)))
-            .collect();
-        let focus = tab
-            .and_then(|tab| {
-                let focused = tab.focused().pane;
-                panes.iter().position(|(rect, _)| rect.pane == focused)
+            .filter_map(|rect| {
+                let rect = drawn
+                    .as_ref()
+                    .and_then(|drawn| drawn.pane(rect.pane))
+                    .unwrap_or(rect);
+                Some((rect, tab?.pane(rect.pane)?))
             })
-            .map_or_else(|| "none".to_owned(), |index| index.to_string());
+            .collect();
+        let index_of = |pane: Option<PaneId>| {
+            pane.and_then(|pane| {
+                panes.iter().position(|(rect, _)| rect.pane == pane)
+            })
+            .map_or_else(|| "none".to_owned(), |index| index.to_string())
+        };
+        let focus = index_of(tab.map(|tab| tab.focused().pane));
+        let zoom_index = index_of(zoomed);
         let joined =
             |field: &dyn Fn(&pane_geometry::PaneRect, &PaneView) -> String| {
                 panes
@@ -10739,12 +11464,10 @@ impl WorkspaceView {
                     .collect::<Vec<_>>()
                     .join(";")
             };
-        let grids = joined(&|_, pane| {
-            let grid = pane.view.read(cx).requested_grid;
-            format!("{},{}", grid.columns, grid.rows)
-        });
-        let terminals = joined(&|rect, _| {
-            let bounds = rect.terminal;
+        let point_of = |point: gpui::Point<Pixels>| {
+            format!("{},{}", f32::from(point.x), f32::from(point.y))
+        };
+        let rect_of = |bounds: Bounds<Pixels>| {
             format!(
                 "{},{},{},{}",
                 f32::from(bounds.origin.x),
@@ -10752,19 +11475,37 @@ impl WorkspaceView {
                 f32::from(bounds.size.width),
                 f32::from(bounds.size.height)
             )
+        };
+        let grids = joined(&|_, pane| {
+            let grid = pane.view.read(cx).requested_grid;
+            format!("{},{}", grid.columns, grid.rows)
         });
-        let closes = joined(&|rect, _| {
-            rect.title_bar.map_or_else(
-                || "none".to_owned(),
-                |bar| {
-                    let center = Self::pane_close_center(bar);
-                    format!("{},{}", f32::from(center.x), f32::from(center.y))
-                },
-            )
-        });
+        let terminals = joined(&|rect, _| rect_of(rect.terminal));
+        let button = |center: fn(Bounds<Pixels>) -> gpui::Point<Pixels>| {
+            joined(&|rect, _| {
+                rect.title_bar.map_or_else(
+                    || "none".to_owned(),
+                    |bar| point_of(center(bar)),
+                )
+            })
+        };
+        let closes = button(Self::pane_close_center);
+        let zooms = button(Self::pane_zoom_center);
+        let dividers = self
+            .drawn_dividers
+            .borrow()
+            .iter()
+            .map(|divider| rect_of(divider.grab))
+            .collect::<Vec<_>>()
+            .join(";");
         format!(
-            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes}",
-            panes.len()
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_dividers={}",
+            panes.len(),
+            if dividers.is_empty() {
+                "none"
+            } else {
+                &dividers
+            },
         )
     }
 

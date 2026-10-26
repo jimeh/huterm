@@ -3031,7 +3031,7 @@ fn a_pane_title_bars_close_button_closes_only_its_pane(
     });
     let close = harness.update_view(window, |view, window, cx| {
         let bounds = view.terminal_geometry(window).bounds.unwrap();
-        let rects = WorkspaceView::tab_panes(tab, bounds, window, cx).unwrap();
+        let rects = view.tab_panes(tab, bounds, None, window, cx).unwrap();
         let title_bar = rects.pane(second).unwrap().title_bar.unwrap();
         WorkspaceView::pane_close_center(title_bar)
     });
@@ -3174,5 +3174,328 @@ fn focus_falls_back_to_the_first_pane_in_layout_order(cx: &mut TestAppContext) {
     harness.wait_for("the far left pane to install", |cx| {
         panes_shown(cx, window, tab)
             == Some((vec![far_left, left, right], left))
+    });
+}
+
+/// Whether `window`'s view of `pane` is visible, and the grid it requests.
+fn pane_shown(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    tab: TabId,
+    pane: PaneId,
+) -> Option<(bool, GridSize)> {
+    let view = pane_view(cx, window, tab, pane)?;
+    let view = view.read(cx);
+    Some((view.visible, view.requested_grid))
+}
+
+/// The weights of the projected layout's root split of `tab`.
+fn root_weights(cx: &App, tab: TabId) -> Option<Vec<u32>> {
+    match cx
+        .global::<Desktop>()
+        .hierarchy
+        .state()
+        .tab(tab)?
+        .layout
+        .root()
+    {
+        huterm_protocol::PaneNode::Split(split) => {
+            Some(split.children.iter().map(|child| child.weight).collect())
+        }
+        huterm_protocol::PaneNode::Pane(_) => None,
+    }
+}
+
+impl DesktopHarness {
+    /// A window showing `tab` split into two ECHO panes side by side, and
+    /// the two panes, once both show their shells.
+    fn split_window(
+        &mut self,
+        tab: TabId,
+    ) -> (AnyWindowHandle, PaneId, PaneId) {
+        let window = self.attach_window();
+        self.wait_text(window, tab, "READY");
+        self.activate(window, tab);
+        let first = self.first_pane(tab);
+        let second = self.split(tab, first, SplitDirection::Right, ECHO);
+        self.wait_for("the second pane to show", |cx| {
+            pane_screen(cx, window, tab, second)
+                .is_some_and(|text| text.contains("READY"))
+        });
+        (window, first, second)
+    }
+
+    /// The centre of `window`'s first drawn divider grab zone.
+    fn divider_center(
+        &mut self,
+        window: AnyWindowHandle,
+    ) -> gpui::Point<Pixels> {
+        self.update_view(window, |view, _, _| {
+            view.drawn_dividers
+                .borrow()
+                .first()
+                .map(|divider| divider.grab.center())
+        })
+        .expect("a drawn divider")
+    }
+}
+
+#[gpui::test]
+fn zooming_a_pane_hides_its_siblings_in_this_window_only(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    let other = harness.attach_window();
+    harness.wait_for("the other window to show both panes", |cx| {
+        panes_shown(cx, other, tab).is_some_and(|(panes, _)| panes.len() == 2)
+    });
+    let split_grid = harness
+        .cx
+        .update(|cx| pane_shown(cx, window, tab, second))
+        .unwrap()
+        .1;
+    harness.activate(window, tab);
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_for("the zoomed pane to take the whole tab", |cx| {
+        pane_shown(cx, window, tab, second).is_some_and(|(visible, grid)| {
+            visible && grid.columns > split_grid.columns
+        }) && pane_shown(cx, window, tab, first)
+            .is_some_and(|(visible, _)| !visible)
+    });
+    // The other window keeps both panes; the hidden one keeps its grid.
+    harness.cx.update(|cx| {
+        assert!(pane_shown(cx, other, tab, first).unwrap().0);
+        assert!(pane_shown(cx, other, tab, second).unwrap().0);
+        assert!(
+            pane_shown(cx, window, tab, first).unwrap().1.columns
+                <= split_grid.columns + 1
+        );
+    });
+    // Focus navigation unzooms, as tmux does.
+    harness.invoke(window, ids::FOCUS_PREVIOUS_PANE).unwrap();
+    harness.wait_for("navigation to unzoom", |cx| {
+        pane_shown(cx, window, tab, first).is_some_and(|(visible, _)| visible)
+            && pane_shown(cx, window, tab, second)
+                .is_some_and(|(visible, grid)| visible && grid == split_grid)
+            && panes_shown(cx, window, tab)
+                .is_some_and(|(_, focus)| focus == first)
+    });
+}
+
+#[gpui::test]
+fn a_shared_zoom_set_in_one_window_moves_the_others_focus(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.panes.zoom = huterm_config::PaneZoomScope::Shared;
+    });
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    let other = harness.attach_window();
+    harness.wait_for("the other window to show both panes", |cx| {
+        panes_shown(cx, other, tab) == Some((vec![first, second], first))
+    });
+    harness.activate(window, tab);
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_for("both windows to show the shared zoom", |cx| {
+        [window, other].into_iter().all(|shown| {
+            pane_shown(cx, shown, tab, first)
+                .is_some_and(|(visible, _)| !visible)
+                && pane_shown(cx, shown, tab, second)
+                    .is_some_and(|(visible, _)| visible)
+        }) && panes_shown(cx, other, tab)
+            .is_some_and(|(_, focus)| focus == second)
+    });
+    // Closing the zoomed pane elsewhere clears the zoom.
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, second)
+        .unwrap();
+    harness.wait_for("the survivor to show unzoomed", |cx| {
+        [window, other].into_iter().all(|shown| {
+            panes_shown(cx, shown, tab) == Some((vec![first], first))
+                && pane_shown(cx, shown, tab, first)
+                    .is_some_and(|(visible, _)| visible)
+        })
+    });
+}
+
+#[gpui::test]
+fn a_title_bars_zoom_button_toggles_its_pane(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    let button = |harness: &mut DesktopHarness, pane| {
+        harness.update_view(window, |view, window, cx| {
+            let bounds = view.terminal_geometry(window).bounds.unwrap();
+            let zoom = view
+                .active_tab_view(cx)
+                .and_then(|tab| view.shown_zoom(tab, cx));
+            let rects = view.tab_panes(tab, bounds, zoom, window, cx).unwrap();
+            WorkspaceView::pane_zoom_center(
+                rects.pane(pane).unwrap().title_bar.unwrap(),
+            )
+        })
+    };
+    let zoom = button(&mut harness, first);
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_click(zoom, gpui::Modifiers::none());
+    harness.wait_for("the first pane to zoom and take focus", |cx| {
+        pane_shown(cx, window, tab, second).is_some_and(|(visible, _)| !visible)
+            && panes_shown(cx, window, tab)
+                .is_some_and(|(_, focus)| focus == first)
+    });
+    let unzoom = button(&mut harness, first);
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_click(unzoom, gpui::Modifiers::none());
+    harness.wait_for("the second pane to show again", |cx| {
+        pane_shown(cx, window, tab, second).is_some_and(|(visible, _)| visible)
+    });
+}
+
+#[gpui::test]
+fn a_divider_drag_previews_reflows_and_commits_once(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    let before = harness
+        .cx
+        .update(|cx| pane_shown(cx, window, tab, first))
+        .unwrap()
+        .1;
+    let start = harness.divider_center(window);
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(
+        start,
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_move(
+        start + gpui::point(px(-120.0), px(0.0)),
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    // The preview resizes both panes while the runtime keeps its weights.
+    harness.wait_for("the preview to narrow the first pane", |cx| {
+        pane_shown(cx, window, tab, first)
+            .is_some_and(|(_, grid)| grid.columns < before.columns)
+            && root_weights(cx, tab) == Some(vec![500_000, 500_000])
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_up(
+        start + gpui::point(px(-120.0), px(0.0)),
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    harness.wait_for("the release to commit the weights", |cx| {
+        root_weights(cx, tab).is_some_and(|weights| weights[0] < 500_000)
+    });
+    let shown = harness
+        .cx
+        .update(|cx| pane_shown(cx, window, tab, first))
+        .unwrap()
+        .1;
+    assert!(shown.columns < before.columns, "the divider snapped back");
+    // No terminal saw the press: neither pane selected anything.
+    harness.cx.update(|cx| {
+        for pane in [first, second] {
+            let view = pane_view(cx, window, tab, pane).unwrap();
+            assert!(view.read(cx).selection.is_none());
+        }
+    });
+}
+
+#[gpui::test]
+fn escape_or_losing_the_split_cancels_a_divider_drag(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    let start = harness.divider_center(window);
+    let drag = |harness: &mut DesktopHarness| {
+        let mut visual = VisualTestContext::from_window(window, &harness.cx);
+        visual.simulate_mouse_down(
+            start,
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        visual.simulate_mouse_move(
+            start + gpui::point(px(80.0), px(0.0)),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+    };
+    let dragging = |cx: &mut App| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .is_ok_and(|view| view.read(cx).divider_drag.is_some())
+            })
+            .unwrap_or(false)
+    };
+    drag(&mut harness);
+    harness.wait_for("the drag to start", dragging);
+    harness
+        .cx
+        .dispatch_keystroke(window, Keystroke::parse("escape").unwrap());
+    harness.wait_for("Escape to cancel the drag", |cx| !dragging(cx));
+    drag(&mut harness);
+    harness.wait_for("the drag to start again", dragging);
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, second)
+        .unwrap();
+    harness.wait_for("the closed split to cancel the drag", |cx| {
+        !dragging(cx)
+            && panes_shown(cx, window, tab) == Some((vec![first], first))
+    });
+    assert_eq!(harness.cx.update(|cx| root_weights(cx, tab)), None);
+}
+
+#[gpui::test]
+fn resize_commands_move_the_pane_edge_and_stop_at_the_minimum(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    let grids = |cx: &mut App| {
+        (
+            pane_shown(cx, window, tab, first).unwrap().1,
+            pane_shown(cx, window, tab, second).unwrap().1,
+        )
+    };
+    let (left, right) = harness.cx.update(grids);
+    harness.invoke(window, ids::RESIZE_PANE_RIGHT).unwrap();
+    harness.wait_for("the first pane to grow by five columns", |cx| {
+        let (now_left, now_right) = grids(cx);
+        now_left.columns == left.columns + 5
+            && now_right.columns + 5 == right.columns
+    });
+    // The first pane has no left neighbour, so moving its left edge does
+    // nothing; a large step right stops with the second at the minimum.
+    harness.invoke(window, ids::RESIZE_PANE_LEFT).unwrap();
+    harness
+        .update_view(window, |view, window, cx| {
+            view.invoke_interactive(
+                &CommandInvocation::new(
+                    ids::RESIZE_PANE_RIGHT,
+                    vec![huterm_protocol::CommandArgument::new(
+                        "amount",
+                        huterm_protocol::CommandValue::Integer(100),
+                    )],
+                ),
+                window,
+                cx,
+            )
+        })
+        .unwrap();
+    harness.wait_for("the second pane to stop at four columns", |cx| {
+        grids(cx).1.columns == MIN_PANE_COLUMNS
     });
 }

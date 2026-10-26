@@ -718,6 +718,17 @@ pub mod ids {
     pub const FOCUS_PANE_UP: CommandId = CommandId::new("focus_pane_up");
     /// Focuses the pane below the focused one.
     pub const FOCUS_PANE_DOWN: CommandId = CommandId::new("focus_pane_down");
+    /// Moves the focused pane's left edge to the left.
+    pub const RESIZE_PANE_LEFT: CommandId = CommandId::new("resize_pane_left");
+    /// Moves the focused pane's right edge to the right.
+    pub const RESIZE_PANE_RIGHT: CommandId =
+        CommandId::new("resize_pane_right");
+    /// Moves the focused pane's top edge up.
+    pub const RESIZE_PANE_UP: CommandId = CommandId::new("resize_pane_up");
+    /// Moves the focused pane's bottom edge down.
+    pub const RESIZE_PANE_DOWN: CommandId = CommandId::new("resize_pane_down");
+    /// Zooms the focused pane across its tab, or unzooms it.
+    pub const TOGGLE_PANE_ZOOM: CommandId = CommandId::new("toggle_pane_zoom");
     /// Opens the window's application menu.
     pub const OPEN_MENU: CommandId = CommandId::new("open_menu");
     /// Focuses the window's notice list.
@@ -878,6 +889,14 @@ const NAME: ArgumentSpec = ArgumentSpec {
     required: Requirement::Always,
     prompt: true,
 };
+
+/// A pane resize moves its edge by `amount` cells.
+const RESIZE: &[ArgumentSpec] = &[ArgumentSpec {
+    name: "amount",
+    kind: ArgumentKind::Integer { min: 1, max: 100 },
+    required: Requirement::Optional,
+    prompt: false,
+}];
 
 /// Movement commands extend the selection instead when `select` is true.
 const SELECT: &[ArgumentSpec] = &[ArgumentSpec {
@@ -1274,6 +1293,44 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Focus Pane Down",
         "Focus the pane below the focused one.",
+        &[],
+    ),
+    spec(
+        ids::RESIZE_PANE_LEFT,
+        CommandScope::Window,
+        "Resize Pane Left",
+        "Move the focused pane's left edge left by `amount` cells, 5 by \
+         default.",
+        RESIZE,
+    ),
+    spec(
+        ids::RESIZE_PANE_RIGHT,
+        CommandScope::Window,
+        "Resize Pane Right",
+        "Move the focused pane's right edge right by `amount` cells, 5 by \
+         default.",
+        RESIZE,
+    ),
+    spec(
+        ids::RESIZE_PANE_UP,
+        CommandScope::Window,
+        "Resize Pane Up",
+        "Move the focused pane's top edge up by `amount` cells, 5 by default.",
+        RESIZE,
+    ),
+    spec(
+        ids::RESIZE_PANE_DOWN,
+        CommandScope::Window,
+        "Resize Pane Down",
+        "Move the focused pane's bottom edge down by `amount` cells, 5 by \
+         default.",
+        RESIZE,
+    ),
+    spec(
+        ids::TOGGLE_PANE_ZOOM,
+        CommandScope::Window,
+        "Toggle Pane Zoom",
+        "Show the focused pane across its whole tab, or show every pane again.",
         &[],
     ),
     spec(
