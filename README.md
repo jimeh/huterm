@@ -1,1207 +1,277 @@
 # Huterm
 
-Huterm is an experimental terminal emulator and multiplexer written in Rust.
-It will start as a native desktop application built with GPUI, but the terminal
-runtime will not belong to the desktop UI. Huterm will own its pseudoterminals,
-terminal state, sessions, workspaces, tabs, and pane layouts so other clients
-can attach to the same runtime later.
+Huterm is a terminal emulator and multiplexer written in Rust. Its runtime owns
+the pseudoterminals, terminal state, sessions, workspaces, tabs, and panes, so
+the native desktop app is one client of that runtime rather than its owner. A
+local server, a text client, and a browser client are planned on the same
+runtime.
 
-The first proof-of-concept implementation is under active validation. It has a
-working PTY runtime, incremental terminal snapshots, and macOS/Linux GPUI clients.
-Portable core tests, repository checks, Linux native tests, and the Linux Xvfb
-smoke pass locally. CI enforces the same suite on Apple Silicon macOS and native
-Linux x86_64/aarch64; green current-head CI is required for PR readiness, while
-manual visual/input evidence remains before the milestone is complete.
+Huterm is pre-1.0 and changes quickly. Signed macOS builds and Linux packages
+are published on the [releases page](https://github.com/jimeh/huterm/releases),
+and macOS builds update themselves. The desktop app runs on macOS 14 or later
+and on Linux x86_64 and aarch64 under X11 or XWayland. Every terminal uses
+[Ghostty](https://ghostty.org)'s `libghostty-vt` for terminal emulation and
+GPUI for rendering.
 
-## Installation
+## What works today
 
-macOS builds require macOS 14.0 or later.
+- **Terminals:** 24-bit color, runtime-owned scrollback, selection, copy and
+  paste, application mouse reporting, clickable links, file drops, clipboard
+  writes from applications (OSC 52, OSC 1337 `Copy`, and Kitty's OSC 5522),
+  color and geometry queries, a visual bell, and a private `xterm-huterm`
+  terminfo entry.
+- **Windows and tabs:** several windows, each with ordered tabs in a top,
+  bottom, left, or right bar or merged into the title bar. Tabs can be
+  reordered by dragging, renamed, and labelled by program, title, or working
+  directory.
+- **Commands:** every action is a catalog command with typed arguments. The
+  command palette finds commands by fuzzy search and prompts for arguments, and
+  keybindings can bind any command with arguments and `when` conditions.
+- **Presentation:** native fullscreen, non-native fullscreen on macOS, and
+  quake windows summoned by global shortcuts on macOS and native X11.
+- **Safe close and Quit:** Huterm inspects each terminal's processes and asks
+  before closing anything with running jobs. An idle shell closes without a
+  prompt.
+- **Configuration:** a TOML file with a published JSON Schema, 14 built-in
+  themes, custom themes, and reload without restarting shells.
 
-Releases provide a universal macOS app plus native Linux x86_64 and aarch64
-builds. Each Linux architecture has an AppImage for direct launch and a neutral
-binary tarball for manual installation. The tarball contains no AppImage runtime
-or AppImage-only files.
+These are not available yet:
 
-Linux packages target glibc 2.35 or newer and require X11 or XWayland plus a
-working Vulkan driver. Make an AppImage executable before launching it. If FUSE
-is unavailable, use `--appimage-extract-and-run` or install the tarball instead.
-Verify downloads against the release's `SHA256SUMS`.
+- Split panes. Each tab holds one pane.
+- Switching sessions or workspaces in a window, and moving tabs between
+  windows. Each window gets a private session.
+- A background server, local IPC, a command-line client, a TUI, or a browser
+  client.
+- Saving and restoring sessions or terminal history across restarts.
+- Configurable scrollback limits, shell integration, desktop notifications,
+  inline graphics, and window transparency.
 
-## Direction
+[Roadmap](#roadmap) summarizes the plan for these.
 
-Huterm is based on four decisions:
+## Install
 
-- Huterm owns PTY spawning, I/O, resize, process lifetime, and attachment
-  behavior. It will initially use `portable-pty` for the operating-system
-  implementation.
-- The runtime owns canonical terminal state and the shared scroll position.
-  Every terminal uses `libghostty-vt` behind Huterm's private snapshot and
-  input boundary.
-- Clients render Huterm-owned terminal snapshots. The first client uses GPUI;
-  a text-based terminal client can use the same model later.
-- Huterm application code targets the MIT license. Dependencies may use other
-  compatible permissive licenses. GPL-covered Zed application code is outside
-  the project boundary.
+Download a build from the
+[releases page](https://github.com/jimeh/huterm/releases). Each release
+publishes a `SHA256SUMS` file; check downloads against it.
 
-The Ghostty adapter stays behind the runtime's private emulator module. PTY
-ownership, workspaces, and GPUI rendering remain independent of native emulator
-types.
+### macOS
 
-## Current desktop
+Download `Huterm-<version>-macOS-universal.zip`, unzip it, and move
+`Huterm.app` to Applications. The app is a universal binary, signed with a
+Developer ID and notarized by Apple, and needs macOS 14.0 or later. Intel Macs
+are supported by the build but have not been validated on Intel hardware.
 
-Huterm runs on macOS Apple Silicon and Linux x86_64/aarch64. Each native window
-has a private session and backing workspace with ordered tabs, one pane per tab,
-and independent terminal processes. Tabs can appear at the top, bottom, left,
-or right, or in the title bar (the macOS default). Hidden tabs keep
-processing output without preparing viewport snapshots or painting.
-Drag tabs to reorder them within a window. The preview stays in the tab bar
-even when the pointer leaves the window; releasing commits the clamped insertion
-position. Escape cancels. Drag near a bar edge to scroll toward hidden tabs.
-Horizontal tabs size to their titles by default; with `width = "fill"` they
-share the window width, shrinking to 120 logical pixels before scrolling.
-Vertical tabs keep a fixed height in a resizable sidebar; drag its inner edge
-to resize it between 140 and 400 logical points, capped at half the window
-width, and each window keeps its chosen width. Scroll the
-bar with a trackpad or mouse wheel. Horizontal bars show floating arrows where
-more tabs remain plus a slim, draggable position indicator along their bottom
-edge; vertical bars show an overlay scrollbar that widens on hover and can be
-dragged. The new-tab button stays visible and follows the last tab in
-vertical mode. Moving tabs between windows and tearing tabs out are not
-supported.
+Release builds update themselves with [Sparkle](https://sparkle-project.org).
+Choose **Check for Updates...** from the Huterm application menu to check now.
+On the second launch, Sparkle asks whether to check automatically; if you
+agree, it checks every 24 hours. The update window lists the release notes for
+every version between the installed one and the update. The `[updates]`
+settings in [Configuration](docs/configuration.md#updates) can manage scheduled
+checks instead.
 
-On macOS, Huterm launches `$SHELL -l` in the home directory, as a Finder launch
-would, and sets `LANG=en_US.UTF-8` only when no locale variable is inherited.
-Linux launches `$SHELL` in the current working directory. Without `$SHELL`,
-Huterm falls back to `/bin/zsh` on macOS and `/bin/sh` on Linux.
+### Linux
 
-Closing a tab stops its terminal. Windows attach to sessions. Closing a window
-only detaches it when another window views the same session, and then never
-asks for confirmation; closing a session's last window terminates the session. A
-window whose last tab goes away closes too, whether it closed that tab, another
-window closed or moved it, or its shell exited. That close stops no terminal and
-never asks; a window whose workspace gains a tab meanwhile stays open and shows
-it. A window whose session is closed elsewhere closes without a notice.
-Hiding a quake window keeps its attachment and terminals. Core detachment and
-attachment retargeting preserve zero-view sessions. Huterm stays alive
-without windows while any session survives or a quake hotkey is registered, and
-macOS Dock reopen creates a window; with none of them left, it exits.
+Each release has two packages for x86_64 and for aarch64:
 
-Close and Quit warn about foreground/background jobs or unknown process state.
-Idle shells need no confirmation. Structure and job evidence are rechecked before
-teardown. Consent covers existing job groups while their leader creation identity
-survives, including leader exec and child churn. A leaderless group needs an
-original surviving member. New groups, lost identity evidence, structural changes,
-or newly unknown process state require reassessment and renewed consent when
-needed. Completed jobs do not re-prompt. A terminal whose runtime stopped on its
-own, after an internal failure, closes without a prompt or a failure notice,
-including when its window closes or the application quits; its runtime already
-stopped its shell. macOS Dock Quit uses the same cancellable path as the
-application menu.
-Quit includes all sessions, even those with no views. Before teardown it retains
-one in-memory hierarchy and window-navigation/layout capture. Disk persistence,
-terminal-history serialization, and restart restoration remain unimplemented.
-Tabs close automatically without confirmation when their root shell exits.
-Set `[terminal] close_on_exit = false` to retain exited tabs for history. Retained
-tabs allow selection, copy, scrolling, and resizing, but send no terminal input.
-Reloading this setting affects future exit events only.
+- `Huterm-<version>-Linux-<arch>.AppImage` runs directly. Make it executable
+  first. If FUSE is unavailable, run it with `--appimage-extract-and-run` or
+  use the tarball.
+- `Huterm-<version>-Linux-<arch>.tar.gz` holds the same payload for manual
+  installation: `bin/huterm`, a desktop entry, AppStream metadata, an icon,
+  and license notices. It has no AppImage runtime.
 
-Keyboard and application mouse input, paste, selection and copy, runtime-owned
-scrollback, configurable fonts and themes, native fullscreen, and alternate-screen
-applications are supported. A background server, local IPC, workspace switching,
-split panes, and a TUI client remain follow-up work.
+The packages need glibc 2.35 or newer (Ubuntu 22.04 or later), X11 or
+XWayland, and a working Vulkan driver. GNOME on Wayland runs Huterm through
+XWayland. Linux builds do not update themselves.
 
-See the [workspace plan](docs/plans/workspaces-windows-tabs.md) for the ownership
-boundaries and follow-up milestones, and the
-[initial desktop plan](docs/plans/initial-desktop-poc.md) for the original,
-since superseded, scope.
+## Configuration
 
-## Core ownership
+Huterm reads `$HUTERM_CONFIG_FILE` when it is set. Otherwise it reads
+`$XDG_CONFIG_HOME/huterm/config.toml`, falling back to
+`~/.config/huterm/config.toml`, on both macOS and Linux. The **Open Settings**
+command (`open_settings`) creates a documented default file if none exists and
+opens it in the system editor. Add this header to get completion and validation
+from the published JSON Schema in Taplo or the Even Better TOML editor
+extension:
 
-One runtime owns a logical socket scope, ordered sessions, ordered workspaces,
-and ordered tabs. The socket name defaults to `default`; this does not create a
-socket file or listener. Core supports custom names, clearing name overrides,
-ID-targeted selection validation, tab transfers between workspaces, and workspace
-transfers between sessions. Moves preserve pane and terminal identities, live
-processes, and attachments. Names can be duplicated; structural IDs include the
-runtime incarnation so equal numeric IDs in different runtimes cannot alias.
+```toml
+#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
+```
 
-These are core APIs. The desktop still creates a private session per window;
-rename controls, cross-window transfers, session/workspace switching, shared
-views, and persistence remain follow-up work. The embedded attachment and close
-lifecycle is implemented; server-mode lifetime policy and IPC remain deferred.
+**Reload Configuration** (Cmd+Shift+, on macOS and Ctrl+Shift+, on Linux, with
+a US keyboard layout) applies changes to every open window without restarting
+shells. An invalid file leaves
+the running settings in place and shows an error.
 
-Process inspection reads operating-system process facts in process through
-`huterm-procinfo`, off the UI and terminal parser threads. It follows shell
-descendants and the owned PTY, including background process groups while the
-root shell is alive. Scan failures require
-confirmation. Root-shell exit completes the terminal and reaps the child
-immediately, including when its tab is retained for history. Closing completed
-history does not scan for or signal surviving processes. This follows the
-root-exit policy used by other desktop terminals; a surviving background job
-does not keep the terminal open or trigger a warning after shell exit.
-Detached processes cannot always be attributed or terminated. Process creation
-or identity changes after the final live-process snapshot are inherently racy.
+- [Configuration](docs/configuration.md) covers every setting: tabs and
+  windows, fonts and themes, quake windows, links, clipboard writes, terminal
+  identity, and updates.
+- [Commands and keybindings](docs/keybindings.md) covers the command palette,
+  keybinding syntax, every command, and the default bindings.
 
-Terminal snapshots follow the window's delivered display frames by default.
-Pending viewport changes may use one additional snapshot per frame to keep
-scrolling responsive when an output snapshot has used the normal allowance.
-Set `[terminal] refresh = "unlimited"` to request another dirty snapshot as soon
-as the previous request completes. This can increase CPU work without increasing
-visible frames. Reload applies the policy to existing tabs. Hidden tabs continue
-processing terminal events without building viewport snapshots.
+## Windows, sessions, and tabs
 
-## Mouse interaction
+Each window creates and attaches to a private session with one workspace of
+ordered tabs. Each tab holds one pane with its own terminal and shell. Hidden
+tabs keep processing output without building snapshots or painting. A tab closes
+when its shell exits, unless `close_on_exit = false` keeps it for its history;
+see [Shells](docs/configuration.md#shells). The configuration guide also covers
+[the tab bar](docs/configuration.md#tab-bar),
+[fullscreen](docs/configuration.md#fullscreen), and
+[quake windows](docs/configuration.md#quake-windows).
 
-Applications can request button reports with mode 1000, held-button motion with
-1002, or all motion with 1003. Huterm supports left, middle, and right buttons,
-vertical and horizontal wheels, and legacy, UTF-8 1005, and SGR 1006 reports.
-Control and Alt/Option modifiers are included. Applications that do not enable
-reporting receive no mouse input.
+### Closing windows and quitting
 
-Hold Shift when starting a selection or scrolling to use local terminal
-selection and scrollback. The scrollbar always stays local. Mouse input also
-stays local while viewing scrollback, including while a scroll away from live
-is waiting for its snapshot. Return to the live viewport to interact with the
-application again. A drag keeps its original ownership until release, even if
-Shift changes or the pointer leaves the grid.
+Closing a tab stops its terminal. Closing a window closes its session and
+stops its terminals. A window closes on its own when its last tab goes away,
+for example when its shell exits; that close stops no other terminal and never
+asks.
 
-Leaving the live viewport or losing focus ends application button gestures.
-Coordinates for continuing gestures clamp to the grid edge. Fast application
-wheel input is limited to 32 steps per platform event; excess whole steps and
-wheel steps that cannot fit the input queue are discarded. Legacy reports clamp
-to column/row 223 and UTF-8 reports to 2015; SGR uses the full terminal grid.
+Close and Quit warn about foreground or background jobs, or when Huterm cannot
+determine a terminal's process state. Idle shells need no confirmation. Huterm
+checks again before it tears anything down. Consent covers the job groups that
+existed when you confirmed, as long as their leaders survive, even if a leader
+runs `exec` or its children change. New job groups, lost process evidence,
+structural changes, or newly unknown process state lead to a new assessment
+and, where needed, a new prompt. Completed jobs do not prompt again. A terminal
+whose runtime stopped after an internal failure closes without a prompt; its
+runtime has already stopped its shell.
 
-## Development
+Huterm reads process facts in-process, off the UI and terminal threads. It
+follows the shell's descendants and processes that hold the terminal, including
+background process groups while the shell is alive. When the shell exits,
+Huterm treats the terminal as finished, like other desktop terminals: a
+surviving background job does not keep the tab open or cause a warning.
+Detached processes cannot always be attributed or terminated.
 
-Install the pinned tools and local hook:
+Quit covers every session, and the Dock's Quit on macOS uses the same
+cancellable path as the application menu. Huterm keeps running without windows
+while a session survives or a quake shortcut is registered, and the macOS Dock
+icon reopens a window. Otherwise it exits when the last window closes.
+
+The runtime and desktop already handle several windows on one session: closing
+one of those windows only detaches it, without a prompt, and the session's last
+window closes the session. No command opens a second window on a session yet;
+that arrives with session switching.
+
+## Develop
+
+Huterm uses [Mise](https://mise.jdx.dev) for its tools and tasks. Run
+`mise tasks` to list them all.
+
+Building on macOS needs macOS 14 or later and Xcode with Apple's Metal
+Toolchain component. Building on Linux needs the X11 and XKB development
+libraries and a Vulkan driver. The
+[development guide](docs/agents/development.md) lists the packages, and
+`mise run doctor` checks for them.
+
+Install the pinned tools and the pre-commit hook, then start the app:
 
 ```sh
 mise run setup
-```
-
-On macOS or Linux, launch the app with:
-
-```sh
 mise run dev
 ```
 
-Huterm reads `$HUTERM_CONFIG_FILE` when set, otherwise
-`$XDG_CONFIG_HOME/huterm/config.toml` or `~/.config/huterm/config.toml`. The
-Settings command creates a documented default file without replacing an
-existing one, then opens it in the system editor.
-
-Add this header to `config.toml` to associate its schema in Taplo or the
-Even Better TOML editor extension. Newly created default configs include it:
-
-```toml
-#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
-```
-
-The schema validates settings and command-specific keybinding arguments. For
-example, `select_tab` accepts an optional integer `args.index` from 1 through
-9, while `copy` rejects that argument. Huterm still checks keystroke and `when`
-syntax, platform restrictions, theme files, and inheritance cycles at runtime.
-Quake profiles share the same schema, including geometry and animation limits.
-Global shortcuts offer only the three quake commands and accept a text `profile`
-argument. Profile existence, display availability, shortcut conflicts, and OS
-registration are checked at runtime.
-Taplo completes command names and diagnoses arguments for the selected command.
-Command-specific argument completion depends on the editor; Taplo 0.10.0 does
-not currently offer it.
-
-`latest/download` follows the newest published release and may describe settings
-missing from an older installation. To match an installed version, use
-`https://github.com/jimeh/huterm/releases/download/vX.Y.Z/huterm.schema.json`.
-For development, point the directive at the absolute local path to
-`schemas/huterm.schema.json`. Release URLs become available after the first
-release containing these assets is published.
-
-Official release-packaged macOS builds use Sparkle's standard update interface.
-**Check for Updates...** is available from the Huterm application menu in those
-builds. Optional scheduled-check overrides live in the same config:
-
-```toml
-[updates]
-automatic_checks = true
-check_interval_hours = 24
-```
-
-Leave either setting absent to leave its persisted value under Sparkle's
-control. On a fresh profile, omitting both preserves Sparkle's normal consent
-prompt on the second launch and its 24-hour default interval. Explicit `true`
-or `false` enables or disables scheduled checks without prompting; setting an
-interval alone does not grant consent. Development binaries, ordinary local
-macOS packages, and Linux builds do not include Sparkle or contact the
-production update feed.
-
-Terminal padding defaults to 4 logical points on each side. Add or adjust the
-`[window]` section to change it:
-
-```toml
-#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
-
-[window]
-padding_x = 4.0
-padding_y = 4.0
-padding_balance = false
-macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
-menu_button = true # the window menu button in the title bar or tab bar
-shortcut_hints = false # key hints on the scroll pill and dialog buttons
-
-[tabs]
-label = "smart" # smart, title, process, directory, or process_and_directory
-directory = "name" # name, path, or short
-# position = "titlebar" # or top, bottom, left, right; Linux default: "top"
-always_show = false
-auto_hide_in_fullscreen = false
-style = "pill" # pill or strip
-pill_accent = false # accent bar inside the active pill
-close_button = "active" # active, hover, or always
-notch = "left" # fullscreen top bar beside a display notch: off, left, or right
-width = "fit" # fit or fill
-min_width = 96.0 # logical points; fit only
-max_width = 240.0 # logical points; fit only
-```
-
-Set `padding_balance = true` to split leftover horizontal space evenly between
-left and right when the window width does not fit whole columns. With it off,
-the remainder stays on the right. Vertical remainder always stays at the
-bottom. Padding accepts values from 0 to 256 points.
-
-`menu_button` shows a three-line menu button that opens the window menu: the
-command palette, tab and window commands, Copy and Paste, fullscreen, settings,
-reload, waiting notices, About, and Quit, with each item's current shortcut.
-On macOS
-it sits at the right end of the title bar. Without a title bar (fullscreen on
-either platform, or Linux without client-side decorations, where the window
-manager draws it) it joins the tab bar: the far right of a top or bottom bar,
-or beside `+` under a left or right column, and it hides with an auto-hidden
-bar. A yellow dot marks waiting notices. `menu_button = false` removes it;
-`open_menu` and every item stay available through the palette and shortcuts.
-Right-clicking empty tab-bar space also opens the window menu at the pointer,
-except in Huterm's own Linux title row, where it opens the window manager's
-menu.
-
-Menus and the command palette show each command's shortcut: macOS in its
-symbols (`⇧⌘P`), Linux in words (`Ctrl+Shift+P`), with Return, Tab,
-Backspace, and the arrows drawn as icons on both. The scroll pill, the close
-confirmation's buttons, and the About panel show key hints only with
-`shortcut_hints = true`.
-
-Right-clicking any tab, active or not, opens its context menu at the pointer
-without activating it; the targeted tab is outlined while the menu is open.
-The menu lists Rename Tab…, Copy Directory Path (disabled with "Directory
-unknown" until the tab reports a working directory; `copy_tab_directory`
-copies the local or remote path), Close Tab (its shortcut shows only on the
-active tab), Close Other Tabs (disabled with one tab), and Close Tabs to the
-Right, worded Close Tabs Below under a left or right column (disabled on the
-last tab). It does not open during a tab drag or while a close confirmation is
-showing, and it uses the same keys, dismissal, and focus return as the window
-menu.
-
-Right-clicking the terminal opens its context menu at the pointer; on macOS a
-Control-click does the same. Open Link and Copy Link Address lead the menu
-when the pointer is over a link. Copy is disabled until text is selected, and
-Paste stays enabled while the shell runs. Select All selects the scrollback
-and screen, Clear Scrollback erases history and keeps the screen, and Reset
-Terminal clears the screen, history, and modes a program left behind, as RIS
-does, without touching running programs. Scroll to Bottom appears while the
-view shows history. The menu also offers Copy Directory Path, Show in Finder
-or Open in File Manager for a local working directory, and New Tab, Rename
-Tab…, and Close Tab for the terminal's tab. `open_context_menu` opens it at the
-text cursor from the keyboard. When a program such as vim or tmux takes the
-mouse, a plain right-click goes to it and Shift+right-click opens the menu.
-`terminal.right_click` chooses the action instead: `"menu"` (default),
-`"paste"`, `"copy_or_paste"` (copy and clear a selection, otherwise paste), or
-`"ignore"`. Menus opened at the pointer shift up or down to fit the window
-and scroll only when taller than it, with a thin indicator on the right.
-
-Tabs show a small yellow dot before their title while a program holds the
-foreground; the exit, error, and bell indicators take its place. The native
-window title is `<active tab title> — Huterm` and follows tab switches and
-title changes, so window managers and switchers show the active tab. On macOS
-the title bar shows the active tab's title in place of the application name.
-
-About Huterm (`about`) opens a themed panel on both platforms with the version,
-identifier, platform (OS version, architecture, and the display backend on
-Linux), terminal engine, and build profile plus the short source revision
-when the build embedded one. Copy Details copies those lines as text; Close,
-Enter, or Escape closes it, and terminal input is blocked while it is showing.
-
-`position = "titlebar"` merges the tabs into the window's title bar; it is the
-macOS default, and Linux defaults to `top`. On macOS
-the 32-point title strip becomes the tab row: it starts after the traffic
-lights, holds the tabs and `+`, keeps its trailing space draggable with the
-usual double-click action, and ends with the menu button. The terminal gains
-the height a top bar would take. With a single tab and `always_show = false`,
-the tabs stay hidden as in the other positions, and the strip shows only the
-active tab's title. On Linux,
-Huterm asks for client-side decorations and draws the whole row itself: the
-tabs and `+`, draggable empty space, the menu button, and round minimize,
-maximize, and close controls. The controls follow the desktop's button layout,
-as GTK applications do: GNOME's `button-layout` setting (for example through
-GNOME Tweaks) or KDE's GTK settings choose which buttons appear and whether
-they sit at the left or right end, and a change applies to open windows
-immediately. Huterm reads the layout from the XSettings `Gtk/DecorationLayout`
-value and draws minimize, maximize, and close on the right when the desktop
-publishes none. Dragging the empty
-space moves the window, double-clicking it maximizes, and a right-click opens
-the window manager's menu; the close control takes the same assessed close
-path as the `close_window` command. A windowed, untiled window also gets a
-thin invisible border for resizing, a shadow, and rounded top corners, which
-disappear while it is maximized, tiled, or fullscreen. This needs a window
-manager that supports client-side decorations by advertising
-`_GTK_FRAME_EXTENTS`, such as GNOME's Mutter or KDE's KWin; GNOME on Wayland
-runs Huterm through XWayland, which Mutter manages. Other window managers,
-such as Openbox or i3, keep their own title bar, and `titlebar` behaves as
-`top` there. Wherever no title bar exists the tabs take a top bar
-instead: fullscreen on either platform and Quake windows.
-
-`style` selects Pill (the default) or Strip tabs for every placement. Left and
-right Strip tabs put the accent line on the window edge; left and right Pill
-tabs are rounded rows inset in the column. `pill_accent = true` draws an
-accent bar inside the active pill. `close_button` shows close buttons on
-hovered tabs only,
-on the active tab as well (the default), or on every tab. `notch = "left"` (the
-default) or `"right"` moves a top bar beside the camera housing in non-native
-fullscreen on a notched display, keeping its normal height at the bottom of
-that area and giving the bar's height back to the terminal; `"off"` keeps the
-bar below the notch, and elsewhere the setting is ignored. Themes
-color the tab bar through their tab chrome keys. `width = "fit"` (the default)
-sizes top and bottom tabs to their titles between `min_width` and `max_width`
-logical points, each accepting 48 through 600; `"fill"` shares the bar equally.
-
-With one tab the bar stays hidden unless `always_show = true`.
-`auto_hide_in_fullscreen = true` reveals the bar in fullscreen only when the
-pointer reaches its edge, even with one tab. It slides over the terminal
-without changing the grid and hides again after the pointer leaves, except for
-a top bar beside a notch, which has nowhere to hide and stays in place. Tab
-dragging and sidebar resizing keep it open, and switching, creating, or closing
-tabs reveals it for a second. Both settings take effect on reload.
-
-Huterm tracks each terminal's foreground program and working directory. The
-directory comes from the foreground program, or from the shell when another
-user owns that program. A bounded OSC 7 report overrides it while the program
-that sent the report still holds the foreground: a shell's report applies at
-its prompt, and a remote shell's report under `ssh` stops applying when `ssh`
-exits. Huterm checks after input, after output that follows a pause, after a
-title change, and once a second while a program runs; idle shells cost
-nothing.
-
-`label = "smart"` (the default) shows a running program's own title, or its
-name when it has not set one, and the directory at an idle shell. A program's
-title stops applying when the program exits. `label = "title"` shows the title
-set by the shell or program, `label = "process"` names the foreground program,
-or the script it runs, `label = "directory"` shows the directory, and
-`label = "process_and_directory"` combines both when available. Each mode
-falls back to the current terminal title and launched program. A custom tab
-name always wins, and the palette, drag previews, and close prompts use the
-same label as the tab bar.
-
-`directory = "name"` (the default) shows the last path component, `"path"`
-the full path, and `"short"` the path with parent components shortened to one
-character, as in `~/P/huterm`. The local home directory always reads as `~`,
-and paths under it start with `~/`; remote paths stay absolute.
-
-New tabs inherit the current directory by default when it is local and still
-an accessible directory. Remote, malformed, deleted, or inaccessible paths use
-the normal platform launch directory instead. Visual bells briefly flash the
-active terminal and mark an inactive tab until viewed:
-
-```toml
-[terminal]
-new_tab_directory = "inherit" # inherit or default
-
-[terminal.bell]
-visual = true
-```
-
-Reloading `visual = false` clears existing bell presentation. Bells never
-select a tab, activate a window, or change focus.
-
-The command palette sits near the top of the window by default and retains a
-cancelled search query for 15 seconds. Reopening it during that window restores
-and selects the query:
-
-```toml
-[palette]
-placement = "top"           # top or center
-retain_query = true
-retain_query_seconds = 15
-```
-
-`placement = "center"` centres the palette at its full height, so the input
-line stays put while results filter down. Set `retain_query = false` to disable
-retention. `retain_query_seconds` accepts values from 0 to 3600 seconds.
-
-Cmd-Enter on macOS, and F11 on either platform, toggle the configured fullscreen
-mode. macOS defaults to non-native fullscreen in the current Space. Set
-`macos_fullscreen_mode = "native"` to create a separate macOS Space instead.
-The green window button always uses AppKit's native fullscreen behavior.
-Non-native mode auto-hides the Dock and menu bar and restores
-the window's previous bounds on exit. Minimize and Zoom are unavailable while
-that window owns non-native presentation state.
-
-All fullscreen commands exit whichever mode is active. Rapid commands toggle
-the desired state and wait for each platform transition to finish. Reload
-changes future default toggles without changing an active mode. Linux always
-uses native X11 fullscreen and reports an error if the window manager ignores
-the request; the explicit non-native command is unavailable there.
-
-### Links and file drops
-
-Hold Cmd on macOS or Ctrl on Linux and click an underlined HTTP(S) link to open
-it with the system handler. Hover shows the destination on a small panel in
-the terminal's bottom-left corner. OSC 8 labels use their
-explicit destination; plain URLs can cross soft-wrapped rows. When a terminal
-application captures the mouse, add Shift to the configured modifier chord.
-Moving away, scrolling, changing the target, or pressing Escape cancels a click.
-Retained exited history supports links too.
-
-```toml
-[terminal]
-links = true
-link_modifiers = "cmd" # macOS default; Linux defaults to "ctrl"
-```
-
-Modifier names are `cmd`, `ctrl`, `alt`, and `shift`, joined by `-` in any
-nonempty combination. macOS rejects Ctrl because AppKit uses
-Control-click for the context menu. Reload applies both settings to open tabs.
-Only HTTP(S) destinations open. Oversized or unavailable lookups show no link.
-Ghostty's pinned OSC 8 parser accepts at most 2,046 combined URI and parameter
-bytes and discards larger sequences; Alacritty has a larger native limit.
-
-Drop files or folders onto a live terminal to paste their absolute paths in
-source order, escaped for bash/zsh and followed by a space. Huterm preserves
-symlink spelling, sends one paste, and never adds Enter. Bracketed paste follows
-the application's current mode. An invalid, non-UTF-8, control-containing, or
-oversized path rejects the whole drop. Exited terminals and confirmation dialogs
-do not accept file drops.
-
-### Application clipboard writes
-
-Terminal applications may write UTF-8 text to the system clipboard with OSC
-52. Huterm accepts the empty selector or `c`, preserves empty text and embedded
-NUL bytes, and ignores clipboard read requests. Both BEL and ST terminate OSC
-52 writes. Ghostty also accepts its OSC 1337 `Copy` extension and Kitty's
-clipboard protocol (OSC 5522) writes, which take the first `text/plain`
-representation whose charset, if given, is UTF-8, ignore other MIME types,
-and follow the same policy. Kitty programs receive `DONE` on success, `EPERM`
-when the policy denies the write, `ENOSYS` for other clipboards or requests
-without text, `EINVAL` for text that is not UTF-8, `EFBIG` when all
-representations together exceed 64 MiB, and `EBUSY` while earlier writes
-still fill the delivery queues below. Ghostty keeps its own parsing and
-allocation limits; Huterm drops writes that cannot fit its bounded delivery
-queues instead of truncating them. Those queues retain at most 8 writes/64
-MiB per terminal and 32 writes/128 MiB across the desktop process. Ghostty
-caps encoded OSC capture at 8 MiB, and decoded Kitty write transactions at
-the 64 MiB per-terminal queue size, the minimum the Kitty protocol requires.
-
-Clipboard writes are allowed by default. Set this policy to deny them without
-disabling explicit Copy or Paste commands:
-
-```toml
-[terminal]
-clipboard_write = "deny" # "allow" or "deny"
-```
-
-Reload applies the policy to existing terminals and cancels writes that have
-not reached the platform clipboard. Invalid reloads retain the last valid
-policy. Startup preserves an explicit `deny` when falling back from unrelated
-settings errors; an invalid clipboard policy stops startup.
-A local attached view remains eligible while its tab is inactive or
-its window is hidden, minimized, or unfocused, so background terminal output
-may replace the clipboard. Use `deny` if that behavior is unwanted. Detached,
-read-only, TUI, and remote clients cannot receive clipboard writes, and dropped
-writes are not retried or replayed after reconnecting.
-
-With tmux, `set-clipboard external` allows tmux copy-mode and `set-buffer -w`
-writes while blocking OSC 52 emitted by applications inside tmux. Use
-`set-clipboard on` if applications inside tmux should also reach the system
-clipboard.
-
-### Option and Alt as Meta
-
-On macOS, set this to use either Option key for terminal Meta chords in Emacs,
-tmux, or readline:
-
-```toml
-[terminal]
-macos_option_as_alt = "both"
-```
-
-The default is `"off"`, which uses the selected macOS keyboard layout for
-printable Option characters and dead-key composition. With `"both"`, Option-r
-sends ESC followed by `r`, and Option-Shift-r sends ESC followed by `R`.
-Supported Control combinations retain
-the Control byte after the ESC prefix. Special keys, such as Option-arrow,
-keep their existing Alt-modified escape sequences with either setting.
-Left/right-only Option settings are not supported yet.
-
-Linux always sends unbound Alt character chords as Meta. Huterm shortcuts take
-precedence on both platforms, including Linux's default Alt-1 through Alt-9 tab
-selection. Unbind a shortcut to pass that chord to terminal applications.
-
-Reload applies the policy to subsequent input in existing tabs; queued input
-keeps its original interpretation. Invalid reloads leave the working settings
-in place. Changing the policy or leaving a terminal cancels unfinished text
-composition. Paste content is unaffected by the Meta setting.
-
-### Themes and config reload
-
-Select a built-in theme and optionally override individual colors:
-
-```toml
-[theme]
-name = "catppuccin-mocha"
-background = "#181825"
-ansi_red = "#f38ba8"
-ansi_bright_red = "#eba0ac"
-```
-
-Built-ins are `huterm-dark` (the unchanged default), `tokyo-night`,
-`tokyo-night-storm`, `tokyo-night-moon`, `tokyo-night-day`,
-`catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`,
-`catppuccin-mocha`, `dracula`, `nord`, `one-dark-pro`, `tomorrow-night`,
-and `tango-with-monokai`.
-They are embedded in the application; no downloads are needed.
-
-Define a named theme directly in your config:
-
-```toml
-[theme]
-name = "my-mocha"
-
-[themes.my-mocha]
-extends = "catppuccin-mocha"
-background = "#181825"
-```
-
-Or place it in `themes/my-mocha.toml` next to your config file:
-
-```toml
-#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm-theme.schema.json
-
-[theme]
-extends = "catppuccin-mocha"
-background = "#181825"
-```
-
-Names use letters, digits, hyphens, and underscores, without a file extension.
-Lookup prefers inline definitions, then adjacent theme files, then built-ins.
-The first match wins; same-name definitions do not merge. Use a distinct custom
-name when extending a built-in. Without `extends`, a definition starts from
-Huterm Dark's palette, and any tab chrome key it leaves unset derives from
-its resulting colors rather than inheriting Huterm Dark's hand-picked set. An
-empty `[theme]` is Huterm Dark itself. Overrides in the config's `[theme]`
-table apply last.
-
-All color keys are flat: `foreground`, `background`, `cursor`, `selection`
-(selection background), optional `selection_foreground`, and `ansi_black`,
-`ansi_red`, `ansi_green`, `ansi_yellow`, `ansi_blue`, `ansi_magenta`,
-`ansi_cyan`, `ansi_white`, with corresponding `ansi_bright_*` keys. Window
-chrome keys are `tab_bar_background`, `tab_active_background`,
-`tab_foreground`, `tab_inactive_foreground`, `tab_border`, and `tab_accent`,
-plus the overlays `tab_hover_background`, `scrollbar_thumb`, and
-`scrollbar_track`. Colors use `#rrggbb`; the three overlay keys also accept
-`#rrggbbaa`. The legacy 16-color `ansi = [...]` array still works; individual
-ANSI keys override its entries. Unspecified fields inherit.
-Without `selection_foreground`, selected text retains its original colors.
-Labels and scroll controls derive their colors from the theme.
-
-Use **Reload Configuration** in the Huterm menu, or press Cmd+Shift+, on
-macOS / Ctrl+Shift+, on Linux with a US keyboard layout. GPUI represents these
-as Cmd+< / Ctrl+<; on other layouts use the corresponding less-than chord.
-It rereads the config and selected theme chain
-and applies font, padding, and colors without restarting the shell or losing
-scrollback. All open windows and retained tabs receive the reload. Windows keep
-their size;
-visible grids are recalculated and hidden grids resize when selected.
-Invalid configuration leaves the running settings intact and displays an error.
-An unreadable or missing config file does the same. To reset to defaults,
-empty the config file and reload it.
-Explicit colors set by terminal applications remain intact. Reload is manual;
-there is no file watcher or remote CLI command.
-
-See [theme sources and licenses](crates/huterm-gpui/themes/README.md) for
-attribution and palette import details.
-
-### Keybindings
-
-Open the command palette with Cmd+Shift+P on macOS or Ctrl+Shift+P on Linux,
-or choose **View > Open Command Palette**. Search is fuzzy across command
-titles, stable IDs, and descriptions, so `tfs` finds Toggle Fullscreen. Match
-quality ranks first, followed by this window's recent commands, process-wide
-command frequency, and catalog order. Unavailable commands remain visible with
-their refusal reason.
-
-Enter takes the most likely action. It runs a command when its arguments can use
-defaults, or opens the first required slot. Tab opens the slots even when Enter
-would run, so optional values can be changed. The input line shows the command,
-committed argument chips, and one active slot. Tabs and quake profiles use fuzzy
-pickers; identity pickers show labels and ancestry. Rename commands prefill the
-current custom name, selected, so typing replaces it; a blank name restores the
-default title. Click places the cursor, drag or Shift-click selects, and
-double-click selects a word; holding Shift with any movement key extends the
-selection. In a slot, Tab moves to the
-next argument, Backspace on an empty field reopens the previous chip or returns
-to search, and Escape returns to search. Escape from search and a scrim click
-close the palette.
-
-A keybinding that omits a prompted argument, such as `select_tab` without an
-index, opens its picker directly. Cancelling from search retains and selects the
-query for 15 seconds by default; configure this with `[palette]`
-`retain_query` and `retain_query_seconds` as shown above. Every palette key is a
-catalog command with `Palette` context and can be rebound through
-`[[keybinding]]`. Palette input stays modal within its window and never reaches
-the terminal beneath it.
-
-Quake windows are retained terminal windows summoned by profile name. Global
-shortcuts are opt-in and work while another application has focus:
-
-```toml
-[quake.profiles.default]
-position = "top"            # top, bottom, left, right, center
-width = 1.0                 # fraction of work area, greater than 0 through 1
-height = 0.5
-fullscreen = false          # use the full display frame, overriding width/height
-display = "active"          # active, pointer, primary, or id:<platform identifier>
-hide_on_focus_loss = true
-animation = "auto"
-animation_ms = 150          # 0 through 1000; zero is immediate
-
-[[global_keybinding]]
-key = "ctrl-alt-t"
-command = "toggle_quake"
-# args = { profile = "default" }
-```
-
-The built-in `default` profile exists without configuration. Add named tables,
-such as `[quake.profiles.logs]`, for independent windows. `show_quake`,
-`hide_quake`, and `toggle_quake` accept an optional `profile` argument and also
-work in ordinary `[[keybinding]]` entries. A hidden window keeps its tabs, shell,
-scrollback, and selection. Toggling a visible but unfocused window raises it;
-toggling the focused window hides it and returns focus to the previous external
-application. Auto-hide does not take focus back from the application you chose.
-On macOS, launcher-style panels that take keyboard focus without activating
-their application, such as 1Password Quick Access or Alfred, do not hide the
-quake window.
-
-`toggle_fullscreen` switches an associated window between quake and regular
-framed presentation. Regular presentation suspends auto-hide and retains user
-placement. Explicit `toggle_native_fullscreen` and `toggle_non_native_fullscreen`
-commands report unavailable for associated windows. Removing a named profile on
-reload converts its window to a visible ordinary window without closing jobs.
-Closing its final tab clears the association; the next summon creates a new shell.
-Registered shortcuts keep Huterm available when all windows are closed. Quit
-still assesses and closes every visible or hidden terminal.
-
-Partial profiles are frameless and use the work area. Tabs follow the configured
-single-tab and fullscreen visibility settings. Their size is clamped to a usable
-minimum without exceeding the work area. `position = "center"` centers both axes;
-the other positions anchor to that side and center the perpendicular axis.
-`auto` fades fullscreen profiles and fades/slides partial profiles from their
-anchored position; centered profiles only fade. `slide` follows the position,
-using the top for centered profiles. Other values are `none`, `fade`,
-`slide_top`, `slide_bottom`,
-`slide_left`, `slide_right`, and the corresponding `fade_slide_*` values.
-Fullscreen quake uses the current Space on macOS and EWMH fullscreen on X11.
-Without an X11 compositor, fades are disabled with a diagnostic; slides remain.
-A failed native transition restores an opaque regular window and reports the error.
-
-The initial display is retained until the window closes or moves in regular
-presentation. Missing displays fall back to the primary display. Explicit IDs use
-CoreGraphics display UUIDs on macOS and RandR monitor names on X11. Global
-bindings use one stroke, no `when`, and only the three quake commands. They must
-not conflict with a local binding's first stroke. Unsupported keys and OS grab
-conflicts are reported; a rejected reload retains the previous configuration and
-registered shortcuts. Native X11 sessions and macOS are supported; Wayland and
-XWayland global shortcuts are unavailable.
-
-Every shortcut runs a catalog command. Add `[[keybinding]]` entries to extend
-or replace the platform defaults:
-
-```toml
-[[keybinding]]
-key = "cmd-1"
-command = "select_tab"
-args = { index = 1 }
-when = "Terminal && !confirming"
-description = "Select the first tab"
-
-[[keybinding]]
-key = "shift-pageup"
-command = "unbind"
-```
-
-Fields: `key` (required), `command` (required), `args` (a table of named
-arguments; arrays are rejected), `when` (an optional context predicate), and
-`description` (an optional label for the settings UI and palette; blank text
-is rejected). Without `description`, the binding is labelled with the command
-title and its arguments, such as `Select Tab (index: 3)`. Unknown fields are
-rejected like the rest of the config.
-
-`unbind` is a reserved command that removes every earlier binding for the key,
-including defaults, regardless of `when`. It takes no `args` or `when`, and
-unbinding a key that has no binding does nothing.
-
-Precedence: the platform defaults apply first, then user entries in file
-order. A later entry wins over an earlier one for the same key and `when`;
-two user entries with the same key and `when` produce a conflict notice in the
-window status after reload, and the last one wins. Different `when` predicates
-for one key coexist; GPUI then prefers the binding whose predicate matches
-closest to the focused view. Among equals, a user binding with `when` beats
-one without, and otherwise the later entry wins. macOS menus display a user
-binding without `when` ahead of the default for the same command.
-
-A context identifier matches only the innermost context that contains it, and
-a binding with no `when` matches at the innermost depth. So `fullscreen` on its
-own ranks below a default for the same key while a terminal is focused, and
-never runs. To require a window context while a terminal is focused, use the
-descendant form: `when = "fullscreen > Terminal"`. Negations look through every
-ancestor, so `Terminal && !confirming` works as written. Alternatively `unbind`
-the key first.
-
-Bound chords never reach the shell; unbound ones do. Unbind `shift-pageup` to
-send it to a full-screen program, or bind `alt-r` to a command and the shell
-never sees the key or its typed character. A binding with `when` consumes its
-key only while the predicate matches, so `ctrl-c` bound to `copy` with
-`when = "selection"` still interrupts the shell when nothing is selected. The
-prefix keystrokes of a multi-key chord are always reserved. Reload compiles
-the whole file: a
-bad entry keeps the last working bindings and shows the diagnostic with its
-entry number and key. At startup a bad entry falls back to the defaults with
-the same error shown in the status line.
-
-`key` uses GPUI keystroke syntax: modifiers `cmd`, `ctrl`, `alt`, `shift`, and
-`fn` joined with hyphens before the key name (`cmd-shift-w`, `ctrl-tab`,
-`f11`, `shift-pageup`). A `+` between modifiers, such as `cmd+<`, is rejected
-rather than silently parsed as an unmodified key; a trailing `+` is the plus
-key. Separate the keystrokes of a multi-key chord with spaces: `ctrl-k ctrl-t`.
-Shifted punctuation is written as the resulting symbol, so Cmd+Shift+, is
-`cmd-<`.
-
-`when` uses GPUI's predicate language: context identifiers combined with `&&`,
-`||`, `!`, `==` and `!=` for `key == value` entries, and `>` to require a
-descendant context (`Workspace > Terminal`). Available contexts:
-
-| Context | Present when |
-| --- | --- |
-| `Terminal` | A terminal view has focus. |
-| `selection` | That terminal has selected text. |
-| `exited` | That terminal's root shell has exited. |
-| `Workspace` | Always, on the window's root. |
-| `confirming` | A close confirmation is open. |
-| `menu` | The window menu has keyboard focus. |
-| `notices` | A notice toast has keyboard focus (after `focus_notices`). |
-| `reordering` | A tab drag is in progress. |
-| `fullscreen` | The window has completed entry into native or non-native fullscreen. Pending entry alone does not match. |
-| `palette` | The window owns an open command palette. |
-| `Palette` | The command palette is open and has focus. |
-
-Commands, their scope, and arguments:
-
-| Command | Scope | Arguments |
-| --- | --- | --- |
-| `show_quake` | Application | Optional `profile` name; defaults to `default`. |
-| `hide_quake` | Application | Optional `profile` name; defaults to `default`. |
-| `toggle_quake` | Application | Optional `profile` name; defaults to `default`. |
-| `new_window` | Application | |
-| `quit` | Application | |
-| `hide` | Application | |
-| `hide_others` | Application | |
-| `show_all` | Application | |
-| `reload_config` | Application | |
-| `check_for_updates` | Application | macOS packaged application only |
-| `open_settings` | Window | |
-| `about` | Window | |
-| `open_command_palette` | Window | |
-| `new_tab` | Window | |
-| `close_tab` | Window | optional `tab`; defaults to the active tab. |
-| `close_other_tabs` | Window | optional `tab`; defaults to the active tab. |
-| `close_tabs_after` | Window | optional `tab`; defaults to the active tab. |
-| `copy_tab_directory` | Window | optional `tab`; defaults to the active tab. |
-| `close_window` | Window | |
-| `next_tab` | Window | |
-| `previous_tab` | Window | |
-| `select_tab` | Window | `index` (1 to 9; 9 selects the last tab) or `tab`; exactly one. Without either, prompts for a tab. |
-| `toggle_fullscreen` | Window | |
-| `toggle_native_fullscreen` | Window | Enter native mode, or exit any active fullscreen mode. |
-| `toggle_non_native_fullscreen` | Window | macOS only. Enter current-Space mode, or exit any active fullscreen mode. |
-| `minimize` | Window | |
-| `zoom` | Window | |
-| `copy` | Terminal | Requires a selection. |
-| `paste` | Terminal | |
-| `scroll_page_up` | Terminal | |
-| `scroll_page_down` | Terminal | |
-| `scroll_to_bottom` | Terminal | |
-| `rename_tab` | Runtime | `name`; `tab` defaults to the active tab |
-| `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace |
-| `rename_session` | Runtime | `name`; `session` defaults to the window's session |
-| `select_recent_tab` | Window | Activate the most recently used tab; repeat to toggle between two tabs. |
-| `open_menu` | Window | |
-| `focus_notices` | Window | Focus the newest notice toast; unavailable without notices. |
-| `dismiss_all_notices` | Window | Dismiss every notice; unavailable without notices. |
-| `select_all` | Terminal | Select the scrollback and screen. |
-| `clear_scrollback` | Terminal | Erase the scrollback and keep the screen. |
-| `reset_terminal` | Terminal | Reset the screen, scrollback, and modes, as RIS does. |
-| `open_tab_directory` | Window | optional `tab`; defaults to the active tab. Requires a local directory. |
-| `open_context_menu` | Window | Open the active terminal's context menu at its cursor. |
-| `dialog_confirm` | Window | Bound only while `confirming`. |
-| `dialog_cancel` | Window | Bound only while `confirming`. |
-| `dialog_focus_next` | Window | Bound only while `confirming`. |
-| `dialog_focus_previous` | Window | Bound only while `confirming`. |
-| `menu_select_next` | Window | Bound only while `menu`. |
-| `menu_select_previous` | Window | Bound only while `menu`. |
-| `menu_select_first` | Window | Bound only while `menu`. |
-| `menu_select_last` | Window | Bound only while `menu`. |
-| `menu_select_right` | Window | Bound only while `menu`. |
-| `menu_select_left` | Window | Bound only while `menu`. |
-| `menu_confirm` | Window | Bound only while `menu`. |
-| `menu_close` | Window | Bound only while `menu`. |
-| `notice_next` | Window | Bound only while `notices`. |
-| `notice_previous` | Window | Bound only while `notices`. |
-| `notice_run_action` | Window | Bound only while `notices`. |
-| `notice_dismiss` | Window | Bound only while `notices`. |
-| `palette_select_next` | Palette | |
-| `palette_select_previous` | Palette | |
-| `palette_page_down` | Palette | |
-| `palette_page_up` | Palette | |
-| `palette_confirm` | Palette | |
-| `palette_back` | Palette | |
-| `palette_pop` | Palette | |
-| `palette_expand` | Palette | |
-| `palette_next_slot` | Palette | |
-| `palette_previous_slot` | Palette | |
-| `text_delete_backward` | Palette | |
-| `text_delete_forward` | Palette | |
-| `text_delete_word_backward` | Palette | |
-| `text_delete_word_forward` | Palette | |
-| `text_delete_line_start` | Palette | |
-| `text_move_left` | Palette | optional `select` extends the selection instead |
-| `text_move_right` | Palette | optional `select` |
-| `text_move_word_left` | Palette | optional `select` |
-| `text_move_word_right` | Palette | optional `select` |
-| `text_line_start` | Palette | optional `select` |
-| `text_line_end` | Palette | optional `select` |
-| `text_select_all` | Palette | |
-| `text_copy` | Palette | |
-| `text_paste` | Palette | |
-
-Runtime commands execute in the core against canonical structure; the ID
-arguments cannot be written in config and are filled from the invoking window.
-Palette-scope commands imply the `Palette` context, and dialog, menu, and
-notice commands imply `confirming`, `menu`, and `notices`. User bindings for
-them need no `when`; the keymap adds the context predicate.
-
-Default bindings differ per platform:
-
-#### Application, window, and terminal
-
-| Command | macOS | Linux |
-| --- | --- | --- |
-| `new_window` | `cmd-n` | `ctrl-shift-n` |
-| `open_command_palette` | `cmd-shift-p` | `ctrl-shift-p` |
-| `new_tab` | `cmd-t` | `ctrl-shift-t` |
-| `close_tab` | `cmd-w` | `ctrl-shift-w` |
-| `close_window` | `cmd-shift-w` | `ctrl-shift-q` |
-| `next_tab` / `previous_tab` | `ctrl-tab` / `ctrl-shift-tab` | `ctrl-tab` / `ctrl-shift-tab` |
-| `select_tab` 1 to 9 | `cmd-1` to `cmd-9` | `alt-1` to `alt-9` |
-| `copy` / `paste` | `cmd-c` / `cmd-v` | `ctrl-shift-c` / `ctrl-shift-v` |
-| `select_all` | `cmd-a` | `ctrl-shift-a` |
-| `clear_scrollback` | `cmd-k` | |
-| `scroll_page_up` / `scroll_page_down` | `shift-pageup` / `shift-pagedown` | `shift-pageup` / `shift-pagedown` |
-| `scroll_to_bottom` | `shift-end` | `shift-end` |
-| `toggle_fullscreen` | `cmd-enter`, `f11` | `f11` |
-| `reload_config` | `cmd-<` | `ctrl-<` |
-| `open_settings` | `cmd-,` | `ctrl-,` |
-| `quit` | `cmd-q` | |
-| `minimize` | `cmd-m` | |
-| `hide` / `hide_others` | `cmd-h` / `cmd-alt-h` | |
-
-#### Palette
-
-| Command | macOS | Linux |
-| --- | --- | --- |
-| `palette_select_next` | `down`, `ctrl-n` | `down`, `ctrl-n` |
-| `palette_select_previous` | `up`, `ctrl-p` | `up`, `ctrl-p` |
-| `palette_page_down` | `pagedown` | `pagedown` |
-| `palette_page_up` | `pageup` | `pageup` |
-| `palette_confirm` | `enter` | `enter` |
-| `palette_back` | `escape` | `escape` |
-| `palette_expand` | `tab` | `tab` |
-| `palette_previous_slot` | `shift-tab` | `shift-tab` |
-| `text_delete_backward` | `backspace` | `backspace` |
-| `text_delete_forward` | `delete`, `ctrl-d` | `delete` |
-| `text_delete_word_backward` | `alt-backspace` | `alt-backspace` |
-| `text_delete_word_forward` | `alt-d` | `alt-d` |
-| `text_delete_line_start` | `cmd-backspace` | |
-| `text_move_left` / `text_move_right` | `left` / `right` | `left` / `right` |
-| `text_move_word_left` / `text_move_word_right` | `alt-left`, `alt-b` / `alt-right`, `alt-f` | `alt-left`, `alt-b` / `alt-right`, `alt-f` |
-| `text_line_start` / `text_line_end` | `home`, `ctrl-a`, `cmd-left` / `end`, `ctrl-e`, `cmd-right` | `home` / `end` |
-| movement with `select = true` | `shift-` plus each movement key above | `shift-` plus each movement key above |
-| `text_select_all` | `cmd-a` | `ctrl-a` |
-| `text_copy` | `cmd-c` | `ctrl-c`, `ctrl-shift-c` |
-| `text_paste` | `cmd-v` | `ctrl-v`, `ctrl-shift-v` |
-
-#### Dialog
-
-These bind only while a close confirmation or the About panel is showing
-(`confirming`), so they take nothing from terminal input. The primary button
-has focus when the dialog opens; a repeated close shortcut never confirms. In
-the About panel, `dialog_confirm` and `dialog_cancel` both close it and the
-focus commands do nothing.
-
-| Command | macOS | Linux |
-| --- | --- | --- |
-| `dialog_confirm` | `enter` | `enter` |
-| `dialog_cancel` | `escape` | `escape` |
-| `dialog_focus_next` | `tab`, `right` | `tab`, `right` |
-| `dialog_focus_previous` | `shift-tab`, `left` | `shift-tab`, `left` |
-
-#### Menu
-
-These bind only while the window menu has focus (`menu`), so they take
-nothing from terminal input. `open_menu` has no default binding; the menu
-button opens the menu with no selection, and `open_menu` selects the first
-item. Typing a letter jumps to the next item starting with it. Escape, Tab,
-running an item, or clicking elsewhere closes the menu and returns focus to
-the terminal.
-
-| Command | macOS | Linux |
-| --- | --- | --- |
-| `menu_select_next` | `down` | `down` |
-| `menu_select_previous` | `up` | `up` |
-| `menu_select_first` | `home` | `home` |
-| `menu_select_last` | `end` | `end` |
-| `menu_select_right` | `right` | `right` |
-| `menu_select_left` | `left` | `left` |
-| `menu_confirm` | `enter`, `space` | `enter`, `space` |
-| `menu_close` | `escape`, `tab` | `escape`, `tab` |
-
-#### Notices
-
-Errors and warnings appear as toasts in the bottom-right corner of the
-terminal. Configuration and keybinding diagnostics stay until a reload fixes
-them; command and terminal failures expire after six seconds unless hovered or
-focused. These bind only while a toast has focus (`notices`), which
-`focus_notices` gives the newest toast, so they take nothing from terminal
-input. Dismissing the last focused toast returns focus to the terminal.
-
-| Command | macOS | Linux |
-| --- | --- | --- |
-| `notice_next` | `down` | `down` |
-| `notice_previous` | `up` | `up` |
-| `notice_run_action` | `enter` | `enter` |
-| `notice_dismiss` | `escape`, `delete` | `escape`, `delete` |
-
-Commands without a default binding are available through menus or config.
-
-On macOS, build a universal application bundle with:
-
-```sh
-mise run package:macos
-```
-
-The package task installs both Rust targets, builds Ghostty for arm64 and
-x86_64, and combines the executables into
-`target/release/bundle/Huterm.app`. This local package deliberately excludes
-Sparkle and production update metadata. It checks that exclusion along with the
-macOS privacy descriptions and release entitlements, but does not sign or
-notarize the app. The CI release workflow uses the separate updater-enabled
-package path. Intel hardware validation remains pending.
-
-Use `mise tasks` to discover all commands. `mise run check` is the fast local
-gate, while `mise run verify` also runs tests, the dependency-license policy,
-and GitHub Actions checks. See the
-[development guide](docs/agents/development.md) for platform prerequisites,
-limits, and the validation ladder.
-
-Set `HUTERM_SOURCE_REVISION` to the source commit when building to embed its
-short form in the About panel's Build row; the container-based Linux runner
-passes the host `HEAD`, and builds without it omit the revision.
-
-Release Please creates draft GitHub releases. The release workflow signs,
-notarizes, staples, verifies, and publishes the universal app only after its
-uploaded ZIP and checksum match the local artifacts. See the
-[release guide](docs/agents/releases.md) for the required repository variables,
-secrets, recovery workflow, and remaining manual checks.
-
-## Planned features
-
-The following list describes the intended product direction. Items outside the
-current milestone are not yet scheduled.
-
-The [workspace, window, and tab plan](docs/plans/workspaces-windows-tabs.md)
-records the next proposed PR and the path toward workspace switching,
-restoration, and shared GUI/TUI access.
-
-### Terminal
-
-- Local shells and arbitrary commands with configurable working directory and
-  environment.
-- More complete grapheme handling, font fallback, and IME.
-- True color, text decorations, cursor styles, hyperlinks, clipboard support,
-  search, selection, and configurable scrollback.
-- More terminal mouse protocols and shell integration.
-
-### Desktop clients
-
-- Native macOS, Linux, and Windows applications built with GPUI.
-- Horizontal or vertical tab bars.
-- Tabs containing arbitrary horizontal and vertical pane splits.
-- Native fullscreen on supported platforms.
-- Borderless non-native fullscreen on macOS without creating a separate
-  Mission Control space.
-- Moving tabs between windows, notifications, and restored window layouts.
-- Accessibility and platform-native input behavior.
-
-### Multiplexer
-
-- A local server that owns terminal processes independently of client windows.
-- Named workspaces containing tabs and split-pane layouts.
-- Detach and reattach without terminating terminal processes while the server
-  remains alive.
-- Multiple simultaneous clients with explicit terminal-size policy.
-- A text-based client that can run inside another terminal.
-- A command-line client for workspace and pane automation.
-- Versioned local IPC, followed by optional authenticated remote attachment if
-  the local design proves useful.
-
-### State and recovery
-
-- Persisted configuration, workspace metadata, tab order, and pane layouts.
-- Scrollback and presentation-state recovery where it can be made reliable.
-- Clear distinction between restoring saved presentation and preserving a live
-  child process. A server crash is allowed to terminate its PTYs.
-
-## Terminology
-
-- **Socket**: a named runtime scope containing sessions.
-- **Session**: a runtime-owned collection of ordered workspaces within a socket.
-- **Workspace**: a collection of ordered tabs within a session, independent of
-  its views.
-- **Tab**: an ordered container with one pane layout.
-- **Pane**: a leaf in a tab's split tree.
-- **Terminal**: a PTY, child process, terminal-emulator state, scrollback, and
-  shared viewport.
-- **Client**: a desktop, TUI, or command-line connection to the runtime.
-- **Client view**: client-local focus, active tab, selection gestures, and
-  presentation preferences.
-
-Tab order and pane layout belong to the workspace. Each window or TUI view
-selects its workspace independently and owns focus and the selected tab.
-Terminal scroll position is shared across views for the engine experiment.
-Tab-bar orientation is a client preference, not workspace state. See
-[CONTEXT.md](CONTEXT.md) for the full glossary.
-
-## Terminal engine
-
-Every terminal uses Ghostty. Run `mise run dev`; generated configuration omits
-an engine selector. Existing explicit values remain accepted for migration:
-
-```toml
-[terminal]
-engine = "alacritty" # Deprecated; still launches Ghostty and reports a warning.
-```
-
-Explicit `"ghostty"` is also accepted without warning. Unknown or non-string
-values remain configuration errors, and failed reloads retain the active
-configuration. Normal build tasks prepare verified Ghostty source and use the
-pinned Zig toolchain.
-
-Each terminal owns one shared viewport. Snapshots remain complete and immutable;
-unchanged rows share storage between generations. See
-[the engine guide](docs/agents/terminal-engines.md) for native build inputs,
-benchmarks, and migration behavior.
-
-### Color, size, and appearance queries
-
-Huterm answers the terminal queries commonly used by shells and development
-tools:
-
-- `OSC 4;index;?` for palette indexes 0 through 255.
-- `OSC 10;?`, `OSC 11;?`, and `OSC 12;?` for foreground, background, and
-  cursor colors. `OSC 104`, `OSC 110`, `OSC 111`, and `OSC 112` reset their
-  corresponding overrides.
-- `CSI 14 t`, `CSI 16 t`, and `CSI 18 t` for terminal content pixels, cell
-  pixels, and rows/columns.
-- `CSI ? 996 n` for dark or light appearance.
-
-Replies use the terminal's current effective state. An application color
-override remains an override even when it happens to equal the theme color, so
-later theme reloads do not replace it. Resetting the override exposes the latest
-theme value. Size replies describe the character grid and physical cell size,
-excluding window chrome and padding.
-
-### Terminal identity, tmux, and SSH
-
-New shells use Huterm's private `xterm-huterm` terminfo entry when it is locally
-available. Development tasks compile it into `target/terminfo`; macOS and Linux
-packages carry the compiled entry in their resources. If the entry cannot be
-found, the default `auto` setting safely falls back to `xterm-256color`.
-
-```toml
-[terminal]
-term = "auto" # Or force "xterm-huterm" / "xterm-256color" for new shells.
-```
-
-`xterm-huterm` inherits the established indexed 256-color capability set and
-advertises `Tc`, allowing terminfo consumers such as tmux to retain 24-bit
-color.
-Forcing `xterm-huterm` makes the entry's availability your responsibility. A
-missing entry commonly appears as an "unknown terminal type" error in curses
-applications.
-
-Local discovery says nothing about an SSH server's terminfo database. Use a
-per-command compatibility identity when the remote host lacks the entry:
-
-```sh
-TERM=xterm-256color ssh host
-```
-
-This changes `TERM` for that SSH invocation only. The remote command then uses
-the widely installed `xterm-256color` entry instead of requiring
-`xterm-huterm`.
-
-Or install the local definition into your account on a trusted remote host:
-
-```sh
-infocmp -x xterm-huterm | ssh host 'tic -x -'
-```
-
-Packaged copies of the source are at
-`Huterm.app/Contents/Resources/terminfo/xterm-huterm.terminfo` on macOS and
-`share/huterm/terminfo/xterm-huterm.terminfo` in Linux bundles. You can copy
-that file to a remote host and run `tic -x xterm-huterm.terminfo` there as
-an alternative to exporting the compiled entry with `infocmp`.
-
-Install the entry in the context that will run the application. `sudo`, `su`,
-and container launchers can strip `TERMINFO` or `TERMINFO_DIRS`, change `HOME`,
-or use a different filesystem. Installing into the local user's `~/.terminfo`
-does not make the entry available to root, another user, a container, or a
-remote host. Run `tic` as the target user or inside the target container, then
-check that context with `infocmp -x xterm-huterm`. When installation is not
-appropriate, set `TERM=xterm-256color` for the individual command instead.
-For example, when running a command through `sudo` without installing the entry
-for root, use:
-
-```sh
-sudo env TERM=xterm-256color command
-```
-
-Replace `command` with the program being run as root.
-
-Huterm does not wrap SSH, install files remotely, or change Mosh's terminal
-capability handling.
-
-## Licensing
-
-Huterm intends to license its own source under the MIT license. The planned
-initial dependencies include MIT and Apache-2.0 software. Distributed builds
-will retain the required third-party license notices and use an automated
-license allowlist to prevent accidental GPL or AGPL dependencies.
-
-Huterm-owned source is available under the [MIT license](LICENSE). The committed
-dependency policy audits the full resolved graph and rejects GPL, AGPL, unknown
-registries, Git dependencies, and wildcard Cargo requirements.
+The main checks are:
+
+- `mise run check`: formatting, Clippy, test-module order, documentation, and
+  architecture boundaries. It is the fast local gate.
+- `mise run test`: Rust unit and PTY integration tests, plus the repository
+  script tests.
+- `mise run verify`: the broad check that matches CI, adding the
+  dependency-license policy and workflow checks.
+- `mise run linux:test` and `mise run linux:smoke`: Linux tests and desktop
+  smokes in Docker, from macOS or Linux.
+- `mise run smoke:macos-*` and `mise run smoke:linux-*`: native desktop smokes
+  for input, the palette, fullscreen, quake windows, and more.
+
+GitHub Actions runs the checks and desktop smokes on macOS arm64 and on Linux
+x86_64 and aarch64, where the smokes run under Xvfb.
+
+To build packages locally:
+
+- `mise run package:macos` builds a universal `Huterm.app` in
+  `target/release/bundle/`. It leaves out Sparkle and the update feed, and it
+  is not signed or notarized.
+- `mise run package:linux:container` builds verified AppImage and tarball
+  packages in the pinned Ubuntu 22.04 container and exports them to `dist/`.
+
+Set `HUTERM_SOURCE_REVISION` to the source commit when building to show its
+short form in the About panel. The container-based Linux runner passes the
+host's `HEAD`; builds without it omit the revision.
+
+Release Please maintains a release pull request from Conventional Commit
+titles. Merging it tags the release, and the release workflow builds, signs,
+notarizes, and publishes the macOS and Linux packages. The
+[release guide](docs/agents/releases.md) covers the configuration and recovery
+steps.
+
+[AGENTS.md](AGENTS.md) and the guides in [docs/agents](docs/agents/) record
+the architecture rules and platform hazards. Plans in [docs/plans](docs/plans/)
+record design decisions as they were made.
+
+## Roadmap
+
+Huterm is heading toward a desktop terminal with an optional persistent
+multiplexer. In the default embedded mode, the runtime and the desktop share
+one process. An opt-in named server will keep sessions alive across client
+restarts and let several clients attach to them: desktop windows, a TUI, a
+command-line client, and a browser client.
+
+The groundwork is in place: runtime-owned sessions, the command catalog with
+the palette and configurable keybindings, fullscreen and quake windows, and
+viewers that let several windows show one terminal with a shared viewport. The
+next stages are:
+
+- **Desktop expansion:** session and workspace switching, split panes and
+  layouts, moving tabs between windows, shell integration, configurable
+  scrollback, a settings UI, window transparency, and restoring sessions and
+  history after a restart.
+- **Terminal compatibility:** notifications and progress, extended underlines,
+  SGR-pixel mouse reports, the Kitty keyboard protocol, and inline graphics.
+- **Optional server:** versioned local IPC, named servers, CLI control, and
+  attaching the desktop to a server.
+- **More clients:** a browser client, a TUI, and remote attachment.
+
+Restoration after a restart recreates the structure and history with fresh
+shells. It does not resurrect running processes; only reattaching to a server
+that is still running keeps them.
+
+[Issue #8](https://github.com/jimeh/huterm/issues/8) tracks the roadmap and the
+live status of each epic.
+
+## Architecture
+
+Huterm rests on a few decisions:
+
+- The runtime owns PTY spawning, I/O, resize, process lifetime, and attachment.
+  It uses `portable-pty` for the operating-system layer.
+- The runtime owns each terminal's canonical state and its shared viewport.
+  Every terminal uses `libghostty-vt` through Huterm's own `huterm-ghostty`
+  binding, behind a private engine boundary. Native emulator types never leave
+  `huterm-core`.
+- Clients render immutable Huterm snapshots. Each client view registers a
+  viewer for every terminal it shows, and the runtime arbitrates input, mouse
+  gestures, and terminal size between viewers. The terminal follows the size
+  of the viewer that most recently gained focus or typed.
+- `huterm-protocol` holds the dependency-neutral IDs, input, events, and
+  snapshots that clients use. It exposes no GPUI, Ghostty, or `portable-pty`
+  types, so a server and other clients can reuse it.
+
+One runtime owns a logical socket scope with ordered sessions, workspaces, and
+tabs. The socket name defaults to `default`; there is no socket file or
+listener yet. Sessions, workspaces, and tabs can have custom names, which may
+repeat. The core can move tabs between workspaces and workspaces between
+sessions while keeping their terminals, processes, and attachments. The
+desktop exposes renaming but not these moves yet.
+
+[CONTEXT.md](CONTEXT.md) defines the project's terms: socket, session,
+workspace, tab, pane, terminal, attachment, viewer, and more.
+
+## License
+
+Huterm's own source is available under the [MIT license](LICENSE). Huterm does
+not use GPL-covered Zed application code. The dependency policy in `deny.toml`
+audits the full resolved dependency graph, allows only listed licenses such as
+MIT and Apache-2.0, and rejects GPL and AGPL licenses, unknown registries, Git
+dependencies, and wildcard Cargo requirements.
