@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.20.0](https://github.com/jimeh/huterm/compare/v0.19.1...v0.20.0) (2026-10-26)
+
+
+### Features
+
+* make scrollback configurable by rows and memory size ([#243](https://github.com/jimeh/huterm/issues/243)) ([a16765d](https://github.com/jimeh/huterm/commit/a16765da4a59ac13130f67e3b50acb022f245a26))
+* resize and zoom split panes ([#250](https://github.com/jimeh/huterm/issues/250)) ([ea43dab](https://github.com/jimeh/huterm/commit/ea43dab1818b304a80d121468d76f0432a6865bc))
+* split, focus, and close panes in the desktop client ([#249](https://github.com/jimeh/huterm/issues/249)) ([02a7c17](https://github.com/jimeh/huterm/commit/02a7c17fdad8613b6766ea8e4cf5e2548b021264))
+
 ## [0.19.1](https://github.com/jimeh/huterm/compare/v0.19.0...v0.19.1) (2026-10-26)
 
 
