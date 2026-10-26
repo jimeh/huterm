@@ -62,23 +62,33 @@ CI Linux packaging retries once with retained Cargo and Zig caches because
 Ghostty's native dependency downloads can fail transiently. A second failure
 remains authoritative.
 
-CI installs Zig through `.github/actions/setup-zig`, which reads the version
-from `mise.toml` and runs `mlugg/setup-zig`; keep `zig` out of CI's Mise install
-lists. Mise's `core:zig` fetches the `.minisig` only from the mirror that served
-the tarball, so one rate-limited mirror (HTTP 429) failed the job. The action
-falls through to the next mirror and then ziglang.org, but a stalled mirror
-holds it for about 14 minutes: three 3-minute attempts, then a slow exit.
-Jobs bound the step to 4 minutes and retry once within 6 minutes, which
-reshuffles the mirrors; a stall in both attempts fails the job.
+CI installs Zig through `.github/actions/setup-zig`, which runs
+`mise install --locked zig` in its own step. Keep `zig` out of CI's Mise action
+install lists so that step keeps its time bound and retry. The action gives the
+install its own `MISE_CACHE_DIR` under `RUNNER_TEMP` and caches that directory,
+which holds Mise's download store, keyed by runner and Zig version. Mise reuses
+a stored archive only when it matches the `mise.lock` checksum, and it checks
+the minisign signature on every install. A cache hit therefore still fetches
+the `.minisig`. Mise tries the serving mirror, ziglang.org, and then every
+other mirror for it. Releases before 2026.10.7 asked only the serving mirror,
+so one rate-limited mirror (HTTP 429) failed the job. A stalled mirror costs
+about two minutes (a 30-second read timeout and three retries), so jobs bound
+the step to 4 minutes and retry once within 6 minutes, which reshuffles the
+mirrors.
 
-This only matters when the tarball cache misses. It always sets
-`ZIG_GLOBAL_CACHE_DIR` and `ZIG_LOCAL_CACHE_DIR` to `.zig-cache` in the
-checkout, so the wrapper moves them under `RUNNER_TEMP`. Release jobs keep
-Mise's Zig install: the action's tarball cache cannot be disabled and a cache
-hit skips signature verification, while release installs never use the Actions
-cache. Reference local actions as `./.github/actions/...` with a
-`zizmor: ignore[self-repository]` comment: actionlint rejects GitHub's `$/`
-self-repository syntax.
+Every install, cached or not, also fetches `ziglang.org/download/index.json`
+to find the tarball URL. When that fails, Mise 2026.10.17 falls back to the
+filename order Zig used before 0.14 (`zig-macos-aarch64-…`), so a ziglang.org
+outage fails the install.
+
+The Mise action saves its install cache right after its own install step, so
+tools installed later in a job, such as Zig and the `cargo:` tools, never reach
+it. The setup-zig action also points `ZIG_GLOBAL_CACHE_DIR` and
+`ZIG_LOCAL_CACHE_DIR` under `RUNNER_TEMP`, where restore-ghostty and
+save-ghostty expect Zig's package cache. Release jobs install Zig through the
+Mise action and use no Actions cache. Reference local actions as
+`./.github/actions/...` with a `zizmor: ignore[self-repository]` comment:
+actionlint rejects GitHub's `$/` self-repository syntax.
 
 CI invokes `ci:smoke:build` separately after the workflow's dependency-preparation
 step. When a smoke binary gains a native compile-time dependency, prepare it in
@@ -123,7 +133,4 @@ zizmor's security audits but no shell linting.
 Runners force Node 20 actions onto Node 24 and annotate each run with a
 deprecation warning. Check `runs.using` in an action's `action.yml` at its
 pinned SHA rather than relying on annotations, which cover only workflows that
-ran. `mlugg/setup-zig` v2.2.1 still declares `node20` and runs correctly on
-Node 24. Its GitHub repository is a read-only mirror, so track the upgrade in
-[codeberg.org/mlugg/setup-zig#55](https://codeberg.org/mlugg/setup-zig/pulls/55)
-and let `actions:update` pick up the release once it clears the cooldown.
+ran.
