@@ -43,7 +43,7 @@ jobs:
         with:
           install: false
           cache: false
-          version: 2026.10.12
+          version: 2026.10.17
 
       # Advanced setup is required to trace the standalone swiftc invocation.
       - name: Initialize CodeQL

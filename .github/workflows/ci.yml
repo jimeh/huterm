@@ -38,7 +38,7 @@ jobs:
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun actionlint markdownlint-cli2 pinact taplo zizmor
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -156,7 +156,7 @@ jobs:
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Install Zig
         id: zig
@@ -301,7 +301,7 @@ jobs:
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Install Zig
         id: zig
@@ -539,7 +539,7 @@ jobs:
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Install Zig
         id: zig
@@ -603,7 +603,7 @@ jobs:
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Install Zig
         id: zig
@@ -705,7 +705,7 @@ jobs:
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Install Linux package tools with Mise
         if: runner.os == 'Linux'
@@ -714,7 +714,7 @@ jobs:
           cache: true
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Install Zig
         id: zig
