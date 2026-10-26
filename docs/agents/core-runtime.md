@@ -99,6 +99,13 @@ the one dequeue check for ordered requests, and `handle_client_message` settles
 each once. Scroll numbers live on the viewer's slot, not its arbitration entry:
 scrolls are controls that can precede or outlive the entry.
 
+A terminal's scrollback limit is terminal state, not presentation.
+`TerminalViewer::set_scrollback` is an ordered buffer edit, so it needs the
+`input` capability, follows earlier input, and applies once queued writes
+drain; the latest request from any viewer wins. It publishes only when the
+limit changes, so a reload that resends it to every tab wakes no hidden viewer.
+`TerminalCommand::scrollback` applies before the child spawns.
+
 Rearm a viewer's invalidation on the runtime owner thread when constructing
 that viewer's snapshot, not when draining its notification, so hidden or
 frame-blocked viewers do not wake for every output chunk; one viewer's snapshot

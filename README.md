@@ -15,7 +15,8 @@ GPUI for rendering.
 
 ## What works today
 
-- **Terminals:** 24-bit color, runtime-owned scrollback, selection, copy and
+- **Terminals:** 24-bit color, runtime-owned scrollback with a configurable
+  row limit, selection, copy and
   paste, application mouse reporting, clickable links, file drops, clipboard
   writes from applications (OSC 52, OSC 1337 `Copy`, and Kitty's OSC 5522),
   color and geometry queries, a visual bell, and a private `xterm-huterm`
@@ -43,8 +44,8 @@ These are not available yet:
 - A background server, local IPC, a command-line client, a TUI, or a browser
   client.
 - Saving and restoring sessions or terminal history across restarts.
-- Configurable scrollback limits, shell integration, desktop notifications,
-  inline graphics, and window transparency.
+- Shell integration, desktop notifications, inline graphics, and window
+  transparency.
 
 [Roadmap](#roadmap) summarizes the plan for these.
 
@@ -224,9 +225,8 @@ viewers that let several windows show one terminal with a shared viewport. The
 next stages are:
 
 - **Desktop expansion:** session and workspace switching, split panes and
-  layouts, moving tabs between windows, shell integration, configurable
-  scrollback, a settings UI, window transparency, and restoring sessions and
-  history after a restart.
+  layouts, moving tabs between windows, shell integration, a settings UI,
+  window transparency, and restoring sessions and history after a restart.
 - **Terminal compatibility:** notifications and progress, extended underlines,
   SGR-pixel mouse reports, the Kitty keyboard protocol, and inline graphics.
 - **Optional server:** versioned local IPC, named servers, CLI control, and

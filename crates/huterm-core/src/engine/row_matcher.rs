@@ -20,8 +20,8 @@ pub(super) fn viewport_shift(
 
 /// Finds a retained row with identical cells so unchanged content keeps its
 /// `Arc`. Rows are immutable, so any equal row is valid, even at another
-/// index. The history-derived shift misses once scrollback reaches its byte
-/// budget, so a bounded scan recovers the offset without trusting one anchor.
+/// index. The history-derived shift misses once scrollback reaches its limit,
+/// so a bounded scan recovers the offset without trusting one anchor.
 pub(super) struct RowMatcher<'a> {
     previous: &'a [Arc<TerminalRow>],
     shift: isize,

@@ -4467,7 +4467,7 @@ impl WorkspaceView {
         let mut command = shell_command(
             self.metrics.at_scale(window.scale_factor()),
             &self.config.theme,
-            self.config.terminal.term,
+            self.config.terminal,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
         let inherited_directory = self.active_view(cx).and_then(|view| {

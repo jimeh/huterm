@@ -16,9 +16,9 @@ use std::time::Instant;
 
 use huterm_protocol::{
     AttachmentId, BufferRange, CellSize, ExitStatus, GridSize, InputStamp,
-    MousePosition, RuntimeId, ScrollCommand, TerminalFailure, TerminalId,
-    TerminalInput, TerminalLifecycle, TerminalPresentation, TerminalSnapshot,
-    TerminalStatus, ViewerCapabilities, ViewerId,
+    MousePosition, RuntimeId, ScrollCommand, ScrollbackLimit, TerminalFailure,
+    TerminalId, TerminalInput, TerminalLifecycle, TerminalPresentation,
+    TerminalSnapshot, TerminalStatus, ViewerCapabilities, ViewerId,
 };
 
 pub(crate) use arbitration::{Arbiter, Effects, Report};
@@ -732,6 +732,22 @@ impl TerminalViewer {
     /// stopped or cannot accept it yet.
     pub fn reset(&self) -> Result<(), RuntimeError> {
         self.send_edit(BufferEdit::Reset)
+    }
+
+    /// Sets how much history the terminal keeps, after earlier input. The
+    /// limit belongs to the terminal, not this viewer: the latest request
+    /// from any viewer that may send input applies. Shrinking it evicts the
+    /// oldest rows at once and invalidates every viewer's snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the viewer may not send input, or the runtime
+    /// stopped or cannot accept it yet.
+    pub fn set_scrollback(
+        &self,
+        limit: ScrollbackLimit,
+    ) -> Result<(), RuntimeError> {
+        self.send_edit(BufferEdit::Scrollback(limit))
     }
 
     fn send_edit(&self, edit: BufferEdit) -> Result<(), RuntimeError> {

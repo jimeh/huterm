@@ -413,6 +413,7 @@ impl TerminalRuntime {
                     )?;
                     engine
                         .set_host_effect_sink(runtime_host_effect_sink.clone());
+                    engine.set_scrollback(command.scrollback)?;
                     let process = pty::spawn(&command)?;
                     run_terminal(
                         terminal_id,
@@ -641,6 +642,8 @@ impl RuntimeMessage {
 pub(crate) enum BufferEdit {
     ClearHistory,
     Reset,
+    /// A new history limit for the terminal, whichever viewer sends it.
+    Scrollback(huterm_protocol::ScrollbackLimit),
 }
 
 #[derive(Debug)]
@@ -1665,6 +1668,22 @@ fn handle_edit(
     let effects = match edit {
         BufferEdit::ClearHistory => owner.engine.clear_history(),
         BufferEdit::Reset => owner.engine.reset(),
+        BufferEdit::Scrollback(limit) => {
+            return match owner.engine.set_scrollback(limit) {
+                Ok(changed) => {
+                    // Every reload resends the limit; only a change may
+                    // wake the viewers.
+                    if changed {
+                        owner.publish();
+                    }
+                    true
+                }
+                Err(error) => {
+                    owner.status.failure(error.to_string());
+                    false
+                }
+            };
+        }
     };
     match effects {
         Ok(effects) => {

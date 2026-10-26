@@ -17,9 +17,9 @@ use huterm_ghostty::{
 use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellSize, CellStyle, CellText,
     Cursor, CursorShape, GridSize, LinkLookup, MouseEncoding, MouseTracking,
-    Rgb, ScrollCommand, TerminalAppearance, TerminalId, TerminalModes,
-    TerminalPresentation, TerminalRow, TerminalSnapshot, Viewport,
-    appearance_for_background,
+    Rgb, ScrollCommand, ScrollbackLimit, TerminalAppearance, TerminalId,
+    TerminalModes, TerminalPresentation, TerminalRow, TerminalSnapshot,
+    Viewport, appearance_for_background,
 };
 
 use super::escape_hint::EscapeHint;
@@ -31,8 +31,10 @@ use crate::host_effects::{
 };
 use crate::terminal::RuntimeError;
 
-/// History budget; Ghostty prunes whole pages, so retention is approximate.
-const SCROLLBACK_BYTES: usize = 16 * 1024 * 1024;
+/// Scrollback allocation allowed per configured row. Pages that grow for
+/// styles, graphemes, and hyperlinks are bounded only by bytes; plain rows
+/// up to about 400 columns fit, so the row limit applies first for them.
+const SCROLLBACK_BYTES_PER_ROW: usize = 4 * 1024;
 /// ED 3: erase scrollback only.
 const CLEAR_HISTORY: &[u8] = b"\x1b[3J";
 /// Longest grapheme cluster a link scan reads from one cell.
@@ -227,6 +229,7 @@ pub(super) struct TerminalEngine {
     size: GridSize,
     cell: CellSize,
     presentation: TerminalPresentation,
+    scrollback: ScrollbackLimit,
     generation: u64,
     modes: StdCell<Option<(u64, TerminalModes)>>,
     hint: EscapeHint,
@@ -268,7 +271,7 @@ impl TerminalEngine {
         };
         let mut terminal =
             ghostty::Terminal::new(options, EngineHost::default())?;
-        terminal.set_scrollback_bytes(Some(SCROLLBACK_BYTES))?;
+        apply_scrollback(&mut terminal, ScrollbackLimit::DEFAULT)?;
         terminal.disable_apc_protocols()?;
         // A larger Kitty write could never fit the terminal's host-effect
         // budget, so Ghostty answers it with EFBIG before asking the host.
@@ -282,6 +285,7 @@ impl TerminalEngine {
             size,
             cell,
             presentation,
+            scrollback: ScrollbackLimit::DEFAULT,
             generation: 0,
             modes: StdCell::new(None),
             hint: EscapeHint::Ground,
@@ -415,12 +419,21 @@ impl TerminalEngine {
         self.stats
     }
 
-    #[cfg(test)]
-    pub(super) fn set_scrollback_limit(
+    /// Applies a history limit; shrinking it evicts the oldest rows at
+    /// once. Returns whether the limit changed. A change counts as a content
+    /// change even when nothing was evicted, because the alternate screen
+    /// hides the primary history it prunes.
+    pub(super) fn set_scrollback(
         &mut self,
-        bytes: usize,
-    ) -> Result<(), RuntimeError> {
-        Ok(self.terminal.set_scrollback_bytes(Some(bytes))?)
+        limit: ScrollbackLimit,
+    ) -> Result<bool, RuntimeError> {
+        if limit == self.scrollback {
+            return Ok(false);
+        }
+        apply_scrollback(&mut self.terminal, limit)?;
+        self.scrollback = limit;
+        self.generation = self.generation.saturating_add(1);
+        Ok(true)
     }
 
     fn drain_effects(&mut self) -> Result<Vec<EngineEffect>, RuntimeError> {
@@ -678,6 +691,26 @@ impl TerminalEngine {
         let text = self.terminal.format_plain(start, end)?;
         Ok(Some(String::from_utf8_lossy(text.as_bytes()).into_owned()))
     }
+}
+
+/// Maps a row limit onto Ghostty's line and byte limits. Ghostty keeps at
+/// least one page of rows under any line limit, so only a zero byte limit
+/// keeps no history.
+fn apply_scrollback(
+    terminal: &mut ghostty::Terminal<EngineHost>,
+    limit: ScrollbackLimit,
+) -> Result<(), RuntimeError> {
+    let rows = usize::try_from(limit.rows()).unwrap_or(usize::MAX);
+    if rows == 0 {
+        terminal.set_scrollback_bytes(Some(0))?;
+        terminal.set_scrollback_lines(None)?;
+    } else {
+        terminal.set_scrollback_lines(Some(rows))?;
+        terminal.set_scrollback_bytes(Some(
+            rows.saturating_mul(SCROLLBACK_BYTES_PER_ROW),
+        ))?;
+    }
+    Ok(())
 }
 
 fn snapshot_cursor(cursor: ghostty::Cursor) -> Option<Cursor> {

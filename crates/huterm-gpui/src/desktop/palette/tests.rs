@@ -36,6 +36,7 @@ fn terminal_command() -> TerminalCommand {
             height: 16,
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
+        scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
     }
 }
 

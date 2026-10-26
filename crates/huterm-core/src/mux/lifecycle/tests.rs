@@ -13,6 +13,7 @@ fn command(script: &str) -> TerminalCommand {
             height: 16,
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
+        scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
     }
 }
 fn ready(client: &crate::test_support::TestClient, text: &str) {

@@ -83,8 +83,9 @@ version data. In a repository with several checkouts, preparation reuses a
 matching archive from another one instead of downloading; see
 [linked worktrees](development.md#linked-worktrees).
 The adapter disables Kitty graphics, the Glyph protocol, APC buffering, and
-scrollback compression, uses the
-portable CPU baseline, and retains a 16 MiB scrollback byte budget.
+scrollback compression, uses the portable CPU baseline, and limits history by
+the configured row count, as
+[the huterm-ghostty crate](#the-huterm-ghostty-crate) describes.
 
 ## Runtime behavior
 
@@ -114,7 +115,9 @@ They occur for every cell of a token that extends above the viewport, and once
 when a token reaches the viewport's top-left cell and the row above must be
 checked for a soft wrap. That check reads the row above's own wrap flag: the
 next row's continuation flag can disagree with it after line insertion or
-deletion.
+deletion. The walks are why `ScrollbackLimit::MAX` is 50,000 rows: the
+`scan-limit-above-viewport` fixture's p95 was 1.9 ms locally with 50,000 rows
+of history and 4.7 ms with 100,000, against the benchmark's 5 ms gate.
 
 Core seeds foreground, background, cursor, palette, grid, and physical cell size
 before spawning the child. It answers native OSC 4,
@@ -173,8 +176,9 @@ The engine benchmark reports the fixed Ghostty revision, p50/p95 elapsed
 processing and snapshot times, row reuse, throughput, and retained history.
 The scroll and link gates keep their existing thresholds and queue limits.
 The link benchmark runs its viewport, above-viewport, long-line, and scrolled
-fixtures with empty and saturated scrollback so their elapsed times can be
-compared.
+fixtures with empty scrollback and with scrollback saturated at the largest
+limit, so their elapsed times can be compared. Raising that limit lengthens the
+above-viewport fixtures' walks.
 Elapsed time includes scheduler preemption; Xvfb snapshot evidence does not
 prove continuous presentation.
 
@@ -369,8 +373,19 @@ tests pin each C behavior the engine relies on, and the ABI test checks every
 emitted FFI type against `ghostty_type_json()`. After a pin bump, fix a failing
 contract test's assumption before changing engine code. Allocator vtable
 callbacks receive log2 alignments, not the byte counts `allocator.h` describes.
-Set history through Ghostty's scrollback byte limit; the engine retains a
-16 MiB budget and reports actual retained rows. Set Ghostty device attributes
+Set history only through `apply_scrollback` in the engine, and set both
+Ghostty limits every time: the C default is a 10,000-byte budget. A nonzero row
+limit sets the line limit plus a byte cap of 4 KiB per row, which bounds pages
+that grow for styles, graphemes, and hyperlinks. Zero sets the byte limit to
+zero, because Ghostty never limits lines below one page of rows at the current
+width. Line pruning removes only whole historical pages, so history stays at or
+below the limit and less than a page under it; contract tests pin those bounds,
+eviction and viewport fixup when the limit drops, the primary-screen target
+while the alternate screen shows, reflow enforcement, and that RIS and ED 3
+keep the limits. A limit change counts as a content change even when nothing
+visible moved, because the alternate screen hides the primary history it
+prunes. Ghostty's render state rebuilds every row when the viewport pin moves,
+so eviction needs no forced snapshot rebuild. Set Ghostty device attributes
 explicitly: a declining callback still gets Ghostty's default VT220 replies at
 this pin, as a `huterm-ghostty` contract test shows.
 

@@ -18,9 +18,10 @@ use gpui::{
 use huterm_core::{Mux, RuntimeError, TerminalViewer, ViewerWake};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
-    CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers, TabId,
-    TerminalCommand, TerminalId, TerminalInput, TerminalLifecycle,
-    TerminalMetadata, TerminalPresentation, TerminalSnapshot, ids,
+    CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers,
+    ScrollbackLimit, TabId, TerminalCommand, TerminalId, TerminalInput,
+    TerminalLifecycle, TerminalMetadata, TerminalPresentation,
+    TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -344,6 +345,11 @@ impl BellPresentation {
 struct TerminalView {
     viewer: TerminalViewer,
     pending_presentation: Option<TerminalPresentation>,
+    /// The configured history limit, which every viewer of the terminal
+    /// sends; the runtime ignores a limit it already applies.
+    scrollback: ScrollbackLimit,
+    /// `scrollback` still waits for room in the runtime's queue.
+    pending_scrollback: bool,
     title: String,
     metadata: TerminalMetadata,
     metadata_revision: u64,
@@ -519,14 +525,19 @@ fn reported_exit(
 struct ViewerStart {
     geometry: Option<(GridSize, CellSize)>,
     presentation: TerminalPresentation,
+    scrollback: ScrollbackLimit,
 }
 
 impl ViewerStart {
     /// A viewer for a view that has shown nothing yet.
-    fn fresh(presentation: TerminalPresentation) -> Self {
+    fn fresh(
+        presentation: TerminalPresentation,
+        scrollback: ScrollbackLimit,
+    ) -> Self {
         Self {
             geometry: None,
             presentation,
+            scrollback,
         }
     }
 }
@@ -574,6 +585,14 @@ impl TerminalView {
                 Ok(()) => (None, None),
                 Err(RuntimeError::Busy) => (Some(initial_presentation), None),
                 Err(error) => (None, Some(error)),
+            };
+        // The terminal may have started under an older configuration.
+        let scrollback = config.terminal.scrollback;
+        let (pending_scrollback, scrollback_failure) =
+            match viewer.set_scrollback(scrollback) {
+                Ok(()) => (false, None),
+                Err(RuntimeError::Busy) => (true, None),
+                Err(error) => (false, Some(error)),
             };
         let (failure_wake, failure_wakes) = async_channel::bounded(1);
         let focus_subscription = cx.on_focus(
@@ -657,6 +676,8 @@ impl TerminalView {
         let mut view = TerminalView {
             viewer,
             pending_presentation,
+            scrollback,
+            pending_scrollback,
             input_queue: InputQueue::default(),
             pending_work,
             _pending_work_task: pending_work_task,
@@ -746,7 +767,7 @@ impl TerminalView {
             refresh_mode: config.terminal.refresh,
             frame_clock,
         };
-        if let Some(error) = presentation_failure {
+        if let Some(error) = presentation_failure.or(scrollback_failure) {
             view.report_viewer_failure(&error);
         }
         view.wake_pending_work();
@@ -1057,6 +1078,7 @@ impl TerminalView {
                 .last_cell_size
                 .map(|cell| (self.requested_grid, cell)),
             presentation: terminal_presentation(&self.theme),
+            scrollback: self.scrollback,
         }
     }
 
@@ -1092,6 +1114,7 @@ impl TerminalView {
         self.pending_presentation = (current.presentation
             != start.presentation)
             .then_some(current.presentation);
+        self.pending_scrollback = current.scrollback != start.scrollback;
         self.mouse = MouseState::default();
         self.context_lookup = None;
         self.links.invalidate();
@@ -1176,6 +1199,7 @@ impl TerminalView {
         !self.input_queue.is_empty()
             || self.pending_resize.is_some()
             || self.pending_presentation.is_some()
+            || self.pending_scrollback
             || self.scroll_benchmark.is_some()
     }
 
@@ -1211,6 +1235,8 @@ impl TerminalView {
             recipient.set_allowed(terminal.clipboard_write.is_allowed());
         }
         self.refresh_mode = terminal.refresh;
+        self.scrollback = terminal.scrollback;
+        self.publish_scrollback();
         self.start_snapshot_if_needed(cx);
         self.links.disable();
         self.links_enabled = terminal.links;
@@ -1224,6 +1250,18 @@ impl TerminalView {
             self.clear_composition(cx);
             self.option_as_alt = terminal.macos_option_as_alt;
         }
+    }
+
+    fn publish_scrollback(&mut self) {
+        match self.viewer.set_scrollback(self.scrollback) {
+            Ok(()) => self.pending_scrollback = false,
+            Err(RuntimeError::Busy) => self.pending_scrollback = true,
+            Err(error) => {
+                self.pending_scrollback = false;
+                self.report_viewer_failure(&error);
+            }
+        }
+        self.wake_pending_work();
     }
 
     fn publish_presentation(&mut self, theme: &Theme) {
@@ -2618,6 +2656,16 @@ impl TerminalView {
                 }
             }
         }
+        if self.pending_scrollback {
+            match self.viewer.set_scrollback(self.scrollback) {
+                Ok(()) => self.pending_scrollback = false,
+                Err(RuntimeError::Busy) => {}
+                Err(error) => {
+                    self.pending_scrollback = false;
+                    return self.report_viewer_failure(&error);
+                }
+            }
+        }
         false
     }
     /// Key context for binding predicates: `Terminal`, plus `selection`
@@ -3305,7 +3353,8 @@ fn send_queued(viewer: &TerminalViewer, queued: Queued) -> Result<(), Refused> {
 /// with `displayed_offset` counted from the bottom.
 #[expect(
     clippy::cast_precision_loss,
-    reason = "terminal scrollback is capped at 10000 rows"
+    reason = "scrollback holds at most ScrollbackLimit::MAX (50,000) rows, \
+              which f32 represents exactly"
 )]
 fn terminal_scrollbar_geometry(
     height: f32,
@@ -3370,7 +3419,8 @@ fn terminal_track_margins(
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "a bounded scrollbar ratio maps to at most 10000 rows"
+    reason = "a bounded scrollbar ratio maps to at most \
+              ScrollbackLimit::MAX (50,000) rows"
 )]
 fn rows_for_offset(offset: f32) -> usize {
     offset.round() as usize
@@ -3439,7 +3489,7 @@ fn terminal_top(chrome_hidden: bool) -> Pixels {
 fn shell_command(
     metrics: GridMetrics,
     theme: &Theme,
-    identity: huterm_config::TerminalIdentity,
+    terminal: config::TerminalConfig,
 ) -> anyhow::Result<TerminalCommand> {
     let shell =
         std::env::var_os("SHELL").map_or_else(default_shell, PathBuf::from);
@@ -3451,7 +3501,7 @@ fn shell_command(
             .into_iter()
             .any(|name| std::env::var_os(name).is_some()),
     );
-    environment.extend(crate::terminfo::environment(identity));
+    environment.extend(crate::terminfo::environment(terminal.term));
     let working_directory = if is_macos {
         config::home_directory()
     } else {
@@ -3468,6 +3518,7 @@ fn shell_command(
             height: pixel_count(metrics.cell_height * metrics.scale_factor),
         },
         presentation: terminal_presentation(theme),
+        scrollback: terminal.scrollback,
     })
 }
 

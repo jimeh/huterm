@@ -275,6 +275,8 @@ fn generate<T: JsonSchema>() -> Result<Value, serde_json::Error> {
     )
 }
 fn constrain_ranges(definitions: &mut Value) {
+    definitions["RawTerminal"]["properties"]["scrollback_rows"]["maximum"] =
+        json!(huterm_protocol::ScrollbackLimit::MAX.rows());
     definitions["PaletteConfig"]["properties"]["retain_query_seconds"]["maximum"] =
         json!(3600);
     for name in ["padding_x", "padding_y"] {

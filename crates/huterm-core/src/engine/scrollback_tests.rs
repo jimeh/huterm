@@ -1,0 +1,233 @@
+//! Retained history under each scrollback limit, measured through the
+//! snapshots and viewport the runtime publishes.
+
+use std::fmt::Write as _;
+
+use huterm_protocol::{
+    CellSize, GridSize, ScrollCommand, ScrollbackLimit, TerminalId,
+    TerminalPresentation, TerminalSnapshot,
+};
+
+use super::TerminalEngine;
+
+/// More rows than one Ghostty page holds at 80 columns or wider, the most
+/// that whole-page pruning can fall short of a limit by there.
+const PAGE_ROWS_AT_80: usize = 650;
+
+fn engine(columns: u16, limit: ScrollbackLimit) -> TerminalEngine {
+    let mut engine = TerminalEngine::new(
+        TerminalId::new(1),
+        GridSize::clamped(columns, 4),
+        CellSize {
+            width: 8,
+            height: 16,
+        },
+        TerminalPresentation::default(),
+    )
+    .unwrap();
+    engine.set_scrollback(limit).unwrap();
+    engine
+}
+
+fn limit(rows: u32) -> ScrollbackLimit {
+    ScrollbackLimit::new(rows).unwrap()
+}
+
+/// Writes lines numbered from `first`, each ending the row it starts.
+fn write_lines(engine: &mut TerminalEngine, first: usize, count: usize) {
+    let mut output = String::new();
+    for line in first..first + count {
+        let _ = write!(output, "line {line}\r\n");
+    }
+    engine.process(output.as_bytes()).unwrap();
+}
+
+/// Writes `count` lines of `width` cells each.
+fn write_wide_lines(engine: &mut TerminalEngine, width: usize, count: usize) {
+    let line = format!("{}\r\n", "w".repeat(width));
+    engine.process(line.repeat(count).as_bytes()).unwrap();
+}
+
+/// Rows of history, read as the largest offset a scroll may reach.
+fn history(engine: &TerminalEngine) -> usize {
+    engine
+        .requested_viewport(Some(ScrollCommand::Absolute(usize::MAX)))
+        .unwrap()
+        .bottom_offset
+}
+
+fn rows_text(snapshot: &TerminalSnapshot) -> Vec<String> {
+    snapshot
+        .rows
+        .iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The rows the snapshot's viewport must show after `lines` numbered
+/// lines: the live bottom row is blank, and the row `k` rows above it
+/// holds line `lines - k`.
+fn expected_rows(snapshot: &TerminalSnapshot, lines: usize) -> Vec<String> {
+    let rows = usize::from(snapshot.size.rows);
+    (0..rows)
+        .map(|row| {
+            let above = snapshot.viewport.bottom_offset + rows - 1 - row;
+            if above == 0 {
+                String::new()
+            } else {
+                format!("line {}", lines - above)
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn zero_keeps_no_history_until_a_later_limit_restores_it() {
+    let mut engine = engine(80, ScrollbackLimit::NONE);
+    write_lines(&mut engine, 0, 50);
+    assert_eq!(history(&engine), 0);
+
+    engine.set_scrollback(ScrollbackLimit::DEFAULT).unwrap();
+    write_lines(&mut engine, 50, 50);
+    assert_eq!(history(&engine), 50);
+
+    engine.set_scrollback(ScrollbackLimit::NONE).unwrap();
+    assert_eq!(history(&engine), 0);
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.history_size, 0);
+    assert_eq!(rows_text(&snapshot), expected_rows(&snapshot, 100));
+}
+
+#[test]
+fn a_limit_below_one_page_keeps_up_to_one_page() {
+    let mut engine = engine(80, limit(1));
+    let mut peak = 0;
+    for line in 0..2000 {
+        write_lines(&mut engine, line, 1);
+        peak = peak.max(history(&engine));
+    }
+    assert!(
+        (400..=PAGE_ROWS_AT_80).contains(&peak),
+        "a one-row limit kept up to {peak} rows"
+    );
+}
+
+#[test]
+fn plain_output_keeps_up_to_the_row_limit_and_less_than_a_page_fewer() {
+    // The configuration reference promises this up to about 400 columns.
+    for (columns, width) in [(80, 8), (400, 400)] {
+        let mut engine = engine(columns, ScrollbackLimit::DEFAULT);
+        write_wide_lines(&mut engine, width, 15_000);
+        let kept = history(&engine);
+        assert!(
+            kept <= 10_000 && kept > 10_000 - PAGE_ROWS_AT_80,
+            "{columns} columns kept {kept} rows"
+        );
+    }
+
+    // The largest limit keeps more than the former 16 MiB budget did,
+    // about 23,000 rows at 80 columns.
+    let mut engine = engine(80, ScrollbackLimit::MAX);
+    write_lines(&mut engine, 0, 30_000);
+    assert_eq!(history(&engine), 30_000 - 3);
+}
+
+#[test]
+fn rows_too_wide_for_the_byte_cap_keep_fewer_rows_than_the_limit() {
+    // A 1,000-column row needs about 8 KiB, twice the cap's allowance.
+    let mut engine = engine(1000, ScrollbackLimit::DEFAULT);
+    write_wide_lines(&mut engine, 1000, 12_000);
+    let kept = history(&engine);
+    assert!(kept > 1000 && kept < 7000, "kept {kept} rows");
+}
+
+#[test]
+fn shrinking_keeps_a_scrolled_viewport_on_its_rows_or_moves_it_to_the_top() {
+    let mut engine = engine(80, ScrollbackLimit::DEFAULT);
+    write_lines(&mut engine, 0, 5000);
+    engine.scroll(ScrollCommand::Absolute(1000)).unwrap();
+    let before = engine.snapshot().unwrap();
+    assert_eq!(before.viewport.bottom_offset, 1000);
+
+    // Resending the current limit changes nothing.
+    assert!(!engine.set_scrollback(ScrollbackLimit::DEFAULT).unwrap());
+    assert_eq!(engine.generation(), before.generation);
+
+    // The viewport's rows survive: it stays on them, and the shrink counts
+    // as a content change so selections and cached rows are dropped.
+    assert!(engine.set_scrollback(limit(2000)).unwrap());
+    let kept = engine.snapshot().unwrap();
+    assert!(kept.generation > before.generation);
+    assert!(
+        kept.history_size <= 2000 && kept.history_size > 1000,
+        "kept {} rows",
+        kept.history_size
+    );
+    assert_eq!(kept.viewport.bottom_offset, 1000);
+    assert_eq!(rows_text(&kept), rows_text(&before));
+    assert_eq!(rows_text(&kept), expected_rows(&kept, 5000));
+
+    // At the top, the viewport's rows are evicted and it moves to the new
+    // top, showing the oldest rows that remain.
+    engine.scroll(ScrollCommand::Absolute(usize::MAX)).unwrap();
+    engine.snapshot().unwrap();
+    engine.set_scrollback(limit(1)).unwrap();
+    let top = engine.snapshot().unwrap();
+    assert!(top.history_size <= PAGE_ROWS_AT_80);
+    assert_eq!(top.viewport.bottom_offset, top.history_size);
+    assert_eq!(rows_text(&top), expected_rows(&top, 5000));
+
+    // Output continues within the smaller limit.
+    write_lines(&mut engine, 5000, 3000);
+    engine.scroll(ScrollCommand::Live).unwrap();
+    let live = engine.snapshot().unwrap();
+    assert!(live.history_size <= PAGE_ROWS_AT_80);
+    assert_eq!(rows_text(&live), expected_rows(&live, 8000));
+}
+
+#[test]
+fn shrinking_on_the_alternate_screen_bounds_history_after_it_exits() {
+    let mut engine = engine(80, ScrollbackLimit::DEFAULT);
+    write_lines(&mut engine, 0, 5000);
+    engine.process(b"\x1b[?1049h").unwrap();
+    let alternate = engine.snapshot().unwrap();
+    assert_eq!(alternate.history_size, 0);
+
+    assert!(engine.set_scrollback(limit(1000)).unwrap());
+    assert!(engine.generation() > alternate.generation);
+    engine.process(b"\x1b[?1049l").unwrap();
+    let primary = engine.snapshot().unwrap();
+    assert!(
+        primary.history_size <= 1000 && primary.history_size > 0,
+        "kept {} rows",
+        primary.history_size
+    );
+    assert_eq!(rows_text(&primary), expected_rows(&primary, 5000));
+}
+
+#[test]
+fn narrowing_evicts_rows_that_rewrapping_pushes_past_the_limit() {
+    let mut engine = engine(80, limit(2000));
+    write_wide_lines(&mut engine, 60, 2000);
+    assert!(history(&engine) > 1500);
+
+    // Each line now fills two rows, which would be about 4,000 rows.
+    engine
+        .resize(
+            GridSize::clamped(40, 4),
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+        )
+        .unwrap();
+    let kept = history(&engine);
+    assert!(kept > 0 && kept <= 2000, "kept {kept} rows");
+}

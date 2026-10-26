@@ -1,6 +1,6 @@
 //! Portable configuration definitions and validation shared by the desktop and schemas.
 
-use huterm_protocol::Rgb;
+use huterm_protocol::{Rgb, ScrollbackLimit};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -23,9 +23,7 @@ pub struct KeybindingEntry {
     pub description: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default, deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TerminalConfig {
     pub term: TerminalIdentity,
     pub close_on_exit: bool,
@@ -37,6 +35,7 @@ pub struct TerminalConfig {
     pub link_modifiers: LinkModifiers,
     pub macos_option_as_alt: MacosOptionAsAlt,
     pub right_click: RightClickAction,
+    pub scrollback: ScrollbackLimit,
 }
 
 impl Default for TerminalConfig {
@@ -52,6 +51,7 @@ impl Default for TerminalConfig {
             link_modifiers: LinkModifiers::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
             right_click: RightClickAction::Menu,
+            scrollback: ScrollbackLimit::DEFAULT,
         }
     }
 }
@@ -894,6 +894,14 @@ pub struct RawTerminal {
     /// paste, copy the selection or else paste, or nothing. While an
     /// application takes the mouse, Shift+right-click applies it.
     pub right_click: RightClickAction,
+    /// Live history each terminal keeps above its screen, in screen rows: a
+    /// line that wraps counts once for each row it fills. 0 keeps none. The
+    /// oldest history is freed a page at a time, about 570 rows at 80
+    /// columns, so a terminal can hold up to a page fewer, and a smaller
+    /// nonzero limit keeps up to one page. It counts rows, not memory.
+    /// Reload applies it to open terminals; lowering it discards the oldest
+    /// rows at once.
+    pub scrollback_rows: u32,
 }
 impl Default for RawTerminal {
     fn default() -> Self {
@@ -909,7 +917,20 @@ impl Default for RawTerminal {
             bell: BellConfig::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
             right_click: RightClickAction::Menu,
+            scrollback_rows: ScrollbackLimit::DEFAULT.rows(),
         }
+    }
+}
+
+impl RawTerminal {
+    /// The validated `scrollback_rows` limit.
+    ///
+    /// # Errors
+    /// Returns an error when the limit exceeds [`ScrollbackLimit::MAX`].
+    pub fn scrollback(&self) -> Result<ScrollbackLimit, ConfigError> {
+        ScrollbackLimit::new(self.scrollback_rows).ok_or(ConfigError::Invalid(
+            "terminal.scrollback_rows must be between 0 and 50000",
+        ))
     }
 }
 
@@ -1031,6 +1052,7 @@ impl RawConfig {
                 "tabs.min_width must not exceed tabs.max_width",
             ));
         }
+        self.terminal.scrollback()?;
         if self.updates.check_interval_hours == Some(0) {
             return Err(ConfigError::Invalid(
                 "updates.check_interval_hours must be at least 1",
@@ -1471,6 +1493,36 @@ mod tests {
         );
 
         assert!(toml::from_str::<RawConfig>("[palette]\nvim = true").is_err());
+    }
+
+    #[test]
+    fn scrollback_rows_default_to_10000_and_accept_0_through_50000() {
+        let defaults: RawConfig = toml::from_str("").unwrap();
+        assert_eq!(defaults.terminal.scrollback_rows, 10_000);
+        for rows in [0, 1, 50_000] {
+            let raw: RawConfig = toml::from_str(&format!(
+                "[terminal]\nscrollback_rows = {rows}"
+            ))
+            .unwrap();
+            assert_eq!(raw.terminal.scrollback_rows, rows);
+            assert!(raw.validate_values().is_ok(), "{rows}");
+        }
+
+        let above: RawConfig =
+            toml::from_str("[terminal]\nscrollback_rows = 50001").unwrap();
+        assert_eq!(
+            above.validate_values().unwrap_err().to_string(),
+            "terminal.scrollback_rows must be between 0 and 50000"
+        );
+        for invalid in ["-1", "1.5", "'many'", "4294967296"] {
+            assert!(
+                toml::from_str::<RawConfig>(&format!(
+                    "[terminal]\nscrollback_rows = {invalid}"
+                ))
+                .is_err(),
+                "{invalid}"
+            );
+        }
     }
 
     #[test]

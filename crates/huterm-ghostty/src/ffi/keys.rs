@@ -31,6 +31,7 @@ pub(crate) mod terminal_data {
         "COLOR_PALETTE_DEFAULT",
         "KITTY_IMAGE_STORAGE_LIMIT",
         "SCROLLBACK_MAX_BYTES",
+        "SCROLLBACK_MAX_LINES",
         "MODE",
         "VT_GROUND",
         "CLIPBOARD_WRITE_MAX_BYTES",
@@ -222,6 +223,16 @@ pub(crate) mod terminal_data {
         type Out = usize;
     }
 
+    /// `GHOSTTY_TERMINAL_DATA_SCROLLBACK_MAX_LINES`.
+    #[derive(Debug)]
+    pub(crate) enum ScrollbackMaxLines {}
+
+    impl super::super::TerminalData for ScrollbackMaxLines {
+        const KEY: ffi::GhosttyTerminalData =
+            ffi::GHOSTTY_TERMINAL_DATA_SCROLLBACK_MAX_LINES;
+        type Out = usize;
+    }
+
     /// `GHOSTTY_TERMINAL_DATA_MODE`.
     #[derive(Debug)]
     pub(crate) enum Mode {}
@@ -277,6 +288,7 @@ pub(crate) mod terminal_option {
         "PWD_CHANGED",
         "CLIPBOARD_WRITE",
         "SCROLLBACK_MAX_BYTES",
+        "SCROLLBACK_MAX_LINES",
         "CLIPBOARD_WRITE_MAX_BYTES",
     ];
 
@@ -454,6 +466,16 @@ pub(crate) mod terminal_option {
     impl super::super::TerminalOption for ScrollbackMaxBytes {
         const KEY: ffi::GhosttyTerminalOption =
             ffi::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES;
+        type Value = usize;
+    }
+
+    /// `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES`.
+    #[derive(Debug)]
+    pub(crate) enum ScrollbackMaxLines {}
+
+    impl super::super::TerminalOption for ScrollbackMaxLines {
+        const KEY: ffi::GhosttyTerminalOption =
+            ffi::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES;
         type Value = usize;
     }
 

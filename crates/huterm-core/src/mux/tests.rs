@@ -533,6 +533,7 @@ pub(super) fn command(script: &str) -> TerminalCommand {
             height: 16,
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
+        scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
     }
 }
 fn wait_for_text(client: &crate::test_support::TestClient, needle: &str) {

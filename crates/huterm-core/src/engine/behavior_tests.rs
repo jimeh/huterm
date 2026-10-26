@@ -4,8 +4,9 @@
 use std::sync::Arc;
 
 use huterm_protocol::{
-    CellColor, CellSize, GridSize, LinkLookup, MousePosition, Rgb, TerminalId,
-    TerminalPresentation, TerminalRow, TerminalSnapshot,
+    CellColor, CellSize, GridSize, LinkLookup, MousePosition, Rgb,
+    ScrollbackLimit, TerminalId, TerminalPresentation, TerminalRow,
+    TerminalSnapshot,
 };
 
 use super::{EngineEffect, TerminalEngine};
@@ -293,8 +294,8 @@ fn soft_reset_clears_palette_overrides_but_keeps_dynamic_colors() {
 }
 
 #[test]
-fn live_scrolling_reuses_shifted_rows_before_and_at_the_scrollback_budget() {
-    for budget in [None, Some(0)] {
+fn live_scrolling_reuses_shifted_rows_before_and_at_the_scrollback_limit() {
+    for limit in [None, Some(ScrollbackLimit::NONE)] {
         let mut engine = TerminalEngine::new(
             TerminalId::new(1),
             GridSize::clamped(8, 4),
@@ -305,14 +306,14 @@ fn live_scrolling_reuses_shifted_rows_before_and_at_the_scrollback_budget() {
             presentation(),
         )
         .unwrap();
-        if let Some(bytes) = budget {
-            engine.set_scrollback_limit(bytes).unwrap();
+        if let Some(limit) = limit {
+            engine.set_scrollback(limit).unwrap();
         }
         engine.process(b"\r\n\r\nA\r\nB").unwrap();
         let before = engine.snapshot().unwrap();
         engine.process(b"\r\nC").unwrap();
         let after = engine.snapshot().unwrap();
-        if budget.is_some() {
+        if limit.is_some() {
             assert_eq!(after.history_size, before.history_size);
         }
         let text = |row: &TerminalRow| {
@@ -321,17 +322,17 @@ fn live_scrolling_reuses_shifted_rows_before_and_at_the_scrollback_budget() {
                 .map(|cell| cell.text.as_str())
                 .collect::<String>()
         };
-        assert_eq!(text(&after.rows[1]), "A       ", "{budget:?}");
-        assert!(Arc::ptr_eq(&after.rows[1], &before.rows[2]), "{budget:?}");
-        assert!(Arc::ptr_eq(&after.rows[2], &before.rows[3]), "{budget:?}");
+        assert_eq!(text(&after.rows[1]), "A       ", "{limit:?}");
+        assert!(Arc::ptr_eq(&after.rows[1], &before.rows[2]), "{limit:?}");
+        assert!(Arc::ptr_eq(&after.rows[2], &before.rows[3]), "{limit:?}");
         assert!(
             before.rows[..2]
                 .iter()
                 .any(|blank| Arc::ptr_eq(blank, &after.rows[0])),
-            "{budget:?}"
+            "{limit:?}"
         );
-        assert_eq!(text(&after.rows[3]), "C       ", "{budget:?}");
-        assert_eq!(engine.last_snapshot_stats().allocated, 1, "{budget:?}");
+        assert_eq!(text(&after.rows[3]), "C       ", "{limit:?}");
+        assert_eq!(engine.last_snapshot_stats().allocated, 1, "{limit:?}");
     }
 }
 

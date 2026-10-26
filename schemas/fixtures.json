@@ -54,6 +54,42 @@
     "theme": false
   },
   {
+    "name": "scrollback rows zero",
+    "toml": "[terminal]\nscrollback_rows = 0",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "scrollback rows maximum",
+    "toml": "[terminal]\nscrollback_rows = 50000",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "scrollback rows above maximum",
+    "toml": "[terminal]\nscrollback_rows = 50001",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "scrollback rows negative",
+    "toml": "[terminal]\nscrollback_rows = -1",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "scrollback rows fraction",
+    "toml": "[terminal]\nscrollback_rows = 1.5",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "scrollback rows string",
+    "toml": "[terminal]\nscrollback_rows = \"many\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "visual bell disabled",
     "toml": "[terminal.bell]\nvisual = false",
     "valid": true,

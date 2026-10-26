@@ -73,8 +73,8 @@ fn replies<H>(terminal: &mut Terminal<H>, bytes: &[u8]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// A terminal with every color set, a title, a directory, and styled,
-/// background-only, and grapheme cells.
+/// A terminal with every color set, a title, a directory, a scrollback row
+/// limit, and styled, background-only, and grapheme cells.
 ///
 /// The render-state probes read `GhosttyRenderStateColors.cursor` and
 /// `GhosttyRenderStateCursor.viewport_*`, which render.h defines only when
@@ -91,6 +91,8 @@ fn populated() -> Terminal<()> {
     terminal
         .set_default_cursor(Some(Rgb::new(7, 8, 9)))
         .unwrap();
+    // An unlimited row count reads back as no value.
+    terminal.set_scrollback_lines(Some(1000)).unwrap();
     terminal
         .write(
             "\x1b]2;title\x07\x1b]7;file:///tmp\x07\x1b[1;31me\u{301}\x1b[m\
@@ -153,6 +155,7 @@ fn terminal_data_keys_write_exactly_their_output_type() {
         ColorPaletteDefault: palette,
         KittyImageStorageLimit: 0,
         ScrollbackMaxBytes: 0,
+        ScrollbackMaxLines: 0,
         VtGround: false,
         ClipboardWriteMaxBytes: 0,
     );
@@ -411,6 +414,7 @@ fn terminal_option_keys_read_exactly_their_value_type() {
     round_trip!(ColorPalette, palette, [blank; 256]);
     round_trip!(KittyImageStorageLimit, 0x0000_0001_0000_0010_u64, 0);
     round_trip!(ScrollbackMaxBytes, 0x0000_0001_0000_0100_usize, 0);
+    round_trip!(ScrollbackMaxLines, 0x0000_0001_0000_0200_usize, 0);
 
     // Values without getters: 0xFF guard bytes would turn a zero value
     // nonzero if the library read past it.

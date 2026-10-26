@@ -248,6 +248,18 @@ impl<H> Terminal<H> {
             .set::<option::ScrollbackMaxBytes>(bytes.as_ref())
     }
 
+    /// Sets the primary screen's scrollback limit in physical rows; `None`
+    /// removes it. Ghostty prunes whole pages and never limits history
+    /// below one page of rows at the current width.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the library rejects the option.
+    pub fn set_scrollback_lines(&mut self, lines: Option<usize>) -> Result<()> {
+        self.native_mut()?
+            .set::<option::ScrollbackMaxLines>(lines.as_ref())
+    }
+
     /// Turns off the APC protocols, Kitty graphics and the Glyph protocol,
     /// and stops buffering APC payloads. Kitty clipboard (OSC 5522) is an
     /// OSC protocol and stays enabled; see
@@ -380,6 +392,15 @@ impl<H> Terminal<H> {
     /// Fails if the terminal is poisoned.
     pub fn scrollback_bytes(&self) -> Result<Option<usize>> {
         optional(self.native()?.as_ref().value::<data::ScrollbackMaxBytes>())
+    }
+
+    /// The configured scrollback row limit, `None` when unlimited.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the terminal is poisoned.
+    pub fn scrollback_lines(&self) -> Result<Option<usize>> {
+        optional(self.native()?.as_ref().value::<data::ScrollbackMaxLines>())
     }
 
     /// The Kitty image storage limit, `None` when Kitty graphics are

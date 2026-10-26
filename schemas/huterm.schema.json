@@ -4711,6 +4711,14 @@
           "default": "menu",
           "description": "What a right-click on the terminal does: open the context menu,\npaste, copy the selection or else paste, or nothing. While an\napplication takes the mouse, Shift+right-click applies it."
         },
+        "scrollback_rows": {
+          "default": 10000,
+          "description": "Live history each terminal keeps above its screen, in screen rows: a\nline that wraps counts once for each row it fills. 0 keeps none. The\noldest history is freed a page at a time, about 570 rows at 80\ncolumns, so a terminal can hold up to a page fewer, and a smaller\nnonzero limit keeps up to one page. It counts rows, not memory.\nReload applies it to open terminals; lowering it discards the oldest\nrows at once.",
+          "format": "uint32",
+          "maximum": 50000,
+          "minimum": 0,
+          "type": "integer"
+        },
         "term": {
           "allOf": [
             {

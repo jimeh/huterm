@@ -420,6 +420,50 @@ terminal applications set explicitly.
 See [theme sources and licenses](../crates/huterm-gpui/themes/README.md) for
 attribution and palette import details.
 
+## Scrollback
+
+Each terminal keeps the output that scrolls off its screen, up to a limit in
+screen rows. A long line that wraps across three rows counts as three.
+
+```toml
+[terminal]
+scrollback_rows = 10000 # 0 through 50000; 0 keeps no history
+```
+
+Huterm frees history a page at a time, oldest first, so the limit is a ceiling
+rather than an exact count:
+
+- Once output passes the limit, a terminal keeps at most `scrollback_rows`
+  rows, and less than one page fewer. A page holds about 570 rows at 80
+  columns and about 230 at 200 columns, and more on narrower terminals.
+- A nonzero limit smaller than one page keeps up to one page.
+- `0` keeps no history.
+
+The limit counts rows, not memory. A row's memory grows with the terminal's
+width and with the styles, combined characters, and links it holds. Huterm also
+caps each terminal's history at 4 KiB per configured row, about 40 MB at the
+default, so unusual output cannot grow it without bound. Plain output up to
+about 400 columns wide stays under that cap. Wider rows, or rows with many
+distinct styles or combining characters, can reach it first and keep fewer
+rows than the limit. The 50,000-row maximum keeps link detection quick:
+finding a link that starts above the visible rows reads history from its oldest
+row.
+
+Reload applies a new limit to every open terminal, including tabs in the
+background and tabs whose shell has exited. Lowering it discards the oldest
+rows at once. Raising it lets history grow again but does not restore rows
+already discarded. The limit applies to the normal screen's history even while
+a full-screen program such as vim shows the alternate screen. Narrowing a
+window or enlarging its font rewraps long lines onto more rows, which can also
+discard the oldest rows. When history shrinks, a view scrolled into history
+stays on the same rows if they remain and otherwise moves to the oldest row
+left, and any selection is cleared. **Clear Scrollback** and **Reset Terminal**
+keep the limit.
+
+This setting covers only the history a running terminal holds in memory.
+Huterm does not save history across restarts; saved history will have its own
+limit.
+
 ## Mouse, selection, and scrolling
 
 Applications can request button reports with mode 1000, held-button motion

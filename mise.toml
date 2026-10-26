@@ -296,6 +296,9 @@ if [ "$platform" = Linux ] && ! command -v twm >/dev/null 2>&1; then
 fi
 bash scripts/build-exec.sh cargo build --release --locked -p huterm
 bench_config="$(mktemp)"
+# The benchmark waits for 10,000 history rows, which the default limit,
+# freed a page at a time, may never hold at once.
+printf '[terminal]\nscrollback_rows = 20000\n' > "$bench_config"
 export HUTERM_CONFIG_FILE="$bench_config"
 bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example scroll_workload
 workload="$(pwd)/target/release/examples/scroll_workload"

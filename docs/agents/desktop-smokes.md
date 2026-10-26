@@ -25,8 +25,10 @@ each smoke covers and how to run it through Docker or Tart.
   echo by a frame. On macOS its keys reach the terminal only while the window
   stays active; the driver skips keys and prints `window_active=false` when
   another application takes focus.
-- `mise run bench:scroll` drives production scroll inputs against 10,000 rows
-  and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
+- `mise run bench:scroll` drives production scroll inputs against 10,000 rows,
+  under a 20,000-row scrollback limit in its temporary configuration because
+  the default limit, freed a page at a time, may never hold 10,000 at once. It
+  enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint
   elapsed time, reuse, and input latency when the host delivers enough frames.
 

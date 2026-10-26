@@ -120,7 +120,8 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   exercises. Later that day one `mise run verify` run for the pushed terminal
   geometry work, which changes no `huterm-core` code, failed both that test
   and `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
-  in the same run; the rerun passed.
+  in the same run; the rerun passed. A `mise run verify` run on the
+  scrollback branch (PR #243) also failed that test once that day.
 - **Triage:** rerun once before suspecting the change. A fix would replace the
   fixed deadline with a condition-driven wait.
 

@@ -512,6 +512,48 @@ pub struct TerminalCommand {
     pub cell_size: CellSize,
     /// Initial presentation published before the child process starts.
     pub presentation: TerminalPresentation,
+    /// History limit applied before the child process starts.
+    pub scrollback: ScrollbackLimit,
+}
+
+/// How much live history a terminal keeps above its screen, in physical
+/// rows: a line that soft-wraps counts once for each screen row it fills.
+///
+/// This bounds rows, not memory. The runtime frees history in blocks of
+/// rows, so retention can fall somewhat short of the limit; the
+/// configuration reference states the guarantees.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ScrollbackLimit(u32);
+
+impl ScrollbackLimit {
+    /// Keeps no history.
+    pub const NONE: Self = Self(0);
+    /// The default limit, 10,000 rows.
+    pub const DEFAULT: Self = Self(10_000);
+    /// The largest limit, 50,000 rows.
+    pub const MAX: Self = Self(50_000);
+
+    /// A limit of `rows`, or `None` when it exceeds [`Self::MAX`].
+    #[must_use]
+    pub const fn new(rows: u32) -> Option<Self> {
+        if rows > Self::MAX.0 {
+            None
+        } else {
+            Some(Self(rows))
+        }
+    }
+
+    /// The limit in physical rows.
+    #[must_use]
+    pub const fn rows(self) -> u32 {
+        self.0
+    }
+}
+
+impl Default for ScrollbackLimit {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// RGB color independent of a renderer.
@@ -849,6 +891,14 @@ pub enum LinkLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrollback_limits_accept_zero_through_the_maximum() {
+        assert_eq!(ScrollbackLimit::new(0), Some(ScrollbackLimit::NONE));
+        assert_eq!(ScrollbackLimit::new(50_000), Some(ScrollbackLimit::MAX));
+        assert_eq!(ScrollbackLimit::new(50_001), None);
+        assert_eq!(ScrollbackLimit::default().rows(), 10_000);
+    }
 
     #[test]
     fn buffer_ranges_are_ordered_by_reading_position() {

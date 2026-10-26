@@ -2,8 +2,9 @@ use super::*;
 use huterm_protocol::{LinkLookup, MousePosition};
 use std::time::Instant;
 
-// Enough output lines to saturate the 16 MiB scrollback budget.
-const FULL_HISTORY_LINES: usize = 100_000;
+// Enough output lines to saturate the largest scrollback limit, which
+// gives above-viewport reads their longest walk from the top of history.
+const FULL_HISTORY_LINES: usize = 60_000;
 
 struct Fixture {
     name: &'static str,
@@ -154,6 +155,7 @@ fn bounded_link_lookup_elapsed_time() {
                 TerminalPresentation::default(),
             )
             .unwrap();
+            engine.set_scrollback(ScrollbackLimit::MAX).unwrap();
             engine
                 .process("line\r\n".repeat(history).as_bytes())
                 .unwrap();

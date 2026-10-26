@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, GridSize, HostEffect, Modifiers,
     MouseAction, MouseButton, MouseInput, MousePosition, ScrollCommand,
-    TerminalCommand, TerminalFailure, TerminalId, TerminalInput,
-    TerminalLifecycle, TerminalPresentation, TerminalSnapshot,
+    ScrollbackLimit, TerminalCommand, TerminalFailure, TerminalId,
+    TerminalInput, TerminalLifecycle, TerminalPresentation, TerminalSnapshot,
     ViewerCapabilities,
 };
 
@@ -33,6 +33,14 @@ fn cell() -> CellSize {
 }
 
 fn spawn(id: u64, script: &str) -> TerminalRuntime {
+    spawn_with(id, script, ScrollbackLimit::DEFAULT)
+}
+
+fn spawn_with(
+    id: u64,
+    script: &str,
+    scrollback: ScrollbackLimit,
+) -> TerminalRuntime {
     TerminalRuntime::spawn(
         TerminalId::new(id),
         &TerminalCommand {
@@ -43,6 +51,7 @@ fn spawn(id: u64, script: &str) -> TerminalRuntime {
             grid_size: GridSize::clamped(40, 8),
             cell_size: cell(),
             presentation: TerminalPresentation::default(),
+            scrollback,
         },
     )
     .unwrap()
@@ -520,6 +529,10 @@ fn capabilities_are_enforced_by_the_runtime() {
     ));
     assert!(matches!(
         reader.clear_history(),
+        Err(RuntimeError::NotPermitted)
+    ));
+    assert!(matches!(
+        reader.set_scrollback(ScrollbackLimit::NONE),
         Err(RuntimeError::NotPermitted)
     ));
     assert!(matches!(
@@ -1550,6 +1563,150 @@ fn a_change_is_reported_once_until_the_next() {
         .unwrap();
     wait_for_text(&typist, "[two]");
     assert!(watcher.poll().invalidated.is_some());
+    runtime.shutdown().unwrap();
+}
+
+/// Prints rows 0 to 2999, then `READY`, and after one input line rows
+/// 3000 to 5999 and `DONE`.
+const ROWS_SCRIPT: &str = "stty -echo; i=0; while [ $i -lt 3000 ]; do printf 'row %s\n' $i; i=$((i+1)); done; printf READY; IFS= read -r l; while [ $i -lt 6000 ]; do printf 'row %s\n' $i; i=$((i+1)); done; printf DONE; read l";
+
+/// The rows the viewport must show while `READY` ends the output: the row
+/// `k` rows above the live bottom holds row `3000 - k`.
+fn rows_before_ready(snapshot: &TerminalSnapshot) -> Vec<String> {
+    let rows = usize::from(snapshot.size.rows);
+    (0..rows)
+        .map(
+            |row| match snapshot.viewport.bottom_offset + rows - 1 - row {
+                0 => "READY".to_owned(),
+                above => format!("row {}", 3000 - above),
+            },
+        )
+        .collect()
+}
+
+fn rows_text(snapshot: &TerminalSnapshot) -> Vec<String> {
+    snapshot
+        .rows
+        .iter()
+        .map(|row| {
+            let text = row.cells.iter().map(|cell| cell.text.as_str());
+            text.collect::<String>().trim_end().to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn shrinking_scrollback_evicts_history_for_every_viewer() {
+    let runtime = spawn(243, ROWS_SCRIPT);
+    let scroller = viewer(&runtime);
+    let hidden = viewer(&runtime);
+    let live = wait_for_text(&scroller, "READY");
+    assert!(live.history_size > 2900, "history {}", live.history_size);
+    let back = scroller
+        .request_scrolled_snapshot(ScrollCommand::Relative(500))
+        .unwrap()
+        .recv_blocking()
+        .unwrap()
+        .snapshot;
+    assert_eq!(back.viewport.bottom_offset, 500);
+    // The other viewer then reads nothing until the shrink, as a hidden
+    // tab would after it was last shown.
+    hidden.read_snapshot().unwrap();
+    while hidden.wake_pending() {}
+    assert!(hidden.poll().invalidated.is_none());
+
+    scroller
+        .set_scrollback(ScrollbackLimit::new(2000).unwrap())
+        .unwrap();
+    wait_until("the shrink to invalidate the hidden viewer", || {
+        hidden.poll().invalidated.is_some()
+    });
+    assert!(scroller.poll().invalidated.is_some());
+    let shrunk = hidden.read_snapshot().unwrap();
+    assert!(Arc::ptr_eq(&shrunk, &scroller.read_snapshot().unwrap()));
+    assert!(
+        shrunk.history_size <= 2000 && shrunk.history_size > 500,
+        "history {}",
+        shrunk.history_size
+    );
+    // The viewport stays on its rows, and none is stale.
+    assert_eq!(shrunk.viewport.bottom_offset, 500);
+    assert_eq!(rows_text(&shrunk), rows_before_ready(&shrunk));
+    assert_eq!(rows_text(&shrunk), rows_text(&back));
+    // Text selected before the shrink is no longer offered.
+    let row = BufferPoint {
+        rows_from_live_bottom: 2500,
+        column: 0,
+    };
+    let selection = hidden
+        .request_selection(live.generation, BufferRange::ordered(row, row))
+        .unwrap();
+    assert_eq!(selection.recv_blocking().unwrap(), None);
+
+    // Typing returns to live, and further output stays within the limit.
+    scroller
+        .send_input(TerminalInput::Text("go\n".into()))
+        .unwrap();
+    let done = wait_for_text(&scroller, "DONE");
+    assert!(done.history_size <= 2000, "history {}", done.history_size);
+    assert!(text(&done).contains("row 5999"));
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_terminal_keeps_its_command_limit_from_the_first_output() {
+    let runtime = spawn_with(
+        244,
+        "stty -echo; i=0; while [ $i -lt 100 ]; do printf 'row %s\\n' $i; i=$((i+1)); done; printf READY; read l",
+        ScrollbackLimit::NONE,
+    );
+    let viewer = viewer(&runtime);
+    let snapshot = wait_for_text(&viewer, "READY");
+    assert_eq!(snapshot.history_size, 0);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn an_exited_terminal_takes_a_smaller_limit() {
+    let runtime = spawn(
+        245,
+        "i=0; while [ $i -lt 3000 ]; do printf 'row %s\\n' $i; i=$((i+1)); done; printf END; exit 0",
+    );
+    let viewer = viewer(&runtime);
+    wait_for_text(&viewer, "END");
+    wait_until("exit", || {
+        runtime.registry().status().lifecycle != TerminalLifecycle::Running
+    });
+    assert!(viewer.read_snapshot().unwrap().history_size > 2900);
+    viewer
+        .set_scrollback(ScrollbackLimit::new(1000).unwrap())
+        .unwrap();
+    wait_until("the smaller limit", || {
+        viewer.read_snapshot().unwrap().history_size <= 1000
+    });
+    assert!(text(&viewer.read_snapshot().unwrap()).contains("END"));
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn resending_the_current_limit_wakes_no_viewer() {
+    let runtime = spawn(246, ROWS_SCRIPT);
+    let watcher = viewer(&runtime);
+    let typist = prober(&runtime);
+    wait_for_text(&watcher, "READY");
+    while watcher.wake_pending() {}
+    assert!(watcher.poll().invalidated.is_none());
+
+    typist.set_scrollback(ScrollbackLimit::DEFAULT).unwrap();
+    // Messages run in order, and this empty text, from a viewer that can
+    // neither take control nor move a live viewport, publishes nothing.
+    typist
+        .send_input(TerminalInput::Text(String::new()))
+        .unwrap();
+    drained(&runtime);
+    // Status changes, such as the shell's first directory, may still wake
+    // it; only a content change invalidates its snapshot.
+    assert!(watcher.poll().invalidated.is_none());
     runtime.shutdown().unwrap();
 }
 
