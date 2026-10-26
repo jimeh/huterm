@@ -368,25 +368,36 @@ fn only_a_change_that_evicts_counts_as_a_content_change() {
 fn raising_a_byte_limit_that_grown_pages_exceed_still_reports_eviction() {
     let mut engine = engine(80, with_bytes(50_000, 2 << 20));
     write_lines(&mut engine, 0, 2500);
-    // Combining marks grow the page that holds them past what the byte
-    // limit allows; Ghostty prunes for bytes only when it allocates.
-    let grapheme = format!("x{}", "\u{301}".repeat(64));
-    engine.process(grapheme.repeat(79).as_bytes()).unwrap();
-    let before = engine.snapshot().unwrap();
-
-    assert!(
-        engine
-            .set_scrollback(with_bytes(50_000, (2 << 20) + 1))
-            .unwrap()
-    );
-    let after = engine.snapshot().unwrap();
-    assert!(after.generation > before.generation);
-    assert!(
-        after.history_size < before.history_size,
-        "kept {} of {} rows",
-        after.history_size,
-        before.history_size
-    );
+    // Each row of combining marks adds about 20 KB of graphemes to the page
+    // holding it, and Ghostty prunes for bytes only when it allocates a page
+    // or a limit is applied. Raising the limit by a byte after each row
+    // therefore evicts once the pages outgrow it, however much slack the
+    // host's page size left.
+    let row =
+        format!("{}\r\n", format!("x{}", "\u{301}".repeat(64)).repeat(79));
+    let mut evictions = 0;
+    for step in 1..=40 {
+        engine.process(row.as_bytes()).unwrap();
+        let before = engine.snapshot().unwrap();
+        let evicted = engine
+            .set_scrollback(with_bytes(50_000, (2 << 20) + step))
+            .unwrap();
+        let after = engine.snapshot().unwrap();
+        assert_eq!(
+            evicted,
+            after.history_size < before.history_size,
+            "step {step}: {} then {} rows",
+            before.history_size,
+            after.history_size
+        );
+        assert_eq!(
+            evicted,
+            after.generation > before.generation,
+            "step {step}"
+        );
+        evictions += usize::from(evicted);
+    }
+    assert!(evictions > 0, "no raise evicted grown pages");
 }
 
 #[test]
