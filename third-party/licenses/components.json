@@ -1,0 +1,289 @@
+{
+  "components": [
+    {
+      "id": "rust-std",
+      "name": "Rust standard library",
+      "version": "$rust",
+      "kind": "Library",
+      "license": "MIT OR Apache-2.0",
+      "url": "https://www.rust-lang.org",
+      "files": [
+        "third-party/licenses/rust/COPYRIGHT",
+        "third-party/licenses/rust/LICENSE-MIT",
+        "third-party/licenses/rust/LICENSE-APACHE",
+        "third-party/licenses/rust/compiler-builtins-LICENSE.txt"
+      ]
+    },
+    {
+      "id": "ghostty",
+      "name": "Ghostty",
+      "version": "$ghostty",
+      "kind": "Library",
+      "license": "MIT",
+      "url": "https://github.com/ghostty-org/ghostty",
+      "files": ["third-party/ghostty/ghostty-MIT.txt"]
+    },
+    {
+      "id": "uucode",
+      "name": "uucode",
+      "version": "0.2.0",
+      "kind": "Library",
+      "license": "MIT AND Unicode-3.0",
+      "url": "https://github.com/jacobsandlund/uucode",
+      "files": [
+        "third-party/ghostty/uucode-MIT.md",
+        "third-party/ghostty/unicode.txt",
+        "third-party/ghostty/uucode-utf8.txt"
+      ]
+    },
+    {
+      "id": "simdutf",
+      "name": "simdutf",
+      "version": "9.0.0",
+      "kind": "Library",
+      "license": "Apache-2.0 OR MIT",
+      "url": "https://github.com/simdutf/simdutf",
+      "files": ["third-party/ghostty/simdutf-MIT.txt"]
+    },
+    {
+      "id": "highway",
+      "name": "Highway",
+      "version": "66486a1",
+      "kind": "Library",
+      "license": "Apache-2.0 OR BSD-3-Clause",
+      "url": "https://github.com/google/highway",
+      "files": [
+        "third-party/ghostty/highway-Apache-2.0.txt",
+        "third-party/ghostty/highway-BSD-3-Clause.txt"
+      ]
+    },
+    {
+      "id": "wuffs",
+      "name": "Wuffs",
+      "version": "0.4",
+      "kind": "Library",
+      "license": "Apache-2.0 OR MIT",
+      "url": "https://github.com/google/wuffs",
+      "files": ["third-party/ghostty/wuffs-MIT.txt"]
+    },
+    {
+      "id": "zig",
+      "name": "Zig standard library",
+      "version": "$zig",
+      "kind": "Library",
+      "license": "MIT",
+      "url": "https://ziglang.org",
+      "files": ["third-party/ghostty/zig-MIT.txt"]
+    },
+    {
+      "id": "terminal-graphics",
+      "name": "Ghostty sprite drawing",
+      "version": "4480625",
+      "kind": "Source port",
+      "license": "MIT",
+      "url": "https://github.com/ghostty-org/ghostty",
+      "files": ["third-party/terminal-graphics/LICENSE-Ghostty"]
+    },
+    {
+      "id": "lucide",
+      "name": "Lucide",
+      "version": "1.58.0",
+      "kind": "Icons",
+      "license": "ISC AND MIT",
+      "url": "https://lucide.dev",
+      "files": ["third-party/lucide/LICENSE"]
+    },
+    {
+      "id": "ncurses-terminfo",
+      "name": "ncurses terminfo",
+      "kind": "Terminfo source",
+      "license": "X11",
+      "url": "https://invisible-island.net/ncurses/",
+      "files": ["third-party/terminfo/LICENSE-ncurses"]
+    },
+    {
+      "id": "theme-catppuccin",
+      "name": "Catppuccin",
+      "version": "f6cb5a5",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/catppuccin/alacritty",
+      "files": ["crates/huterm-gpui/themes/licenses/catppuccin.txt"]
+    },
+    {
+      "id": "theme-dracula",
+      "name": "Dracula",
+      "version": "c8a3a13",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/dracula/alacritty",
+      "files": ["crates/huterm-gpui/themes/licenses/dracula.txt"]
+    },
+    {
+      "id": "theme-nord",
+      "name": "Nord",
+      "version": "9949642",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/nordtheme/alacritty",
+      "files": ["crates/huterm-gpui/themes/licenses/nordtheme.txt"]
+    },
+    {
+      "id": "theme-one-dark-pro",
+      "name": "One Dark Pro",
+      "version": "54c3280",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/Binaryify/OneDark-Pro",
+      "files": ["crates/huterm-gpui/themes/licenses/binaryify.txt"]
+    },
+    {
+      "id": "theme-tokyo-night",
+      "name": "Tokyo Night",
+      "version": "cdc07ac",
+      "kind": "Color theme",
+      "license": "Apache-2.0",
+      "url": "https://github.com/folke/tokyonight.nvim",
+      "files": ["crates/huterm-gpui/themes/licenses/folke.txt"]
+    },
+    {
+      "id": "theme-tomorrow",
+      "name": "Tomorrow Theme",
+      "version": "ccf6666",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/chriskempson/tomorrow-theme",
+      "files": ["crates/huterm-gpui/themes/licenses/chriskempson.txt"]
+    },
+    {
+      "id": "freetype",
+      "name": "FreeType",
+      "version": "$freetype",
+      "kind": "Library",
+      "license": "FTL",
+      "url": "https://freetype.org",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "files": [
+        "crate:freetype-sys/freetype2/LICENSE.TXT",
+        "crate:freetype-sys/freetype2/docs/FTL.TXT",
+        "crate:freetype-sys/freetype2/src/bdf/README",
+        "crate:freetype-sys/freetype2/src/pcf/README"
+      ]
+    },
+    {
+      "id": "libxkbcommon",
+      "name": "libxkbcommon",
+      "kind": "Library",
+      "license": "MIT",
+      "url": "https://xkbcommon.org",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "files": ["packaged:libxkbcommon0.copyright"]
+    },
+    {
+      "id": "libxkbcommon-x11",
+      "name": "libxkbcommon-x11",
+      "kind": "Library",
+      "license": "MIT",
+      "url": "https://xkbcommon.org",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "files": ["packaged:libxkbcommon-x11-0.copyright"]
+    },
+    {
+      "id": "libxcb-xkb",
+      "name": "libxcb-xkb",
+      "kind": "Library",
+      "license": "X11",
+      "url": "https://xcb.freedesktop.org",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "files": ["packaged:libxcb-xkb1.copyright"]
+    },
+    {
+      "id": "sparkle",
+      "name": "Sparkle",
+      "version": "$sparkle",
+      "kind": "Library",
+      "license": "MIT",
+      "url": "https://sparkle-project.org",
+      "targets": ["aarch64-apple-darwin", "x86_64-apple-darwin"],
+      "condition": "macos-updater",
+      "files": ["third-party/sparkle/LICENSE"]
+    },
+    {
+      "id": "appimage-type2-runtime",
+      "name": "AppImage type2-runtime",
+      "version": "20251108",
+      "kind": "AppImage runtime",
+      "license": "MIT",
+      "url": "https://github.com/AppImage/type2-runtime",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "condition": "appimage",
+      "files": ["third-party/appimage-runtime/type2-runtime-20251108-LICENSE"]
+    },
+    {
+      "id": "appimage-musl",
+      "name": "musl",
+      "version": "1.2.5",
+      "kind": "AppImage runtime",
+      "license": "MIT",
+      "url": "https://musl.libc.org",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "condition": "appimage",
+      "files": ["third-party/appimage-runtime/musl-1.2.5-COPYRIGHT"]
+    },
+    {
+      "id": "appimage-libfuse",
+      "name": "libfuse",
+      "version": "3.15.0",
+      "kind": "AppImage runtime",
+      "license": "LGPL-2.1-only",
+      "url": "https://github.com/libfuse/libfuse",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "condition": "appimage",
+      "files": ["third-party/appimage-runtime/libfuse-3.15.0-LGPL2.txt"]
+    },
+    {
+      "id": "appimage-squashfuse",
+      "name": "squashfuse",
+      "version": "0.5.2",
+      "kind": "AppImage runtime",
+      "license": "BSD-2-Clause",
+      "url": "https://github.com/vasi/squashfuse",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "condition": "appimage",
+      "files": ["third-party/appimage-runtime/squashfuse-0.5.2-LICENSE"]
+    },
+    {
+      "id": "appimage-zstd",
+      "name": "zstd",
+      "version": "1.5.6",
+      "kind": "AppImage runtime",
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/facebook/zstd",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "condition": "appimage",
+      "files": ["third-party/appimage-runtime/zstd-1.5.6-LICENSE"]
+    },
+    {
+      "id": "appimage-zlib",
+      "name": "zlib",
+      "version": "1.3.1",
+      "kind": "AppImage runtime",
+      "license": "Zlib",
+      "url": "https://zlib.net",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "condition": "appimage",
+      "files": ["third-party/appimage-runtime/zlib-1.3.1-LICENSE"]
+    },
+    {
+      "id": "appimage-mimalloc",
+      "name": "mimalloc",
+      "version": "2.1.7",
+      "kind": "AppImage runtime",
+      "license": "MIT",
+      "url": "https://github.com/microsoft/mimalloc",
+      "targets": ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+      "condition": "appimage",
+      "files": ["third-party/appimage-runtime/mimalloc-2.1.7-LICENSE"]
+    }
+  ]
+}

@@ -41,7 +41,8 @@
     { "source": "third-party/terminal-graphics/LICENSE-Ghostty", "target": "terminal-graphics-LICENSE-Ghostty" },
     { "source": "third-party/lucide/README.md", "target": "lucide-README.md" },
     { "source": "third-party/lucide/LICENSE", "target": "lucide-LICENSE" },
-    { "source": "third-party/freetype/FTL.TXT", "target": "freetype-FTL.txt" }
+    { "source": "third-party/freetype/FTL.TXT", "target": "freetype-FTL.txt" },
+    { "source": "third-party/licenses/licenses.json", "target": "licenses.json" }
   ],
   "appImageEnvelope": {
     "noticeDirectory": "appimage-runtime-notices",

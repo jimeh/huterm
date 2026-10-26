@@ -394,6 +394,11 @@ assert_file "$bundle/Contents/Resources/ghostty/ghostty-MIT.txt" "Ghostty licens
 assert_file "$bundle/Contents/Resources/terminal-graphics/LICENSE-Ghostty" "terminal graphics license"
 assert_file "$bundle/Contents/Resources/lucide/README.md" "Lucide provenance"
 assert_file "$bundle/Contents/Resources/lucide/LICENSE" "Lucide license"
+assert_file "$bundle/Contents/Resources/licenses.json" "open source license notices"
+if ! cmp -s "$bundle/Contents/Resources/licenses.json" third-party/licenses/licenses.json; then
+  echo "package verification failed: licenses.json differs from third-party/licenses/licenses.json" >&2
+  exit 1
+fi
 if [ ! -f "$bundle/Contents/Resources/terminfo/x/xterm-huterm" ] && [ ! -f "$bundle/Contents/Resources/terminfo/78/xterm-huterm" ]; then
   echo "package verification failed: missing Huterm terminfo entry" >&2
   exit 1
@@ -418,6 +423,14 @@ echo "verified $bundle ($identifier, version $version, arm64 + x86_64)"
 [tasks.license]
 description = "Audit dependency advisories, licenses, bans, and sources"
 run = "cargo deny --locked check"
+
+[tasks."licenses:generate"]
+description = "Regenerate the open source license notices that the app and packages ship"
+run = "bun scripts/licenses.ts generate"
+
+[tasks."licenses:check"]
+description = "Fail when the committed open source license notices are out of date"
+run = "bun scripts/licenses.ts check"
 
 [tasks."ci:workflows"]
 description = "Validate and secure GitHub Actions workflows"
@@ -457,7 +470,7 @@ run = "bash scripts/ci-toolchain.sh"
 
 [tasks."verify:parallel"]
 hide = true
-depends = ["check", "test", "terminfo:check", "license", "audit:scripts", "ci:workflows", "vendor:check"]
+depends = ["check", "test", "terminfo:check", "license", "licenses:check", "audit:scripts", "ci:workflows", "vendor:check"]
 
 [tasks."verify:platform:parallel"]
 hide = true

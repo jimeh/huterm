@@ -16,6 +16,8 @@ The vendored simdutf header identifies version 9.0.0; its package manifest's
 Both Highway notices are retained for its Apache-2.0/BSD-3-Clause source files.
 Ghostty compiles Wuffs into the VT library whenever its Kitty graphics support
 is built. Huterm disables Kitty graphics at run time, but the code still links.
+Zig compiles parts of its MIT licensed standard library and compiler-rt into
+the static library; `zig-MIT.txt` is Zig 0.17.0's license.
 
 The upstream archive and Zig dependency evaluation include application-related
 sources that are not linked into the VT library. This notice set describes the

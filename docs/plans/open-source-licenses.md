@@ -60,12 +60,15 @@ script dependency, Mise tools, Zig's build-time fetches.
    names the crate.
 3. Classify license files by name (`LICENSE-MIT`, `LICENSE-APACHE`, ...),
    by the single license of a one-license expression, or by signature
-   phrases. A combined file matches every license it contains. An ambiguous
-   file fails generation. Apache-2.0 also carries the crate's `NOTICE` file.
+   phrases. A combined file matches every license it contains. A file whose
+   name contradicts its wording fails generation; an unrecognized file under
+   several declared licenses ships as a notice. Apache-2.0 also carries the
+   crate's `NOTICE` file.
 4. Clarifications (`third-party/licenses/crates.json`) cover crates that ship
    no file for a license that needs one, such as objc2 and taffy. Each one
    pins the upstream URL at the crate's VCS commit, a SHA-256, and a caret
-   version range.
+   version range. Crates whose repository has no license file either get the
+   standard MIT text naming their Cargo.toml authors.
 5. Non-crate components come from `third-party/licenses/components.json`:
    id, name, version, license, URL, targets, an optional condition
    (`macos-updater` or `appimage`), and files as repository paths,
@@ -73,10 +76,10 @@ script dependency, Mise tools, Zig's build-time fetches.
 6. Normalize layout only: LF line endings, trimmed trailing spaces, tabs
    expanded, and surrounding blank lines removed. Deduplicate texts by
    SHA-256.
-7. Write `third-party/licenses.json`, sorted with a stable order.
+7. Write `third-party/licenses/licenses.json`, sorted with a stable order.
    `mise run licenses:check` regenerates in memory, compares bytes, and fails
    with the regenerate command. It runs in `verify:parallel` and in CI's
-   Dependencies job.
+   Policy job.
 
 ### Packaging
 
@@ -191,6 +194,15 @@ script dependency, Mise tools, Zig's build-time fetches.
 | Native keyboard path on the host | `check-overlays.ts` About step extended (Tab, Enter, type, Escape, Escape), via `smoke:macos-palette`, which runs the overlay checks |
 | Packaging | `mise run package:macos` assertion and an app launch; `package:linux:container` byte check and a tarball listing |
 | Regression | `mise run verify`; CI |
+
+## Deviations
+
+- The artifact lives at `third-party/licenses/licenses.json`, beside its
+  inputs, rather than at `third-party/licenses.json`.
+- Six crates (objc2 0.6, objc2-encode, block2, objc2-foundation 0.3, seahash,
+  block) have no license file upstream either. Their clarification is the
+  standard MIT text naming their Cargo.toml authors, and the entry's title
+  says so.
 
 ## Open questions
 
