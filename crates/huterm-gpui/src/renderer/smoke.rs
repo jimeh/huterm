@@ -20,7 +20,11 @@ use crate::config::Theme;
 
 pub(crate) fn run() {
     let hold = std::env::var_os("HUTERM_RENDERER_HOLD").is_some();
+    // Startup markers bound a hang before the first paint, which otherwise
+    // leaves no output at all.
+    println!("RENDERER_SMOKE launching");
     crate::assets::application().run(move |cx| {
+        println!("RENDERER_SMOKE application started");
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -38,6 +42,7 @@ pub(crate) fn run() {
             },
         )
         .expect("open renderer smoke window");
+        println!("RENDERER_SMOKE window opened");
         if hold {
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {

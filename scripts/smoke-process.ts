@@ -1,6 +1,6 @@
 /** Bounded native smoke supervision with live output and durable timing evidence. */
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 
@@ -86,6 +86,7 @@ export async function runSmokeProcess(command: string[], options: {
     deadline = setTimeout(() => {
       timedOut = true;
       event("deadline");
+      if (directory && child?.pid && process.platform === "linux") event("threads", { threads: processGroupThreads(child.pid) });
       terminate("SIGTERM");
     }, options.timeoutMs);
     const status = await new Promise<{ exitCode: number | null; signalCode: string | null }>((resolve, reject) => {
@@ -108,6 +109,55 @@ export async function runSmokeProcess(command: string[], options: {
     clearTimeout(force);
     signal("SIGKILL");
   }
+}
+
+export type ThreadState = {
+  pid: number;
+  tid: number;
+  comm?: string;
+  state?: string;
+  wchan?: string;
+  syscall?: string;
+};
+
+/**
+ * The threads of every process in `group`, from Linux procfs. A smoke that
+ * hangs before its first output leaves only these wait states to locate the
+ * hang. Descendants that start their own process group, such as PTY shells,
+ * are not included. Returns nothing on other platforms; unreadable fields
+ * stay unset.
+ */
+export function processGroupThreads(group: number): ThreadState[] {
+  if (process.platform !== "linux") return [];
+  const read = (path: string) => {
+    try { return readFileSync(path, "utf8"); } catch { return undefined; }
+  };
+  const list = (path: string) => {
+    try { return readdirSync(path).filter(name => /^\d+$/.test(name)); } catch { return []; }
+  };
+  // The command name sits in parentheses and may itself contain them.
+  const stat = (path: string) => {
+    const text = read(path);
+    const end = text?.lastIndexOf(")") ?? -1;
+    if (!text || end < 0) return undefined;
+    const fields = text.slice(end + 2).split(" ");
+    return { comm: text.slice(text.indexOf("(") + 1, end), state: fields[0], group: Number(fields[2]) };
+  };
+  return list("/proc").flatMap(pid => {
+    if (stat(`/proc/${pid}/stat`)?.group !== group) return [];
+    return list(`/proc/${pid}/task`).map(tid => {
+      const task = `/proc/${pid}/task/${tid}`;
+      const facts = stat(`${task}/stat`);
+      return {
+        pid: Number(pid),
+        tid: Number(tid),
+        comm: facts?.comm,
+        state: facts?.state,
+        wchan: read(`${task}/wchan`)?.trim(),
+        syscall: read(`${task}/syscall`)?.trim(),
+      };
+    });
+  });
 }
 
 export function checkSmokeProcess(outcome: SmokeOutcome, label: string): asserts outcome is SmokeOutcome & { exitCode: 0 } {

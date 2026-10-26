@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkSmokeProcess, runSmokeProcess } from "./smoke-process.ts";
+import { checkSmokeProcess, processGroupThreads, runSmokeProcess, type ThreadState } from "./smoke-process.ts";
 
 const run = (source: string, timeoutMs = 5_000) => runSmokeProcess(
   [process.execPath, "-e", source], { timeoutMs, graceMs: 50, stream: false },
@@ -69,6 +70,39 @@ test("smoke evidence records output timing before process completion", async () 
     expect(JSON.parse(await readFile(join(directory, "outcome.json"), "utf8")).exitCode).toBe(0);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform !== "linux")("a smoke deadline records the smoke's thread states", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "huterm-process-test-"));
+  try {
+    // Spawning returns once `sleep` has exec'd, so it is named by the deadline.
+    const result = await runSmokeProcess(["sleep", "30"], { timeoutMs: 300, graceMs: 50, evidenceDir: directory, stream: false });
+    expect(result.timedOut).toBe(true);
+    const events = (await readFile(join(directory, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const pid = events.find(event => event.kind === "started")?.pid;
+    const threads: ThreadState[] = events.find(event => event.kind === "threads")?.threads ?? [];
+    expect(threads.map(thread => [thread.pid, thread.tid, thread.comm])).toEqual([[pid, pid, "sleep"]]);
+    expect(typeof threads[0]?.state).toBe("string");
+    expect(typeof threads[0]?.wchan).toBe("string");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform !== "linux")("process group threads include every member and nothing else", async () => {
+  // The shell reports ready only once its background child has exec'd.
+  const shell = spawn("sh", ["-c", 'sleep 30 & until [ "$(cat /proc/$!/comm)" = sleep ]; do :; done; echo ready; wait'], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      shell.once("error", reject);
+      shell.stdout.on("data", (chunk: Buffer) => { if (chunk.toString().includes("ready")) resolve(); });
+    });
+    const threads = processGroupThreads(shell.pid!);
+    expect(threads.map(thread => thread.comm).sort()).toEqual(["sh", "sleep"]);
+    expect(threads.find(thread => thread.comm === "sh")?.pid).toBe(shell.pid);
+  } finally {
+    process.kill(-shell.pid!, "SIGKILL");
   }
 });
 
