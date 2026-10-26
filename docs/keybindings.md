@@ -59,6 +59,12 @@ description = "Select the first tab"
 [[keybinding]]
 key = "shift-pageup"
 command = "unbind"
+
+# Keep cmd-h for the shell; Hide stays in the menu.
+[[keybinding]]
+key = "cmd-h"
+command = "hide"
+disabled = true
 ```
 
 The fields are:
@@ -71,12 +77,28 @@ The fields are:
 - `description`: an optional label for the palette; blank text is rejected.
   Without it, the binding is labelled with the command title and its
   arguments, such as `Select Tab (index: 3)`.
+- `disabled`: `true` turns off earlier bindings instead of adding one, as
+  described below. `false` is the same as leaving it out.
 
 Unknown fields are rejected, as everywhere in the config.
 
 `unbind` is a reserved command that removes every earlier binding for the key,
-including defaults, regardless of `when`. It takes no `args` or `when`.
-Unbinding a key with no binding does nothing.
+including defaults, regardless of `when`. It takes no `args`, `when`, or
+`disabled`. Unbinding a key with no binding does nothing.
+
+`disabled = true` is narrower. It removes each earlier binding, default or
+user, with the same key, the same command, and the same `when` combined with
+the command's own context, and binds nothing itself. Bindings on that key for
+other commands or other `when` predicates stay. With `args`, an earlier
+binding must also have the same arguments; without `args`, any arguments
+match. So `cmd-h` with `command = "hide"` and `disabled = true` frees Cmd+H
+from Hide but keeps a `cmd-h` binding you added for another command, and the
+key reaches the shell unless something else still claims it. The command and
+its arguments are still checked, so a typo fails like any other bad entry. A
+disabled entry that matches nothing does nothing, so one file can disable a
+macOS default and still load on Linux. Like every entry, it affects only
+entries before it: a later entry can bind the key again, and a later `unbind`
+still removes what remains. Global shortcuts reject `disabled`.
 
 The platform defaults apply first, then user entries in file order. A later
 entry wins over an earlier one with the same key and `when`. Two user entries

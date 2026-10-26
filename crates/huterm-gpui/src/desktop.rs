@@ -92,6 +92,7 @@ const VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
 mod about;
 mod close_dialog;
 mod composition;
+mod config_watch;
 mod grid_geometry;
 mod key_bench;
 mod key_hint;

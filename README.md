@@ -40,7 +40,7 @@ GPUI for rendering.
   before closing anything with running jobs. An idle shell closes without a
   prompt.
 - **Configuration:** a TOML file with a published JSON Schema, 14 built-in
-  themes, custom themes, and reload without restarting shells.
+  themes, custom themes, and automatic reload without restarting shells.
 
 These are not available yet:
 
@@ -105,10 +105,11 @@ extension:
 #:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
 ```
 
-**Reload Configuration** (Cmd+Shift+, on macOS and Ctrl+Shift+, on Linux, with
-a US keyboard layout) applies changes to every open window without restarting
-shells. An invalid file leaves
-the running settings in place and shows an error.
+Huterm reloads the file when it changes on disk, and **Reload Configuration**
+(Cmd+Shift+, on macOS and Ctrl+Shift+, on Linux, with a US keyboard layout)
+reloads it on request. Either applies changes to every open window without
+restarting shells. An invalid file leaves the running settings in place and
+shows an error.
 
 - [Configuration](docs/configuration.md) covers every setting: tabs and
   windows, fonts and themes, quake windows, links, clipboard writes, terminal

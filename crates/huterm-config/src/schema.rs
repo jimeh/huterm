@@ -66,6 +66,30 @@ fn modifier_combinations(
     }
 }
 
+/// The schema for one configurable argument, or `None` for runtime
+/// identities that a binding cannot set.
+fn argument_schema(kind: ArgumentKind) -> Option<Value> {
+    Some(match kind {
+        ArgumentKind::Bool => json!({"type":"boolean"}),
+        ArgumentKind::Text => json!({"type":"string"}),
+        ArgumentKind::QuakeProfile => json!({
+            "type":"string",
+            "description":"Configured quake profile name; defaults to `default`."
+        }),
+        ArgumentKind::Integer { min, max } => {
+            json!({"type":"integer", "minimum":min, "maximum":max})
+        }
+        ArgumentKind::Side => json!({
+            "type":"string",
+            "enum": huterm_protocol::SIDES,
+        }),
+        ArgumentKind::Tab
+        | ArgumentKind::Workspace
+        | ArgumentKind::Session
+        | ArgumentKind::Pane => return None,
+    })
+}
+
 fn keybindings(base: &Value, global: bool) -> Value {
     let mut alternatives = Vec::new();
     for command in catalog().iter().filter(|spec| {
@@ -79,24 +103,8 @@ fn keybindings(base: &Value, global: bool) -> Value {
         let mut required = Vec::new();
         let mut one_of_groups = BTreeMap::<_, Vec<_>>::new();
         for arg in command.args {
-            let schema = match arg.kind {
-                ArgumentKind::Bool => json!({"type":"boolean"}),
-                ArgumentKind::Text => json!({"type":"string"}),
-                ArgumentKind::QuakeProfile => json!({
-                    "type":"string",
-                    "description":"Configured quake profile name; defaults to `default`."
-                }),
-                ArgumentKind::Integer { min, max } => {
-                    json!({"type":"integer", "minimum":min, "maximum":max})
-                }
-                ArgumentKind::Side => json!({
-                    "type":"string",
-                    "enum": huterm_protocol::SIDES,
-                }),
-                ArgumentKind::Tab
-                | ArgumentKind::Workspace
-                | ArgumentKind::Session
-                | ArgumentKind::Pane => continue,
+            let Some(schema) = argument_schema(arg.kind) else {
+                continue;
             };
             properties.insert(arg.name.into(), schema);
             match arg.required {
@@ -143,6 +151,10 @@ fn keybindings(base: &Value, global: bool) -> Value {
         );
         unbind["properties"]["args"] =
             json!({"type":"object", "additionalProperties":false});
+        // Runtime rejects `disabled` on unbind, even when false.
+        unbind["properties"]
+            .as_object_mut()
+            .map(|fields| fields.remove("disabled"));
         alternatives.push(json!({"if":{"properties":{"command":{"const":"unbind"}},"required":["command"]},"then":unbind}));
     }
     let mut common = base.clone();
@@ -173,9 +185,10 @@ fn keybindings(base: &Value, global: bool) -> Value {
     json!({"allOf": alternatives})
 }
 fn global_fields(schema: &mut Value) {
-    schema["properties"]
-        .as_object_mut()
-        .map(|fields| fields.remove("when"));
+    if let Some(fields) = schema["properties"].as_object_mut() {
+        fields.remove("when");
+        fields.remove("disabled");
+    }
     schema["properties"]["key"]["pattern"] = json!("^\\S+$");
     schema["properties"]["key"]["description"] = json!(
         "One global keystroke in GPUI syntax. Native key support, duplicate grabs, local conflicts, and OS registration are checked at runtime."

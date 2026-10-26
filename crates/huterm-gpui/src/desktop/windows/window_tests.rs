@@ -80,6 +80,7 @@ impl DesktopHarness {
             error: None,
             warning: None,
             fatal: false,
+            inputs: config::Inputs::default(),
         };
         let app_runtime = Arc::clone(&runtime);
         cx.update(|cx| {
@@ -3466,6 +3467,7 @@ impl DesktopHarness {
                     args: None,
                     when: Some((*when).to_owned()),
                     description: None,
+                    disabled: None,
                 })
                 .collect();
         })

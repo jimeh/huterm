@@ -272,6 +272,7 @@ fn user_bindings_replace_default_shortcut_text() {
             args: None,
             when: None,
             description: None,
+            disabled: None,
         },
         KeybindingEntry {
             key: "cmd-shift-w".to_owned(),
@@ -279,6 +280,7 @@ fn user_bindings_replace_default_shortcut_text() {
             args: None,
             when: None,
             description: None,
+            disabled: None,
         },
     ];
     let input = WindowMenuInput {

@@ -4,12 +4,15 @@ use std::path::Path;
 
 use huterm_config::{ThemeDefinition, ThemeFile};
 
-use crate::config::{ConfigError, Theme};
+use crate::config::{ConfigError, Consumed, Theme};
 
+/// Resolves the selected theme, recording every external theme file it
+/// reads or probes in `consumed`.
 pub(super) fn resolve(
     selected: &ThemeDefinition,
     inline: &BTreeMap<String, ThemeDefinition>,
     directory: &Path,
+    consumed: &mut Consumed,
 ) -> Result<Theme, ConfigError> {
     if selected.extends.is_some() {
         return Err(ConfigError::Invalid("use name in [theme], not extends"));
@@ -20,7 +23,9 @@ pub(super) fn resolve(
         validate_definition(definition)?;
     }
     let base = match &selected.name {
-        Some(name) => resolve_named(name, inline, directory, &mut Vec::new())?,
+        Some(name) => {
+            resolve_named(name, inline, directory, consumed, &mut Vec::new())?
+        }
         None => Theme::default(),
     };
     // A `[theme]` that sets nothing is the built-in huterm-dark, with its
@@ -64,6 +69,7 @@ fn resolve_named(
     name: &str,
     inline: &BTreeMap<String, ThemeDefinition>,
     directory: &Path,
+    consumed: &mut Consumed,
     stack: &mut Vec<String>,
 ) -> Result<Theme, ConfigError> {
     validate_name(name)?;
@@ -78,7 +84,13 @@ fn resolve_named(
         definition.clone()
     } else {
         let path = directory.join(format!("{name}.toml"));
-        match fs::read_to_string(&path) {
+        let read = fs::read(&path);
+        consumed.theme(&path, read.as_deref().ok());
+        match read.and_then(|bytes| {
+            String::from_utf8(bytes).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+            })
+        }) {
             Ok(source) => parse_file(&source)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if name == "huterm-dark" {
@@ -104,7 +116,9 @@ fn resolve_named(
         return Ok(Theme::huterm_dark());
     }
     let base = match &definition.extends {
-        Some(parent) => resolve_named(parent, inline, directory, stack)?,
+        Some(parent) => {
+            resolve_named(parent, inline, directory, consumed, stack)?
+        }
         None => Theme::default(),
     };
     let theme = definition.apply(base)?;

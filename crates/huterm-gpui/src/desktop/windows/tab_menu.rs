@@ -227,6 +227,7 @@ mod tests {
             args: None,
             when: None,
             description: None,
+            disabled: None,
         }];
         let model = tab_menu_model(
             &active,

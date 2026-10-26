@@ -9,6 +9,7 @@ fn entry(key: &str, command: &str) -> KeybindingEntry {
         args: None,
         when: None,
         description: None,
+        disabled: None,
     }
 }
 
@@ -881,4 +882,238 @@ fn partial_bindings_compile_but_bad_values_fail() {
     .expect("configured runtime identity fails")
     .to_string();
     assert!(identity.contains("runtime identity"), "{identity}");
+}
+
+fn disabled(mut entry: KeybindingEntry) -> KeybindingEntry {
+    entry.disabled = Some(true);
+    entry
+}
+
+fn bound_to<'a>(
+    compiled: &'a CompiledKeymap,
+    key: &str,
+) -> Vec<&'a EffectiveBinding> {
+    compiled
+        .effective
+        .iter()
+        .filter(|binding| binding.key == key)
+        .collect()
+}
+
+#[test]
+fn disabled_removes_only_the_binding_with_its_key_command_and_predicate() {
+    let user = [
+        KeybindingEntry {
+            when: Some("Terminal".into()),
+            ..entry("cmd-h", "copy")
+        },
+        entry("cmd-alt-h", "minimize"),
+        disabled(entry("cmd-h", "hide")),
+        disabled(entry("cmd-alt-h", "hide_others")),
+    ];
+    let compiled = compile(Platform::MacOs, &user).unwrap();
+    assert_eq!(compiled.conflicts, Vec::<String>::new());
+    let commands = |key| {
+        bound_to(&compiled, key)
+            .iter()
+            .map(|binding| binding.command)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(commands("cmd-h"), vec![ids::COPY]);
+    // A same-key binding with another command stays, replacing nothing.
+    assert_eq!(commands("cmd-alt-h"), vec![ids::MINIMIZE]);
+    // The conditional copy reserves nothing, so cmd-h reaches the terminal;
+    // the unconditional minimize keeps cmd-alt-h reserved.
+    assert!(!compiled.reserved.is_reserved(&keystroke("cmd-h")));
+    assert!(compiled.reserved.is_reserved(&keystroke("cmd-alt-h")));
+    let installed = compile(Platform::MacOs, &user).unwrap().install_parts().1;
+    assert_eq!(
+        installed.shortcuts(ids::HIDE, &[], None),
+        Vec::<&EffectiveBinding>::new()
+    );
+}
+
+#[test]
+fn disabled_matches_a_contextual_default_and_a_normalized_when() {
+    let user = [
+        KeybindingEntry {
+            when: Some("Terminal&&selection".into()),
+            ..entry("alt-x", "copy")
+        },
+        KeybindingEntry {
+            when: Some("Terminal && !selection".into()),
+            ..entry("alt-x", "copy")
+        },
+        disabled(KeybindingEntry {
+            when: Some("Terminal && selection".into()),
+            ..entry("alt-x", "copy")
+        }),
+        // The palette default carries its command's context, so the
+        // disabled entry needs no `when` to match it.
+        disabled(entry("ctrl-n", "palette_select_next")),
+    ];
+    let compiled = compile(Platform::MacOs, &user).unwrap();
+    let remaining = bound_to(&compiled, "alt-x");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].when.as_deref(), Some("Terminal && !selection"));
+    assert_eq!(
+        bound_to(&compiled, "ctrl-n"),
+        Vec::<&EffectiveBinding>::new()
+    );
+    assert_eq!(
+        bound_to(&compiled, "down")
+            .iter()
+            .filter(|binding| binding.command == ids::PALETTE_SELECT_NEXT)
+            .count(),
+        1
+    );
+    // A `when` that only adds to the context is a different predicate.
+    let other = compile(
+        Platform::MacOs,
+        &[disabled(KeybindingEntry {
+            when: Some("Palette".into()),
+            ..entry("ctrl-n", "palette_select_next")
+        })],
+    )
+    .unwrap();
+    assert_eq!(bound_to(&other, "ctrl-n").len(), 1);
+}
+
+#[test]
+fn disabled_args_match_exactly_when_given_and_any_when_omitted() {
+    let index = |value| [("index", toml::Value::Integer(value))];
+    let compile_with =
+        |user: &[KeybindingEntry]| compile(Platform::MacOs, user).unwrap();
+    let omitted = compile_with(&[disabled(entry("cmd-1", "select_tab"))]);
+    assert_eq!(bound_to(&omitted, "cmd-1"), Vec::<&EffectiveBinding>::new());
+    let other = compile_with(&[disabled(with_args(
+        entry("cmd-1", "select_tab"),
+        &index(2),
+    ))]);
+    assert_eq!(bound_to(&other, "cmd-1").len(), 1);
+    let same = compile_with(&[disabled(with_args(
+        entry("cmd-1", "select_tab"),
+        &index(1),
+    ))]);
+    assert_eq!(bound_to(&same, "cmd-1"), Vec::<&EffectiveBinding>::new());
+    // `args = {}` is given: it matches only bindings without arguments.
+    let empty =
+        compile_with(&[disabled(with_args(entry("cmd-1", "select_tab"), &[]))]);
+    assert_eq!(bound_to(&empty, "cmd-1").len(), 1);
+}
+
+#[test]
+fn disabled_affects_only_earlier_entries_and_unbind_still_follows() {
+    let rebound = compile(
+        Platform::MacOs,
+        &[disabled(entry("cmd-h", "hide")), entry("cmd-h", "hide")],
+    )
+    .unwrap();
+    assert_eq!(rebound.conflicts, Vec::<String>::new());
+    assert_eq!(bound_to(&rebound, "cmd-h").len(), 1);
+    assert!(rebound.reserved.is_reserved(&keystroke("cmd-h")));
+    let replaced = compile(
+        Platform::MacOs,
+        &[disabled(entry("cmd-h", "hide")), entry("cmd-h", "minimize")],
+    )
+    .unwrap();
+    assert_eq!(
+        bound_to(&replaced, "cmd-h")
+            .iter()
+            .map(|binding| binding.command)
+            .collect::<Vec<_>>(),
+        vec![ids::MINIMIZE]
+    );
+    let unbound = compile(
+        Platform::MacOs,
+        &[
+            KeybindingEntry {
+                when: Some("Terminal".into()),
+                ..entry("cmd-h", "copy")
+            },
+            disabled(entry("cmd-h", "hide")),
+            entry("cmd-h", "unbind"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(bound_to(&unbound, "cmd-h"), Vec::<&EffectiveBinding>::new());
+    // `disabled = false` is an ordinary binding.
+    let ordinary = compile(
+        Platform::Linux,
+        &[KeybindingEntry {
+            disabled: Some(false),
+            ..entry("alt-x", "copy")
+        }],
+    )
+    .unwrap();
+    assert_eq!(bound_to(&ordinary, "alt-x").len(), 1);
+}
+
+#[test]
+fn unmatched_disabled_is_silent_and_bad_disabled_entries_fail() {
+    // A macOS-only default has nothing to match on Linux.
+    let linux =
+        compile(Platform::Linux, &[disabled(entry("cmd-h", "hide"))]).unwrap();
+    assert_eq!(linux.conflicts, Vec::<String>::new());
+    assert_eq!(bound_to(&linux, "cmd-h"), Vec::<&EffectiveBinding>::new());
+    for (user, expected) in [
+        (disabled(entry("cmd-h", "hyde")), "unknown command"),
+        (
+            disabled(with_args(
+                entry("cmd-1", "select_tab"),
+                &[("index", toml::Value::Integer(12))],
+            )),
+            "expected 1 to 9",
+        ),
+        (disabled(entry("cmd-h", "unbind")), "takes no `disabled`"),
+        (
+            KeybindingEntry {
+                disabled: Some(false),
+                ..entry("cmd-h", "unbind")
+            },
+            "takes no `disabled`",
+        ),
+    ] {
+        let error = compile(Platform::MacOs, &[user])
+            .err()
+            .expect("entry fails")
+            .to_string();
+        assert!(
+            error.starts_with("keybinding 1 (\"cmd-")
+                && error.contains(expected),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn a_disabled_default_no_longer_dispatches_while_its_neighbours_do() {
+    let user = [
+        KeybindingEntry {
+            when: Some("Terminal".into()),
+            ..entry("cmd-h", "copy")
+        },
+        disabled(entry("cmd-h", "hide")),
+    ];
+    let keymap = Keymap::new(compile(Platform::MacOs, &user).unwrap().bindings);
+    let terminal = [
+        KeyContext::parse("Workspace").unwrap(),
+        KeyContext::parse("Terminal").unwrap(),
+    ];
+    let matched = |contexts: &[KeyContext]| {
+        let (bindings, pending) =
+            keymap.bindings_for_input(&[keystroke("cmd-h")], contexts);
+        assert!(!pending);
+        bindings.iter().map(command_of).collect::<Vec<_>>()
+    };
+    assert_eq!(matched(&terminal), vec![ids::COPY]);
+    assert_eq!(matched(&[KeyContext::parse("Workspace").unwrap()]), []);
+    let (bindings, _) = keymap.bindings_for_input(
+        &[keystroke("cmd-alt-h")],
+        &[KeyContext::parse("Workspace").unwrap()],
+    );
+    assert_eq!(
+        bindings.iter().map(command_of).collect::<Vec<_>>(),
+        vec![ids::HIDE_OTHERS]
+    );
 }

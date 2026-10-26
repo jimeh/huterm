@@ -536,6 +536,33 @@ settings errors must preserve clipboard policy and the migration diagnostic.
 Fatal snapshot errors set the runtime closing gate; latch client snapshot
 failure so pending scroll or invalidation cannot create an immediate retry loop.
 
+`desktop/config_watch.rs` owns the `notify` watcher on its own worker thread,
+which starts, reconfigures, and drops it: `FSEvents` blocks while starting and
+joins a thread when dropped, so the GPUI thread only sends `Settings` and
+receives `Report`s. Watch directories non-recursively, never files, and a
+missing directory through its nearest existing ancestor; keep the ancestor
+watched until the descendant's registration succeeds. Ignore every `Access`
+event: fingerprinting opens the files, so reacting to inotify's open and close
+events loops. Every load and reload records `config::Inputs`, a fingerprint of
+the bytes it consumed plus the theme files it read or probed; reconcile
+compares the current fingerprint with the last *attempted* reload's, not the
+last successful one, so restoring good content after a broken save reloads.
+Each registration change schedules one catch-up reconciliation for changes
+made while no watch covered them, including the stream restart `FSEvents`
+performs on every `watch` call. With no events the worker blocks on its
+channel: no timer, no reads. On the desktop, `config_watch::Reloads` admits
+one reload at a time; a report during a reload marks it dirty even when the
+content matches, and one follow-up runs when it finishes. Every finished
+reload sends the watcher fresh `Settings`, including after a failure, which
+keeps the previous `watch_config`. An automatic reload that finds the file
+missing is skipped silently, since editors remove it while saving.
+
+The `huterm_config::document` patch service edits `config.toml` by splicing
+byte ranges, never by re-serializing, and refuses any splice whose reparsed
+value tree or comments differ from what the operation asked for. Its desktop
+validator, `config::validator`, must stay free of side effects: it compiles the
+keymap and global shortcuts but registers nothing.
+
 Configuration schemas are generated from `huterm-config` with its `schema`
 feature; that crate must remain independent of GPUI and terminal engines.
 `mise run schema:generate` updates both committed files; `schema:check` compares

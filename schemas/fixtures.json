@@ -1212,5 +1212,95 @@
     "toml": "[[global_keybinding]]\nkey = \"ctrl-alt-enter\"\ncommand = \"dialog_confirm\"",
     "valid": false,
     "theme": false
+  },
+  {
+    "name": "general watch_config default",
+    "toml": "[general]",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "general watch_config off",
+    "toml": "[general]\nwatch_config = false",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "general watch_config text",
+    "toml": "[general]\nwatch_config = \"no\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "general unknown field",
+    "toml": "[general]\nwatch = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "keybinding disabled",
+    "toml": "[[keybinding]]\nkey = \"cmd-h\"\ncommand = \"hide\"\ndisabled = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "keybinding disabled false",
+    "toml": "[[keybinding]]\nkey = \"cmd-h\"\ncommand = \"hide\"\ndisabled = false",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "keybinding disabled with args",
+    "toml": "[[keybinding]]\nkey = \"alt-1\"\ncommand = \"select_tab\"\nargs = { index = 1 }\ndisabled = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "keybinding disabled with when",
+    "toml": "[[keybinding]]\nkey = \"ctrl-c\"\ncommand = \"copy\"\nwhen = \"selection\"\ndisabled = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "keybinding disabled text",
+    "toml": "[[keybinding]]\nkey = \"cmd-h\"\ncommand = \"hide\"\ndisabled = \"yes\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "keybinding disabled unknown command",
+    "toml": "[[keybinding]]\nkey = \"cmd-h\"\ncommand = \"hyde\"\ndisabled = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "keybinding disabled bad args",
+    "toml": "[[keybinding]]\nkey = \"alt-1\"\ncommand = \"select_tab\"\nargs = { index = 12 }\ndisabled = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unbind disabled",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"unbind\"\ndisabled = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unbind disabled false",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"unbind\"\ndisabled = false",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "global disabled",
+    "toml": "[[global_keybinding]]\nkey = \"ctrl-shift-f12\"\ncommand = \"toggle_quake\"\ndisabled = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "global disabled false",
+    "toml": "[[global_keybinding]]\nkey = \"ctrl-shift-f12\"\ncommand = \"toggle_quake\"\ndisabled = false",
+    "valid": false,
+    "theme": false
   }
 ]

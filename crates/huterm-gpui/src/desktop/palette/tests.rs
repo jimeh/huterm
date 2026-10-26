@@ -105,6 +105,7 @@ fn ten_tab_picker_caps_match_select_tab_positions_exactly() {
         args: None,
         when: None,
         description: None,
+        disabled: None,
     };
     let (_, keymap) =
         compile(Platform::MacOs, &[bare]).unwrap().install_parts();

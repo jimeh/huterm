@@ -17,7 +17,7 @@ fn schema_fixtures_match_application_parsing_and_keymap_compilation() {
         serde_json::from_str(include_str!("../../../../schemas/fixtures.json"))
             .unwrap();
     let fixtures = fixtures.as_array().unwrap();
-    assert_eq!(fixtures.len(), 209);
+    assert_eq!(fixtures.len(), 224);
     for fixture in fixtures {
         let source = fixture["toml"].as_str().unwrap();
         let expected = fixture["valid"].as_bool().unwrap();
@@ -215,9 +215,9 @@ fn fullscreen_mode_defaults_spelling_reload_and_startup_fallback() {
     fs::create_dir(&directory).unwrap();
     let path = directory.join("config.toml");
     fs::write(&path, "[window]\nmacos_fullscreen_mode = 'non_native'").unwrap();
-    let working = reload(&path).unwrap();
+    let working = reload(&path).config.unwrap();
     fs::write(&path, "[terminal]\nengine = 'ghostty'\n[window]\nmacos_fullscreen_mode = 'simple'").unwrap();
-    assert!(reload(&path).is_err());
+    assert!(reload(&path).config.is_err());
     assert_eq!(
         working.window.macos_fullscreen_mode,
         MacosFullscreenMode::NonNative
@@ -266,14 +266,14 @@ fn option_policy_reload_rejects_invalid_values_without_fallback() {
     fs::create_dir(&directory).unwrap();
     let path = directory.join("config.toml");
     fs::write(&path, "[terminal]\nmacos_option_as_alt = 'both'").unwrap();
-    let working = reload(&path).unwrap();
+    let working = reload(&path).config.unwrap();
     assert_eq!(working.terminal.macos_option_as_alt, MacosOptionAsAlt::Both);
     fs::write(&path, "[terminal]\nmacos_option_as_alt = 'left'").unwrap();
-    assert!(reload(&path).is_err());
+    assert!(reload(&path).config.is_err());
     assert_eq!(working.terminal.macos_option_as_alt, MacosOptionAsAlt::Both);
     fs::write(&path, "[terminal]\nmacos_option_as_alt = 'off'").unwrap();
     assert_eq!(
-        reload(&path).unwrap().terminal.macos_option_as_alt,
+        reload(&path).config.unwrap().terminal.macos_option_as_alt,
         MacosOptionAsAlt::Off
     );
     fs::remove_dir_all(directory).unwrap();
@@ -285,10 +285,10 @@ fn clipboard_write_policy_reload_rejects_invalid_values_without_fallback() {
     fs::create_dir(&directory).unwrap();
     let path = directory.join("config.toml");
     fs::write(&path, "[terminal]\nclipboard_write = 'deny'").unwrap();
-    let working = reload(&path).unwrap();
+    let working = reload(&path).config.unwrap();
     assert_eq!(working.terminal.clipboard_write, ClipboardWritePolicy::Deny);
     fs::write(&path, "[terminal]\nclipboard_write = 'prompt'").unwrap();
-    assert!(reload(&path).is_err());
+    assert!(reload(&path).config.is_err());
     assert_eq!(working.terminal.clipboard_write, ClipboardWritePolicy::Deny);
     fs::remove_dir_all(directory).unwrap();
 }
@@ -628,13 +628,13 @@ fn reload_rereads_theme_files_and_never_falls_back_on_errors() {
     let theme_path = directory.join("themes/custom.toml");
     fs::write(&path, "[theme]\nname = 'custom'").unwrap();
     fs::write(&theme_path, "[theme]\nextends = 'nord'").unwrap();
-    let first = reload(&path).unwrap();
+    let first = reload(&path).config.unwrap();
     fs::write(&theme_path, "[theme]\nextends = 'dracula'").unwrap();
-    assert_ne!(reload(&path).unwrap().theme, first.theme);
+    assert_ne!(reload(&path).config.unwrap().theme, first.theme);
     fs::write(&theme_path, "[theme]\nforeground = 'bad'").unwrap();
-    assert!(reload(&path).is_err());
+    assert!(reload(&path).config.is_err());
     fs::remove_file(&path).unwrap();
-    assert!(reload(&path).is_err());
+    assert!(reload(&path).config.is_err());
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -804,6 +804,145 @@ fn indexed_palette_should_cover_cube_and_grayscale() {
     assert_eq!(theme.indexed(231), rgb(0x00ff_ffff));
     assert_eq!(theme.indexed(232), rgb(0x0008_0808));
     assert_eq!(theme.indexed(255), rgb(0x00ee_eeee));
+}
+
+#[test]
+fn watch_config_defaults_on_parses_and_is_read_leniently_on_a_nonfatal_error() {
+    assert!(Config::default().general.watch_config);
+    assert!(parse("").unwrap().general.watch_config);
+    assert!(parse(DEFAULT_CONFIG).unwrap().general.watch_config);
+    assert!(DEFAULT_CONFIG.contains("[general]\n# Reload this file automatically when it changes on disk.\nwatch_config = true\n"));
+    assert!(
+        !parse("[general]\nwatch_config = false")
+            .unwrap()
+            .general
+            .watch_config
+    );
+    assert!(parse("[general]\nwatch_config = 'no'").is_err());
+    assert!(parse("[general]\nwatch = true").is_err());
+    let directory = test_directory();
+    fs::create_dir(&directory).unwrap();
+    let path = directory.join("config.toml");
+    // A value error elsewhere falls back to defaults but keeps the choice,
+    // so a fix saved later still reloads, or still does not.
+    for (general, expected) in [
+        ("[general]\nwatch_config = false\n", false),
+        ("[general]\nwatch_config = true\n", true),
+        ("", true),
+        ("[general]\nwatch_config = 'no'\n", true),
+    ] {
+        fs::write(&path, format!("{general}[font]\nsize = 1000.0\n")).unwrap();
+        let loaded = load_path(path.clone());
+        assert!(!loaded.fatal && loaded.error.is_some(), "{general}");
+        assert_eq!(loaded.config.general.watch_config, expected, "{general}");
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn input_fingerprints_follow_the_config_and_every_theme_file_it_consumed() {
+    let directory = test_directory();
+    let themes = directory.join("themes");
+    fs::create_dir_all(&themes).unwrap();
+    let path = directory.join("config.toml");
+    fs::write(&path, "[theme]\nname = 'child'\n").unwrap();
+    fs::write(
+        themes.join("child.toml"),
+        "[theme]\nextends = 'parent'\nbackground = '#101010'\n",
+    )
+    .unwrap();
+    fs::write(themes.join("parent.toml"), "[theme]\nextends = 'dracula'\n")
+        .unwrap();
+    let loaded = load_path(path.clone());
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    // Inheritance probes the parent and, before the bundled theme, a file
+    // that does not exist.
+    assert_eq!(
+        loaded.inputs.themes,
+        ["child", "parent", "dracula"]
+            .map(|name| themes.join(format!("{name}.toml")))
+    );
+    assert_eq!(reload(&path).inputs, loaded.inputs);
+    let current = || fingerprint(&path, &loaded.inputs.themes).unwrap();
+    assert_eq!(current(), loaded.inputs.fingerprint);
+    for (file, edit) in [
+        (path.clone(), "[theme]\nname = 'child'\n# edited\n"),
+        (
+            themes.join("child.toml"),
+            "[theme]\nextends = 'parent'\nbackground = '#202020'\n",
+        ),
+        (
+            themes.join("parent.toml"),
+            "[theme]\nextends = 'dracula' # x\n",
+        ),
+        (
+            themes.join("dracula.toml"),
+            "[theme]\nbackground = '#000000'\n",
+        ),
+    ] {
+        let before = fs::read(&file).ok();
+        fs::write(&file, edit).unwrap();
+        assert_ne!(current(), loaded.inputs.fingerprint, "{}", file.display());
+        match before {
+            Some(bytes) => fs::write(&file, bytes).unwrap(),
+            None => fs::remove_file(&file).unwrap(),
+        }
+        assert_eq!(current(), loaded.inputs.fingerprint, "{}", file.display());
+    }
+    // A missing configuration is an editor's save in progress.
+    fs::remove_file(&path).unwrap();
+    assert_eq!(fingerprint(&path, &loaded.inputs.themes), None);
+    let missing = reload(&path);
+    assert!(missing.missing && missing.config.is_err());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn the_validator_guards_patch_service_writes_without_side_effects() {
+    use huterm_config::document::{ApplyError, ConfigFile, Patch};
+    let directory = test_directory();
+    fs::create_dir(&directory).unwrap();
+    let path = directory.join("config.toml");
+    fs::write(&path, DEFAULT_CONFIG).unwrap();
+    let validate = validator(path.clone());
+    validate(DEFAULT_CONFIG).expect("the template is valid");
+    for invalid in [
+        "[[keybinding]]\nkey = 'cmd-h'\ncommand = 'unbind'\ndisabled = true",
+        "[[keybinding]]\nkey = 'cmd-h'\ncommand = 'hyde'",
+        "[[global_keybinding]]\nkey = 'ctrl-shift-f12'\ncommand = 'toggle_quake'\ndisabled = false",
+        "[theme]\nname = 'missing-theme'",
+        "[tabs]\nmin_width = 300\nmax_width = 200",
+    ] {
+        assert!(validate(invalid).is_err(), "{invalid}");
+    }
+    let file = ConfigFile::new(&path);
+    let base = file.load().unwrap();
+    let error = file
+        .apply(
+            &base,
+            &[Patch::Set {
+                path: vec!["theme".into(), "name".into()],
+                value: "missing-theme".into(),
+            }],
+            &validate,
+        )
+        .unwrap_err();
+    assert!(matches!(error, ApplyError::Rejected(_)), "{error}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), DEFAULT_CONFIG);
+    file.apply(
+        &base,
+        &[Patch::Set {
+            path: vec!["font".into(), "size".into()],
+            value: toml::Value::Float(16.0),
+        }],
+        &validate,
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        DEFAULT_CONFIG.replace("size = 14.0", "size = 16.0")
+    );
+    fs::remove_dir_all(directory).unwrap();
 }
 
 fn test_directory() -> PathBuf {
