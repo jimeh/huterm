@@ -1,10 +1,11 @@
 # Pane moves
 
-Status: proposed. Plans [issue #29][issue-29] within [epic #12][issue-12],
-and proposes a separate layout-undo issue that #29's operations prepare
-for. Builds on [the split panes plan](split-panes.md), which fixed the drop
-zone geometry, the title bar as a drag handle, and settled decisions 1 to
-3 for this issue.
+Status: proposed. Plans [issue #29][issue-29] within [epic #12][issue-12].
+Builds on [the split panes plan](split-panes.md), which fixed the drop zone
+geometry, the title bar as a drag handle, and its settled decisions 1 to 3
+for this issue, cited here as "split panes decision N". Layout undo is a
+related issue with [its own plan](layout-undo.md) and no ordering dependency
+(settled decision 1).
 
 A pane can swap places with a sibling, move beside another pane in the same
 tab or in any other tab on the same runtime, or leave its tab for a new one.
@@ -47,16 +48,16 @@ Observed on `main` at `d7bc7c0c`, after #245, #246, #249, and #250:
   left press and stops propagation; it starts no drag.
 - `ArgumentKind` has `Tab`, `Workspace`, and `Session` identity kinds,
   which config bindings may not set, but no pane or side kind.
-- No undo exists anywhere. No default binding uses `cmd-z`, `cmd-shift-z`,
-  `ctrl-shift-z`, or `ctrl-shift-y`.
+- Nothing activates a tab during a drag. Reorder never changes the active
+  tab, and the window's earliest-deadline timer (`refresh::Animated`)
+  drives deadlines such as notice expiry from an injected `now`.
 
-## Scope across #29, #30, #31, and the undo issue
+## Scope across #29, #30, and #31
 
 | Issue | Owns |
 | --- | --- |
-| #29 | Swap and move commands (next, previous, four directions); moving a pane beside a pane in any tab on the runtime; extracting a pane into a new tab; moving a tab into a pane; the pane and tab drags inside one window, the drop overlay, and dropping a pane on the window's own tab bar; the atomic multi-tab hierarchy event; returning each change's before and after tab records |
-| Undo (new issue) | Bounded per-window undo and redo of #29's operations and #30's presets and balancing, through one runtime restore operation |
-| #30 | Presets, cycling, and balancing, each recorded as one undo entry |
+| #29 | Swap and move commands (next, previous, four directions); moving a pane beside a pane in any tab on the runtime; extracting a pane into a new tab; moving a tab into a pane; the pane and tab drags inside one window, the drop overlay, dropping a pane on the window's own tab bar, and spring-loaded tabs; the atomic multi-tab hierarchy event; returning each change's before and after tab records |
+| #30 | Presets, cycling, and balancing |
 | #31 | Every drag that crosses a window boundary: a tab or pane dropped on another window's tab bar or panes, and tear-out into a new window. It reuses #29's overlay, `drop_zone`, and Mux operations. |
 
 Issue #29's drags end at their own window. A pane drag released outside
@@ -64,6 +65,9 @@ the window, or over another window, cancels and leaves every layout
 unchanged. A tab drag released there keeps today's reorder behavior and
 reorders within its own bar (see "Drags"). #31 later turns those releases
 into transfers and tear-outs.
+
+Layout undo is related but separate: [its plan](layout-undo.md) builds on
+this plan's first PR, and #29 neither waits for it nor depends on it.
 
 ## Principles
 
@@ -78,8 +82,10 @@ a tab does. This plan adds:
   sequenced event, so no client ever observes a pane in no tab or two.
 - **Views follow their panes.** A window that shows a pane before and after
   a move keeps the same view, viewer, scroll, and selection.
-- **Undo restores snapshots, guarded by the runtime.** It never replays
-  inverse commands.
+- **Mis-drops are hard to make and easy to fix.** A tab reorder becomes a
+  drop only past a deliberate depth, the overlay previews every drop's
+  result before release, and the move and extract commands reverse any
+  drop by keyboard or palette.
 
 ## Decisions
 
@@ -94,7 +100,7 @@ share one implementation:
   the target's weight as a sibling when the target's parent splits on the
   side's axis, otherwise a new split identified by `split` replaces the
   target. When the inserted node is itself a split on the axis of the split
-  that now holds it, it flattens into that split (settled decision 3) with
+  that now holds it, it flattens into that split (split panes decision 3) with
   the existing `normalize_child` scaling and `rebalance`, and a flatten that
   would pass `MAX_SPLIT_CHILDREN` keeps the nested split, as removal does.
   The inserted subtree keeps its internal proportions, its pane IDs, and
@@ -142,7 +148,7 @@ Commands act on the window's focused pane, the source:
 - **Move to a new tab** in any workspace of the runtime, by default right
   after the source tab in its workspace.
 - **Move a tab into a pane** on a chosen side; its whole layout nests
-  (settled decision 3).
+  (split panes decision 3).
 
 Refusals and no-ops:
 
@@ -159,7 +165,8 @@ Refusals and no-ops:
 - Extracting a tab's only pane into a new tab in the same workspace is a
   no-op. Into another workspace, it moves the tab and keeps its ID, name,
   and pane. It emits the same `PanesRearranged` event as other moves, with
-  a `Placed` change (see "Hierarchy events"), so undo can move it back.
+  a `Placed` change (see "Hierarchy events"), so every move is one atomic
+  event of one kind.
 - Moving a tab's last pane beside a pane of another tab removes the emptied
   tab (the issue's rule).
 - The initiating window preflights the result as a split does: a move or
@@ -227,9 +234,17 @@ Cross-runtime targets: every ID is scope-checked, so a destination from
 another Mux fails with `ForeignRuntime` before any change. Matching socket
 names grant nothing.
 
-Every operation returns a `LayoutChange` (see "Undo and redo"): each
-touched tab's record before and after, read under the lock. It is empty for
-a no-op. #29 uses it in tests, and the undo issue records it.
+Every operation returns a `LayoutChange`: each touched tab's record before
+and after, read under the lock, and empty for a no-op.
+
+```text
+LayoutChange { before: Vec<TabSnapshot>, after: Vec<TabSnapshot> }
+TabSnapshot  { tab: TabId, record: Option<TabRecord> }       None: absent
+TabRecord    { session, workspace, index, custom_name, layout, zoomed }
+```
+
+The protocol and core tests assert expected results against it. The layout
+undo plan records it.
 
 ### Hierarchy events
 
@@ -254,9 +269,9 @@ changes covers every case:
 - emptying the source: `Removed`;
 - a lone pane extracted to another workspace: `Placed`, which is
   `TabMoved` inside the atomic event;
-- a tab dropped into a pane: `Removed` and `Layout`;
-- the undo issue's restores, which may reopen a removed tab or place a tab
-  back in its workspace.
+- a tab dropped into a pane: `Removed` and `Layout`.
+
+The layout undo plan's restores emit the same event.
 
 Changes apply in list order, and each `index` is a final position at that
 step, as `TabMoved` and `TabOpened` define it today. A tab may appear in at
@@ -407,7 +422,8 @@ close confirmation; directional and next or previous commands also need a
 split tab. A command whose target vanished between picking and running
 fails with `StaleTarget`, as other identity commands do.
 
-No default bindings in #29 (open question 2). Menus:
+No default bindings (settled decision 2): users can bind any of these
+commands. Menus:
 
 - Terminal context menu: Move Pane to New Tab, shown in split tabs.
 - macOS Window menu and the Linux window menu: Move Pane to New Tab.
@@ -418,14 +434,15 @@ No default bindings in #29 (open question 2). Menus:
 ### Drags
 
 Two new drags join the window's capture listeners, beside reorder and
-divider drags, and like them own motion and release once started, stop
-propagation, keep terminal focus so no application sees a focus report, and
-never reach a terminal.
+divider drags. Like them, they own motion and release once started, stop
+propagation, and never reach a terminal. They keep terminal focus, so no
+application sees a focus report, unless spring-loading switches tabs (see
+"Spring-loaded tabs").
 
 **Pane drag.** A left press on a title bar's title area, not its buttons,
 focuses the pane as today; motion past `TAB_DRAG_THRESHOLD` starts a
 `PaneDrag { tab, pane, origin, pointer, target }`. Title bars exist only in
-split tabs (settled decision 1), so a lone pane is dragged from the tab bar
+split tabs (split panes decision 1), so a lone pane is dragged from the tab bar
 as its tab.
 
 **Tab drag onto panes.** Today a reorder projects every pointer position
@@ -451,12 +468,14 @@ The desktop input guide records the exception with PR 3.
 **Targets.** Each motion resolves a target from the last drawn frame:
 
 - For a pane drag over a pane frame other than the source pane:
-  `drop_zone(frame, point)`, all five zones.
+  `drop_zone(frame, point)`. The four edge zones are always offered. The
+  centre is offered only when the target pane is in the source pane's tab,
+  since `swap_panes` works within one tab (see "Spring-loaded tabs").
 - For a tab drag in pane mode: the four edge zones. Its centre offers
-  nothing (settled decision 2).
-- For a pane drag over the tab bar: an insertion slot from `TabStrip::slot`,
-  which extracts the pane into a new tab there. Overflow autoscroll works
-  as it does for reorder.
+  nothing (split panes decision 2).
+- For a pane drag over the tab bar: an insertion slot, which extracts the
+  pane into a new tab there, or an inactive tab's spring zone (see
+  "Spring-loaded tabs"). Overflow autoscroll works as it does for reorder.
 - For a tab drag outside pane mode: today's reorder slot.
 - For a pane drag anywhere else, including outside the window: no target.
 
@@ -466,7 +485,8 @@ The desktop input guide records the exception with PR 3.
   layout would occupy;
 - the centre zone outlines the whole target frame and the source pane, the
   two that swap;
-- a tab bar target draws the reorder insertion marker;
+- a tab bar insertion slot draws the reorder insertion marker, and an armed
+  spring zone outlines its label;
 - a zone the minimum size refuses is drawn in the refused style, and a
   release there does nothing;
 - a small chip with the dragged pane's or tab's title follows the pointer.
@@ -484,7 +504,7 @@ pane layout:
 - a tab-drag release over a centre zone or a refused zone in pane mode;
 - Escape;
 - window blur;
-- a tab switch;
+- a tab switch the drag did not make by spring-loading;
 - a close request;
 - an overlay opening;
 - a layout change that removes the source pane or tab.
@@ -492,7 +512,129 @@ pane layout:
 A tab drag released outside pane mode reorders, as today. A refused
 operation, such as a target that vanished between the frame and the
 commit, shows one notice. A drop is an explicit request, unlike a divider
-drag's silent snap-back.
+drag's silent snap-back. A pane drag that spring-loaded switches back when
+it cancels or is refused (see "Spring-loaded tabs").
+
+### Spring-loaded tabs
+
+A pane drag that rests on an inactive tab's label activates that tab after
+a short delay, so the pane can be dropped into that tab's panes (settled
+decision 3). Without it, a pane drag reaches only the tab it started in and
+the tab bar's insertion slots.
+
+**Delay: `SPRING_LOAD_DELAY`, 500 ms, a constant.** For reference:
+
+- Chromium's `HoverTabSelector`, which its header calls "spring-loaded" tab
+  transitions, waits `kHoverTransitionDelay`, 500 ms
+  ([hover_tab_selector.cc][chromium-hover] on `main` at `07350d3d`, read on
+  2026-10-26). `BrowserTabStripController::OnDropIndexUpdate` starts it only
+  for a drop hovering directly over a tab, not between tabs
+  ([browser_tab_strip_controller.cc][chromium-strip]).
+- Firefox selects a hovered tab after `browser.tabs.dragDrop.selectTab.delayMS`,
+  350 ms ([firefox.js][firefox-prefs]), and only for link drags
+  ([drag-and-drop.js][firefox-dnd]).
+- macOS spring-loading, as in Finder, is a system setting
+  (`com.apple.springing.enabled` and `com.apple.springing.delay`). Apple
+  documents a speed slider but no default value. The machine this plan was
+  written on reads 0.5 s.
+
+500 ms matches Chromium and the observed macOS value, and sits at the fast
+end of the 0.5 to 1 second range. Firefox's 350 ms is faster, but a pane
+drag that crosses the bar on its way to an insertion slot would trip it more
+often. A constant keeps Linux, which has no system equivalent, on the same
+behavior, and a setting is cheap to add later. Whether macOS should follow
+its system spring-loading setting is open question 2.
+
+**Which drags: pane drags only.** A tab drag over another tab's label is a
+reorder. Spring-loading there would switch tabs in the middle of a reorder,
+and because a tab drag nests only into the active tab's panes, the switch
+would also turn a plain reorder into a possible nest. Chromium and Firefox
+both reserve hover-to-activate for external drags such as links and files,
+and never spring-load during a tab drag. To nest tab A into tab B, the user
+activates B first, then drags A.
+
+**Zones on a label.** For a pane drag, `TabStrip` splits each label along
+the bar's axis, horizontal or vertical:
+
+- the middle half of an inactive tab's label is that tab's spring zone;
+- the outer quarters of every label, the gaps between labels, and the bar
+  past the last tab are insertion slots, from `TabStrip::slot`, which
+  extract the pane into a new tab there;
+- the middle half of the active tab's label is no target.
+
+This follows Chromium's split between hovering a tab and hovering between
+tabs.
+
+**Arming and firing.** Entering a spring zone arms `SpringLoad { tab,
+armed_at }`. Moving into another label's spring zone re-arms for that tab,
+and leaving to anything else disarms. While armed, the window reports
+`armed_at + SPRING_LOAD_DELAY` through its `animation_schedule`, as one
+deadline on the window's earliest-deadline timer. It requests no frames,
+so a pointer resting on the label still fires and waiting costs one timer.
+`advance_animation(now)` fires once `now` reaches the deadline. It
+re-resolves the pointer against the last drawn strip:
+
+- If the hit result is still the armed tab's spring zone, and that tab is
+  still in the window and inactive, the window activates it. Being over
+  the same label is not enough: a resize or a title change can leave a
+  still pointer over that label's insertion quarter.
+- If the hit result is another tab's spring zone, the window re-arms for it
+  with a fresh `armed_at`.
+- Otherwise it disarms.
+
+Overflow autoscroll moves labels under a still pointer and so re-arms each
+time; a scrolling bar never springs. A drag whose pointer is already over a
+spring zone when it crosses the drag threshold arms at that moment, as if
+it had just entered.
+
+**Activation.** Spring-loading activates the tab through the existing
+select path, as a click would: the window model's active tab changes, the
+tab's pane views show and resize, and keyboard focus moves to its focused
+pane, so focus reports follow the real switch. The source pane's tab hides
+under the hidden-view rules, and the drag continues because its state lives
+in `WorkspaceView`. The window records `origin_tab`, the tab active when
+the drag started, and `sprung_tab`, the last tab spring-loading activated.
+Spring-loading is the drag's own tab switch. Any other switch, from a key
+binding, a click, or reconcile, still cancels the drag. Resting on the
+origin tab's label springs back to it.
+
+**Dropping into a spring-loaded tab.** Over that tab's panes, the pane drag
+is offered the four edge zones, which move the pane beside the target with
+`move_pane` and `Beside`, a cross-tab move. Centre eligibility follows the
+tab, not the spring: the centre zone is offered only when the target pane
+is in the source pane's tab, because `swap_panes` exchanges panes within one
+tab (open question 1). A drag that springs from A to B and back to A is
+offered A's centre zones again. After a drop, the destination tab stays
+active and the moved pane takes focus, under the initiating window's rule
+in "Client reconciliation".
+
+**Cancellation and switching back.** A drag that cancels, for any reason
+listed under "Release" in "Drags", or whose drop the runtime refuses,
+switches back when it spring-loaded and the active tab is still
+`sprung_tab`:
+
+- the window reactivates `origin_tab`, if it still exists, through the
+  same select path;
+- keyboard focus returns to that tab's focused pane, which is the dragged
+  pane, since a title-bar press focuses its pane, unless an overlay holds
+  focus. A drag cancelled because a palette, menu, or dialog opened
+  switches back without taking focus from it, following reconcile's
+  existing activation rule for a window whose overlay holds focus.
+
+The switch was only a means to reach a drop target, so a drag that drops
+nothing leaves the user where the gesture began, with the dragged pane
+focused. If something else switched tabs, the drag already cancelled and
+nothing switches back. If `origin_tab` is gone, the active tab stays.
+
+Releasing on a spring zone, armed or already activated, is a release with
+no target: it cancels and switches back. Escape before the delay disarms
+and cancels; after it, Escape cancels and switches back. A release outside
+the window cancels and switches back, as for any pane drag.
+
+**Feedback.** While armed, the hovered label draws in the drop-target
+style: the accent outline from `TabColors`. It is static, with no progress
+animation, so waiting draws one frame and arms one timer. Once the tab
+activates, it takes the active style, and the overlay targets its panes.
 
 ### `drop_zone`
 
@@ -503,246 +645,6 @@ side is that edge's zone; where two edge zones overlap near a corner, the
 edge nearer the pointer as a fraction of the frame's width or height wins,
 ties going to the top or bottom edge; the rest is the centre. A point
 outside the frame has no zone.
-
-### Undo and redo
-
-The undo work ships as its own issue (see "Staging"), but #29's operations
-are shaped for it, so the design is settled here.
-
-**Owner: the client window, with a runtime-guarded restore.** Each window
-keeps its own history of the layout operations it initiated. Undo sends the
-runtime one restore operation that applies a recorded snapshot only if the
-touched tabs still match what the operation left. Alternatives considered:
-
-- *Runtime history per session.* One window's undo would revert another
-  window's change, which in a shared session surprises both users. A
-  cross-session move belongs to two sessions' histories at once.
-- *Runtime history per tab.* A move spans two tabs, and a tab dropped into
-  a pane no longer exists to own its history.
-- *Runtime history per attachment.* Workable, and it would survive a future
-  client reconnecting over IPC. It adds runtime state and needs a way to
-  publish availability for menus, for a benefit no client needs yet. The
-  restore operation and the record types live in `huterm-protocol` and
-  core, so a TUI client keeps its own stack with the same guarantees, and
-  moving the stack into the runtime later changes no event.
-
-A second window attached to the same session sees an undo as ordinary
-structural events from another window. Its own history is untouched,
-except that entries the change invalidated are pruned (see
-"Invalidation").
-
-**Snapshots, not inverse operations.** An inverse "move it back beside X"
-fails whenever a flatten, a collapsed split, or a removed tab changed the
-shape. Each history entry instead holds the records of every tab the
-operation touched, before and after. Core returns the records; the client
-wraps them with its own presentation data:
-
-```text
-LayoutChange { before: Vec<TabSnapshot>, after: Vec<TabSnapshot>,
-               placed: Vec<TabId> }                                  core
-TabSnapshot  { tab: TabId, record: Option<TabRecord> }       None: absent
-TabRecord    { session, workspace, index, custom_name, layout, zoomed }
-
-HistoryEntry { label, focus: PaneId, change: LayoutChange }        client
-```
-
-`placed` lists the existing tabs whose workspace and position the
-operation set on purpose, the tabs its event moved with a `Placed` change.
-A tab whose index shifted only because a neighbour was removed or opened is
-not in it.
-
-`label` names the operation ("Move Pane", "Move Tab into Pane"). `focus` is
-the pane the initiating window focused after the operation: the moved
-pane, the swapped source pane, or the dropped tab's focused pane. A few
-tab layouts per entry come to a few kilobytes at most.
-
-**The restore operation.** `Mux::restore_tabs(change: &LayoutChange,
-direction)` takes the recorded change, including `placed`, and a direction
-of `Undo` or `Redo`. For `Undo`, `from` is the change's `after` and `to` is
-its `before`. For `Redo`, they are reversed. Under the lock, core checks the
-guard, applies the restore, emits one `PanesRearranged`, and returns the
-change it made.
-
-The guard compares each tab in `from` with the current state:
-
-- An absent snapshot matches only an absent tab.
-- A present snapshot matches a tab with the same shape, split IDs, pane
-  IDs, and terminal IDs, in the same session.
-- A tab in `placed` must still be in its `from` workspace. Its position
-  within that workspace is not compared.
-
-The guard ignores every other field: weights, zoom, position, name, and the
-workspace of a tab not in `placed`. A divider drag, a zoom, a rename, or a
-reorder elsewhere therefore never blocks undo. A tab another client moved to
-a different session does block it, because a window should not rearrange
-tabs that now belong to another session's users.
-
-The restore applies each tab in `to` field by field:
-
-- **A tab that exists before and after the restore:** its layout returns
-  to the `to` layout, weights included. Weights are the one deliberate
-  exception to keeping later changes: when the shape differs, no later
-  weights can carry over, so undo restores the proportions from before the
-  operation. Its zoom becomes the `to` zoom only when the operation changed
-  the tab's zoom and the current zoom still equals the `from` zoom.
-  Otherwise the current zoom stays if its pane is in the restored layout,
-  and clears if not. Either way, a restored layout of one pane has no zoom,
-  as `set_pane_zoom` and the reducer require (`mux.rs:667`,
-  `hierarchy.rs:123`). Its workspace and index return to the `to` record only
-  for a tab in `placed`. Its name always keeps its current value, so
-  another client's rename, reorder, or zoom survives.
-- **A tab the restore reopens:** it gets its recorded custom name and zoom,
-  at its recorded index in its recorded workspace, clamped to that
-  workspace's current length.
-- **A tab the restore removes:** it is an extraction's new tab.
-
-Core rejects a restore that would break any of these rules:
-
-- Conservation holds exactly, as the reducer checks it.
-- Every tab, split, and pane ID is at or below the allocation high-water
-  mark (`next_id`).
-- A reopened tab's ID is unused.
-- No untouched tab uses a restored split ID.
-- Every workspace the restore names exists, in the session its record
-  names.
-
-A refused restore changes nothing and emits nothing. The restore never
-spawns or stops a runtime, revokes viewers of terminals whose session
-changes, and advances the revision.
-
-**A removed source tab comes back as itself.** Undoing a tab-into-pane
-drop, or a move that emptied its source, reopens the tab with its original
-`TabId`. Reusing the ID is safe for three reasons:
-
-- Mux never allocates an ID twice.
-- The restore accepts only IDs it has allocated (at or below `next_id`)
-  that are not in use.
-- The reducer's `TabOpened` and `Opened` already accept any unknown ID.
-
-Reuse lets the window's tab MRU, the palette, and any external reference
-converge on the same tab. A recorded workspace that no longer exists, or
-that moved to another session, refuses the restore.
-
-**What is recorded.**
-
-| Operation | Recorded |
-| --- | --- |
-| Swaps, moves, extraction, tab into pane (#29) | Yes, one entry each |
-| Presets, cycling, balancing (#30) | Yes, one entry each |
-| Divider drags and resize commands | No (open question 4) |
-| Split, pane close, tab open or close | No |
-| Zoom, focus | No: view state, not structure |
-
-Splits and closes are excluded because undo would have to destroy a
-terminal it created, or recreate one it closed. The first kills a process
-the user may be using. The second is impossible without keeping closed
-terminals alive, which Ghostty does for `undo-timeout` (5 s by default) but
-which contradicts Huterm's rule that an explicit close terminates. Both stay
-explicit. They still change shape, so the history entries they cut off are
-pruned (see "Invalidation").
-
-Divider resizes are excluded from history for two reasons. They reverse by
-dragging. They would also flood the history and push out the structural
-entries undo exists for. The guard ignores weights, so a resize never
-blocks undo, and undo restores the touched tabs' weights from before the
-operation, discarding later resizes of those tabs.
-
-**Invalidation.** Only the top of each stack is checked against the
-current state: the newest undo entry's `after`, and the newest redo entry's
-`before`. Older entries form a chain. Entry k's `after` is the state that
-undoing entry k+1 recreates, so each entry becomes checkable exactly when
-it reaches the top. A window's own consecutive operations on one tab
-therefore never prune each other, and a swap of A and B followed by a swap
-of A and C undoes in two steps.
-
-Pruning runs after every applied batch, in a pass separate from window
-reconcile. Reconcile visits only windows showing a touched workspace or
-tab (`windows_to_visit`, `projection.rs:453`), but an entry can reference
-tabs in sessions the window does not show. The pass visits every window
-whose stack tops reference a touched tab, and repeats while a top fails its
-guard against the projection:
-
-- The failing entry is dropped.
-- Older entries that share a tab with it are dropped too, because their
-  chain ran through the state that just changed.
-- Older entries that share no tab with it stay, and each is checked in turn
-  when it reaches the top.
-
-A window's own operations need one exception. `sync_hierarchy`
-(`windows.rs:1399`) reconciles a batch before it releases completion
-waiters. The event of a window's own move, undo, or redo can therefore
-apply before that window's completion pushes the new entry or transfers one
-between stacks, and a pruning pass in between would compare the old top
-with the new state and drop it. A window with a recorded operation in
-flight marks its history pending, and the pass skips that window. The
-completion records the result, clears the mark, and prunes the window
-against the projection as it is then. A failed operation clears the mark
-the same way.
-
-The cost is proportional to the stack tops, not the history depth.
-Menus and availability read the pruned stacks.
-
-A pane that exited but stayed open still matches. A pane closed by exit or
-by hand changes the shape, which cuts the chain at that tab. If the
-projection lags and the runtime refuses a restore, the window drops that
-entry and the older entries that share its tabs, then shows "Cannot undo:
-the layout changed". Undo never skips silently to an older entry. Each
-restore re-checks its own guard under the lock, so pruning is about accurate
-menus, not safety: no entry can apply against a state it was not recorded
-for.
-
-**Limit.** 50 entries per window, a constant (`LAYOUT_HISTORY_DEPTH`), not
-a setting. The oldest entry is evicted first. Entries are small, and no
-terminal stays alive for them, so no time limit is needed. A new recorded
-operation clears the window's redo stack. Closing the window drops its
-history, and retargeting its attachment to another session (#26) clears
-it. A window emptied by its own move, such as a command moving its last
-pane into another session, closes with its history. That is the accepted
-limit of window-owned history; open question 7 offers attachment-owned
-history as the alternative.
-
-**After an undo or redo**, the initiating window activates the tab holding
-the entry's `focus` pane, if the window shows that tab, and focuses the
-pane.
-
-**Commands, bindings, menus.**
-
-| Command | Scope | macOS | Linux |
-| --- | --- | --- | --- |
-| `undo` | Window | `cmd-z` | `ctrl-shift-z` |
-| `redo` | Window | `cmd-shift-z` | `ctrl-shift-y` |
-
-Ghostty binds `undo` to `super+z` and `super+shift+t` and `redo` to
-`super+shift+z` on macOS only, as "performable" bindings that pass the key
-through when nothing can be undone ([Config.zig][ghostty-config] on
-Ghostty's `main` at `ebd44999`, read on 2026-10-26). Its undo covers new and
-closed windows, tabs, and splits, kept for `undo-timeout`, and is
-unimplemented on Linux ([Binding.zig][ghostty-binding]). Huterm takes the
-macOS keys and not `cmd-shift-t`, which reads as "reopen closed tab" and
-would promise something this undo does not do. `cmd-z` has no terminal
-meaning, and no Huterm default uses these keys. On Linux, `ctrl-z` is job
-control and must reach the shell, so undo takes the shifted form, as copy
-and paste do; `ctrl-shift-z` reaches applications only as plain `ctrl-z` in
-legacy encoding, so binding it hides nothing a shell relies on.
-`ctrl-shift-y` mirrors the `ctrl-y` redo convention. Neither is a current
-default or a known desktop or IBus binding; `docs/keybindings.md` lists them
-with the other Linux conflicts.
-
-The commands are generic `undo` and `redo` rather than layout-specific
-names, so a later undoable action joins the same history. They are
-unavailable while the window is busy or a palette, menu, dialog, or close
-confirmation holds focus, so `cmd-z` in the palette's text field does not
-rearrange panes. With an empty history they do nothing, and the bindings
-still take the key. Ghostty instead passes the key to the terminal. Huterm
-could do the same with a conditional binding, but GPUI's native menu
-matcher never sees a predicate that depends on window state, so the menu
-would lose its shortcut. No terminal program reads `cmd-z` today. Once the
-Kitty keyboard protocol lands (README future work), applications can, and
-this choice should be revisited then (open question 8).
-
-Menus: the macOS Edit menu gains Undo and Redo at its top; the Linux window
-menu gains them above its Edit buttons. Titles are static ("Undo", "Redo");
-the palette row shows the next entry's label, such as "Undo Move Pane".
 
 ## Races
 
@@ -761,9 +663,11 @@ the palette row shows the next entry's label, such as "Undo Move Pane".
 | A divider drag in another window when its split changes | Existing rule: cancelled when the split vanishes or its children change | Existing tier 2 |
 | A move empties another window's last tab | That window takes an emptied close, which refuses while its workspace still holds tabs | Tier 2 |
 | A cross-session move while the source window shows the pane | Viewers revoked; the source window drops the view; the destination session's windows install it | Core, tier 2 |
-| A window's own move, undo, or redo event applies before its completion | The window's history is pending, so pruning skips it until the completion records the result | Tier 2, event forced before completion for all three |
-| An undo whose tabs changed since the projection last checked | The runtime refuses under its own guard. The entry and the older entries sharing its tabs are dropped, with one notice | Core, tier 2 |
-| Another window renames or reorders a tab before this window undoes a move in it | The guard ignores those fields, and the restore keeps their current values | Core |
+| The armed tab closes, or moves to another workspace, before the delay | The deadline handler finds it gone from the window and disarms; nothing activates | Tier 2 |
+| Another client reorders the armed tab before the delay | At the deadline the label under the pointer belongs to another tab, so the window re-arms for that tab, or disarms | Tier 2 |
+| The spring-loaded tab closes while the drag hovers its panes | Reconcile's removal rule picks the most recently active tab, normally `origin_tab`. That switch was not the drag's, so the drag cancels and nothing more switches back | Tier 2 |
+| The origin tab closes, or the dragged pane leaves it, during a spring-loaded drag | The drag cancels because its source changed; with `origin_tab` gone, nothing switches back | Tier 2 |
+| The dragged pane exits while another tab is spring-loaded | As for any pane drag: an exit-close that removes it cancels the drag, which switches back if the origin tab remains | Tier 2 |
 | A pane's terminal events interleave with its move | Terminal events are routed by pane; the adopted view keeps receiving them | Tier 2 |
 | A drain sees the move and a later layout change in one batch | Reconcile is level-triggered and adopts from final state | Reconcile unit test |
 
@@ -776,8 +680,13 @@ the palette row shows the next entry's label, such as "Undo Move Pane".
   drop shows which half the pane will take. Refused zones look refused.
 - Errors are notices with the operation's name; a cancelled drag says
   nothing.
-- A mis-drop is undone with one key once the undo issue lands, which is why
-  it lands before the drags (see "Staging").
+- Mis-drop recovery in #29: a tab reorder becomes a drop only past
+  `PANE_DROP_DEPTH`, the overlay shows each drop's result before release,
+  and the move and extract commands put any pane or tab back by keyboard or
+  palette.
+- Spring-loading needs a deliberate 500 ms rest on a label, shows an
+  outline while it waits, and switches back if the drag ends without a
+  drop.
 - The tab bar target uses `TabStrip`, which already handles all four
   positions, both styles, and overflow. Tier 2 covers every position, and
   the native smokes cover the top bar. Panes as small as the minimum keep
@@ -785,8 +694,7 @@ the palette row shows the next entry's label, such as "Undo Move Pane".
 
 ## Testing and verification
 
-Mapped to #29's acceptance criteria, then the undo issue's. Apply the
-global testing rules:
+Mapped to #29's acceptance criteria. Apply the global testing rules:
 
 - Each new test fails at its assertion before its fix, or under one targeted
   perturbation for a test over existing behavior.
@@ -811,8 +719,7 @@ layouts differ, and a mis-ordered result cannot compare equal.
   - a last-pane extraction to another workspace;
   - a move into another session;
   - a tab dropped into a pane;
-  - a pane moved into a pending spawn's tab before `cleanup_spawn` runs;
-  - in the undo issue, undo and redo of each of these.
+  - a pane moved into a pending spawn's tab before `cleanup_spawn` runs.
 
   Before and after each one:
   - every shell answers a unique ACK;
@@ -861,8 +768,7 @@ layouts differ, and a mis-ordered result cannot compare equal.
     ID, an invalid index at its step, a layout reusing an untouched tab's
     pane, a pane paired with a different terminal, and a conservation
     violation;
-  - stale and gap rules hold;
-  - a tab removed and later reopened with the same ID applies.
+  - stale and gap rules hold.
 - Core:
   - last-pane moves remove the source tab;
   - same-pane moves, swaps with itself, and shape-equal moves emit nothing,
@@ -912,6 +818,55 @@ layouts differ, and a mis-ordered result cannot compare equal.
   unchanged. No shell receives a byte during any drag, checked with the
   ordered ACK.
 
+### Spring-loaded tabs (criterion 3)
+
+Time is controlled, never slept. `SpringLoad` is a pure model that takes
+every `Instant` from its caller, as `NoticeStack` does, and the window's
+`refresh::Animated` implementation receives `now` as an argument. The tests
+read `armed_at` from the model and call `advance_animation` with instants
+derived from it.
+
+- Unit tests:
+  - the `SpringLoad` model arms, re-arms on another tab, and disarms;
+  - its deadline is `armed_at + SPRING_LOAD_DELAY`;
+  - it is due at the deadline and not one millisecond before;
+  - `TabStrip`'s label zones, for all four positions: the middle half of an
+    inactive label is a spring zone, the active label's middle is no
+    target, and outer quarters, gaps, and the space past the last tab are
+    insertion slots.
+- Tier 2, through `Window::dispatch_event` and synthetic instants:
+  - **Timing:** a pane drag resting on an inactive label is armed, and
+    `animation_schedule` reports exactly the deadline and no frame;
+    `advance_animation` at `armed_at + 499 ms` activates nothing, and at
+    `armed_at + 500 ms` activates the tab and moves keyboard focus to its
+    focused pane;
+  - **Re-arming:** moving to another label before the deadline re-arms
+    with a new `armed_at`; leaving the bar disarms, and the schedule goes
+    idle; a drag that starts over a spring zone arms at the threshold;
+  - **Geometry without motion:** a resize or title change that leaves the
+    still pointer over the armed label's insertion quarter activates
+    nothing at the deadline, and one that leaves it over another label's
+    spring zone re-arms;
+  - **Autoscroll:** a pane drag resting at the overflow edge scrolls the
+    bar, re-arms as labels pass, and activates nothing while scrolling;
+  - **Dropping:** a drop on an edge zone of the spring-loaded tab's pane
+    moves the pane across tabs, keeps that tab active, and focuses the
+    pane; its centre zone offers nothing; a drag that springs from A to B
+    and back to A swaps on a sibling's centre;
+  - **Switching back:** Escape, a release on a spring zone, a release
+    outside the window, and a refused drop each reactivate `origin_tab`
+    with the dragged pane focused; a drag cancelled by an opening palette
+    switches back and leaves focus in the palette;
+  - **Other switches:** a tab switch by key binding during the drag cancels
+    it and switches nothing back;
+  - **Tab drags:** a tab drag resting on another label past the deadline
+    activates nothing and still reorders on release;
+  - **Races:** each spring-loading row in "Races". Rows about the armed tab
+    apply their event before the deadline is driven; rows about the
+    spring-loaded or origin tab apply it after activation;
+  - **No input leaks:** no shell receives a byte, checked with the ordered
+    ACK.
+
 ### Palette and arguments (criterion 4)
 
 - Tier 2: each argument command, run once through the palette's pickers
@@ -923,40 +878,6 @@ layouts differ, and a mis-ordered result cannot compare equal.
   - `StaleTarget` for a pane that vanished while the picker stayed open.
 - Keymap and schema: `side` validates and appears as an enum, and `pane`
   cannot be set in a binding.
-
-### Undo issue
-
-- Protocol and core, for `restore_tabs`:
-  - undo and redo of every #29 operation return the exact earlier state;
-  - a rename, a reorder, and a shared zoom by another client survive an
-    undo;
-  - a divider resize by another client does not block an undo, and the
-    undo returns the weights from before the operation;
-  - a pane moved beside a lone pane B, a shared zoom on B set by another
-    client, then an undo: the restored single-pane tab has no zoom;
-  - after a tab-into-pane drop removes a tab and another client then
-    reorders the receiving tab, undo still applies, because the receiving
-    tab's shifted index is not in `placed`;
-  - a tab moved to another session by another client refuses the undo;
-  - a missing workspace refuses;
-  - a never-allocated tab, split, or pane ID refuses;
-  - a reopened ID already in use refuses;
-  - a restore that breaks conservation refuses;
-  - every refusal emits nothing and leaves the revision unchanged.
-- Client history unit tests:
-  - two and three consecutive operations on one tab undo and redo in full;
-  - an external change to a tab cuts only the entries chained through it,
-    and an entry on another tab survives;
-  - depth eviction drops the oldest entry at 51;
-  - a new operation clears the redo stack;
-  - pruning reaches a window that does not show the touched tab;
-  - pruning defers while the window's own operation, undo, or redo is in
-    flight, so the operation's event cannot prune the previous top before
-    the completion records the new entry.
-- Tier 2: undo of a tab-into-pane drop reopens the tab at its index, with
-  its name and `TabId`, focuses the entry's pane, and keeps every view
-  entity in the window; a refused undo shows one notice; `cmd-z` with the
-  palette open edits nothing.
 
 ### Native smokes
 
@@ -972,11 +893,23 @@ layouts differ, and a mis-ordered result cannot compare equal.
   `check-overlays.ts`. Both palette smokes run it with AppKit or XTest
   input. It covers the same drops, Escape cancelling a pane drag, and the
   no-byte check.
+- Spring-loading, on both platforms (`smoke:macos-input` with AppKit events,
+  `check-overlays.ts` with XTest on Linux):
+  - drag a title bar onto another tab's label and hold the pointer still;
+  - wait, with a bounded deadline, until smoke state reports that tab
+    active;
+  - move onto an edge zone of one of its panes and release, then assert the
+    moved pane's tab, a shell ACK from every pane, and the same `$$`;
+  - repeat to the switch, then press Escape, and assert the origin tab is
+    active again and every layout is unchanged.
+
+  The real timer is the integration boundary here, so the smoke polls state
+  rather than sleeping a fixed time. Tier 2 owns the timing assertions.
 - `check-viewers.ts` panes step: a move between tabs through `invoke-in`,
   with the second window adopting the pane and its shell answering.
-- Smoke state gains `w<i>.pane_tabs=` (each pane's tab) and the drag target
-  (`w<i>.drop=`), set during paint, so a smoke waits for the drawn overlay
-  before releasing.
+- Smoke state gains `w<i>.pane_tabs=` (each pane's tab), the drag target
+  (`w<i>.drop=`), and the armed spring tab (`w<i>.spring=`), each set during
+  paint, so a smoke waits for the drawn overlay before releasing.
 - Native coverage uses a top tab bar on both platforms. The other three
   positions and both styles rely on tier 2, which drives the same
   `TabStrip` geometry.
@@ -993,96 +926,95 @@ layouts differ, and a mis-ordered result cannot compare equal.
 - Run `mise run test:ghostty-releasesafe` for PRs that add core PTY tests.
 - Run `mise run verify` before each PR leaves draft.
 - Run `mise run bench:idle` on macOS before and after the drag PR, and
-  confirm it shows no added idle wakeups.
+  confirm it shows no added idle wakeups. An armed spring load adds one
+  deadline only during a drag.
 
 ## Staging
 
-Four PRs, each leaving `main` consistent and shippable:
+Three PRs, each leaving `main` consistent and shippable:
 
-1. **#29 PR 1, runtime moves.** `with_inserted`, `with_swapped`,
-   `SelfTarget`, `PanesRearranged` and its reducer, `swap_panes`,
-   `move_pane`, `move_tab_to_pane`, `LayoutChange` results, the revision
-   rules, the allocation preflight, and protocol and core tests, including
-   PTY tests. The desktop handles the event through its existing
-   drop-and-install path, and no command triggers it yet.
-2. **#29 PR 2, commands.** The argument kinds, pickers, commands, and menus;
+1. **PR 1, runtime moves.** `with_inserted`, `with_swapped`, `SelfTarget`,
+   `PanesRearranged` and its reducer, `swap_panes`, `move_pane`,
+   `move_tab_to_pane`, `LayoutChange` results, the revision rules, the
+   allocation preflight, and protocol and core tests, including PTY tests.
+   The desktop handles the event through its existing drop-and-install
+   path, and no command triggers it yet.
+2. **PR 2, commands.** The argument kinds, pickers, commands, and menus;
    reconcile adoption and pane order; the focus and activation rules; Pane
    close targets that follow their pane; `cleanup_spawn` sparing moved-in
    panes; and the tier 1, tier 2, palette, and `check-viewers.ts` tests.
-   Users can move and swap panes by keyboard and palette.
-3. **Undo issue PR.** `restore_tabs`, the per-window history and its
-   pruning pass, `undo` and `redo` with bindings and menus, and the undo
-   tests.
-4. **#29 PR 3, drags.** `drop_zone`, pane and tab drags, the reorder
-   exception, the overlay, the tab bar target, and the native smokes.
+   Users can move and swap panes by palette and their own bindings.
+3. **PR 3, drags.** `drop_zone`, pane and tab drags, the reorder exception,
+   the overlay, the tab bar target, spring-loaded tabs, and the tier 2 and
+   native tests.
 
-Undo goes in a separate issue rather than inside #29 (open question 1). It
-has its own acceptance criteria, and #30's presets and balancing record into
-it as well. Landing it before the drags means a tab-into-pane mis-drop never
-ships without a one-key recovery. If Jim prefers to keep it inside #29, the
-same PR becomes the third #29 PR and the order is unchanged.
+Layout undo ships separately, on its own schedule (settled decision 1).
+Its runtime PR needs this plan's PR 1 on `main`, and its client PR needs
+PR 2. No PR here waits for it.
 
 ## Documentation
 
-- `CONTEXT.md`: **Layout history** (a window's bounded record of the
-  layout rearrangements it made, which undo and redo restore).
-- `docs/agents/core-runtime.md` (PR 1 and the undo PR):
+- `docs/agents/core-runtime.md` (PR 1):
   - terminal conservation;
   - one event per rearrangement;
   - the allocation preflight;
   - swaps leaving the revision alone;
-  - restore's guard, and its reuse of a removed tab's ID;
   - "moves retain empty parents" narrowed to workspaces and sessions.
 - `docs/agents/desktop-client.md` (PR 2): reconcile adoption, pane order,
   and Pane close targets that follow their pane.
 - `docs/agents/desktop-input.md` (PR 3): pane and tab drags, the overlay,
-  cancellation, and the reorder exception for pane mode.
-- `docs/keybindings.md`: the new commands, `undo` and `redo` bindings, and
-  the Linux binding notes.
+  cancellation, the reorder exception for pane mode, and spring-loading.
+- `docs/keybindings.md` (PR 2): the new commands, unbound by default.
 - This plan's `Status:` in each PR.
 
 ## Non-goals
 
 - Any drag across windows, and tear-out: #31.
-- Hovering a tab label during a pane drag to switch to that tab
-  ("spring-loaded" tabs; open question 3).
-- Undoing splits, closes, renames, tab opens, focus, or zoom.
-- Pane custom names, persisting history, or history shared between windows.
+- Layout undo: [its own plan](layout-undo.md).
+- Spring-loading during tab drags (see "Spring-loaded tabs").
+- Pane custom names.
+
+## Settled decisions
+
+Jim decided these on 2026-10-26, after the first round of reviews. Each item
+names the alternatives he considered.
+
+1. **Undo is split out completely.** Layout undo is its own issue and
+   [plan](layout-undo.md), with no ordering dependency: #29 does not wait
+   for it, and its drag PR does not depend on it. #29 keeps only the hooks
+   it needs on its own, the `Placed` change and the `LayoutChange` results.
+   Not chosen: undo as a #29 PR, or a separate issue landing before #29's
+   drag PR.
+2. **No default bindings for move and swap.** The commands are in the
+   palette, and users can bind them. The obvious keys collide with
+   platform conventions (`cmd-shift-[` and `cmd-shift-]` switch tabs in
+   macOS applications) or with desktop shortcuts (older GNOME releases bind
+   `ctrl-alt-shift-<arrow>` to moving windows between workspaces). Not
+   chosen: `cmd-shift-alt-<arrow>` and `ctrl-super-alt-<arrow>` for
+   directional swaps.
+3. **Spring-loaded tabs are in #29**, in the drag PR, as "Spring-loaded
+   tabs" specifies. Not chosen: deferring them, with the move commands as
+   the only way to reach another tab.
 
 ## Open questions
 
-1. **Undo staging.** Recommend a separate issue under #12, landing between
-   #29's command PR and its drag PR. Alternative: undo as #29's third PR.
-2. **Default bindings for move and swap.** Recommend none in #29: the
-   obvious candidates collide with platform conventions (`cmd-shift-[` and
-   `]` switch tabs in macOS apps) or with Linux desktop shortcuts
-   (older GNOME releases bind `ctrl-alt-shift-<arrow>` to moving windows
-   between workspaces), and Ghostty ships no pane moves at all. Users can
-   bind them. Alternative: `cmd-shift-alt-<arrow>` and
-   `ctrl-super-alt-<arrow>` for directional swaps.
-3. **Spring-loaded tabs.** Recommend deferring: dragging a pane over a tab
-   label for 600 ms would activate that tab so the pane can land in its
-   panes. Commands already reach any tab.
-4. **Recording divider resizes.** Recommend not recording them (see
-   "What is recorded"). Alternative: record each committed drag and
-   coalesce consecutive resize commands on one split within one second.
-5. **Linux undo keys.** Recommend `ctrl-shift-z` and `ctrl-shift-y`.
-   Alternative: `ctrl-super-z` and `ctrl-super-shift-z`, matching the
-   `ctrl-super` pane focus keys.
-6. **Restored tab identity.** Recommend reusing the removed tab's `TabId`.
-   Alternative: a fresh ID on each undo, which keeps "an ID never returns"
-   as an invariant at the cost of rewriting history entries after each
-   restore.
-7. **History owner.** Recommend window-owned history, which dies with its
-   window, including a window that a move of its own emptied. Alternative:
-   history owned by the runtime per attachment. It survives an IPC client
-   reconnecting, but it still dies with the attachment, and it needs a way
-   to publish availability for menus.
-8. **`cmd-z` with nothing to undo.** Recommend taking the key always, for
-   now (see "Commands, bindings, menus"). Revisit with Kitty keyboard
-   protocol support, which would let a terminal program read the key.
+1. **The centre zone in a spring-loaded tab.** Recommend offering nothing
+   on a pane outside the source pane's tab, as for tab drags, so
+   `swap_panes` stays a single-tab operation. A drag that springs back to
+   the source pane's tab gets its centre zones again.
+   Alternative: a cross-tab swap, which sends the target pane back into the
+   hidden origin tab. That would honor split panes decision 2 literally, but
+   it widens `swap_panes` to two tabs, makes swaps advance the close
+   revision, and moves a pane the user cannot see.
+2. **macOS system spring-loading setting.** Recommend the 500 ms constant on
+   both platforms. Alternative: on macOS, read `com.apple.springing.enabled`
+   and `com.apple.springing.delay` so Huterm follows the user's
+   accessibility choice, at the cost of native defaults reads and a second
+   code path that Linux cannot share.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-29]: https://github.com/jimeh/huterm/issues/29
-[ghostty-config]: https://github.com/ghostty-org/ghostty/blob/ebd449995d321e90d6c73be3decb15558512b2ed/src/config/Config.zig
-[ghostty-binding]: https://github.com/ghostty-org/ghostty/blob/ebd449995d321e90d6c73be3decb15558512b2ed/src/input/Binding.zig
+[chromium-hover]: https://chromium.googlesource.com/chromium/src/+/07350d3d4eeb10bc22254989d9fd58b9199b09d7/chrome/browser/ui/tabs/hover_tab_selector.cc
+[chromium-strip]: https://chromium.googlesource.com/chromium/src/+/07350d3d4eeb10bc22254989d9fd58b9199b09d7/chrome/browser/ui/views/tabs/browser_tab_strip_controller.cc
+[firefox-prefs]: https://searchfox.org/firefox-main/source/browser/app/profile/firefox.js
+[firefox-dnd]: https://searchfox.org/firefox-main/source/browser/components/tabbrowser/content/drag-and-drop.js
