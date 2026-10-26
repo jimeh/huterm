@@ -1,10 +1,13 @@
 # Pane moves
 
-Status: proposed. Plans [issue #29][issue-29] within [epic #12][issue-12].
-Builds on [the split panes plan](split-panes.md), which fixed the drop zone
-geometry, the title bar as a drag handle, and its settled decisions 1 to 3
-for this issue, cited here as "split panes decision N". Layout undo is a
-related issue with [its own plan](layout-undo.md) and no ordering dependency
+Status: in progress. Approved on 2026-10-26 after a Claude review and four
+Codex review rounds, then revised with Jim's settled decisions and two more
+Codex review rounds. PR 1 (runtime moves) is in progress. Plans
+[issue #29][issue-29] within [epic #12][issue-12]. Builds on [the split panes
+plan](split-panes.md), which fixed the drop zone geometry, the title bar as
+a drag handle, and its settled decisions 1 to 3 for this issue, cited here
+as "split panes decision N". Layout undo is [#256][issue-256], a related
+issue with [its own plan](layout-undo.md) and no ordering dependency
 (settled decision 1).
 
 A pane can swap places with a sibling, move beside another pane in the same
@@ -66,8 +69,9 @@ unchanged. A tab drag released there keeps today's reorder behavior and
 reorders within its own bar (see "Drags"). #31 later turns those releases
 into transfers and tear-outs.
 
-Layout undo is related but separate: [its plan](layout-undo.md) builds on
-this plan's first PR, and #29 neither waits for it nor depends on it.
+Layout undo ([#256][issue-256]) is related but separate: [its
+plan](layout-undo.md) builds on this plan's first PR, and #29 neither waits
+for it nor depends on it.
 
 ## Principles
 
@@ -979,9 +983,10 @@ PR 2. No PR here waits for it.
 Jim decided these on 2026-10-26, after the first round of reviews. Each item
 names the alternatives he considered.
 
-1. **Undo is split out completely.** Layout undo is its own issue and
-   [plan](layout-undo.md), with no ordering dependency: #29 does not wait
-   for it, and its drag PR does not depend on it. #29 keeps only the hooks
+1. **Undo is split out completely.** Layout undo is its own issue,
+   [#256][issue-256], and [plan](layout-undo.md), with no ordering
+   dependency: #29 does not wait for it, and its drag PR does not depend on
+   it. #29 keeps only the hooks
    it needs on its own, the `Placed` change and the `LayoutChange` results.
    Not chosen: undo as a #29 PR, or a separate issue landing before #29's
    drag PR.
@@ -1014,6 +1019,7 @@ names the alternatives he considered.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-29]: https://github.com/jimeh/huterm/issues/29
+[issue-256]: https://github.com/jimeh/huterm/issues/256
 [chromium-hover]: https://chromium.googlesource.com/chromium/src/+/07350d3d4eeb10bc22254989d9fd58b9199b09d7/chrome/browser/ui/tabs/hover_tab_selector.cc
 [chromium-strip]: https://chromium.googlesource.com/chromium/src/+/07350d3d4eeb10bc22254989d9fd58b9199b09d7/chrome/browser/ui/views/tabs/browser_tab_strip_controller.cc
 [firefox-prefs]: https://searchfox.org/firefox-main/source/browser/app/profile/firefox.js

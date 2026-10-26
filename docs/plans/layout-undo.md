@@ -1,10 +1,10 @@
 # Layout undo
 
-Status: proposed. Plans a new issue under [epic #12][issue-12], related to
-[#29][issue-29] and [#30][issue-30] with no ordering dependency: #29 does
-not wait for this work, and its drag PR does not depend on it. This plan
-builds on the runtime hooks that [the pane moves plan](pane-moves.md)
-delivers in its first PR.
+Status: proposed. Plans [issue #256][issue-256] under [epic #12][issue-12],
+related to [#29][issue-29] and [#30][issue-30] with no ordering dependency.
+Issue #29 does not wait for this work, and its drag PR does not depend on
+it. This plan builds on the runtime hooks that
+[the pane moves plan](pane-moves.md) delivers in its first PR.
 
 A user who drops a multi-pane tab into another tab's pane by mistake gets a
 nested layout. Pulling that subtree back out into its own tab by hand is
@@ -495,5 +495,6 @@ drag PR of #29.
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-29]: https://github.com/jimeh/huterm/issues/29
 [issue-30]: https://github.com/jimeh/huterm/issues/30
+[issue-256]: https://github.com/jimeh/huterm/issues/256
 [ghostty-config]: https://github.com/ghostty-org/ghostty/blob/ebd449995d321e90d6c73be3decb15558512b2ed/src/config/Config.zig
 [ghostty-binding]: https://github.com/ghostty-org/ghostty/blob/ebd449995d321e90d6c73be3decb15558512b2ed/src/input/Binding.zig
