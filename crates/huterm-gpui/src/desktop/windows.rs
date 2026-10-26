@@ -2713,10 +2713,16 @@ impl TabView {
     }
 
     /// Drops the views of `panes`. Focus falls back to the most recently
-    /// focused pane still present.
+    /// focused pane still present, else the first in layout order, which
+    /// joins the history so a pane added before it later cannot take focus.
     fn remove_panes(&mut self, panes: &[PaneId]) {
         self.panes.retain(|view| !panes.contains(&view.pane));
         self.focus_history.retain(|id| !panes.contains(id));
+        if let Some(first) = self.panes.first()
+            && !self.focus_history.iter().any(|id| self.pane(*id).is_some())
+        {
+            self.focus_history.push(first.pane);
+        }
     }
 
     /// The tab's label with status text, for previews, dialogs, and the
@@ -3815,14 +3821,19 @@ impl WorkspaceView {
             return Vec::new();
         };
         let tab_id = tab.id;
-        let rects = Self::tab_panes(tab_id, bounds, window, cx);
+        // A layout this window shows none of yet, as when a busy window
+        // defers removals, is drawn as if the projection held no layout.
+        let rects =
+            Self::tab_panes(tab_id, bounds, window, cx).filter(|rects| {
+                tab.panes.iter().any(|pane| rects.pane(pane.pane).is_some())
+            });
         let focused = tab.focused().pane;
         let split = rects.as_ref().is_some_and(|rects| rects.panes.len() > 1);
         let mut elements = Vec::new();
         for pane in &tab.panes {
             // A view the layout no longer holds, such as one still closing,
-            // is not drawn. A tab the projection no longer holds shows only
-            // its focused pane, across the whole bounds.
+            // is not drawn. A tab without a layout to draw shows only its
+            // focused pane, across the whole bounds.
             let rect = match &rects {
                 Some(rects) => match rects.pane(pane.pane) {
                     Some(rect) => Some(rect),
@@ -6762,12 +6773,21 @@ impl WorkspaceView {
             .assessment
             .iter()
             .flat_map(CloseAssessment::terminal_jobs);
-        // A lone pane's close reads as its tab's, as before splits existed.
+        // A lone pane's close reads as its tab's, as before splits existed;
+        // the runtime decides from the layout, not this window's views.
         let pane_title = match target {
             CloseTarget::Pane { tab, pane } => self
                 .tabs
                 .iter()
-                .find(|view| view.id == *tab && view.panes.len() > 1)
+                .find(|view| {
+                    view.id == *tab
+                        && cx
+                            .global::<Desktop>()
+                            .hierarchy
+                            .state()
+                            .tab(*tab)
+                            .is_some_and(|info| info.layout.pane_count() > 1)
+                })
                 .and_then(|view| {
                     let pane = view.pane(*pane)?;
                     Some(pane.label(

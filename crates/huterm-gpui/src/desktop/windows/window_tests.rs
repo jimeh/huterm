@@ -3169,4 +3169,10 @@ fn focus_falls_back_to_the_first_pane_in_layout_order(cx: &mut TestAppContext) {
     harness.wait_for("focus to fall back to the leftmost pane", |cx| {
         panes_shown(cx, window, tab) == Some((vec![left, right], left))
     });
+    // A pane split in before the fallback in layout order leaves it focused.
+    let far_left = harness.split(tab, left, SplitDirection::Left, ECHO);
+    harness.wait_for("the far left pane to install", |cx| {
+        panes_shown(cx, window, tab)
+            == Some((vec![far_left, left, right], left))
+    });
 }
