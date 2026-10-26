@@ -145,3 +145,11 @@ test("file references take an optional inclusive line range", () => {
   expect(selectLines("a\r\nb\nc\nd", [2, 3])).toBe("b\nc");
   expect(() => selectLines("a\nb", [1, 5])).toThrow("passes the end");
 });
+
+test("a WITH exception needs a text that carries it", () => {
+  const llvm = "Apache License\nVersion 2.0, January 2004\n---- LLVM Exceptions to the Apache 2.0 License ----";
+  expect(() => texts("Apache-2.0 WITH LLVM-exception", [])).toThrow("ships no text for a license deny.toml allows");
+  expect(() => texts("Apache-2.0 WITH LLVM-exception", [{ title: "LICENSE-APACHE", text: APACHE }])).toThrow("ships no text");
+  expect(texts("Apache-2.0 WITH LLVM-exception", [{ title: "LICENSE", text: llvm }])).toEqual({ used: "Apache-2.0 WITH LLVM-exception", texts: [{ title: "LICENSE", text: llvm }] });
+  expect(texts("Apache-2.0 WITH LLVM-exception OR MIT", [{ title: "LICENSE-APACHE", text: APACHE }, { title: "LICENSE-MIT", text: MIT }]).used).toBe("MIT");
+});

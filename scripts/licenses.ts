@@ -183,6 +183,11 @@ export function classifyFile(title: string, text: string, declared: string[]): C
 
 // Selection ------------------------------------------------------------------
 
+/** Wording that shows a license text carries a `WITH` exception. */
+const EXCEPTION_SIGNATURES: Record<string, RegExp> = {
+  "LLVM-exception": /LLVM Exceptions? to the Apache 2\.0 License/i,
+};
+
 export type Resolution = { expression: Expression; texts: Text[]; quality: number };
 export type Sources = {
   files: ClassifiedFile[];
@@ -216,11 +221,15 @@ export function resolveExpression(expression: Expression, sources: Sources): Res
   if (expression.kind === "license") {
     if (sources.allowed && !sources.allowed.has(expression.id)) return undefined;
     const id = baseLicense(expression.id);
-    const own = sources.files.filter(file => !file.notice && file.licenses.has(id));
+    const exception = expression.id.split(" WITH ")[1];
+    // A `WITH` exception needs a text that carries it; the base license's
+    // standard text alone would drop it.
+    const covers = (text: string) => exception === undefined || EXCEPTION_SIGNATURES[exception]?.test(flat(text)) === true;
+    const own = sources.files.filter(file => !file.notice && file.licenses.has(id) && covers(file.text));
     if (own.length > 0) return { expression, texts: own.map(({ title, text }) => ({ title, text })), quality: 2 };
-    const clarified = sources.clarified.get(id);
-    if (clarified) return { expression, texts: clarified, quality: 2 };
-    const canonical = sources.canonical.get(id);
+    const clarified = sources.clarified.get(expression.id) ?? sources.clarified.get(id);
+    if (clarified && clarified.some(text => covers(text.text))) return { expression, texts: clarified, quality: 2 };
+    const canonical = exception === undefined ? sources.canonical.get(id) : undefined;
     if (canonical) return { expression, texts: [canonical], quality: 1 };
     return undefined;
   }
