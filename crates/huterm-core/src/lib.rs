@@ -27,10 +27,10 @@ mod viewer;
 mod wake;
 
 pub use mux::{
-    CloseAssessment, CloseEffect, CloseRequest, CloseTicket,
+    Beside, CloseAssessment, CloseEffect, CloseRequest, CloseTicket,
     DEFAULT_SOCKET_NAME, HierarchyRecvError, HierarchySnapshot,
-    HierarchySubscription, Mux, MuxError, OpenedPane, OpenedTab,
-    SelectionTarget, Session, Tab, Workspace,
+    HierarchySubscription, MoveDestination, Mux, MuxError, OpenedPane,
+    OpenedTab, PaneRef, SelectionTarget, Session, Tab, Workspace,
 };
 pub use terminal::{
     RefusedInput, RuntimeError, SelectionRequest, SnapshotReply,

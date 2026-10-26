@@ -536,7 +536,10 @@ pub(super) fn command(script: &str) -> TerminalCommand {
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
     }
 }
-fn wait_for_text(client: &crate::test_support::TestClient, needle: &str) {
+pub(super) fn wait_for_text(
+    client: &crate::test_support::TestClient,
+    needle: &str,
+) {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let snapshot = client.read_snapshot().unwrap();
@@ -1071,7 +1074,9 @@ fn detaching_preserves_terminal_and_unobserved_output_and_exit() {
     mux.shutdown().unwrap();
 }
 
-fn shell_pid(client: &crate::test_support::TestClient) -> nix::unistd::Pid {
+pub(super) fn shell_pid(
+    client: &crate::test_support::TestClient,
+) -> nix::unistd::Pid {
     let pid = client.job_context().unwrap().shell.unwrap();
     nix::unistd::Pid::from_raw(i32::try_from(pid).unwrap())
 }

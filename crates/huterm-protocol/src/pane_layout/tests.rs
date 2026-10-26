@@ -716,3 +716,234 @@ fn directional_neighbours_stop_at_edges_and_break_ties_as_documented() {
         Some(pane_id(4))
     );
 }
+
+#[test]
+fn inserting_a_subtree_keeps_it_nested_across_the_axis() {
+    let columns = layout(split(
+        10,
+        SplitAxis::Columns,
+        vec![(300_000, leaf(1)), (700_000, leaf(2))],
+    ));
+    let stack = split(
+        20,
+        SplitAxis::Rows,
+        vec![(400_000, leaf(5)), (600_000, leaf(6))],
+    );
+    // A sibling on the parent's axis keeps its own split and proportions.
+    let beside = columns
+        .with_inserted(
+            pane_id(2),
+            SplitDirection::Right,
+            stack.clone(),
+            split_id(30),
+        )
+        .unwrap();
+    assert_eq!(
+        shape(&beside),
+        "C[300000:1 350000:2 350000:R[400000:5 600000:6]]"
+    );
+    assert!(beside.split_node(split_id(20)).is_some());
+    assert!(beside.split_node(split_id(30)).is_none());
+    // Across the parent's axis, a new split holds the target and the
+    // subtree, which keeps its identity because the axes differ.
+    let lone = PaneLayout::single(info(1));
+    let nested = lone
+        .with_inserted(pane_id(1), SplitDirection::Left, stack, split_id(30))
+        .unwrap();
+    assert_eq!(shape(&nested), "C[500000:R[400000:5 600000:6] 500000:1]");
+    assert_eq!(nested.split_ids(), [split_id(30), split_id(20)]);
+}
+
+#[test]
+fn inserting_a_same_axis_subtree_flattens_it_into_its_new_parent() {
+    let columns = layout(split(
+        10,
+        SplitAxis::Columns,
+        vec![(HALF, leaf(1)), (HALF, leaf(2))],
+    ));
+    let pair = split(
+        20,
+        SplitAxis::Columns,
+        vec![
+            (250_000, leaf(5)),
+            (
+                750_000,
+                split(
+                    21,
+                    SplitAxis::Rows,
+                    vec![(HALF, leaf(6)), (HALF, leaf(7))],
+                ),
+            ),
+        ],
+    );
+    // As a sibling: the subtree's children share pane 2's half.
+    let joined = columns
+        .with_inserted(
+            pane_id(2),
+            SplitDirection::Right,
+            pair.clone(),
+            split_id(30),
+        )
+        .unwrap();
+    assert_eq!(
+        shape(&joined),
+        "C[500000:1 250000:2 62500:5 187500:R[500000:6 500000:7]]"
+    );
+    // The subtree's root split is gone; its nested split stays.
+    assert_eq!(joined.split_ids(), [split_id(10), split_id(21)]);
+    // In a new split across the parent's axis, it flattens into that split.
+    let rows = layout(split(
+        10,
+        SplitAxis::Rows,
+        vec![(HALF, leaf(1)), (HALF, leaf(2))],
+    ));
+    let fresh = rows
+        .with_inserted(pane_id(2), SplitDirection::Left, pair, split_id(30))
+        .unwrap();
+    assert_eq!(
+        shape(&fresh),
+        "R[500000:1 500000:C[125000:5 375000:R[500000:6 500000:7] 500000:2]]"
+    );
+    assert_eq!(
+        fresh.split_ids(),
+        [split_id(10), split_id(30), split_id(21)]
+    );
+}
+
+#[test]
+fn a_flattened_subtree_wider_than_its_slot_reapportions_the_split() {
+    let tight = layout(split(
+        10,
+        SplitAxis::Columns,
+        vec![(2, leaf(1)), (SPLIT_TOTAL - 2, leaf(2))],
+    ));
+    let trio = split(
+        20,
+        SplitAxis::Columns,
+        vec![(300_000, leaf(5)), (300_000, leaf(6)), (400_000, leaf(7))],
+    );
+    // Pane 1 keeps 1 and the subtree's slot is 1, narrower than its three
+    // children; each child takes at least 1 and the largest child absorbs
+    // the difference.
+    let joined = tight
+        .with_inserted(pane_id(1), SplitDirection::Right, trio, split_id(30))
+        .unwrap();
+    assert_eq!(shape(&joined), "C[1:1 1:5 1:6 1:7 999996:2]");
+}
+
+#[test]
+fn a_subtree_flatten_past_the_child_limit_keeps_it_nested() {
+    let PaneNode::Split(mut root) = full_columns().root().clone() else {
+        unreachable!()
+    };
+    // Make room for exactly one more child.
+    let removed = root.children.pop().unwrap();
+    root.children[0].weight += removed.weight;
+    let crowded = layout(PaneNode::Split(root));
+    let pair = split(
+        20,
+        SplitAxis::Columns,
+        vec![(HALF, leaf(300)), (HALF, leaf(301))],
+    );
+    let kept = crowded
+        .with_inserted(pane_id(1), SplitDirection::Right, pair, split_id(30))
+        .unwrap();
+    let PaneNode::Split(root) = kept.root() else {
+        unreachable!()
+    };
+    assert_eq!(root.children.len(), MAX_SPLIT_CHILDREN);
+    assert_eq!(root.children[1].node.id(), NodeId::Split(split_id(20)));
+}
+
+#[test]
+fn insertion_refuses_unknown_targets_and_repeated_identities() {
+    let columns = layout(split(
+        10,
+        SplitAxis::Columns,
+        vec![(HALF, leaf(1)), (HALF, leaf(2))],
+    ));
+    let right = SplitDirection::Right;
+    assert_eq!(
+        columns.with_inserted(pane_id(9), right, leaf(5), split_id(30)),
+        Err(LayoutError::UnknownPane)
+    );
+    // A subtree holding a pane the layout already has.
+    let reused =
+        split(20, SplitAxis::Rows, vec![(HALF, leaf(1)), (HALF, leaf(5))]);
+    assert_eq!(
+        columns.with_inserted(pane_id(2), right, reused, split_id(30)),
+        Err(LayoutError::DuplicateId)
+    );
+    let tiny = layout(split(
+        10,
+        SplitAxis::Columns,
+        vec![(1, leaf(1)), (SPLIT_TOTAL - 1, leaf(2))],
+    ));
+    assert_eq!(
+        tiny.with_inserted(pane_id(1), right, leaf(5), split_id(30)),
+        Err(LayoutError::PaneTooSmall)
+    );
+}
+
+#[test]
+fn swapping_exchanges_panes_and_leaves_each_slot_its_weight() {
+    let uneven = left_and_stack()
+        .with_weights(
+            split_id(10),
+            &[NodeId::Pane(pane_id(1)), NodeId::Split(split_id(11))],
+            &[300_000, 700_000],
+        )
+        .unwrap();
+    let swapped = uneven.with_swapped(pane_id(1), pane_id(3)).unwrap();
+    assert_eq!(shape(&swapped), "C[300000:3 700000:R[500000:2 500000:1]]");
+    // Each pane keeps its terminal.
+    assert_eq!(
+        swapped.pane(pane_id(1)).unwrap().terminal_id,
+        TerminalId::new(1)
+    );
+    assert_eq!(uneven.with_swapped(pane_id(2), pane_id(2)).unwrap(), uneven);
+    assert_eq!(
+        uneven.with_swapped(pane_id(1), pane_id(9)),
+        Err(LayoutError::UnknownPane)
+    );
+}
+
+#[test]
+fn same_shape_ignores_split_identities_and_weights_only() {
+    let base = left_and_stack();
+    let renamed = layout(split(
+        40,
+        SplitAxis::Columns,
+        vec![
+            (100_000, leaf(1)),
+            (
+                900_000,
+                split(
+                    41,
+                    SplitAxis::Rows,
+                    vec![(1, leaf(2)), (SPLIT_TOTAL - 1, leaf(3))],
+                ),
+            ),
+        ],
+    ));
+    assert!(base.same_shape(&renamed));
+    // Panes in other places, or another axis, differ.
+    let swapped = base.with_swapped(pane_id(2), pane_id(3)).unwrap();
+    assert!(!base.same_shape(&swapped));
+    let turned = layout(split(
+        10,
+        SplitAxis::Rows,
+        vec![
+            (HALF, leaf(1)),
+            (
+                HALF,
+                split(
+                    11,
+                    SplitAxis::Columns,
+                    vec![(HALF, leaf(2)), (HALF, leaf(3))],
+                ),
+            ),
+        ],
+    ));
+    assert!(!base.same_shape(&turned));
+}

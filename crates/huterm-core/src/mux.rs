@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 mod hierarchy;
 mod lifecycle;
+mod moves;
 pub use hierarchy::{HierarchyRecvError, HierarchySubscription};
 pub use lifecycle::{
     CloseAssessment, CloseEffect, CloseRequest, CloseTicket, HierarchySnapshot,
 };
+pub use moves::{Beside, MoveDestination, PaneRef};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::terminal::RuntimeClient;

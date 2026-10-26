@@ -817,3 +817,272 @@ fn snapshots_reject_repeated_or_foreign_identities() {
     );
     assert!(foreign.is_none());
 }
+
+fn layout_change(value: u64, layout: PaneLayout) -> TabChange {
+    TabChange::Layout {
+        tab: tab_id(value),
+        layout,
+        zoomed: None,
+    }
+}
+
+fn rearranged(changes: Vec<TabChange>) -> HierarchyEvent {
+    HierarchyEvent::PanesRearranged { changes }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "walk one pane through every kind of rearrangement"
+)]
+fn rearrangements_move_panes_between_tabs_atomically() {
+    let mut state = seeded(1);
+    apply(
+        &mut state,
+        split_tab(SplitAxis::Columns, [120, 130], HALF, None),
+    );
+    // Pane 130 moves from tab 20 into tab 21.
+    assert_eq!(
+        apply(
+            &mut state,
+            rearranged(vec![
+                layout_change(20, PaneLayout::single(pane(120))),
+                layout_change(21, two_panes(SplitAxis::Rows, [121, 130], HALF)),
+            ]),
+        ),
+        touched_layouts(false, &[10], &[20, 21], &[20, 21])
+    );
+    assert_eq!(state.pane_tab(pane_id(130)), Some(tab_id(21)));
+    assert_eq!(state.terminal_tab(TerminalId::new(230)), Some(tab_id(21)));
+    assert_eq!(state.pane_tab(pane_id(120)), Some(tab_id(20)));
+    // It leaves for a new tab 23 at the front of workspace 11.
+    assert_eq!(
+        apply(
+            &mut state,
+            rearranged(vec![
+                TabChange::Opened {
+                    workspace: workspace_id(11),
+                    tab: TabInfo {
+                        layout: PaneLayout::single(pane(130)),
+                        ..tab(23)
+                    },
+                    index: 0,
+                },
+                layout_change(21, PaneLayout::single(pane(121))),
+            ]),
+        ),
+        touched_layouts(false, &[10, 11], &[21, 23], &[21, 23])
+    );
+    assert_eq!(
+        state.workspace_tabs(workspace_id(11)).unwrap(),
+        [tab_id(23), tab_id(22)]
+    );
+    assert_eq!(state.pane_tab(pane_id(130)), Some(tab_id(23)));
+    // The lone-pane tab moves to workspace 10 between tabs 20 and 21.
+    assert_eq!(
+        apply(
+            &mut state,
+            rearranged(vec![TabChange::Placed {
+                tab: tab_id(23),
+                workspace: workspace_id(10),
+                index: 1,
+            }]),
+        ),
+        touched_layouts(false, &[10, 11], &[23], &[23])
+    );
+    assert_eq!(
+        state.workspace_tabs(workspace_id(10)).unwrap(),
+        [tab_id(20), tab_id(23), tab_id(21)]
+    );
+    assert_eq!(
+        state.workspace_tabs(workspace_id(11)).unwrap(),
+        [tab_id(22)]
+    );
+    assert_eq!(state.tab_workspace(tab_id(23)), Some(workspace_id(10)));
+    // Tab 23 drops into tab 20 and is removed, its pane kept.
+    assert_eq!(
+        apply(
+            &mut state,
+            rearranged(vec![
+                TabChange::Removed { tab: tab_id(23) },
+                layout_change(20, two_panes(SplitAxis::Rows, [120, 130], HALF)),
+            ]),
+        ),
+        touched_layouts(false, &[10], &[20, 23], &[20, 23])
+    );
+    assert!(state.tab(tab_id(23)).is_none());
+    assert_eq!(
+        state.workspace_tabs(workspace_id(10)).unwrap(),
+        [tab_id(20), tab_id(21)]
+    );
+    assert_eq!(state.pane_tab(pane_id(130)), Some(tab_id(20)));
+    // A removed tab's identity can open again later, as a restore does.
+    assert_eq!(
+        apply(
+            &mut state,
+            rearranged(vec![
+                TabChange::Opened {
+                    workspace: workspace_id(10),
+                    tab: TabInfo {
+                        layout: PaneLayout::single(pane(130)),
+                        ..tab(23)
+                    },
+                    index: 2,
+                },
+                layout_change(20, PaneLayout::single(pane(120))),
+            ]),
+        ),
+        touched_layouts(false, &[10], &[20, 23], &[20, 23])
+    );
+    assert_eq!(
+        state.workspace_tabs(workspace_id(10)).unwrap(),
+        [tab_id(20), tab_id(21), tab_id(23)]
+    );
+    // The indexes match a snapshot of the same structure.
+    let fresh = HierarchyState::from_sessions(
+        STREAM,
+        state.seq(),
+        [
+            (
+                session(1),
+                vec![
+                    (
+                        workspace(10),
+                        vec![
+                            tab(20),
+                            tab(21),
+                            TabInfo {
+                                layout: PaneLayout::single(pane(130)),
+                                ..tab(23)
+                            },
+                        ],
+                    ),
+                    (workspace(11), vec![tab(22)]),
+                ],
+            ),
+            (session(2), vec![]),
+        ],
+    )
+    .unwrap();
+    assert_eq!(state, fresh);
+}
+
+#[test]
+fn rearrangements_that_break_conservation_or_structure_change_nothing() {
+    let inconsistent = ApplyOutcome::ResyncRequired(ResyncReason::Inconsistent);
+    let lone = |value| PaneLayout::single(pane(value));
+    for changes in [
+        // Nothing to apply.
+        vec![],
+        // An unknown tab.
+        vec![layout_change(99, lone(199))],
+        // A tab with two layout changes.
+        vec![layout_change(20, lone(120)), layout_change(20, lone(120))],
+        // A removed tab that also changes layout.
+        vec![
+            TabChange::Removed { tab: tab_id(21) },
+            layout_change(20, two_panes(SplitAxis::Rows, [120, 121], HALF)),
+            layout_change(21, lone(121)),
+        ],
+        // Opening a tab that exists.
+        vec![
+            TabChange::Removed { tab: tab_id(22) },
+            TabChange::Opened {
+                workspace: workspace_id(10),
+                tab: TabInfo {
+                    layout: lone(122),
+                    ..tab(21)
+                },
+                index: 0,
+            },
+        ],
+        // Opening into an unknown workspace.
+        vec![
+            TabChange::Removed { tab: tab_id(22) },
+            TabChange::Opened {
+                workspace: workspace_id(99),
+                tab: TabInfo {
+                    layout: lone(122),
+                    ..tab(23)
+                },
+                index: 0,
+            },
+        ],
+        // Opening a tab of another stream.
+        vec![
+            TabChange::Removed { tab: tab_id(22) },
+            TabChange::Opened {
+                workspace: workspace_id(10),
+                tab: TabInfo {
+                    id: TabId::in_runtime(RuntimeId::new(8), 23),
+                    layout: lone(122),
+                    ..tab(23)
+                },
+                index: 0,
+            },
+        ],
+        // A placement past the end.
+        vec![TabChange::Placed {
+            tab: tab_id(22),
+            workspace: workspace_id(10),
+            index: 3,
+        }],
+        // A pane taken from an untouched tab.
+        vec![layout_change(
+            20,
+            two_panes(SplitAxis::Rows, [120, 121], HALF),
+        )],
+        // A pane paired with another terminal.
+        vec![layout_change(
+            20,
+            PaneLayout::single(PaneInfo {
+                terminal_id: TerminalId::new(999),
+                ..pane(120)
+            }),
+        )],
+        // A tab removed without its panes going anywhere.
+        vec![TabChange::Removed { tab: tab_id(21) }],
+        // A pane that appears from nowhere.
+        vec![layout_change(
+            20,
+            two_panes(SplitAxis::Rows, [120, 130], HALF),
+        )],
+        // A zoom on a lone pane.
+        vec![TabChange::Layout {
+            tab: tab_id(20),
+            layout: lone(120),
+            zoomed: Some(pane_id(120)),
+        }],
+    ] {
+        let mut state = seeded(1);
+        let before = state.clone();
+        let event = rearranged(changes);
+        assert_eq!(apply(&mut state, event.clone()), inconsistent, "{event:?}");
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn rearrangements_follow_the_stale_and_gap_rules() {
+    let mut state = seeded(4);
+    let event = rearranged(vec![
+        TabChange::Removed { tab: tab_id(21) },
+        layout_change(20, two_panes(SplitAxis::Rows, [120, 121], HALF)),
+    ]);
+    let replayed = HierarchyEnvelope {
+        stream: STREAM,
+        seq: 4,
+        event: event.clone(),
+    };
+    assert_eq!(state.apply(replayed), ApplyOutcome::Stale);
+    let gap = HierarchyEnvelope {
+        stream: STREAM,
+        seq: 6,
+        event,
+    };
+    assert_eq!(
+        state.apply(gap),
+        ApplyOutcome::ResyncRequired(ResyncReason::Gap)
+    );
+    assert_eq!(state, seeded(4));
+}

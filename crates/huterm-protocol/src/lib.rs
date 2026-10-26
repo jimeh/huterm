@@ -18,8 +18,8 @@ pub use command::{
 };
 pub use hierarchy::{
     ApplyOutcome, HierarchyEnvelope, HierarchyEvent, HierarchyState,
-    ResyncReason, SessionInfo, StreamId, TabInfo, Touched, WorkspaceInfo,
-    resolve_tab_name,
+    LayoutChange, ResyncReason, SessionInfo, StreamId, TabChange, TabInfo,
+    TabRecord, TabSnapshot, Touched, WorkspaceInfo, resolve_tab_name,
 };
 pub use pane_layout::{
     LayoutError, MAX_SPLIT_CHILDREN, NORMALIZED_EXTENT, NodeId, NormalizedRect,

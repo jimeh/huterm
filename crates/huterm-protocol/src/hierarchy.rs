@@ -1,10 +1,11 @@
 //! Sequenced session, workspace, and tab structure and its reducer.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    PaneId, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis, TabId,
-    TerminalId, WorkspaceId,
+    PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis,
+    TabId, TerminalId, WorkspaceId,
 };
 
 /// Identifies one ordered hierarchy stream.
@@ -119,6 +120,105 @@ impl TabInfo {
     }
 }
 
+/// One tab's part of a [`HierarchyEvent::PanesRearranged`].
+///
+/// Changes apply in order, and each `index` is the tab's final position at
+/// that step, as [`HierarchyEvent::TabMoved`] and
+/// [`HierarchyEvent::TabOpened`] define it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TabChange {
+    /// An existing tab's layout and shared zoom.
+    Layout {
+        /// The tab.
+        tab: TabId,
+        /// Its new layout.
+        layout: PaneLayout,
+        /// Its shared zoom after the change.
+        zoomed: Option<PaneId>,
+    },
+    /// An existing tab moved to a position, in its workspace or another.
+    Placed {
+        /// The tab.
+        tab: TabId,
+        /// Destination workspace.
+        workspace: WorkspaceId,
+        /// Final position within the destination workspace at this step.
+        index: u32,
+    },
+    /// A tab opened to hold panes that came from the event's other tabs.
+    Opened {
+        /// Owning workspace.
+        workspace: WorkspaceId,
+        /// The new tab.
+        tab: TabInfo,
+        /// Position within the workspace at this step.
+        index: u32,
+    },
+    /// A tab removed because its panes moved to the event's other tabs.
+    /// Unlike [`HierarchyEvent::TabClosed`], no terminal closed.
+    Removed {
+        /// The tab.
+        tab: TabId,
+    },
+}
+
+impl TabChange {
+    /// The tab this change concerns.
+    #[must_use]
+    pub fn tab(&self) -> TabId {
+        match self {
+            Self::Layout { tab, .. }
+            | Self::Placed { tab, .. }
+            | Self::Removed { tab } => *tab,
+            Self::Opened { tab, .. } => tab.id,
+        }
+    }
+}
+
+/// A tab's structural record at one moment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TabRecord {
+    /// Owning session.
+    pub session: SessionId,
+    /// Owning workspace.
+    pub workspace: WorkspaceId,
+    /// Position within the workspace.
+    pub index: u32,
+    /// Custom override, if set.
+    pub custom_name: Option<String>,
+    /// The tab's split tree of panes.
+    pub layout: PaneLayout,
+    /// The tab's shared zoom.
+    pub zoomed: Option<PaneId>,
+}
+
+/// One tab's record, or its absence, at one moment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TabSnapshot {
+    /// The tab.
+    pub tab: TabId,
+    /// Its record; `None` while the tab does not exist.
+    pub record: Option<TabRecord>,
+}
+
+/// What a pane rearrangement did: every tab it touched, before and after,
+/// in the same order. Empty when the operation changed nothing.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LayoutChange {
+    /// The touched tabs before the operation.
+    pub before: Vec<TabSnapshot>,
+    /// The touched tabs after the operation.
+    pub after: Vec<TabSnapshot>,
+}
+
+impl LayoutChange {
+    /// Whether the operation changed nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.before.is_empty() && self.after.is_empty()
+    }
+}
+
 /// Whether `zoomed` can be a tab's shared zoom over `layout`.
 fn valid_zoom(layout: &PaneLayout, zoomed: Option<PaneId>) -> bool {
     zoomed.is_none_or(|pane| {
@@ -227,6 +327,14 @@ pub enum HierarchyEvent {
         tab: TabId,
         /// The zoomed pane, or `None`.
         zoomed: Option<PaneId>,
+    },
+    /// Panes moved between tabs, as one atomic change: tabs' layouts
+    /// changed, tabs moved, opened to hold panes, or were removed once
+    /// emptied. The panes and terminals of the touched tabs are the same
+    /// before and after; no terminal opened or closed.
+    PanesRearranged {
+        /// The changes, applied in order.
+        changes: Vec<TabChange>,
     },
     /// Application shutdown removed every session.
     Reset,
@@ -701,6 +809,9 @@ impl HierarchyState {
             HierarchyEvent::PaneZoomChanged { tab, zoomed } => {
                 self.replace_zoom(tab, zoomed, &mut touched)?;
             }
+            HierarchyEvent::PanesRearranged { changes } => {
+                self.rearrange(changes, &mut touched)?;
+            }
             HierarchyEvent::Reset => {
                 self.session_order.clear();
                 self.sessions.clear();
@@ -899,6 +1010,157 @@ impl HierarchyState {
         Some(workspace)
     }
 
+    /// Applies a [`HierarchyEvent::PanesRearranged`] all or nothing: the
+    /// changes run in order against scratch copies of the touched tabs and
+    /// workspace orders, which replace the state only when every step was
+    /// valid and the touched tabs hold exactly the panes they held before.
+    fn rearrange(
+        &mut self,
+        changes: Vec<TabChange>,
+        touched: &mut Touched,
+    ) -> Option<()> {
+        if changes.is_empty() || !distinct_roles(&changes) {
+            return None;
+        }
+        let mut scratch = Rearranged::default();
+        for change in changes {
+            self.rearrange_step(&mut scratch, change)?;
+        }
+        if !self.conserves(&scratch.tabs) {
+            return None;
+        }
+        self.commit_rearranged(scratch, touched)
+    }
+
+    /// Applies one change to the scratch copies, or returns `None`.
+    fn rearrange_step(
+        &self,
+        scratch: &mut Rearranged,
+        change: TabChange,
+    ) -> Option<()> {
+        let id = change.tab();
+        let slot = scratch
+            .tabs
+            .entry(id)
+            .or_insert_with(|| self.tabs.get(&id).cloned());
+        let orders = &mut scratch.orders;
+        match change {
+            TabChange::Layout { layout, zoomed, .. } => {
+                let entry = slot.as_mut()?;
+                entry.info.layout = layout;
+                entry.info.zoomed = zoomed;
+            }
+            TabChange::Placed {
+                workspace, index, ..
+            } => {
+                let entry = slot.as_mut()?;
+                self.order(orders, entry.workspace)?
+                    .retain(|tab| *tab != id);
+                insert_at(self.order(orders, workspace)?, index, id)?;
+                entry.workspace = workspace;
+            }
+            TabChange::Opened {
+                workspace,
+                tab,
+                index,
+            } => {
+                if slot.is_some() || !self.owns(id.runtime()) {
+                    return None;
+                }
+                insert_at(self.order(orders, workspace)?, index, id)?;
+                *slot = Some(TabEntry {
+                    info: tab,
+                    workspace,
+                });
+            }
+            TabChange::Removed { .. } => {
+                let entry = slot.take()?;
+                self.order(orders, entry.workspace)?
+                    .retain(|tab| *tab != id);
+            }
+        }
+        Some(())
+    }
+
+    /// Whether the scratch tabs hold exactly the panes, each with its own
+    /// terminal, that the same tabs hold now, with valid zooms and splits
+    /// of this stream.
+    fn conserves(&self, tabs: &HashMap<TabId, Option<TabEntry>>) -> bool {
+        let sorted = |entries: Vec<&TabEntry>| {
+            let mut panes: Vec<PaneInfo> = entries
+                .into_iter()
+                .flat_map(|entry| entry.info.layout.panes())
+                .cloned()
+                .collect();
+            panes.sort_by_key(|pane| pane.id);
+            panes
+        };
+        let before =
+            sorted(tabs.keys().filter_map(|id| self.tabs.get(id)).collect());
+        let after = sorted(tabs.values().flatten().collect());
+        before == after
+            && tabs.values().flatten().all(|entry| {
+                valid_zoom(&entry.info.layout, entry.info.zoomed)
+                    && entry
+                        .info
+                        .layout
+                        .split_ids()
+                        .into_iter()
+                        .all(|split| self.owns(split.runtime()))
+            })
+    }
+
+    /// Replaces the touched tabs, their pane indexes, and the touched
+    /// workspace orders with the validated scratch copies.
+    fn commit_rearranged(
+        &mut self,
+        scratch: Rearranged,
+        touched: &mut Touched,
+    ) -> Option<()> {
+        for (id, entry) in &scratch.tabs {
+            if let Some(old) = self.tabs.get(id) {
+                touched.workspaces.insert(old.workspace);
+                let layout = old.info.layout.clone();
+                self.unindex_layout(&layout);
+            }
+            touched.tabs.insert(*id);
+            touched.layouts.insert(*id);
+            if let Some(entry) = entry {
+                touched.workspaces.insert(entry.workspace);
+            }
+        }
+        for (workspace, order) in scratch.orders {
+            self.workspaces.get_mut(&workspace)?.tabs = order;
+        }
+        for (id, entry) in scratch.tabs {
+            match entry {
+                Some(entry) => {
+                    self.index_layout(id, &entry.info.layout);
+                    self.tabs.insert(id, entry);
+                }
+                None => {
+                    self.tabs.remove(&id);
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// The scratch copy of a workspace's tab order, taken from the state on
+    /// first use; `None` for an unknown workspace.
+    fn order<'a>(
+        &self,
+        orders: &'a mut HashMap<WorkspaceId, Vec<TabId>>,
+        workspace: WorkspaceId,
+    ) -> Option<&'a mut Vec<TabId>> {
+        match orders.entry(workspace) {
+            Entry::Occupied(entry) => Some(entry.into_mut()),
+            Entry::Vacant(entry) => Some(
+                entry.insert(self.workspaces.get(&workspace)?.tabs.clone()),
+            ),
+        }
+    }
+
     /// Replaces a tab's shared zoom, recording a change in `touched`, or
     /// returns `None` without changes for an unknown tab or an invalid zoom.
     fn replace_zoom(
@@ -941,6 +1203,50 @@ impl HierarchyState {
         }
         touched.workspaces.insert(workspace);
     }
+}
+
+/// Scratch copies a [`HierarchyEvent::PanesRearranged`] works on: each
+/// touched tab's record, or `None` once removed, and each touched
+/// workspace's tab order.
+#[derive(Default)]
+struct Rearranged {
+    tabs: HashMap<TabId, Option<TabEntry>>,
+    orders: HashMap<WorkspaceId, Vec<TabId>>,
+}
+
+/// Inserts `tab` into `order` at `index`, or returns `None` when the index
+/// is past the end.
+fn insert_at(order: &mut Vec<TabId>, index: u32, tab: TabId) -> Option<()> {
+    let index = position(index)?;
+    if index > order.len() {
+        return None;
+    }
+    order.insert(index, tab);
+    Some(())
+}
+
+/// Whether each tab in `changes` has at most one layout change and one
+/// placement, and a tab that opens or is removed has no other change.
+fn distinct_roles(changes: &[TabChange]) -> bool {
+    let mut layouts = HashSet::new();
+    let mut placements = HashSet::new();
+    let mut lifecycles = HashSet::new();
+    for change in changes {
+        let tab = change.tab();
+        let fresh = match change {
+            TabChange::Layout { .. } => layouts.insert(tab),
+            TabChange::Placed { .. } => placements.insert(tab),
+            TabChange::Opened { .. } | TabChange::Removed { .. } => {
+                lifecycles.insert(tab)
+            }
+        };
+        if !fresh {
+            return false;
+        }
+    }
+    lifecycles
+        .iter()
+        .all(|tab| !layouts.contains(tab) && !placements.contains(tab))
 }
 
 /// Replaces a custom name and reports whether it changed.

@@ -1017,6 +1017,30 @@ names the alternatives he considered.
    accessibility choice, at the cost of native defaults reads and a second
    code path that Linux cannot share.
 
+## Deviations
+
+Recorded with PR 1:
+
+- The Mux operations return `Result<LayoutChange, MuxError>`. `Committed`
+  is the desktop's wrapper, which PR 2 adds around them. The destination
+  type is `MoveDestination`, and `Beside` holds a `PaneRef` target and a
+  side, so the target's tab and workspace are validated like the source's.
+- A move computes its layouts with the identity the next allocation would
+  return, rather than a placeholder that it later replaces. When the result
+  uses a new split, the move allocates it, and the computed layout is
+  already correct. No move allocates more than one identity.
+- The operations live in `crates/huterm-core/src/mux/moves.rs`, and
+  `LayoutChange`, `TabSnapshot`, `TabRecord`, and `TabChange` live in the
+  protocol's `hierarchy` module. Each `LayoutChange` lists the touched tabs
+  in the same order in `before` and `after`, source first.
+- The reducer's conservation check compares the touched tabs' `PaneInfo`
+  values sorted by pane ID. Because each `PaneInfo` carries its terminal,
+  the check also covers terminals, and no separate check for untouched
+  tabs is needed.
+- A refused move that needs an identity checks for exhaustion before any
+  other change, including in shape-equal no-ops, so a fully exhausted
+  runtime refuses those no-ops with `IdExhausted` too.
+
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-29]: https://github.com/jimeh/huterm/issues/29
 [issue-256]: https://github.com/jimeh/huterm/issues/256
