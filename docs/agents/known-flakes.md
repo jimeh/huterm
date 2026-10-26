@@ -247,10 +247,6 @@ These are not flakes, but they produce failures that look like regressions:
   is occluded, because GPUI stops the display link. Check
   `ioreg -n Root -d1 | rg CGSSessionScreenIsLocked` first. The first run after
   unlocking can still miss intervals; retry once.
-- `mise run linux:test` runs as root, so
-  `desktop::windows::tests::new_tab_directory_inheritance_accepts_only_local_usable_directories`
-  always fails there at `!usable_launch_directory(&captured)`: root can use
-  the directory the test makes inaccessible with mode 0600.
 - The `smoke:macos-quake` external grab probe needs one free global chord from
   `GRAB_CANDIDATES`. If every candidate is owned by another application, the
   probe writes `failed` with each candidate's error; read that file instead of
