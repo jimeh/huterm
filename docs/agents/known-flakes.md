@@ -97,7 +97,15 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Not this flake:** "missing pending_work_cancellation success" failed twice
   on feature branches (2026-10-01 alongside a `projection.rs` panic, and
   2026-10-02 on in-progress shared-viewer work). Treat that signature as a
-  regression on the branch, not as this flake.
+  regression on the branch, not as this flake. Read the `REFRESH_SMOKE
+  failed:` line above it. "this terminal viewer was revoked" failed three
+  times on one branch (2026-10-25, before PR #238 merged) and not since.
+  "detached pending worker retained its receiver" failed once on main
+  (2026-10-26, run 40320456365): the smoke checked the receiver once, but
+  the executor drops a canceled task's future, and the receiver it holds,
+  only when it next runs that task. The smoke now waits for the receiver
+  to close, so its timeout, "detached pending worker to release its
+  receiver: last observed receiver_closed=false", is a real leak.
 
 ## huterm-core foreground-job tests under full local runs
 

@@ -661,10 +661,18 @@ async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
         Ok((!alive, format!("view_alive={alive}")))
     })
     .await?;
-    ensure!(
-        pending_wake.is_closed(),
-        "detached pending worker retained its receiver"
-    );
+    // Dropping the view cancels its pending-work task, but the executor
+    // drops that task's future, and the receiver it holds, only when it
+    // next runs the canceled task.
+    wait(
+        cx,
+        "detached pending worker to release its receiver",
+        |_| {
+            let closed = pending_wake.is_closed();
+            Ok((closed, format!("receiver_closed={closed}")))
+        },
+    )
+    .await?;
     eprintln!("REFRESH_SMOKE pending_work_cancellation passed");
     eprintln!("REFRESH_SMOKE stale_callback_after_detach passed");
     Ok(())
