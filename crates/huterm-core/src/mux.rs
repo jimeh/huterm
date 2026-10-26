@@ -552,7 +552,8 @@ impl Mux {
     ) -> Result<OpenedPane, MuxError> {
         self.select_workspace_pane(workspace, tab, pane)?;
         // Refuse before allocating: allocation advances the close revision,
-        // and a refused split must leave pending close tickets valid.
+        // so a refused split leaves pending close tickets valid. A spawn that
+        // fails after allocation still advances it, as `open_tab` does.
         self.tab_record(workspace, tab)?
             .layout
             .check_split(pane, direction)

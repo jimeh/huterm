@@ -721,9 +721,9 @@ fn contains_pane(node: &SplitNode, target: PaneId) -> bool {
     })
 }
 
-/// Removes `target` somewhere under `node`, normalizing the children it
-/// touched; returns whether it was found. `node` itself may be left with
-/// one child, which its parent replaces.
+/// Removes `target` somewhere under `node` and normalizes the split it
+/// shrank; returns whether it was found. `node` itself may be left with one
+/// child, which its parent replaces, keeping that child's identity.
 fn remove_within(node: &mut SplitNode, target: PaneId) -> bool {
     if let Some(index) = node.children.iter().position(
         |child| matches!(&child.node, PaneNode::Pane(leaf) if leaf.id == target),
@@ -732,9 +732,11 @@ fn remove_within(node: &mut SplitNode, target: PaneId) -> bool {
         let heir = index.saturating_sub(1);
         node.children[heir].weight += removed.weight;
         // A same-axis child kept because flattening it would have passed
-        // the child limit may fit now that `node` holds one fewer child.
+        // the child limit may fit now that `node` holds one fewer child. A
+        // lone survivor is left for the parent to collapse instead, so it
+        // keeps its identity.
         let mut index = 0;
-        while index < node.children.len() {
+        while node.children.len() > 1 && index < node.children.len() {
             let before = node.children.len();
             normalize_child(node, index);
             index += 1 + (node.children.len() - before);

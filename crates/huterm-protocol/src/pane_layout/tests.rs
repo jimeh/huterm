@@ -390,6 +390,28 @@ fn a_flatten_past_the_child_limit_keeps_the_nested_split() {
 }
 
 #[test]
+fn a_kept_split_left_alone_replaces_its_parent_and_keeps_its_identity() {
+    let PaneNode::Split(full) = full_columns().root().clone() else {
+        unreachable!()
+    };
+    // Columns[pane 900, Columns[256 panes]]: the inner split is kept
+    // because flattening it would pass the limit.
+    let nested = layout(split(
+        20,
+        SplitAxis::Columns,
+        vec![(HALF, leaf(900)), (HALF, PaneNode::Split(full))],
+    ));
+    let survivor = nested.without_pane(pane_id(900)).unwrap();
+    assert_eq!(survivor.split_ids(), [split_id(10)]);
+    assert_eq!(survivor.pane_count(), MAX_SPLIT_CHILDREN);
+    let PaneNode::Split(root) = survivor.root() else {
+        unreachable!()
+    };
+    // Its weights are its own, not rescaled into the removed parent.
+    assert_eq!(root.children[0].weight, 3906);
+}
+
+#[test]
 fn weights_change_only_for_the_expected_children_and_valid_sums() {
     let pair = left_and_stack();
     let children = [NodeId::Pane(pane_id(1)), NodeId::Split(split_id(11))];
