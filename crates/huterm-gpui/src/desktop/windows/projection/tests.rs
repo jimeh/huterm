@@ -1,5 +1,5 @@
 use super::*;
-use crate::desktop::windows::model::{TabEntry, WindowLayout};
+use crate::desktop::windows::model::{PaneTitle, TabEntry, WindowLayout};
 use gpui::{Bounds, WindowBounds, point, px, size};
 use huterm_core::Mux;
 use huterm_protocol::{
@@ -212,6 +212,29 @@ impl ReconcileTarget for Target<'_> {
         &mut self.window.pending
     }
 
+    fn installed_panes(&self, tab: TabId) -> Vec<(PaneId, u64)> {
+        // Fake views show every projected pane, so only tab-level
+        // reconcile runs here; pane steps have their own tests.
+        let committed = self
+            .window
+            .views
+            .iter()
+            .find(|view| view.tab == tab)
+            .map_or(0, |view| view.committed);
+        self.state
+            .tab(tab)
+            .map(|info| {
+                info.layout
+                    .panes()
+                    .into_iter()
+                    .map(|pane| (pane.id, committed))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn drop_panes(&mut self, _tab: TabId, _panes: &[PaneId]) {}
+
     fn install(&mut self, tabs: &[TabId]) {
         self.window.started.push(tabs.to_vec());
     }
@@ -290,7 +313,10 @@ fn push(
         fake.id,
         TabEntry {
             id: tab(value),
-            terminal: TerminalId::new(value),
+            panes: vec![PaneTitle {
+                terminal: TerminalId::new(value),
+                title: format!("title {value}"),
+            }],
             title: format!("title {value}"),
         },
     );
@@ -833,7 +859,10 @@ fn a_resync_snapshot_older_than_an_installed_view_drains_before_reconciling() {
         window(1),
         TabEntry {
             id: opened.tab.id,
-            terminal: opened.tab.first_pane().terminal_id,
+            panes: vec![PaneTitle {
+                terminal: opened.tab.first_pane().terminal_id,
+                title: "sh".into(),
+            }],
             title: "sh".into(),
         },
     );
@@ -998,7 +1027,10 @@ fn a_reset_drained_before_the_teardown_flag_is_seen_freezes_the_projection() {
         window(1),
         TabEntry {
             id: opened.tab.id,
-            terminal: opened.tab.first_pane().terminal_id,
+            panes: vec![PaneTitle {
+                terminal: opened.tab.first_pane().terminal_id,
+                title: "custom".into(),
+            }],
             title: "custom".into(),
         },
     );
@@ -1298,29 +1330,6 @@ fn a_revoked_view_whose_tab_stays_is_replaced_once_and_otherwise_removed() {
     reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
     assert_eq!(fake.started, Vec::<Vec<TabId>>::new());
     assert_eq!(fake.replaced.len(), 1);
-}
-
-#[test]
-fn a_finished_install_applies_only_while_its_tab_still_belongs_here() {
-    let mut feed = Feed::new();
-    for value in [1, 2, 3] {
-        feed.open(workspace(10), value);
-    }
-    feed.apply(HierarchyEvent::TabClosed { tab: tab(2) });
-    feed.move_tab(3, workspace(11), 0);
-    let applies = |installed: &[TabId], value| {
-        install_applies(
-            &feed.state,
-            Some(workspace(10)),
-            Some(session(1)),
-            installed,
-            tab(value),
-        )
-    };
-    assert!(applies(&[], 1));
-    assert!(!applies(&[tab(1)], 1), "the window already shows it");
-    assert!(!applies(&[], 2), "closed before the completion");
-    assert!(!applies(&[], 3), "moved to another workspace");
 }
 
 #[test]

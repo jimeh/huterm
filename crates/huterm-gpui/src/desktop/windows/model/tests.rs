@@ -18,7 +18,10 @@ fn layout(x: f32) -> WindowLayout {
 fn entry(tab: u64) -> TabEntry {
     TabEntry {
         id: TabId::new(tab),
-        terminal: TerminalId::new(tab),
+        panes: vec![PaneTitle {
+            terminal: TerminalId::new(tab),
+            title: format!("tab {tab}"),
+        }],
         title: format!("tab {tab}"),
     }
 }
@@ -258,7 +261,7 @@ fn title_scopes_cover_one_window_or_every_open_window() {
         model
             .tab_titles(scope)
             .into_iter()
-            .map(|entry| entry.terminal)
+            .map(|entry| entry.panes[0].terminal)
             .collect::<Vec<_>>()
     };
     assert_eq!(

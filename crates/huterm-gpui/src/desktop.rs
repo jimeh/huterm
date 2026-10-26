@@ -170,6 +170,11 @@ fn install_menus(cx: &mut App) {
             items: vec![
                 item(ids::NEW_WINDOW),
                 item(ids::NEW_TAB),
+                MenuItem::separator(),
+                item(ids::SPLIT_RIGHT),
+                item(ids::SPLIT_DOWN),
+                MenuItem::separator(),
+                item(ids::CLOSE_PANE),
                 item(ids::CLOSE_TAB),
                 item(ids::CLOSE_WINDOW),
             ],
@@ -210,6 +215,9 @@ fn install_menus(cx: &mut App) {
                 item(ids::SELECT_RECENT_TAB),
                 item(ids::SELECT_TAB),
                 item(ids::RENAME_TAB),
+                MenuItem::separator(),
+                item(ids::FOCUS_NEXT_PANE),
+                item(ids::FOCUS_PREVIOUS_PANE),
             ],
         },
     ]);
@@ -428,6 +436,9 @@ struct TerminalView {
     /// Where the view sits in its window; the workspace computes it from
     /// the window's chrome and pushes it.
     geometry: TerminalGeometry,
+    /// The view shows one pane of a split tab, so its cursor is drawn as an
+    /// outline while it lacks keyboard focus.
+    split: bool,
     tab_overlay: Option<Bounds<Pixels>>,
     theme: Theme,
     /// Failures waiting for the window's notice stack, oldest first. The
@@ -727,6 +738,7 @@ impl TerminalView {
             font_size: metrics.font_size,
             window_config: config.window,
             geometry: TerminalGeometry::default(),
+            split: false,
             tab_overlay: None,
             theme,
             failures: Vec::new(),
@@ -3070,6 +3082,9 @@ impl Render for TerminalView {
         if let Some(benchmark) = &mut self.scroll_benchmark {
             benchmark.display_scale = window.scale_factor();
         }
+        self.renderer
+            .borrow_mut()
+            .set_cursor_outline(self.split && !self.focus.is_focused(window));
         if self.renderer.borrow().requests_continuous_frames() {
             window.request_animation_frame();
         }

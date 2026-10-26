@@ -11,7 +11,7 @@ use crate::ui::scrollbar::ScrollbarColors;
 use super::super::scrollbar_colors;
 use super::{
     App, Bounds, CloseTarget, Context, FluentBuilder, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels,
+    IntoElement, MouseButton, MouseDownEvent, PaneId, ParentElement, Pixels,
     Presentation, StatefulInteractiveElement, Styled, TAB_HEIGHT, TabId,
     TabPosition, Theme, Window, WorkspaceView, color, div, px,
 };
@@ -420,6 +420,111 @@ impl WorkspaceView {
                     .group_hover("close-tab", |style| {
                         style.text_color(foreground)
                     }),
+            )
+    }
+}
+
+impl WorkspaceView {
+    /// One pane's title bar in a split tab: its status, its title, and a
+    /// close button. A press focuses the pane and never reaches the
+    /// terminal; the focused pane uses the active tab colours.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a title bar renders one pane's identity, place, and state"
+    )]
+    pub(super) fn pane_title_bar(
+        tab: TabId,
+        pane: PaneId,
+        bounds: Bounds<Pixels>,
+        title: String,
+        status: TabStatus,
+        focused: bool,
+        colors: TabColors,
+        cx: &mut Context<'_, Self>,
+    ) -> Stateful<Div> {
+        let foreground = colors.foreground;
+        div()
+            .id(("pane-title", pane.get()))
+            .group("pane-title")
+            .absolute()
+            .left(bounds.origin.x)
+            .top(bounds.origin.y)
+            .w(bounds.size.width)
+            .h(bounds.size.height)
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .pl(px(8.0))
+            .pr(px(3.0))
+            .overflow_hidden()
+            .bg(if focused { colors.active } else { colors.bar })
+            .border_b_1()
+            .border_color(colors.border)
+            .text_color(if focused {
+                colors.foreground
+            } else {
+                colors.inactive
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _: &MouseDownEvent, window, cx| {
+                    view.focus_pane(tab, pane, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .children(match status {
+                TabStatus::Exited | TabStatus::Failed => Some(
+                    icon_element(Icon::CircleAlert, colors.error)
+                        .into_any_element(),
+                ),
+                TabStatus::Bell => Some(
+                    icon_element(Icon::Bell, colors.accent).into_any_element(),
+                ),
+                TabStatus::Busy => Some(running_dot(colors).into_any_element()),
+                TabStatus::Idle => None,
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .line_clamp(1)
+                    .when(status == TabStatus::Exited, |title| {
+                        title.opacity(0.6)
+                    })
+                    .child(title),
+            )
+            .child(
+                div()
+                    .id(("close-pane", pane.get()))
+                    .group("close-pane")
+                    .flex_shrink_0()
+                    .w(CLOSE_SIZE)
+                    .h(CLOSE_SIZE)
+                    .rounded(px(4.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .hover(|style| style.bg(colors.control_hover))
+                    .active(|style| style.bg(colors.control_pressed))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        cx.stop_propagation();
+                        view.request_close(
+                            CloseTarget::Pane { tab, pane },
+                            window,
+                            cx,
+                        );
+                    }))
+                    .child(
+                        icon_element(Icon::X, colors.inactive)
+                            .group_hover("close-pane", |style| {
+                                style.text_color(foreground)
+                            }),
+                    ),
             )
     }
 }

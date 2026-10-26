@@ -82,7 +82,7 @@ fn read_state(cx: &mut App) -> String {
             let workspace = root.read(cx);
             writeln!(output, "tabs={}", workspace.tabs.len()).unwrap();
             for (index, tab) in workspace.tabs.iter().enumerate() {
-                let terminal = tab.view.read(cx);
+                let terminal = tab.focused_view().read(cx);
                 let cell = terminal.physical_cell_size();
                 let grid = terminal.requested_grid;
                 let displayed = terminal.displayed_grid_state();

@@ -136,8 +136,11 @@ fn the_window_menu_lists_the_plan_items_with_platform_shortcuts() {
             ("open_command_palette", Some("⇧⌘P".to_owned())),
             ("new_tab", Some("⌘T".to_owned())),
             ("new_window", Some("⌘N".to_owned())),
+            ("split_right", Some("⌘D".to_owned())),
+            ("split_down", Some("⇧⌘D".to_owned())),
             ("rename_tab", None),
-            ("close_tab", Some("⌘W".to_owned())),
+            ("close_pane", Some("⌘W".to_owned())),
+            ("close_tab", None),
             ("close_window", Some("⇧⌘W".to_owned())),
             ("toggle_fullscreen", Some("⌘↩".to_owned())),
             ("open_settings", Some("⌘,".to_owned())),
@@ -155,9 +158,9 @@ fn the_window_menu_lists_the_plan_items_with_platform_shortcuts() {
         })
         .collect();
     assert_eq!(labels[0], "Command Palette…");
-    assert_eq!(labels[3], "Rename Tab…");
-    assert_eq!(labels[9], "About Huterm");
-    assert_eq!(labels[10], "Quit Huterm");
+    assert_eq!(labels[5], "Rename Tab…");
+    assert_eq!(labels[12], "About Huterm");
+    assert_eq!(labels[13], "Quit Huterm");
     let separators = model
         .rows
         .iter()
@@ -176,11 +179,22 @@ fn the_window_menu_lists_the_plan_items_with_platform_shortcuts() {
         ("open_command_palette", Some("Ctrl+Shift+P".to_owned()))
     );
     assert_eq!(
+        linux_items[3],
+        ("split_right", Some("Ctrl+Shift+O".to_owned()))
+    );
+    assert_eq!(
         linux_items[6],
+        ("close_pane", Some("Ctrl+Shift+W".to_owned()))
+    );
+    assert_eq!(
+        linux_items[9],
         ("toggle_fullscreen", Some("F11".to_owned()))
     );
-    assert_eq!(linux_items[7], ("open_settings", Some("Ctrl+,".to_owned())));
-    assert_eq!(linux_items[10], ("quit", None), "Linux has no quit binding");
+    assert_eq!(
+        linux_items[10],
+        ("open_settings", Some("Ctrl+,".to_owned()))
+    );
+    assert_eq!(linux_items[13], ("quit", None), "Linux has no quit binding");
 }
 
 #[test]
@@ -275,5 +289,5 @@ fn user_bindings_replace_default_shortcut_text() {
         window_menu_model(&input, &keymap(Platform::MacOs, &user), &contexts());
     let shortcuts = items(&model);
     assert_eq!(shortcuts[1], ("new_tab", Some("⌃⌥T".to_owned())));
-    assert_eq!(shortcuts[5], ("close_window", None), "unbound shows none");
+    assert_eq!(shortcuts[8], ("close_window", None), "unbound shows none");
 }

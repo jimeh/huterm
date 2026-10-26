@@ -101,7 +101,7 @@ fn state(cx: &mut App) -> anyhow::Result<State> {
             .iter()
             .find(|tab| Some(tab.id) == active)
             .context("no active smoke tab")?;
-        let terminal = tab.view.read(cx);
+        let terminal = tab.focused_view().read(cx);
         let text =
             terminal
                 .snapshot
@@ -156,7 +156,7 @@ async fn wait_state(
 fn send(cx: &mut App, label: &str) -> anyhow::Result<()> {
     workspace(cx, |view, _, cx| {
         view.tabs[0]
-            .view
+            .focused_view()
             .read(cx)
             .viewer
             .send_input(TerminalInput::Text(format!("{label}\n")))
@@ -172,7 +172,7 @@ fn show(cx: &mut App) -> anyhow::Result<()> {
 
 fn scroll_to(cx: &mut App, offset: usize) -> anyhow::Result<()> {
     workspace(cx, |view, _, cx| {
-        view.tabs[0].view.update(cx, |terminal, cx| {
+        view.tabs[0].focused_view().update(cx, |terminal, cx| {
             terminal.scroll.set_desired(offset);
             terminal.start_snapshot_if_needed(cx);
         });
@@ -193,7 +193,7 @@ async fn pause(cx: &mut AsyncApp) -> anyhow::Result<()> {
 async fn check_pending_work(cx: &mut AsyncApp) -> anyhow::Result<()> {
     cx.update(|cx| {
         workspace(cx, |view, _, cx| {
-            view.tabs[0].view.update(cx, |terminal, _| {
+            view.tabs[0].focused_view().update(cx, |terminal, _| {
                 // Force the runtime-admission boundary busy once. The real
                 // pending worker must deliver this input without a redraw or
                 // another producer event to rescue it.
@@ -232,7 +232,7 @@ async fn check_pending_work(cx: &mut AsyncApp) -> anyhow::Result<()> {
         "queued input and controls progress without frames",
         |cx| {
             workspace(cx, |view, _, cx| {
-                let terminal = view.tabs[0].view.read(cx);
+                let terminal = view.tabs[0].focused_view().read(cx);
                 let done = terminal.title == "PENDING_WORK"
                     && !terminal.has_pending_work();
                 Ok((
@@ -285,7 +285,7 @@ async fn check_animations(cx: &mut AsyncApp) -> anyhow::Result<()> {
     let observed = Rc::clone(&samples);
     let _subscription = cx.update(|cx| {
         workspace(cx, |view, _, cx| {
-            view.tabs[0].view.update(cx, |_, cx| {
+            view.tabs[0].focused_view().update(cx, |_, cx| {
                 cx.observe_self(move |terminal, _| {
                     let opacity = terminal.resize_visibility.opacity;
                     let mut samples = observed.borrow_mut();
@@ -303,7 +303,7 @@ async fn check_animations(cx: &mut AsyncApp) -> anyhow::Result<()> {
     })?;
     cx.update(|cx| {
         workspace(cx, |view, _, cx| {
-            view.tabs[0].view.update(cx, |terminal, cx| {
+            view.tabs[0].focused_view().update(cx, |terminal, cx| {
                 terminal.resize_visibility =
                     super::IndicatorVisibility::with_hold(
                         Duration::from_millis(100),
@@ -316,14 +316,18 @@ async fn check_animations(cx: &mut AsyncApp) -> anyhow::Result<()> {
     })?;
     wait(cx, "indicator fades on delivered frames", |cx| {
         workspace(cx, |view, _, cx| {
-            let opacity = view.tabs[0].view.read(cx).resize_visibility.opacity;
+            let opacity = view.tabs[0]
+                .focused_view()
+                .read(cx)
+                .resize_visibility
+                .opacity;
             Ok((opacity > 0.0 && opacity < 1.0, format!("opacity={opacity}")))
         })?
     })
     .await?;
     wait(cx, "animations settle without recurring callbacks", |cx| {
         workspace(cx, |view, _, cx| {
-            let terminal = view.tabs[0].view.read(cx);
+            let terminal = view.tabs[0].focused_view().read(cx);
             let opacity = terminal.resize_visibility.opacity;
             let flash = terminal.bell.flash_until;
             let callbacks = view.frame_clock.pending_callbacks();
@@ -366,7 +370,7 @@ async fn check_render_resize(cx: &mut AsyncApp) -> anyhow::Result<()> {
     let (original, requests) = cx.update(|cx| {
         workspace(cx, |view, window, cx| {
             let original = window.viewport_size();
-            let requests = view.tabs[0].view.read(cx).resize_requests;
+            let requests = view.tabs[0].focused_view().read(cx).resize_requests;
             window.resize(gpui::size(
                 original.width + gpui::px(1.0),
                 original.height,
@@ -379,7 +383,7 @@ async fn check_render_resize(cx: &mut AsyncApp) -> anyhow::Result<()> {
         "one-pixel resize activates the indicator without resizing the grid",
         |cx| {
             workspace(cx, |view, window, cx| {
-                let terminal = view.tabs[0].view.read(cx);
+                let terminal = view.tabs[0].focused_view().read(cx);
                 ensure!(
                     terminal.resize_requests == requests,
                     "fixture crossed a grid boundary"
@@ -402,7 +406,7 @@ async fn check_render_resize(cx: &mut AsyncApp) -> anyhow::Result<()> {
         "render-time resize indicator expires without a terminal event",
         |cx| {
             workspace(cx, |view, _, cx| {
-                let terminal = view.tabs[0].view.read(cx);
+                let terminal = view.tabs[0].focused_view().read(cx);
                 ensure!(
                     terminal.resize_requests == requests,
                     "fixture resized the grid"
@@ -416,7 +420,11 @@ async fn check_render_resize(cx: &mut AsyncApp) -> anyhow::Result<()> {
     cx.update(|cx| workspace(cx, |_, window, _| window.resize(original)))?;
     wait(cx, "restored viewport and settled indicator", |cx| {
         workspace(cx, |view, window, cx| {
-            let opacity = view.tabs[0].view.read(cx).resize_visibility.opacity;
+            let opacity = view.tabs[0]
+                .focused_view()
+                .read(cx)
+                .resize_visibility
+                .opacity;
             Ok((
                 window.viewport_size() == original
                     && opacity <= f32::EPSILON
@@ -433,7 +441,7 @@ async fn check_render_resize(cx: &mut AsyncApp) -> anyhow::Result<()> {
 async fn check_paused_animation(cx: &mut AsyncApp) -> anyhow::Result<()> {
     cx.update(|cx| {
         workspace(cx, |view, _, cx| {
-            view.tabs[0].view.update(cx, |terminal, cx| {
+            view.tabs[0].focused_view().update(cx, |terminal, cx| {
                 terminal.bell.ring(Instant::now(), true, true);
                 cx.notify();
             });
@@ -441,7 +449,7 @@ async fn check_paused_animation(cx: &mut AsyncApp) -> anyhow::Result<()> {
     })?;
     wait(cx, "bell deadline expires without display frames", |cx| {
         workspace(cx, |view, _, cx| {
-            let flash = view.tabs[0].view.read(cx).bell.flash_until;
+            let flash = view.tabs[0].focused_view().read(cx).bell.flash_until;
             Ok((flash.is_none(), format!("flash={flash:?}")))
         })?
     })
@@ -602,7 +610,7 @@ async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
                     record.attachment.context("window attachment")?,
                     record.workspace.context("window workspace")?,
                     view.tabs[0].id,
-                    view.tabs[0].terminal,
+                    view.tabs[0].focused().terminal,
                     std::sync::Arc::clone(&desktop.runtime),
                 ))
             })
@@ -610,8 +618,8 @@ async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
     let (id, weak, pending_wake) = cx.update(|cx| {
         workspace(cx, |view, _, cx| {
             let tab = &view.tabs[0];
-            let pending_wake = tab.view.read(cx).pending_work.clone();
-            (tab.id, tab.view.downgrade(), pending_wake)
+            let pending_wake = tab.focused_view().read(cx).pending_work.clone();
+            (tab.id, tab.focused_view().downgrade(), pending_wake)
         })
     })?;
     // The UI thread never takes the Mux lock.

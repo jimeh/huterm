@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     Bounds, FontStyle, FontWeight, Hsla, LineLayout, Pixels, Point,
     StrikethroughStyle, TextRun, TextSystem, UnderlineStyle, Window, fill,
-    font, point, px, rgba, size,
+    font, outline, point, px, rgba, size,
 };
 use huterm_protocol::{
     BufferRange, Cell, CellColor, Cursor, CursorShape, Rgb, TerminalSnapshot,
@@ -115,6 +115,9 @@ pub(super) struct TerminalRenderer {
     font_family: String,
     theme: Theme,
     selection: Option<BufferRange>,
+    /// Draw a block cursor as an outline: the pane has no keyboard focus
+    /// in a split tab. Presentation only; no prepared row depends on it.
+    cursor_outline: bool,
     stats: Option<RendererStats>,
     scroll_benchmark: Option<ScrollBenchmarkStats>,
     last_prepare: PrepareOutcome,
@@ -174,6 +177,7 @@ impl TerminalRenderer {
             font_family,
             theme,
             selection: None,
+            cursor_outline: false,
             stats,
             scroll_benchmark,
             last_prepare: PrepareOutcome::default(),
@@ -263,6 +267,15 @@ impl TerminalRenderer {
 
     pub(super) fn set_selection(&mut self, selection: Option<BufferRange>) {
         self.selection = selection;
+    }
+
+    pub(super) fn set_cursor_outline(&mut self, outline: bool) {
+        self.cursor_outline = outline;
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) fn cursor_outline(&self) -> bool {
+        self.cursor_outline
     }
 
     pub(super) fn prepare(
@@ -402,13 +415,18 @@ impl TerminalRenderer {
             .cursor
             .filter(|cursor| cursor.shape != CursorShape::Hidden)
         {
-            window.paint_quad(fill(
-                cursor_bounds(bounds.origin, cursor, metrics),
-                cursor_fill(
-                    snapshot.cursor_color.unwrap_or(self.theme.cursor),
-                    cursor.shape,
-                ),
-            ));
+            let bounds = cursor_bounds(bounds.origin, cursor, metrics);
+            let color = snapshot.cursor_color.unwrap_or(self.theme.cursor);
+            if self.cursor_outline && cursor.shape == CursorShape::Block {
+                window.paint_quad(outline(
+                    bounds,
+                    rgb_color(color),
+                    gpui::BorderStyle::Solid,
+                ));
+            } else {
+                window
+                    .paint_quad(fill(bounds, cursor_fill(color, cursor.shape)));
+            }
         }
         self.record_paint(started);
     }

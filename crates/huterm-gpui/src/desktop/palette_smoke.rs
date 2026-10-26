@@ -855,7 +855,7 @@ fn read_state(cx: &mut App) -> String {
             let clipboard_writes: u64 = view
                 .tabs
                 .iter()
-                .map(|tab| tab.view.read(cx).clipboard_writes)
+                .map(|tab| tab.focused_view().read(cx).clipboard_writes)
                 .sum();
             writeln!(
                 output,

@@ -266,7 +266,7 @@ fn read_state(cx: &mut App) -> String {
             // Every retained view, shown or hidden, holds the geometry the
             // window's chrome gives it.
             let geometry = view.terminal_geometry(window);
-            let consistent = view.tabs.iter().all(|tab| tab.view.read(cx).geometry == geometry);
+            let consistent = view.tabs.iter().all(|tab| tab.views().all(|view| view.read(cx).geometry == geometry));
             writeln!(output, "w{index}.retained={consistent}").unwrap();
             if let Some(terminal) = view.active_view(cx) {
                 let terminal = terminal.read(cx);

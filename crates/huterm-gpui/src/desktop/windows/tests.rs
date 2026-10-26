@@ -510,14 +510,24 @@ fn hidden_and_every_overlay_frame_preserve_full_terminal_bounds() {
 #[test]
 fn exit_closes_wait_behind_busy_work_confirmation_and_queued_closes() {
     let window = gpui::WindowId::from(1);
-    let (first, second, queued) = (TabId::new(1), TabId::new(2), TabId::new(4));
+    let (first, second, queued) =
+        (PaneId::new(1), PaneId::new(2), TabId::new(4));
+    // Each exited pane is the only pane of the tab with its number.
+    let exit_close = |pane: PaneId| CloseTarget::Pane {
+        tab: TabId::new(pane.get()),
+        pane,
+    };
     let mut exits = ExitCloses::default();
     let mut close = CloseState::default();
     close.begin_check(CloseTarget::Tab(TabId::new(3)));
     exits.observe(first, true, true);
     exits.observe(second, true, true);
     let mut next = |close: &mut CloseState, busy| {
-        close.next_request(busy, |_| true, || exits.take(window, |_| true))
+        close.next_request(
+            busy,
+            |_| true,
+            || exits.take(window, |_| true).map(exit_close),
+        )
     };
     // Busy structural work leaves both exit-closes owed, independent of
     // the active tab.
@@ -526,7 +536,7 @@ fn exit_closes_wait_behind_busy_work_confirmation_and_queued_closes() {
     close.queue(CloseTarget::Tab(queued));
     assert_eq!(next(&mut close, false), Some(CloseTarget::Tab(queued)));
     let target = next(&mut close, false).unwrap();
-    assert_eq!(target, CloseTarget::Tab(first));
+    assert_eq!(target, exit_close(first));
     close.begin_check(target.clone());
     assert_eq!(
         close.checked(true),
@@ -1567,22 +1577,16 @@ fn tab_set_resolution_follows_window_order() {
 fn close_dialog_input_maps_busy_terminals_to_tabs() {
     use huterm_core::{JobProcess, JobState};
     let (first, second, third) = (TabId::new(1), TabId::new(2), TabId::new(3));
+    let title = |tab, terminal, title: &str| TabTitle {
+        tab,
+        terminal: TerminalId::new(terminal),
+        title: title.to_owned(),
+        pane: None,
+    };
     let titles = vec![
-        TabTitle {
-            tab: first,
-            terminal: TerminalId::new(10),
-            title: "build".to_owned(),
-        },
-        TabTitle {
-            tab: second,
-            terminal: TerminalId::new(20),
-            title: "shell".to_owned(),
-        },
-        TabTitle {
-            tab: third,
-            terminal: TerminalId::new(30),
-            title: "editor".to_owned(),
-        },
+        title(first, 10, "build"),
+        title(second, 20, "shell"),
+        title(third, 30, "editor"),
     ];
     let cargo = JobProcess {
         pid: 41,
@@ -1606,7 +1610,8 @@ fn close_dialog_input_maps_busy_terminals_to_tabs() {
         command_line: Some("cargo build".to_owned()),
     };
 
-    let single = close_dialog_input(&CloseTarget::Tab(first), jobs(), &titles);
+    let single =
+        close_dialog_input(&CloseTarget::Tab(first), jobs(), &titles, None);
     assert_eq!(
         single.target,
         CloseDialogTarget::Tab {
@@ -1632,6 +1637,7 @@ fn close_dialog_input_maps_busy_terminals_to_tabs() {
         &CloseTarget::Tabs(vec![first, second, third]),
         jobs(),
         &titles,
+        None,
     );
     assert_eq!(several.target, CloseDialogTarget::Tabs { count: 3 });
     assert_eq!(
@@ -1648,7 +1654,8 @@ fn close_dialog_input_maps_busy_terminals_to_tabs() {
         ]
     );
 
-    let window = close_dialog_input(&CloseTarget::Window, jobs(), &titles);
+    let window =
+        close_dialog_input(&CloseTarget::Window, jobs(), &titles, None);
     assert_eq!(window.target, CloseDialogTarget::Window);
     assert_eq!(window.groups, several.groups);
 
@@ -1658,6 +1665,7 @@ fn close_dialog_input_maps_busy_terminals_to_tabs() {
         &CloseTarget::Application,
         unviewed.iter().map(|(terminal, state)| (*terminal, state)),
         &titles,
+        None,
     );
     assert_eq!(quit.target, CloseDialogTarget::Application);
     assert_eq!(
@@ -1676,6 +1684,7 @@ fn a_one_tab_window_dialog_has_no_headings() {
         tab: TabId::new(1),
         terminal: TerminalId::new(10),
         title: "build".to_owned(),
+        pane: None,
     }];
     let cargo = JobProcess {
         pid: 41,
@@ -1688,7 +1697,7 @@ fn a_one_tab_window_dialog_has_no_headings() {
     };
     let running = JobState::Running(vec![cargo]);
     let jobs = [(TerminalId::new(10), &running)];
-    let window = close_dialog_input(&CloseTarget::Window, jobs, &titles);
+    let window = close_dialog_input(&CloseTarget::Window, jobs, &titles, None);
     assert_eq!(
         window
             .groups
@@ -1698,12 +1707,81 @@ fn a_one_tab_window_dialog_has_no_headings() {
         [&None],
         "the dialog covers one tab, so its rows need no heading"
     );
-    let quit = close_dialog_input(&CloseTarget::Application, jobs, &titles);
+    let quit =
+        close_dialog_input(&CloseTarget::Application, jobs, &titles, None);
     assert_eq!(
         quit.groups[0].tab_title.as_deref(),
         Some("build"),
         "Quit may cover other windows, so it keeps headings"
     );
+}
+
+#[test]
+fn a_split_tabs_dialog_heads_each_busy_pane_and_a_pane_close_needs_none() {
+    use huterm_core::{JobProcess, JobState};
+    let tab = TabId::new(1);
+    let pane = |terminal, title: &str| TabTitle {
+        tab,
+        terminal: TerminalId::new(terminal),
+        title: "build".to_owned(),
+        pane: Some(title.to_owned()),
+    };
+    let titles = [pane(10, "cargo"), pane(20, "vim")];
+    let process = |command: &str| JobProcess {
+        pid: 41,
+        group: 41,
+        group_started: None,
+        foreground: true,
+        identity: command.to_owned(),
+        command: command.to_owned(),
+        command_line: None,
+    };
+    let (cargo, vim) = (
+        JobState::Running(vec![process("cargo")]),
+        JobState::Running(vec![process("vim")]),
+    );
+    let jobs = [(TerminalId::new(10), &cargo), (TerminalId::new(20), &vim)];
+    let headings = |input: &CloseDialogInput| {
+        input
+            .groups
+            .iter()
+            .map(|group| group.tab_title.clone())
+            .collect::<Vec<_>>()
+    };
+    // One tab, but two busy panes: each needs its own heading.
+    let whole = close_dialog_input(&CloseTarget::Tab(tab), jobs, &titles, None);
+    assert_eq!(
+        whole.target,
+        CloseDialogTarget::Tab {
+            title: "build".to_owned()
+        }
+    );
+    assert_eq!(
+        headings(&whole),
+        [
+            Some("build › cargo".to_owned()),
+            Some("build › vim".to_owned())
+        ]
+    );
+    let window = close_dialog_input(&CloseTarget::Window, jobs, &titles, None);
+    assert_eq!(headings(&window), headings(&whole));
+    // A pane close names the pane and covers its one terminal.
+    let one = close_dialog_input(
+        &CloseTarget::Pane {
+            tab,
+            pane: PaneId::new(2),
+        },
+        [(TerminalId::new(20), &vim)],
+        &titles,
+        Some("vim"),
+    );
+    assert_eq!(
+        one.target,
+        CloseDialogTarget::Pane {
+            title: "vim".to_owned()
+        }
+    );
+    assert_eq!(headings(&one), [None]);
 }
 
 #[test]
@@ -2146,8 +2224,21 @@ fn native_tab_shortcuts_match_actions_and_are_reserved_from_terminal_input() {
         for (chord, command) in [
             (format!("{prefix}-n"), ids::NEW_WINDOW),
             (format!("{prefix}-t"), ids::NEW_TAB),
-            (format!("{prefix}-w"), ids::CLOSE_TAB),
+            (format!("{prefix}-w"), ids::CLOSE_PANE),
             ("ctrl-tab".into(), ids::NEXT_TAB),
+            (
+                if macos { "cmd-d" } else { "ctrl-shift-o" }.into(),
+                ids::SPLIT_RIGHT,
+            ),
+            (
+                if macos {
+                    "cmd-alt-left"
+                } else {
+                    "ctrl-alt-left"
+                }
+                .into(),
+                ids::FOCUS_PANE_LEFT,
+            ),
             ("ctrl-shift-tab".into(), ids::PREVIOUS_TAB),
             (
                 format!("{}-9", if macos { "cmd" } else { "alt" }),

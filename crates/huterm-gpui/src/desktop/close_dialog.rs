@@ -18,8 +18,16 @@ use crate::keymap::Platform;
 /// What the confirmation closes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CloseDialogTarget {
-    Tab { title: String },
-    Tabs { count: usize },
+    Tab {
+        title: String,
+    },
+    /// One pane of a split tab.
+    Pane {
+        title: String,
+    },
+    Tabs {
+        count: usize,
+    },
     Window,
     Application,
 }
@@ -128,6 +136,21 @@ fn dialog_copy(
                 ));
             }
             (format!("Close \"{title}\"?"), "Close Tab")
+        }
+        CloseDialogTarget::Pane { title } => {
+            if unknown_tabs > 0 {
+                sentences.push(
+                    "Huterm could not read this pane's process state, so it \
+                     may have running jobs."
+                        .to_owned(),
+                );
+            } else {
+                sentences.push(format!(
+                    "Closing this pane ends {}.",
+                    plural(processes, "running process", "running processes")
+                ));
+            }
+            (format!("Close pane \"{title}\"?"), "Close Pane")
         }
         CloseDialogTarget::Tabs { count } => {
             if busy >= *count {
@@ -246,7 +269,8 @@ pub(crate) fn build_close_dialog(input: &CloseDialogInput) -> CloseDialogModel {
     let (title, subtitle, primary_label) =
         dialog_copy(&input.target, busy, processes, unknown_tabs);
     let fallback_title = match &input.target {
-        CloseDialogTarget::Tab { title } => title.as_str(),
+        CloseDialogTarget::Tab { title }
+        | CloseDialogTarget::Pane { title } => title.as_str(),
         _ => "This tab",
     };
     CloseDialogModel {
