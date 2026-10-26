@@ -281,6 +281,26 @@ impl PaneLayout {
         }
     }
 
+    /// Whether inserting beside `target` toward `direction` forms a new
+    /// split, which needs a split identity: true when the target is the
+    /// root or its parent splits across that direction's axis.
+    ///
+    /// # Errors
+    /// Rejects an unknown target.
+    pub fn forms_split(
+        &self,
+        target: PaneId,
+        direction: SplitDirection,
+    ) -> Result<bool, LayoutError> {
+        match &self.root {
+            PaneNode::Pane(leaf) if leaf.id == target => Ok(true),
+            PaneNode::Pane(_) => Err(LayoutError::UnknownPane),
+            PaneNode::Split(node) => parent_axis(node, target)
+                .map(|axis| axis != direction.axis())
+                .ok_or(LayoutError::UnknownPane),
+        }
+    }
+
     /// Every split identity in traversal order.
     #[must_use]
     pub fn split_ids(&self) -> Vec<SplitId> {
@@ -786,6 +806,15 @@ fn check_within(
         }
     }
     Err(LayoutError::UnknownPane)
+}
+
+/// The axis of the split that directly holds `target` under `node`.
+fn parent_axis(node: &SplitNode, target: PaneId) -> Option<SplitAxis> {
+    node.children.iter().find_map(|child| match &child.node {
+        PaneNode::Pane(pane) if pane.id == target => Some(node.axis),
+        PaneNode::Pane(_) => None,
+        PaneNode::Split(nested) => parent_axis(nested, target),
+    })
 }
 
 fn collect_splits(node: &PaneNode, ids: &mut Vec<SplitId>) {

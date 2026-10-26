@@ -947,3 +947,47 @@ fn same_shape_ignores_split_identities_and_weights_only() {
     ));
     assert!(!base.same_shape(&turned));
 }
+
+#[test]
+fn an_insertion_forms_a_split_only_at_the_root_or_across_the_parent_axis() {
+    let lone = PaneLayout::single(info(1));
+    assert_eq!(
+        lone.forms_split(pane_id(1), SplitDirection::Right),
+        Ok(true)
+    );
+    let nested = left_and_stack();
+    // Pane 1's parent splits into columns; panes 2 and 3's into rows.
+    assert_eq!(
+        nested.forms_split(pane_id(1), SplitDirection::Left),
+        Ok(false)
+    );
+    assert_eq!(nested.forms_split(pane_id(1), SplitDirection::Up), Ok(true));
+    assert_eq!(
+        nested.forms_split(pane_id(3), SplitDirection::Down),
+        Ok(false)
+    );
+    assert_eq!(
+        nested.forms_split(pane_id(3), SplitDirection::Right),
+        Ok(true)
+    );
+    assert_eq!(
+        nested.forms_split(pane_id(9), SplitDirection::Right),
+        Err(LayoutError::UnknownPane)
+    );
+    // The answer matches whether the insertion used the offered identity.
+    for (pane, side) in [
+        (1, SplitDirection::Left),
+        (1, SplitDirection::Up),
+        (3, SplitDirection::Down),
+        (3, SplitDirection::Right),
+    ] {
+        let inserted = nested
+            .with_inserted(pane_id(pane), side, leaf(5), split_id(30))
+            .unwrap();
+        assert_eq!(
+            inserted.split_node(split_id(30)).is_some(),
+            nested.forms_split(pane_id(pane), side).unwrap(),
+            "{pane} {side:?}"
+        );
+    }
+}

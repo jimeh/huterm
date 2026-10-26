@@ -208,11 +208,10 @@ checks `next_id` before calling `allocate`, which advances the revision before
 it detects exhaustion, so a refused move leaves pending close tickets valid.
 Moves advance the revision; swaps, like resizes, do not. A tab whose last pane
 moves away is removed, unlike an emptied workspace or session.
-Moves retain empty workspaces and sessions and never change terminal
-lifetime. Desktop windows
-retain their attachment identity for assessed close. Orphaned spawn cleanup
-must preserve resources adopted by another attachment or moved elsewhere. Roll
-back newly created sessions on initial workspace/tab failure.
+Moves retain empty workspaces and sessions and never change terminal lifetime.
+Desktop windows retain their attachment identity for assessed close. Orphaned
+spawn cleanup must preserve resources adopted by another attachment or moved
+elsewhere. Roll back newly created sessions on initial workspace/tab failure.
 
 ## Attachments, close consent, and exit
 

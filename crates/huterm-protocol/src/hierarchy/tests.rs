@@ -978,24 +978,19 @@ fn rearrangements_that_break_conservation_or_structure_change_nothing() {
         vec![layout_change(99, lone(199))],
         // A tab with two layout changes.
         vec![layout_change(20, lone(120)), layout_change(20, lone(120))],
-        // A removed tab that also changes layout.
+        // A tab that changes layout and is removed; the panes balance, so
+        // only the one-role rule refuses it.
         vec![
+            layout_change(21, lone(121)),
             TabChange::Removed { tab: tab_id(21) },
             layout_change(20, two_panes(SplitAxis::Rows, [120, 121], HALF)),
-            layout_change(21, lone(121)),
         ],
-        // Opening a tab that exists.
-        vec![
-            TabChange::Removed { tab: tab_id(22) },
-            TabChange::Opened {
-                workspace: workspace_id(10),
-                tab: TabInfo {
-                    layout: lone(122),
-                    ..tab(21)
-                },
-                index: 0,
-            },
-        ],
+        // Opening a tab that exists, with its own panes.
+        vec![TabChange::Opened {
+            workspace: workspace_id(10),
+            tab: tab(21),
+            index: 0,
+        }],
         // Opening into an unknown workspace.
         vec![
             TabChange::Removed { tab: tab_id(22) },
@@ -1085,4 +1080,63 @@ fn rearrangements_follow_the_stale_and_gap_rules() {
         ApplyOutcome::ResyncRequired(ResyncReason::Gap)
     );
     assert_eq!(state, seeded(4));
+}
+
+#[test]
+fn placements_apply_in_order_with_each_index_final_at_its_step() {
+    let mut state = seeded(1);
+    // Workspace 10 holds [20, 21] and workspace 11 holds [22]. Tab 22 goes
+    // to the front of 10, then tab 20 moves to 11, where 22 has left; tab
+    // 21 then trades panes with 22 in the same event.
+    assert_eq!(
+        apply(
+            &mut state,
+            rearranged(vec![
+                TabChange::Placed {
+                    tab: tab_id(22),
+                    workspace: workspace_id(10),
+                    index: 0,
+                },
+                TabChange::Placed {
+                    tab: tab_id(20),
+                    workspace: workspace_id(11),
+                    index: 0,
+                },
+                layout_change(21, PaneLayout::single(pane(122))),
+                layout_change(22, PaneLayout::single(pane(121))),
+            ]),
+        ),
+        touched_layouts(false, &[10, 11], &[20, 21, 22], &[20, 21, 22])
+    );
+    assert_eq!(
+        state.workspace_tabs(workspace_id(10)).unwrap(),
+        [tab_id(22), tab_id(21)]
+    );
+    assert_eq!(
+        state.workspace_tabs(workspace_id(11)).unwrap(),
+        [tab_id(20)]
+    );
+    assert_eq!(state.pane_tab(pane_id(121)), Some(tab_id(22)));
+    assert_eq!(state.pane_tab(pane_id(122)), Some(tab_id(21)));
+    // An index valid only before an earlier step's removal is refused.
+    let before = state.clone();
+    assert_eq!(
+        apply(
+            &mut state,
+            rearranged(vec![
+                TabChange::Placed {
+                    tab: tab_id(20),
+                    workspace: workspace_id(10),
+                    index: 0,
+                },
+                TabChange::Placed {
+                    tab: tab_id(21),
+                    workspace: workspace_id(11),
+                    index: 1,
+                },
+            ]),
+        ),
+        ApplyOutcome::ResyncRequired(ResyncReason::Inconsistent)
+    );
+    assert_eq!(state, before);
 }

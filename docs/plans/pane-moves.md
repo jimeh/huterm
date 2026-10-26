@@ -1037,9 +1037,11 @@ Recorded with PR 1:
   values sorted by pane ID. Because each `PaneInfo` carries its terminal,
   the check also covers terminals, and no separate check for untouched
   tabs is needed.
-- A refused move that needs an identity checks for exhaustion before any
-  other change, including in shape-equal no-ops, so a fully exhausted
-  runtime refuses those no-ops with `IdExhausted` too.
+- A move asks `PaneLayout::forms_split` whether its insertion forms a new
+  split, and checks for a free identity only then. A move that joins an
+  existing split therefore works even with no identity left, and one that
+  needs a split is refused before any change, including a shape-equal
+  no-op that would need one.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-29]: https://github.com/jimeh/huterm/issues/29

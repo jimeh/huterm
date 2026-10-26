@@ -348,9 +348,156 @@ fn no_ops_and_refusals_change_nothing_and_swaps_keep_the_revision() {
         ),
         Err(MuxError::IdExhausted)
     ));
+    // So does a tab dropped below a pane of a column split.
+    assert!(matches!(
+        mux.move_tab_to_pane(
+            alpha,
+            lone.id,
+            Beside {
+                target: pane_ref(&mux, left),
+                side: SplitDirection::Down,
+            },
+        ),
+        Err(MuxError::IdExhausted)
+    ));
     unchanged(&mux, seq, revision, next);
     assert_eq!(*mux.tab(tab.id).unwrap(), layout);
     assert_eq!(*mux.tab(lone.id).unwrap(), lone);
+    // A move that joins an existing split needs no identity, so it still
+    // works.
+    mux.move_pane(
+        pane_ref(&mux, lone_pane),
+        beside(&mux, right, SplitDirection::Right),
+    )
+    .unwrap();
+    assert_eq!(mux.tab(tab.id).unwrap().layout().pane_count(), 3);
+    assert_eq!(mux.next_id, next);
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn moves_keep_unrelated_zoom_and_clear_zoom_they_disturb() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let alpha = mux.create_workspace(session, None).unwrap();
+    let idle = command("read value");
+    let split = |mux: &mut Mux, tab: TabId, pane: PaneId| {
+        mux.split_pane(alpha, tab, pane, SplitDirection::Right, &idle)
+            .unwrap()
+            .pane
+            .id
+    };
+    // Tab one: [pa | pb | pc]; tab two: [pd | pe].
+    let one = mux.open_tab(alpha, &idle).unwrap().tab.id;
+    let pa = mux.tab(one).unwrap().first_pane().id;
+    let pb = split(&mut mux, one, pa);
+    let pc = split(&mut mux, one, pb);
+    let two = mux.open_tab(alpha, &idle).unwrap().tab.id;
+    let pd = mux.tab(two).unwrap().first_pane().id;
+    let pe = split(&mut mux, two, pd);
+    let zoom = |mux: &Mux, tab: TabId| mux.tab(tab).unwrap().zoomed();
+
+    // A swap keeps the zoom on its pane.
+    mux.set_pane_zoom(alpha, one, Some(pa)).unwrap();
+    mux.swap_panes(alpha, one, pa, pb).unwrap();
+    assert_eq!(zoom(&mux, one), Some(pa));
+    // Pane pc leaves: tab one keeps its unrelated zoom, and tab two, which
+    // takes pc, loses its own.
+    mux.set_pane_zoom(alpha, two, Some(pd)).unwrap();
+    mux.move_pane(pane_ref(&mux, pc), beside(&mux, pe, SplitDirection::Right))
+        .unwrap();
+    assert_eq!(zoom(&mux, one), Some(pa));
+    assert_eq!(zoom(&mux, two), None);
+    // An extraction that leaves two panes keeps an unrelated zoom.
+    mux.set_pane_zoom(alpha, two, Some(pd)).unwrap();
+    mux.move_pane(
+        pane_ref(&mux, pe),
+        MoveDestination::NewTab {
+            workspace: alpha,
+            before: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(zoom(&mux, two), Some(pd));
+    // The zoomed pane leaving clears its tab's zoom, and so does pa tab
+    // left with one pane.
+    mux.move_pane(pane_ref(&mux, pd), beside(&mux, pa, SplitDirection::Left))
+        .unwrap();
+    assert_eq!(zoom(&mux, two), None);
+    mux.move_pane(pane_ref(&mux, pb), beside(&mux, pc, SplitDirection::Right))
+        .unwrap();
+    assert_eq!(mux.tab(one).unwrap().layout().pane_count(), 2);
+    mux.set_pane_zoom(alpha, two, Some(pb)).unwrap();
+    mux.move_pane(pane_ref(&mux, pc), beside(&mux, pa, SplitDirection::Right))
+        .unwrap();
+    assert_eq!(mux.tab(two).unwrap().layout().pane_count(), 1);
+    assert_eq!(zoom(&mux, two), None);
+    // A move within pa tab clears its zoom, as pa split does.
+    mux.set_pane_zoom(alpha, one, Some(pa)).unwrap();
+    mux.move_pane(pane_ref(&mux, pd), beside(&mux, pc, SplitDirection::Right))
+        .unwrap();
+    assert_eq!(zoom(&mux, one), None);
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn cross_session_moves_revoke_only_the_moved_terminals_viewers() {
+    let mut mux = Mux::default();
+    let first = mux.create_session(None).unwrap();
+    let alpha = mux.create_workspace(first, None).unwrap();
+    let second = mux.create_session(None).unwrap();
+    let beta = mux.create_workspace(second, None).unwrap();
+    let idle = command("read value");
+    let one = mux.open_tab(alpha, &idle).unwrap().tab;
+    let p = one.first_pane().clone();
+    let q = mux
+        .split_pane(alpha, one.id, p.id, SplitDirection::Right, &idle)
+        .unwrap()
+        .pane;
+    let lone = mux.open_tab(alpha, &idle).unwrap().tab;
+    let s = lone.first_pane().clone();
+    let other = mux.open_tab(beta, &idle).unwrap().tab;
+    let r = other.first_pane().clone();
+    let watch = |mux: &Mux, pane: &PaneInfo| {
+        TestClient::new(&mux.terminals[&pane.terminal_id])
+    };
+    let (wp, wq, wr, ws) = (
+        watch(&mux, &p),
+        watch(&mux, &q),
+        watch(&mux, &r),
+        watch(&mux, &s),
+    );
+    // A pane moved beside a pane of another session.
+    mux.move_pane(
+        pane_ref(&mux, p.id),
+        beside(&mux, r.id, SplitDirection::Down),
+    )
+    .unwrap();
+    assert!(wp.poll().revoked);
+    assert!(!wq.poll().revoked && !wr.poll().revoked && !ws.poll().revoked);
+    // A lone pane's tab placed in another session's workspace.
+    mux.move_pane(
+        pane_ref(&mux, s.id),
+        MoveDestination::NewTab {
+            workspace: beta,
+            before: None,
+        },
+    )
+    .unwrap();
+    assert!(ws.poll().revoked);
+    assert!(!wq.poll().revoked && !wr.poll().revoked);
+    // A whole tab dropped into another session's tab.
+    mux.move_tab_to_pane(
+        alpha,
+        one.id,
+        Beside {
+            target: pane_ref(&mux, r.id),
+            side: SplitDirection::Right,
+        },
+    )
+    .unwrap();
+    assert!(wq.poll().revoked);
+    assert!(!wr.poll().revoked);
     mux.shutdown().unwrap();
 }
 

@@ -389,9 +389,10 @@ impl Mux {
     }
 
     /// `layout` with `node` inserted beside `target`, and whether that
-    /// needed a new split identity. The transform runs with the identity
-    /// the next allocation returns, so a caller that commits allocates it
-    /// and the layout is already correct.
+    /// needed a new split identity. A new split takes the identity the next
+    /// allocation returns, so a caller that commits allocates it and the
+    /// layout is already correct. An insertion that forms no split never
+    /// reads the identity, so it works even with none left.
     fn insert_into(
         &self,
         layout: &PaneLayout,
@@ -399,12 +400,18 @@ impl Mux {
         side: SplitDirection,
         node: PaneNode,
     ) -> Result<(PaneLayout, bool), MuxError> {
-        let next = self.next_id.checked_add(1).ok_or(MuxError::IdExhausted)?;
+        let allocates = layout
+            .forms_split(target, side)
+            .map_err(|error| layout_error(error, target))?;
+        let next = if allocates {
+            self.next_id.checked_add(1).ok_or(MuxError::IdExhausted)?
+        } else {
+            self.next_id
+        };
         let split = SplitId::in_runtime(self.runtime_id, next);
         let layout = layout
             .with_inserted(target, side, node, split)
             .map_err(|error| layout_error(error, target))?;
-        let allocates = layout.split_ids().contains(&split);
         Ok((layout, allocates))
     }
 
