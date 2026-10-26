@@ -1170,9 +1170,14 @@ fn a_closing_tab_keeps_its_custom_name_until_its_view_is_dropped() {
 
 #[test]
 fn removing_an_idle_windows_active_tab_activates_its_replacement() {
-    assert_eq!(reactivation(Some(tab(2)), Some(tab(1))), Some(tab(1)));
-    assert_eq!(reactivation(Some(tab(1)), Some(tab(1))), None);
-    assert_eq!(reactivation(Some(tab(1)), None), None);
+    let pane = |value| PaneId::in_runtime(RUNTIME, value);
+    let active =
+        |tab_value, pane_value| Some((tab(tab_value), pane(pane_value)));
+    assert_eq!(reactivation(active(2, 20), active(1, 10)), Some(tab(1)));
+    assert_eq!(reactivation(active(1, 10), active(1, 10)), None);
+    assert_eq!(reactivation(active(1, 10), None), None);
+    // Losing the focused pane reactivates the same tab, to focus the next.
+    assert_eq!(reactivation(active(1, 10), active(1, 11)), Some(tab(1)));
 
     let mut feed = Feed::new();
     let mut model = WindowModel::default();
@@ -1181,12 +1186,18 @@ fn removing_an_idle_windows_active_tab_activates_its_replacement() {
         let seq = feed.open(workspace(10), value);
         push(&mut fake, &mut model, &feed.state, value, seq);
     }
-    let before = model.record(fake.id).unwrap().active;
-    assert_eq!(before, Some(tab(2)));
+    // The fake focuses each tab's first pane.
+    let id = fake.id;
+    let active = |model: &WindowModel, state: &HierarchyState| {
+        let tab = model.record(id).unwrap().active?;
+        Some((tab, state.tab(tab)?.layout.first_pane().id))
+    };
+    let before = active(&model, &feed.state);
+    assert_eq!(before.map(|(tab, _)| tab), Some(tab(2)));
     // Another client closes the active tab; this window is idle.
     feed.apply(HierarchyEvent::TabClosed { tab: tab(2) });
     reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
-    let after = model.record(fake.id).unwrap().active;
+    let after = active(&model, &feed.state);
     assert_eq!(reactivation(before, after), Some(tab(1)));
 }
 

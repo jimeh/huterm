@@ -591,14 +591,15 @@ pub(super) fn missing_panes(
     })
 }
 
-/// The tab a window must activate after reconcile: its new active tab when
-/// a removal moved the active tab. The model moved it, but the view still
-/// has to show, snapshot, and focus it.
+/// The tab a window must activate after reconcile: its active tab when a
+/// removal moved the active tab or that tab's focused pane, given each as
+/// the active tab and its focused pane. The model or the tab view moved it,
+/// but the view still has to show, snapshot, and focus it.
 pub(super) fn reactivation(
-    before: Option<TabId>,
-    after: Option<TabId>,
+    before: Option<(TabId, PaneId)>,
+    after: Option<(TabId, PaneId)>,
 ) -> Option<TabId> {
-    after.filter(|_| after != before)
+    after.filter(|_| after != before).map(|(tab, _)| tab)
 }
 
 /// What reconciling one window changed.

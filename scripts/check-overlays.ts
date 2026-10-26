@@ -183,7 +183,7 @@ while IFS= read -r line; do
     fill) i=0; while [ "$i" -lt 300 ]; do echo "line $i"; i=$((i+1)); done; printf 'FILLED\\n';;
     link) printf '\\033[2J\\033[Hhttps://example.test/huterm\\nLINKED\\n';;
     ack*) printf 'ACK:%s\\n' "$line";;
-    mouse) printf '\\033[?1000h\\033[?1006hMOUSE-ON\\n'; stty raw -echo
+    mouse) stty raw -echo; printf '\\033[?1000h\\033[?1006hMOUSE-ON\\r\\n'
       report=$(dd bs=1 count=18 2>/dev/null); stty sane
       printf '\\033[?1000l\\033[?1006lMOUSE:%s\\n' "$(printf %s "$report" | tr -d '\\033')";;
     exit) exit 0;;

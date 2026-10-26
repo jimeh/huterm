@@ -1430,9 +1430,9 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     let mut retitled = HashSet::new();
     let mut activate = Vec::new();
     update_windows(cx, &windows, |view, cx| {
-        let before = view.active_tab(cx);
+        let before = view.active_pane(cx);
         let change = view.reconcile(touched, terminating, cx);
-        if let Some(tab) = reactivation(before, view.active_tab(cx)) {
+        if let Some(tab) = reactivation(before, view.active_pane(cx)) {
             activate.push((view.window, tab));
         }
         if change.titles {
@@ -1450,8 +1450,9 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     refresh_title_consumers(cx, true, &retitled);
 }
 
-/// Shows the tabs reconcile made active by removing the active tab, as
-/// `reconcile_own` does for a window's own completion, and focuses them
+/// Shows the tabs reconcile made active by removing the active tab or its
+/// focused pane, as `reconcile_own` does for a window's own completion, and
+/// focuses them
 /// unless an overlay holds the window's focus. A window whose active tab
 /// changed again meanwhile is left alone.
 fn activate_reconciled_tabs(cx: &mut App, tabs: &[(gpui::WindowId, TabId)]) {
@@ -3167,6 +3168,15 @@ impl CloseTarget {
         }
     }
 
+    /// Whether this target closes `pane` of `tab` by naming it or its tab.
+    /// A window close may only detach, so it never counts.
+    fn names_pane(&self, tab: TabId, pane: PaneId) -> bool {
+        match self {
+            Self::Pane { pane: closed, .. } => *closed == pane,
+            target => target.tabs().is_some_and(|tabs| tabs.contains(&tab)),
+        }
+    }
+
     /// Whether committing this target also closes everything `other`
     /// would.
     fn covers(&self, other: &Self) -> bool {
@@ -3241,7 +3251,7 @@ fn exit_commit_outcome(
         CommitOutcome::Retry
     } else if result.is_err() {
         CommitOutcome::Failed
-    } else if target.covers(&CloseTarget::Pane { tab, pane }) {
+    } else if target.names_pane(tab, pane) {
         CommitOutcome::Closed
     } else {
         CommitOutcome::NotReached
@@ -3636,14 +3646,12 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let active = self.active_tab(cx);
+        let active = self.active_pane(cx);
         let change = self.reconcile(&Touched::default(), terminating(cx), cx);
         if !change.changed {
             return;
         }
-        if let Some(next) = self.active_tab(cx)
-            && Some(next) != active
-        {
+        if let Some(next) = reactivation(active, self.active_pane(cx)) {
             self.measure_tab_widths(window, cx);
             self.select(next, window, cx);
         }
@@ -3812,9 +3820,17 @@ impl WorkspaceView {
         let split = rects.as_ref().is_some_and(|rects| rects.panes.len() > 1);
         let mut elements = Vec::new();
         for pane in &tab.panes {
-            // A view the layout does not hold, such as one still closing,
-            // keeps the whole bounds; it stays below the laid-out panes.
-            let rect = rects.as_ref().and_then(|rects| rects.pane(pane.pane));
+            // A view the layout no longer holds, such as one still closing,
+            // is not drawn. A tab the projection no longer holds shows only
+            // its focused pane, across the whole bounds.
+            let rect = match &rects {
+                Some(rects) => match rects.pane(pane.pane) {
+                    Some(rect) => Some(rect),
+                    None => continue,
+                },
+                None if pane.pane == focused => None,
+                None => continue,
+            };
             let terminal = rect.map_or(bounds, |rect| rect.terminal);
             let id = pane.pane;
             elements.push(
@@ -4265,8 +4281,9 @@ impl WorkspaceView {
     /// Each of `tab`'s pane views' geometry, in `tab.panes` order: its
     /// terminal rectangle inside the window's terminal bounds. A pane at
     /// the bounds' top right keeps the window's scrollbar track margins,
-    /// which avoid the chrome corner there. A view the layout does not
-    /// hold, such as one still closing, keeps the whole bounds.
+    /// which avoid the chrome corner there. A view the layout no longer
+    /// holds, such as one still closing, keeps the geometry it has, and so
+    /// does every view of a tab the projection no longer holds.
     fn pane_geometries(
         tab: &TabView,
         base: TerminalGeometry,
@@ -4283,7 +4300,7 @@ impl WorkspaceView {
                 let Some(rect) =
                     rects.as_ref().and_then(|rects| rects.pane(pane.pane))
                 else {
-                    return base;
+                    return pane.view.read(cx).geometry;
                 };
                 let corner = rect.terminal.origin.y == bounds.origin.y
                     && rect.terminal.right() == bounds.right();
@@ -4918,6 +4935,12 @@ impl WorkspaceView {
     fn active_view(&self, cx: &App) -> Option<Entity<TerminalView>> {
         self.active_tab_view(cx)
             .map(|tab| tab.focused_view().clone())
+    }
+
+    /// The active tab and the pane this window focuses in it.
+    fn active_pane(&self, cx: &App) -> Option<(TabId, PaneId)> {
+        self.active_tab_view(cx)
+            .map(|tab| (tab.id, tab.focused().pane))
     }
 
     fn active_tab_view(&self, cx: &App) -> Option<&TabView> {
@@ -6739,11 +6762,12 @@ impl WorkspaceView {
             .assessment
             .iter()
             .flat_map(CloseAssessment::terminal_jobs);
+        // A lone pane's close reads as its tab's, as before splits existed.
         let pane_title = match target {
             CloseTarget::Pane { tab, pane } => self
                 .tabs
                 .iter()
-                .find(|view| view.id == *tab)
+                .find(|view| view.id == *tab && view.panes.len() > 1)
                 .and_then(|view| {
                     let pane = view.pane(*pane)?;
                     Some(pane.label(
@@ -6807,7 +6831,9 @@ fn tab_close_availability(
 /// Maps assessed job evidence onto the dialog's busy groups. `titles` lists
 /// the tabs the dialog may cover, in window order; idle terminals are
 /// omitted, and headings are set when the dialog covers more than one tab:
-/// a tab set, the application, or a window with more than one tab.
+/// a tab set, the application, or a window with more than one tab. A pane
+/// close with no `pane_title`, the close of a tab's only pane, reads as the
+/// tab's close.
 fn close_dialog_input<'a>(
     target: &CloseTarget,
     jobs: impl IntoIterator<Item = (TerminalId, &'a huterm_core::JobState)>,
@@ -6822,8 +6848,17 @@ fn close_dialog_input<'a>(
                 .map(|entry| entry.title.clone())
                 .unwrap_or_default(),
         },
-        CloseTarget::Pane { .. } => CloseDialogTarget::Pane {
-            title: pane_title.unwrap_or_default().to_owned(),
+        CloseTarget::Pane { tab, .. } => match pane_title {
+            Some(title) => CloseDialogTarget::Pane {
+                title: title.to_owned(),
+            },
+            None => CloseDialogTarget::Tab {
+                title: titles
+                    .iter()
+                    .find(|entry| entry.tab == *tab)
+                    .map(|entry| entry.title.clone())
+                    .unwrap_or_default(),
+            },
         },
         CloseTarget::Tabs(ids) => CloseDialogTarget::Tabs { count: ids.len() },
         CloseTarget::Window | CloseTarget::Emptied => CloseDialogTarget::Window,
@@ -6832,7 +6867,8 @@ fn close_dialog_input<'a>(
     // A split tab's jobs show under their panes' headings, so two busy
     // panes stay distinguishable.
     let headings = match (&dialog_target, target) {
-        (CloseDialogTarget::Pane { .. }, _) => false,
+        (CloseDialogTarget::Pane { .. }, _)
+        | (CloseDialogTarget::Tab { .. }, CloseTarget::Pane { .. }) => false,
         (CloseDialogTarget::Tab { .. }, CloseTarget::Tab(id)) => titles
             .iter()
             .any(|entry| entry.tab == *id && entry.pane.is_some()),
@@ -7800,22 +7836,35 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Whether the window no longer shows any tab or pane `target` names;
+    /// window-wide targets always apply.
+    fn shows_none_of(&self, target: &CloseTarget) -> bool {
+        match target {
+            CloseTarget::Pane { tab, pane } => !self
+                .tabs
+                .iter()
+                .any(|view| view.id == *tab && view.pane(*pane).is_some()),
+            target => target.tabs().is_some_and(|tabs| {
+                !tabs
+                    .iter()
+                    .any(|tab| self.tabs.iter().any(|v| v.id == *tab))
+            }),
+        }
+    }
+
     fn resume_close(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        let showing =
-            |tab: &TabId| self.tabs.iter().any(|view| view.id == *tab);
         if self
             .close
             .confirmation
             .as_ref()
-            .and_then(CloseTarget::tabs)
-            .is_some_and(|tabs| !tabs.iter().any(showing))
+            .is_some_and(|target| self.shows_none_of(target))
         {
-            // Every tab it asks about left the window, so its commit could
-            // only go stale. Queued closes stay queued and run below.
+            // Every tab or pane it asks about left the window, so its commit
+            // could only go stale. Queued closes stay queued and run below.
             self.close.dismiss_confirmation();
             self.release_exit_close_if_idle(cx);
             self.restore_tab_focus(window, cx);
@@ -9743,7 +9792,7 @@ fn modal_layer(overlay: gpui::Div, layout: &ChromeLayout) -> gpui::Div {
         .child(overlay.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS))
 }
 
-/// The `menu_*` commands act on the open menu instead of replacing it.
+/// The split, close, and focus commands for panes.
 fn is_pane_command(command: huterm_protocol::CommandId) -> bool {
     matches!(
         command,
@@ -9761,6 +9810,7 @@ fn is_pane_command(command: huterm_protocol::CommandId) -> bool {
     )
 }
 
+/// The `menu_*` commands act on the open menu instead of replacing it.
 fn is_menu_command(command: huterm_protocol::CommandId) -> bool {
     matches!(
         command,
@@ -10634,14 +10684,6 @@ impl WorkspaceView {
         )
     }
 
-    /// Smoke output for the transient UI, each field named after `prefix`:
-    /// the menu (open, focused, selected item, targeted tab index), the
-    /// About panel, the close confirmation (showing, focused button,
-    /// Debug-quoted title), notice focus, the Debug-quoted native window
-    /// title, the painted menu button and window-controls bounds in logical
-    /// points, the window scale, the sampled frame (granted client decorations, applied inset,
-    /// maximized, observed fullscreen mode), and the content bounds inside
-    /// the frame. Quoted values may contain spaces.
     /// The active tab's panes for smoke fixtures, as `<prefix>` fields:
     /// `panes` counts them and `pane_focus` is the focused pane's index.
     /// In layout order and `;`-separated, `pane_grids` holds each pane's
@@ -10706,6 +10748,14 @@ impl WorkspaceView {
         )
     }
 
+    /// Smoke output for the transient UI, each field named after `prefix`:
+    /// the menu (open, focused, selected item, targeted tab index), the
+    /// About panel, the close confirmation (showing, focused button,
+    /// Debug-quoted title), notice focus, the Debug-quoted native window
+    /// title, the painted menu button and window-controls bounds in logical
+    /// points, the window scale, the sampled frame (granted client decorations, applied inset,
+    /// maximized, observed fullscreen mode), and the content bounds inside
+    /// the frame. Quoted values may contain spaces.
     pub(super) fn ui_smoke_state(
         &self,
         prefix: &str,

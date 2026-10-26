@@ -1717,6 +1717,34 @@ fn a_one_tab_window_dialog_has_no_headings() {
 }
 
 #[test]
+fn an_exit_close_counts_as_closed_only_under_a_target_naming_its_pane() {
+    let (tab, pane, other) = (TabId::new(1), PaneId::new(2), PaneId::new(3));
+    let outcome =
+        |target: CloseTarget| exit_commit_outcome(&Ok(()), &target, tab, pane);
+    assert_eq!(
+        outcome(CloseTarget::Pane { tab, pane }),
+        CommitOutcome::Closed
+    );
+    assert_eq!(outcome(CloseTarget::Tab(tab)), CommitOutcome::Closed);
+    assert_eq!(outcome(CloseTarget::Tabs(vec![tab])), CommitOutcome::Closed);
+    assert_eq!(
+        outcome(CloseTarget::Pane { tab, pane: other }),
+        CommitOutcome::NotReached
+    );
+    // A window close may only detach a shared session, leaving the pane.
+    assert_eq!(outcome(CloseTarget::Window), CommitOutcome::NotReached);
+    assert_eq!(
+        exit_commit_outcome(
+            &Err(MuxError::StaleClose),
+            &CloseTarget::Pane { tab, pane },
+            tab,
+            pane
+        ),
+        CommitOutcome::Retry
+    );
+}
+
+#[test]
 fn a_split_tabs_dialog_heads_each_busy_pane_and_a_pane_close_needs_none() {
     use huterm_core::{JobProcess, JobState};
     let tab = TabId::new(1);
@@ -1782,6 +1810,26 @@ fn a_split_tabs_dialog_heads_each_busy_pane_and_a_pane_close_needs_none() {
         }
     );
     assert_eq!(headings(&one), [None]);
+    // A tab's only pane closes as the tab, with no pane title.
+    let lone = close_dialog_input(
+        &CloseTarget::Pane {
+            tab,
+            pane: PaneId::new(2),
+        },
+        [(TerminalId::new(20), &vim)],
+        &[TabTitle {
+            pane: None,
+            ..pane(20, "vim")
+        }],
+        None,
+    );
+    assert_eq!(
+        lone.target,
+        CloseDialogTarget::Tab {
+            title: "build".to_owned()
+        }
+    );
+    assert_eq!(headings(&lone), [None]);
 }
 
 #[test]

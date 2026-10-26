@@ -38,7 +38,11 @@ not spawn, such as a tab another window opened in a shared workspace, and for
 panes another client split into a tab the window shows
 (`windows/view_install.rs`). It drops pane views the projected layout no
 longer holds, except while the window is busy or terminating, and moves focus
-to the most recently focused remaining pane. It skips a busy window, whose own
+to the most recently focused remaining pane, else the first in traversal
+order: tab views keep their panes in layout order. Losing the focused pane
+reactivates the tab as losing the active tab does, so keyboard focus follows.
+A finished install reconciles again, since reconcile skips a tab whose
+install is in flight. It skips a busy window, whose own
 spawn holds `busy` until it pushes its view, a window without an attachment,
 and teardown. A worker subscribes the viewers under one Mux lock, the
 completion waits for the projection to reach the worker's sequence, and the

@@ -975,6 +975,23 @@ Recorded with PR 3:
 - The overlay smoke's short window that must fit the terminal menu grew
   from 420 to 520 points, because the menu gained Split Right, Split Down,
   and Close Pane.
+- Closing a tab's only pane, by `close_pane` or by its exit, asks as the
+  tab's close ("Close tab?") while keeping the `Pane` target, so a pane
+  another client split in before a stale retry is not closed with it.
+- A tab view keeps its panes in the layout's traversal order, so focus falls
+  back to the first pane in traversal order when the focused pane and the
+  window's focus history are gone, and later panes paint above earlier
+  ones. A view the layout no longer holds is not drawn and keeps its
+  geometry until it is dropped; a tab the projection no longer holds shows
+  only its focused pane.
+- Reconcile reactivates the active tab when it loses its focused pane, not
+  only when the active tab changes, so another client's pane close moves
+  keyboard focus to the surviving pane. A finished pane install reconciles
+  again, because a pane split into a tab while that tab's install was in
+  flight was skipped.
+- The plan's tier 1 clipping check already exists as
+  `a_larger_canonical_grid_is_clipped_and_owned_gestures_survive_it`, so this
+  PR adds no second one.
 
 [issue-8]: https://github.com/jimeh/huterm/issues/8
 [issue-12]: https://github.com/jimeh/huterm/issues/12

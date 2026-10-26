@@ -3041,3 +3041,132 @@ fn a_pane_title_bars_close_button_closes_only_its_pane(
         panes_shown(cx, window, tab) == Some((vec![first], first))
     });
 }
+
+#[gpui::test]
+fn closing_the_focused_pane_elsewhere_refocuses_the_survivor(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("the second pane to show", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    harness.wait_for("the second pane to take keyboard focus", |cx| {
+        focused(cx, window, tab)
+            && panes_shown(cx, window, tab).is_some_and(|(_, f)| f == second)
+    });
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, second)
+        .unwrap();
+    harness.wait_for("the survivor to take keyboard focus", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![first], first))
+            && focused(cx, window, tab)
+    });
+    harness.type_line(window, "survivor");
+    harness.wait_for("the survivor to read the line", |cx| {
+        pane_screen(cx, window, tab, first)
+            .is_some_and(|text| text.contains("got:survivor"))
+    });
+}
+
+#[gpui::test]
+fn a_pane_split_while_its_tab_installs_a_pane_still_installs(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    let first = harness.first_pane(tab);
+    let hooks = &harness.runtime.worker_hooks;
+    hooks.hold(Stage::Subscribe);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    let runtime = Arc::clone(&harness.runtime);
+    harness.wait_for("the second pane's install to wait", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) == 1
+    });
+    // The tab's install is in flight, so reconcile skips the third pane.
+    let third = harness.split(tab, second, SplitDirection::Down, ECHO);
+    harness.wait_for("the projection to hold the third pane", |cx| {
+        cx.global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab)
+            .is_some_and(|info| info.layout.pane(third).is_some())
+    });
+    harness.runtime.worker_hooks.release(Stage::Subscribe);
+    harness.wait_for("both new panes to install", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(panes, _)| {
+            panes.contains(&second) && panes.contains(&third)
+        })
+    });
+}
+
+#[gpui::test]
+fn a_pane_confirmation_whose_pane_closes_elsewhere_is_dismissed(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let busy_pane = harness.split(tab, first, SplitDirection::Right, RUNS_JOB);
+    harness.wait_for("the busy pane to show", |cx| {
+        pane_screen(cx, window, tab, busy_pane)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    harness.invoke(window, ids::CLOSE_PANE).unwrap();
+    harness
+        .wait_for("the pane close to ask first", |cx| confirming(cx, window));
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, busy_pane)
+        .unwrap();
+    harness.wait_for("the stale confirmation to go", |cx| {
+        !confirming(cx, window)
+            && panes_shown(cx, window, tab) == Some((vec![first], first))
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(notices(cx, window), Vec::<String>::new());
+    });
+}
+
+#[gpui::test]
+fn focus_falls_back_to_the_first_pane_in_layout_order(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    let middle = harness.first_pane(tab);
+    // Installed after the middle pane, but laid out right and then left.
+    let right = harness.split(tab, middle, SplitDirection::Right, ECHO);
+    harness.wait_for("the right pane to install", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(panes, _)| panes.len() == 2)
+    });
+    let left = harness.split(tab, middle, SplitDirection::Left, ECHO);
+    harness.wait_for("the left pane to install", |cx| {
+        panes_shown(cx, window, tab)
+            == Some((vec![left, middle, right], middle))
+    });
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, middle)
+        .unwrap();
+    harness.wait_for("focus to fall back to the leftmost pane", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![left, right], left))
+    });
+}

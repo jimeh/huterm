@@ -160,8 +160,11 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         let current = resolution == Resolution::Ready && !terminating(cx);
+        // Before any removal: a failed replacement may move the active tab
+        // or its focused pane, which must then be shown and focused.
+        let active = self.active_pane(cx);
         let mut pushed = false;
-        let mut removed_tabs = Vec::new();
+        let mut removed_any = false;
         let mut by_tab: Vec<(TabId, Vec<_>)> = Vec::new();
         for (target, result) in targets.iter().zip(viewers) {
             match by_tab.iter_mut().find(|(tab, _)| *tab == target.tab) {
@@ -174,27 +177,35 @@ impl WorkspaceView {
             let (added, removed) = self
                 .apply_tab_viewers(tab, entries, held, committed, window, cx);
             pushed |= added;
-            if removed {
-                removed_tabs.push(tab);
-            }
+            removed_any |= removed;
         }
-        if !removed_tabs.is_empty() {
-            let active = self.active_tab(cx);
+        if removed_any {
             self.measure_tab_widths(window, cx);
-            if let Some(next) = self.active_tab(cx)
-                && Some(next) != active
-            {
-                let focus = !self.overlay_holds_focus();
-                self.select_tab(next, focus, window, cx);
-            }
             cx.notify();
         }
-        if !pushed {
-            if self.emptied_close_may_retry(cx) {
-                self.owe_emptied_close(cx);
-            }
-            return;
+        if let Some(next) = reactivation(active, self.active_pane(cx)) {
+            let focus = !self.overlay_holds_focus();
+            self.select_tab(next, focus, window, cx);
         }
+        if pushed {
+            self.show_pushed_panes(window, cx);
+        } else if self.emptied_close_may_retry(cx) {
+            self.owe_emptied_close(cx);
+        }
+        // A pane split into a tab while its install was in flight was
+        // excluded then; installs that failed stay excluded.
+        if current {
+            self.reconcile_own(window, cx);
+        }
+    }
+
+    /// Selects a tab for a window that had none once views arrived, or
+    /// shows the panes the active tab gained.
+    fn show_pushed_panes(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         self.measure_tab_widths(window, cx);
         match (self.active_tab(cx), self.tabs.first()) {
             (None, Some(first)) => {
@@ -329,6 +340,7 @@ impl WorkspaceView {
     ) -> bool {
         if let Some(view) = self.tabs.iter_mut().find(|view| view.id == tab) {
             view.panes.extend(panes);
+            in_layout_order(&mut view.panes, tab, cx);
             let titles = view.pane_titles(self.config.tabs, cx);
             if cx.global_mut::<Desktop>().windows.set_pane_titles(
                 self.window,
@@ -348,18 +360,7 @@ impl WorkspaceView {
             .unwrap_or_default();
         let mut panes = panes;
         // The tab's first pane in traversal order takes focus.
-        if let Some(first) = cx
-            .global::<Desktop>()
-            .hierarchy
-            .state()
-            .tab(tab)
-            .and_then(|info| {
-                let first = info.layout.first_pane().id;
-                panes.iter().position(|pane| pane.pane == first)
-            })
-        {
-            panes.swap(0, first);
-        }
+        in_layout_order(&mut panes, tab, cx);
         self.push_tab_view(
             TabView::new(tab, committed, names, panes),
             false,
@@ -413,4 +414,25 @@ impl WorkspaceView {
             installed.restart_activity(task);
         }
     }
+}
+
+/// Orders `panes` as `tab`'s projected layout traverses them, so focus falls
+/// back to the first pane in traversal order and later panes paint above
+/// earlier ones. Panes the layout no longer holds go last.
+fn in_layout_order(panes: &mut [PaneView], tab: TabId, cx: &App) {
+    let Some(info) = cx.global::<Desktop>().hierarchy.state().tab(tab) else {
+        return;
+    };
+    let order: Vec<PaneId> = info
+        .layout
+        .panes()
+        .into_iter()
+        .map(|pane| pane.id)
+        .collect();
+    panes.sort_by_key(|pane| {
+        order
+            .iter()
+            .position(|id| *id == pane.pane)
+            .unwrap_or(usize::MAX)
+    });
 }
