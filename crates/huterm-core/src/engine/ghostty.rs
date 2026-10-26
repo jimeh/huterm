@@ -439,11 +439,14 @@ impl TerminalEngine {
         self.stats
     }
 
-    /// Applies a history limit; lowering it evicts the oldest rows at once.
-    /// Returns whether the limit dropped: fewer rows or a smaller byte
-    /// allowance, the only changes that can evict. A drop counts as a
-    /// content change even when nothing was evicted, because the alternate
-    /// screen hides the primary history it prunes.
+    /// Applies a history limit, which evicts the oldest rows at once when
+    /// history no longer fits. Returns whether it evicted rows that viewers
+    /// can see. Eviction is measured, not inferred from the limits: Ghostty
+    /// can evict even under a higher byte limit, because pages that grew
+    /// for graphemes or styles may already exceed it. Only the primary
+    /// screen has history, and pruning it while the alternate screen shows
+    /// changes nothing on screen; leaving the alternate screen is output,
+    /// which advances the generation anyway.
     pub(super) fn set_scrollback(
         &mut self,
         limit: ScrollbackLimit,
@@ -451,16 +454,15 @@ impl TerminalEngine {
         if limit == self.scrollback {
             return Ok(false);
         }
-        let screen_rows = self.size.rows;
-        apply_scrollback(&mut self.terminal, limit, screen_rows)?;
-        let lowered = limit.rows() < self.scrollback.rows()
-            || scrollback_bytes(limit, screen_rows)
-                < scrollback_bytes(self.scrollback, screen_rows);
+        let primary = self.terminal.screen()? == Screen::Primary;
+        let before = self.terminal.scrollback_rows()?;
+        apply_scrollback(&mut self.terminal, limit, self.size.rows)?;
         self.scrollback = limit;
-        if lowered {
+        let evicted = primary && self.terminal.scrollback_rows()? < before;
+        if evicted {
             self.generation = self.generation.saturating_add(1);
         }
-        Ok(lowered)
+        Ok(evicted)
     }
 
     fn drain_effects(&mut self) -> Result<Vec<EngineEffect>, RuntimeError> {

@@ -231,7 +231,7 @@ impl TerminalEngine {
         self.inner.last_snapshot_stats()
     }
 
-    /// Applies a history limit and returns whether it dropped.
+    /// Applies a history limit and returns whether it evicted visible rows.
     pub(crate) fn set_scrollback(
         &mut self,
         limit: ScrollbackLimit,

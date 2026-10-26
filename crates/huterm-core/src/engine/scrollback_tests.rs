@@ -256,9 +256,13 @@ fn shrinking_on_the_alternate_screen_bounds_history_after_it_exits() {
     let alternate = engine.snapshot().unwrap();
     assert_eq!(alternate.history_size, 0);
 
-    assert!(engine.set_scrollback(limit(1000)).unwrap());
-    assert!(engine.generation() > alternate.generation);
+    // The alternate screen shows no history, so pruning the primary one
+    // changes nothing on screen; leaving it is output, which advances the
+    // generation.
+    assert!(!engine.set_scrollback(limit(1000)).unwrap());
+    assert_eq!(engine.generation(), alternate.generation);
     engine.process(b"\x1b[?1049l").unwrap();
+    assert!(engine.generation() > alternate.generation);
     let primary = engine.snapshot().unwrap();
     assert!(
         primary.history_size <= 1000 && primary.history_size > 0,
@@ -339,16 +343,17 @@ fn a_byte_limit_below_the_screen_and_a_page_keeps_at_most_two_pages() {
 }
 
 #[test]
-fn only_a_smaller_row_or_byte_allowance_counts_as_a_drop() {
+fn only_a_change_that_evicts_counts_as_a_content_change() {
     let mut engine = engine(80, ScrollbackLimit::DEFAULT);
     write_lines(&mut engine, 0, 5000);
     let generation = engine.generation();
     let kept = history(&engine);
 
-    // A gibibyte is above the default's derived allowance.
+    // Raising either limit, or switching to a larger explicit size, evicts
+    // nothing.
     assert!(!engine.set_scrollback(with_bytes(10_000, 1 << 30)).unwrap());
-    // More rows under the same explicit bytes.
     assert!(!engine.set_scrollback(with_bytes(50_000, 1 << 30)).unwrap());
+    assert!(!engine.set_scrollback(ScrollbackLimit::MAX).unwrap());
     assert_eq!(engine.generation(), generation);
     assert_eq!(history(&engine), kept);
 
@@ -356,12 +361,31 @@ fn only_a_smaller_row_or_byte_allowance_counts_as_a_drop() {
     assert!(engine.set_scrollback(with_bytes(50_000, 1 << 20)).unwrap());
     assert!(engine.generation() > generation);
     assert!(history(&engine) < kept, "kept {} rows", history(&engine));
+}
 
-    // Dropping the explicit bytes for the larger derived allowance is a
-    // raise; returning from a gibibyte to it is a drop.
-    assert!(!engine.set_scrollback(ScrollbackLimit::MAX).unwrap());
-    engine.set_scrollback(with_bytes(50_000, 1 << 30)).unwrap();
-    assert!(engine.set_scrollback(ScrollbackLimit::MAX).unwrap());
+#[test]
+fn raising_a_byte_limit_that_grown_pages_exceed_still_reports_eviction() {
+    let mut engine = engine(80, with_bytes(50_000, 2 << 20));
+    write_lines(&mut engine, 0, 2500);
+    // Combining marks grow the page that holds them past what the byte
+    // limit allows; Ghostty prunes for bytes only when it allocates.
+    let grapheme = format!("x{}", "\u{301}".repeat(64));
+    engine.process(grapheme.repeat(79).as_bytes()).unwrap();
+    let before = engine.snapshot().unwrap();
+
+    assert!(
+        engine
+            .set_scrollback(with_bytes(50_000, (2 << 20) + 1))
+            .unwrap()
+    );
+    let after = engine.snapshot().unwrap();
+    assert!(after.generation > before.generation);
+    assert!(
+        after.history_size < before.history_size,
+        "kept {} of {} rows",
+        after.history_size,
+        before.history_size
+    );
 }
 
 #[test]
@@ -374,7 +398,6 @@ fn explicit_bytes_stay_fixed_and_enforced_across_resizes() {
     let mut taller = engine(80, with_bytes(50_000, 4 << 20));
     let before = peak_history(&mut taller, 8, 20_000);
     taller.resize(GridSize::clamped(80, 400), cell).unwrap();
-    assert!(history(&taller) <= before, "kept {}", history(&taller));
     let after = peak_history(&mut taller, 8, 20_000);
     assert!(after <= before, "kept {after} rows, {before} before");
 

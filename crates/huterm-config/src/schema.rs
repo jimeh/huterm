@@ -46,7 +46,7 @@ fn scrollback_size_schema() -> Value {
         "minimum": 0,
         "maximum": huterm_protocol::ScrollbackLimit::MAX_BYTES,
         "pattern": "^[0-9]+( ?([bB]|[kKmMgG][iI]?[bB]))?$",
-        "description": "Optional size limit on each terminal's screen and history: a byte count, or digits and a unit such as \"64MiB\" or \"50MB\" (B, KB, MB, GB in powers of 1000; KiB, MiB, GiB in powers of 1024; units ignore case, so b also means bytes), at most 16GiB. 0 keeps no history. Whichever of it and scrollback_rows is reached first applies. Ghostty frees history a page at a time and always allows the visible screen plus one page. Reload applies it to open terminals."
+        "description": "Optional size limit on each terminal's screen and history: a byte count, or digits and a unit such as \"64MiB\" or \"50MB\" (B, KB, MB, GB in powers of 1000; KiB, MiB, GiB in powers of 1024; units ignore case, so b also means bytes), at most 16GiB. 0 keeps no history. Whichever of it and scrollback_rows is reached first applies. Ghostty frees history a page at a time and always allows the visible screen rounded up to whole pages plus one more, so a tiny value keeps one to two pages. Reload applies it to open terminals."
     })
 }
 

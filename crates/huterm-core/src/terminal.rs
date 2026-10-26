@@ -1670,10 +1670,10 @@ fn handle_edit(
         BufferEdit::Reset => owner.engine.reset(),
         BufferEdit::Scrollback(limit) => {
             return match owner.engine.set_scrollback(limit) {
-                Ok(lowered) => {
-                    // Every reload resends the limit, and only a lower one
-                    // can evict rows, so only it wakes the viewers.
-                    if lowered {
+                Ok(evicted) => {
+                    // Every reload resends the limit; only one that evicted
+                    // rows wakes the viewers.
+                    if evicted {
                         owner.publish();
                     }
                     true

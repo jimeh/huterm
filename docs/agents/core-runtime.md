@@ -101,15 +101,14 @@ scrolls are controls that can precede or outlive the entry.
 
 A terminal's scrollback limit is terminal state, not presentation.
 `TerminalViewer::set_scrollback` is an ordered buffer edit, so it needs the
-`input` capability, follows earlier input, and applies once queued writes
-drain; the latest request from any viewer wins. It carries both the row limit
-and the optional byte limit, and publishes only when the limit drops, the one
-change that can evict rows: fewer rows, or a smaller byte allowance at the
-current screen height. A reload that resends or raises it wakes no hidden
-viewer. Views resend it after every viewer
-replacement: the revoked viewer's queued requests are discarded, and a
-subscription does not carry the limit.
-`TerminalCommand::scrollback` applies before the child spawns.
+`input` capability, follows earlier input, and applies once queued writes drain;
+the latest request from any viewer wins. It carries both the row limit and the
+optional byte limit, and publishes only when applying it evicted rows from the
+primary screen's history, measured before and after rather than inferred from
+the limits. A reload that resends a limit, or raises one that evicts nothing,
+wakes no hidden viewer. Views resend it after every viewer replacement: the
+revoked viewer's queued requests are discarded, and a subscription does not
+carry the limit. `TerminalCommand::scrollback` applies before the child spawns.
 
 Rearm a viewer's invalidation on the runtime owner thread when constructing
 that viewer's snapshot, not when draining its notification, so hidden or

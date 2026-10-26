@@ -392,14 +392,17 @@ Line pruning removes only whole historical pages, so history stays at or below
 the limit and less than a page under it; contract tests pin those bounds,
 eviction and viewport fixup when the limit drops, the primary-screen target
 while the alternate screen shows, reflow enforcement, and that RIS and ED 3 keep
-the limits, and that the first-reached limit applies. Only fewer rows or a
-smaller byte allowance at the current height can evict, so only that counts as a
-content change, even when nothing visible moved, because the alternate screen
-hides the primary history it prunes. A raised limit leaves the generation alone.
-Ghostty's render state rebuilds every row when the viewport pin moves, so
-eviction needs no forced snapshot rebuild. Set Ghostty device attributes
-explicitly: a declining callback still gets Ghostty's default VT220 replies at
-this pin, as a `huterm-ghostty` contract test shows.
+the limits, and that the first-reached limit applies. A limit change counts as a
+content change only when it evicts rows the primary screen shows, measured as
+retained history before and after. Inferring eviction from the limits is wrong:
+Ghostty prunes for bytes only when it allocates a page, so a page that grew for
+combining marks can exceed the byte limit, and even raising it then evicts.
+While the alternate screen shows, pruning primary history changes nothing on
+screen, and leaving it is output that advances the generation. Ghostty's render
+state rebuilds every row when the viewport pin moves, so eviction needs no
+forced snapshot rebuild. Set Ghostty device attributes explicitly: a declining
+callback still gets Ghostty's default VT220 replies at this pin, as a
+`huterm-ghostty` contract test shows.
 
 ## Color and mouse state
 
