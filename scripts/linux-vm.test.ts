@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BASE_IMAGE, argumentsFor, imageName, tryLock, vmName } from "./linux-vm";
@@ -11,6 +11,17 @@ const root = resolve(import.meta.dir, "..");
 const image = imageName(root);
 const vm = vmName(root);
 const macos = process.platform === "darwin" && process.arch === "arm64";
+
+/** Polls until `done` accepts a reading or two seconds pass, returning the last reading. */
+async function settle<T>(read: () => T, done: (value: T) => boolean): Promise<T> {
+  const deadline = Date.now() + 2_000;
+  let value = read();
+  while (!done(value) && Date.now() < deadline) {
+    await Bun.sleep(20);
+    value = read();
+  }
+  return value;
+}
 
 function fixture(overrides: Record<string, string> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "huterm-linux-vm-test-"));
@@ -206,25 +217,27 @@ describe("Linux VM runner", () => {
       .stdout.toString().split("\n").filter((line) => line.includes(fakeRun));
     expect(running()).toHaveLength(1);
     rmSync(fake.directory, { recursive: true, force: true });
-    const deadline = Date.now() + 2_000;
-    let survivors = running();
-    while (survivors.length > 0 && Date.now() < deadline) {
-      await Bun.sleep(20);
-      survivors = running();
-    }
-    expect(survivors).toEqual([]);
+    expect(await settle(running, (survivors) => survivors.length === 0)).toEqual([]);
   });
 
   test("a VM left running ends with the test process that owns it", async () => {
     // A crashed test run never reaches afterEach, so its fixture stays on disk.
-    const owner = Bun.spawn(["true"]);
-    await owner.exited;
+    const owner = Bun.spawn(["sleep", "30"]);
     const fake = fixture({ TART_TEST_OWNER: String(owner.pid) });
     const machine = fake.tart("run", vm);
+    let exited = false;
+    void machine.exited.then(() => { exited = true; });
     try {
-      const timeout = Bun.sleep(2_000).then(() => "still running");
-      expect(await Promise.race([machine.exited, timeout])).toBe(0);
-    } finally { machine.kill("SIGKILL"); }
+      // The fake is polling once it reports the VM booted.
+      expect(await settle(() => existsSync(join(fake.directory, `vms.${vm}.booted`)), Boolean)).toBe(true);
+      expect(exited).toBe(false);
+      owner.kill("SIGKILL");
+      expect(await settle(() => exited, Boolean)).toBe(true);
+      expect(machine.exitCode).toBe(0);
+    } finally {
+      owner.kill("SIGKILL");
+      machine.kill("SIGKILL");
+    }
   });
 
   test("a container export failure ends the run instead of crashing it", () => {
