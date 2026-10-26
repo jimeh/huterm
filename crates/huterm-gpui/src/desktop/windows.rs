@@ -1975,6 +1975,7 @@ fn open_window_with_profile(
                 reveal_context: None,
                 pointer_reveal: PointerReveal::default(),
                 layout_pending: false,
+                synced_presentation: None,
                 reorder: None,
                 config,
                 family,
@@ -2791,6 +2792,9 @@ struct WorkspaceView {
     reveal_context: Option<(TabPosition, bool, bool)>,
     pointer_reveal: PointerReveal,
     layout_pending: bool,
+    /// The tab bar presentation the last layout sync pushed, so a sync can
+    /// tell the bar appearing or hiding from a resize.
+    synced_presentation: Option<Presentation>,
     reorder: Option<TabReorder>,
     /// Fit tab widths measured during the last render.
     tab_widths: Vec<Pixels>,
@@ -3763,15 +3767,45 @@ impl WorkspaceView {
         )
     }
 
+    /// The geometry every terminal view in the window takes: the terminal
+    /// bounds with the tab bar shown or hidden, never mid-reveal, and the
+    /// scrollbar track margins beside that chrome.
+    fn terminal_geometry(&self, window: &Window) -> TerminalGeometry {
+        let tabs = self.layout_tabs();
+        let presentation = self.presentation();
+        let bounds = ChromeLayout::for_tabs(
+            window.viewport_size(),
+            self.title_row(),
+            tabs,
+            self.sidebar_width,
+            self.fullscreen_insets,
+            self.notch_shelf(),
+            self.window_frame(),
+        )
+        .present(presentation, tabs.position, 0.0)
+        .terminal;
+        TerminalGeometry {
+            bounds: Some(bounds),
+            track_margins: terminal_track_margins(
+                presentation,
+                tabs.position,
+                self.title_row(),
+                self.config.window,
+            ),
+        }
+    }
+
     fn sync_tab_layout(&mut self, window: &Window, cx: &mut Context<'_, Self>) {
         // Config and bounds changes must reach hidden or frame-blocked PTYs.
         // Consume this once; pointer events do not require scanning every tab.
         let geometry_changed = std::mem::take(&mut self.layout_pending);
         let presentation = self.presentation();
-        let chrome_hidden = self.chrome_hidden();
-        let notch_shelf = self.notch_shelf();
-        let tabs_config = self.layout_tabs();
-        let window_frame = self.window_frame();
+        // The tab bar appearing or hiding is not a resize to report.
+        let bar_toggled = self
+            .synced_presentation
+            .replace(presentation)
+            .is_some_and(|synced| synced != presentation);
+        let geometry = self.terminal_geometry(window);
         let quake_presenting = self.quake_presenting();
         let overlay = (presentation == Presentation::Overlay
             && self.reveal.progress > 0.0)
@@ -3787,27 +3821,13 @@ impl WorkspaceView {
                         != terminal.metrics;
                 let cell_changed = terminal.last_cell_size
                     != Some(terminal.physical_cell_size());
-                // The tab bar appearing or hiding is not a resize to report.
-                let bar_toggled = terminal.tab_presentation != presentation;
-                let changed = bar_toggled
-                    || terminal.tabs_config != tabs_config
-                    || terminal.sidebar_width != self.sidebar_width
-                    || terminal.chrome_hidden != chrome_hidden
-                    || terminal.fullscreen_insets != self.fullscreen_insets
-                    || terminal.notch_shelf != notch_shelf
-                    || terminal.window_frame != window_frame;
+                let changed = bar_toggled || terminal.geometry != geometry;
                 changed_any |= geometry_changed
                     || changed
                     || scale_changed
                     || cell_changed;
                 terminal.tab_overlay = overlay;
-                terminal.tab_presentation = presentation;
-                terminal.tabs_config = tabs_config;
-                terminal.sidebar_width = self.sidebar_width;
-                terminal.chrome_hidden = chrome_hidden;
-                terminal.fullscreen_insets = self.fullscreen_insets;
-                terminal.notch_shelf = notch_shelf;
-                terminal.window_frame = window_frame;
+                terminal.geometry = geometry;
                 terminal.quiet_resize = quake_presenting;
                 if geometry_changed || changed || scale_changed || cell_changed
                 {
@@ -4161,9 +4181,11 @@ impl WorkspaceView {
         cx.global_mut::<Desktop>()
             .windows
             .set_sidebar_width(self.window, self.sidebar_width);
+        // Hidden views take the new width now and resize when shown.
+        let geometry = self.terminal_geometry(window);
         for tab in &self.tabs {
             tab.view.update(cx, |view, cx| {
-                view.sidebar_width = self.sidebar_width;
+                view.geometry = geometry;
                 if view.visible {
                     view.resize_if_needed(window);
                 }
@@ -4637,6 +4659,7 @@ impl WorkspaceView {
         }
         let activity = viewer.wake_handle();
         let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
+        let geometry = self.terminal_geometry(window);
         let terminal = cx.new(|cx| {
             let mut terminal = TerminalView::new(
                 viewer,
@@ -4648,8 +4671,7 @@ impl WorkspaceView {
                 cx,
             );
             terminal.set_scroll_to_bottom_key(scroll_key, cx);
-            terminal.tabs_config = self.layout_tabs();
-            terminal.window_frame = self.window_frame();
+            terminal.geometry = geometry;
             terminal
         });
         if terminal.read(cx).revoked {
@@ -6234,16 +6256,12 @@ impl WorkspaceView {
             // before the terminals resize, so no PTY is sized for the
             // windowed chrome inside the fullscreen frame.
             self.sync_frame(window);
-            let window_frame = self.window_frame();
-            let notch_shelf = self.notch_shelf();
+            let geometry = self.terminal_geometry(window);
             let quake_presenting = self.quake_presenting();
             for tab in &self.tabs {
                 tab.view.update(cx, |terminal, cx| {
                     terminal.quiet_resize = quake_presenting;
-                    terminal.chrome_hidden = self.fullscreen.chrome_hidden;
-                    terminal.fullscreen_insets = self.fullscreen_insets;
-                    terminal.notch_shelf = notch_shelf;
-                    terminal.window_frame = window_frame;
+                    terminal.geometry = geometry;
                     terminal.resize_if_needed(window);
                     cx.notify();
                 });
@@ -7134,8 +7152,8 @@ impl WorkspaceView {
                 .set_default(config.window.macos_fullscreen_mode);
             self.family.clone_from(family);
             self.metrics = *metrics;
-            let tabs_config = self.layout_tabs();
-            let window_frame = self.window_frame();
+            // `layout_pending` resizes the views at the next sync.
+            let geometry = self.terminal_geometry(window);
             for tab in &self.tabs {
                 tab.view.update(cx, |view, cx| {
                     let metrics = metrics.at_scale(view.metrics.scale_factor);
@@ -7148,8 +7166,7 @@ impl WorkspaceView {
                     view.font_size = metrics.font_size;
                     view.metrics = metrics;
                     view.window_config = config.window;
-                    view.tabs_config = tabs_config;
-                    view.window_frame = window_frame;
+                    view.geometry = geometry;
                     view.reload_terminal_config(config.terminal, cx);
                     view.publish_presentation(&config.theme);
                     view.theme = config.theme.clone();

@@ -2474,3 +2474,62 @@ fn a_failed_emptied_close_assessment_keeps_a_queued_quit(
     harness.wait_quit(unviewed);
     assert_eq!(harness.close_failures(), 1);
 }
+
+/// Whether every view in `window` holds the geometry its chrome gives it.
+fn views_hold_window_geometry(cx: &mut App, window: AnyWindowHandle) -> bool {
+    window
+        .update(cx, |root, window, cx| {
+            let view = root.downcast::<WorkspaceView>().unwrap().read(cx);
+            let geometry = view.terminal_geometry(window);
+            geometry.bounds.is_some()
+                && view
+                    .tabs
+                    .iter()
+                    .all(|tab| tab.view.read(cx).geometry == geometry)
+        })
+        .unwrap_or(false)
+}
+
+#[gpui::test]
+fn a_sidebar_drag_reaches_hidden_views_which_resize_when_shown(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.position = TabPosition::Left;
+    });
+    let first = harness.open_tab(ECHO);
+    let hidden = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_for("both views to install", |cx| {
+        terminal(cx, window, first).is_some()
+            && terminal(cx, window, hidden).is_some()
+    });
+    harness.activate(window, first);
+    harness.wait_for("every view to take the window's geometry", |cx| {
+        views_hold_window_geometry(cx, window)
+    });
+    let requested = |cx: &mut App, tab: TabId| {
+        let view = terminal(cx, window, tab).unwrap();
+        view.read(cx).requested_grid
+    };
+    let before = harness.cx.update(|cx| requested(cx, hidden));
+
+    // Narrow the sidebar from its default 180 points to 140.
+    harness.update_view(window, |view, window, cx| {
+        view.resize_sidebar(gpui::point(px(140.0), px(10.0)), window, cx);
+    });
+    harness.wait_for("every view to take the narrower sidebar", |cx| {
+        views_hold_window_geometry(cx, window)
+    });
+    let shown = harness.cx.update(|cx| requested(cx, first));
+    assert!(shown.columns > before.columns, "{shown:?} vs {before:?}");
+    // A hidden view keeps its grid until it is shown, as before.
+    assert_eq!(harness.cx.update(|cx| requested(cx, hidden)), before);
+
+    harness.update_view(window, |view, window, cx| {
+        view.select_tab(hidden, true, window, cx);
+    });
+    harness.wait_for("the shown view to request the wider grid", |cx| {
+        requested(cx, hidden) == shown
+    });
+}

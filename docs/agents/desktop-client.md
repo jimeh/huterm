@@ -99,12 +99,20 @@ extends; do not allocate a timer per interaction. Interaction
 endings must renew holds explicitly because settled drags and hovers have no ticks.
 Do not suppress invalidation by comparing content generations: presentation
 updates invalidate without advancing the content generation. Keep ChromeLayout
-as the
-shared source of terminal bounds for painting, mouse input, scrollbars, and PTY
-resizing. Inside those bounds, `TerminalLayout` computes the requested grid,
-which the view reports and the PTY follows while the view controls;
-`requested_grid` is never what the view draws. `GridGeometry` maps between
-window positions and the displayed grid, the snapshot's `size`.
+as the shared source of terminal bounds for painting, mouse input, scrollbars,
+and PTY resizing. `WorkspaceView::terminal_geometry` derives each view's
+`TerminalGeometry`, its bounds and scrollbar track margins, from it, and every
+site that changes chrome pushes that value into the views; `TerminalView`
+never computes chrome itself, and a view no workspace hosts fills its window.
+Pushing does not resize: views resize where they did before. A shown view
+resizes on render. Hidden views resize through the layout sync, when the
+layout is pending, the scale or cell size changed, the geometry differs, or
+the tab bar appeared or hid; through the fullscreen sync; and otherwise on
+activation. Inside those bounds, `TerminalLayout`
+computes the requested grid, which the view reports and the PTY follows while
+the view controls; `requested_grid` is never what the view draws.
+`GridGeometry` maps between window positions and the displayed grid, the
+snapshot's `size`.
 
 ## Close and Quit
 

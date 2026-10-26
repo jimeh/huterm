@@ -263,13 +263,10 @@ fn read_state(cx: &mut App) -> String {
             writeln!(output, "w{index}.tab_bounds={}", rect(view.tab_strip(window).bounds)).unwrap();
             writeln!(output, "w{index}.bar_bounds={}", rect(view.chrome_layout(window).tabs)).unwrap();
             writeln!(output, "w{index}.notch_shelves={}", view.notch_shelves.map_or_else(|| "none".to_owned(), |shelves| format!("l={};r={}", rect(shelves.left), rect(shelves.right)))).unwrap();
-            let mut consistent = true;
-            for tab in &view.tabs {
-                let terminal = tab.view.read(cx);
-                consistent &= terminal.chrome_hidden == view.fullscreen.chrome_hidden
-                    && terminal.fullscreen_insets == view.fullscreen_insets
-                    && terminal.tab_presentation == view.presentation();
-            }
+            // Every retained view, shown or hidden, holds the geometry the
+            // window's chrome gives it.
+            let geometry = view.terminal_geometry(window);
+            let consistent = view.tabs.iter().all(|tab| tab.view.read(cx).geometry == geometry);
             writeln!(output, "w{index}.retained={consistent}").unwrap();
             if let Some(terminal) = view.active_view(cx) {
                 let terminal = terminal.read(cx);
