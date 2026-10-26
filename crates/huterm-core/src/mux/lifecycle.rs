@@ -35,6 +35,16 @@ pub enum CloseRequest {
     },
     /// Terminate every surviving session, including unattached sessions.
     Application,
+    /// Close a window whose last tab view went away without stopping any
+    /// terminal. Refused while `workspace` still holds tabs in the
+    /// attachment's session; otherwise detaches, or deletes the session
+    /// once it holds no terminal and no other attachment.
+    EmptiedWindow {
+        /// The window's attachment.
+        attachment: AttachmentId,
+        /// The workspace the window showed.
+        workspace: WorkspaceId,
+    },
 }
 
 /// Resolved effect captured before process inspection or confirmation.
@@ -95,15 +105,35 @@ pub struct CloseAssessment {
 }
 impl CloseTicket {
     /// Checks foreground and background processes on the calling worker.
-    /// Must run off the UI thread and outside the structural mutex.
+    /// Must run off the UI thread and outside the structural mutex. A
+    /// terminal whose runtime has stopped by now assesses as idle without
+    /// asking it: its own teardown already stopped its child.
     #[must_use]
     pub fn check_jobs(&self) -> CloseAssessment {
-        let jobs = crate::jobs::inspect_all(
+        let stopped: Vec<bool> = self
+            .clients
+            .iter()
+            .map(|client| client.registry().is_closed())
+            .collect();
+        let mut inspected = crate::jobs::inspect_all(
             self.clients
                 .iter()
-                .map(RuntimeClient::job_context)
+                .zip(&stopped)
+                .filter(|(_, stopped)| !**stopped)
+                .map(|(client, _)| client.job_context())
                 .collect(),
-        );
+        )
+        .into_iter();
+        let jobs = stopped
+            .iter()
+            .map(|stopped| {
+                if *stopped {
+                    JobState::Idle
+                } else {
+                    inspected.next().unwrap_or(JobState::Unknown)
+                }
+            })
+            .collect();
         CloseAssessment {
             ticket: self.clone(),
             jobs,
@@ -286,6 +316,10 @@ impl Mux {
                 }
             }
             CloseRequest::Application => CloseEffect::Application,
+            CloseRequest::EmptiedWindow {
+                attachment,
+                workspace,
+            } => self.resolve_emptied_window(*attachment, *workspace)?,
         };
         let terminal = |tab: &TabId| {
             self.tab(*tab)
@@ -374,6 +408,37 @@ impl Mux {
                 self.close_tabs(*workspace, tabs)
             }
             CloseEffect::Application => self.shutdown(),
+        }
+    }
+    /// Resolves an emptied window's close so that it stops no terminal:
+    /// refused while its workspace still holds tabs in the attachment's
+    /// session; a detach while another attachment holds the session or the
+    /// session keeps terminals in other workspaces; otherwise deletes the
+    /// empty session.
+    fn resolve_emptied_window(
+        &self,
+        attachment: AttachmentId,
+        workspace: WorkspaceId,
+    ) -> Result<CloseEffect, MuxError> {
+        let session = self.attachment_session(attachment)?;
+        self.validate_scope(workspace.runtime())?;
+        let workspaces: Vec<&Workspace> = self
+            .workspaces
+            .values()
+            .filter(|w| w.session_id == session)
+            .collect();
+        if workspaces
+            .iter()
+            .any(|w| w.id == workspace && !w.tabs.is_empty())
+        {
+            return Err(MuxError::ViewNotEmpty(workspace));
+        }
+        let shared =
+            self.attachments.values().filter(|s| **s == session).count() > 1;
+        if shared || workspaces.iter().any(|w| !w.tabs.is_empty()) {
+            Ok(CloseEffect::Detach(attachment))
+        } else {
+            Ok(CloseEffect::Session(session))
         }
     }
     /// Validates that a tab currently belongs to the workspace.

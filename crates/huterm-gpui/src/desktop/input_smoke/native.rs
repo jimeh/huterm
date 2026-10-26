@@ -330,6 +330,22 @@ fn post_mouse(fields: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Closes the window that owns GPUI's `view` through `performClose:`, as
+/// its close button does. `AppKit` runs GPUI's close callback before this
+/// returns, so call it with no GPUI update active.
+pub(super) fn perform_close(view: *mut c_void) -> anyhow::Result<()> {
+    ensure!(!view.is_null(), "no native view");
+    // SAFETY: `view` is GPUI's live NSView, read from its window handle on
+    // this main thread with no AppKit callback since.
+    unsafe {
+        let window: *mut Object = msg_send![view.cast::<Object>(), window];
+        ensure!(!window.is_null(), "the view has no window");
+        let _: () =
+            msg_send![window, performClose: std::ptr::null_mut::<Object>()];
+    }
+    Ok(())
+}
+
 /// The key window's native title, as `AppKit` shows it.
 pub(super) fn key_window_title() -> anyhow::Result<String> {
     // SAFETY: Main-thread AppKit reads; the title string is autoreleased

@@ -159,6 +159,167 @@ fn structural_changes_invalidate_consent_without_consuming_attachment() {
         Err(MuxError::StaleClose)
     ));
     assert_eq!(mux.attachment_session(attachment).unwrap(), second);
+    // A tab moving to another session also changes the window's scope.
+    let source = mux.create_workspace(second, None).unwrap();
+    let elsewhere = mux.create_session(None).unwrap();
+    let destination = mux.create_workspace(elsewhere, None).unwrap();
+    let opened = mux
+        .open_test_tab(source, &command("printf READY; read value"))
+        .unwrap();
+    ready(&opened.client, "READY");
+    let ticket = mux
+        .prepare_close(CloseRequest::Window(attachment))
+        .unwrap()
+        .check_jobs();
+    mux.move_tab(source, opened.tab.id, destination, None)
+        .unwrap();
+    assert!(matches!(
+        mux.commit_close(&ticket, &ticket.recheck(), true),
+        Err(MuxError::StaleClose)
+    ));
+    assert_eq!(mux.attachment_session(attachment).unwrap(), second);
+    assert_eq!(
+        mux.select_tab(opened.tab.id).unwrap().workspace,
+        Some(destination)
+    );
+    mux.shutdown().unwrap();
+}
+fn pid_of(client: &crate::test_support::TestClient) -> nix::unistd::Pid {
+    let pid = client.job_context().unwrap().shell.unwrap();
+    nix::unistd::Pid::from_raw(i32::try_from(pid).unwrap())
+}
+/// Sends a line to a child that answers each line by printing the next
+/// step's marker, and waits for `marker`.
+fn answers(client: &crate::test_support::TestClient, marker: &str) {
+    client
+        .send_input(TerminalInput::Text("next\n".into()))
+        .expect("the child no longer accepts input");
+    ready(client, marker);
+}
+#[test]
+fn retarget_keeps_the_old_sessions_child_and_closing_the_new_one_spares_it() {
+    let steps = "printf READY; read value; printf ALIVE; read value; \
+                 printf AGAIN; read value";
+    let mut mux = Mux::default();
+    let first = mux.create_session(None).unwrap();
+    let first_workspace = mux.create_workspace(first, None).unwrap();
+    let kept = mux.open_test_tab(first_workspace, &command(steps)).unwrap();
+    let second = mux.create_session(None).unwrap();
+    let second_workspace = mux.create_workspace(second, None).unwrap();
+    let closed = mux
+        .open_test_tab(second_workspace, &command(steps))
+        .unwrap();
+    ready(&kept.client, "READY");
+    ready(&closed.client, "READY");
+    let attachment = mux.attach_session(first).unwrap();
+    mux.retarget_attachment(attachment, second).unwrap();
+    answers(&kept.client, "ALIVE");
+    let closed_pid = pid_of(&closed.client);
+    mux.close_session(second).unwrap();
+    assert_eq!(
+        nix::sys::signal::kill(closed_pid, None),
+        Err(nix::errno::Errno::ESRCH),
+        "the closed session's child survived"
+    );
+    assert!(mux.attachment_session(attachment).is_err());
+    answers(&kept.client, "AGAIN");
+    assert!(nix::sys::signal::kill(pid_of(&kept.client), None).is_ok());
+    mux.shutdown().unwrap();
+}
+#[test]
+fn emptied_window_closes_stop_no_terminal_and_never_need_consent() {
+    let steps = "printf READY; read value; printf ALIVE; read value";
+    let emptied = |mux: &Mux, attachment, workspace| {
+        mux.prepare_close(CloseRequest::EmptiedWindow {
+            attachment,
+            workspace,
+        })
+    };
+    let commit = |mux: &mut Mux, ticket: CloseTicket| {
+        let assessment = ticket.check_jobs();
+        assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
+        mux.commit_close(&assessment, &assessment.recheck(), false)
+    };
+    let mut mux = Mux::default();
+
+    // A workspace that still holds tabs refuses and changes nothing.
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let held = mux.open_test_tab(workspace, &command(steps)).unwrap();
+    ready(&held.client, "READY");
+    let attachment = mux.attach_session(session).unwrap();
+    let before = mux.capture_hierarchy();
+    assert!(matches!(
+        emptied(&mux, attachment, workspace),
+        Err(MuxError::ViewNotEmpty(refused)) if refused == workspace
+    ));
+    assert_eq!(mux.capture_hierarchy(), before);
+
+    // The tab moves to a sibling workspace: the sole attachment detaches
+    // and the moved child keeps running in the unviewed session.
+    let sibling = mux.create_workspace(session, None).unwrap();
+    mux.move_tab(workspace, held.tab.id, sibling, None).unwrap();
+    let ticket = emptied(&mux, attachment, workspace).unwrap();
+    assert_eq!(ticket.effect(), CloseEffect::Detach(attachment));
+    commit(&mut mux, ticket).unwrap();
+    assert!(mux.attachment_session(attachment).is_err());
+    assert!(mux.session(session).is_some());
+    answers(&held.client, "ALIVE");
+
+    // Another attachment holds the session: detach.
+    let shared = mux.create_session(None).unwrap();
+    let shared_workspace = mux.create_workspace(shared, None).unwrap();
+    let first = mux.attach_session(shared).unwrap();
+    let second = mux.attach_session(shared).unwrap();
+    let ticket = emptied(&mux, first, shared_workspace).unwrap();
+    assert_eq!(ticket.effect(), CloseEffect::Detach(first));
+    commit(&mut mux, ticket).unwrap();
+    assert_eq!(mux.attachment_session(second).unwrap(), shared);
+
+    // The last attachment of an empty session deletes it, and the
+    // invalidated attachment is then unknown.
+    let ticket = emptied(&mux, second, shared_workspace).unwrap();
+    assert_eq!(ticket.effect(), CloseEffect::Session(shared));
+    commit(&mut mux, ticket).unwrap();
+    assert!(mux.session(shared).is_none());
+    assert!(matches!(
+        emptied(&mux, second, shared_workspace),
+        Err(MuxError::UnknownAttachment(unknown)) if unknown == second
+    ));
+
+    // A tab opened between assessment and commit makes the commit stale,
+    // and the next assessment refuses.
+    let arriving = mux.create_session(None).unwrap();
+    let arriving_workspace = mux.create_workspace(arriving, None).unwrap();
+    let attachment = mux.attach_session(arriving).unwrap();
+    let ticket = emptied(&mux, attachment, arriving_workspace).unwrap();
+    assert_eq!(ticket.effect(), CloseEffect::Session(arriving));
+    let opened = mux
+        .open_test_tab(arriving_workspace, &command(steps))
+        .unwrap();
+    ready(&opened.client, "READY");
+    assert!(matches!(
+        commit(&mut mux, ticket),
+        Err(MuxError::StaleClose)
+    ));
+    assert!(matches!(
+        emptied(&mux, attachment, arriving_workspace),
+        Err(MuxError::ViewNotEmpty(_))
+    ));
+    answers(&opened.client, "ALIVE");
+    assert_eq!(mux.terminal_count(), 2);
+
+    // A workspace of another runtime is foreign.
+    let mut foreign = Mux::default();
+    let foreign_session = foreign.create_session(None).unwrap();
+    let foreign_workspace =
+        foreign.create_workspace(foreign_session, None).unwrap();
+    assert!(matches!(
+        emptied(&mux, attachment, foreign_workspace),
+        Err(MuxError::ForeignRuntime(runtime))
+            if runtime == foreign_workspace.runtime()
+    ));
+    mux.shutdown().unwrap();
 }
 #[test]
 fn detach_keeps_real_child_alive_and_last_window_close_reaps_it() {
@@ -362,11 +523,18 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
         .unwrap()
         .check_jobs();
     assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
-    exited.client.close().unwrap();
-    while exited.client.job_context().is_some() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // A live runtime that does not answer is unknown, unlike a stopped one.
+    let (entered, paused) = std::sync::mpsc::channel();
+    let (resume, release) = std::sync::mpsc::channel::<()>();
+    exited
+        .client
+        .control
+        .send_control(crate::terminal::RuntimeControl::Pause {
+            entered,
+            release,
+        })
+        .unwrap();
+    paused.recv_timeout(Duration::from_secs(3)).unwrap();
     let assessment = mux
         .prepare_close(CloseRequest::Application)
         .unwrap()
@@ -376,8 +544,119 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
         mux.commit_close(&assessment, &assessment.recheck(), false),
         Err(MuxError::ConfirmationRequired)
     ));
+    drop(resume);
     mux.commit_close(&assessment, &assessment.recheck(), true)
         .unwrap();
+}
+/// Panics `client`'s runtime and waits until it stopped.
+fn panic_runtime(client: &crate::test_support::TestClient) {
+    client
+        .control
+        .send_control(crate::terminal::RuntimeControl::Panic)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !client.control.registry().is_closed() {
+        assert!(Instant::now() < deadline, "the runtime never stopped");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+#[test]
+fn a_panicked_tab_closes_without_consent_or_failure_and_spares_its_sibling() {
+    let steps = "printf READY; read value; printf ALIVE; read value";
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let panicked = mux.open_test_tab(workspace, &command(steps)).unwrap();
+    let sibling = mux.open_test_tab(workspace, &command(steps)).unwrap();
+    ready(&panicked.client, "READY");
+    ready(&sibling.client, "READY");
+    let pid = pid_of(&panicked.client);
+    panic_runtime(&panicked.client);
+    let assessment = mux
+        .prepare_close(CloseRequest::Tab {
+            workspace,
+            tab: panicked.tab.id,
+        })
+        .unwrap()
+        .check_jobs();
+    assert_eq!(assessment.jobs(), &[JobState::Idle]);
+    mux.commit_close(&assessment, &assessment.recheck(), false)
+        .expect("closing a stopped terminal reported a failure");
+    assert_eq!(tab_ids(&mux, workspace), vec![sibling.tab.id]);
+    answers(&sibling.client, "ALIVE");
+    // The panicked runtime's own teardown reaps its shell.
+    assert_eq!(
+        nix::sys::signal::kill(pid, None),
+        Err(nix::errno::Errno::ESRCH),
+        "the panicked tab's shell survived"
+    );
+    mux.shutdown().unwrap();
+}
+#[test]
+fn window_session_and_quit_closes_need_no_consent_for_a_panicked_member() {
+    fn panicked_session(
+        mux: &mut Mux,
+    ) -> (SessionId, Vec<crate::mux::TestTab>) {
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let tabs = open_idle_tabs(mux, workspace, 2);
+        panic_runtime(&tabs[0].client);
+        (session, tabs)
+    }
+    let mut mux = Mux::default();
+    // The last window's close terminates the session.
+    let (closed, _tabs) = panicked_session(&mut mux);
+    let attachment = mux.attach_session(closed).unwrap();
+    let assessment = mux
+        .prepare_close(CloseRequest::Window(attachment))
+        .unwrap()
+        .check_jobs();
+    assert_eq!(assessment.jobs(), &[JobState::Idle, JobState::Idle]);
+    mux.commit_close(&assessment, &assessment.recheck(), false)
+        .expect("a window close with a stopped terminal reported a failure");
+    assert!(mux.session(closed).is_none());
+    // Quit needs no consent for it, and its shutdown reports no failure.
+    let (_kept, _tabs) = panicked_session(&mut mux);
+    let assessment = mux
+        .prepare_close(CloseRequest::Application)
+        .unwrap()
+        .check_jobs();
+    assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
+    mux.shutdown()
+        .expect("shutdown with a stopped terminal reported a failure");
+    assert_eq!(mux.terminal_count(), 0);
+}
+
+#[test]
+fn a_stopped_terminal_keeps_job_evidence_aligned_with_a_busy_sibling() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let stopped = open_idle_tabs(&mut mux, workspace, 1).remove(0);
+    let busy = mux
+        .open_test_tab(
+            workspace,
+            &command("set -m; sleep 30 & printf BUSY; read value"),
+        )
+        .unwrap();
+    ready(&busy.client, "BUSY");
+    panic_runtime(&stopped.client);
+    let assessment = mux
+        .prepare_close(CloseRequest::Session(session))
+        .unwrap()
+        .check_jobs();
+    let jobs: Vec<_> = assessment.terminal_jobs().collect();
+    // The stopped terminal skips inspection, but its sibling's evidence
+    // still lines up with the sibling.
+    assert_eq!(jobs[0], (stopped.tab.terminal_id, &JobState::Idle));
+    assert!(
+        matches!(jobs[1], (id, JobState::Running(_)) if id == busy.tab.terminal_id),
+        "{jobs:?}"
+    );
+    assert!(assessment.needs_confirmation());
+    mux.commit_close(&assessment, &assessment.recheck(), true)
+        .expect("a session close with a stopped terminal reported a failure");
+    assert_eq!(mux.terminal_count(), 0);
 }
 
 #[test]

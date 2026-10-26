@@ -438,6 +438,7 @@ fn dialog_footer(
         .child(
             button(swatch, focus == DialogFocus::Primary, hints)
                 .id("confirm-close")
+                .debug_selector(|| "confirm-close".to_owned())
                 .bg(danger)
                 .text_color(swatch.bg)
                 .hover(move |button| button.bg(swatch.danger))

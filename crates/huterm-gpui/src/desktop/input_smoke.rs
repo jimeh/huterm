@@ -10,6 +10,10 @@ pub(super) fn key_window_title() -> anyhow::Result<String> {
     native::key_window_title()
 }
 
+pub(super) fn perform_close(view: *mut std::ffi::c_void) -> anyhow::Result<()> {
+    native::perform_close(view)
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     if let Some(mode) = std::env::args().nth(1) {
         return native::clipboard_file(

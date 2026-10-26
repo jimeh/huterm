@@ -687,7 +687,8 @@ impl Mux {
         self.changed();
         self.emit_hierarchy(|_| HierarchyEvent::TabClosed { tab: tab.id });
         if let Some(runtime) = self.terminals.remove(&tab.terminal_id) {
-            runtime.shutdown()?;
+            let stopped = runtime.registry().is_closed();
+            shut_down(runtime, stopped)?;
         }
         Ok(())
     }
@@ -752,15 +753,24 @@ impl Mux {
         &mut self,
         terminals: Vec<TerminalId>,
     ) -> Result<(), MuxError> {
+        // Read before the close signals below, which end every runtime.
+        let stopped: Vec<bool> = terminals
+            .iter()
+            .map(|id| {
+                self.terminals
+                    .get(id)
+                    .is_some_and(|runtime| runtime.registry().is_closed())
+            })
+            .collect();
         for id in &terminals {
             if let Some(runtime) = self.terminals.get(id) {
                 let _ = runtime.client().close();
             }
         }
         let mut failure = None;
-        for id in terminals {
+        for (id, stopped) in terminals.into_iter().zip(stopped) {
             if let Some(runtime) = self.terminals.remove(&id)
-                && let Err(error) = runtime.shutdown()
+                && let Err(error) = shut_down(runtime, stopped)
             {
                 failure = Some(error);
             }
@@ -785,6 +795,24 @@ impl Mux {
     #[must_use]
     pub fn terminal_count(&self) -> usize {
         self.terminals.len()
+    }
+}
+/// Stops and joins a runtime Mux no longer owns. A runtime that had
+/// `stopped` on its own before this close already surfaced its failure to
+/// its viewers, and its teardown stopped its child, so only a timeout, which
+/// may leave a child alive, still reports. A runtime that fails during this
+/// close reports as usual.
+fn shut_down(
+    runtime: TerminalRuntime,
+    stopped: bool,
+) -> Result<(), RuntimeError> {
+    match runtime.shutdown() {
+        Err(error)
+            if stopped && !matches!(error, RuntimeError::ShutdownTimedOut) =>
+        {
+            Ok(())
+        }
+        result => result,
     }
 }
 /// A tab opened by a test with a full-capability viewer subscribed at
@@ -846,6 +874,9 @@ pub enum MuxError {
     /// Current job evidence requires explicit user consent.
     #[error("close requires confirmation")]
     ConfirmationRequired,
+    /// An emptied window's workspace still holds tabs it has not shown yet.
+    #[error("workspace {0:?} still holds tabs")]
+    ViewNotEmpty(WorkspaceId),
     /// A multi-tab close request named no tabs.
     #[error("close request names no tabs")]
     EmptyClose,

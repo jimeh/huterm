@@ -121,15 +121,11 @@ pub fn allow_termination() {
     }
 }
 
-/// Calls the actual `AppKit` termination entrypoint for the native smoke helper.
+/// Calls the actual `AppKit` termination entrypoint for native smoke fixtures.
 /// Invoke this from a foreground task outside an active GPUI App borrow.
 ///
 /// # Errors
 /// Returns an error outside the main thread or if `NSApplication` is unavailable.
-#[allow(
-    dead_code,
-    reason = "the standalone native smoke compiles this helper from the production bridge"
-)]
 pub fn request_termination() -> anyhow::Result<()> {
     ensure!(
         is_main_thread()?,
