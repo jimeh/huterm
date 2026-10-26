@@ -15,6 +15,7 @@ use huterm_protocol::{
 use super::notices::NoticeContent;
 use super::worker_hooks::Stage;
 use super::*;
+use crate::desktop::licenses::LicensesFocus;
 
 /// How long a wait may take before the test fails with the last state it
 /// observed. Below GPUI's 15-second limit for a parked test thread.
@@ -4018,6 +4019,59 @@ fn the_licenses_view_says_when_this_build_has_no_notices(
         licenses_state(cx, window) == Some(LicensesState::Unavailable)
     });
     harness.press(window, "escape");
+    assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
+    assert_eq!(harness.about_focus(window), Some(AboutFocus::Licenses));
+}
+
+#[gpui::test]
+fn licenses_buttons_take_keyboard_focus_and_enter_presses_the_focused_one(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    let focus = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, cx| {
+            view.licenses
+                .as_ref()
+                .map(|licenses| licenses.read(cx).focus())
+        })
+    };
+    for key in "ghostty".chars() {
+        harness.press(window, &key.to_string());
+    }
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Search));
+    harness.press(window, "tab tab");
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Copy));
+    harness.press(window, "enter");
+    harness.cx.update(|cx| {
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        assert!(
+            copied
+                .as_deref()
+                .is_some_and(|text| text.starts_with("MIT License")
+                    && text.contains("Mitchell Hashimoto")),
+            "{copied:?}"
+        );
+    });
+    harness.press(window, "shift-tab");
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Website));
+    // Typing returns focus to the search; with no match, only Done follows.
+    harness.press(window, "z");
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Search));
+    harness.press(window, "tab");
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Done));
+    harness.press(window, "enter");
     assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
     assert_eq!(harness.about_focus(window), Some(AboutFocus::Licenses));
 }

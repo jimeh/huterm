@@ -280,8 +280,10 @@ on Close.
 **Licenses** in the About panel lists the open source software this build
 ships, with each component's version, license, and full license text. Type to
 search by name, version, license, or kind; Up and Down select, Page Up and
-Page Down scroll the text, and **Copy** copies it. Escape clears the search,
-then returns to the About panel.
+Page Down scroll the text, and **Copy** copies it. Tab and Shift-Tab move focus
+from the search to the **Website**, **Copy**, and **Done** buttons, and Enter
+presses the focused one. Escape clears the search, then returns to the About
+panel.
 
 Errors and warnings appear as notices in the bottom-right corner of the
 terminal. Configuration and keybinding diagnostics stay until a reload fixes

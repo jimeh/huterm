@@ -488,8 +488,9 @@ label = "title"
     await key("enter");
     await state("w0.about=false", "w0.terminal_focused=true");
     // Tab focuses About's Licenses button and Enter opens the Licenses view.
-    // Typing filters it, Down selects, and Escape clears the search, returns
-    // to About, then closes it, without reaching the terminal.
+    // Typing filters it, Down selects, Tab reaches Copy and Enter presses it,
+    // and Escape clears the search, returns to About, then closes it, without
+    // reaching the terminal.
     await invoke("about");
     await state("w0.about=true", "w0.about_focus=close");
     await key("tab");
@@ -500,6 +501,12 @@ label = "title"
     await state('w0.licenses_selected=Some("Ghostty")');
     await key("down");
     await state('w0.licenses_selected=Some("Ghostty sprite drawing")');
+    await key("tab");
+    await key("tab");
+    await state("w0.licenses_focus=copy");
+    await key("enter");
+    let licenseText = "";
+    await waitFor(async () => { licenseText = await command("clipboard"); return licenseText.includes("Mitchell Hashimoto"); }, `Copy to write the license, last clipboard ${JSON.stringify(licenseText.slice(0, 80))}`);
     await key("escape");
     await stateWhere((text) => !text.includes("w0.licenses=2 ") && /w0\.licenses=\d{2,} /.test(text), "the search to clear");
     await typeText("acklicensesx");
@@ -749,7 +756,7 @@ label = "title"
     }
     await reloadedTitles(configDocument);
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

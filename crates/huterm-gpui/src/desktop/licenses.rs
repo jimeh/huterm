@@ -47,6 +47,29 @@ enum Load {
 /// Asks the owner to return to the About panel.
 pub(super) struct Done;
 
+/// Where keyboard focus is: the search field, which also takes typing and
+/// list navigation, or one of the buttons. Tab and Shift-Tab move it; Enter
+/// presses the focused button.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum LicensesFocus {
+    #[default]
+    Search,
+    Website,
+    Copy,
+    Done,
+}
+
+impl LicensesFocus {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Search => "search",
+            Self::Website => "website",
+            Self::Copy => "copy",
+            Self::Done => "done",
+        }
+    }
+}
+
 /// What the view shows, for smoke state and tests.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum LicensesState {
@@ -68,6 +91,7 @@ pub(super) struct LicensesView {
     /// The selected position in `matches`.
     selected: usize,
     hover: Option<usize>,
+    focus: LicensesFocus,
     /// The `matches` position whose texts the Copy button last copied.
     copied: Option<usize>,
     colors: OverlayColors,
@@ -96,6 +120,8 @@ impl LicensesView {
         let subscription =
             cx.subscribe(&input, |view, input, _: &Changed, cx| {
                 let query = input.read(cx).text().trim().to_lowercase();
+                // Typing always goes to the search, so focus follows it.
+                view.focus = LicensesFocus::Search;
                 if query != view.query {
                     view.query = query;
                     view.refilter(cx);
@@ -115,6 +141,7 @@ impl LicensesView {
             matches: Vec::new(),
             selected: 0,
             hover: None,
+            focus: LicensesFocus::Search,
             copied: None,
             colors,
             hints,
@@ -140,6 +167,10 @@ impl LicensesView {
         }
     }
 
+    pub(super) fn focus(&self) -> LicensesFocus {
+        self.focus
+    }
+
     pub(super) fn set_presentation(
         &mut self,
         colors: OverlayColors,
@@ -155,8 +186,9 @@ impl LicensesView {
     }
 
     /// Runs one `Palette`-scope catalog command: Up and Down select, Page
-    /// Up and Page Down scroll the license text, and Escape clears the
-    /// search before returning to About. Enter and Tab do nothing here.
+    /// Up and Page Down scroll the license text, Tab and Shift-Tab move
+    /// focus between the search and the buttons, Enter presses the focused
+    /// button, and Escape clears the search before returning to About.
     ///
     /// # Errors
     /// Reports `UnknownCommand` for anything outside that set.
@@ -172,11 +204,12 @@ impl LicensesView {
             ids::PALETTE_PAGE_DOWN => self.scroll_text(1.0, cx),
             ids::PALETTE_PAGE_UP => self.scroll_text(-1.0, cx),
             ids::PALETTE_BACK => self.back(cx),
-            ids::PALETTE_CONFIRM
-            | ids::PALETTE_EXPAND
-            | ids::PALETTE_NEXT_SLOT
-            | ids::PALETTE_PREVIOUS_SLOT
-            | ids::PALETTE_POP => {}
+            ids::PALETTE_EXPAND | ids::PALETTE_NEXT_SLOT => {
+                self.move_focus(true, cx);
+            }
+            ids::PALETTE_PREVIOUS_SLOT => self.move_focus(false, cx),
+            ids::PALETTE_CONFIRM => self.press_focused(cx),
+            ids::PALETTE_POP => {}
             id if FORWARDED_TEXT_COMMANDS.contains(&id) => {
                 self.input.update(cx, |field, cx| {
                     field.run(invocation, window, cx)
@@ -233,8 +266,60 @@ impl LicensesView {
         }
         self.hover = None;
         self.copied = None;
+        self.keep_focus_available();
         self.list_scroll.scroll_to_item(self.selected);
         cx.notify();
+    }
+
+    /// The focus stops in Tab order: the search, then the buttons the
+    /// current state shows.
+    fn focus_order(&self) -> Vec<LicensesFocus> {
+        let mut order = vec![LicensesFocus::Search];
+        if let Some(component) = self.selected_component() {
+            if component.url.is_some() {
+                order.push(LicensesFocus::Website);
+            }
+            order.push(LicensesFocus::Copy);
+        }
+        order.push(LicensesFocus::Done);
+        order
+    }
+
+    /// Returns focus to the search when its button no longer shows.
+    fn keep_focus_available(&mut self) {
+        if !self.focus_order().contains(&self.focus) {
+            self.focus = LicensesFocus::Search;
+        }
+    }
+
+    fn move_focus(&mut self, forward: bool, cx: &mut Context<'_, Self>) {
+        let order = self.focus_order();
+        let index = order
+            .iter()
+            .position(|focus| *focus == self.focus)
+            .unwrap_or(0);
+        let next = if forward {
+            index + 1
+        } else {
+            index + order.len() - 1
+        };
+        self.focus = order[next % order.len()];
+        cx.notify();
+    }
+
+    fn press_focused(&mut self, cx: &mut Context<'_, Self>) {
+        match self.focus {
+            LicensesFocus::Search => {}
+            LicensesFocus::Website => {
+                if let Some(url) =
+                    self.selected_component().and_then(|item| item.url.clone())
+                {
+                    cx.open_url(&url);
+                }
+            }
+            LicensesFocus::Copy => self.copy_selected(cx),
+            LicensesFocus::Done => cx.emit(Done),
+        }
     }
 
     fn select(&mut self, position: usize, cx: &mut Context<'_, Self>) {
@@ -243,6 +328,7 @@ impl LicensesView {
         }
         self.selected = position;
         self.copied = None;
+        self.keep_focus_available();
         self.reset_text();
         self.list_scroll.scroll_to_item(position);
         self.list_scrollbar.show();
@@ -382,7 +468,7 @@ impl LicensesView {
                 div()
                     .p(px(14.0))
                     .text_size(px(12.0))
-                    .text_color(swatch.dim)
+                    .text_color(swatch.muted)
                     .child(format!("No matches for “{}”", self.query)),
             );
         }
@@ -476,17 +562,25 @@ impl LicensesView {
         let mut actions = div().flex().flex_none().items_center().gap(px(8.0));
         if let Some(url) = component.url.clone() {
             actions = actions.child(
-                footer_button("license-website", swatch, false, false)
-                    .on_click(move |_: &ClickEvent, _, cx| cx.open_url(&url))
-                    .child("Website"),
+                self.ring(
+                    footer_button("license-website", swatch, false, false),
+                    LicensesFocus::Website,
+                    swatch,
+                )
+                .on_click(move |_: &ClickEvent, _, cx| cx.open_url(&url))
+                .child("Website"),
             );
         }
         actions = actions.child(
-            footer_button("license-copy", swatch, false, false)
-                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                    view.copy_selected(cx);
-                }))
-                .child(if copied { "Copied" } else { "Copy" }),
+            self.ring(
+                footer_button("license-copy", swatch, false, false),
+                LicensesFocus::Copy,
+                swatch,
+            )
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.copy_selected(cx);
+            }))
+            .child(if copied { "Copied" } else { "Copy" }),
         );
         div()
             .flex()
@@ -612,6 +706,18 @@ impl LicensesView {
             )
     }
 
+    /// `button` with the focus ring while keyboard focus is on `which`.
+    fn ring(
+        &self,
+        button: gpui::Stateful<gpui::Div>,
+        which: LicensesFocus,
+        swatch: Swatch,
+    ) -> gpui::Stateful<gpui::Div> {
+        button.when(self.focus == which, |button| {
+            button.shadow(swatch.focus_ring())
+        })
+    }
+
     fn render_footer(
         &self,
         swatch: Swatch,
@@ -642,6 +748,7 @@ impl LicensesView {
             for (keys, label) in [
                 (&["up", "down"][..], "select"),
                 (&["pageup", "pagedown"][..], "scroll"),
+                (&["tab"][..], "buttons"),
             ] {
                 hints = hints.child(
                     div()
@@ -667,17 +774,19 @@ impl LicensesView {
             .bg(swatch.fg.opacity(0.03))
             .child(hints)
             .child(
-                footer_button("licenses-done", swatch, true, self.hints)
-                    .on_click(
-                        cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(Done)),
-                    )
-                    .child("Done")
-                    .when(self.hints, |button| {
-                        button.child(key_cap_on(
-                            &KeyHint::keys(&["escape"], platform),
-                            swatch.bg,
-                        ))
-                    }),
+                self.ring(
+                    footer_button("licenses-done", swatch, true, self.hints),
+                    LicensesFocus::Done,
+                    swatch,
+                )
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(Done)))
+                .child("Done")
+                .when(self.hints, |button| {
+                    button.child(key_cap_on(
+                        &KeyHint::keys(&["escape"], platform),
+                        swatch.bg,
+                    ))
+                }),
             )
     }
 }
@@ -735,6 +844,9 @@ impl Render for LicensesView {
                     .rounded(px(6.0))
                     .border_1()
                     .border_color(swatch.line_strong)
+                    .when(self.focus == LicensesFocus::Search, |field| {
+                        field.shadow(swatch.focus_ring())
+                    })
                     .bg(swatch.bg)
                     .text_size(px(12.5))
                     .child(self.input.clone()),

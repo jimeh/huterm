@@ -129,7 +129,9 @@ script dependency, Mise tools, Zig's build-time fetches.
   - Up, Down, Ctrl-N, and Ctrl-P change the selection;
   - Page Up and Page Down scroll the license text;
   - Escape clears a non-empty search, then returns to About;
-  - Enter and Tab do nothing.
+  - Tab and Shift-Tab move a visible focus ring from the search to the
+    Website, Copy, and Done buttons, and Enter presses the focused one;
+    typing returns focus to the search.
 
   The Palette-scope router sends commands to the licenses view while it is
   open. The workspace keeps `confirming`, so terminals stay blocked.
@@ -203,6 +205,11 @@ script dependency, Mise tools, Zig's build-time fetches.
   block) have no license file upstream either. Their clarification is the
   standard MIT text naming their Cargo.toml authors, and the entry's title
   says so.
+
+- The plan first had Enter and Tab do nothing in the Licenses view. The UX
+  review found that Copy and Website were then unreachable by keyboard, which
+  the brief requires, so Tab, Shift-Tab, and Enter now move and press button
+  focus.
 
 ## Open questions
 

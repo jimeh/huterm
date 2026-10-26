@@ -11802,11 +11802,38 @@ impl WorkspaceView {
         )
     }
 
+    /// Smoke output for the Licenses view: `closed`, `loading`,
+    /// `unavailable`, or its match count, the Debug-quoted selected name,
+    /// and its keyboard focus.
+    fn licenses_smoke_state(
+        &self,
+        prefix: &str,
+        cx: &Context<'_, Self>,
+    ) -> String {
+        let licenses_focus = self
+            .licenses
+            .as_ref()
+            .map_or("none", |view| view.read(cx).focus().name());
+        let (licenses, licenses_selected) =
+            match self.licenses.as_ref().map(|view| view.read(cx).state()) {
+                None => ("closed".to_owned(), None),
+                Some(LicensesState::Loading) => ("loading".to_owned(), None),
+                Some(LicensesState::Unavailable) => {
+                    ("unavailable".to_owned(), None)
+                }
+                Some(LicensesState::Ready { matches, selected }) => {
+                    (matches.to_string(), selected)
+                }
+            };
+        format!(
+            "{prefix}licenses={licenses} {prefix}licenses_selected={licenses_selected:?} {prefix}licenses_focus={licenses_focus}"
+        )
+    }
+
     /// Smoke output for the transient UI, each field named after `prefix`:
     /// the menu (open, focused, selected item, targeted tab index), the
-    /// About panel and its focused button, the Licenses view (`closed`,
-    /// `loading`, `unavailable`, or its match count, and the Debug-quoted
-    /// selected name), the close confirmation (showing, focused button,
+    /// About panel and its focused button, the Licenses view, the close
+    /// confirmation (showing, focused button,
     /// Debug-quoted title), notice focus, the Debug-quoted native window
     /// title, the painted menu button and window-controls bounds in logical
     /// points, the window scale, the sampled frame (granted client decorations, applied inset,
@@ -11835,17 +11862,7 @@ impl WorkspaceView {
             AboutFocus::Copy => "copy",
             AboutFocus::Close => "close",
         };
-        let (licenses, licenses_selected) =
-            match self.licenses.as_ref().map(|view| view.read(cx).state()) {
-                None => ("closed".to_owned(), None),
-                Some(LicensesState::Loading) => ("loading".to_owned(), None),
-                Some(LicensesState::Unavailable) => {
-                    ("unavailable".to_owned(), None)
-                }
-                Some(LicensesState::Ready { matches, selected }) => {
-                    (matches.to_string(), selected)
-                }
-            };
+        let licenses = self.licenses_smoke_state(prefix, cx);
         let menu = self.menu_smoke_state(prefix, window, cx);
         let dialog_focus = match self.close.dialog_focus {
             DialogFocus::Primary => "primary",
@@ -11900,7 +11917,7 @@ impl WorkspaceView {
         #[cfg(not(target_os = "macos"))]
         let traffic_lights = "none";
         format!(
-            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {prefix}licenses={licenses} {prefix}licenses_selected={licenses_selected:?} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {licenses} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
             self.close.confirmation.is_some(),
             self.drawn_dialog_groups.as_deref().unwrap_or("none"),
             self.notice_focus.is_focused(window),

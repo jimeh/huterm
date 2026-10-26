@@ -304,9 +304,11 @@ and Close buttons, `dialog_confirm` presses the focused one, and
 
 The Licenses view takes the `Palette` context, so the palette bindings apply
 there: `palette_select_next` and `palette_select_previous` move the selection,
-`palette_page_down` and `palette_page_up` scroll the license text, the text
-commands edit the search, and `palette_back` clears the search or returns to
-the About panel.
+`palette_page_down` and `palette_page_up` scroll the license text,
+`palette_expand` and `palette_previous_slot` move focus between the search and
+the buttons, `palette_confirm` presses the focused button, the text commands
+edit the search, and `palette_back` clears the search or returns to the About
+panel.
 
 | Command | macOS | Linux |
 | --- | --- | --- |
