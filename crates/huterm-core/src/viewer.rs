@@ -736,9 +736,11 @@ impl TerminalViewer {
 
     /// Sets how much history the terminal keeps, after earlier input. The
     /// limit belongs to the terminal, not this viewer: the latest request
-    /// from any viewer that may send input applies. Lowering it evicts the
-    /// oldest rows at once and invalidates every viewer's snapshot; raising
-    /// it changes nothing they show.
+    /// from any viewer that may send input applies. When history no longer
+    /// fits, the oldest rows are evicted at once, and every viewer's
+    /// snapshot is invalidated if the primary screen showed them. That
+    /// usually follows a lower limit, but a raised byte limit can evict too
+    /// when pages have grown past it.
     ///
     /// # Errors
     ///

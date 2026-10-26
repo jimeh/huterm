@@ -106,7 +106,8 @@ fn zero_keeps_no_history_until_a_later_limit_restores_it() {
     write_lines(&mut engine, 50, 50);
     assert_eq!(history(&engine), 50);
 
-    engine.set_scrollback(ScrollbackLimit::NONE).unwrap();
+    // Zero erases history rather than pruning pages; it still counts.
+    assert!(engine.set_scrollback(ScrollbackLimit::NONE).unwrap());
     assert_eq!(history(&engine), 0);
     let snapshot = engine.snapshot().unwrap();
     assert_eq!(snapshot.history_size, 0);

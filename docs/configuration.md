@@ -442,17 +442,18 @@ than exact counts:
 - A nonzero row limit smaller than one page keeps up to one page.
 - `0` in either setting keeps no history, whatever the other says.
 
-`scrollback_bytes` takes a byte count or a string of digits and a unit, with
-at most one space between them: `B`, `KB`, `MB`, and `GB` count in powers of
-1000, and `KiB`, `MiB`, and `GiB` in powers of 1024. Units ignore case, so `b`
-also means bytes. Fractions such as `"1.5GiB"` are not accepted. The size
-covers the memory Ghostty allocates for the terminal's grid: the visible
-screen as well as its history, so a taller window leaves less of it for
-history. Ghostty always allows the visible screen rounded up to whole pages,
-plus one more page, so a very small value still keeps between one and two
-pages of history. It is a page-granular limit, not a memory budget: Ghostty
-checks it when it allocates a page and when the limit changes, so a page that
-grows for combining characters or styles can pass it until then, and it does
+`scrollback_bytes` takes a byte count or a string of digits and a unit, with at
+most one space between them: `B`, `KB`, `MB`, and `GB` count in powers of 1000,
+and `KiB`, `MiB`, and `GiB` in powers of 1024. Units ignore case, so `b` also
+means bytes. Fractions such as `"1.5GiB"` are not accepted. The size covers the
+memory Ghostty allocates for the terminal's grid: the visible screen as well as
+its history, so a taller window leaves less of it for history. Ghostty always
+allows the visible screen rounded up to whole pages, plus one more page, so a
+very small value still keeps up to about two pages of history, depending on how
+the screen fills its pages; on a tall, wide window that can be far less than one
+page. It is a page-granular limit, not a memory budget: Ghostty checks it when
+it allocates a page and when a limit is applied, so pages that grow for
+combining characters or styles can push history past it until then, and it does
 not count memory outside the grid.
 
 Without `scrollback_bytes`, Huterm still gives Ghostty a size allowance, so
@@ -472,14 +473,15 @@ Reload applies new limits to every open terminal, including tabs in the
 background and tabs whose shell has exited. Lowering either limit discards the
 oldest rows at once. Raising one lets history grow again but does not restore
 rows already discarded. A raise usually discards nothing and leaves views and
-selections as they were, but a page that grew past the size limit is discarded
-when any new limit is applied. The limits apply to the normal screen's history
-even while a full-screen program such as vim shows the alternate screen.
-Narrowing a window or enlarging its font rewraps long lines onto more rows, and
-widening it makes each row larger, so either can also discard the oldest rows.
-When history shrinks, a view scrolled into history stays on the same rows if
-they remain and otherwise moves to the oldest row left, and any selection is
-cleared. **Clear Scrollback** and **Reset Terminal** keep the limits.
+selections as they were, but when grown pages have pushed history past the size
+limit, applying any new limit discards the oldest rows. The limits apply to the
+normal screen's history even while a full-screen program such as vim shows the
+alternate screen. Narrowing a window or enlarging its font rewraps long lines
+onto more rows, and widening it makes each row larger, so either can also
+discard the oldest rows. When history shrinks, a view scrolled into history
+stays on the same rows if they remain and otherwise moves to the oldest row
+left, and any selection is cleared. **Clear Scrollback** and **Reset Terminal**
+keep the limits.
 
 These settings cover only the history a running terminal holds in memory.
 Huterm does not save history across restarts; saved history will have its own
