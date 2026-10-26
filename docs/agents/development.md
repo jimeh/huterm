@@ -130,7 +130,9 @@ remove retained workspace `dist` output before building, so artifacts from an
 older version cannot enter the new export. The copied workspace has no Git
 metadata. Linux build artifacts, native source preparation, and dependency
 caches stay in volumes scoped to the checkout's real path and architecture.
-The runner allows only one active run for each such pair.
+The runner allows only one active run for each such pair. Commands run as the
+image's unprivileged `huterm` user, as CI runs as a normal user; as root, a
+test of a directory made unusable with mode 0600 always failed.
 
 Containers are removed on completion or interruption; cache volumes remain. To
 remove only this worktree's caches for one architecture:
@@ -783,9 +785,18 @@ two-minute timeout otherwise delays every boot before the guest agent answers.
 
 ## Docker rules
 
-Mise's Rust install points at `/root/.cargo/bin` in the image; changing
+Mise's Rust install points at `/home/huterm/.cargo/bin` in the image; changing
 `CARGO_HOME` at runtime makes Mise report Rust missing. Cache Cargo's registry
 and Git downloads separately while retaining the image's Cargo home.
+
+The image installs its tools as `huterm` and gives that user the `/workspace`
+and `/cache` mount points, which Docker copies into each new volume. The
+entrypoint starts as root: it copies the source, which `huterm` may not be
+able to read on a Linux host, then gives `huterm` every file in both volumes
+that it does not own, and runs the command as `huterm` through `setpriv`.
+Older images ran as root and still do on branches that predate the change,
+so the ownership pass runs every time instead of once. Keep build steps that
+need root before the image's `USER huterm` line.
 
 The local Linux runner omits Git metadata because linked worktrees reference
 paths outside the source mount. It passes host HEAD as HUTERM_SOURCE_REVISION;
