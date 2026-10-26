@@ -370,6 +370,16 @@ impl DesktopHarness {
         }
     }
 
+    /// Presses each space-separated keystroke in `keys` in `window`. GPUI
+    /// gives unmodified keys their typed character. A modified key that
+    /// must carry one, as Linux reports Alt keys, names it as `alt-j->j`.
+    fn press(&mut self, window: AnyWindowHandle, keys: &str) {
+        for key in keys.split(' ') {
+            self.cx
+                .dispatch_keystroke(window, Keystroke::parse(key).unwrap());
+        }
+    }
+
     /// Runs every window's tasks, delivering frames, until `done` holds.
     /// Fails with the last observed state after [`WAIT_DEADLINE`].
     fn wait_for(&mut self, what: &str, done: impl FnMut(&mut App) -> bool) {
@@ -3461,15 +3471,6 @@ impl DesktopHarness {
         })
     }
 
-    /// Presses `key`, a single modified character such as `alt-j`, in
-    /// `window`. The keystroke carries its character, as Linux reports
-    /// it, since Linux encodes Alt from that character.
-    fn press(&mut self, window: AnyWindowHandle, key: &str) {
-        let mut keystroke = Keystroke::parse(key).unwrap();
-        keystroke.key_char = Some(keystroke.key.clone());
-        self.cx.dispatch_keystroke(window, keystroke);
-    }
-
     /// Waits until `window`'s focused terminal renders exactly `expected`
     /// of the pane layout contexts.
     fn wait_contexts(&mut self, window: AnyWindowHandle, expected: &[&str]) {
@@ -3501,7 +3502,7 @@ fn a_direction_binding_moves_focus_toward_a_pane_or_reaches_the_shell(
     };
     // A lone pane has nothing to its left, so the key reaches its shell.
     harness.wait_contexts(window, &[]);
-    harness.press(window, "alt-j");
+    harness.press(window, "alt-j->j");
     harness.type_line(window, "a");
     harness.wait_for("the lone pane's shell to read alt-j", |cx| {
         pane_screen(cx, window, tab, first)
@@ -3509,18 +3510,18 @@ fn a_direction_binding_moves_focus_toward_a_pane_or_reaches_the_shell(
     });
     let second = harness.split(tab, first, SplitDirection::Right, KEYS);
     harness.wait_contexts(window, &["split", "has_pane_right"]);
-    harness.press(window, "alt-l");
+    harness.press(window, "alt-l->l");
     harness.wait_for("focus to move right", |cx| focus(cx) == Some(second));
     // At the tab's right edge the key reaches the shell and focus stays.
     harness.wait_contexts(window, &["split", "has_pane_left"]);
-    harness.press(window, "alt-l");
+    harness.press(window, "alt-l->l");
     harness.type_line(window, "b");
     harness.wait_for("the right pane's shell to read alt-l", |cx| {
         pane_screen(cx, window, tab, second)
             .is_some_and(|text| text.contains("got:^lb"))
     });
     assert_eq!(harness.cx.update(focus), Some(second));
-    harness.press(window, "alt-j");
+    harness.press(window, "alt-j->j");
     harness.wait_for("focus to move back left", |cx| focus(cx) == Some(first));
 }
 
@@ -3593,7 +3594,7 @@ fn a_direction_binding_reaches_the_shell_while_its_target_installs(
             .is_some_and(|info| info.layout.pane_count() == 2)
             && pane_contexts(cx, window).as_deref() == Some(&[][..])
     });
-    harness.press(window, "alt-l");
+    harness.press(window, "alt-l->l");
     harness.type_line(window, "a");
     harness.wait_for("the shell to read alt-l", |cx| {
         pane_screen(cx, window, tab, first)
@@ -3601,7 +3602,7 @@ fn a_direction_binding_reaches_the_shell_while_its_target_installs(
     });
     hooks.release(Stage::Subscribe);
     harness.wait_contexts(window, &["split", "has_pane_right"]);
-    harness.press(window, "alt-l");
+    harness.press(window, "alt-l->l");
     harness.wait_for("focus to move to the installed pane", |cx| {
         panes_shown(cx, window, tab).is_some_and(|(_, focus)| focus == second)
     });
@@ -3632,7 +3633,7 @@ fn a_zoomed_pane_moves_focus_unless_its_binding_excludes_zoom(
     harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
     harness.wait_contexts(window, &["split", "pane_zoomed", "has_pane_right"]);
     // A binding without `!pane_zoomed` unzooms and moves focus.
-    harness.press(window, "alt-l");
+    harness.press(window, "alt-l->l");
     harness.wait_for("focus to move right and unzoom", |cx| {
         panes_shown(cx, window, tab).is_some_and(|(_, focus)| focus == second)
             && pane_shown(cx, window, tab, first)
@@ -3642,7 +3643,7 @@ fn a_zoomed_pane_moves_focus_unless_its_binding_excludes_zoom(
     // One with it leaves a zoomed pane alone and reaches the shell.
     harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
     harness.wait_contexts(window, &["split", "pane_zoomed", "has_pane_left"]);
-    harness.press(window, "alt-j");
+    harness.press(window, "alt-j->j");
     harness.type_line(window, "c");
     harness.wait_for("the zoomed pane's shell to read alt-j", |cx| {
         pane_screen(cx, window, tab, second)
@@ -4182,17 +4183,23 @@ fn licenses_state(
 }
 
 impl DesktopHarness {
-    fn press(&mut self, window: AnyWindowHandle, keys: &str) {
-        for key in keys.split(' ') {
-            self.cx
-                .dispatch_keystroke(window, Keystroke::parse(key).unwrap());
-        }
-    }
-
     /// Whether `window`'s About panel shows with keyboard focus on `focus`.
     fn about_focus(&mut self, window: AnyWindowHandle) -> Option<AboutFocus> {
         self.update_view(window, |view, _, _| {
             view.about.is_some().then_some(view.about_focus)
+        })
+    }
+
+    /// The keyboard focus in `window`'s Licenses view, or `None` while it
+    /// is closed.
+    fn licenses_focus(
+        &mut self,
+        window: AnyWindowHandle,
+    ) -> Option<LicensesFocus> {
+        self.update_view(window, |view, _, cx| {
+            view.licenses
+                .as_ref()
+                .map(|licenses| licenses.read(cx).focus())
         })
     }
 }
@@ -4338,19 +4345,12 @@ fn licenses_buttons_take_keyboard_focus_and_enter_presses_the_focused_one(
             Some(LicensesState::Ready { .. })
         )
     });
-    let focus = |harness: &mut DesktopHarness| {
-        harness.update_view(window, |view, _, cx| {
-            view.licenses
-                .as_ref()
-                .map(|licenses| licenses.read(cx).focus())
-        })
-    };
     for key in "ghostty".chars() {
         harness.press(window, &key.to_string());
     }
-    assert_eq!(focus(&mut harness), Some(LicensesFocus::Search));
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
     harness.press(window, "tab tab");
-    assert_eq!(focus(&mut harness), Some(LicensesFocus::Copy));
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Copy));
     harness.press(window, "enter");
     harness.cx.update(|cx| {
         let copied = cx.read_from_clipboard().and_then(|item| item.text());
@@ -4363,12 +4363,12 @@ fn licenses_buttons_take_keyboard_focus_and_enter_presses_the_focused_one(
         );
     });
     harness.press(window, "shift-tab");
-    assert_eq!(focus(&mut harness), Some(LicensesFocus::Website));
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
     // Typing returns focus to the search; with no match, only Done follows.
     harness.press(window, "z");
-    assert_eq!(focus(&mut harness), Some(LicensesFocus::Search));
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
     harness.press(window, "tab");
-    assert_eq!(focus(&mut harness), Some(LicensesFocus::Done));
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Done));
     harness.press(window, "enter");
     assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
     assert_eq!(harness.about_focus(window), Some(AboutFocus::Licenses));
@@ -4406,21 +4406,14 @@ fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
     // A press inside the panel moves keyboard focus back to the search, so
     // Enter no longer presses the button Tab reached.
     harness.press(window, "tab tab tab");
-    let focus = |harness: &mut DesktopHarness| {
-        harness.update_view(window, |view, _, cx| {
-            view.licenses
-                .as_ref()
-                .map(|licenses| licenses.read(cx).focus())
-        })
-    };
-    assert_eq!(focus(&mut harness), Some(LicensesFocus::Done));
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Done));
     let centre = harness.update_view(window, |_, window, _| {
         let size = window.viewport_size();
         gpui::point(size.width / 2.0, size.height / 2.0)
     });
     VisualTestContext::from_window(window, &harness.cx)
         .simulate_click(centre, gpui::Modifiers::none());
-    assert_eq!(focus(&mut harness), Some(LicensesFocus::Search));
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
     harness.press(window, "enter");
     assert!(harness.cx.update(|cx| licenses_state(cx, window)).is_some());
 }
