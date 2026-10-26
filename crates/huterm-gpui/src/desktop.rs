@@ -28,9 +28,7 @@ use crate::assets::Icon;
 use crate::commands::{
     InvokeApp, InvokePalette, InvokeTerminal, InvokeWindow, invoke,
 };
-use crate::config::{
-    self, Config, LinkModifiersExt, TabsConfig, Theme, WindowConfig,
-};
+use crate::config::{self, Config, LinkModifiersExt, Theme, WindowConfig};
 #[cfg(test)]
 use crate::input_queue::buffered_input_bytes;
 use crate::input_queue::{
@@ -421,20 +419,10 @@ struct TerminalView {
     font_family: String,
     font_size: Pixels,
     window_config: WindowConfig,
-    /// The tab configuration with its position resolved for the window;
-    /// the workspace keeps it current, so `titlebar` never reaches layout
-    /// without a title bar.
-    tabs_config: TabsConfig,
-    sidebar_width: Pixels,
-    tab_presentation: windows::tab_visibility::Presentation,
+    /// Where the view sits in its window; the workspace computes it from
+    /// the window's chrome and pushes it.
+    geometry: TerminalGeometry,
     tab_overlay: Option<Bounds<Pixels>>,
-    chrome_hidden: bool,
-    fullscreen_insets: gpui::Edges<Pixels>,
-    /// Shelf beside a display notch that holds the top tab bar, if any.
-    notch_shelf: Option<Bounds<Pixels>>,
-    /// The window frame the chrome sits in; the workspace keeps it current
-    /// with the Linux client-side decorations GPUI reports.
-    window_frame: windows::WindowFrame,
     theme: Theme,
     /// Failures waiting for the window's notice stack, oldest first. The
     /// tab's activity drain collects them with [`TerminalView::refresh`].
@@ -722,14 +710,8 @@ impl TerminalView {
             last_cell_size: None,
             font_size: metrics.font_size,
             window_config: config.window,
-            tabs_config: config.tabs,
-            sidebar_width: windows::SIDEBAR_WIDTH,
-            tab_presentation: windows::tab_visibility::Presentation::Hidden,
+            geometry: TerminalGeometry::default(),
             tab_overlay: None,
-            chrome_hidden: false,
-            fullscreen_insets: gpui::Edges::default(),
-            notch_shelf: None,
-            window_frame: windows::WindowFrame::default(),
             theme,
             failures: Vec::new(),
             failure_wake,
@@ -2317,20 +2299,11 @@ impl TerminalView {
         )
     }
 
-    /// The terminal scrollbar options for the current chrome: with a right
-    /// tab bar under top chrome, the track starts below the rounded corner
-    /// so the patch never covers the thumb.
+    /// The terminal scrollbar options for the pushed geometry's track
+    /// margins.
     fn scrollbar_options(&self) -> ScrollbarOptions {
         ScrollbarOptions {
-            margins: terminal_track_margins(
-                self.tab_presentation,
-                self.tabs_config.position,
-                windows::title_row_height(
-                    self.chrome_hidden,
-                    self.window_frame,
-                ),
-                self.window_config,
-            ),
+            margins: self.geometry.track_margins,
             ..TERMINAL_SCROLLBAR
         }
     }
@@ -2389,18 +2362,12 @@ impl TerminalView {
             .any(|button| self.mouse.held(button))
     }
 
+    /// The terminal content bounds in window coordinates: the pushed
+    /// bounds, or the whole window for a view no workspace hosts.
     fn content_bounds(&self, window: &Window) -> Bounds<Pixels> {
-        windows::ChromeLayout::for_tabs(
-            window.viewport_size(),
-            windows::title_row_height(self.chrome_hidden, self.window_frame),
-            self.tabs_config,
-            self.sidebar_width,
-            self.fullscreen_insets,
-            self.notch_shelf,
-            self.window_frame,
-        )
-        .present(self.tab_presentation, self.tabs_config.position, 0.0)
-        .terminal
+        self.geometry.bounds.unwrap_or_else(|| {
+            Bounds::new(point(px(0.0), px(0.0)), window.viewport_size())
+        })
     }
     fn viewport(&self, window: &Window) -> gpui::Size<Pixels> {
         self.content_bounds(window).size
@@ -3361,6 +3328,30 @@ fn terminal_scrollbar_geometry(
 /// The terminal scrollbar's track margins: with a right tab bar shown
 /// under a titlebar, the track starts below the rounded corner patch so the
 /// patch never covers the thumb.
+/// Where a terminal view sits in its window, which its workspace computes
+/// from the window's chrome. Painting, the pointer, scrollbars, and the
+/// requested grid all read it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerminalGeometry {
+    /// Content bounds in window coordinates. `None` fills the window, for a
+    /// view no workspace hosts, such as a test window's root view.
+    bounds: Option<Bounds<Pixels>>,
+    /// Scrollbar track insets that keep the thumb clear of chrome corners.
+    track_margins: TrackMargins,
+}
+
+impl Default for TerminalGeometry {
+    fn default() -> Self {
+        Self {
+            bounds: None,
+            track_margins: TERMINAL_SCROLLBAR.margins,
+        }
+    }
+}
+
+/// The terminal scrollbar's track margins beside the window's chrome: with
+/// a right tab bar under top chrome, the track starts below the rounded
+/// corner so the patch never covers the thumb.
 fn terminal_track_margins(
     presentation: windows::tab_visibility::Presentation,
     position: huterm_config::TabPosition,

@@ -102,15 +102,25 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 ## huterm-core foreground-job tests under full local runs
 
 - **Label:**
-  `terminal::tests::close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
-  and
+  `terminal::tests::close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`,
   `mux::lifecycle::tests::orphans_holding_the_terminal_need_consent_and_are_cleaned_up`
-  ("orphan missing").
+  ("orphan missing"), and
+  `mux::lifecycle::tests::foreground_exit_and_unavailable_runtime_are_assessed_conservatively`
+  ("foreground job not observed").
 - **Rate:** about 1 in 3 full `cargo test -p huterm-core --lib` runs on a
-  developer Mac, at the 3-second "foreground job not detected" deadline. Both
-  pass alone and in CI. On 2026-10-20, during the dependency refresh, 4 of 7
-  full runs on a loaded developer Mac failed one of them (3 were the orphan
-  test).
+  developer Mac, at the 3-second "foreground job not detected" deadline. All
+  three pass alone and in CI. On 2026-10-20, during the dependency refresh, 4
+  of 7 full runs on a loaded developer Mac failed one of them (3 were the
+  orphan test). On 2026-10-26, during the split-pane runtime work (PR #245),
+  one full local `mise run test` run failed the
+  `foreground_exit_and_unavailable_runtime_are_assessed_conservatively` test:
+  its last assessment still showed `sleep 30` in a background group, not yet
+  the foreground one `fg` moves it to. It passed in 5 isolated reruns and 3
+  full reruns of the `mux::` suite, and PR #245 did not change the code it
+  exercises. Later that day one `mise run verify` run for the pushed terminal
+  geometry work, which changes no `huterm-core` code, failed both that test
+  and `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
+  in the same run; the rerun passed.
 - **Triage:** rerun once before suspecting the change. A fix would replace the
   fixed deadline with a condition-driven wait.
 

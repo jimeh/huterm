@@ -113,8 +113,8 @@ impl ViewHarness {
             window.activate_window();
             view.update(cx, |view, cx| {
                 // As a window root the view paints at the window's origin, so
-                // its content must start there too.
-                view.chrome_hidden = true;
+                // its content must start there too: no workspace pushes
+                // geometry, so the view fills the window.
                 assert_eq!(
                     view.content_bounds(window).origin,
                     gpui::Point::default(),
@@ -571,8 +571,12 @@ fn a_hovered_link_is_found_again_after_a_local_resize_without_control(
     // stays the controller's. (A simulated window resize would also move
     // GPUI's test pointer to the window's corner.)
     harness.update(|view, window, cx| {
-        view.tabs_config.position = config::TabPosition::Bottom;
-        view.tab_presentation = windows::tab_visibility::Presentation::Reserved;
+        // A 32-point bar takes the bottom of the window.
+        let viewport = window.viewport_size();
+        view.geometry.bounds = Some(gpui::Bounds::new(
+            gpui::Point::default(),
+            gpui::size(viewport.width, viewport.height - gpui::px(32.0)),
+        ));
         assert_eq!(view.content_bounds(window).origin, gpui::Point::default());
         view.resize_to_layout(window, true);
         cx.notify();

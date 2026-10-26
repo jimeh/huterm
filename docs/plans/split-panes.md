@@ -1,7 +1,8 @@
 # Split panes
 
 Status: in progress. Approved on 2026-10-26 after a Claude review and two
-Codex review rounds; PR 1 (the runtime split tree) is in progress. Plans
+Codex review rounds. PR 1 (the runtime split tree) merged in #245; PR 2
+(pushed terminal geometry) is in progress. Plans
 [issue #28][issue-28] within [epic #12][issue-12], and sets the pane UX that
 [#29][issue-29] and [#30][issue-30] build on.
 
@@ -904,6 +905,26 @@ Recorded with PR 1:
 - Zooming a lone pane fails with `InvalidLayout(LayoutError::LastPane)`.
 - A split that fails to spawn still advances `Mux::revision`, because
   identity allocation advances it, as a failed `open_tab` already does.
+
+Recorded with PR 2:
+
+- `TerminalGeometry` holds the bounds and the scrollbar track margins. The
+  quiet flag is an argument of the resize rather than part of the value,
+  because it describes one change, not the geometry: a layout sync passes it
+  when the tab bar presentation changed since the previous sync, which
+  `WorkspaceView::synced_presentation` records.
+- `bounds` is optional: a view no workspace hosts, such as a tier 1 test
+  window's root view, fills its window.
+- Every push site now derives chrome from the workspace's quake-aware
+  `chrome_hidden()`. The fullscreen sync used to push the fullscreen
+  controller's flag, which the next layout sync then corrected in a Quake
+  window.
+- In place of a unit test comparing `terminal_geometry` with the old
+  `content_bounds`, which would compare one `ChromeLayout` expression with
+  itself, a tier 2 test drags the sidebar with two tabs and checks that every
+  view holds the window's geometry, that the hidden view keeps its grid, and
+  that it resizes when shown. The fullscreen smoke's `retained` field now
+  compares each view's geometry with the window's.
 
 [issue-8]: https://github.com/jimeh/huterm/issues/8
 [issue-12]: https://github.com/jimeh/huterm/issues/12

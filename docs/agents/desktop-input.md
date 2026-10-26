@@ -142,9 +142,9 @@ during the drag to avoid false application focus-out/in reports. TabStrip owns
 pixel geometry for rendering, reveal, wheel input, and drag slots;
 WorkspaceView owns its only scroll offset. Include that offset in drop
 mapping. Edge autoscroll runs on the window animation clock with bounded elapsed
-time. Manual scrolling must not pin the active tab. Pass the same preferred
-sidebar width to ChromeLayout in WorkspaceView and TerminalView; synchronize
-retained views on resize and before activation. Resolve window-size caps
+time. Manual scrolling must not pin the active tab. A sidebar resize pushes
+the new terminal geometry into every retained view and resizes only the shown
+ones; hidden views resize before activation. Resolve window-size caps
 without overwriting the preferred width. Commit canonical Mux order on a
 worker and reorder retained views without selecting or recreating them.
 
