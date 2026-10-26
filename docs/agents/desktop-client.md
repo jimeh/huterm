@@ -104,8 +104,11 @@ and PTY resizing. `WorkspaceView::terminal_geometry` derives each view's
 `TerminalGeometry`, its bounds and scrollbar track margins, from it, and every
 site that changes chrome pushes that value into the views; `TerminalView`
 never computes chrome itself, and a view no workspace hosts fills its window.
-Pushing does not resize: views resize where they did before, on render while
-shown and on activation while hidden. Inside those bounds, `TerminalLayout`
+Pushing does not resize: views resize where they did before. A shown view
+resizes on render. Hidden views resize through the layout sync, when the
+layout is pending, the scale or cell size changed, the geometry differs, or
+the tab bar appeared or hid; through the fullscreen sync; and otherwise on
+activation. Inside those bounds, `TerminalLayout`
 computes the requested grid, which the view reports and the PTY follows while
 the view controls; `requested_grid` is never what the view draws.
 `GridGeometry` maps between window positions and the displayed grid, the

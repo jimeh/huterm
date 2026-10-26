@@ -925,6 +925,17 @@ Recorded with PR 2:
   view holds the window's geometry, that the hidden view keeps its grid, and
   that it resizes when shown. The fullscreen smoke's `retained` field now
   compares each view's geometry with the window's.
+- Two tier 1 tests changed with the removed fields: the harness no longer
+  sets `chrome_hidden`, since an unhosted view fills its window, and
+  `a_hovered_link_is_found_again_after_a_local_resize_without_control`
+  shortens the pushed bounds instead of setting a bottom bar.
+- The fullscreen sync now pushes the current tab bar presentation with the
+  rest of the chrome. When fullscreen also hides or shows the bar, a view
+  resizes once to its final size instead of once to an intermediate size and
+  again at the next layout sync.
+- Because the pushed bounds include the viewport size, a layout sync after a
+  viewport change resizes hidden views even when no bounds observer set
+  `layout_pending`.
 
 [issue-8]: https://github.com/jimeh/huterm/issues/8
 [issue-12]: https://github.com/jimeh/huterm/issues/12

@@ -3325,9 +3325,6 @@ fn terminal_scrollbar_geometry(
     )
 }
 
-/// The terminal scrollbar's track margins: with a right tab bar shown
-/// under a titlebar, the track starts below the rounded corner patch so the
-/// patch never covers the thumb.
 /// Where a terminal view sits in its window, which its workspace computes
 /// from the window's chrome. Painting, the pointer, scrollbars, and the
 /// requested grid all read it.
