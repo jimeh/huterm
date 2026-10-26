@@ -330,6 +330,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "walk every emitting operation through one evolving runtime"
+    )]
     fn reducer_follows_every_emitting_operation() {
         let mut mux = Mux::default();
         let (mut state, subscription) = mux.subscribe_hierarchy();
@@ -396,6 +400,26 @@ mod tests {
         step(&mut mux, &mut state);
         mux.set_pane_zoom(alpha, one, None).unwrap();
         step(&mut mux, &mut state);
+        // Closing every sibling of the zoomed pane clears the zoom with the
+        // last close, which leaves one pane.
+        mux.set_pane_zoom(alpha, one, Some(right)).unwrap();
+        step(&mut mux, &mut state);
+        let others: Vec<_> = mux
+            .tab(one)
+            .unwrap()
+            .layout()
+            .panes()
+            .into_iter()
+            .map(|pane| pane.id)
+            .filter(|pane| *pane != right)
+            .collect();
+        mux.close_pane(alpha, one, others[0]).unwrap();
+        step(&mut mux, &mut state);
+        assert_eq!(state.tab(one).unwrap().zoomed, Some(right));
+        mux.close_pane(alpha, one, others[1]).unwrap();
+        step(&mut mux, &mut state);
+        assert_eq!(state.tab(one).unwrap().zoomed, None);
+        assert_eq!(mux.tab(one).unwrap().zoomed(), None);
 
         // [one, two, three] -> [three, one, two] -> [one, two, three].
         mux.reorder_tab(alpha, three, Some(one)).unwrap();
@@ -555,6 +579,24 @@ mod tests {
         assert_eq!((mux.revision, mux.hierarchy_seq()), (revision, seq + 2));
         mux.set_pane_zoom(workspace, tab, Some(right)).unwrap();
         assert_eq!(mux.hierarchy_seq(), seq + 2);
+
+        // A refused split changes nothing, not even the close revision.
+        mux.resize_split(workspace, tab, root, &children, &[1, 999_999])
+            .unwrap();
+        let (seq, terminals) = (mux.hierarchy_seq(), mux.terminal_count());
+        assert!(matches!(
+            mux.split_pane(
+                workspace,
+                tab,
+                left,
+                SplitDirection::Right,
+                &command("read value"),
+            ),
+            Err(crate::MuxError::PaneTooSmall(pane)) if pane == left
+        ));
+        assert_eq!(mux.revision, revision);
+        assert_eq!(mux.hierarchy_seq(), seq);
+        assert_eq!(mux.terminal_count(), terminals);
 
         // Splits and pane closes change what a close covers.
         let below =

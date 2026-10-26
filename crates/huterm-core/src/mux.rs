@@ -551,6 +551,12 @@ impl Mux {
         command: &TerminalCommand,
     ) -> Result<OpenedPane, MuxError> {
         self.select_workspace_pane(workspace, tab, pane)?;
+        // Refuse before allocating: allocation advances the close revision,
+        // and a refused split must leave pending close tickets valid.
+        self.tab_record(workspace, tab)?
+            .layout
+            .check_split(pane, direction)
+            .map_err(|error| layout_error(error, pane))?;
         let added = self.new_pane(command)?;
         let split = SplitId::in_runtime(self.runtime_id, self.allocate()?);
         let layout = self.tab_record(workspace, tab)?.layout.with_split(
@@ -575,7 +581,8 @@ impl Mux {
     }
     /// Closes a pane and joins its terminal workers, leaving its siblings
     /// running; they take its space. Closing a tab's only pane closes the
-    /// tab.
+    /// tab. The shared zoom clears when it named the pane or one pane
+    /// remains.
     /// # Errors
     /// Rejects foreign, missing, or nonmember targets, or reports failed
     /// terminal cleanup after the pane was removed.
@@ -601,7 +608,8 @@ impl Mux {
         self.changed();
         let record = self.tab_record_mut(workspace, tab)?;
         record.layout = layout;
-        if record.zoomed == Some(pane) {
+        // A shared zoom ends with its pane, and a lone pane has none.
+        if record.zoomed == Some(pane) || record.layout.pane_count() < 2 {
             record.zoomed = None;
         }
         self.emit_layout(workspace, tab);

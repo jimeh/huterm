@@ -985,6 +985,18 @@ fn a_pane_ticket_covers_its_own_terminal_and_the_last_pane_closes_the_tab() {
     );
     let tab = idle.tab.id;
     let idle_pane = idle.tab.first_pane().id;
+    // A busy pane's own ticket needs consent while its sibling stays.
+    let busy_ticket = mux
+        .prepare_close(CloseRequest::Pane {
+            workspace,
+            tab,
+            pane: busy.pane.id,
+        })
+        .unwrap();
+    assert!(matches!(busy_ticket.effect(), CloseEffect::Pane { .. }));
+    let busy_assessment = busy_ticket.check_jobs();
+    assert_eq!(busy_assessment.terminals(), [busy.pane.terminal_id]);
+    assert!(busy_assessment.needs_confirmation());
     let ticket = mux
         .prepare_close(CloseRequest::Pane {
             workspace,

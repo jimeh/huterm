@@ -260,6 +260,32 @@ impl PaneLayout {
         find_split(&self.root, id)
     }
 
+    /// Whether `target` can be split toward `direction`, checked without
+    /// identities so a caller can refuse before allocating any.
+    ///
+    /// # Errors
+    /// Rejects an unknown target, a target whose weight is 1, and a parent
+    /// already at [`MAX_SPLIT_CHILDREN`].
+    pub fn check_split(
+        &self,
+        target: PaneId,
+        direction: SplitDirection,
+    ) -> Result<(), LayoutError> {
+        match &self.root {
+            PaneNode::Pane(leaf) if leaf.id == target => Ok(()),
+            PaneNode::Pane(_) => Err(LayoutError::UnknownPane),
+            PaneNode::Split(node) => check_within(node, target, direction),
+        }
+    }
+
+    /// Every split identity in traversal order.
+    #[must_use]
+    pub fn split_ids(&self) -> Vec<SplitId> {
+        let mut ids = Vec::new();
+        collect_splits(&self.root, &mut ids);
+        ids
+    }
+
     /// Splits `target` toward `direction`, adding `pane`.
     ///
     /// When the target's parent splits on that direction's axis, the new
@@ -278,6 +304,7 @@ impl PaneLayout {
         pane: PaneInfo,
         split: SplitId,
     ) -> Result<Self, LayoutError> {
+        self.check_split(target, direction)?;
         let pane = PaneNode::Pane(pane);
         let root = match self.root.clone() {
             PaneNode::Pane(leaf) if leaf.id == target => {
@@ -622,13 +649,8 @@ fn split_within(
         return Ok(false);
     };
     if node.axis == direction.axis() {
-        if node.children.len() >= MAX_SPLIT_CHILDREN {
-            return Err(LayoutError::TooManyChildren);
-        }
+        // `check_split` already refused a full parent and a weight of 1.
         let weight = node.children[index].weight;
-        if weight < 2 {
-            return Err(LayoutError::PaneTooSmall);
-        }
         let added = weight / 2;
         node.children[index].weight = weight - added;
         let at = if direction.leading() {
@@ -656,6 +678,42 @@ fn split_within(
     Ok(true)
 }
 
+fn check_within(
+    node: &SplitNode,
+    target: PaneId,
+    direction: SplitDirection,
+) -> Result<(), LayoutError> {
+    for child in &node.children {
+        match &child.node {
+            PaneNode::Pane(leaf) if leaf.id == target => {
+                return if node.axis != direction.axis() {
+                    Ok(())
+                } else if node.children.len() >= MAX_SPLIT_CHILDREN {
+                    Err(LayoutError::TooManyChildren)
+                } else if child.weight < 2 {
+                    Err(LayoutError::PaneTooSmall)
+                } else {
+                    Ok(())
+                };
+            }
+            PaneNode::Split(nested) if contains_pane(nested, target) => {
+                return check_within(nested, target, direction);
+            }
+            _ => {}
+        }
+    }
+    Err(LayoutError::UnknownPane)
+}
+
+fn collect_splits(node: &PaneNode, ids: &mut Vec<SplitId>) {
+    if let PaneNode::Split(split) = node {
+        ids.push(split.id);
+        for child in &split.children {
+            collect_splits(&child.node, ids);
+        }
+    }
+}
+
 fn contains_pane(node: &SplitNode, target: PaneId) -> bool {
     node.children.iter().any(|child| match &child.node {
         PaneNode::Pane(pane) => pane.id == target,
@@ -673,6 +731,14 @@ fn remove_within(node: &mut SplitNode, target: PaneId) -> bool {
         let removed = node.children.remove(index);
         let heir = index.saturating_sub(1);
         node.children[heir].weight += removed.weight;
+        // A same-axis child kept because flattening it would have passed
+        // the child limit may fit now that `node` holds one fewer child.
+        let mut index = 0;
+        while index < node.children.len() {
+            let before = node.children.len();
+            normalize_child(node, index);
+            index += 1 + (node.children.len() - before);
+        }
         return true;
     }
     let Some(index) = node.children.iter().position(|child| {

@@ -199,8 +199,9 @@ one implementation:
   grandchildren may end up larger than the slot was, and their siblings
   shrink by the same amount. A flatten that would exceed
   `MAX_SPLIT_CHILDREN` is skipped, leaving the same-axis child in place;
-  `validate` accepts that only at the limit. Removing the last pane is not a
-  layout operation (see "Closing a pane").
+  `validate` accepts that only at the limit. A removal that leaves a split
+  one child shorter flattens any such kept child that now fits. Removing
+  the last pane is not a layout operation (see "Closing a pane").
 - **Set weights** of one split, by `SplitId`, given the expected child
   identities in order (pane or split IDs). A different arrangement, such as
   one #29 swapped, fails even with the same child count.
@@ -288,8 +289,11 @@ Mux gains, each taking the expected workspace like `close_tab`:
   the tab's shared zoom and emits `PaneZoomChanged`. Setting the current
   value is a no-op. A pane outside the tab fails with `UnknownPane`. A lone
   pane cannot be zoomed and fails with `InvalidLayout`. `split_pane` and
-  `close_pane` keep it consistent: closing the zoomed pane clears it, and
-  splitting a tab clears it, matching the view rule that splitting unzooms.
+  `close_pane` keep it consistent: closing the zoomed pane, or closing panes
+  until one remains, clears it, and splitting a tab clears it, matching the
+  view rule that splitting unzooms. A split checks that the pane can be
+  split before allocating identities, so a refused split leaves the close
+  revision alone.
 - `select_pane(pane) -> SelectionTarget`, which gains a `pane` field, and
   `Tab::terminals()`, which replaces every `tab.terminal_id` read listed
   above.

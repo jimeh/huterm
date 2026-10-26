@@ -836,9 +836,9 @@ impl HierarchyState {
         Some(())
     }
 
-    /// Whether `layout` can belong to `tab`: its panes are in this stream's
-    /// scope, no other tab holds its panes or terminals, and `zoomed` is
-    /// one of its panes.
+    /// Whether `layout` can belong to `tab`: its panes and splits are in
+    /// this stream's scope, no other tab holds its panes or terminals, and
+    /// `zoomed` is one of its panes.
     fn layout_fits(
         &self,
         tab: TabId,
@@ -846,6 +846,10 @@ impl HierarchyState {
         zoomed: Option<PaneId>,
     ) -> bool {
         valid_zoom(layout, zoomed)
+            && layout
+                .split_ids()
+                .into_iter()
+                .all(|split| self.owns(split.runtime()))
             && layout.panes().into_iter().all(|pane| {
                 self.owns(pane.id.runtime())
                     && self.panes.get(&pane.id).is_none_or(|t| *t == tab)

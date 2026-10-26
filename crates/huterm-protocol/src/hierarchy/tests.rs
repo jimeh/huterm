@@ -588,6 +588,10 @@ fn layout_and_zoom_events_replace_a_tab_layout_and_its_pane_indexes() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of inconsistent layout events, each applied alike"
+)]
 fn layouts_that_reuse_another_tabs_panes_or_name_foreign_zoom_are_inconsistent()
 {
     let inconsistent = ApplyOutcome::ResyncRequired(ResyncReason::Inconsistent);
@@ -632,9 +636,29 @@ fn layouts_that_reuse_another_tabs_panes_or_name_foreign_zoom_are_inconsistent()
         }),
         zoomed: None,
     };
+    let foreign_split = HierarchyEvent::PaneLayoutChanged {
+        tab: tab_id(20),
+        layout: PaneLayout::new(PaneNode::Split(SplitNode {
+            id: SplitId::in_runtime(RuntimeId::new(8), 900),
+            axis: SplitAxis::Columns,
+            children: vec![
+                SplitChild {
+                    weight: HALF,
+                    node: PaneNode::Pane(pane(120)),
+                },
+                SplitChild {
+                    weight: HALF,
+                    node: PaneNode::Pane(pane(130)),
+                },
+            ],
+        }))
+        .unwrap(),
+        zoomed: None,
+    };
     for event in [
         reused_pane,
         reused_pane_only,
+        foreign_split,
         reused_terminal,
         foreign_pane,
         split_tab(SplitAxis::Columns, [120, 130], HALF, Some(pane_id(140))),

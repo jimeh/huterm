@@ -169,6 +169,16 @@ fn splits_refuse_tiny_panes_full_parents_and_repeated_identities() {
         ),
         Err(LayoutError::PaneTooSmall)
     );
+    // The identity-free check agrees with the transform.
+    assert_eq!(
+        tiny.check_split(pane_id(1), SplitDirection::Right),
+        Err(LayoutError::PaneTooSmall)
+    );
+    assert_eq!(tiny.check_split(pane_id(1), SplitDirection::Down), Ok(()));
+    assert_eq!(
+        tiny.check_split(pane_id(9), SplitDirection::Down),
+        Err(LayoutError::UnknownPane)
+    );
     // Across the axis, a weight-1 pane can still split: the new split
     // divides its own space.
     assert!(
@@ -197,6 +207,10 @@ fn splits_refuse_tiny_panes_full_parents_and_repeated_identities() {
             info(999),
             split_id(9)
         ),
+        Err(LayoutError::TooManyChildren)
+    );
+    assert_eq!(
+        full.check_split(pane_id(1), SplitDirection::Right),
         Err(LayoutError::TooManyChildren)
     );
     assert!(
@@ -369,6 +383,10 @@ fn a_flatten_past_the_child_limit_keeps_the_nested_split() {
         panic!("the same-axis split was flattened past the limit");
     };
     assert_eq!((last.id, last.axis), (split_id(12), SplitAxis::Columns));
+    // Removing a direct sibling makes room, so the kept split flattens.
+    let flat = kept.without_pane(pane_id(1)).unwrap();
+    assert_eq!(flat.split_ids(), [split_id(10)]);
+    assert_eq!(flat.pane_count(), MAX_SPLIT_CHILDREN);
 }
 
 #[test]
