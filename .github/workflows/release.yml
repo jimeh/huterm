@@ -97,11 +97,11 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Install preflight tools with Mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           cache: false
           install_args: bun
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -152,11 +152,11 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Install macOS release tools with Mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           cache: false
           install_args: bun zig syft pipx:spdx-tools
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -252,11 +252,11 @@ jobs:
             xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
 
       - name: Install Linux release tools with Mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           cache: false
           install_args: bun zig
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -346,11 +346,11 @@ jobs:
             xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
 
       - name: Install Linux release tools with Mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           cache: false
           install_args: bun zig
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -425,11 +425,11 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Install assembly tools with Mise
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           cache: false
           install_args: bun
-          version: 2026.10.12
+          version: 2026.10.17
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain

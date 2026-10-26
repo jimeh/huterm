@@ -1,30 +1,48 @@
 name: Set up Zig
 description: >-
-  Install the Zig version pinned in mise.toml. Requires Mise on PATH.
+  Install the Zig version pinned in mise.toml through Mise, reusing a cached
+  download that Mise verifies against mise.lock. Requires Mise on PATH.
 runs:
   using: composite
   steps:
-    - name: Resolve the pinned Zig version
-      id: version
+    - name: Name the download cache
+      id: key
       shell: bash
-      # An empty version would make setup-zig install the latest release.
+      # A Mise release that changes its download store's layout would ignore
+      # an older entry, and a hit would never save a usable one.
       run: |
-        version="$(mise tool zig --requested)"
-        test -n "$version"
-        echo "zig=$version" >> "$GITHUB_OUTPUT"
+        set -euo pipefail
+        zig="$(mise tool zig --requested)"
+        mise="$(mise --version | cut -d' ' -f1)"
+        test -n "$zig" && test -n "$mise"
+        echo "key=huterm-zig-download-v1-$RUNNER_OS-$RUNNER_ARCH-$zig-mise-$mise" >> "$GITHUB_OUTPUT"
 
-    # Mise's core:zig fetches a signature only from the mirror that served the
-    # tarball, so one rate-limited mirror fails the install. This action
-    # verifies each mirror's tarball and signature together, falls through to
-    # the next mirror and then ziglang.org, and caches the verified tarball.
-    - name: Install Zig
-      uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+    # Mise checks a stored archive against the mise.lock checksum and its
+    # minisign signature before installing it, so a stale or tampered entry
+    # cannot change what is installed.
+    - name: Restore the Zig download
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        version: ${{ steps.version.outputs.zig }}
-        use-cache: false
+        path: ${{ runner.temp }}/mise-zig-cache
+        key: ${{ steps.key.outputs.key }}
 
-    # The action always points both Zig caches at .zig-cache in the checkout.
-    # Only literal paths under RUNNER_TEMP reach GITHUB_ENV.
+    # A separate cache directory keeps other tools' downloads out of this
+    # cache entry. A cache hit still fetches Zig's release index from
+    # ziglang.org and the archive's signature from a mirror.
+    - name: Install Zig
+      shell: bash
+      run: MISE_CACHE_DIR="$RUNNER_TEMP/mise-zig-cache" mise install --locked zig
+
+    - name: Save the Zig download
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/mise-zig-cache
+        key: ${{ steps.key.outputs.key }}
+
+    # restore-ghostty and save-ghostty cache Zig's package directory from
+    # this global cache. Only literal paths under RUNNER_TEMP reach GITHUB_ENV.
     - name: Keep Zig caches outside the checkout
       shell: bash
       run: | # zizmor: ignore[github-env]
