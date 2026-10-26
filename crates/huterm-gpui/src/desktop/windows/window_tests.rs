@@ -3545,6 +3545,9 @@ fn pane_contexts_follow_splits_and_closes_without_terminal_output(
     });
     harness.invoke(window, ids::FOCUS_PANE_RIGHT).unwrap();
     harness.wait_contexts(window, &["split", "has_pane_left", "has_pane_down"]);
+    harness.invoke(window, ids::FOCUS_PANE_DOWN).unwrap();
+    harness.wait_contexts(window, &["split", "has_pane_left", "has_pane_up"]);
+    // Closing the focused pane returns focus to the second.
     harness
         .runtime
         .lock()
@@ -3557,6 +3560,50 @@ fn pane_contexts_follow_splits_and_closes_without_terminal_output(
         .close_pane(harness.workspace, tab, second)
         .unwrap();
     harness.wait_contexts(window, &[]);
+}
+
+#[gpui::test]
+fn a_direction_binding_reaches_the_shell_while_its_target_installs(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_bindings(
+        cx,
+        &[("alt-l", "focus_pane_right", "Terminal && has_pane_right")],
+    );
+    let tab = harness.open_tab(KEYS);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_contexts(window, &[]);
+    let first = harness.first_pane(tab);
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Subscribe);
+    let second = harness.split(tab, first, SplitDirection::Right, KEYS);
+    harness.wait_for("the split's install to start", |_| {
+        hooks.held(Stage::Subscribe) == 1
+    });
+    // The layout holds the new pane, but this window cannot focus it yet,
+    // so no context offers it and the key reaches the shell.
+    harness.wait_for("a frame of the projected split", |cx| {
+        cx.global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab)
+            .is_some_and(|info| info.layout.pane_count() == 2)
+            && pane_contexts(cx, window).as_deref() == Some(&[][..])
+    });
+    harness.press(window, "alt-l");
+    harness.type_line(window, "a");
+    harness.wait_for("the shell to read alt-l", |cx| {
+        pane_screen(cx, window, tab, first)
+            .is_some_and(|text| text.contains("got:^la"))
+    });
+    hooks.release(Stage::Subscribe);
+    harness.wait_contexts(window, &["split", "has_pane_right"]);
+    harness.press(window, "alt-l");
+    harness.wait_for("focus to move to the installed pane", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(_, focus)| focus == second)
+    });
 }
 
 #[gpui::test]

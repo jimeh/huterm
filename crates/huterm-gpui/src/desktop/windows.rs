@@ -2822,8 +2822,9 @@ impl TabView {
 
     /// The pane `focus_pane_*` toward `direction` moves to from `pane`, in
     /// the projected layout; ties go to the pane this window focused most
-    /// recently. The pane key contexts ask the same question, so a
-    /// binding they enable always has a target.
+    /// recently. A target this window has no view of yet, such as a pane
+    /// still installing, counts as none. The pane key contexts ask the same
+    /// question, so a binding they enable always moves focus.
     fn neighbor(
         &self,
         pane: PaneId,
@@ -2836,6 +2837,7 @@ impl TabView {
             .tab(self.id)?
             .layout
             .neighbor(pane, direction, &self.focus_history)
+            .filter(|next| self.pane(*next).is_some())
     }
 
     /// Moves focus to `pane`; returns whether it changed.
