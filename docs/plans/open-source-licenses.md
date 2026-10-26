@@ -95,7 +95,8 @@ script dependency, Mise tools, Zig's build-time fetches.
 - `src/licenses.rs` is pure data with no GPUI. It holds the serde model, the
   lookup order (the macOS `Resources`, then `share/licenses/huterm` relative
   to the executable, then the checkout copy that an unpackaged build in
-  Cargo's `target/<profile>` layout finds from its executable), the
+  Cargo's `target/<profile>` or `target/<triple>/<profile>` layout finds
+  from its executable), the
   filter for this build (target, `macos-updater` feature, an `AppImage`
   launch with the executable under `APPDIR`, and packaged files that
   exist), and the search.

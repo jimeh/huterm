@@ -225,8 +225,10 @@ export function resolveExpression(expression: Expression, sources: Sources): Res
     // A `WITH` exception needs a text that carries it; the base license's
     // standard text alone would drop it.
     const covers = (text: string) => exception === undefined || EXCEPTION_SIGNATURES[exception]?.test(flat(text)) === true;
-    const own = sources.files.filter(file => !file.notice && file.licenses.has(id) && covers(file.text));
-    if (own.length > 0) return { expression, texts: own.map(({ title, text }) => ({ title, text })), quality: 2 };
+    // Coverage is judged over the set: a crate may ship the exception in its
+    // own file beside the base license.
+    const own = sources.files.filter(file => !file.notice && file.licenses.has(id));
+    if (own.some(file => covers(file.text))) return { expression, texts: own.map(({ title, text }) => ({ title, text })), quality: 2 };
     const clarified = sources.clarified.get(expression.id) ?? sources.clarified.get(id);
     if (clarified && clarified.some(text => covers(text.text))) return { expression, texts: clarified, quality: 2 };
     const canonical = exception === undefined ? sources.canonical.get(id) : undefined;

@@ -203,7 +203,8 @@ pub(crate) fn load() -> Result<Catalog, LoadError> {
 
 /// Where the artifact may be, in order: the macOS bundle's resources, the
 /// Linux package's license directory, then, for an unpackaged build in
-/// Cargo's `target/<profile>` layout, the checkout's committed copy. The
+/// Cargo's `target/<profile>` or `target/<triple>/<profile>` layout, the
+/// checkout's committed copy. The
 /// checkout is found from the executable rather than compiled in, because
 /// package checks reject an executable that contains its build path.
 fn locations(executable: Option<&Path>, is_macos: bool) -> Vec<PathBuf> {

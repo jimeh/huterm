@@ -152,4 +152,7 @@ test("a WITH exception needs a text that carries it", () => {
   expect(() => texts("Apache-2.0 WITH LLVM-exception", [{ title: "LICENSE-APACHE", text: APACHE }])).toThrow("ships no text");
   expect(texts("Apache-2.0 WITH LLVM-exception", [{ title: "LICENSE", text: llvm }])).toEqual({ used: "Apache-2.0 WITH LLVM-exception", texts: [{ title: "LICENSE", text: llvm }] });
   expect(texts("Apache-2.0 WITH LLVM-exception OR MIT", [{ title: "LICENSE-APACHE", text: APACHE }, { title: "LICENSE-MIT", text: MIT }]).used).toBe("MIT");
+  // An exception in its own file keeps the license text beside it.
+  const exceptionOnly = "---- LLVM Exceptions to the Apache 2.0 License ----\nAs an exception, if, as a result of your compiling your source code...";
+  expect(texts("Apache-2.0 WITH LLVM-exception", [{ title: "LICENSE", text: APACHE }, { title: "LICENSE-LLVM-EXCEPTION", text: exceptionOnly }]).texts.map(text => text.title)).toEqual(["LICENSE", "LICENSE-LLVM-EXCEPTION"]);
 });
