@@ -83,6 +83,10 @@ jobs:
         if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
         run: mise run license
 
+      - name: Check open source license notices
+        if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
+        run: mise run licenses:check
+
       - name: Audit scripting dependencies
         if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
         run: mise run audit:scripts

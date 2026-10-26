@@ -1,7 +1,7 @@
 //! The About panel: a centred raised panel with the application's version
 //! and a details list the user can copy. The details are pure text built by
 //! [`about_details`]; the panel renders them and the owner handles its
-//! buttons and keys.
+//! buttons and keys. Its Licenses button opens the Licenses view.
 
 use gpui::{
     App, ClickEvent, Div, Pixels, Size, Window, div, img, prelude::*, px,
@@ -42,6 +42,40 @@ impl AboutDetails {
         }
         text
     }
+}
+
+/// The About panel button that keyboard focus is on. Tab and the arrow keys
+/// move it; Enter presses it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum AboutFocus {
+    Licenses,
+    Copy,
+    /// The default, so Enter closes the panel as it always has.
+    #[default]
+    Close,
+}
+
+impl AboutFocus {
+    /// The next button in `direction`, wrapping: Licenses, Copy Details,
+    /// Close.
+    pub(crate) fn moved(self, forward: bool) -> Self {
+        const ORDER: [AboutFocus; 3] =
+            [AboutFocus::Licenses, AboutFocus::Copy, AboutFocus::Close];
+        let index = ORDER.iter().position(|focus| *focus == self).unwrap_or(2);
+        let next = if forward {
+            index + 1
+        } else {
+            index + ORDER.len() - 1
+        };
+        ORDER[next % ORDER.len()]
+    }
+}
+
+/// The About panel's button handlers.
+pub(crate) struct AboutActions<L, C, X> {
+    pub(crate) licenses: L,
+    pub(crate) copy: C,
+    pub(crate) close: X,
 }
 
 /// Facts about the running build that the platform row and build row show.
@@ -166,16 +200,21 @@ fn product_version(plist: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-/// The panel over its scrim, filling the parent. `on_copy` and `on_close`
-/// receive the clicks on `about-copy` and `about-close`; `hints` shows the
-/// Close button's key.
+/// The panel over its scrim, filling the parent. `actions` receive the
+/// clicks on `about-licenses`, `about-copy`, and `about-close`; `focus`
+/// marks the keyboard-focused button and `hints` shows the Close button's
+/// key.
 pub(crate) fn render_about(
     details: &AboutDetails,
     viewport: Size<Pixels>,
     swatch: Swatch,
     hints: bool,
-    on_copy: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    focus: AboutFocus,
+    actions: AboutActions<
+        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    >,
 ) -> Div {
     let width = (viewport.width - px(32.0)).clamp(px(0.0), px(PANEL_WIDTH));
     scrim(swatch)
@@ -201,7 +240,7 @@ pub(crate) fn render_about(
                 .text_color(swatch.fg)
                 .child(hero(&details.version, swatch))
                 .child(details_list(details, swatch))
-                .child(footer(swatch, hints, on_copy, on_close)),
+                .child(footer(swatch, hints, focus, actions)),
         )
 }
 
@@ -270,50 +309,60 @@ fn details_list(details: &AboutDetails, swatch: Swatch) -> Div {
     list
 }
 
-/// The Copy Details and Close buttons at the right. Enter and Escape also
-/// close the panel.
+/// The Licenses button at the left, Copy Details and Close at the right.
+/// Enter presses the focused button and Escape closes the panel.
 fn footer(
     swatch: Swatch,
     hints: bool,
-    on_copy: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    focus: AboutFocus,
+    actions: AboutActions<
+        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    >,
 ) -> Div {
+    let ring = |button: gpui::Stateful<Div>, which: AboutFocus| {
+        button.when(focus == which, |button| button.shadow(swatch.focus_ring()))
+    };
     div()
         .flex()
         .flex_none()
-        .justify_end()
+        .items_center()
+        .gap(px(8.0))
         .px(px(12.0))
         .py(px(10.0))
         .border_t_1()
         .border_color(swatch.line)
         .bg(swatch.fg.opacity(0.03))
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    footer_button("about-copy", swatch, false, false)
-                        .on_click(on_copy)
-                        .child("Copy Details"),
-                )
-                .child(
-                    footer_button("about-close", swatch, true, hints)
-                        .on_click(on_close)
-                        .child("Close")
-                        .when(hints, |button| {
-                            button.child(key_cap_on(
-                                &KeyHint::keys(&["enter"], Platform::current()),
-                                swatch.bg,
-                            ))
-                        }),
-                ),
-        )
+        .child(ring(
+            footer_button("about-licenses", swatch, false, false)
+                .on_click(actions.licenses)
+                .child("Licenses"),
+            AboutFocus::Licenses,
+        ))
+        .child(div().flex_1())
+        .child(ring(
+            footer_button("about-copy", swatch, false, false)
+                .on_click(actions.copy)
+                .child("Copy Details"),
+            AboutFocus::Copy,
+        ))
+        .child(ring(
+            footer_button("about-close", swatch, true, hints)
+                .on_click(actions.close)
+                .child("Close")
+                .when(hints, |button| {
+                    button.child(key_cap_on(
+                        &KeyHint::keys(&["enter"], Platform::current()),
+                        swatch.bg,
+                    ))
+                }),
+            AboutFocus::Close,
+        ))
 }
 
 /// A footer button; `hint` leaves room for its trailing key cap.
-fn footer_button(
+pub(super) fn footer_button(
     id: &'static str,
     swatch: Swatch,
     primary: bool,
@@ -396,6 +445,15 @@ mod tests {
         });
         assert_eq!(mac.rows[1], ("Platform", "macOS 15.1, aarch64".to_owned()));
         assert_eq!(mac.rows[3], ("Build", "debug".to_owned()));
+    }
+
+    #[test]
+    fn about_focus_cycles_through_the_buttons_both_ways() {
+        assert_eq!(AboutFocus::default(), AboutFocus::Close);
+        assert_eq!(AboutFocus::Close.moved(true), AboutFocus::Licenses);
+        assert_eq!(AboutFocus::Licenses.moved(true), AboutFocus::Copy);
+        assert_eq!(AboutFocus::Licenses.moved(false), AboutFocus::Close);
+        assert_eq!(AboutFocus::Copy.moved(false), AboutFocus::Licenses);
     }
 
     #[test]

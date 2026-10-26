@@ -1,0 +1,34 @@
+{
+  "canonical/Apache-2.0.txt": {
+    "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  "canonical/CC0-1.0.txt": {
+    "url": "https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt",
+    "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499"
+  },
+  "canonical/MIT.txt": {
+    "url": "https://spdx.org/licenses/MIT.txt",
+    "sha256": "c3b1b78bc8bd3ea13aa4bc9778442d16560270afa235006d816e5e88cef24db4"
+  },
+  "rust/COPYRIGHT": {
+    "url": "https://github.com/rust-lang/rust/blob/1.99.1/COPYRIGHT",
+    "sha256": "172020dbfd5b53a226dfde77616190a48dcff519b0bc0e6deb91a8450782c4af",
+    "rust": "1.99.1"
+  },
+  "rust/LICENSE-APACHE": {
+    "url": "https://github.com/rust-lang/rust/blob/1.99.1/LICENSE-APACHE",
+    "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+    "rust": "1.99.1"
+  },
+  "rust/LICENSE-MIT": {
+    "url": "https://github.com/rust-lang/rust/blob/1.99.1/LICENSE-MIT",
+    "sha256": "b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1",
+    "rust": "1.99.1"
+  },
+  "rust/compiler-builtins-LICENSE.txt": {
+    "url": "https://github.com/rust-lang/rust/blob/1.99.1/library/compiler-builtins/LICENSE.txt",
+    "sha256": "ab6eec6caf0fa5775e411c7a8bc6a45c4ef2956b0980b157ab74fc5cd62a928b",
+    "rust": "1.99.1"
+  }
+}

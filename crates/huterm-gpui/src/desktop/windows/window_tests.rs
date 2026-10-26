@@ -15,6 +15,7 @@ use huterm_protocol::{
 use super::notices::NoticeContent;
 use super::worker_hooks::Stage;
 use super::*;
+use crate::desktop::licenses::LicensesFocus;
 
 /// How long a wait may take before the test fails with the last state it
 /// observed. Below GPUI's 15-second limit for a parked test thread.
@@ -4161,4 +4162,265 @@ fn a_carried_drag_never_shrinks_a_neighbour_under_the_minimum(
         );
         assert!(pane_shown(cx, window, tab, third).is_some());
     });
+}
+
+/// The Licenses view's state in `window`, or `None` while it is closed.
+fn licenses_state(
+    cx: &mut App,
+    window: AnyWindowHandle,
+) -> Option<LicensesState> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            let view = view.read(cx);
+            view.licenses
+                .as_ref()
+                .map(|licenses| licenses.read(cx).state())
+        })
+        .ok()
+        .flatten()
+}
+
+impl DesktopHarness {
+    fn press(&mut self, window: AnyWindowHandle, keys: &str) {
+        for key in keys.split(' ') {
+            self.cx
+                .dispatch_keystroke(window, Keystroke::parse(key).unwrap());
+        }
+    }
+
+    /// Whether `window`'s About panel shows with keyboard focus on `focus`.
+    fn about_focus(&mut self, window: AnyWindowHandle) -> Option<AboutFocus> {
+        self.update_view(window, |view, _, _| {
+            view.about.is_some().then_some(view.about_focus)
+        })
+    }
+}
+
+#[gpui::test]
+fn about_buttons_take_keyboard_focus_and_enter_presses_the_focused_one(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    assert_eq!(harness.about_focus(window), Some(AboutFocus::Close));
+    harness.press(window, "tab tab");
+    assert_eq!(harness.about_focus(window), Some(AboutFocus::Copy));
+    harness.press(window, "enter");
+    let details = harness
+        .update_view(window, |view, _, _| view.about.clone().unwrap().text());
+    harness.cx.update(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some(details)
+        );
+    });
+    assert_eq!(harness.about_focus(window), Some(AboutFocus::Copy));
+    harness.press(window, "shift-tab shift-tab");
+    assert_eq!(harness.about_focus(window), Some(AboutFocus::Close));
+    harness.press(window, "enter");
+    assert_eq!(harness.about_focus(window), None);
+    harness.wait_for("the terminal to take focus back", |cx| {
+        focused(cx, window, tab)
+    });
+}
+
+#[gpui::test]
+fn the_licenses_view_filters_selects_and_returns_to_about_without_terminal_input(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    let Some(LicensesState::Ready { matches: all, .. }) =
+        harness.cx.update(|cx| licenses_state(cx, window))
+    else {
+        unreachable!();
+    };
+    // Typed keys reach the search field, and Enter there does nothing.
+    harness.type_line(window, "ghostty");
+    let state = harness.cx.update(|cx| licenses_state(cx, window));
+    let Some(LicensesState::Ready { matches, selected }) = state else {
+        panic!("the view closed: {state:?}");
+    };
+    assert!((2..all).contains(&matches), "{matches} of {all}");
+    assert_eq!(selected.as_deref(), Some("Ghostty"));
+    harness.press(window, "down");
+    assert_eq!(
+        harness.cx.update(|cx| licenses_state(cx, window)),
+        Some(LicensesState::Ready {
+            matches,
+            selected: Some("Ghostty sprite drawing".to_owned()),
+        })
+    );
+    // Escape clears the search first, keeping the selection.
+    harness.press(window, "escape");
+    assert_eq!(
+        harness.cx.update(|cx| licenses_state(cx, window)),
+        Some(LicensesState::Ready {
+            matches: all,
+            selected: Some("Ghostty sprite drawing".to_owned()),
+        })
+    );
+    harness.press(window, "escape");
+    assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
+    assert_eq!(harness.about_focus(window), Some(AboutFocus::Licenses));
+    harness.press(window, "escape");
+    assert_eq!(harness.about_focus(window), None);
+    harness.wait_for("the terminal to take focus back", |cx| {
+        focused(cx, window, tab)
+    });
+    harness.type_line(window, "after");
+    harness.wait_text(window, tab, "got:after");
+    harness.cx.update(|cx| {
+        let text = screen(cx, window, tab).unwrap();
+        assert!(!text.contains("ghostty"), "{text}");
+    });
+}
+
+#[gpui::test]
+fn the_licenses_view_says_when_this_build_has_no_notices(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.update_view(window, |view, window, cx| {
+        view.open_licenses(
+            || {
+                Err(crate::licenses::LoadError::Missing(vec![
+                    "/nonexistent/licenses.json".into(),
+                ]))
+            },
+            window,
+            cx,
+        );
+    });
+    harness.wait_for("the load to fail", |cx| {
+        licenses_state(cx, window) == Some(LicensesState::Unavailable)
+    });
+    harness.press(window, "escape");
+    assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
+    assert_eq!(harness.about_focus(window), Some(AboutFocus::Licenses));
+}
+
+#[gpui::test]
+fn licenses_buttons_take_keyboard_focus_and_enter_presses_the_focused_one(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    let focus = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, cx| {
+            view.licenses
+                .as_ref()
+                .map(|licenses| licenses.read(cx).focus())
+        })
+    };
+    for key in "ghostty".chars() {
+        harness.press(window, &key.to_string());
+    }
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Search));
+    harness.press(window, "tab tab");
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Copy));
+    harness.press(window, "enter");
+    harness.cx.update(|cx| {
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        assert!(
+            copied
+                .as_deref()
+                .is_some_and(|text| text.starts_with("MIT License")
+                    && text.contains("Mitchell Hashimoto")),
+            "{copied:?}"
+        );
+    });
+    harness.press(window, "shift-tab");
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Website));
+    // Typing returns focus to the search; with no match, only Done follows.
+    harness.press(window, "z");
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Search));
+    harness.press(window, "tab");
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Done));
+    harness.press(window, "enter");
+    assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
+    assert_eq!(harness.about_focus(window), Some(AboutFocus::Licenses));
+}
+
+#[gpui::test]
+fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    // The About command, as from the macOS application menu, must not pull
+    // focus from the view it replaced.
+    harness.invoke(window, ids::ABOUT).unwrap();
+    for key in "ghostty".chars() {
+        harness.press(window, &key.to_string());
+    }
+    let Some(LicensesState::Ready { matches, .. }) =
+        harness.cx.update(|cx| licenses_state(cx, window))
+    else {
+        panic!("the view closed");
+    };
+    assert_eq!(matches, 2);
+    // A press inside the panel moves keyboard focus back to the search, so
+    // Enter no longer presses the button Tab reached.
+    harness.press(window, "tab tab tab");
+    let focus = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, cx| {
+            view.licenses
+                .as_ref()
+                .map(|licenses| licenses.read(cx).focus())
+        })
+    };
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Done));
+    let centre = harness.update_view(window, |_, window, _| {
+        let size = window.viewport_size();
+        gpui::point(size.width / 2.0, size.height / 2.0)
+    });
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_click(centre, gpui::Modifiers::none());
+    assert_eq!(focus(&mut harness), Some(LicensesFocus::Search));
+    harness.press(window, "enter");
+    assert!(harness.cx.update(|cx| licenses_state(cx, window)).is_some());
 }

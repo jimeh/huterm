@@ -24,11 +24,15 @@ pub(crate) mod refresh_smoke;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
-use super::about::{AboutDetails, BuildFacts, about_details, render_about};
+use super::about::{
+    AboutActions, AboutDetails, AboutFocus, BuildFacts, about_details,
+    render_about,
+};
 use super::close_dialog::{
     CloseDialogInput, CloseDialogTarget, DialogFocus, ProcessGroup,
     ProcessGroupState, ProcessRow, build_close_dialog, render_close_dialog,
 };
+use super::licenses::{Done as LicensesDone, LicensesState, LicensesView};
 use super::menu::{
     MENU_MIN_WIDTH, Menu as MenuView, MenuAnchor, MenuEvent, MenuModel,
     MenuRow, place_menu,
@@ -2135,6 +2139,8 @@ fn open_window_with_profile(
                 title_row_press: Rc::new(Cell::new(false)),
                 title_row_moves: Rc::new(Cell::new(0)),
                 about: None,
+                about_focus: AboutFocus::default(),
+                licenses: None,
                 // The window opened with this title. Writing it again from
                 // the first render costs GPUI's X11 backend a blocking round
                 // trip that can queue the window's MapNotify where the event
@@ -3209,6 +3215,10 @@ struct WorkspaceView {
     menu_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The About panel's details while it is showing.
     about: Option<AboutDetails>,
+    /// The About panel button keyboard focus is on.
+    about_focus: AboutFocus,
+    /// The Licenses view, open over the About panel it returns to.
+    licenses: Option<Entity<LicensesView>>,
     /// The native window title last set, so unchanged titles are not reset.
     window_title: String,
     /// The close dialog's group headings as the last render drew them, for
@@ -6530,15 +6540,23 @@ impl WorkspaceView {
             CommandScope::Window | CommandScope::Runtime => {
                 self.run_command(invocation, window, cx)
             }
-            CommandScope::Palette => self
-                .palette
-                .clone()
-                .ok_or_else(|| {
-                    CommandError::Unavailable(
-                        "command palette is not open".to_owned(),
-                    )
-                })?
-                .update(cx, |palette, cx| palette.run(invocation, window, cx)),
+            CommandScope::Palette => {
+                if let Some(licenses) = self.licenses.clone() {
+                    return licenses.update(cx, |licenses, cx| {
+                        licenses.run(invocation, window, cx)
+                    });
+                }
+                self.palette
+                    .clone()
+                    .ok_or_else(|| {
+                        CommandError::Unavailable(
+                            "command palette is not open".to_owned(),
+                        )
+                    })?
+                    .update(cx, |palette, cx| {
+                        palette.run(invocation, window, cx)
+                    })
+            }
             CommandScope::Terminal => Err(CommandError::ClientRequired),
         }
     }
@@ -6550,6 +6568,11 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         cx.stop_propagation();
+        if self.licenses.is_some() {
+            // The view has no error line; a refused command changes nothing.
+            let _ = self.invoke_interactive(&action.0, window, cx);
+            return;
+        }
         if self.palette.is_none() {
             return;
         }
@@ -7081,6 +7104,13 @@ impl WorkspaceView {
     fn reload_palette(&mut self, cx: &mut Context<'_, Self>) {
         self.palette_refresh_state = None;
         self.refresh_palette(cx);
+        if let Some(licenses) = self.licenses.clone() {
+            let (colors, hints) =
+                (self.palette_colors(), self.config.window.shortcut_hints);
+            licenses.update(cx, |licenses, cx| {
+                licenses.set_presentation(colors, hints, cx);
+            });
+        }
         if let Some(palette) = self.palette.clone() {
             let colors = self.palette_colors();
             let profiles = quake_profile_rows(cx);
@@ -7309,8 +7339,8 @@ impl WorkspaceView {
 
     /// Runs a `dialog_*` command against the showing confirmation. Confirm
     /// presses the focused button, so Enter on Cancel cancels. The About
-    /// panel shares these bindings: Enter and Escape close it, and its
-    /// buttons are not keyboard-focusable.
+    /// panel shares these bindings: Tab and the arrows move its button
+    /// focus, Enter presses the focused button, and Escape closes it.
     fn run_dialog_command(
         &mut self,
         command: huterm_protocol::CommandId,
@@ -7319,10 +7349,18 @@ impl WorkspaceView {
     ) -> Result<CommandOutcome, CommandError> {
         if self.about.is_some() {
             match command {
-                ids::DIALOG_CONFIRM | ids::DIALOG_CANCEL => {
-                    self.close_about(window, cx);
+                ids::DIALOG_CONFIRM => match self.about_focus {
+                    AboutFocus::Licenses => self.show_licenses(window, cx),
+                    AboutFocus::Copy => self.copy_about_details(cx),
+                    AboutFocus::Close => self.close_about(window, cx),
+                },
+                ids::DIALOG_CANCEL => self.close_about(window, cx),
+                ids::DIALOG_FOCUS_NEXT | ids::DIALOG_FOCUS_PREVIOUS => {
+                    self.about_focus = self
+                        .about_focus
+                        .moved(command == ids::DIALOG_FOCUS_NEXT);
+                    cx.notify();
                 }
-                ids::DIALOG_FOCUS_NEXT | ids::DIALOG_FOCUS_PREVIOUS => {}
                 other => return Err(CommandError::UnknownCommand(other)),
             }
             return Ok(CommandOutcome::Completed);
@@ -7812,7 +7850,8 @@ fn close_dialog_input<'a>(
 }
 
 impl WorkspaceView {
-    /// Shows the About panel, or refocuses it when it is already showing.
+    /// Shows the About panel, or refocuses it, or the Licenses view over it,
+    /// when it is already showing.
     /// It takes the root focus so the `confirming` bindings close it, and
     /// blocks terminal input while it is up.
     fn show_about(
@@ -7821,7 +7860,13 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         if self.about.is_some() {
-            self.focus.focus(window, cx);
+            // The Licenses view replaces the panel; keep its search focused.
+            match &self.licenses {
+                Some(licenses) => {
+                    licenses.read(cx).focus_handle(cx).focus(window, cx);
+                }
+                None => self.focus.focus(window, cx),
+            }
             cx.notify();
             return Ok(CommandOutcome::Completed);
         }
@@ -7833,17 +7878,81 @@ impl WorkspaceView {
         }
         let facts = BuildFacts::current(display_backend(window));
         self.about = Some(about_details(&facts));
+        self.about_focus = AboutFocus::default();
         self.focus.focus(window, cx);
         cx.notify();
         Ok(CommandOutcome::Completed)
     }
 
-    /// Closes the About panel and returns focus to the terminal.
+    /// Closes the About panel, and the Licenses view over it, and returns
+    /// focus to the terminal.
     fn close_about(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.licenses = None;
         if self.about.take().is_none() {
             return;
         }
         self.focus_terminal(window, cx);
+        cx.notify();
+    }
+
+    /// Opens the Licenses view over the About panel, its search focused.
+    fn show_licenses(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.open_licenses(crate::licenses::load, window, cx);
+    }
+
+    /// [`Self::show_licenses`] with the notices read by `load`.
+    fn open_licenses(
+        &mut self,
+        load: impl FnOnce() -> Result<
+            crate::licenses::Catalog,
+            crate::licenses::LoadError,
+        > + Send
+        + 'static,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.about.is_none() {
+            return;
+        }
+        if let Some(licenses) = &self.licenses {
+            licenses.read(cx).focus_handle(cx).focus(window, cx);
+            return;
+        }
+        let colors = self.palette_colors();
+        let hints = self.config.window.shortcut_hints;
+        let licenses = cx.new(|cx| {
+            self.frame_clock.observe(cx);
+            LicensesView::new(colors, hints, load, cx)
+        });
+        cx.subscribe_in(
+            &licenses,
+            window,
+            |view, _, _: &LicensesDone, window, cx| {
+                view.close_licenses(window, cx);
+            },
+        )
+        .detach();
+        licenses.read(cx).focus_handle(cx).focus(window, cx);
+        self.licenses = Some(licenses);
+        cx.notify();
+    }
+
+    /// Returns from the Licenses view to the About panel, with focus on its
+    /// Licenses button.
+    fn close_licenses(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.licenses.take().is_none() {
+            return;
+        }
+        self.about_focus = AboutFocus::Licenses;
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -8507,6 +8616,7 @@ impl WorkspaceView {
                         view.dismiss_palette_for_confirmation(cx);
                         view.close_menu(MenuFocusReturn::Keep, window, cx);
                         view.about = None;
+                        view.licenses = None;
                         view.focus.focus(window, cx);
                         cx.notify();
                     }
@@ -10631,18 +10741,29 @@ impl Render for WorkspaceView {
         if let Some(menu) = self.render_menu(&layout, window, cx) {
             root = root.child(menu);
         }
-        if let Some(details) = &self.about {
+        if let Some(licenses) = &self.licenses {
+            root = root.child(modal_layer(
+                div().absolute().inset_0().child(licenses.clone()),
+                &layout,
+            ));
+        } else if let Some(details) = &self.about {
             let about = render_about(
                 details,
                 content.size,
                 Swatch::from_theme(&self.config.theme),
                 self.config.window.shortcut_hints,
-                cx.listener(|view, _, _, cx| {
-                    view.copy_about_details(cx);
-                }),
-                cx.listener(|view, _, window, cx| {
-                    view.close_about(window, cx);
-                }),
+                self.about_focus,
+                AboutActions {
+                    licenses: cx.listener(|view, _, window, cx| {
+                        view.show_licenses(window, cx);
+                    }),
+                    copy: cx.listener(|view, _, _, cx| {
+                        view.copy_about_details(cx);
+                    }),
+                    close: cx.listener(|view, _, window, cx| {
+                        view.close_about(window, cx);
+                    }),
+                },
             );
             root = root.child(modal_layer(about, &layout));
         }
@@ -11720,9 +11841,38 @@ impl WorkspaceView {
         )
     }
 
+    /// Smoke output for the Licenses view: `closed`, `loading`,
+    /// `unavailable`, or its match count, the Debug-quoted selected name,
+    /// and its keyboard focus.
+    fn licenses_smoke_state(
+        &self,
+        prefix: &str,
+        cx: &Context<'_, Self>,
+    ) -> String {
+        let licenses_focus = self
+            .licenses
+            .as_ref()
+            .map_or("none", |view| view.read(cx).focus().name());
+        let (licenses, licenses_selected) =
+            match self.licenses.as_ref().map(|view| view.read(cx).state()) {
+                None => ("closed".to_owned(), None),
+                Some(LicensesState::Loading) => ("loading".to_owned(), None),
+                Some(LicensesState::Unavailable) => {
+                    ("unavailable".to_owned(), None)
+                }
+                Some(LicensesState::Ready { matches, selected }) => {
+                    (matches.to_string(), selected)
+                }
+            };
+        format!(
+            "{prefix}licenses={licenses} {prefix}licenses_selected={licenses_selected:?} {prefix}licenses_focus={licenses_focus}"
+        )
+    }
+
     /// Smoke output for the transient UI, each field named after `prefix`:
     /// the menu (open, focused, selected item, targeted tab index), the
-    /// About panel, the close confirmation (showing, focused button,
+    /// About panel and its focused button, the Licenses view, the close
+    /// confirmation (showing, focused button,
     /// Debug-quoted title), notice focus, the Debug-quoted native window
     /// title, the painted menu button and window-controls bounds in logical
     /// points, the window scale, the sampled frame (granted client decorations, applied inset,
@@ -11746,6 +11896,12 @@ impl WorkspaceView {
             })
             .map_or_else(|| "none".to_owned(), |index| index.to_string());
         let about = self.about.is_some();
+        let about_focus = match self.about_focus {
+            AboutFocus::Licenses => "licenses",
+            AboutFocus::Copy => "copy",
+            AboutFocus::Close => "close",
+        };
+        let licenses = self.licenses_smoke_state(prefix, cx);
         let menu = self.menu_smoke_state(prefix, window, cx);
         let dialog_focus = match self.close.dialog_focus {
             DialogFocus::Primary => "primary",
@@ -11800,7 +11956,7 @@ impl WorkspaceView {
         #[cfg(not(target_os = "macos"))]
         let traffic_lights = "none";
         format!(
-            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {licenses} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
             self.close.confirmation.is_some(),
             self.drawn_dialog_groups.as_deref().unwrap_or("none"),
             self.notice_focus.is_focused(window),
@@ -11887,6 +12043,9 @@ fn menu_items_state(model: &MenuModel) -> String {
 pub(super) fn modal_focus(window: &Window, cx: &App) -> Option<FocusHandle> {
     let root = window.root::<WorkspaceView>().flatten()?;
     let view = root.read(cx);
+    if let Some(licenses) = &view.licenses {
+        return Some(licenses.read(cx).focus_handle(cx));
+    }
     view.dialog_showing().then(|| view.focus.clone())
 }
 

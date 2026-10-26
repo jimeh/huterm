@@ -132,7 +132,7 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has finished entering native or non-native fullscreen. Pending entry alone does not match. |
 | `palette` | The window owns an open command palette. |
-| `Palette` | The command palette is open and has focus. |
+| `Palette` | The command palette or the About panel's Licenses view is open and has focus. |
 
 Most contexts are bare words for the state of the view or window, such as
 `selection` and `pane_zoomed`. The `has_` prefix marks a context that says
@@ -342,8 +342,17 @@ menus, or your own bindings.
 These bind only while a close confirmation or the About panel is showing
 (`confirming`), so they take nothing from terminal input. The primary button
 has focus when the dialog opens, and a repeated close shortcut never confirms.
-In the About panel, `dialog_confirm` and `dialog_cancel` both close it and the
-focus commands do nothing.
+In the About panel, the focus commands move between its Licenses, Copy Details,
+and Close buttons, `dialog_confirm` presses the focused one, and
+`dialog_cancel` closes it. Focus starts on Close.
+
+The Licenses view takes the `Palette` context, so the palette bindings apply
+there: `palette_select_next` and `palette_select_previous` move the selection,
+`palette_page_down` and `palette_page_up` scroll the license text,
+`palette_expand` and `palette_previous_slot` move focus between the search and
+the buttons, `palette_confirm` presses the focused button, the text commands
+edit the search, and `palette_back` clears the search or returns to the About
+panel.
 
 | Command | macOS | Linux |
 | --- | --- | --- |

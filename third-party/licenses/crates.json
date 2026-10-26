@@ -1,0 +1,161 @@
+{
+  "crates": [
+    {
+      "name": "block",
+      "version": "^0.1.6",
+      "license": "MIT",
+      "standard": "authors"
+    },
+    {
+      "name": "block2",
+      "version": "^0.6.2",
+      "license": "MIT",
+      "standard": "authors"
+    },
+    {
+      "name": "harfrust",
+      "version": "^0.5.2",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "third-party/licenses/crates/harfrust-0.5.2/LICENSE",
+          "url": "https://github.com/harfbuzz/harfrust/blob/efdae3142ab76a2f1524d72cff9e3dfdc5afd7ca/LICENSE",
+          "sha256": "3a7c3f0b887abb7c638faf022d29257418458614c6724b120ceeffb279f9c7d2"
+        }
+      ]
+    },
+    {
+      "name": "malloc_buf",
+      "version": "^0.0.6",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "third-party/licenses/crates/malloc_buf-0.0.6/LICENSE",
+          "url": "https://github.com/SSheldon/malloc_buf/blob/d9a3e539642bd90e07df458d226b19cdfa606863/LICENSE",
+          "sha256": "aced7b57e474a63edb5a724954222bf7659c01ceef0e648a03af799582991db7"
+        }
+      ]
+    },
+    {
+      "name": "objc-sys",
+      "version": "^0.3.5",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "third-party/licenses/crates/objc-sys-0.3.5/LICENSE.txt",
+          "url": "https://github.com/madsmtm/objc2/blob/4fc083f1c6d6784577e38b0ee8dbd344481e2fd2/LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ]
+    },
+    {
+      "name": "objc2",
+      "version": "^0.5.3",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "third-party/licenses/crates/objc2-0.5.3/LICENSE.txt",
+          "url": "https://github.com/madsmtm/objc2/blob/5237cbf081d04ef75a1f6a207b4018e7c1ae7438/LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ]
+    },
+    {
+      "name": "objc2",
+      "version": "^0.6.5",
+      "license": "MIT",
+      "standard": "authors"
+    },
+    {
+      "name": "objc2-app-kit",
+      "version": "^0.2.2",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "third-party/licenses/crates/objc2-app-kit-0.2.2/LICENSE.txt",
+          "url": "https://github.com/madsmtm/objc2/blob/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ]
+    },
+    {
+      "name": "objc2-encode",
+      "version": "^4.1.0",
+      "license": "MIT",
+      "standard": "authors"
+    },
+    {
+      "name": "objc2-foundation",
+      "version": "^0.2.2",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "third-party/licenses/crates/objc2-foundation-0.2.2/LICENSE.txt",
+          "url": "https://github.com/madsmtm/objc2/blob/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ]
+    },
+    {
+      "name": "objc2-foundation",
+      "version": "^0.3.2",
+      "license": "MIT",
+      "standard": "authors",
+      "holders": "Mads Marquart"
+    },
+    {
+      "name": "pulp-wasm-simd-flag",
+      "version": "^0.1.1",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "third-party/licenses/crates/pulp-wasm-simd-flag-0.1.1/LICENSE",
+          "url": "https://github.com/sarah-quinones/pulp/blob/5eb07fd7b68edf0a5e19f71737d315f72a510295/LICENSE",
+          "sha256": "d64f878c89bd5f1e5ada7e4aad57690b122727cf5229b7b87ea1980c188da1d9"
+        }
+      ]
+    },
+    {
+      "name": "seahash",
+      "version": "^4.1.0",
+      "license": "MIT",
+      "standard": "authors"
+    },
+    {
+      "name": "taffy",
+      "version": "^0.13.0",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "third-party/licenses/crates/taffy-0.13.0/LICENSE",
+          "url": "https://github.com/DioxusLabs/taffy/blob/45a56299d366ddb383e593a1f0372158d00e8530/LICENSE",
+          "sha256": "f97daf1a0124413dccf399a4e6626b4b74acd05282f80b6d64ac82225650b77a"
+        }
+      ]
+    },
+    {
+      "name": "xim-ctext",
+      "version": "^0.3.0",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "third-party/licenses/crates/xim-ctext-0.3.0/LICENSE",
+          "url": "https://github.com/Riey/xim-rs/blob/65f77e44524ba487285a63aac4080faf2c05b4ed/LICENSE",
+          "sha256": "efa1224931b98468f5005f77285457f8d2eab0a77a15941aa10abbab1ae9a74e"
+        }
+      ]
+    },
+    {
+      "name": "xim-parser",
+      "version": "^0.2.2",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "third-party/licenses/crates/xim-parser-0.2.2/LICENSE",
+          "url": "https://github.com/Riey/xim-rs/blob/7300de35a111de2df1a694bf70454532a8419685/LICENSE",
+          "sha256": "efa1224931b98468f5005f77285457f8d2eab0a77a15941aa10abbab1ae9a74e"
+        }
+      ]
+    }
+  ]
+}

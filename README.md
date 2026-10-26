@@ -202,6 +202,9 @@ To build packages locally:
 - `mise run package:linux:container` builds verified AppImage and tarball
   packages in the pinned Ubuntu 22.04 container and exports them to `dist/`.
 
+Both carry `licenses.json`, the open source notices that the About panel's
+Licenses view shows; `mise run licenses:generate` regenerates it.
+
 Set `HUTERM_SOURCE_REVISION` to the source commit when building to show its
 short form in the About panel. The container-based Linux runner passes the
 host's `HEAD`; builds without it omit the revision.
