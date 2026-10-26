@@ -1,4 +1,7 @@
 use super::*;
+use crate::{PaneInfo, PaneNode, SPLIT_TOTAL, SplitChild, SplitId, SplitNode};
+
+const HALF: u32 = SPLIT_TOTAL / 2;
 
 const RUNTIME: RuntimeId = RuntimeId::new(7);
 const STREAM: StreamId = StreamId::new(RUNTIME);
@@ -31,13 +34,25 @@ fn workspace(value: u64) -> WorkspaceInfo {
     }
 }
 
+fn pane_id(value: u64) -> PaneId {
+    PaneId::in_runtime(RUNTIME, value)
+}
+
+fn pane(value: u64) -> PaneInfo {
+    PaneInfo {
+        id: pane_id(value),
+        terminal_id: TerminalId::new(value + 100),
+        fallback_name: "sh".into(),
+    }
+}
+
+/// A one-pane tab whose pane is `value + 100` and terminal `value + 200`.
 fn tab(value: u64) -> TabInfo {
     TabInfo {
         id: tab_id(value),
-        pane_id: PaneId::new(value + 100),
-        terminal_id: TerminalId::new(value + 200),
         custom_name: None,
-        fallback_name: "sh".into(),
+        layout: PaneLayout::single(pane(value + 100)),
+        zoomed: None,
     }
 }
 
@@ -62,11 +77,21 @@ fn seeded(seq: u64) -> HierarchyState {
 }
 
 fn touched(names: bool, workspaces: &[u64], tabs: &[u64]) -> ApplyOutcome {
+    touched_layouts(names, workspaces, tabs, &[])
+}
+
+fn touched_layouts(
+    names: bool,
+    workspaces: &[u64],
+    tabs: &[u64],
+    layouts: &[u64],
+) -> ApplyOutcome {
     ApplyOutcome::Applied(Touched {
         everything: false,
         names,
         workspaces: workspaces.iter().copied().map(workspace_id).collect(),
         tabs: tabs.iter().copied().map(tab_id).collect(),
+        layouts: layouts.iter().copied().map(tab_id).collect(),
     })
 }
 
@@ -138,7 +163,7 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
                     index,
                 },
             ),
-            touched(false, &[10], &[value])
+            touched_layouts(false, &[10], &[value], &[value])
         );
     }
     assert_eq!(
@@ -460,12 +485,239 @@ fn projections_fed_the_same_stream_converge() {
     assert!(Touched::default().is_empty());
 }
 
+/// Splits tab 20 into panes `panes` along `axis`, the first with `weight`.
+fn split_tab(
+    axis: SplitAxis,
+    panes: [u64; 2],
+    weight: u32,
+    zoomed: Option<PaneId>,
+) -> HierarchyEvent {
+    HierarchyEvent::PaneLayoutChanged {
+        tab: tab_id(20),
+        layout: two_panes(axis, panes, weight),
+        zoomed,
+    }
+}
+
+fn two_panes(axis: SplitAxis, panes: [u64; 2], weight: u32) -> PaneLayout {
+    PaneLayout::new(PaneNode::Split(SplitNode {
+        id: SplitId::in_runtime(RUNTIME, 900),
+        axis,
+        children: vec![
+            SplitChild {
+                weight,
+                node: PaneNode::Pane(pane(panes[0])),
+            },
+            SplitChild {
+                weight: SPLIT_TOTAL - weight,
+                node: PaneNode::Pane(pane(panes[1])),
+            },
+        ],
+    }))
+    .unwrap()
+}
+
+#[test]
+fn layout_and_zoom_events_replace_a_tab_layout_and_its_pane_indexes() {
+    let mut state = seeded(1);
+    assert_eq!(state.pane_tab(pane_id(120)), Some(tab_id(20)));
+    assert_eq!(state.terminal_tab(TerminalId::new(220)), Some(tab_id(20)));
+    assert_eq!(
+        apply(
+            &mut state,
+            split_tab(SplitAxis::Columns, [120, 130], HALF, None)
+        ),
+        touched_layouts(false, &[10], &[20], &[20])
+    );
+    assert_eq!(state.tab(tab_id(20)).unwrap().layout.pane_count(), 2);
+    assert_eq!(state.pane_tab(pane_id(130)), Some(tab_id(20)));
+    assert_eq!(state.terminal_tab(TerminalId::new(230)), Some(tab_id(20)));
+    assert_eq!(
+        apply(
+            &mut state,
+            HierarchyEvent::PaneZoomChanged {
+                tab: tab_id(20),
+                zoomed: Some(pane_id(130)),
+            },
+        ),
+        touched_layouts(false, &[10], &[20], &[20])
+    );
+    assert_eq!(state.tab(tab_id(20)).unwrap().zoomed, Some(pane_id(130)));
+    // Setting the current zoom again changes nothing.
+    assert_eq!(
+        apply(
+            &mut state,
+            HierarchyEvent::PaneZoomChanged {
+                tab: tab_id(20),
+                zoomed: Some(pane_id(130)),
+            },
+        ),
+        touched(false, &[], &[])
+    );
+    // A close back to one pane clears the zoom and drops the old pane's
+    // indexes.
+    assert_eq!(
+        apply(
+            &mut state,
+            HierarchyEvent::PaneLayoutChanged {
+                tab: tab_id(20),
+                layout: PaneLayout::single(pane(130)),
+                zoomed: None,
+            },
+        ),
+        touched_layouts(false, &[10], &[20], &[20])
+    );
+    assert_eq!(state.pane_tab(pane_id(120)), None);
+    assert_eq!(state.terminal_tab(TerminalId::new(220)), None);
+    assert_eq!(state.tab(tab_id(20)).unwrap().fallback_name(), "sh");
+    assert_eq!(
+        apply(&mut state, HierarchyEvent::TabClosed { tab: tab_id(20) }),
+        touched(false, &[10], &[20])
+    );
+    assert_eq!(state.pane_tab(pane_id(130)), None);
+    assert_eq!(
+        apply(
+            &mut state,
+            HierarchyEvent::WorkspaceClosed {
+                workspace: workspace_id(11)
+            }
+        ),
+        touched(true, &[11], &[22])
+    );
+    assert_eq!(state.pane_tab(pane_id(122)), None);
+}
+
+#[test]
+fn layouts_that_reuse_another_tabs_panes_or_name_foreign_zoom_are_inconsistent()
+{
+    let inconsistent = ApplyOutcome::ResyncRequired(ResyncReason::Inconsistent);
+    // Pane 121 belongs to tab 21.
+    let reused_pane = split_tab(SplitAxis::Columns, [120, 121], HALF, None);
+    let reused_terminal = HierarchyEvent::PaneLayoutChanged {
+        tab: tab_id(20),
+        layout: PaneLayout::new(PaneNode::Split(SplitNode {
+            id: SplitId::in_runtime(RUNTIME, 900),
+            axis: SplitAxis::Columns,
+            children: vec![
+                SplitChild {
+                    weight: HALF,
+                    node: PaneNode::Pane(pane(120)),
+                },
+                SplitChild {
+                    weight: HALF,
+                    node: PaneNode::Pane(PaneInfo {
+                        id: pane_id(130),
+                        ..pane(121)
+                    }),
+                },
+            ],
+        }))
+        .unwrap(),
+        zoomed: None,
+    };
+    // Pane 121's identity with a terminal no tab shows.
+    let reused_pane_only = HierarchyEvent::PaneLayoutChanged {
+        tab: tab_id(20),
+        layout: PaneLayout::single(PaneInfo {
+            id: pane_id(121),
+            ..pane(199)
+        }),
+        zoomed: None,
+    };
+    let foreign_pane = HierarchyEvent::PaneLayoutChanged {
+        tab: tab_id(20),
+        layout: PaneLayout::single(PaneInfo {
+            id: PaneId::in_runtime(RuntimeId::new(8), 120),
+            ..pane(120)
+        }),
+        zoomed: None,
+    };
+    for event in [
+        reused_pane,
+        reused_pane_only,
+        reused_terminal,
+        foreign_pane,
+        split_tab(SplitAxis::Columns, [120, 130], HALF, Some(pane_id(140))),
+        HierarchyEvent::PaneLayoutChanged {
+            tab: tab_id(20),
+            layout: PaneLayout::single(pane(120)),
+            zoomed: Some(pane_id(120)),
+        },
+        HierarchyEvent::PaneZoomChanged {
+            tab: tab_id(20),
+            zoomed: Some(pane_id(120)),
+        },
+        HierarchyEvent::PaneZoomChanged {
+            tab: tab_id(99),
+            zoomed: None,
+        },
+        HierarchyEvent::PaneLayoutChanged {
+            tab: tab_id(99),
+            layout: PaneLayout::single(pane(199)),
+            zoomed: None,
+        },
+        HierarchyEvent::TabOpened {
+            workspace: workspace_id(10),
+            tab: TabInfo {
+                layout: PaneLayout::single(pane(121)),
+                ..tab(30)
+            },
+            index: 0,
+        },
+    ] {
+        let mut state = seeded(1);
+        let before = state.clone();
+        assert_eq!(apply(&mut state, event.clone()), inconsistent, "{event:?}");
+        assert_eq!(state, before);
+    }
+    let reused = HierarchyState::from_sessions(
+        STREAM,
+        0,
+        [(
+            session(1),
+            vec![(
+                workspace(10),
+                vec![
+                    tab(20),
+                    TabInfo {
+                        layout: PaneLayout::single(pane(120)),
+                        ..tab(21)
+                    },
+                ],
+            )],
+        )],
+    );
+    assert!(reused.is_none());
+}
+
+#[test]
+fn layout_events_follow_the_stale_and_gap_rules() {
+    let mut state = seeded(4);
+    let event = split_tab(SplitAxis::Columns, [120, 130], HALF, None);
+    let replayed = HierarchyEnvelope {
+        stream: STREAM,
+        seq: 4,
+        event: event.clone(),
+    };
+    assert_eq!(state.apply(replayed), ApplyOutcome::Stale);
+    let gap = HierarchyEnvelope {
+        stream: STREAM,
+        seq: 6,
+        event,
+    };
+    assert_eq!(
+        state.apply(gap),
+        ApplyOutcome::ResyncRequired(ResyncReason::Gap)
+    );
+    assert_eq!(state, seeded(4));
+}
+
 #[test]
 fn digest_is_stable_and_sensitive_to_every_structural_difference() {
     let state = seeded(1);
     // Fixed value, cross-checked against an independent implementation of
     // the documented encoding: the digest must not vary by process.
-    assert_eq!(state.digest(), 0x5fc1_9fa0_42d3_dfe8);
+    assert_eq!(state.digest(), 0x1309_9f2a_2f37_cbc0);
     assert_eq!(seeded(9).digest(), state.digest());
     assert_eq!(HierarchyState::new(STREAM).digest(), FNV_OFFSET);
 
@@ -501,6 +753,16 @@ fn digest_is_stable_and_sensitive_to_every_structural_difference() {
             session: session_id(2),
             index: 0,
         }),
+        variant(split_tab(SplitAxis::Columns, [120, 130], 400_000, None)),
+        variant(split_tab(SplitAxis::Columns, [120, 130], 600_000, None)),
+        variant(split_tab(SplitAxis::Rows, [120, 130], 400_000, None)),
+        variant(split_tab(SplitAxis::Columns, [130, 120], 400_000, None)),
+        variant(split_tab(
+            SplitAxis::Columns,
+            [120, 130],
+            400_000,
+            Some(pane_id(130)),
+        )),
     ];
     for (index, digest) in digests.iter().enumerate() {
         assert!(

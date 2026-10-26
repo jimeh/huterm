@@ -251,10 +251,9 @@ impl Tab {
     pub(super) fn info(&self) -> TabInfo {
         TabInfo {
             id: self.id,
-            pane_id: self.pane_id,
-            terminal_id: self.terminal_id,
             custom_name: self.custom_name.clone(),
-            fallback_name: self.fallback_name.clone(),
+            layout: self.layout.clone(),
+            zoomed: self.zoomed,
         }
     }
 }
@@ -263,7 +262,10 @@ impl Tab {
 mod tests {
     use super::*;
     use crate::mux::tests::command;
-    use huterm_protocol::{ApplyOutcome, SessionId, TabId, WorkspaceId};
+    use huterm_protocol::{
+        ApplyOutcome, NodeId, PaneId, PaneNode, SessionId, SplitDirection,
+        SplitId, TabId, WorkspaceId,
+    };
 
     /// Drains the real subscription into `state`, then compares it with a
     /// fresh snapshot.
@@ -300,6 +302,31 @@ mod tests {
             .unwrap()
             .tab
             .id
+    }
+
+    fn split(
+        mux: &mut Mux,
+        workspace: WorkspaceId,
+        tab: TabId,
+        pane: PaneId,
+        direction: SplitDirection,
+    ) -> PaneId {
+        mux.split_pane(workspace, tab, pane, direction, &command("read value"))
+            .unwrap()
+            .pane
+            .id
+    }
+
+    /// The root split's identity and children.
+    fn root_split(mux: &Mux, tab: TabId) -> (SplitId, Vec<NodeId>) {
+        let PaneNode::Split(split) = mux.tab(tab).unwrap().layout().root()
+        else {
+            panic!("tab {tab:?} is not split");
+        };
+        (
+            split.id,
+            split.children.iter().map(|child| child.node.id()).collect(),
+        )
     }
 
     #[test]
@@ -341,6 +368,35 @@ mod tests {
         mux.rename_session(second, None).unwrap();
         step(&mut mux, &mut state);
 
+        // Tab one: [left | right over below], resized, zoomed, then a close
+        // that clears the zoom and collapses the nested split.
+        let left = mux.tab(one).unwrap().first_pane().id;
+        let right = split(&mut mux, alpha, one, left, SplitDirection::Right);
+        step(&mut mux, &mut state);
+        let below = split(&mut mux, alpha, one, right, SplitDirection::Down);
+        step(&mut mux, &mut state);
+        let (root, children) = root_split(&mux, one);
+        mux.resize_split(alpha, one, root, &children, &[300_000, 700_000])
+            .unwrap();
+        step(&mut mux, &mut state);
+        mux.set_pane_zoom(alpha, one, Some(below)).unwrap();
+        step(&mut mux, &mut state);
+        assert_eq!(state.tab(one).unwrap().zoomed, Some(below));
+        mux.close_pane(alpha, one, below).unwrap();
+        step(&mut mux, &mut state);
+        assert_eq!(state.tab(one).unwrap().zoomed, None);
+        assert_eq!(state.tab(one).unwrap().layout.pane_count(), 2);
+        // Splitting clears a shared zoom.
+        mux.set_pane_zoom(alpha, one, Some(right)).unwrap();
+        step(&mut mux, &mut state);
+        split(&mut mux, alpha, one, left, SplitDirection::Left);
+        step(&mut mux, &mut state);
+        assert_eq!(state.tab(one).unwrap().zoomed, None);
+        mux.set_pane_zoom(alpha, one, Some(right)).unwrap();
+        step(&mut mux, &mut state);
+        mux.set_pane_zoom(alpha, one, None).unwrap();
+        step(&mut mux, &mut state);
+
         // [one, two, three] -> [three, one, two] -> [one, two, three].
         mux.reorder_tab(alpha, three, Some(one)).unwrap();
         step(&mut mux, &mut state);
@@ -362,6 +418,11 @@ mod tests {
 
         mux.close_tab(alpha, one).unwrap();
         step(&mut mux, &mut state);
+        // Closing a tab's only pane closes the tab.
+        let only = mux.tab(four).unwrap().first_pane().id;
+        mux.close_pane(beta, four, only).unwrap();
+        step(&mut mux, &mut state);
+        assert!(state.tab(four).is_none());
         mux.close_workspace(beta).unwrap();
         step(&mut mux, &mut state);
         assert!(state.tab(four).is_none());
@@ -418,6 +479,25 @@ mod tests {
         assert!(mux.close_tab(workspace, stale_tab).is_err());
         assert!(mux.close_workspace(stale_workspace).is_err());
         assert!(mux.close_session(stale_session).is_err());
+        let pane = mux.tab(tab).unwrap().first_pane().id;
+        let stale_pane = PaneId::in_runtime(mux.runtime_id(), u64::MAX);
+        let right = SplitDirection::Right;
+        assert!(
+            mux.split_pane(workspace, tab, stale_pane, right, &command(""))
+                .is_err()
+        );
+        // A failed spawn changes no structure and leaks no terminal.
+        let terminals = mux.terminal_count();
+        assert!(
+            mux.split_pane(workspace, tab, pane, right, &failing)
+                .is_err()
+        );
+        assert_eq!(mux.terminal_count(), terminals);
+        assert_eq!(mux.tab(tab).unwrap().layout().pane_count(), 1);
+        assert!(mux.close_pane(workspace, stale_tab, pane).is_err());
+        assert!(mux.close_pane(workspace, tab, stale_pane).is_err());
+        // A lone pane cannot be zoomed.
+        assert!(mux.set_pane_zoom(workspace, tab, Some(pane)).is_err());
         // Unchanged positions and names, which must not make pending close
         // assessments stale either.
         let revision = mux.revision;
@@ -450,6 +530,40 @@ mod tests {
         assert_eq!(mux.hierarchy_seq(), seq + 2);
         assert_eq!(subscription.try_recv(), Err(HierarchyRecvError::Empty));
         assert!(!subscription.take_wake());
+    }
+
+    #[test]
+    fn resizes_and_shared_zoom_emit_but_leave_close_tickets_valid() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let tab = open(&mut mux, workspace);
+        let left = mux.tab(tab).unwrap().first_pane().id;
+        let right =
+            split(&mut mux, workspace, tab, left, SplitDirection::Right);
+        let (root, children) = root_split(&mux, tab);
+        let (revision, seq) = (mux.revision, mux.hierarchy_seq());
+
+        mux.resize_split(workspace, tab, root, &children, &[400_000, 600_000])
+            .unwrap();
+        assert_eq!((mux.revision, mux.hierarchy_seq()), (revision, seq + 1));
+        // The same weights again change nothing.
+        mux.resize_split(workspace, tab, root, &children, &[400_000, 600_000])
+            .unwrap();
+        assert_eq!(mux.hierarchy_seq(), seq + 1);
+        mux.set_pane_zoom(workspace, tab, Some(right)).unwrap();
+        assert_eq!((mux.revision, mux.hierarchy_seq()), (revision, seq + 2));
+        mux.set_pane_zoom(workspace, tab, Some(right)).unwrap();
+        assert_eq!(mux.hierarchy_seq(), seq + 2);
+
+        // Splits and pane closes change what a close covers.
+        let below =
+            split(&mut mux, workspace, tab, right, SplitDirection::Down);
+        assert_ne!(mux.revision, revision);
+        let revision = mux.revision;
+        mux.close_pane(workspace, tab, below).unwrap();
+        assert_ne!(mux.revision, revision);
+        mux.shutdown().unwrap();
     }
 
     #[test]

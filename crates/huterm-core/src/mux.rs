@@ -11,7 +11,8 @@ use crate::terminal::RuntimeClient;
 use crate::{RuntimeError, TerminalRuntime, TerminalViewer, ViewerOptions};
 use hierarchy::HierarchyPublisher;
 use huterm_protocol::{
-    AttachmentId, HierarchyEvent, PaneId, RuntimeId, SessionId, TabId,
+    AttachmentId, HierarchyEvent, LayoutError, NodeId, PaneId, PaneInfo,
+    PaneLayout, RuntimeId, SessionId, SplitDirection, SplitId, TabId,
     TerminalCommand, TerminalId, WorkspaceId,
 };
 use thiserror::Error;
@@ -20,17 +21,14 @@ use thiserror::Error;
 pub const DEFAULT_SOCKET_NAME: &str = "default";
 static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
 
-/// One tab's canonical single-pane layout. Splits can replace this leaf later.
+/// One tab: its split tree of panes and its shared zoom.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Tab {
     /// Stable tab identity.
     pub id: TabId,
-    /// Stable pane identity.
-    pub pane_id: PaneId,
-    /// Terminal displayed by the pane.
-    pub terminal_id: TerminalId,
     custom_name: Option<String>,
-    fallback_name: String,
+    layout: PaneLayout,
+    zoomed: Option<PaneId>,
 }
 impl Tab {
     /// Returns the custom override, if set.
@@ -38,7 +36,40 @@ impl Tab {
     pub fn custom_name(&self) -> Option<&str> {
         self.custom_name.as_deref()
     }
-    /// Resolves the override, current terminal title, then launched program name.
+    /// The tab's split tree of panes.
+    #[must_use]
+    pub fn layout(&self) -> &PaneLayout {
+        &self.layout
+    }
+    /// The first pane in traversal order.
+    #[must_use]
+    pub fn first_pane(&self) -> &PaneInfo {
+        self.layout.first_pane()
+    }
+    /// The pane zoomed for clients that share zoom state.
+    #[must_use]
+    pub fn zoomed(&self) -> Option<PaneId> {
+        self.zoomed
+    }
+    /// Every terminal the tab's panes show, in traversal order.
+    #[must_use]
+    pub fn terminals(&self) -> Vec<TerminalId> {
+        self.layout
+            .panes()
+            .into_iter()
+            .map(|pane| pane.terminal_id)
+            .collect()
+    }
+    /// Whether a pane of the tab shows `terminal`.
+    #[must_use]
+    pub fn shows(&self, terminal: TerminalId) -> bool {
+        self.layout
+            .panes()
+            .into_iter()
+            .any(|pane| pane.terminal_id == terminal)
+    }
+    /// Resolves the override, current terminal title, then the first pane's
+    /// launched program name.
     #[must_use]
     pub fn display_name<'a>(
         &'a self,
@@ -47,7 +78,7 @@ impl Tab {
         huterm_protocol::resolve_tab_name(
             self.custom_name.as_deref(),
             current_terminal_title,
-            &self.fallback_name,
+            &self.first_pane().fallback_name,
         )
     }
 }
@@ -102,6 +133,8 @@ pub struct SelectionTarget {
     pub workspace: Option<WorkspaceId>,
     /// Selected tab, if any.
     pub tab: Option<TabId>,
+    /// Selected pane, if any.
+    pub pane: Option<PaneId>,
 }
 /// A successfully published tab. Clients display its terminal through
 /// [`Mux::subscribe_terminal`].
@@ -109,6 +142,15 @@ pub struct SelectionTarget {
 pub struct OpenedTab {
     /// Canonical tab record.
     pub tab: Tab,
+}
+/// A pane a split published. Clients display its terminal through
+/// [`Mux::subscribe_terminal`].
+#[derive(Debug)]
+pub struct OpenedPane {
+    /// The tab that holds the pane.
+    pub tab: TabId,
+    /// The new pane.
+    pub pane: PaneInfo,
 }
 
 /// Canonical session, workspace, and terminal owner.
@@ -119,6 +161,8 @@ pub struct OpenedTab {
 /// assign incarnation identity across processes and restarts as well.
 #[derive(Debug)]
 pub struct Mux {
+    /// Advances on every change that can affect a close ticket's scope.
+    /// Pane resizes and shared zoom leave it alone.
     revision: u64,
     attachments: BTreeMap<AttachmentId, SessionId>,
     runtime_id: RuntimeId,
@@ -232,6 +276,7 @@ impl Mux {
             session: id,
             workspace: None,
             tab: None,
+            pane: None,
         })
     }
     /// Resolves a workspace selection to its current session.
@@ -248,6 +293,7 @@ impl Mux {
             session: workspace.session_id,
             workspace: Some(id),
             tab: None,
+            pane: None,
         })
     }
     /// Resolves a tab selection to its current workspace and session.
@@ -264,6 +310,29 @@ impl Mux {
             session: workspace.session_id,
             workspace: Some(workspace.id),
             tab: Some(id),
+            pane: None,
+        })
+    }
+    /// Resolves a pane selection to its current tab, workspace, and session.
+    /// # Errors
+    /// Rejects foreign or missing identities.
+    pub fn select_pane(&self, id: PaneId) -> Result<SelectionTarget, MuxError> {
+        self.validate_scope(id.runtime())?;
+        let (workspace, tab) = self
+            .workspaces
+            .values()
+            .find_map(|w| {
+                w.tabs
+                    .iter()
+                    .find(|t| t.layout.pane(id).is_some())
+                    .map(|t| (w, t.id))
+            })
+            .ok_or(MuxError::UnknownPane(id))?;
+        Ok(SelectionTarget {
+            session: workspace.session_id,
+            workspace: Some(workspace.id),
+            tab: Some(tab),
+            pane: Some(id),
         })
     }
     /// Creates an empty session with an optional custom name.
@@ -424,23 +493,17 @@ impl Mux {
     ) -> Result<OpenedTab, MuxError> {
         self.select_workspace(workspace)?;
         let value = self.allocate()?;
+        let id = TabId::in_runtime(self.runtime_id, value);
+        let pane = self.new_pane(command)?;
+        let terminal_id = pane.terminal_id;
         let tab = Tab {
-            id: TabId::in_runtime(self.runtime_id, value),
-            pane_id: PaneId::new(self.allocate()?),
-            terminal_id: TerminalId::new(self.allocate()?),
+            id,
             custom_name: None,
-            fallback_name: command
-                .program
-                .file_name()
-                .unwrap_or(command.program.as_os_str())
-                .to_string_lossy()
-                .into_owned(),
+            layout: PaneLayout::single(pane),
+            zoomed: None,
         };
-        let runtime = TerminalRuntime::spawn_in(
-            self.runtime_id,
-            tab.terminal_id,
-            command,
-        )?;
+        let runtime =
+            TerminalRuntime::spawn_in(self.runtime_id, terminal_id, command)?;
         let tabs = &mut self
             .workspaces
             .get_mut(&workspace)
@@ -448,13 +511,217 @@ impl Mux {
             .tabs;
         tabs.push(tab.clone());
         let index = position(tabs.len() - 1);
-        self.terminals.insert(tab.terminal_id, runtime);
+        self.terminals.insert(terminal_id, runtime);
         self.emit_hierarchy(|_| HierarchyEvent::TabOpened {
             workspace,
             tab: tab.info(),
             index,
         });
         Ok(OpenedTab { tab })
+    }
+    /// Allocates a pane and its terminal identity for `command`.
+    fn new_pane(
+        &mut self,
+        command: &TerminalCommand,
+    ) -> Result<PaneInfo, MuxError> {
+        Ok(PaneInfo {
+            id: PaneId::in_runtime(self.runtime_id, self.allocate()?),
+            terminal_id: TerminalId::new(self.allocate()?),
+            fallback_name: command
+                .program
+                .file_name()
+                .unwrap_or(command.program.as_os_str())
+                .to_string_lossy()
+                .into_owned(),
+        })
+    }
+    /// Splits `pane` toward `direction` with a new terminal running
+    /// `command`. The terminal spawns before the layout changes, so a failed
+    /// spawn changes no structure and emits nothing. A split clears the
+    /// tab's shared zoom.
+    /// # Errors
+    /// Rejects foreign, missing, or nonmember targets, a pane too small or a
+    /// parent too full to split, exhausted identities, and failed spawns.
+    pub fn split_pane(
+        &mut self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        pane: PaneId,
+        direction: SplitDirection,
+        command: &TerminalCommand,
+    ) -> Result<OpenedPane, MuxError> {
+        self.select_workspace_pane(workspace, tab, pane)?;
+        let added = self.new_pane(command)?;
+        let split = SplitId::in_runtime(self.runtime_id, self.allocate()?);
+        let layout = self.tab_record(workspace, tab)?.layout.with_split(
+            pane,
+            direction,
+            added.clone(),
+            split,
+        );
+        let layout = layout.map_err(|error| layout_error(error, pane))?;
+        let runtime = TerminalRuntime::spawn_in(
+            self.runtime_id,
+            added.terminal_id,
+            command,
+        )?;
+        self.changed();
+        let record = self.tab_record_mut(workspace, tab)?;
+        record.layout = layout;
+        record.zoomed = None;
+        self.terminals.insert(added.terminal_id, runtime);
+        self.emit_layout(workspace, tab);
+        Ok(OpenedPane { tab, pane: added })
+    }
+    /// Closes a pane and joins its terminal workers, leaving its siblings
+    /// running; they take its space. Closing a tab's only pane closes the
+    /// tab.
+    /// # Errors
+    /// Rejects foreign, missing, or nonmember targets, or reports failed
+    /// terminal cleanup after the pane was removed.
+    pub fn close_pane(
+        &mut self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        pane: PaneId,
+    ) -> Result<(), MuxError> {
+        self.select_workspace_pane(workspace, tab, pane)?;
+        let record = self.tab_record(workspace, tab)?;
+        let layout = match record.layout.without_pane(pane) {
+            Err(LayoutError::LastPane) => {
+                return self.close_tab(workspace, tab);
+            }
+            result => result.map_err(|error| layout_error(error, pane))?,
+        };
+        let terminal = record
+            .layout
+            .pane(pane)
+            .ok_or(MuxError::UnknownPane(pane))?
+            .terminal_id;
+        self.changed();
+        let record = self.tab_record_mut(workspace, tab)?;
+        record.layout = layout;
+        if record.zoomed == Some(pane) {
+            record.zoomed = None;
+        }
+        self.emit_layout(workspace, tab);
+        self.close_terminals(vec![terminal])
+    }
+    /// Sets the weights of a split's children, which must still be exactly
+    /// `children`, in order. Weights never change which terminals a close
+    /// covers, so pending close assessments stay valid.
+    /// # Errors
+    /// Rejects foreign, missing, or nonmember targets, a split whose
+    /// children changed, and invalid weights.
+    pub fn resize_split(
+        &mut self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        split: SplitId,
+        children: &[NodeId],
+        weights: &[u32],
+    ) -> Result<(), MuxError> {
+        self.select_workspace_tab(workspace, tab)?;
+        self.validate_scope(split.runtime())?;
+        let record = self.tab_record(workspace, tab)?;
+        let layout = record
+            .layout
+            .with_weights(split, children, weights)
+            .map_err(|error| match error {
+                LayoutError::UnknownSplit => MuxError::UnknownSplit(split),
+                error => MuxError::InvalidLayout(error),
+            })?;
+        if layout == record.layout {
+            return Ok(());
+        }
+        self.tab_record_mut(workspace, tab)?.layout = layout;
+        self.emit_layout(workspace, tab);
+        Ok(())
+    }
+    /// Sets or clears the tab's shared zoom, which only clients that share
+    /// zoom state follow. Zoom never changes which terminals a close
+    /// covers, so pending close assessments stay valid.
+    /// # Errors
+    /// Rejects foreign, missing, or nonmember targets, and zooming a tab
+    /// with one pane.
+    pub fn set_pane_zoom(
+        &mut self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        zoomed: Option<PaneId>,
+    ) -> Result<(), MuxError> {
+        match zoomed {
+            Some(pane) => self.select_workspace_pane(workspace, tab, pane)?,
+            None => self.select_workspace_tab(workspace, tab)?,
+        }
+        let record = self.tab_record_mut(workspace, tab)?;
+        if zoomed.is_some() && record.layout.pane_count() < 2 {
+            return Err(MuxError::InvalidLayout(LayoutError::LastPane));
+        }
+        if record.zoomed == zoomed {
+            return Ok(());
+        }
+        record.zoomed = zoomed;
+        self.emit_hierarchy(|_| HierarchyEvent::PaneZoomChanged {
+            tab,
+            zoomed,
+        });
+        Ok(())
+    }
+    /// Validates that a pane belongs to the tab in the workspace.
+    fn select_workspace_pane(
+        &self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        pane: PaneId,
+    ) -> Result<(), MuxError> {
+        self.select_workspace_tab(workspace, tab)?;
+        self.validate_scope(pane.runtime())?;
+        if self.tab_record(workspace, tab)?.layout.pane(pane).is_some() {
+            Ok(())
+        } else {
+            Err(MuxError::UnknownPane(pane))
+        }
+    }
+    fn tab_record(
+        &self,
+        workspace: WorkspaceId,
+        tab: TabId,
+    ) -> Result<&Tab, MuxError> {
+        self.workspaces
+            .get(&workspace)
+            .ok_or(MuxError::UnknownWorkspace(workspace))?
+            .tabs
+            .iter()
+            .find(|t| t.id == tab)
+            .ok_or(MuxError::UnknownTab(tab))
+    }
+    fn tab_record_mut(
+        &mut self,
+        workspace: WorkspaceId,
+        tab: TabId,
+    ) -> Result<&mut Tab, MuxError> {
+        self.workspaces
+            .get_mut(&workspace)
+            .ok_or(MuxError::UnknownWorkspace(workspace))?
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab)
+            .ok_or(MuxError::UnknownTab(tab))
+    }
+    fn emit_layout(&mut self, workspace: WorkspaceId, tab: TabId) {
+        self.emit_hierarchy(|mux| {
+            let record = &mux.workspaces[&workspace]
+                .tabs
+                .iter()
+                .find(|t| t.id == tab)
+                .expect("an emitted layout's tab exists");
+            HierarchyEvent::PaneLayoutChanged {
+                tab,
+                layout: record.layout.clone(),
+                zoomed: record.zoomed,
+            }
+        });
     }
     /// Reorders a tab within its current workspace, before an anchor or at end.
     /// # Errors
@@ -507,10 +774,12 @@ impl Mux {
         }
         let source_session = self.workspaces[&source].session_id;
         let destination_session = self.workspaces[&destination].session_id;
-        let terminal_id =
-            self.workspaces[&source].tabs[source_index].terminal_id;
         if source_session != destination_session {
-            self.invalidate_terminal_authority(terminal_id);
+            for terminal_id in
+                self.workspaces[&source].tabs[source_index].terminals()
+            {
+                self.invalidate_terminal_authority(terminal_id);
+            }
         }
         self.changed();
         let record = self
@@ -583,7 +852,7 @@ impl Mux {
             let terminal_ids: Vec<_> = self.workspaces[&workspace]
                 .tabs
                 .iter()
-                .map(|tab| tab.terminal_id)
+                .flat_map(Tab::terminals)
                 .collect();
             for terminal_id in terminal_ids {
                 self.invalidate_terminal_authority(terminal_id);
@@ -635,10 +904,7 @@ impl Mux {
         let session = self.attachment_session(attachment)?;
         let is_member = self.workspaces.values().any(|workspace| {
             workspace.session_id == session
-                && workspace
-                    .tabs
-                    .iter()
-                    .any(|tab| tab.terminal_id == terminal_id)
+                && workspace.tabs.iter().any(|tab| tab.shows(terminal_id))
         });
         let runtime = self
             .terminals
@@ -686,11 +952,7 @@ impl Mux {
         let tab = record.tabs.remove(index);
         self.changed();
         self.emit_hierarchy(|_| HierarchyEvent::TabClosed { tab: tab.id });
-        if let Some(runtime) = self.terminals.remove(&tab.terminal_id) {
-            let stopped = runtime.registry().is_closed();
-            shut_down(runtime, stopped)?;
-        }
-        Ok(())
+        self.close_terminals(tab.terminals())
     }
     /// Deletes a workspace and stops all its terminals, retaining its session.
     /// # Errors
@@ -710,7 +972,7 @@ impl Mux {
         }
         self.emit_hierarchy(|_| HierarchyEvent::WorkspaceClosed { workspace });
         self.close_terminals(
-            record.tabs.into_iter().map(|t| t.terminal_id).collect(),
+            record.tabs.iter().flat_map(Tab::terminals).collect(),
         )
     }
     /// Deletes a session and stops every terminal in its workspaces.
@@ -744,7 +1006,7 @@ impl Mux {
             .into_iter()
             .filter_map(|id| self.workspaces.remove(&id))
             .flat_map(|w| w.tabs)
-            .map(|t| t.terminal_id)
+            .flat_map(|t| t.terminals())
             .collect();
         self.emit_hierarchy(|_| HierarchyEvent::SessionClosed { session });
         self.close_terminals(terminals)
@@ -832,15 +1094,54 @@ impl Mux {
     ) -> Result<TestTab, MuxError> {
         let opened = self.open_tab(workspace, command)?;
         let client = crate::test_support::TestClient::new(
-            &self.terminals[&opened.tab.terminal_id],
+            &self.terminals[&opened.tab.first_pane().terminal_id],
         );
         Ok(TestTab {
             tab: opened.tab,
             client,
         })
     }
+
+    /// Splits a pane like [`Mux::split_pane`] and subscribes a
+    /// full-capability viewer to the new terminal.
+    pub(crate) fn split_test_pane(
+        &mut self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        pane: PaneId,
+        direction: SplitDirection,
+        command: &TerminalCommand,
+    ) -> Result<TestPane, MuxError> {
+        let opened =
+            self.split_pane(workspace, tab, pane, direction, command)?;
+        let client = crate::test_support::TestClient::new(
+            &self.terminals[&opened.pane.terminal_id],
+        );
+        Ok(TestPane {
+            pane: opened.pane,
+            client,
+        })
+    }
 }
 
+/// A pane split by a test with a full-capability viewer subscribed at
+/// spawn.
+#[cfg(test)]
+pub(crate) struct TestPane {
+    pub(crate) pane: PaneInfo,
+    pub(crate) client: crate::test_support::TestClient,
+}
+
+/// Maps a rejected layout transform on `pane` to a Mux error.
+fn layout_error(error: LayoutError, pane: PaneId) -> MuxError {
+    match error {
+        LayoutError::UnknownPane => MuxError::UnknownPane(pane),
+        LayoutError::PaneTooSmall | LayoutError::TooManyChildren => {
+            MuxError::PaneTooSmall(pane)
+        }
+        error => MuxError::InvalidLayout(error),
+    }
+}
 /// Converts a structural position to the protocol's fixed width.
 fn position(index: usize) -> u32 {
     u32::try_from(index).expect("structural position exceeds u32")
@@ -898,6 +1199,20 @@ pub enum MuxError {
     /// Tab no longer belongs to the requested workspace.
     #[error("tab {0:?} does not exist in this workspace")]
     UnknownTab(TabId),
+    /// Pane no longer belongs to the requested tab.
+    #[error("pane {0:?} does not exist in this tab")]
+    UnknownPane(PaneId),
+    /// Split no longer belongs to the requested tab.
+    #[error("split {0:?} does not exist in this tab")]
+    UnknownSplit(SplitId),
+    /// A pane's share of its split is too small, or its split too full, to
+    /// split it.
+    #[error("pane {0:?} is too small to split")]
+    PaneTooSmall(PaneId),
+    /// A layout change named different split children, invalid weights, or
+    /// zoomed a tab's only pane.
+    #[error("invalid pane layout: {0}")]
+    InvalidLayout(LayoutError),
     /// Terminal startup or shutdown failed.
     #[error(transparent)]
     Runtime(#[from] RuntimeError),

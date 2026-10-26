@@ -313,7 +313,7 @@ impl DesktopRuntime {
                     .and_then(|viewer_attachment| {
                         mux.subscribe_terminal(
                             viewer_attachment,
-                            tab.tab.terminal_id,
+                            tab.tab.first_pane().terminal_id,
                             ViewerOptions {
                                 geometry: Some((
                                     command.grid_size,
@@ -4587,7 +4587,7 @@ impl WorkspaceView {
         // reconcile installs again if the window still shows its workspace.
         let Some(tab) = self.tab_view(
             tab_id,
-            opened.tab.terminal_id,
+            opened.tab.first_pane().terminal_id,
             viewer,
             committed,
             window,

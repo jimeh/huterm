@@ -387,7 +387,8 @@ fn quake_profiles_form_a_strict_domain_with_a_default() {
 /// 2, which carry no custom names.
 fn projected() -> HierarchyState {
     use huterm_protocol::{
-        HierarchyEvent, PaneId, SessionInfo, StreamId, TabInfo, WorkspaceInfo,
+        HierarchyEvent, PaneId, PaneInfo, PaneLayout, SessionInfo, StreamId,
+        TabInfo, WorkspaceInfo,
     };
     let runtime = RuntimeId::new(9);
     let mut state = HierarchyState::new(StreamId::new(runtime));
@@ -416,10 +417,13 @@ fn projected() -> HierarchyState {
             workspace: WorkspaceId::in_runtime(runtime, 10),
             tab: TabInfo {
                 id: TabId::in_runtime(runtime, value),
-                pane_id: PaneId::new(value),
-                terminal_id: TerminalId::new(value),
                 custom_name: None,
-                fallback_name: "sh".into(),
+                layout: PaneLayout::single(PaneInfo {
+                    id: PaneId::in_runtime(runtime, value),
+                    terminal_id: TerminalId::new(value),
+                    fallback_name: "sh".into(),
+                }),
+                zoomed: None,
             },
             index: u32::try_from(index).unwrap(),
         });

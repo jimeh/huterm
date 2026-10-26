@@ -2,7 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{PaneId, RuntimeId, SessionId, TabId, TerminalId, WorkspaceId};
+use crate::{
+    PaneId, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis, TabId,
+    TerminalId, WorkspaceId,
+};
 
 /// Identifies one ordered hierarchy stream.
 ///
@@ -87,26 +90,40 @@ impl WorkspaceInfo {
 pub struct TabInfo {
     /// Stable tab identity.
     pub id: TabId,
-    /// The tab's single pane.
-    pub pane_id: PaneId,
-    /// Terminal displayed by the pane.
-    pub terminal_id: TerminalId,
     /// Custom override, if set.
     pub custom_name: Option<String>,
-    /// Launched program name used when the terminal has no title.
-    pub fallback_name: String,
+    /// The tab's split tree of panes.
+    pub layout: PaneLayout,
+    /// The pane zoomed for every client that shares zoom state; always a
+    /// pane of a layout with more than one pane.
+    pub zoomed: Option<PaneId>,
 }
 
 impl TabInfo {
-    /// Resolves the label through [`resolve_tab_name`].
+    /// The first pane's launched program name, used when the terminal has
+    /// no title.
+    #[must_use]
+    pub fn fallback_name(&self) -> &str {
+        &self.layout.first_pane().fallback_name
+    }
+
+    /// Resolves the label through [`resolve_tab_name`], with the first
+    /// pane's fallback name.
     #[must_use]
     pub fn display_name<'a>(&'a self, terminal_title: &'a str) -> &'a str {
         resolve_tab_name(
             self.custom_name.as_deref(),
             terminal_title,
-            &self.fallback_name,
+            self.fallback_name(),
         )
     }
+}
+
+/// Whether `zoomed` can be a tab's shared zoom over `layout`.
+fn valid_zoom(layout: &PaneLayout, zoomed: Option<PaneId>) -> bool {
+    zoomed.is_none_or(|pane| {
+        layout.pane_count() > 1 && layout.pane(pane).is_some()
+    })
 }
 
 /// One committed structural change.
@@ -195,6 +212,22 @@ pub enum HierarchyEvent {
         /// Closed tab.
         tab: TabId,
     },
+    /// A tab's pane layout changed: a split, a pane close, or a resize.
+    PaneLayoutChanged {
+        /// The tab.
+        tab: TabId,
+        /// Its new layout.
+        layout: PaneLayout,
+        /// Its shared zoom after the change.
+        zoomed: Option<PaneId>,
+    },
+    /// A tab's shared zoom was set or cleared.
+    PaneZoomChanged {
+        /// The tab.
+        tab: TabId,
+        /// The zoomed pane, or `None`.
+        zoomed: Option<PaneId>,
+    },
     /// Application shutdown removed every session.
     Reset,
 }
@@ -236,16 +269,19 @@ pub enum ResyncReason {
 
 /// What one or more applied events changed.
 ///
-/// Workspaces are listed when their tab membership or order changed, or when
-/// they were created, moved, or closed. Tabs are listed when their name
-/// changed or they opened, moved, or closed. The names flag records any
-/// change to the session or workspace lists or their names.
+/// Workspaces are listed when their tab membership or order changed, when
+/// they were created, moved, or closed, or when one of their tabs' layouts
+/// changed. Tabs are listed when their name or layout changed or they
+/// opened, moved, or closed; layouts list the tabs whose pane layout or
+/// shared zoom changed or that opened. The names flag records any change to
+/// the session or workspace lists or their names.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Touched {
     everything: bool,
     names: bool,
     workspaces: HashSet<WorkspaceId>,
     tabs: HashSet<TabId>,
+    layouts: HashSet<TabId>,
 }
 
 impl Touched {
@@ -266,6 +302,7 @@ impl Touched {
             && !self.names
             && self.workspaces.is_empty()
             && self.tabs.is_empty()
+            && self.layouts.is_empty()
     }
 
     /// Whether the summary covers everything.
@@ -292,6 +329,18 @@ impl Touched {
         self.everything || self.tabs.contains(&tab)
     }
 
+    /// Whether the tab's pane layout or shared zoom changed, or it opened.
+    #[must_use]
+    pub fn contains_layout(&self, tab: TabId) -> bool {
+        self.everything || self.layouts.contains(&tab)
+    }
+
+    fn layout_changed(&mut self, workspace: WorkspaceId, tab: TabId) {
+        self.workspaces.insert(workspace);
+        self.tabs.insert(tab);
+        self.layouts.insert(tab);
+    }
+
     /// Adds another summary's changes to this one.
     pub fn merge(&mut self, other: Self) {
         if self.everything {
@@ -304,6 +353,7 @@ impl Touched {
         self.names |= other.names;
         self.workspaces.extend(other.workspaces);
         self.tabs.extend(other.tabs);
+        self.layouts.extend(other.layouts);
     }
 }
 
@@ -330,7 +380,7 @@ struct TabEntry {
 /// through [`Self::seq`].
 ///
 /// Records are indexed by identity, so lookups are constant time; each parent
-/// keeps its children's order.
+/// keeps its children's order. Panes and terminals are indexed to their tab.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HierarchyState {
     stream: StreamId,
@@ -339,6 +389,8 @@ pub struct HierarchyState {
     sessions: HashMap<SessionId, SessionEntry>,
     workspaces: HashMap<WorkspaceId, WorkspaceEntry>,
     tabs: HashMap<TabId, TabEntry>,
+    panes: HashMap<PaneId, TabId>,
+    terminals: HashMap<TerminalId, TabId>,
 }
 
 /// 64-bit FNV-1a offset basis.
@@ -357,6 +409,8 @@ impl HierarchyState {
             sessions: HashMap::new(),
             workspaces: HashMap::new(),
             tabs: HashMap::new(),
+            panes: HashMap::new(),
+            terminals: HashMap::new(),
         }
     }
 
@@ -454,6 +508,18 @@ impl HierarchyState {
         self.tabs.get(&id).map(|entry| entry.workspace)
     }
 
+    /// Returns the tab that holds a pane.
+    #[must_use]
+    pub fn pane_tab(&self, id: PaneId) -> Option<TabId> {
+        self.panes.get(&id).copied()
+    }
+
+    /// Returns the tab whose layout shows a terminal.
+    #[must_use]
+    pub fn terminal_tab(&self, id: TerminalId) -> Option<TabId> {
+        self.terminals.get(&id).copied()
+    }
+
     /// Applies the next event of this state's stream.
     ///
     /// A foreign stream, a gap, or an event that contradicts the state
@@ -487,7 +553,11 @@ impl HierarchyState {
     ///
     /// - Session: `b'S'`, ID, custom name, automatic name, workspace count.
     /// - Workspace: `b'W'`, ID, custom name, automatic name, tab count.
-    /// - Tab: `b'T'`, ID, pane ID, terminal ID, custom name, fallback name.
+    /// - Tab: `b'T'`, ID, custom name, shared zoom (`0`, or `1` and the pane
+    ///   ID), then its layout in traversal order: for a pane, `b'P'`, pane
+    ///   ID, terminal ID, fallback name; for a split, `b'X'`, split ID, axis
+    ///   (`0` columns, `1` rows), child count, then each child's weight
+    ///   followed by the child.
     ///
     /// The stream and sequence are not part of the digest. The cost is
     /// proportional to the hierarchy, so do not compute it per event.
@@ -512,10 +582,15 @@ impl HierarchyState {
                     let tab = &self.tabs[tab_id].info;
                     hash.byte(b'T');
                     hash.number(tab.id.get());
-                    hash.number(tab.pane_id.get());
-                    hash.number(tab.terminal_id.get());
                     hash.optional(tab.custom_name.as_deref());
-                    hash.text(&tab.fallback_name);
+                    match tab.zoomed {
+                        None => hash.byte(0),
+                        Some(pane) => {
+                            hash.byte(1);
+                            hash.number(pane.get());
+                        }
+                    }
+                    hash.node(tab.layout.root());
                 }
             }
         }
@@ -523,6 +598,7 @@ impl HierarchyState {
     }
 
     /// Validates and applies one event, or returns `None` without changes.
+    #[expect(clippy::too_many_lines, reason = "one short arm per event kind")]
     fn apply_event(&mut self, event: HierarchyEvent) -> Option<Touched> {
         let mut touched = Touched::default();
         match event {
@@ -589,6 +665,7 @@ impl HierarchyState {
                 self.insert_tab(workspace, tab, position(index)?)?;
                 touched.workspaces.insert(workspace);
                 touched.tabs.insert(id);
+                touched.layouts.insert(id);
             }
             HierarchyEvent::TabRenamed { tab, custom_name } => {
                 let info = &mut self.tabs.get_mut(&tab)?.info;
@@ -606,20 +683,31 @@ impl HierarchyState {
                 touched.tabs.insert(tab);
             }
             HierarchyEvent::TabClosed { tab } => {
-                let entry = self.tabs.remove(&tab)?;
-                if let Some(workspace) =
-                    self.workspaces.get_mut(&entry.workspace)
-                {
-                    workspace.tabs.retain(|id| *id != tab);
+                let workspace = self.remove_tab(tab)?;
+                if let Some(entry) = self.workspaces.get_mut(&workspace) {
+                    entry.tabs.retain(|id| *id != tab);
                 }
-                touched.workspaces.insert(entry.workspace);
+                touched.workspaces.insert(workspace);
                 touched.tabs.insert(tab);
+            }
+            HierarchyEvent::PaneLayoutChanged {
+                tab,
+                layout,
+                zoomed,
+            } => {
+                let workspace = self.replace_layout(tab, layout, zoomed)?;
+                touched.layout_changed(workspace, tab);
+            }
+            HierarchyEvent::PaneZoomChanged { tab, zoomed } => {
+                self.replace_zoom(tab, zoomed, &mut touched)?;
             }
             HierarchyEvent::Reset => {
                 self.session_order.clear();
                 self.sessions.clear();
                 self.workspaces.clear();
                 self.tabs.clear();
+                self.panes.clear();
+                self.terminals.clear();
                 touched = Touched::everything();
             }
         }
@@ -732,7 +820,10 @@ impl HierarchyState {
         info: TabInfo,
         index: usize,
     ) -> Option<()> {
-        if !self.owns(info.id.runtime()) || self.tabs.contains_key(&info.id) {
+        if !self.owns(info.id.runtime())
+            || self.tabs.contains_key(&info.id)
+            || !self.layout_fits(info.id, &info.layout, info.zoomed)
+        {
             return None;
         }
         let siblings = &mut self.workspaces.get_mut(&workspace)?.tabs;
@@ -740,8 +831,95 @@ impl HierarchyState {
             return None;
         }
         siblings.insert(index, info.id);
+        self.index_layout(info.id, &info.layout);
         self.tabs.insert(info.id, TabEntry { info, workspace });
         Some(())
+    }
+
+    /// Whether `layout` can belong to `tab`: its panes are in this stream's
+    /// scope, no other tab holds its panes or terminals, and `zoomed` is
+    /// one of its panes.
+    fn layout_fits(
+        &self,
+        tab: TabId,
+        layout: &PaneLayout,
+        zoomed: Option<PaneId>,
+    ) -> bool {
+        valid_zoom(layout, zoomed)
+            && layout.panes().into_iter().all(|pane| {
+                self.owns(pane.id.runtime())
+                    && self.panes.get(&pane.id).is_none_or(|t| *t == tab)
+                    && self
+                        .terminals
+                        .get(&pane.terminal_id)
+                        .is_none_or(|t| *t == tab)
+            })
+    }
+
+    fn index_layout(&mut self, tab: TabId, layout: &PaneLayout) {
+        for pane in layout.panes() {
+            self.panes.insert(pane.id, tab);
+            self.terminals.insert(pane.terminal_id, tab);
+        }
+    }
+
+    fn unindex_layout(&mut self, layout: &PaneLayout) {
+        for pane in layout.panes() {
+            self.panes.remove(&pane.id);
+            self.terminals.remove(&pane.terminal_id);
+        }
+    }
+
+    /// Replaces a tab's layout and shared zoom and returns its workspace,
+    /// or returns `None` without changes.
+    fn replace_layout(
+        &mut self,
+        tab: TabId,
+        layout: PaneLayout,
+        zoomed: Option<PaneId>,
+    ) -> Option<WorkspaceId> {
+        if !self.tabs.contains_key(&tab)
+            || !self.layout_fits(tab, &layout, zoomed)
+        {
+            return None;
+        }
+        let old = std::mem::replace(
+            &mut self.tabs.get_mut(&tab)?.info.layout,
+            layout,
+        );
+        self.unindex_layout(&old);
+        let entry = self.tabs.get_mut(&tab)?;
+        entry.info.zoomed = zoomed;
+        let (workspace, layout) = (entry.workspace, entry.info.layout.clone());
+        self.index_layout(tab, &layout);
+        Some(workspace)
+    }
+
+    /// Replaces a tab's shared zoom, recording a change in `touched`, or
+    /// returns `None` without changes for an unknown tab or an invalid zoom.
+    fn replace_zoom(
+        &mut self,
+        tab: TabId,
+        zoomed: Option<PaneId>,
+        touched: &mut Touched,
+    ) -> Option<()> {
+        let entry = self.tabs.get_mut(&tab)?;
+        if !valid_zoom(&entry.info.layout, zoomed) {
+            return None;
+        }
+        if entry.info.zoomed != zoomed {
+            entry.info.zoomed = zoomed;
+            touched.layout_changed(entry.workspace, tab);
+        }
+        Some(())
+    }
+
+    /// Removes a tab record and its pane indexes and returns its workspace,
+    /// leaving the workspace's order to the caller.
+    fn remove_tab(&mut self, tab: TabId) -> Option<WorkspaceId> {
+        let entry = self.tabs.remove(&tab)?;
+        self.unindex_layout(&entry.info.layout);
+        Some(entry.workspace)
     }
 
     /// Removes a workspace record and its tabs, leaving the parent's order
@@ -753,7 +931,7 @@ impl HierarchyState {
     ) {
         if let Some(entry) = self.workspaces.remove(&workspace) {
             for tab in entry.tabs {
-                self.tabs.remove(&tab);
+                self.remove_tab(tab);
                 touched.tabs.insert(tab);
             }
         }
@@ -801,6 +979,30 @@ impl Fnv1a {
     fn text(&mut self, value: &str) {
         self.count(value.len());
         self.bytes(value.as_bytes());
+    }
+
+    fn node(&mut self, node: &PaneNode) {
+        match node {
+            PaneNode::Pane(pane) => {
+                self.byte(b'P');
+                self.number(pane.id.get());
+                self.number(pane.terminal_id.get());
+                self.text(&pane.fallback_name);
+            }
+            PaneNode::Split(split) => {
+                self.byte(b'X');
+                self.number(split.id.get());
+                self.byte(match split.axis {
+                    SplitAxis::Columns => 0,
+                    SplitAxis::Rows => 1,
+                });
+                self.count(split.children.len());
+                for child in &split.children {
+                    self.number(u64::from(child.weight));
+                    self.node(&child.node);
+                }
+            }
+        }
     }
 
     fn optional(&mut self, value: Option<&str>) {

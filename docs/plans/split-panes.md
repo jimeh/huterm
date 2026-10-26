@@ -882,6 +882,25 @@ names the alternatives he considered.
 
 None.
 
+## Deviations
+
+Recorded with PR 1:
+
+- `PaneLayout` validates on construction. Its tree is private, and only
+  `PaneLayout::new`, `PaneLayout::single`, and the transforms build one, so
+  every value upholds the invariants and the reducer checks only what spans
+  tabs: pane and terminal reuse, scope, and the shared zoom.
+- `huterm_core::Tab` drops its public `pane_id` and `terminal_id` fields for
+  `layout()`, `first_pane()`, `zoomed()`, `terminals()`, and `shows()`.
+  `TabInfo::fallback_name()` and `Tab::display_name` use the first pane until
+  PR 3 resolves labels from the focused pane.
+- `close_tab` stops a split tab's terminals through `close_terminals`, which
+  signals every runtime before joining any, as session and workspace closes
+  already do.
+- Zooming a lone pane fails with `InvalidLayout(LayoutError::LastPane)`.
+- A split that fails to spawn still advances `Mux::revision`, because
+  identity allocation advances it, as a failed `open_tab` already does.
+
 [issue-8]: https://github.com/jimeh/huterm/issues/8
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-20]: https://github.com/jimeh/huterm/issues/20

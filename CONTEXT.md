@@ -28,6 +28,15 @@ An ordered container within a workspace, containing one pane layout.
 **Pane**:
 A leaf in a tab's split tree that displays a terminal.
 
+**Split**:
+A node of a tab's split tree that divides its space among child panes or
+splits along one axis.
+
+**Pane zoom**:
+A view showing one pane of a split tab across the whole tab, without changing
+the shared layout. Zoom is view-local unless a client shares it through the
+runtime.
+
 **Terminal**:
 A PTY, its child process, terminal-emulator state, scrollback, and shared viewport.
 

@@ -121,7 +121,8 @@ fn names_reset_to_stable_ordinals_and_current_title_with_duplicate_id_targeting(
         SelectionTarget {
             session: first_session,
             workspace: Some(first_workspace),
-            tab: Some(tab.id)
+            tab: Some(tab.id),
+            pane: None,
         }
     );
     assert_eq!(
@@ -209,7 +210,8 @@ fn cross_parent_moves_preserve_live_pty_identity_and_update_selection_ancestry()
         SelectionTarget {
             session: second_session,
             workspace: Some(second_workspace),
-            tab: Some(opened.tab.id)
+            tab: Some(opened.tab.id),
+            pane: None,
         }
     );
     mux.move_workspace(second_session, second_workspace, second_session, None)
@@ -243,13 +245,14 @@ fn cross_parent_moves_preserve_live_pty_identity_and_update_selection_ancestry()
     assert_eq!(mux.tab(opened.tab.id).unwrap(), &opened.tab);
     // Moving across sessions revoked the viewer the test opened with.
     assert!(opened.client.poll().revoked);
-    let moved = TestClient::new(&mux.terminals[&opened.tab.terminal_id]);
+    let moved =
+        TestClient::new(&mux.terminals[&opened.tab.first_pane().terminal_id]);
     moved
         .send_input(TerminalInput::Text("alive\n".into()))
         .unwrap();
     wait_for_text(&moved, "MOVED_alive");
     wait_for_text(
-        &TestClient::new(&mux.terminals[&anchor.tab.terminal_id]),
+        &TestClient::new(&mux.terminals[&anchor.tab.first_pane().terminal_id]),
         "SIBLING",
     );
     mux.move_workspace(first_session, first_workspace, second_session, None)
@@ -601,7 +604,10 @@ fn closing_tabs_preserves_order_and_other_workspace_processes() {
     let third = mux
         .open_test_tab(second_workspace, &command(script))
         .unwrap();
-    assert_ne!(first.tab.terminal_id, third.tab.terminal_id);
+    assert_ne!(
+        first.tab.first_pane().terminal_id,
+        third.tab.first_pane().terminal_id
+    );
     mux.close_tab(first_workspace, first.tab.id).unwrap();
     assert!(matches!(
         first.client.read_snapshot(),
@@ -677,7 +683,7 @@ fn viewer_authority_tracks_attachment_and_terminal_membership() {
     let opened = mux
         .open_test_tab(first_workspace, &command("read value"))
         .unwrap();
-    let terminal_id = opened.tab.terminal_id;
+    let terminal_id = opened.tab.first_pane().terminal_id;
     let first_attachment = mux.attach_session(first_session).unwrap();
     let second_attachment = mux.attach_session(second_session).unwrap();
     let process = DesktopHostEffectClient::new();
@@ -791,7 +797,7 @@ fn presentation_seed_and_controlling_viewer_follow_attachment_authority() {
     let clipboard = subscribe_clipboard(
         &mux,
         attachment,
-        opened.tab.terminal_id,
+        opened.tab.first_pane().terminal_id,
         &process,
         false,
     )
@@ -799,7 +805,7 @@ fn presentation_seed_and_controlling_viewer_follow_attachment_authority() {
     let controller = subscribe_controller(
         &mux,
         attachment,
-        opened.tab.terminal_id,
+        opened.tab.first_pane().terminal_id,
         &command,
         None,
     )
@@ -865,7 +871,7 @@ fn presentation_follows_the_controlling_viewer_without_failing_others() {
     let first = subscribe_controller(
         &mux,
         attachment,
-        opened.tab.terminal_id,
+        opened.tab.first_pane().terminal_id,
         &command,
         Some(theme(1)),
     )
@@ -876,7 +882,7 @@ fn presentation_follows_the_controlling_viewer_without_failing_others() {
     let second = subscribe_controller(
         &mux,
         attachment,
-        opened.tab.terminal_id,
+        opened.tab.first_pane().terminal_id,
         &command,
         Some(theme(2)),
     )
@@ -886,7 +892,7 @@ fn presentation_follows_the_controlling_viewer_without_failing_others() {
     let prober = mux
         .subscribe_terminal(
             attachment,
-            opened.tab.terminal_id,
+            opened.tab.first_pane().terminal_id,
             ViewerOptions::new(ViewerCapabilities {
                 input: true,
                 ..ViewerCapabilities::NONE
@@ -938,7 +944,7 @@ fn subscription_validates_membership_and_structural_changes() {
     let subscribe = |mux: &Mux, attachment| {
         mux.subscribe_terminal(
             attachment,
-            opened.tab.terminal_id,
+            opened.tab.first_pane().terminal_id,
             ViewerOptions::new(ViewerCapabilities::ALL),
         )
     };
@@ -1015,7 +1021,7 @@ fn detaching_preserves_terminal_and_unobserved_output_and_exit() {
             ),
         )
         .unwrap();
-    let terminal_id = opened.tab.terminal_id;
+    let terminal_id = opened.tab.first_pane().terminal_id;
     opened
         .client
         .send_input(TerminalInput::Text("go\n".into()))
@@ -1061,5 +1067,213 @@ fn detaching_preserves_terminal_and_unobserved_output_and_exit() {
         assert!(Instant::now() < deadline, "missing BACKGROUND");
         std::thread::sleep(Duration::from_millis(10));
     }
+    mux.shutdown().unwrap();
+}
+
+fn shell_pid(client: &crate::test_support::TestClient) -> nix::unistd::Pid {
+    let pid = client.job_context().unwrap().shell.unwrap();
+    nix::unistd::Pid::from_raw(i32::try_from(pid).unwrap())
+}
+
+fn advance(client: &crate::test_support::TestClient, marker: &str) {
+    client
+        .send_input(TerminalInput::Text("next\n".into()))
+        .expect("the child no longer accepts input");
+    wait_for_text(client, marker);
+}
+
+#[test]
+fn closing_a_pane_reaps_its_child_and_its_sibling_keeps_running() {
+    let steps = "printf READY; read value; printf ALIVE; read value; \
+                 printf AGAIN; read value";
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let first = mux.open_test_tab(workspace, &command(steps)).unwrap();
+    let tab = first.tab.id;
+    let first_pane = first.tab.first_pane().id;
+    let second = mux
+        .split_test_pane(
+            workspace,
+            tab,
+            first_pane,
+            SplitDirection::Right,
+            &command(steps),
+        )
+        .unwrap();
+    wait_for_text(&first.client, "READY");
+    wait_for_text(&second.client, "READY");
+    assert_eq!(mux.terminal_count(), 2);
+    assert_eq!(mux.tab(tab).unwrap().layout().pane_count(), 2);
+    // Splitting kept the first shell running.
+    advance(&first.client, "ALIVE");
+
+    let first_pid = shell_pid(&first.client);
+    mux.close_pane(workspace, tab, first_pane).unwrap();
+    assert_eq!(
+        nix::sys::signal::kill(first_pid, None),
+        Err(nix::errno::Errno::ESRCH),
+        "the closed pane's child survived"
+    );
+    assert_eq!(mux.terminal_count(), 1);
+    assert_eq!(mux.tab(tab).unwrap().layout().panes()[0].id, second.pane.id);
+    advance(&second.client, "ALIVE");
+
+    // The last pane closes the tab and reaps its child.
+    let second_pid = shell_pid(&second.client);
+    mux.close_pane(workspace, tab, second.pane.id).unwrap();
+    assert!(mux.tab(tab).is_none());
+    assert_eq!(mux.terminal_count(), 0);
+    assert_eq!(
+        nix::sys::signal::kill(second_pid, None),
+        Err(nix::errno::Errno::ESRCH)
+    );
+}
+
+#[test]
+fn closing_a_split_tab_reaps_every_pane() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let script = command("printf READY; read value");
+    let first = mux.open_test_tab(workspace, &script).unwrap();
+    let second = mux
+        .split_test_pane(
+            workspace,
+            first.tab.id,
+            first.tab.first_pane().id,
+            SplitDirection::Down,
+            &script,
+        )
+        .unwrap();
+    wait_for_text(&first.client, "READY");
+    wait_for_text(&second.client, "READY");
+    let pids = [shell_pid(&first.client), shell_pid(&second.client)];
+    mux.close_tab(workspace, first.tab.id).unwrap();
+    assert_eq!(mux.terminal_count(), 0);
+    for pid in pids {
+        assert_eq!(
+            nix::sys::signal::kill(pid, None),
+            Err(nix::errno::Errno::ESRCH)
+        );
+    }
+}
+
+#[test]
+fn each_pane_terminal_takes_its_own_viewer_geometry() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let script = command("printf READY; read value; stty size; read value");
+    let first = mux.open_test_tab(workspace, &script).unwrap();
+    let second = mux
+        .split_test_pane(
+            workspace,
+            first.tab.id,
+            first.tab.first_pane().id,
+            SplitDirection::Right,
+            &script,
+        )
+        .unwrap();
+    wait_for_text(&first.client, "READY");
+    wait_for_text(&second.client, "READY");
+    let cell = CellSize {
+        width: 8,
+        height: 16,
+    };
+    first.client.resize(GridSize::clamped(30, 7), cell).unwrap();
+    second
+        .client
+        .resize(GridSize::clamped(50, 9), cell)
+        .unwrap();
+    // The geometry report precedes the line in each terminal's queue.
+    advance(&first.client, "7 30");
+    advance(&second.client, "9 50");
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn pane_operations_reject_stale_and_foreign_targets_without_changes() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let other = mux.create_workspace(session, None).unwrap();
+    let script = command("read value");
+    let opened = mux.open_tab(workspace, &script).unwrap();
+    let tab = opened.tab.id;
+    let pane = opened.tab.first_pane().id;
+    let added = mux
+        .split_pane(workspace, tab, pane, SplitDirection::Right, &script)
+        .unwrap();
+    let before = mux.tab(tab).unwrap().clone();
+    let stale_pane = PaneId::in_runtime(mux.runtime_id(), u64::MAX);
+    let foreign_pane = PaneId::new(pane.get());
+    let split = match before.layout().root() {
+        huterm_protocol::PaneNode::Split(split) => split.id,
+        huterm_protocol::PaneNode::Pane(_) => unreachable!(),
+    };
+    let children = [NodeId::Pane(pane), NodeId::Pane(added.pane.id)];
+    for pane in [stale_pane, foreign_pane] {
+        assert!(
+            mux.split_pane(workspace, tab, pane, SplitDirection::Down, &script)
+                .is_err()
+        );
+        assert!(mux.close_pane(workspace, tab, pane).is_err());
+        assert!(mux.set_pane_zoom(workspace, tab, Some(pane)).is_err());
+    }
+    // The right pane in the wrong workspace.
+    assert!(matches!(
+        mux.close_pane(other, tab, pane),
+        Err(MuxError::UnknownTab(_))
+    ));
+    assert!(matches!(
+        mux.resize_split(
+            workspace,
+            tab,
+            SplitId::in_runtime(mux.runtime_id(), u64::MAX),
+            &children,
+            &[1, 999_999],
+        ),
+        Err(MuxError::UnknownSplit(_))
+    ));
+    assert!(
+        mux.resize_split(
+            workspace,
+            tab,
+            SplitId::new(split.get()),
+            &children,
+            &[1, 999_999]
+        )
+        .is_err()
+    );
+    assert!(matches!(
+        mux.resize_split(
+            workspace,
+            tab,
+            split,
+            &[NodeId::Pane(added.pane.id), NodeId::Pane(pane)],
+            &[1, 999_999],
+        ),
+        Err(MuxError::InvalidLayout(LayoutError::ChildrenChanged))
+    ));
+    assert!(matches!(
+        mux.resize_split(workspace, tab, split, &children, &[1, 1]),
+        Err(MuxError::InvalidLayout(LayoutError::InvalidWeights))
+    ));
+    assert_eq!(*mux.tab(tab).unwrap(), before);
+    assert_eq!(mux.terminal_count(), 2);
+    assert_eq!(
+        mux.select_pane(added.pane.id).unwrap(),
+        SelectionTarget {
+            session,
+            workspace: Some(workspace),
+            tab: Some(tab),
+            pane: Some(added.pane.id),
+        }
+    );
+    assert!(matches!(
+        mux.select_pane(stale_pane),
+        Err(MuxError::UnknownPane(_))
+    ));
     mux.shutdown().unwrap();
 }

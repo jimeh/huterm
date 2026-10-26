@@ -126,6 +126,8 @@ impl DesktopHarness {
                 .state()
                 .tab(tab)
                 .unwrap()
+                .layout
+                .first_pane()
                 .terminal_id
         });
         let mut mux = self.runtime.lock();
@@ -210,6 +212,8 @@ impl DesktopHarness {
                 .state()
                 .tab(tab)
                 .unwrap()
+                .layout
+                .first_pane()
                 .terminal_id
         });
         let viewer = {

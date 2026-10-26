@@ -261,7 +261,7 @@ impl PaletteHierarchy {
                             .custom_name
                             .as_deref()
                             .or_else(|| title(tab_id))
-                            .unwrap_or(&tab.fallback_name)
+                            .unwrap_or(tab.fallback_name())
                             .to_owned(),
                         detail: format!(
                             "{} › {}",

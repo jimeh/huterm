@@ -176,6 +176,18 @@ completions wait for the projection to apply it before acting. Client effects
 derive from projection state through `reconcile`, which removes views, orders
 tabs, publishes titles, and installs views for tabs a window did not spawn. See
 [the hierarchy projection plan](../plans/hierarchy-projection.md).
+A tab holds a `PaneLayout`, the n-ary split tree in `huterm-protocol`; its
+constructor and transforms validate every invariant, so core, the reducer, and
+tests share one implementation (see [the split panes plan](../plans/split-panes.md)).
+`split_pane` spawns the terminal before it changes the layout, so a failed spawn
+changes no structure and emits nothing. Closing a tab's only pane closes the
+tab. Splits and pane closes advance `Mux::revision`; `resize_split` and
+`set_pane_zoom` do not, because neither changes which terminals a close covers
+and a stale commit makes the desktop show its confirmation again. Every layout
+change emits the whole layout in `PaneLayoutChanged`, with the shared zoom, so
+removing the zoomed pane clears the zoom in the same event. Pane IDs are
+scoped like tab IDs, and the reducer rejects a layout that reuses another tab's
+pane or terminal.
 Moves retain empty parents and never change terminal lifetime. Desktop windows
 retain their attachment identity for assessed close. Orphaned spawn cleanup
 must preserve resources adopted by another attachment or moved elsewhere. Roll
