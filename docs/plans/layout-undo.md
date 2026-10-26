@@ -181,9 +181,12 @@ Core rejects a restore that would break any of these rules:
 - Every workspace the restore names exists, in the session its record
   names.
 
-A refused restore changes nothing and emits nothing. The restore never
-spawns or stops a runtime, revokes viewers of terminals whose session
-changes, and advances the revision.
+A refused restore changes nothing and emits nothing. A restore never spawns
+or stops a runtime. It revokes the viewers of every terminal whose session
+it changes, as a cross-session move does. It advances the revision when a
+terminal changes tabs, which changes what a tab close covers, and leaves the
+revision alone when it only rearranges panes within their tabs, as a swap
+does.
 
 ### A removed source tab comes back as itself
 
