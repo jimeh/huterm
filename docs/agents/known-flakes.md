@@ -147,7 +147,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   geometry work, which changes no `huterm-core` code, failed both that test
   and `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
   in the same run; the rerun passed. A `mise run verify` run on the
-  scrollback branch (PR #243) also failed that test once that day.
+  scrollback branch (PR #243) also failed that test once that day. Also on
+  2026-10-26, one `mise run test:ghostty-releasesafe` run on the pane moves
+  runtime branch (#29 PR 1), which changes no job or close-assessment code,
+  failed the orphan test with a new signature: the `sleep 30` job was found
+  but reported as foreground (`assert!(!orphan.foreground)`). The cause is
+  unconfirmed. The rerun passed all 391 tests.
 - **Cause:** the system shell's job control, not Huterm. These tests already
   poll their conditions. With the load average around 90 on a 16-core Mac
   (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.

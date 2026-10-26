@@ -149,6 +149,8 @@ pub enum LayoutError {
     PaneTooSmall,
     /// The pane is the layout's only pane.
     LastPane,
+    /// The target lies inside the layout being moved.
+    SelfTarget,
 }
 
 impl fmt::Display for LayoutError {
@@ -164,6 +166,7 @@ impl fmt::Display for LayoutError {
             Self::ChildrenChanged => "split children changed",
             Self::PaneTooSmall => "pane is too small to split",
             Self::LastPane => "pane is the layout's only pane",
+            Self::SelfTarget => "target is inside the moved layout",
         })
     }
 }
@@ -278,6 +281,26 @@ impl PaneLayout {
         }
     }
 
+    /// Whether inserting beside `target` toward `direction` forms a new
+    /// split, which needs a split identity: true when the target is the
+    /// root or its parent splits across that direction's axis.
+    ///
+    /// # Errors
+    /// Rejects an unknown target.
+    pub fn forms_split(
+        &self,
+        target: PaneId,
+        direction: SplitDirection,
+    ) -> Result<bool, LayoutError> {
+        match &self.root {
+            PaneNode::Pane(leaf) if leaf.id == target => Ok(true),
+            PaneNode::Pane(_) => Err(LayoutError::UnknownPane),
+            PaneNode::Split(node) => parent_axis(node, target)
+                .map(|axis| axis != direction.axis())
+                .ok_or(LayoutError::UnknownPane),
+        }
+    }
+
     /// Every split identity in traversal order.
     #[must_use]
     pub fn split_ids(&self) -> Vec<SplitId> {
@@ -286,13 +309,8 @@ impl PaneLayout {
         ids
     }
 
-    /// Splits `target` toward `direction`, adding `pane`.
-    ///
-    /// When the target's parent splits on that direction's axis, the new
-    /// pane becomes the target's sibling and the two divide the target's
-    /// weight, the target keeping the larger half. Otherwise the target is
-    /// replaced by a new split, identified by `split`, of two equal
-    /// children.
+    /// Splits `target` toward `direction`, adding `pane`; see
+    /// [`Self::with_inserted`].
     ///
     /// # Errors
     /// Rejects an unknown target, a target whose weight is 1, a parent
@@ -304,21 +322,69 @@ impl PaneLayout {
         pane: PaneInfo,
         split: SplitId,
     ) -> Result<Self, LayoutError> {
+        self.with_inserted(target, direction, PaneNode::Pane(pane), split)
+    }
+
+    /// Inserts `node`, a pane or a whole subtree, beside `target` toward
+    /// `direction`.
+    ///
+    /// When the target's parent splits on that direction's axis, the node
+    /// becomes the target's sibling and the two divide the target's weight,
+    /// the target keeping the larger half. Otherwise the target is replaced
+    /// by a new split, identified by `split`, of two equal children. A
+    /// subtree whose root splits on the axis of the split that now holds it
+    /// is flattened into that split, as removal flattens; its nested splits,
+    /// panes, and proportions are kept.
+    ///
+    /// # Errors
+    /// Rejects an unknown target, a target whose weight is 1, a parent
+    /// already at [`MAX_SPLIT_CHILDREN`], and a repeated identity.
+    pub fn with_inserted(
+        &self,
+        target: PaneId,
+        direction: SplitDirection,
+        node: PaneNode,
+        split: SplitId,
+    ) -> Result<Self, LayoutError> {
         self.check_split(target, direction)?;
-        let pane = PaneNode::Pane(pane);
         let root = match self.root.clone() {
-            PaneNode::Pane(leaf) if leaf.id == target => {
-                new_split(split, direction, PaneNode::Pane(leaf), pane)
-            }
+            PaneNode::Pane(leaf) if leaf.id == target => PaneNode::Split(
+                new_split(split, direction, PaneNode::Pane(leaf), node),
+            ),
             PaneNode::Pane(_) => return Err(LayoutError::UnknownPane),
-            PaneNode::Split(mut node) => {
-                if !split_within(&mut node, target, direction, pane, split)? {
+            PaneNode::Split(mut parent) => {
+                if !split_within(&mut parent, target, direction, node, split)? {
                     return Err(LayoutError::UnknownPane);
                 }
-                PaneNode::Split(node)
+                PaneNode::Split(parent)
             }
         };
         Self::new(root)
+    }
+
+    /// Exchanges the places of panes `a` and `b`. Each slot keeps its
+    /// weight; swapping a pane with itself changes nothing.
+    ///
+    /// # Errors
+    /// Rejects a pane that is not in the layout.
+    pub fn with_swapped(
+        &self,
+        a: PaneId,
+        b: PaneId,
+    ) -> Result<Self, LayoutError> {
+        let first = self.pane(a).ok_or(LayoutError::UnknownPane)?.clone();
+        let second = self.pane(b).ok_or(LayoutError::UnknownPane)?.clone();
+        let mut root = self.root.clone();
+        swap_leaves(&mut root, &first, &second);
+        Self::new(root)
+    }
+
+    /// Whether `other` has the same tree of splits, axes, and child counts,
+    /// with the same panes in the same places, ignoring split identities
+    /// and weights.
+    #[must_use]
+    pub fn same_shape(&self, other: &Self) -> bool {
+        same_shape(&self.root, &other.root)
     }
 
     /// Removes `target`. Its weight goes to its previous sibling, or the
@@ -599,20 +665,22 @@ fn find_split_mut(node: &mut PaneNode, id: SplitId) -> Option<&mut SplitNode> {
         .find_map(|child| find_split_mut(&mut child.node, id))
 }
 
-/// A split of `original` and `pane` toward `direction`, each holding half.
+/// A split of `original` and `inserted` toward `direction`, each holding
+/// half, with an inserted subtree on the same axis flattened into it.
 fn new_split(
     id: SplitId,
     direction: SplitDirection,
     original: PaneNode,
-    pane: PaneNode,
-) -> PaneNode {
+    inserted: PaneNode,
+) -> SplitNode {
     let half = SPLIT_TOTAL / 2;
-    let (first, second) = if direction.leading() {
-        (pane, original)
+    let leading = direction.leading();
+    let (first, second) = if leading {
+        (inserted, original)
     } else {
-        (original, pane)
+        (original, inserted)
     };
-    PaneNode::Split(SplitNode {
+    let mut split = SplitNode {
         id,
         axis: direction.axis(),
         children: vec![
@@ -625,10 +693,42 @@ fn new_split(
                 node: second,
             },
         ],
-    })
+    };
+    normalize_child(&mut split, usize::from(!leading));
+    split
 }
 
-/// Splits `target` somewhere under `node`; returns whether it was found.
+/// Replaces `a`'s and `b`'s leaves under `node` with each other.
+fn swap_leaves(node: &mut PaneNode, a: &PaneInfo, b: &PaneInfo) {
+    match node {
+        PaneNode::Pane(pane) if pane.id == a.id => *pane = b.clone(),
+        PaneNode::Pane(pane) if pane.id == b.id => *pane = a.clone(),
+        PaneNode::Pane(_) => {}
+        PaneNode::Split(split) => {
+            for child in &mut split.children {
+                swap_leaves(&mut child.node, a, b);
+            }
+        }
+    }
+}
+
+fn same_shape(a: &PaneNode, b: &PaneNode) -> bool {
+    match (a, b) {
+        (PaneNode::Pane(a), PaneNode::Pane(b)) => a == b,
+        (PaneNode::Split(a), PaneNode::Split(b)) => {
+            a.axis == b.axis
+                && a.children.len() == b.children.len()
+                && a.children
+                    .iter()
+                    .zip(&b.children)
+                    .all(|(a, b)| same_shape(&a.node, &b.node))
+        }
+        _ => false,
+    }
+}
+
+/// Inserts `pane`, a pane or a subtree, beside `target` somewhere under
+/// `node`; returns whether `target` was found.
 fn split_within(
     node: &mut SplitNode,
     target: PaneId,
@@ -665,13 +765,16 @@ fn split_within(
                 node: pane,
             },
         );
+        normalize_child(node, at);
     } else {
         let child = node.children.remove(index);
         node.children.insert(
             index,
             SplitChild {
                 weight: child.weight,
-                node: new_split(split, direction, child.node, pane),
+                node: PaneNode::Split(new_split(
+                    split, direction, child.node, pane,
+                )),
             },
         );
     }
@@ -703,6 +806,15 @@ fn check_within(
         }
     }
     Err(LayoutError::UnknownPane)
+}
+
+/// The axis of the split that directly holds `target` under `node`.
+fn parent_axis(node: &SplitNode, target: PaneId) -> Option<SplitAxis> {
+    node.children.iter().find_map(|child| match &child.node {
+        PaneNode::Pane(pane) if pane.id == target => Some(node.axis),
+        PaneNode::Pane(_) => None,
+        PaneNode::Split(nested) => parent_axis(nested, target),
+    })
 }
 
 fn collect_splits(node: &PaneNode, ids: &mut Vec<SplitId>) {
