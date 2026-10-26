@@ -3499,3 +3499,53 @@ fn resize_commands_move_the_pane_edge_and_stop_at_the_minimum(
         grids(cx).1.columns == MIN_PANE_COLUMNS
     });
 }
+
+#[gpui::test]
+fn a_selection_drag_stops_at_its_panes_edge(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    let (from, to, columns) =
+        harness.update_view(window, |view, window, cx| {
+            let bounds = view.terminal_geometry(window).bounds.unwrap();
+            let rects = view.tab_panes(tab, bounds, None, window, cx).unwrap();
+            let left = rects.pane(first).unwrap().terminal;
+            let right = rects.pane(second).unwrap().terminal;
+            let columns = view
+                .active_tab_view(cx)
+                .and_then(|tab| tab.pane(first))
+                .map(|pane| pane.view.read(cx).requested_grid.columns)
+                .unwrap();
+            (
+                left.origin + gpui::point(px(20.0), px(20.0)),
+                right.center(),
+                columns,
+            )
+        });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(
+        from,
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_move(
+        to,
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_up(to, MouseButton::Left, gpui::Modifiers::none());
+    harness.wait_for("the first pane to select up to its own edge", |cx| {
+        pane_view(cx, window, tab, first).is_some_and(|view| {
+            view.read(cx)
+                .selection
+                .is_some_and(|selection| selection.head.column + 1 == columns)
+        })
+    });
+    harness.cx.update(|cx| {
+        let other = pane_view(cx, window, tab, second).unwrap();
+        assert!(
+            other.read(cx).selection.is_none(),
+            "the drag selected in the other pane"
+        );
+    });
+}

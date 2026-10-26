@@ -276,7 +276,36 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await send(`mouse\t1\t${cellX}\t${cellY}`);
     await send(`mouse\t2\t${cellX}\t${cellY}`);
     await check("pane-mouse-cells", "\x1b[<0;3;2M\x1b[<0;3;2m");
-    const [, close] = field(tracking, "pane_close").split(";");
+    // A divider drag resizes both panes and reaches neither shell, even the
+    // one reporting mouse buttons.
+    const split = await currentState();
+    const [leftGrid] = field(split, "pane_grids").split(";");
+    const leftColumns = Number(leftGrid!.split(",")[0]);
+    const [grab] = rects(field(split, "pane_dividers"));
+    const grabX = grab!.x + grab!.w / 2;
+    const grabY = grab!.y + grab!.h / 2;
+    await send(`mouse\t1\t${grabX}\t${grabY}`);
+    await send(`mouse\t6\t${grabX - 40}\t${grabY}`);
+    await send(`mouse\t6\t${grabX - 80}\t${grabY}`);
+    await send(`mouse\t2\t${grabX - 80}\t${grabY}`);
+    await waitFor(async () => {
+      const [grid] = field(await currentState(), "pane_grids").split(";");
+      return Number(grid!.split(",")[0]) <= leftColumns - 8;
+    }, "the divider drag to narrow the left pane");
+    await check("divider-drag-reaches-no-shell", "");
+    // The title bar's zoom toggle zooms its pane and unzooms it again.
+    const zoomAt = async () => {
+      const [, zoom] = field(await currentState(), "pane_zoom").split(";");
+      const [x, y] = zoom!.split(",").map(Number);
+      await send(`mouse\t1\t${x}\t${y}`);
+      await send(`mouse\t2\t${x}\t${y}`);
+    };
+    await zoomAt();
+    await state("pane_zoomed=1");
+    await zoomAt();
+    await state("pane_zoomed=none");
+    await check("zoom-button-reaches-no-shell", "");
+    const [, close] = field(await currentState(), "pane_close").split(";");
     const [closeX, closeY] = close!.split(",").map(Number);
     await send(`mouse\t1\t${closeX}\t${closeY}`);
     await send(`mouse\t2\t${closeX}\t${closeY}`);

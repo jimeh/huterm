@@ -1,7 +1,7 @@
 # Desktop input
 
-Rules for keyboard, mouse, scrolling, selection, tab dragging, links, and file
-drops in `huterm-gpui`. Smoke fixtures that exercise this input are in
+Rules for keyboard, mouse, scrolling, selection, tab dragging, panes, links,
+and file drops in `huterm-gpui`. Smoke fixtures that exercise this input are in
 [desktop smokes](desktop-smokes.md).
 
 ## Keyboard and text input
@@ -151,6 +151,31 @@ worker and reorder retained views without selecting or recreating them.
 Keep the sidebar resize handle entirely inside sidebar bounds. A grab zone
 straddling the terminal can start terminal selection or application mouse input
 before resize capture consumes release, leaving that terminal gesture stuck.
+
+## Panes and divider drags
+
+A press in a pane focuses it from a capture listener on the pane's element,
+because the terminal's own press handling calls `prevent_default`, which stops
+GPUI's focus tracking. A divider's grab zone is 8 points across its line,
+clipped to its split. The window's capture listener claims a left press in a
+zone the last frame drew (`drawn_dividers`) and stops propagation, so no
+terminal starts a selection or reports the press. A hitbox element over each
+zone only sets the resize cursor, which a capture listener cannot. Overlays,
+the close dialog, and the About panel keep presses; a reorder or sidebar
+drag in progress keeps ownership.
+
+A drag keeps preview weights in the view and runs them through the normal
+geometry path, so both shells reflow while dragging, clamped so every pane
+keeps 4 columns by 2 rows in this window. Release commits once with
+`resize_split` on a worker, and the view keeps showing the committed weights
+until the projection reaches the commit, so the divider never snaps back; a
+rejected commit drops them silently. Escape, blur, switching tabs, zoom, a
+close request, and a layout change that removes the split or changes its
+children cancel the drag. Resize commands commit the same way.
+
+Zoom hides the tab's other panes as a hidden tab hides its view: `hide`
+releases accepted gestures and finalizes the selection, and the hidden panes
+keep requesting their split geometry, so zoom resizes only the zoomed pane.
 
 ## Links and file drops
 

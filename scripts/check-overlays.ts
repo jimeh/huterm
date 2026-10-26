@@ -632,7 +632,27 @@ label = "title"
     const [paneCellWidth, paneCellHeight] = field(tracking, "cell").split(",").map(Number);
     await click(paneGrid.x + paneCellWidth! * 2.5, paneGrid.y + paneCellHeight! * 1.5);
     await state("MOUSE:[<0;3;2M[<0;3;2m");
-    const [, closeButton] = field(tracking, "pane_close").split(";");
+    // A divider drag narrows the first pane; both shells still answer.
+    const split = await current();
+    const columnsOf = (text: string) => Number(field(text, "pane_grids").split(";")[0]!.split(",")[0]);
+    const leftColumns = columnsOf(split);
+    const [grab] = field(split, "pane_dividers").split(";").map(parseRect);
+    const grabX = grab!.x + grab!.w / 2;
+    const grabY = grab!.y + grab!.h / 2;
+    await native().drag(grabX, grabY, grabX - 80, grabY);
+    await stateWhere((text) => columnsOf(text) <= leftColumns - 8, "the divider drag to narrow the first pane");
+    await ack("ackafterdrag");
+    // The title bar's zoom toggle zooms its pane and unzooms it again.
+    const clickZoom = async () => {
+      const [, zoom] = field(await current(), "pane_zoom").split(";");
+      const [zoomX, zoomY] = zoom!.split(",").map(Number);
+      await click(zoomX!, zoomY!);
+    };
+    await clickZoom();
+    await state("w0.pane_zoomed=1");
+    await clickZoom();
+    await state("w0.pane_zoomed=none");
+    const [, closeButton] = field(await current(), "pane_close").split(";");
     const [closeX, closeY] = closeButton!.split(",").map(Number);
     await click(closeX!, closeY!);
     await state("w0.panes=1", "w0.pane_focus=0", "w0.confirming=false");
