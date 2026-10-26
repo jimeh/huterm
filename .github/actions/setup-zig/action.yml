@@ -8,11 +8,14 @@ runs:
     - name: Name the download cache
       id: key
       shell: bash
+      # A Mise release that changes its download store's layout would ignore
+      # an older entry, and a hit would never save a usable one.
       run: |
         set -euo pipefail
-        version="$(mise tool zig --requested)"
-        test -n "$version"
-        echo "key=huterm-zig-download-v1-$RUNNER_OS-$RUNNER_ARCH-$version" >> "$GITHUB_OUTPUT"
+        zig="$(mise tool zig --requested)"
+        mise="$(mise --version | cut -d' ' -f1)"
+        test -n "$zig" && test -n "$mise"
+        echo "key=huterm-zig-download-v1-$RUNNER_OS-$RUNNER_ARCH-$zig-mise-$mise" >> "$GITHUB_OUTPUT"
 
     # Mise checks a stored archive against the mise.lock checksum and its
     # minisign signature before installing it, so a stale or tampered entry

@@ -66,15 +66,16 @@ CI installs Zig through `.github/actions/setup-zig`, which runs
 `mise install --locked zig` in its own step. Keep `zig` out of CI's Mise action
 install lists so that step keeps its time bound and retry. The action gives the
 install its own `MISE_CACHE_DIR` under `RUNNER_TEMP` and caches that directory,
-which holds Mise's download store, keyed by runner and Zig version. Mise reuses
-a stored archive only when it matches the `mise.lock` checksum, and it checks
-the minisign signature on every install. A cache hit therefore still fetches
-the `.minisig`. Mise tries the serving mirror, ziglang.org, and then every
-other mirror for it. Releases before 2026.10.7 asked only the serving mirror,
-so one rate-limited mirror (HTTP 429) failed the job. A stalled mirror costs
-about two minutes (a 30-second read timeout and three retries), so jobs bound
-the step to 4 minutes and retry once within 6 minutes, which reshuffles the
-mirrors.
+which holds Mise's download store, keyed by runner, Zig version, and Mise
+version. Mise reuses a stored archive only when it matches the `mise.lock`
+checksum, and it checks the minisign signature on every install. A cache hit
+therefore still fetches the `.minisig`. Mise tries the serving mirror,
+ziglang.org, and then every other mirror for it. Releases before 2026.10.7
+asked only the serving mirror, so one rate-limited mirror (HTTP 429) failed the
+job. A mirror that sends nothing costs about two minutes (a 30-second read
+timeout and three retries), but one that sends slowly is limited only by the
+30-minute download timeout. Jobs therefore bound the step to 4 minutes and
+retry once within 6 minutes, which reshuffles the mirrors.
 
 Every install, cached or not, also fetches `ziglang.org/download/index.json`
 to find the tarball URL. When that fails, Mise 2026.10.17 falls back to the
