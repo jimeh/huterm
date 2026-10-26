@@ -855,7 +855,7 @@ fn read_state(cx: &mut App) -> String {
             let clipboard_writes: u64 = view
                 .tabs
                 .iter()
-                .map(|tab| tab.view.read(cx).clipboard_writes)
+                .map(|tab| tab.focused_view().read(cx).clipboard_writes)
                 .sum();
             writeln!(
                 output,
@@ -935,9 +935,10 @@ fn ui_state(
             },
         );
         format!(
-            "{} {prefix}tabs_rects={} {terminal_line}",
+            "{} {prefix}tabs_rects={} {} {terminal_line}",
             view.ui_smoke_state(&prefix, window, cx),
-            view.tab_smoke_rects(window)
+            view.tab_smoke_rects(window),
+            view.pane_smoke_state(&prefix, window, cx)
         )
     })
 }

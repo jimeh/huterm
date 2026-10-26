@@ -434,7 +434,7 @@ fn terminal(
                 .tabs
                 .iter()
                 .find(|view| view.id == tab)
-                .map(|tab| tab.view.clone())
+                .map(|tab| tab.focused_view().clone())
         })
         .ok()
         .flatten()
@@ -796,9 +796,11 @@ fn an_exit_while_the_window_is_busy_closes_once_the_busy_close_ends(
     // The refresh that saw the exit ran the pipeline in the same update; a
     // close it started would have taken the exit-close.
     let owed = harness.cx.update(|cx| {
-        cx.global::<Desktop>()
+        let desktop = cx.global::<Desktop>();
+        desktop
             .exit_closes
             .owed()
+            .filter_map(|pane| desktop.hierarchy.state().pane_tab(pane))
             .collect::<Vec<_>>()
     });
     assert_eq!(owed, [exits], "busy defers the exit-close");
@@ -1756,7 +1758,7 @@ fn exit_while_replacing(
     // and closes its wake; the swap later replaces the placeholder.
     let drain = harness.update_view(window, |view, _, _| {
         let tab = view.tabs.iter_mut().find(|tab| tab.id == exits).unwrap();
-        std::mem::replace(&mut tab.activity_task, Task::ready(()))
+        std::mem::replace(&mut tab.panes[0].activity_task, Task::ready(()))
     });
     harness.cx.foreground_executor().clone().block_test(drain);
     let client = harness.send_line(exits, "x");
@@ -2600,10 +2602,9 @@ fn views_hold_window_geometry(cx: &mut App, window: AnyWindowHandle) -> bool {
             let view = root.downcast::<WorkspaceView>().unwrap().read(cx);
             let geometry = view.terminal_geometry(window);
             geometry.bounds.is_some()
-                && view
-                    .tabs
-                    .iter()
-                    .all(|tab| tab.view.read(cx).geometry == geometry)
+                && view.tabs.iter().all(|tab| {
+                    tab.views().all(|view| view.read(cx).geometry == geometry)
+                })
         })
         .unwrap_or(false)
 }
@@ -2649,5 +2650,529 @@ fn a_sidebar_drag_reaches_hidden_views_which_resize_when_shown(
     });
     harness.wait_for("the shown view to request the wider grid", |cx| {
         requested(cx, hidden) == shown
+    });
+}
+
+/// The view of `pane` in `window`'s view of `tab`.
+fn pane_view(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    tab: TabId,
+    pane: PaneId,
+) -> Option<Entity<TerminalView>> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            view.read(cx)
+                .tabs
+                .iter()
+                .find(|view| view.id == tab)
+                .and_then(|view| view.pane(pane))
+                .map(|pane| pane.view.clone())
+        })
+        .ok()
+        .flatten()
+}
+
+/// The text `window`'s view of `pane` shows, if it has a snapshot.
+fn pane_screen(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    tab: TabId,
+    pane: PaneId,
+) -> Option<String> {
+    let snapshot = pane_view(cx, window, tab, pane)?
+        .read(cx)
+        .snapshot
+        .clone()?;
+    Some(snapshot.cells().map(|cell| cell.text.as_str()).collect())
+}
+
+/// `window`'s pane views of `tab`, and the one it focuses.
+fn panes_shown(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    tab: TabId,
+) -> Option<(Vec<PaneId>, PaneId)> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            let tab = view.read(cx).tabs.iter().find(|view| view.id == tab)?;
+            Some((
+                tab.panes.iter().map(|pane| pane.pane).collect(),
+                tab.focused().pane,
+            ))
+        })
+        .ok()
+        .flatten()
+}
+
+impl DesktopHarness {
+    /// The first pane of `tab`, from the runtime.
+    fn first_pane(&self, tab: TabId) -> PaneId {
+        self.runtime.lock().tab(tab).unwrap().first_pane().id
+    }
+
+    /// Splits `pane` of `tab` through Mux, as another client would.
+    fn split(
+        &self,
+        tab: TabId,
+        pane: PaneId,
+        direction: SplitDirection,
+        script: &str,
+    ) -> PaneId {
+        self.runtime
+            .lock()
+            .split_pane(self.workspace, tab, pane, direction, &fixture(script))
+            .unwrap()
+            .pane
+            .id
+    }
+
+    /// Runs `command` in `window` as a binding would.
+    fn invoke(
+        &mut self,
+        window: AnyWindowHandle,
+        command: huterm_protocol::CommandId,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.update_view(window, |view, window, cx| {
+            view.invoke_interactive(
+                &CommandInvocation::new(command, vec![]),
+                window,
+                cx,
+            )
+        })
+    }
+}
+
+#[gpui::test]
+fn a_pane_another_client_splits_installs_beside_the_focused_one(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let whole = harness.cx.update(|cx| {
+        pane_view(cx, window, tab, first)
+            .unwrap()
+            .read(cx)
+            .requested_grid
+    });
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("the second pane to install and show", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    // Each pane takes its share of the tab, and both views report it.
+    harness.wait_for("both panes to request narrower grids", |cx| {
+        [first, second].into_iter().all(|pane| {
+            pane_view(cx, window, tab, pane).is_some_and(|view| {
+                let grid = view.read(cx).requested_grid;
+                grid.columns < whole.columns / 2 + 1 && grid.rows < whole.rows
+            })
+        })
+    });
+    // Another client's split leaves this window's focus where it was.
+    assert_eq!(
+        harness.cx.update(|cx| panes_shown(cx, window, tab)),
+        Some((vec![first, second], first))
+    );
+    harness.type_line(window, "one");
+    harness.wait_for("the first pane to read the line", |cx| {
+        pane_screen(cx, window, tab, first)
+            .is_some_and(|text| text.contains("got:one"))
+    });
+    assert!(
+        harness.cx.update(|cx| {
+            !pane_screen(cx, window, tab, second)
+                .unwrap_or_default()
+                .contains("got:one")
+        }),
+        "the unfocused pane read the line"
+    );
+}
+
+#[gpui::test]
+fn pane_focus_commands_route_typing_and_wrap_or_stop_at_edges(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("the second pane to show", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    harness.wait_for("the second pane to take keyboard focus", |cx| {
+        pane_view(cx, window, tab, second).is_some_and(|view| {
+            window
+                .update(cx, |_, window, cx| {
+                    view.read(cx).focus.is_focused(window)
+                })
+                .unwrap_or(false)
+        })
+    });
+    harness.type_line(window, "two");
+    harness.wait_for("the second pane to read the line", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("got:two"))
+    });
+    // Terminal commands follow focus too.
+    let routed = harness.update_view(window, |view, _, cx| {
+        view.active_view(cx).map(|view| view.entity_id())
+    });
+    let second_view = harness
+        .cx
+        .update(|cx| pane_view(cx, window, tab, second).map(|v| v.entity_id()));
+    assert_eq!(routed, second_view);
+    // Next wraps; a direction stops at the layout's edge.
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    assert_eq!(
+        harness
+            .cx
+            .update(|cx| panes_shown(cx, window, tab))
+            .map(|(_, f)| f),
+        Some(first)
+    );
+    harness.invoke(window, ids::FOCUS_PANE_LEFT).unwrap();
+    assert_eq!(
+        harness
+            .cx
+            .update(|cx| panes_shown(cx, window, tab))
+            .map(|(_, f)| f),
+        Some(first)
+    );
+    harness.invoke(window, ids::FOCUS_PANE_RIGHT).unwrap();
+    assert_eq!(
+        harness
+            .cx
+            .update(|cx| panes_shown(cx, window, tab))
+            .map(|(_, f)| f),
+        Some(second)
+    );
+}
+
+#[gpui::test]
+fn close_pane_closes_the_focused_pane_and_the_last_pane_closes_its_tab(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let other = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Down, ECHO);
+    harness.wait_for("the second pane to show", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    harness.invoke(window, ids::CLOSE_PANE).unwrap();
+    harness.wait_for("the focused pane to close", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![first], first))
+            && cx
+                .global::<Desktop>()
+                .hierarchy
+                .state()
+                .tab(tab)
+                .is_some_and(|info| info.layout.pane_count() == 1)
+    });
+    // Focus falls back to the remaining pane, which still answers.
+    harness.wait_for("the remaining pane to take keyboard focus", |cx| {
+        focused(cx, window, tab)
+    });
+    harness.type_line(window, "after");
+    harness.wait_for("the remaining pane to read the line", |cx| {
+        pane_screen(cx, window, tab, first)
+            .is_some_and(|text| text.contains("got:after"))
+    });
+    // Closing the only pane closes the tab.
+    harness.invoke(window, ids::CLOSE_PANE).unwrap();
+    harness.wait_for("the tab to close", |cx| !projected(cx, tab));
+    assert!(harness.cx.update(|cx| projected(cx, other)));
+}
+
+#[gpui::test]
+fn an_exited_pane_closes_alone_under_close_on_exit(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let exits = harness.split(tab, first, SplitDirection::Right, EXITS);
+    harness.wait_for("the exiting pane to show", |cx| {
+        pane_screen(cx, window, tab, exits)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    harness.type_line(window, "x");
+    harness.wait_for("only the exited pane to close", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![first], first))
+    });
+    assert!(harness.cx.update(|cx| projected(cx, tab)));
+    harness.type_line(window, "still");
+    harness.wait_for("the sibling to answer", |cx| {
+        pane_screen(cx, window, tab, first)
+            .is_some_and(|text| text.contains("got:still"))
+    });
+}
+
+#[gpui::test]
+fn two_windows_focus_the_panes_of_one_tab_independently(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (left, right) = (harness.attach_window(), harness.attach_window());
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("both windows to show both panes", |cx| {
+        [left, right].into_iter().all(|window| {
+            panes_shown(cx, window, tab)
+                .is_some_and(|(panes, _)| panes.len() == 2)
+        })
+    });
+    harness.invoke(left, ids::FOCUS_NEXT_PANE).unwrap();
+    assert_eq!(
+        harness
+            .cx
+            .update(|cx| panes_shown(cx, left, tab))
+            .map(|(_, f)| f),
+        Some(second)
+    );
+    assert_eq!(
+        harness
+            .cx
+            .update(|cx| panes_shown(cx, right, tab))
+            .map(|(_, f)| f),
+        Some(first)
+    );
+    // Closing the pane one window focuses moves that window's focus.
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, second)
+        .unwrap();
+    harness.wait_for("both windows to drop the pane", |cx| {
+        [left, right].into_iter().all(|window| {
+            panes_shown(cx, window, tab) == Some((vec![first], first))
+        })
+    });
+}
+
+#[gpui::test]
+fn a_split_that_would_leave_a_pane_under_the_minimum_is_refused(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    let first = harness.first_pane(tab);
+    let fits = |harness: &mut DesktopHarness, direction| {
+        harness.update_view(window, |view, window, cx| {
+            view.split_grid(tab, first, direction, window, cx)
+        })
+    };
+    assert!(fits(&mut harness, SplitDirection::Down).is_ok());
+    // Shrink the window until the lone pane is six rows tall: a split
+    // across rows leaves each half under two rows once it takes a title
+    // bar, while a split across columns keeps every row.
+    let (chrome, cell) = harness.update_view(window, |view, window, _| {
+        let bounds = view.terminal_geometry(window).bounds.unwrap();
+        (
+            window.viewport_size().height - bounds.size.height,
+            view.metrics.at_scale(window.scale_factor()).cell_height,
+        )
+    });
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(800.0), chrome + cell * 6.5));
+    harness.wait_for("the lone pane to request six rows", |cx| {
+        pane_view(cx, window, tab, first)
+            .is_some_and(|view| view.read(cx).requested_grid.rows == 6)
+    });
+    let refused = fits(&mut harness, SplitDirection::Down);
+    assert!(
+        matches!(
+            &refused,
+            Err(CommandError::Unavailable(reason)) if reason.contains("too small")
+        ),
+        "{refused:?}"
+    );
+    let beside = fits(&mut harness, SplitDirection::Right).unwrap();
+    assert!(beside.rows >= 2, "{beside:?}");
+}
+
+#[gpui::test]
+fn a_pane_title_bars_close_button_closes_only_its_pane(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("the second pane to show", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    let close = harness.update_view(window, |view, window, cx| {
+        let bounds = view.terminal_geometry(window).bounds.unwrap();
+        let rects = WorkspaceView::tab_panes(tab, bounds, window, cx).unwrap();
+        let title_bar = rects.pane(second).unwrap().title_bar.unwrap();
+        WorkspaceView::pane_close_center(title_bar)
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_click(close, gpui::Modifiers::none());
+    harness.wait_for("the clicked pane to close", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![first], first))
+    });
+}
+
+#[gpui::test]
+fn closing_the_focused_pane_elsewhere_refocuses_the_survivor(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("the second pane to show", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    harness.wait_for("the second pane to take keyboard focus", |cx| {
+        focused(cx, window, tab)
+            && panes_shown(cx, window, tab).is_some_and(|(_, f)| f == second)
+    });
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, second)
+        .unwrap();
+    harness.wait_for("the survivor to take keyboard focus", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![first], first))
+            && focused(cx, window, tab)
+    });
+    harness.type_line(window, "survivor");
+    harness.wait_for("the survivor to read the line", |cx| {
+        pane_screen(cx, window, tab, first)
+            .is_some_and(|text| text.contains("got:survivor"))
+    });
+}
+
+#[gpui::test]
+fn a_pane_split_while_its_tab_installs_a_pane_still_installs(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    let first = harness.first_pane(tab);
+    let hooks = &harness.runtime.worker_hooks;
+    hooks.hold(Stage::Subscribe);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    let runtime = Arc::clone(&harness.runtime);
+    harness.wait_for("the second pane's install to wait", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) == 1
+    });
+    // The tab's install is in flight, so reconcile skips the third pane.
+    let third = harness.split(tab, second, SplitDirection::Down, ECHO);
+    harness.wait_for("the projection to hold the third pane", |cx| {
+        cx.global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab)
+            .is_some_and(|info| info.layout.pane(third).is_some())
+    });
+    harness.runtime.worker_hooks.release(Stage::Subscribe);
+    harness.wait_for("both new panes to install", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(panes, _)| {
+            panes.contains(&second) && panes.contains(&third)
+        })
+    });
+}
+
+#[gpui::test]
+fn a_pane_confirmation_whose_pane_closes_elsewhere_is_dismissed(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let first = harness.first_pane(tab);
+    let busy_pane = harness.split(tab, first, SplitDirection::Right, RUNS_JOB);
+    harness.wait_for("the busy pane to show", |cx| {
+        pane_screen(cx, window, tab, busy_pane)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    harness.invoke(window, ids::CLOSE_PANE).unwrap();
+    harness
+        .wait_for("the pane close to ask first", |cx| confirming(cx, window));
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, busy_pane)
+        .unwrap();
+    harness.wait_for("the stale confirmation to go", |cx| {
+        !confirming(cx, window)
+            && panes_shown(cx, window, tab) == Some((vec![first], first))
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(notices(cx, window), Vec::<String>::new());
+    });
+}
+
+#[gpui::test]
+fn focus_falls_back_to_the_first_pane_in_layout_order(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    let middle = harness.first_pane(tab);
+    // Installed after the middle pane, but laid out right and then left.
+    let right = harness.split(tab, middle, SplitDirection::Right, ECHO);
+    harness.wait_for("the right pane to install", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(panes, _)| panes.len() == 2)
+    });
+    let left = harness.split(tab, middle, SplitDirection::Left, ECHO);
+    harness.wait_for("the left pane to install", |cx| {
+        panes_shown(cx, window, tab)
+            == Some((vec![left, middle, right], middle))
+    });
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, middle)
+        .unwrap();
+    harness.wait_for("focus to fall back to the leftmost pane", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![left, right], left))
+    });
+    // A pane split in before the fallback in layout order leaves it focused.
+    let far_left = harness.split(tab, left, SplitDirection::Left, ECHO);
+    harness.wait_for("the far left pane to install", |cx| {
+        panes_shown(cx, window, tab)
+            == Some((vec![far_left, left, right], left))
     });
 }

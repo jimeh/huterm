@@ -12,8 +12,8 @@ use std::rc::Rc;
 use gpui::{Task, WindowId};
 use huterm_core::{HierarchyRecvError, HierarchySubscription};
 use huterm_protocol::{
-    ApplyOutcome, HierarchyEvent, HierarchyState, SessionId, TabId, TabInfo,
-    Touched, WorkspaceId,
+    ApplyOutcome, HierarchyEvent, HierarchyState, PaneId, SessionId, TabId,
+    TabInfo, Touched, WorkspaceId,
 };
 
 use super::model::WindowModel;
@@ -410,20 +410,6 @@ pub(super) fn holds_no_tabs(
     installs(state, workspace, session, &[], &[], false, false).is_empty()
 }
 
-/// Whether a finished install of `tab` still applies: reconcile would
-/// install it now, apart from `busy`, teardown, and the install's own
-/// pending entry.
-pub(super) fn install_applies(
-    state: &HierarchyState,
-    workspace: Option<WorkspaceId>,
-    session: Option<SessionId>,
-    installed: &[TabId],
-    tab: TabId,
-) -> bool {
-    installs(state, workspace, session, installed, &[], false, false)
-        .contains(&tab)
-}
-
 /// A window's installs and replacements that have started and not
 /// finished, and those that failed. A failed one waits for a later batch
 /// that touches the window's workspace before reconcile tries it again, so
@@ -561,16 +547,59 @@ pub(super) trait ReconcileTarget {
     /// Starts replacing the revoked viewers of `tabs`, which reconcile has
     /// recorded as in flight.
     fn replace(&mut self, tabs: &[TabId]);
+    /// An installed tab's pane views with the sequences they were built at.
+    fn installed_panes(&self, tab: TabId) -> Vec<(PaneId, u64)>;
+    /// Drops pane views of `tab` without closing anything.
+    fn drop_panes(&mut self, tab: TabId, panes: &[PaneId]);
 }
 
-/// The tab a window must activate after reconcile: its new active tab when
-/// a removal moved the active tab. The model moved it, but the view still
-/// has to show, snapshot, and focus it.
+/// The pane views of an installed `tab` that reconcile removes: those whose
+/// pane the projection no longer holds in the tab, once it has applied the
+/// sequence each view was built at. A tab the projection no longer holds
+/// in `workspace` leaves with its tab instead.
+pub(super) fn pane_removals(
+    state: &HierarchyState,
+    workspace: Option<WorkspaceId>,
+    tab: TabId,
+    installed: &[(PaneId, u64)],
+) -> Vec<PaneId> {
+    let Some(info) = state.tab(tab).filter(|_| {
+        workspace.is_some() && state.tab_workspace(tab) == workspace
+    }) else {
+        return Vec::new();
+    };
+    installed
+        .iter()
+        .filter(|(pane, committed)| {
+            *committed <= state.seq() && info.layout.pane(*pane).is_none()
+        })
+        .map(|(pane, _)| *pane)
+        .collect()
+}
+
+/// Whether the projection holds a pane of `tab` that has no view in
+/// `installed`.
+pub(super) fn missing_panes(
+    state: &HierarchyState,
+    tab: TabId,
+    installed: &[(PaneId, u64)],
+) -> bool {
+    state.tab(tab).is_some_and(|info| {
+        info.layout.panes().iter().any(|pane| {
+            !installed.iter().any(|(installed, _)| *installed == pane.id)
+        })
+    })
+}
+
+/// The tab a window must activate after reconcile: its active tab when a
+/// removal moved the active tab or that tab's focused pane, given each as
+/// the active tab and its focused pane. The model or the tab view moved it,
+/// but the view still has to show, snapshot, and focus it.
 pub(super) fn reactivation(
-    before: Option<TabId>,
-    after: Option<TabId>,
+    before: Option<(TabId, PaneId)>,
+    after: Option<(TabId, PaneId)>,
 ) -> Option<TabId> {
-    after.filter(|_| after != before)
+    after.filter(|_| after != before).map(|(tab, _)| tab)
 }
 
 /// What reconciling one window changed.
@@ -582,6 +611,25 @@ pub(super) struct WindowChange {
     pub(super) titles: bool,
     /// The removals took the window's last view.
     pub(super) emptied: bool,
+}
+
+/// Drops the pane views whose panes left their tabs once the projection
+/// caught up with each view; reports whether any went.
+fn drop_left_panes(target: &mut impl ReconcileTarget) -> bool {
+    let mut dropped = false;
+    for (tab, _) in target.installed() {
+        let gone = pane_removals(
+            target.projection(),
+            target.workspace(),
+            tab,
+            &target.installed_panes(tab),
+        );
+        if !gone.is_empty() {
+            target.drop_panes(tab, &gone);
+            dropped = true;
+        }
+    }
+    dropped
 }
 
 /// Brings one window in line with the projection: removals, then order,
@@ -610,6 +658,12 @@ pub(super) fn reconcile_window(
         change.changed = true;
         change.titles = true;
         change.emptied = target.installed().is_empty();
+    }
+    // Panes leave their tab the way tabs leave the window: never in a busy
+    // window, whose own completion owns the aftermath.
+    if !target.busy() && !terminating && drop_left_panes(target) {
+        change.changed = true;
+        change.titles = true;
     }
     let current: Vec<TabId> =
         target.installed().into_iter().map(|(tab, _)| tab).collect();
@@ -648,7 +702,7 @@ pub(super) fn reconcile_window(
     let pending = target.pending_installs().excluded();
     let installed: Vec<TabId> =
         target.installed().into_iter().map(|(tab, _)| tab).collect();
-    let install = installs(
+    let mut install = installs(
         target.projection(),
         workspace,
         target.session(),
@@ -657,6 +711,24 @@ pub(super) fn reconcile_window(
         target.busy(),
         terminating,
     );
+    // A shown tab whose layout gained a pane installs the new pane's view.
+    let held = installs(
+        target.projection(),
+        workspace,
+        target.session(),
+        &[],
+        &pending,
+        target.busy(),
+        terminating,
+    );
+    install.extend(installed.iter().copied().filter(|tab| {
+        held.contains(tab)
+            && missing_panes(
+                target.projection(),
+                *tab,
+                &target.installed_panes(*tab),
+            )
+    }));
     if !install.is_empty() {
         target.pending_installs().begin(&install);
         target.install(&install);

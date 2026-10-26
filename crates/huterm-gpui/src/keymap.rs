@@ -545,6 +545,52 @@ fn default_with(
     }
 }
 
+/// Split and pane focus bindings, following Ghostty's and iTerm2's.
+fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
+    let (split_right, split_down, next, previous, focus) = match platform {
+        Platform::MacOs => {
+            ("cmd-d", "cmd-shift-d", "cmd-]", "cmd-[", "cmd-alt")
+        }
+        Platform::Linux => (
+            "ctrl-shift-o",
+            "ctrl-shift-e",
+            "ctrl-super-]",
+            "ctrl-super-[",
+            "ctrl-alt",
+        ),
+    };
+    vec![
+        default(split_right, ids::SPLIT_RIGHT, "Split the pane to the right"),
+        default(split_down, ids::SPLIT_DOWN, "Split the pane downward"),
+        default(next, ids::FOCUS_NEXT_PANE, "Focus the next pane"),
+        default(
+            previous,
+            ids::FOCUS_PREVIOUS_PANE,
+            "Focus the previous pane",
+        ),
+        default(
+            &format!("{focus}-left"),
+            ids::FOCUS_PANE_LEFT,
+            "Focus the pane to the left",
+        ),
+        default(
+            &format!("{focus}-right"),
+            ids::FOCUS_PANE_RIGHT,
+            "Focus the pane to the right",
+        ),
+        default(
+            &format!("{focus}-up"),
+            ids::FOCUS_PANE_UP,
+            "Focus the pane above",
+        ),
+        default(
+            &format!("{focus}-down"),
+            ids::FOCUS_PANE_DOWN,
+            "Focus the pane below",
+        ),
+    ]
+}
+
 /// The shipped per-platform bindings, in precedence order.
 pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     let mut entries = vec![
@@ -611,7 +657,11 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             "Open a new window",
         ),
         default(&format!("{modifier}-t"), ids::NEW_TAB, "Open a new tab"),
-        default(&format!("{modifier}-w"), ids::CLOSE_TAB, "Close the tab"),
+        default(
+            &format!("{modifier}-w"),
+            ids::CLOSE_PANE,
+            "Close the pane, or the tab when it has one pane",
+        ),
         default(close_window, ids::CLOSE_WINDOW, "Close the window"),
         default("ctrl-tab", ids::NEXT_TAB, "Activate the next tab"),
         default(
@@ -620,6 +670,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             "Activate the previous tab",
         ),
     ]);
+    entries.extend(pane_defaults(platform));
     let modifier = match platform {
         Platform::MacOs => "cmd",
         Platform::Linux => "alt",

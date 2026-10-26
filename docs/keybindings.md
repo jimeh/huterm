@@ -167,6 +167,11 @@ imply the `Palette` context, and dialog, menu, and notice commands imply
 | `previous_tab` | Window | |
 | `select_tab` | Window | `index` (1 to 9; 9 selects the last tab) or `tab`, not both. Without either, prompts for a tab. |
 | `select_recent_tab` | Window | Activates the most recently used tab; repeat to toggle between two tabs. |
+| `split_right` / `split_down` | Window | Splits the focused pane; the new pane opens beside or below it and takes focus. |
+| `split_left` / `split_up` | Window | Splits the focused pane; the new pane opens before or above it and takes focus. |
+| `close_pane` | Window | Closes the focused pane, asking first when it runs a job. Closing a tab's only pane closes the tab. |
+| `focus_next_pane` / `focus_previous_pane` | Window | Focuses panes in layout order, wrapping. |
+| `focus_pane_left` / `focus_pane_right` / `focus_pane_up` / `focus_pane_down` | Window | Focuses the adjacent pane in that direction; does nothing at the tab's edge. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enters native mode, or exits any active fullscreen mode. |
 | `toggle_non_native_fullscreen` | Window | macOS only. Enters current-Space mode, or exits any active fullscreen mode. |
@@ -240,7 +245,10 @@ menus, or your own bindings.
 | `new_window` | `cmd-n` | `ctrl-shift-n` |
 | `open_command_palette` | `cmd-shift-p` | `ctrl-shift-p` |
 | `new_tab` | `cmd-t` | `ctrl-shift-t` |
-| `close_tab` | `cmd-w` | `ctrl-shift-w` |
+| `close_pane` | `cmd-w` | `ctrl-shift-w` |
+| `split_right` / `split_down` | `cmd-d` / `cmd-shift-d` | `ctrl-shift-o` / `ctrl-shift-e` |
+| `focus_next_pane` / `focus_previous_pane` | `cmd-]` / `cmd-[` | `ctrl-super-]` / `ctrl-super-[` |
+| `focus_pane_left` and the other directions | `cmd-alt-` plus an arrow | `ctrl-alt-` plus an arrow |
 | `close_window` | `cmd-shift-w` | `ctrl-shift-q` |
 | `next_tab` / `previous_tab` | `ctrl-tab` / `ctrl-shift-tab` | `ctrl-tab` / `ctrl-shift-tab` |
 | `select_tab` 1 to 9 | `cmd-1` to `cmd-9` | `alt-1` to `alt-9` |

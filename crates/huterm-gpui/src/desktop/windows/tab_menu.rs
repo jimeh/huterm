@@ -202,27 +202,14 @@ mod tests {
             active: true,
             ..input(0, 2)
         };
-        assert_eq!(
-            items(&model(&active))[2]
-                .shortcut
-                .as_ref()
-                .map(KeyHint::text)
-                .as_deref(),
-            Some("⌘W")
-        );
-        assert_eq!(items(&model(&input(0, 2)))[2].shortcut, None);
+        // The default close shortcut closes the pane, so Close Tab shows
+        // one only when the user binds it.
+        assert_eq!(items(&model(&active))[2].shortcut, None);
         let linux = TabMenuInput {
             platform: Platform::Linux,
             ..active
         };
-        assert_eq!(
-            items(&model(&linux))[2]
-                .shortcut
-                .as_ref()
-                .map(KeyHint::text)
-                .as_deref(),
-            Some("Ctrl+Shift+W")
-        );
+        assert_eq!(items(&model(&linux))[2].shortcut, None);
         let user = [KeybindingEntry {
             key: "ctrl-alt-w".to_owned(),
             command: "close_tab".to_owned(),
@@ -243,5 +230,11 @@ mod tests {
                 .as_deref(),
             Some("⌃⌥W")
         );
+        let inactive = tab_menu_model(
+            &input(0, 2),
+            &keymap(Platform::MacOs, &user),
+            &contexts(),
+        );
+        assert_eq!(items(&inactive)[2].shortcut, None);
     }
 }

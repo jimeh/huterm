@@ -9,7 +9,7 @@ import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverX11Window } from "./check-desktop-integration";
-import { commandFlag, macKeyEvents, shiftFlag } from "./macos-keys";
+import { commandFlag, macKeyEvents, optionFlag, shiftFlag } from "./macos-keys";
 
 type X11Process = Pick<Bun.Subprocess, "pid" | "exitCode" | "signalCode">;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -30,7 +30,8 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
 
 type OverlayKey =
   | "enter" | "escape" | "tab" | "shift-tab" | "left" | "right" | "down" | "end" | "page-up"
-  | "new-tab" | "close-tab" | "select-1" | "select-2" | "select-3";
+  | "new-tab" | "close-tab" | "select-1" | "select-2" | "select-3"
+  | "split-right" | "focus-next-pane" | "focus-pane-left";
 type PointerButton = "left" | "middle" | "right";
 
 /** Native input for one platform, positioned in the window's logical points. */
@@ -50,6 +51,9 @@ const x11Keys: Record<OverlayKey, string> = {
   enter: "Return", escape: "Escape", tab: "Tab", "shift-tab": "shift+Tab", left: "Left", right: "Right",
   down: "Down", end: "End", "page-up": "shift+Prior", "new-tab": "ctrl+shift+t", "close-tab": "ctrl+shift+w",
   "select-1": "alt+1", "select-2": "alt+2", "select-3": "alt+3",
+  // Openbox grabs Ctrl+Alt+arrows for desktop switching, so the X11 run
+  // invokes focus_pane_left instead of sending this key.
+  "split-right": "ctrl+shift+o", "focus-next-pane": "ctrl+super+bracketright", "focus-pane-left": "ctrl+alt+Left",
 };
 
 /** xdotool input; X11 positions are physical pixels. */
@@ -85,6 +89,8 @@ const macKeys: Record<OverlayKey, [number, number, string]> = {
   left: [123, 0, "\uF702"], right: [124, 0, "\uF703"], down: [125, 0, "\uF701"], end: [119, 0, "\uF72B"],
   "page-up": [116, shiftFlag, "\uF72C"], "new-tab": [17, commandFlag, "t"], "close-tab": [13, commandFlag, "w"],
   "select-1": [18, commandFlag, "1"], "select-2": [19, commandFlag, "2"], "select-3": [20, commandFlag, "3"],
+  "split-right": [2, commandFlag, "d"], "focus-next-pane": [30, commandFlag, "]"],
+  "focus-pane-left": [123, commandFlag | optionFlag, "\uF702"],
 };
 
 /**
@@ -177,6 +183,9 @@ while IFS= read -r line; do
     fill) i=0; while [ "$i" -lt 300 ]; do echo "line $i"; i=$((i+1)); done; printf 'FILLED\\n';;
     link) printf '\\033[2J\\033[Hhttps://example.test/huterm\\nLINKED\\n';;
     ack*) printf 'ACK:%s\\n' "$line";;
+    mouse) stty raw -echo; printf '\\033[?1000h\\033[?1006hMOUSE-ON\\r\\n'
+      report=$(dd bs=1 count=18 2>/dev/null); stty sane
+      printf '\\033[?1000l\\033[?1006lMOUSE:%s\\n' "$(printf %s "$report" | tr -d '\\033')";;
     exit) exit 0;;
   esac
 done
@@ -579,7 +588,7 @@ label = "title"
     // pointer, and only a window shorter than the menu scrolls it, with the
     // indicator showing.
     const original = parseRect(field(await current(), "content"));
-    const unscrolled = await openInShortWindow(original.w, 420, 0.45);
+    const unscrolled = await openInShortWindow(original.w, 520, 0.45);
     if (field(unscrolled, "menu_overflow") !== "false") throw new Error(`${engine}: a menu that fits the window scrolled: ${unscrolled}`);
     await key("escape");
     await state("w0.menu=false");
@@ -595,6 +604,39 @@ label = "title"
     await key("escape");
     await state("w0.menu=false", "w0.terminal_focused=true");
     await ack("ackcontextx");
+
+    // Panes through native input: the split key opens a focused pane beside
+    // the first, a click focuses the pane it lands in, typed lines reach only
+    // the focused pane's shell, the pane keys move focus, application mouse
+    // reports use the focused pane's own cells, and a title bar's close
+    // button closes its idle pane without asking.
+    await key("split-right");
+    await stateWhere((text) => field(text, "panes") === "2" && field(text, "pane_focus") === "1"
+      && (quoted(text, "w0.text") ?? "").includes("READY"), "the split pane's shell");
+    await ack("ackpaneright");
+    const [leftPane] = field(await current(), "pane_rects").split(";").map(parseRect);
+    await click(leftPane!.x + leftPane!.w / 2, leftPane!.y + leftPane!.h / 2);
+    await state("w0.pane_focus=0");
+    await ack("ackpaneleft");
+    await key("focus-next-pane");
+    await state("w0.pane_focus=1");
+    if (process.platform === "linux") await invoke("focus_pane_left");
+    else await key("focus-pane-left");
+    await state("w0.pane_focus=0", "w0.terminal_focused=true");
+    await key("focus-next-pane");
+    await state("w0.pane_focus=1", "ACK:ackpaneright");
+    await typeText("mouse");
+    await key("enter");
+    const tracking = await state("MOUSE-ON", "w0.mouse=Buttons");
+    const paneGrid = parseRect(field(tracking, "grid_bounds"));
+    const [paneCellWidth, paneCellHeight] = field(tracking, "cell").split(",").map(Number);
+    await click(paneGrid.x + paneCellWidth! * 2.5, paneGrid.y + paneCellHeight! * 1.5);
+    await state("MOUSE:[<0;3;2M[<0;3;2m");
+    const [, closeButton] = field(tracking, "pane_close").split(";");
+    const [closeX, closeY] = closeButton!.split(",").map(Number);
+    await click(closeX!, closeY!);
+    await state("w0.panes=1", "w0.pane_focus=0", "w0.confirming=false");
+    await ack("ackpaneclosed");
 
     // 10. Quit's confirmation names a sibling window's busy tab by the title
     // the window model published. Window 0 hosts the dialog, so the title can

@@ -31,18 +31,27 @@ workspace, active tab, and history. `WorkspaceView` keeps its tab entities
 aligned with the model through `push_tab_view`, `apply_tab_view_order`, and
 `drop_tab_views`.
 
-Reconcile installs views for tabs a window did not spawn, such as a tab
-another window opened in a shared workspace (`windows/view_install.rs`). It
-skips a busy window, whose own spawn holds `busy` until it pushes its view,
-a window without an attachment, and teardown. A worker subscribes the
-viewers under one Mux lock, the completion waits for the projection to reach
-the worker's sequence, and the window then pushes only the tabs it still
-shows no view of, without activating them unless it has no active tab. A
-failed install waits for a later batch that touches the workspace. A window
-that gains an attachment runs its own full reconcile, because attaching
-emits no hierarchy event. A view installed after its tab exited shows the
-exit from status but announces nothing: only the exit transition raises a
-notice or records an exit-close.
+Each `TabView` holds one `PaneView` per pane of its layout, with the
+window's own focused pane and focus history, so two windows showing one tab
+focus its panes independently. Reconcile installs views for tabs a window did
+not spawn, such as a tab another window opened in a shared workspace, and for
+panes another client split into a tab the window shows
+(`windows/view_install.rs`). It drops pane views the projected layout no
+longer holds, except while the window is busy or terminating, and moves focus
+to the most recently focused remaining pane, else the first in traversal
+order: tab views keep their panes in layout order. Losing the focused pane
+reactivates the tab as losing the active tab does, so keyboard focus follows.
+A finished install reconciles again, since reconcile skips a tab whose
+install is in flight. It skips a busy window, whose own
+spawn holds `busy` until it pushes its view, a window without an attachment,
+and teardown. A worker subscribes the viewers under one Mux lock, the
+completion waits for the projection to reach the worker's sequence, and the
+window then pushes only the tabs and panes it still shows no view of, without
+activating them unless it has no active tab. A failed install waits for a
+later batch that touches the workspace. A window that gains an attachment runs
+its own full reconcile, because attaching emits no hierarchy event. A view
+installed after its pane exited shows the exit from status but announces
+nothing: only the exit transition raises a notice or records an exit-close.
 
 A view whose viewer reports revocation while its tab stays in the window's
 workspace is replaced in place by the same worker and sequence wait. The tab's
@@ -141,21 +150,22 @@ remain blocked. Use commit_close_with for capture and termination-gate changes:
 validate once before side effects, then capture before teardown. A second
 freshness check after capture can strand a half-accepted Quit.
 
-`Desktop::exit_closes` owns exit-closes, one record per tab, and the window
+`Desktop::exit_closes` owns exit-closes, one record per pane, and the window
 close pipeline is the only actor that assesses and commits them. The first
-view to report a tab's exit transition records it, owed under that window's
+view to report a pane's exit transition records it, owed under that window's
 `close_on_exit` and settled otherwise, so a reload changes only future exits.
-An idle window that shows an owed tab takes it in `next_request`, after
-queued user closes, and starts its assessment at once; any window showing the
-tab may take it, and a window holds one at a time. Keep automatic exit
+An idle window that shows an owed pane takes it in `next_request` as a
+`CloseTarget::Pane`, after queued user closes, and starts its assessment at
+once; any window showing the pane may take it, and a window holds one at a
+time. Core closes a tab with its last pane. Keep automatic exit
 requests separate from the merged manual close intent, so canceling one prompt
-does not lose inactive siblings. A close that never reached Mux for its tab
+does not lose inactive siblings. A close that never reached Mux for its pane
 (cancelled, merged into a wider target that left the tab, or found gone on a
 stale retry) returns to owed and is offered to the other windows through
 `cx.defer` and window handles, never by reading their entities from inside an
 update. Once its commit starts, the commit's completion records the result by
-tab in application context, so closing the window cannot let a second window
-close the same tab. Removing a window returns a close it took but had not
+pane in application context, so closing the window cannot let a second window
+close the same pane. Removing a window returns a close it took but had not
 started committing. A failed assessment or commit settles with one notice and
 is not retried. Tier 2 tests hold and fail both stages through
 `windows/worker_hooks.rs`, which compiles only for tests with `test-support`;

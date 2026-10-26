@@ -1,8 +1,9 @@
 # Split panes
 
 Status: in progress. Approved on 2026-10-26 after a Claude review and two
-Codex review rounds. PR 1 (the runtime split tree) merged in #245; PR 2
-(pushed terminal geometry) is in progress. Plans
+Codex review rounds. PR 1 (the runtime split tree) merged in #245 and PR 2
+(pushed terminal geometry) in #246; PR 3 (desktop panes) is in progress.
+Plans
 [issue #28][issue-28] within [epic #12][issue-12], and sets the pane UX that
 [#29][issue-29] and [#30][issue-30] build on.
 
@@ -936,6 +937,61 @@ Recorded with PR 2:
 - Because the pushed bounds include the viewport size, a layout sync after a
   viewport change resizes hidden views even when no bounds observer set
   `layout_pending`.
+
+Recorded with PR 3:
+
+- The window's focused pane and pane focus history live in its `TabView`,
+  not in the window model's `TabEntry`: only the view reads them today, and
+  durable layout records (#42) can move them into the model. `TabEntry`
+  holds `panes: Vec<PaneTitle>`, each pane's terminal and title, in place of
+  a terminal-to-pane map.
+- `CloseTarget::Pane` carries `{ tab, pane }`, and `Desktop::exit_closes` is
+  keyed by `PaneId` rather than by terminal.
+- `pane_geometry` lives at `desktop/windows/pane_geometry.rs` and computes
+  frames, title bars, terminal bounds, and divider lines. Grab zones, zoom,
+  and drag previews arrive with PR 4. In space too short for its dividers a
+  pane shrinks toward zero instead of stopping at one cell; the splitting
+  window refuses a split that would leave a pane under 4 by 2 cells, so
+  only a narrower second view of a tab can reach that case.
+- A pane keeps the window's scrollbar track margins only when its terminal
+  touches the top right corner of the tab's bounds; other panes get none.
+- The renderer takes the unfocused outline through `set_cursor_outline`
+  rather than a `paint` argument.
+- `projection::install_applies` is gone: each subscribed viewer is checked
+  against the projection per pane (`pane_still_applies`) when it lands.
+- The title bar's zoom button ships with zoom in PR 4.
+- Native pane input is covered twice. `smoke:macos-input` checks exact PTY
+  bytes: the split key and the pane keys reach no shell, a native click
+  focuses its pane, a mouse report carries the pane's own cell, and the
+  title bar's close button asks first for a pane running a program. The
+  Linux input smoke runs the production binary without smoke state, so the
+  cross-platform steps (split key, click, pane keys, mouse report, idle
+  title bar close) live in `check-overlays.ts`, which both palette smokes
+  run with AppKit or XTest input.
+- Each pane's `stty size` against its grid, before and after a pane
+  close, is checked once, in the `check-viewers.ts` panes step, which also
+  runs the split command's real shell path. Tier 2 checks the panes'
+  requested grids.
+- The overlay smoke's short window that must fit the terminal menu grew
+  from 420 to 520 points, because the menu gained Split Right, Split Down,
+  and Close Pane.
+- Closing a tab's only pane, by `close_pane` or by its exit, asks as the
+  tab's close ("Close tab?") while keeping the `Pane` target, so a pane
+  another client split in before a stale retry is not closed with it.
+- A tab view keeps its panes in the layout's traversal order, so focus falls
+  back to the first pane in traversal order when the focused pane and the
+  window's focus history are gone, and later panes paint above earlier
+  ones. A view the layout no longer holds is not drawn and keeps its
+  geometry until it is dropped; a tab the projection no longer holds shows
+  only its focused pane.
+- Reconcile reactivates the active tab when it loses its focused pane, not
+  only when the active tab changes, so another client's pane close moves
+  keyboard focus to the surviving pane. A finished pane install reconciles
+  again, because a pane split into a tab while that tab's install was in
+  flight was skipped.
+- The plan's tier 1 clipping check already exists as
+  `a_larger_canonical_grid_is_clipped_and_owned_gestures_survive_it`, so this
+  PR adds no second one.
 
 [issue-8]: https://github.com/jimeh/huterm/issues/8
 [issue-12]: https://github.com/jimeh/huterm/issues/12

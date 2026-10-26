@@ -29,8 +29,8 @@ mod wake;
 pub use mux::{
     CloseAssessment, CloseEffect, CloseRequest, CloseTicket,
     DEFAULT_SOCKET_NAME, HierarchyRecvError, HierarchySnapshot,
-    HierarchySubscription, Mux, MuxError, OpenedTab, SelectionTarget, Session,
-    Tab, Workspace,
+    HierarchySubscription, Mux, MuxError, OpenedPane, OpenedTab,
+    SelectionTarget, Session, Tab, Workspace,
 };
 pub use terminal::{
     RefusedInput, RuntimeError, SelectionRequest, SnapshotReply,

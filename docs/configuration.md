@@ -66,19 +66,20 @@ would. The packaged app also sets `LANG=en_US.UTF-8` when it inherits no locale
 variable. On Linux, Huterm launches `$SHELL` in its own working directory.
 Without `$SHELL`, it falls back to `/bin/zsh` on macOS and `/bin/sh` on Linux.
 
-New tabs start in the current tab's directory when that directory is local and
-still accessible. Remote, malformed, deleted, or inaccessible paths use the
-normal launch directory instead:
+New tabs and panes start in the focused pane's directory when that directory
+is local and still accessible. Remote, malformed, deleted, or inaccessible
+paths use the normal launch directory instead:
 
 ```toml
 [terminal]
 new_tab_directory = "inherit" # inherit or default
 ```
 
-A tab closes without confirmation when its shell exits. Set
-`close_on_exit = false` in `[terminal]` to keep exited tabs for their history.
-An exited tab allows selection, copy, scrolling, links, and resizing, but sends
-no input. Reloading this setting affects only later exits.
+A pane closes without confirmation when its shell exits, and closing a tab's
+last pane closes the tab. Set `close_on_exit = false` in `[terminal]` to keep
+exited panes for their history. An exited pane allows selection, copy,
+scrolling, links, and resizing, but sends no input. Reloading this setting
+affects only later exits.
 
 ## Tab bar
 

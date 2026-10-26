@@ -149,7 +149,7 @@ fn read_state(cx: &mut gpui::App) -> String {
             let unseen_bells = workspace
                 .tabs
                 .iter()
-                .filter(|tab| tab.view.read(cx).bell.unseen)
+                .filter(|tab| tab.focused_view().read(cx).bell.unseen)
                 .count();
             let active_tab = workspace.active_tab(cx);
             let label = workspace.tabs.iter().find(|tab| Some(tab.id) == active_tab).map_or_else(String::new, |tab| tab.label(workspace.config.tabs, cx).0);

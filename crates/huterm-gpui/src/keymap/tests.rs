@@ -467,14 +467,14 @@ fn window_context_predicates_need_the_descendant_form_to_beat_defaults() {
             keymap.bindings_for_input(&[keystroke("cmd-w")], contexts);
         bindings.first().map(command_of)
     };
-    assert_eq!(first("fullscreen", &fullscreen), Some(ids::CLOSE_TAB));
+    assert_eq!(first("fullscreen", &fullscreen), Some(ids::CLOSE_PANE));
     assert_eq!(
         first("fullscreen > Terminal", &fullscreen),
         Some(ids::TOGGLE_FULLSCREEN)
     );
     assert_eq!(
         first("fullscreen > Terminal", &terminal),
-        Some(ids::CLOSE_TAB)
+        Some(ids::CLOSE_PANE)
     );
 }
 

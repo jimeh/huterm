@@ -14,6 +14,13 @@ pub(crate) fn run() -> anyhow::Result<()> {
     let windows: usize = std::env::var("HUTERM_IDLE_WINDOWS")?.parse()?;
     ensure!((1..=50).contains(&tabs), "expected 1..=50 tabs per window");
     ensure!((1..=2).contains(&windows), "expected one or two windows");
+    // Opt-in: each window's active tab splits until it holds this many panes.
+    let panes: usize = std::env::var("HUTERM_IDLE_PANES")
+        .map_or(Ok(1), |value| value.parse())?;
+    ensure!(
+        (1..=8).contains(&panes),
+        "expected 1..=8 panes per active tab"
+    );
     let quake = std::env::var("HUTERM_IDLE_PRESENTATION").ok().as_deref()
         == Some("quake");
     let hidden = std::env::var("HUTERM_IDLE_VISIBILITY").ok().as_deref()
@@ -23,7 +30,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
             let deadline = Instant::now() + Duration::from_secs(90);
             let mut last_progress = String::new();
             loop {
-                let result = cx.update(|cx| advance(cx, tabs, windows, quake, hidden));
+                let result = cx.update(|cx| {
+                    advance(cx, Shape { tabs, panes, windows }, quake, hidden)
+                });
                 match result {
                     Ok(Some(adapters)) => {
                         // No persistent observer, state writer or control loop survives
@@ -113,13 +122,47 @@ fn ensure_no_notices(view: &WorkspaceView) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether the window's terminal shows the fixture's readiness line. Until
+/// it does, the terminal gets one startup snapshot credit.
+fn shows_ready(root: &gpui::Entity<WorkspaceView>, cx: &mut App) -> bool {
+    let view = root.read(cx);
+    let ready = view.active_view(cx).is_some_and(|terminal| {
+        terminal.read(cx).snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot
+                .cells()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains("HUTERM_IDLE_READY")
+        })
+    });
+    if !ready && let Some(terminal) = view.active_view(cx) {
+        // Fixture initialization must finish even when AppKit occludes
+        // this window and stops native frames. Grant one startup credit
+        // through normal admission; never change the refresh policy.
+        // This loop ends before READY and external idle measurement.
+        terminal.update(cx, |terminal, cx| {
+            terminal.snapshot_pacer.frame();
+            terminal.start_snapshot_if_needed(cx);
+        });
+    }
+    ready
+}
+
+/// The windows, tabs per window, and panes of each active tab to open.
+#[derive(Clone, Copy)]
+struct Shape {
+    tabs: usize,
+    panes: usize,
+    windows: usize,
+}
+
 fn advance(
     cx: &mut App,
-    tabs: usize,
-    windows: usize,
+    shape: Shape,
     quake: bool,
     hidden: bool,
 ) -> anyhow::Result<Option<usize>> {
+    let Shape { tabs, windows, .. } = shape;
     if cx.global::<Desktop>().pending_spawns != 0 {
         return Ok(None);
     }
@@ -148,30 +191,12 @@ fn advance(
             );
             adapters += usize::from(view.native_fullscreen.is_some());
             ensure_no_notices(view)?;
-            let ready = view.active_view(cx).is_some_and(|terminal| {
-                terminal.read(cx).snapshot.as_ref().is_some_and(|snapshot| {
-                    snapshot
-                        .cells()
-                        .map(|cell| cell.text.as_str())
-                        .collect::<String>()
-                        .contains("HUTERM_IDLE_READY")
-                })
-            });
-            if !ready && let Some(terminal) = view.active_view(cx) {
-                // Fixture initialization must finish even when AppKit occludes
-                // this window and stops native frames. Grant one startup credit
-                // through normal admission; never change the refresh policy.
-                // This loop ends before READY and external idle measurement.
-                terminal.update(cx, |terminal, cx| {
-                    terminal.snapshot_pacer.frame();
-                    terminal.start_snapshot_if_needed(cx);
-                });
-            }
+            let ready = shows_ready(&root, cx);
             let view = root.read(cx);
             if let Some(state) = &view.quake {
                 let observation = quake_windows::inspect(state)?;
                 if !observation.lines().any(|line| line == "stage=Idle") {
-                    return Ok((false, view.tabs.len(), None));
+                    return Ok((false, view.tabs.len(), None, 0));
                 }
                 let desired =
                     observation.lines().any(|line| line == "desired=true");
@@ -184,6 +209,7 @@ fn advance(
                         true,
                         view.tabs.len(),
                         Some(state.name.clone()),
+                        0,
                     ));
                 }
                 ensure!(
@@ -191,7 +217,14 @@ fn advance(
                     "native Quake visibility disagrees"
                 );
             }
-            Ok::<_, anyhow::Error>((ready && !view.busy, view.tabs.len(), None))
+            let split =
+                view.active_tab_view(cx).map_or(0, |tab| tab.panes.len());
+            Ok::<_, anyhow::Error>((
+                ready && !view.busy,
+                view.tabs.len(),
+                None,
+                split,
+            ))
         })??;
         if let Some(profile) = ready.2 {
             invoke_profile(cx, visibility_command(hidden), &profile)?;
@@ -200,11 +233,9 @@ fn advance(
         if !ready.0 {
             return Ok(None);
         }
-        if ready.1 < tabs {
-            invoke(cx, "new_tab", Some(*handle))?;
+        if grow_window(cx, *handle, ready.1, ready.3, shape)? {
             return Ok(None);
         }
-        ensure!(ready.1 == tabs, "unexpected tab count");
     }
     if handles.len() < windows {
         if quake {
@@ -221,6 +252,28 @@ fn advance(
     ensure!(handles.len() == windows, "unexpected window count");
     report_windows(cx, &handles)?;
     Ok(Some(adapters))
+}
+
+/// Opens the next tab or pane a ready window lacks, given the tabs it has
+/// and the panes of its active tab; reports whether it asked for one.
+fn grow_window(
+    cx: &mut App,
+    handle: gpui::AnyWindowHandle,
+    tabs: usize,
+    panes: usize,
+    shape: Shape,
+) -> anyhow::Result<bool> {
+    if tabs < shape.tabs {
+        invoke(cx, "new_tab", Some(handle))?;
+        return Ok(true);
+    }
+    ensure!(tabs == shape.tabs, "unexpected tab count");
+    if panes < shape.panes {
+        invoke(cx, "split_right", Some(handle))?;
+        return Ok(true);
+    }
+    ensure!(panes == shape.panes, "unexpected pane count");
+    Ok(false)
 }
 
 fn report_windows(

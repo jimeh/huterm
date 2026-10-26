@@ -592,3 +592,45 @@ fn a_hovered_link_is_found_again_after_a_local_resize_without_control(
     });
     drop(controller);
 }
+
+#[gpui::test]
+fn a_split_views_focus_change_repaints_its_cursor_without_a_snapshot(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, "printf READY; exec cat >/dev/null");
+    harness.wait_for("the first snapshot", |view, _| {
+        screen_text(view).is_some_and(|text| text.contains("READY"))
+            && view.input_queue.is_empty()
+    });
+    harness.update(|view, _, cx| {
+        view.split = true;
+        cx.notify();
+    });
+    let (snapshot, sequence) = harness.read(|view, _| {
+        (view.snapshot.clone().unwrap(), view.snapshot_sequence)
+    });
+    let unchanged = |view: &TerminalView| {
+        view.snapshot_sequence == sequence
+            && view
+                .snapshot
+                .as_ref()
+                .is_some_and(|shown| Arc::ptr_eq(shown, &snapshot))
+    };
+    // Losing keyboard focus outlines the block cursor of a split pane.
+    harness.update(|_, window, cx| window.blur(cx));
+    harness.wait_for("the cursor to draw as an outline", |view, _| {
+        view.renderer.borrow().cursor_outline()
+    });
+    assert!(
+        harness.read(|view, _| unchanged(view)),
+        "a blur took a snapshot"
+    );
+    harness.update(|view, window, cx| view.focus.focus(window, cx));
+    harness.wait_for("the cursor to draw filled", |view, _| {
+        !view.renderer.borrow().cursor_outline()
+    });
+    assert!(
+        harness.read(|view, _| unchanged(view)),
+        "a focus took a snapshot"
+    );
+}

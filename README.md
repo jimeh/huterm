@@ -25,6 +25,9 @@ GPUI for rendering.
   bottom, left, or right bar or merged into the title bar. Tabs can be
   reordered by dragging, renamed, and labelled by program, title, or working
   directory.
+- **Split panes:** a tab splits into panes side by side or stacked, each with
+  its own shell and a title bar while the tab is split. Keyboard commands move
+  focus between panes in order or by direction.
 - **Commands:** every action is a catalog command with typed arguments. The
   command palette finds commands by fuzzy search and prompts for arguments, and
   keybindings can bind any command with arguments and `when` conditions.
@@ -38,7 +41,7 @@ GPUI for rendering.
 
 These are not available yet:
 
-- Split panes. Each tab holds one pane.
+- Resizing or zooming split panes, and dragging tabs onto panes.
 - Switching sessions or workspaces in a window, and moving tabs between
   windows. Each window gets a private session.
 - A background server, local IPC, a command-line client, a TUI, or a browser
@@ -113,9 +116,10 @@ the running settings in place and shows an error.
 ## Windows, sessions, and tabs
 
 Each window creates and attaches to a private session with one workspace of
-ordered tabs. Each tab holds one pane with its own terminal and shell. Hidden
-tabs keep processing output without building snapshots or painting. A tab closes
-when its shell exits, unless `close_on_exit = false` keeps it for its history;
+ordered tabs. Each tab holds one or more panes, each with its own terminal and
+shell. Hidden tabs keep processing output without building snapshots or
+painting. A pane closes when its shell exits, and its tab closes with its last
+pane, unless `close_on_exit = false` keeps them for their history;
 see [Shells](docs/configuration.md#shells). The configuration guide also covers
 [the tab bar](docs/configuration.md#tab-bar),
 [fullscreen](docs/configuration.md#fullscreen), and
@@ -123,10 +127,10 @@ see [Shells](docs/configuration.md#shells). The configuration guide also covers
 
 ### Closing windows and quitting
 
-Closing a tab stops its terminal. Closing a window closes its session and
-stops its terminals. A window closes on its own when its last tab goes away,
-for example when its shell exits; that close stops no other terminal and never
-asks.
+Closing a pane stops its terminal, and closing a tab stops the terminals of
+all its panes. Closing a window closes its session and stops its terminals. A
+window closes on its own when its last tab goes away, for example when its
+shell exits; that close stops no other terminal and never asks.
 
 Close and Quit warn about foreground or background jobs, or when Huterm cannot
 determine a terminal's process state. Idle shells need no confirmation. Huterm
@@ -224,9 +228,10 @@ the palette and configurable keybindings, fullscreen and quake windows, and
 viewers that let several windows show one terminal with a shared viewport. The
 next stages are:
 
-- **Desktop expansion:** session and workspace switching, split panes and
-  layouts, moving tabs between windows, shell integration, a settings UI,
-  window transparency, and restoring sessions and history after a restart.
+- **Desktop expansion:** session and workspace switching, resizing, zooming,
+  and dragging split panes, moving tabs between windows, shell integration, a
+  settings UI, window transparency, and restoring sessions and history after a
+  restart.
 - **Terminal compatibility:** notifications and progress, extended underlines,
   SGR-pixel mouse reports, the Kitty keyboard protocol, and inline graphics.
 - **Optional server:** versioned local IPC, named servers, CLI control, and

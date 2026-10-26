@@ -56,12 +56,13 @@ use huterm_config::{TabStyle, TabWidth, TabsConfig};
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
     HierarchySubscription, HostEffectRecipientOptions, HostEffectViewerOptions,
-    MuxError, OpenedTab, TerminalViewer, ViewerOptions, ViewerWake,
+    MuxError, OpenedPane, OpenedTab, TerminalViewer, ViewerOptions, ViewerWake,
 };
 use huterm_protocol::{
-    AttachmentId, CommandArgument, CommandScope, HierarchyState, SessionId,
-    TerminalId, Touched, ViewerCapabilities, WorkspaceId, catalog,
-    resolve_tab_name, validate, validate_supplied,
+    AttachmentId, CommandArgument, CommandScope, HierarchyState, PaneId,
+    PaneInfo, RuntimeId, SessionId, SplitDirection, SplitId, TerminalId,
+    Touched, ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name,
+    validate, validate_supplied,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -69,11 +70,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
+/// The smallest pane a split or resize leaves, in cells.
+const MIN_PANE_COLUMNS: u16 = 4;
+const MIN_PANE_ROWS: u16 = 2;
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod button_layout;
 mod client_frame;
 mod exit_closes;
 mod model;
+mod pane_geometry;
 mod projection;
 mod tab_bar;
 mod tab_menu;
@@ -100,9 +105,10 @@ use client_frame::{
 };
 use exit_closes::{CommitOutcome, ExitCloses};
 use model::{
-    QuakeRecord, TabEntry, TitleScope, WindowLayout, WindowModel, WindowRecord,
-    WindowRestore, apply_tab_order,
+    PaneTitle, QuakeRecord, TabEntry, TitleScope, WindowLayout, WindowModel,
+    WindowRecord, WindowRestore, apply_tab_order,
 };
+use pane_geometry::{TabPanes, layout_panes};
 use projection::{
     Drained, Install, PendingInstalls, Projection, ReconcileTarget, Resolution,
     TabNames, TitleConsumers, Wait, WindowChange, holds_no_tabs,
@@ -351,6 +357,60 @@ impl DesktopRuntime {
         }
     }
 
+    /// Splits `pane` of `tab` toward `direction` with a new terminal running
+    /// `command`, and subscribes the window's viewer of it under the same
+    /// lock. A viewer that cannot subscribe closes the new pane again.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a split names its window, pane, side, and new terminal"
+    )]
+    fn split_pane(
+        &self,
+        workspace: WorkspaceId,
+        attachment: AttachmentId,
+        tab: TabId,
+        pane: PaneId,
+        direction: SplitDirection,
+        command: &TerminalCommand,
+        clipboard_allowed: bool,
+    ) -> Committed<Result<(OpenedPane, TerminalViewer), MuxError>> {
+        let mut mux = self.lock();
+        let result = if self.terminating.load(Ordering::Acquire) {
+            Err(RuntimeError::Stopped.into())
+        } else {
+            mux.split_pane(workspace, tab, pane, direction, command)
+                .and_then(|opened| {
+                    let viewer = mux.subscribe_terminal(
+                        attachment,
+                        opened.pane.terminal_id,
+                        ViewerOptions {
+                            geometry: Some((
+                                command.grid_size,
+                                command.cell_size,
+                            )),
+                            spawned: true,
+                            ..self.viewer_options(
+                                clipboard_allowed,
+                                command.presentation.clone(),
+                            )
+                        },
+                    );
+                    match viewer {
+                        Ok(viewer) => Ok((opened, viewer)),
+                        Err(error) => {
+                            let _ =
+                                mux.close_pane(workspace, tab, opened.pane.id);
+                            Err(error)
+                        }
+                    }
+                })
+        };
+        Committed {
+            result,
+            seq: mux.hierarchy_seq(),
+        }
+    }
+
     /// The options a desktop view's viewer starts with: full capabilities,
     /// host effects under the window's clipboard policy, and the view's
     /// presentation.
@@ -371,37 +431,36 @@ impl DesktopRuntime {
         }
     }
 
-    /// Subscribes a viewer for each of a window's tabs under one lock, for
-    /// views the window did not spawn and for revoked views it replaces.
-    /// Each viewer starts with its tab's [`ViewerStart`].
-    fn subscribe_tabs(
+    /// Subscribes a viewer for each of a window's pane targets under one
+    /// lock, for views the window did not create and for revoked views it
+    /// replaces. Each viewer starts with its target's [`ViewerStart`];
+    /// results follow `targets` in order.
+    fn subscribe_panes(
         &self,
         attachment: AttachmentId,
-        tabs: &[(TabId, TerminalId, ViewerStart)],
+        targets: &[view_install::PaneTarget],
         clipboard_allowed: bool,
-    ) -> Committed<Vec<(TabId, Result<TerminalViewer, MuxError>)>> {
+    ) -> Committed<Vec<Result<TerminalViewer, MuxError>>> {
         let mux = self.lock();
         let terminating = self.terminating.load(Ordering::Acquire);
-        let result = tabs
+        let result = targets
             .iter()
-            .map(|(tab, terminal, start)| {
-                let tab = *tab;
-                let viewer = if terminating {
+            .map(|target| {
+                if terminating {
                     Err(RuntimeError::Stopped.into())
                 } else {
                     mux.subscribe_terminal(
                         attachment,
-                        *terminal,
+                        target.terminal,
                         ViewerOptions {
-                            geometry: start.geometry,
+                            geometry: target.start.geometry,
                             ..self.viewer_options(
                                 clipboard_allowed,
-                                start.presentation.clone(),
+                                target.start.presentation.clone(),
                             )
                         },
                     )
-                };
-                (tab, viewer)
+                }
             })
             .collect();
         Committed {
@@ -1364,16 +1423,16 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     let state = desktop.hierarchy.state();
     desktop
         .exit_closes
-        .retain(|tab| state.tab_workspace(tab).is_some());
+        .retain(|pane| state.pane_tab(pane).is_some());
     let desktop = cx.global::<Desktop>();
     let terminating = desktop.runtime.terminating.load(Ordering::Acquire);
     let windows = windows_to_visit(&desktop.windows, touched);
     let mut retitled = HashSet::new();
     let mut activate = Vec::new();
     update_windows(cx, &windows, |view, cx| {
-        let before = view.active_tab(cx);
+        let before = view.active_pane(cx);
         let change = view.reconcile(touched, terminating, cx);
-        if let Some(tab) = reactivation(before, view.active_tab(cx)) {
+        if let Some(tab) = reactivation(before, view.active_pane(cx)) {
             activate.push((view.window, tab));
         }
         if change.titles {
@@ -1391,8 +1450,9 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     refresh_title_consumers(cx, true, &retitled);
 }
 
-/// Shows the tabs reconcile made active by removing the active tab, as
-/// `reconcile_own` does for a window's own completion, and focuses them
+/// Shows the tabs reconcile made active by removing the active tab or its
+/// focused pane, as `reconcile_own` does for a window's own completion, and
+/// focuses them
 /// unless an overlay holds the window's focus. A window whose active tab
 /// changed again meanwhile is left alone.
 fn activate_reconciled_tabs(cx: &mut App, tabs: &[(gpui::WindowId, TabId)]) {
@@ -2524,25 +2584,145 @@ impl WorkspaceView {
     }
 }
 
+/// The identities of one pane: its tab, itself, and its terminal.
+#[derive(Clone, Copy, Debug)]
+struct PaneKey {
+    tab: TabId,
+    pane: PaneId,
+    terminal: TerminalId,
+}
+
+/// One pane of a tab as this window shows it.
+struct PaneView {
+    pane: PaneId,
+    terminal: TerminalId,
+    /// The hierarchy sequence the pane's view was built at. Reconcile drops
+    /// the view only once the projection has applied it and no longer holds
+    /// the pane.
+    committed: u64,
+    view: Entity<TerminalView>,
+    /// The pane's activity drain; dropping it cancels the drain.
+    activity_task: Task<()>,
+}
+
+impl PaneView {
+    /// Replaces the pane's activity drain, cancelling the old one.
+    fn restart_activity(&mut self, task: Task<()>) {
+        drop(std::mem::replace(&mut self.activity_task, task));
+    }
+
+    /// The pane's title without status text: what its tab would show if
+    /// this were its only pane, through the tab label settings but without
+    /// the tab's custom name.
+    fn label(
+        &self,
+        fallback: &str,
+        tabs: huterm_config::TabsConfig,
+        cx: &App,
+    ) -> String {
+        let terminal = self.view.read(cx);
+        resolve_tab_label(
+            tabs.label,
+            tabs.directory,
+            resolve_tab_name(None, &terminal.title, fallback),
+            &terminal.metadata,
+            home_paths(),
+        )
+    }
+
+    fn status(&self, cx: &App) -> TabStatus {
+        let terminal = self.view.read(cx);
+        TabStatus::new(
+            terminal.exited,
+            terminal.failed,
+            terminal.bell.unseen,
+            terminal.metadata.foreground_process(),
+        )
+    }
+}
+
 struct TabView {
     id: TabId,
-    terminal: TerminalId,
-    /// The hierarchy sequence the tab's spawn committed at. Reconcile drops
-    /// the view only once the projection has applied it and no longer holds
-    /// the tab.
+    /// The hierarchy sequence the tab's first view was built at. Reconcile
+    /// drops the tab only once the projection has applied it and no longer
+    /// holds the tab.
     committed: u64,
     /// The names the projection last held for this tab, used while it no
     /// longer does, such as during a close commit.
     names: TabNames,
-    view: Entity<TerminalView>,
-    /// The tab's activity drain; dropping it cancels the drain.
-    activity_task: Task<()>,
+    /// The views of the tab's panes; never empty.
+    panes: Vec<PaneView>,
+    /// Panes this window focused, most recent first. The first one present
+    /// has keyboard focus whenever the tab is active.
+    focus_history: Vec<PaneId>,
 }
 
 impl TabView {
-    /// Replaces the tab's activity drain, cancelling the old one.
-    fn restart_activity(&mut self, task: Task<()>) {
-        drop(std::mem::replace(&mut self.activity_task, task));
+    fn new(
+        id: TabId,
+        committed: u64,
+        names: TabNames,
+        panes: Vec<PaneView>,
+    ) -> Self {
+        debug_assert!(!panes.is_empty(), "a tab view needs a pane");
+        let focus_history =
+            panes.first().map(|pane| pane.pane).into_iter().collect();
+        Self {
+            id,
+            committed,
+            names,
+            panes,
+            focus_history,
+        }
+    }
+
+    /// The pane with keyboard focus: the most recently focused one still
+    /// present, else the first.
+    fn focused(&self) -> &PaneView {
+        self.focus_history
+            .iter()
+            .find_map(|id| self.pane(*id))
+            .unwrap_or(&self.panes[0])
+    }
+
+    fn focused_view(&self) -> &Entity<TerminalView> {
+        &self.focused().view
+    }
+
+    fn pane(&self, id: PaneId) -> Option<&PaneView> {
+        self.panes.iter().find(|pane| pane.pane == id)
+    }
+
+    fn pane_mut(&mut self, id: PaneId) -> Option<&mut PaneView> {
+        self.panes.iter_mut().find(|pane| pane.pane == id)
+    }
+
+    /// Every pane's view.
+    fn views(&self) -> impl Iterator<Item = &Entity<TerminalView>> {
+        self.panes.iter().map(|pane| &pane.view)
+    }
+
+    /// Moves focus to `pane`; returns whether it changed.
+    fn focus_pane(&mut self, pane: PaneId) -> bool {
+        if self.pane(pane).is_none() || self.focused().pane == pane {
+            return false;
+        }
+        self.focus_history.retain(|id| *id != pane);
+        self.focus_history.insert(0, pane);
+        true
+    }
+
+    /// Drops the views of `panes`. Focus falls back to the most recently
+    /// focused pane still present, else the first in layout order, which
+    /// joins the history so a pane added before it later cannot take focus.
+    fn remove_panes(&mut self, panes: &[PaneId]) {
+        self.panes.retain(|view| !panes.contains(&view.pane));
+        self.focus_history.retain(|id| !panes.contains(id));
+        if let Some(first) = self.panes.first()
+            && !self.focus_history.iter().any(|id| self.pane(*id).is_some())
+        {
+            self.focus_history.push(first.pane);
+        }
     }
 
     /// The tab's label with status text, for previews, dialogs, and the
@@ -2552,43 +2732,78 @@ impl TabView {
         with_status_suffix(title, status)
     }
 
+    /// Each pane's own title for the window model, which close dialogs
+    /// read for their headings.
+    fn pane_titles(
+        &self,
+        tabs: huterm_config::TabsConfig,
+        cx: &App,
+    ) -> Vec<PaneTitle> {
+        self.panes
+            .iter()
+            .map(|pane| PaneTitle {
+                terminal: pane.terminal,
+                title: pane.label(self.fallback_name(pane.pane, cx), tabs, cx),
+            })
+            .collect()
+    }
+
+    /// The launched program name of `pane`, from the projection while it
+    /// holds the tab, else the tab's remembered fallback name.
+    fn fallback_name<'a>(&'a self, pane: PaneId, cx: &'a App) -> &'a str {
+        let state = cx.global::<Desktop>().hierarchy.state();
+        state
+            .tab(self.id)
+            .and_then(|info| info.layout.pane(pane))
+            .map_or_else(
+                || tab_names(state, self.id, &self.names).1,
+                |pane| pane.fallback_name.as_str(),
+            )
+    }
+
     /// Returns the display name without status text, and the status its
-    /// indicator reports. Names come from the hierarchy projection by
-    /// identity; a tab the projection no longer holds keeps the names it
-    /// last held.
+    /// indicator reports. The name is the tab's custom name, else the
+    /// focused pane's title; the status is the focused pane's, except that
+    /// a failure or bell in any pane shows. Names come from the hierarchy
+    /// projection by identity; a tab the projection no longer holds keeps
+    /// the names it last held.
     fn label(
         &self,
         tabs: huterm_config::TabsConfig,
         cx: &App,
     ) -> (String, TabStatus) {
-        let terminal = self.view.read(cx);
-        let (custom, fallback) = tab_names(
+        let focused = self.focused();
+        let (custom, _) = tab_names(
             cx.global::<Desktop>().hierarchy.state(),
             self.id,
             &self.names,
         );
-        let fallback = resolve_tab_name(custom, &terminal.title, fallback);
-        let label = if custom.is_some() {
-            fallback.to_owned()
-        } else {
-            resolve_tab_label(
-                tabs.label,
-                tabs.directory,
-                fallback,
-                &terminal.metadata,
-                home_paths(),
-            )
-        };
-        (
-            label,
-            TabStatus::new(
-                terminal.exited,
-                terminal.failed,
-                terminal.bell.unseen,
-                terminal.metadata.foreground_process(),
-            ),
-        )
+        let label = custom.map_or_else(
+            || focused.label(self.fallback_name(focused.pane, cx), tabs, cx),
+            str::to_owned,
+        );
+        let status = focused.status(cx);
+        let others = self
+            .panes
+            .iter()
+            .filter(|pane| pane.pane != focused.pane)
+            .map(|pane| pane.status(cx));
+        (label, attention_status(status, others))
     }
+}
+
+/// A split tab's status: the focused pane's, raised to a failure or a bell
+/// that any other pane shows, because both ask for attention.
+fn attention_status(
+    focused: TabStatus,
+    others: impl Iterator<Item = TabStatus>,
+) -> TabStatus {
+    others.fold(focused, |status, other| match (status, other) {
+        (TabStatus::Failed, _) | (_, TabStatus::Failed) => TabStatus::Failed,
+        (TabStatus::Exited, _) => TabStatus::Exited,
+        (_, TabStatus::Bell) => TabStatus::Bell,
+        (status, _) => status,
+    })
 }
 
 /// A tab label with the status text previews, dialogs, and the window model
@@ -2931,6 +3146,12 @@ struct TabReorder {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CloseTarget {
     Tab(TabId),
+    /// One pane of a tab. The runtime closes the tab instead when the pane
+    /// is its last.
+    Pane {
+        tab: TabId,
+        pane: PaneId,
+    },
     /// Several tabs of this window, distinct and in window order. Always
     /// two or more: [`tabs_target`] normalizes shorter lists.
     Tabs(Vec<TabId>),
@@ -2946,7 +3167,38 @@ impl CloseTarget {
         match self {
             Self::Tab(id) => Some(vec![*id]),
             Self::Tabs(ids) => Some(ids.clone()),
-            Self::Window | Self::Application | Self::Emptied => None,
+            Self::Pane { .. }
+            | Self::Window
+            | Self::Application
+            | Self::Emptied => None,
+        }
+    }
+
+    /// Whether this target closes `pane` of `tab` by naming it or its tab.
+    /// A window close may only detach, so it never counts.
+    fn names_pane(&self, tab: TabId, pane: PaneId) -> bool {
+        match self {
+            Self::Pane { pane: closed, .. } => *closed == pane,
+            target => target.tabs().is_some_and(|tabs| tabs.contains(&tab)),
+        }
+    }
+
+    /// Whether committing this target also closes everything `other`
+    /// would.
+    fn covers(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Application, _) => true,
+            (Self::Window, other) => *other != Self::Application,
+            (_, Self::Pane { tab, .. }) => {
+                self == other
+                    || self.tabs().is_some_and(|tabs| tabs.contains(tab))
+            }
+            (_, other) => match (self.tabs(), other.tabs()) {
+                (Some(wide), Some(narrow)) => {
+                    narrow.iter().all(|tab| wide.contains(tab))
+                }
+                _ => self == other,
+            },
         }
     }
 }
@@ -2994,36 +3246,40 @@ fn close_commit_retries(result: &Result<(), MuxError>) -> bool {
     )
 }
 
-/// How a commit ended for the exit-close of `tab` it carried.
+/// How a commit ended for the exit-close of `pane`, in `tab`, it carried.
 fn exit_commit_outcome(
     result: &Result<(), MuxError>,
     target: &CloseTarget,
     tab: TabId,
+    pane: PaneId,
 ) -> CommitOutcome {
     if close_commit_retries(result) {
         CommitOutcome::Retry
     } else if result.is_err() {
         CommitOutcome::Failed
-    } else if target.tabs().is_some_and(|tabs| tabs.contains(&tab)) {
+    } else if target.names_pane(tab, pane) {
         CommitOutcome::Closed
     } else {
         CommitOutcome::NotReached
     }
 }
 
-/// Records how the commit that carried `tab`'s exit-close ended, whether or
-/// not `window`, which started it, is still open.
+/// Records how the commit that carried `pane`'s exit-close ended, whether
+/// or not `window`, which started it, is still open.
 fn finish_exit_commit(
     cx: &mut App,
     window: gpui::WindowId,
-    tab: TabId,
+    pane: PaneId,
     outcome: CommitOutcome,
 ) {
     let desktop = cx.global_mut::<Desktop>();
     // A closing window's view still assesses a refused commit again; its
     // removal returns the close to owed.
     let window_open = desktop.windows.record(window).is_some();
-    if desktop.exit_closes.finish_commit(tab, outcome, window_open) {
+    if desktop
+        .exit_closes
+        .finish_commit(pane, outcome, window_open)
+    {
         offer_exit_closes(cx, Some(window));
     }
 }
@@ -3038,7 +3294,12 @@ fn offer_exit_closes(cx: &mut App, except: Option<gpui::WindowId>) {
             return;
         }
         let desktop = cx.global::<Desktop>();
-        let owed: Vec<TabId> = desktop.exit_closes.owed().collect();
+        let state = desktop.hierarchy.state();
+        let owed: Vec<TabId> = desktop
+            .exit_closes
+            .owed()
+            .filter_map(|pane| state.pane_tab(pane))
+            .collect();
         let windows: Vec<gpui::WindowId> = desktop
             .windows
             .records()
@@ -3076,6 +3337,19 @@ fn merge_close(
         }
         (Some(CloseTarget::Tab(_)), requested @ CloseTarget::Tab(_))
         | (None, requested) => requested,
+        // A pane close joins no union: a tab-level target that covers its
+        // tab absorbs it, and otherwise the newer request runs while
+        // `CloseState::checked` keeps the other queued.
+        (Some(pending), requested)
+            if matches!(pending, CloseTarget::Pane { .. })
+                || matches!(requested, CloseTarget::Pane { .. }) =>
+        {
+            if pending.covers(&requested) {
+                pending
+            } else {
+                requested
+            }
+        }
         (Some(pending), requested) => {
             let mut union = pending.tabs().unwrap_or_default();
             for tab in requested.tabs().unwrap_or_default() {
@@ -3146,17 +3420,14 @@ impl CloseState {
         &mut self,
         busy: bool,
         contains: impl Fn(TabId) -> bool,
-        take_exit: impl FnOnce() -> Option<TabId>,
+        take_exit: impl FnOnce() -> Option<CloseTarget>,
     ) -> Option<CloseTarget> {
         if busy || self.confirmation.is_some() {
             return None;
         }
-        self.take_pending(&contains)
-            .or_else(|| take_exit().map(CloseTarget::Tab))
-            .or_else(|| {
-                (self.emptied == EmptiedClose::Owed)
-                    .then_some(CloseTarget::Emptied)
-            })
+        self.take_pending(&contains).or_else(take_exit).or_else(|| {
+            (self.emptied == EmptiedClose::Owed).then_some(CloseTarget::Emptied)
+        })
     }
 
     fn begin_check(&mut self, target: CloseTarget) -> CloseTarget {
@@ -3179,9 +3450,17 @@ impl CloseState {
         if effective != target {
             return Some(CloseDecision::Check(effective));
         }
-        // A second, different tab close follows the first; wider requests
-        // subsume narrower requests and repeated closes of one tab coalesce.
-        if matches!((&target, &pending), (CloseTarget::Tab(first), Some(CloseTarget::Tab(second))) if first != second)
+        // A second, different tab or pane close follows the first; wider
+        // requests subsume narrower requests and repeated closes of one tab
+        // or pane coalesce.
+        if let Some(queued) = &pending
+            && matches!(
+                (&target, queued),
+                (CloseTarget::Tab(_) | CloseTarget::Pane { .. }, _)
+                    | (_, CloseTarget::Pane { .. })
+            )
+            && !matches!(queued, CloseTarget::Emptied)
+            && !target.covers(queued)
         {
             self.pending = pending;
         }
@@ -3280,6 +3559,9 @@ impl CloseState {
             CloseTarget::Tab(id) => {
                 contains(id).then_some(CloseTarget::Tab(id))
             }
+            CloseTarget::Pane { tab, pane } => {
+                contains(tab).then_some(CloseTarget::Pane { tab, pane })
+            }
             CloseTarget::Tabs(ids) => tabs_target(
                 ids.into_iter().filter(|id| contains(*id)).collect(),
             ),
@@ -3329,7 +3611,7 @@ impl WorkspaceView {
     fn push_tab_view(&mut self, tab: TabView, spawned: bool, cx: &mut App) {
         let entry = TabEntry {
             id: tab.id,
-            terminal: tab.terminal,
+            panes: tab.pane_titles(self.config.tabs, cx),
             title: tab.title(self.config.tabs, cx),
         };
         self.tabs.push(tab);
@@ -3370,14 +3652,12 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let active = self.active_tab(cx);
+        let active = self.active_pane(cx);
         let change = self.reconcile(&Touched::default(), terminating(cx), cx);
         if !change.changed {
             return;
         }
-        if let Some(next) = self.active_tab(cx)
-            && Some(next) != active
-        {
+        if let Some(next) = reactivation(active, self.active_pane(cx)) {
             self.measure_tab_widths(window, cx);
             self.select(next, window, cx);
         }
@@ -3527,6 +3807,190 @@ impl WorkspaceView {
         self.sync_tab_order(cx);
     }
 
+    /// The active tab's panes: each pane's terminal view at its rectangle
+    /// inside `bounds`, a title bar per pane in a split tab, and the
+    /// dividers between panes.
+    fn pane_elements(
+        &self,
+        bounds: Bounds<Pixels>,
+        colors: TabColors,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let Some(tab) = self.active_tab_view(cx) else {
+            return Vec::new();
+        };
+        let tab_id = tab.id;
+        // A layout this window shows none of yet, as when a busy window
+        // defers removals, is drawn as if the projection held no layout.
+        let rects =
+            Self::tab_panes(tab_id, bounds, window, cx).filter(|rects| {
+                tab.panes.iter().any(|pane| rects.pane(pane.pane).is_some())
+            });
+        let focused = tab.focused().pane;
+        let split = rects.as_ref().is_some_and(|rects| rects.panes.len() > 1);
+        let mut elements = Vec::new();
+        for pane in &tab.panes {
+            // A view the layout no longer holds, such as one still closing,
+            // is not drawn. A tab without a layout to draw shows only its
+            // focused pane, across the whole bounds.
+            let rect = match &rects {
+                Some(rects) => match rects.pane(pane.pane) {
+                    Some(rect) => Some(rect),
+                    None => continue,
+                },
+                None if pane.pane == focused => None,
+                None => continue,
+            };
+            let terminal = rect.map_or(bounds, |rect| rect.terminal);
+            let id = pane.pane;
+            elements.push(
+                div()
+                    .id(("pane", id.get()))
+                    .absolute()
+                    .left(terminal.origin.x)
+                    .top(terminal.origin.y)
+                    .w(terminal.size.width)
+                    .h(terminal.size.height)
+                    .overflow_hidden()
+                    // Before the terminal's own press handling, which keeps
+                    // GPUI's focus tracking from focusing it.
+                    .capture_any_mouse_down(cx.listener(
+                        move |view, _: &gpui::MouseDownEvent, window, cx| {
+                            view.focus_pane(tab_id, id, window, cx);
+                        },
+                    ))
+                    .child(pane.view.clone())
+                    .into_any_element(),
+            );
+            if let Some(title_bar) = rect.and_then(|rect| rect.title_bar)
+                && split
+            {
+                let title =
+                    pane.label(tab.fallback_name(id, cx), self.config.tabs, cx);
+                elements.push(
+                    Self::pane_title_bar(
+                        tab_id,
+                        id,
+                        title_bar,
+                        title,
+                        pane.status(cx),
+                        id == focused,
+                        colors,
+                        cx,
+                    )
+                    .into_any_element(),
+                );
+            }
+        }
+        for divider in rects.iter().flat_map(|rects| &rects.dividers) {
+            let line = divider.line;
+            elements.push(
+                div()
+                    .absolute()
+                    .left(line.origin.x)
+                    .top(line.origin.y)
+                    .w(line.size.width)
+                    .h(line.size.height)
+                    .bg(colors.border)
+                    .into_any_element(),
+            );
+        }
+        elements
+    }
+
+    /// Gives `pane` of `tab` keyboard focus in this window: the tab's
+    /// focused pane becomes `pane`, and GPUI focus moves to its view when
+    /// the tab is active and no overlay holds focus.
+    fn focus_pane(
+        &mut self,
+        tab: TabId,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(view) = self.tabs.iter_mut().find(|view| view.id == tab)
+        else {
+            return;
+        };
+        let changed = view.focus_pane(pane);
+        if self.active_tab(cx) == Some(tab) && !self.overlay_holds_focus() {
+            self.restore_tab_focus(window, cx);
+        }
+        if changed {
+            self.publish_active_title(tab, cx);
+            cx.notify();
+        }
+    }
+
+    /// Republishes `tab`'s title, which follows its focused pane.
+    fn publish_active_title(&self, tab: TabId, cx: &mut App) {
+        let Some(view) = self.tabs.iter().find(|view| view.id == tab) else {
+            return;
+        };
+        let title = view.title(self.config.tabs, cx);
+        if cx.global_mut::<Desktop>().windows.set_tab_title(
+            self.window,
+            tab,
+            &title,
+        ) {
+            mark_titles_changed(self.window, cx);
+        }
+    }
+
+    /// Drops pane views of `tab` without closing anything, and republishes
+    /// the tab's pane titles. A tab left without a view of any pane goes
+    /// too. Returns whether anything was dropped.
+    fn remove_pane_views(
+        &mut self,
+        tab: TabId,
+        panes: &[PaneId],
+        cx: &mut App,
+    ) -> bool {
+        let Some(view) = self.tabs.iter_mut().find(|view| view.id == tab)
+        else {
+            return false;
+        };
+        let before = view.panes.len();
+        view.remove_panes(panes);
+        if view.panes.len() == before {
+            return false;
+        }
+        if view.panes.is_empty() {
+            self.drop_tab_views(&[tab], cx);
+            return true;
+        }
+        let titles = view.pane_titles(self.config.tabs, cx);
+        let title = view.title(self.config.tabs, cx);
+        let windows = &mut cx.global_mut::<Desktop>().windows;
+        let changed = windows.set_pane_titles(self.window, tab, titles)
+            | windows.set_tab_title(self.window, tab, &title);
+        if changed {
+            mark_titles_changed(self.window, cx);
+        }
+        true
+    }
+
+    /// Drops pane views after this window closed a pane or reconcile saw it
+    /// go, then shows the tab's remaining panes and focuses the one that
+    /// took focus.
+    fn drop_pane_views(
+        &mut self,
+        tab: TabId,
+        panes: &[PaneId],
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.remove_pane_views(tab, panes, cx)
+            && self.active_tab(cx) == Some(tab)
+        {
+            self.sync_tab_layout(window, cx);
+            if !self.overlay_holds_focus() {
+                self.restore_tab_focus(window, cx);
+            }
+        }
+    }
+
     /// Records the bounds this window reopens with, unless quake owns its
     /// geometry.
     fn publish_restorable_bounds(&self, cx: &mut App) {
@@ -3659,13 +4123,31 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
         self.view
             .tabs
             .iter()
-            .filter(|tab| tab.view.read(self.cx).revoked)
+            .filter(|tab| tab.views().any(|view| view.read(self.cx).revoked))
             .map(|tab| tab.id)
             .collect()
     }
 
     fn replace(&mut self, tabs: &[TabId]) {
         self.view.replace_tabs(tabs, self.cx);
+    }
+
+    fn installed_panes(&self, tab: TabId) -> Vec<(PaneId, u64)> {
+        self.view
+            .tabs
+            .iter()
+            .find(|view| view.id == tab)
+            .map(|view| {
+                view.panes
+                    .iter()
+                    .map(|pane| (pane.pane, pane.committed))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn drop_panes(&mut self, tab: TabId, panes: &[PaneId]) {
+        self.view.remove_pane_views(tab, panes, self.cx);
     }
 }
 
@@ -3795,6 +4277,90 @@ impl WorkspaceView {
         }
     }
 
+    /// The rectangles of `tab`'s panes inside `base`, from the projected
+    /// layout; `None` for a tab the projection no longer holds.
+    fn tab_panes(
+        tab: TabId,
+        base: Bounds<Pixels>,
+        window: &Window,
+        cx: &App,
+    ) -> Option<TabPanes> {
+        let layout = &cx.global::<Desktop>().hierarchy.state().tab(tab)?.layout;
+        Some(layout_panes(layout, base, window.scale_factor()))
+    }
+
+    /// Each of `tab`'s pane views' geometry, in `tab.panes` order: its
+    /// terminal rectangle inside the window's terminal bounds. A pane at
+    /// the bounds' top right keeps the window's scrollbar track margins,
+    /// which avoid the chrome corner there. A view the layout no longer
+    /// holds, such as one still closing, keeps the geometry it has, and so
+    /// does every view of a tab the projection no longer holds.
+    fn pane_geometries(
+        tab: &TabView,
+        base: TerminalGeometry,
+        window: &Window,
+        cx: &App,
+    ) -> Vec<TerminalGeometry> {
+        let Some(bounds) = base.bounds else {
+            return vec![base; tab.panes.len()];
+        };
+        let rects = Self::tab_panes(tab.id, bounds, window, cx);
+        tab.panes
+            .iter()
+            .map(|pane| {
+                let Some(rect) =
+                    rects.as_ref().and_then(|rects| rects.pane(pane.pane))
+                else {
+                    return pane.view.read(cx).geometry;
+                };
+                let corner = rect.terminal.origin.y == bounds.origin.y
+                    && rect.terminal.right() == bounds.right();
+                TerminalGeometry {
+                    bounds: Some(rect.terminal),
+                    track_margins: if corner {
+                        base.track_margins
+                    } else {
+                        TerminalGeometry::default().track_margins
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Every pane view of every tab with the geometry it takes now.
+    fn pane_views_with_geometry(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Vec<(Entity<TerminalView>, TerminalGeometry)> {
+        self.pane_views_with_layout(window, cx)
+            .into_iter()
+            .map(|(view, geometry, _)| (view, geometry))
+            .collect()
+    }
+
+    /// Every pane view of every tab with its geometry and whether its tab
+    /// is split.
+    fn pane_views_with_layout(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Vec<(Entity<TerminalView>, TerminalGeometry, bool)> {
+        let base = self.terminal_geometry(window);
+        self.tabs
+            .iter()
+            .flat_map(|tab| {
+                let geometries = Self::pane_geometries(tab, base, window, cx);
+                let split = tab.panes.len() > 1;
+                tab.views()
+                    .cloned()
+                    .zip(geometries)
+                    .map(move |(view, geometry)| (view, geometry, split))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     fn sync_tab_layout(&mut self, window: &Window, cx: &mut Context<'_, Self>) {
         // Config and bounds changes must reach hidden or frame-blocked PTYs.
         // Consume this once; pointer events do not require scanning every tab.
@@ -3805,7 +4371,7 @@ impl WorkspaceView {
             .synced_presentation
             .replace(presentation)
             .is_some_and(|synced| synced != presentation);
-        let geometry = self.terminal_geometry(window);
+        let views = self.pane_views_with_layout(window, cx);
         let quake_presenting = self.quake_presenting();
         let overlay = (presentation == Presentation::Overlay
             && self.reveal.progress > 0.0)
@@ -3814,8 +4380,12 @@ impl WorkspaceView {
                 layout.tabs.intersect(&layout.terminal)
             });
         let mut changed_any = false;
-        for tab in &self.tabs {
-            tab.view.update(cx, |terminal, cx| {
+        for (view, geometry, split) in views {
+            view.update(cx, |terminal, cx| {
+                if terminal.split != split {
+                    terminal.split = split;
+                    cx.notify();
+                }
                 let scale_changed =
                     terminal.metrics.at_scale(window.scale_factor())
                         != terminal.metrics;
@@ -4182,9 +4752,8 @@ impl WorkspaceView {
             .windows
             .set_sidebar_width(self.window, self.sidebar_width);
         // Hidden views take the new width now and resize when shown.
-        let geometry = self.terminal_geometry(window);
-        for tab in &self.tabs {
-            tab.view.update(cx, |view, cx| {
+        for (view, geometry) in self.pane_views_with_geometry(window, cx) {
+            view.update(cx, |view, cx| {
                 view.geometry = geometry;
                 if view.visible {
                     view.resize_if_needed(window);
@@ -4373,32 +4942,54 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// The window's terminal: the active tab's focused pane.
     fn active_view(&self, cx: &App) -> Option<Entity<TerminalView>> {
-        let active = self.active_tab(cx)?;
-        self.tabs
-            .iter()
-            .find(|tab| tab.id == active)
-            .map(|tab| tab.view.clone())
+        self.active_tab_view(cx)
+            .map(|tab| tab.focused_view().clone())
     }
 
-    fn refresh_tab(
+    /// The active tab and the pane this window focuses in it.
+    fn active_pane(&self, cx: &App) -> Option<(TabId, PaneId)> {
+        self.active_tab_view(cx)
+            .map(|tab| (tab.id, tab.focused().pane))
+    }
+
+    fn active_tab_view(&self, cx: &App) -> Option<&TabView> {
+        let active = self.active_tab(cx)?;
+        self.tabs.iter().find(|tab| tab.id == active)
+    }
+
+    fn refresh_pane(
         &mut self,
         tab_id: TabId,
+        pane_id: PaneId,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<bool> {
         let tab = self.tabs.iter().find(|tab| tab.id == tab_id)?;
-        let result = tab
+        let pane = tab.pane(pane_id)?;
+        let result = pane
             .view
             .update(cx, |terminal, cx| terminal.refresh(window, cx));
         let (title, status) = tab.label(self.config.tabs, cx);
+        // An exit notice names the pane in a split tab.
+        let exit_title = if tab.panes.len() > 1 {
+            pane.label(tab.fallback_name(pane_id, cx), self.config.tabs, cx)
+        } else {
+            title.clone()
+        };
+        let pane_titles = tab.pane_titles(self.config.tabs, cx);
         // Title, metadata, and exit changes all arrive through this drain;
         // the model only records a title that actually changed.
-        if cx.global_mut::<Desktop>().windows.set_tab_title(
+        let windows = &mut cx.global_mut::<Desktop>().windows;
+        let tab_changed = windows.set_tab_title(
             self.window,
             tab_id,
             &with_status_suffix(title.clone(), status),
-        ) {
+        );
+        let panes_changed =
+            windows.set_pane_titles(self.window, tab_id, pane_titles);
+        if tab_changed || panes_changed {
             mark_titles_changed(self.window, cx);
         }
         if !result.failures.is_empty() {
@@ -4420,17 +5011,16 @@ impl WorkspaceView {
         }
         if result.exited && !self.config.terminal.close_on_exit {
             self.notices.push(
-                exit_notice(tab_id, &title, result.exit_code),
+                exit_notice(tab_id, &exit_title, result.exit_code),
                 Instant::now(),
             );
             cx.notify();
         }
         if result.exited {
             let desktop = cx.global_mut::<Desktop>();
-            let holds =
-                desktop.hierarchy.state().tab_workspace(tab_id).is_some();
+            let holds = desktop.hierarchy.state().pane_tab(pane_id).is_some();
             desktop.exit_closes.observe(
-                tab_id,
+                pane_id,
                 self.config.terminal.close_on_exit,
                 holds,
             );
@@ -4439,11 +5029,13 @@ impl WorkspaceView {
             cx.notify();
         }
         // A revocation emits no hierarchy event; reconcile replaces the
-        // viewer, or removes the view once its tab has left.
+        // viewer, or removes the view once its pane has left.
         if self
             .tabs
             .iter()
-            .any(|tab| tab.id == tab_id && tab.view.read(cx).revoked)
+            .filter(|tab| tab.id == tab_id)
+            .filter_map(|tab| tab.pane(pane_id))
+            .any(|pane| pane.view.read(cx).revoked)
         {
             self.reconcile_own(window, cx);
         }
@@ -4587,6 +5179,265 @@ impl WorkspaceView {
         Ok(CommandOutcome::Accepted)
     }
 
+    /// The active tab and its focused pane.
+    fn focused_pane(&self, cx: &App) -> Result<(TabId, PaneId), CommandError> {
+        self.active_tab_view(cx)
+            .map(|tab| (tab.id, tab.focused().pane))
+            .ok_or_else(|| {
+                CommandError::Unavailable("window has no active tab".to_owned())
+            })
+    }
+
+    /// Asks to close the active tab's focused pane, as its title bar's
+    /// close button does.
+    fn close_focused_pane(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_tab_close_available()?;
+        let (tab, pane) = self.focused_pane(cx)?;
+        self.request_close(CloseTarget::Pane { tab, pane }, window, cx);
+        Ok(CommandOutcome::Accepted)
+    }
+
+    /// Focuses the pane after or before the focused one in traversal order,
+    /// wrapping.
+    fn cycle_pane(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let (tab, pane) = self.focused_pane(cx)?;
+        let next = cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab)
+            .and_then(|info| info.layout.cycle(pane, forward));
+        if let Some(next) = next {
+            self.focus_pane(tab, next, window, cx);
+        }
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Focuses the pane beside the focused one toward `direction`, without
+    /// wrapping; ties go to the pane this window focused most recently.
+    fn focus_neighbor(
+        &mut self,
+        direction: SplitDirection,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let (tab, pane) = self.focused_pane(cx)?;
+        let history = self
+            .tabs
+            .iter()
+            .find(|view| view.id == tab)
+            .map(|view| view.focus_history.clone())
+            .unwrap_or_default();
+        let next =
+            cx.global::<Desktop>().hierarchy.state().tab(tab).and_then(
+                |info| info.layout.neighbor(pane, direction, &history),
+            );
+        if let Some(next) = next {
+            self.focus_pane(tab, next, window, cx);
+        }
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// The grid a new pane gets when `pane` of `tab` splits toward
+    /// `direction`, if every pane of the resulting layout, title bars,
+    /// dividers, and padding included, keeps at least the minimum pane size
+    /// in this window.
+    fn split_grid(
+        &self,
+        tab: TabId,
+        pane: PaneId,
+        direction: SplitDirection,
+        window: &Window,
+        cx: &App,
+    ) -> Result<GridSize, CommandError> {
+        let too_small = || {
+            CommandError::Unavailable("pane is too small to split".to_owned())
+        };
+        let layout = &cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab)
+            .ok_or(CommandError::StaleTarget)?
+            .layout;
+        // Placeholder identities no runtime allocates.
+        let probe = RuntimeId::new(u64::MAX);
+        let added = PaneId::in_runtime(probe, u64::MAX);
+        let candidate = layout
+            .with_split(
+                pane,
+                direction,
+                PaneInfo {
+                    id: added,
+                    terminal_id: TerminalId::new(u64::MAX),
+                    fallback_name: String::new(),
+                },
+                SplitId::in_runtime(probe, u64::MAX),
+            )
+            .map_err(|_| too_small())?;
+        let bounds = self
+            .terminal_geometry(window)
+            .bounds
+            .ok_or_else(too_small)?;
+        let metrics = self.metrics.at_scale(window.scale_factor());
+        let cell = size(metrics.cell_width, metrics.cell_height);
+        let rects = layout_panes(&candidate, bounds, window.scale_factor());
+        let grid = |rect: &pane_geometry::PaneRect| {
+            TerminalLayout::new(rect.terminal.size, cell, self.config.window)
+                .grid
+        };
+        if rects.panes.iter().any(|rect| {
+            let grid = grid(rect);
+            grid.columns < MIN_PANE_COLUMNS || grid.rows < MIN_PANE_ROWS
+        }) {
+            return Err(too_small());
+        }
+        rects.pane(added).map(grid).ok_or_else(too_small)
+    }
+
+    /// Splits the active tab's focused pane toward `direction`. The new pane
+    /// starts in the focused pane's directory under `new_tab_directory`, at
+    /// the grid it will show, and takes focus.
+    fn split_pane(
+        &mut self,
+        direction: SplitDirection,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_new_tab_available(cx)?;
+        let (tab, pane) = self.focused_pane(cx)?;
+        let grid = self.split_grid(tab, pane, direction, window, cx)?;
+        let (Some(workspace), Some(attachment)) =
+            (self.workspace_id(cx), self.attachment_id(cx))
+        else {
+            return Err(CommandError::StaleTarget);
+        };
+        let mut command = shell_command(
+            self.metrics.at_scale(window.scale_factor()),
+            &self.config.theme,
+            self.config.terminal,
+        )
+        .map_err(|error| CommandError::Runtime(error.to_string()))?;
+        command.grid_size = grid;
+        let inherited_directory = self.active_view(cx).and_then(|view| {
+            inherited_directory(
+                self.config.terminal.new_tab_directory,
+                &view.read(cx).metadata,
+            )
+        });
+        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+        let clipboard_allowed =
+            self.config.terminal.clipboard_write.is_allowed();
+        self.busy = true;
+        cx.global_mut::<Desktop>().pending_spawns += 1;
+        let task = cx.background_executor().spawn(async move {
+            if let Some(directory) = inherited_directory
+                && usable_launch_directory(&directory)
+            {
+                command.working_directory = directory;
+            }
+            runtime.split_pane(
+                workspace,
+                attachment,
+                tab,
+                pane,
+                direction,
+                &command,
+                clipboard_allowed,
+            )
+        });
+        let app = cx.to_async();
+        cx.spawn_in(window, async move |view, cx| {
+            let Committed { result, seq } = task.await;
+            let resolution = projected(&app, seq).await;
+            let _ = view.update_in(cx, |view, window, cx| {
+                view.busy = false;
+                let terminating = terminating(cx);
+                match result {
+                    Ok((opened, viewer))
+                        if resolution == Resolution::Ready && !terminating =>
+                    {
+                        let key = PaneKey {
+                            tab,
+                            pane: opened.pane.id,
+                            terminal: opened.pane.terminal_id,
+                        };
+                        view.publish_split(key, viewer, seq, window, cx);
+                    }
+                    // Reconcile installs the pane like any other once the
+                    // projection holds it.
+                    Ok(_) => {}
+                    Err(error) => {
+                        if !terminating {
+                            view.notify(
+                                NoticeContent::command_failure(
+                                    "Cannot split pane",
+                                    format!("Cannot split pane: {error}"),
+                                ),
+                                cx,
+                            );
+                        }
+                    }
+                }
+                view.reconcile_own(window, cx);
+                view.resume_close(window, cx);
+                cx.notify();
+            });
+            // The split stays pending through its wait, so Quit requested
+            // meanwhile resumes only after it settles.
+            app.update(|cx| {
+                let desktop = cx.global_mut::<Desktop>();
+                if settle_spawn(
+                    &mut desktop.pending_spawns,
+                    &mut desktop.quit_pending,
+                ) {
+                    cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
+                } else if desktop.pending_spawns == 0 {
+                    maybe_exit(cx);
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+        Ok(CommandOutcome::Accepted)
+    }
+
+    /// Adds a split's new pane view to its tab and focuses it.
+    fn publish_split(
+        &mut self,
+        key: PaneKey,
+        viewer: TerminalViewer,
+        committed: u64,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let tab = key.tab;
+        if !self.tabs.iter().any(|view| view.id == tab) {
+            return;
+        }
+        let Some(pane) = self.pane_view(key, viewer, committed, window, cx)
+        else {
+            return;
+        };
+        self.add_pane_views(tab, vec![pane], committed, cx);
+        if let Some(view) = self.tabs.iter_mut().find(|view| view.id == tab) {
+            view.focus_pane(key.pane);
+        }
+        self.publish_active_title(tab, cx);
+        if self.active_tab(cx) == Some(tab) {
+            self.select(tab, window, cx);
+        }
+    }
+
     /// Installs a published spawn's terminal view, activates it, and records
     /// the sequence its tab committed at.
     fn publish_spawn(
@@ -4607,14 +5458,14 @@ impl WorkspaceView {
         let tab_id = opened.tab.id;
         // A viewer revoked already leaves the tab without a view, which
         // reconcile installs again if the window still shows its workspace.
-        let Some(tab) = self.tab_view(
-            tab_id,
-            opened.tab.first_pane().terminal_id,
-            viewer,
-            committed,
-            window,
-            cx,
-        ) else {
+        let first = opened.tab.first_pane();
+        let key = PaneKey {
+            tab: tab_id,
+            pane: first.id,
+            terminal: first.terminal_id,
+        };
+        let Some(tab) = self.tab_view(key, viewer, committed, window, cx)
+        else {
             return;
         };
         self.push_tab_view(tab, true, cx);
@@ -4642,17 +5493,39 @@ impl WorkspaceView {
         }
     }
 
-    /// Builds the view of `tab_id` around its viewer, with the tab's
-    /// activity drain; `None` when the viewer was already revoked.
+    /// Builds the view of `key`'s tab around the viewer of its pane;
+    /// `None` when the viewer was already revoked.
     fn tab_view(
         &mut self,
-        tab_id: TabId,
-        terminal_id: TerminalId,
+        key: PaneKey,
         viewer: TerminalViewer,
         committed: u64,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<TabView> {
+        let tab_id = key.tab;
+        let pane = self.pane_view(key, viewer, committed, window, cx)?;
+        // The completion drained first, so the projection holds the tab.
+        let names = cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab_id)
+            .map(TabNames::from_info)
+            .unwrap_or_default();
+        Some(TabView::new(tab_id, committed, names, vec![pane]))
+    }
+
+    /// Builds one pane's view around its viewer, with the pane's activity
+    /// drain; `None` when the viewer was already revoked.
+    fn pane_view(
+        &mut self,
+        key: PaneKey,
+        viewer: TerminalViewer,
+        committed: u64,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<PaneView> {
         if let Some(recipient) = viewer.host_effects() {
             recipient
                 .set_allowed(self.config.terminal.clipboard_write.is_allowed());
@@ -4679,36 +5552,29 @@ impl WorkspaceView {
         }
         cx.subscribe_in(&terminal, window, Self::handle_context_menu_request)
             .detach();
-        // The completion drained first, so the projection holds the tab.
-        let names = cx
-            .global::<Desktop>()
-            .hierarchy
-            .state()
-            .tab(tab_id)
-            .map(TabNames::from_info)
-            .unwrap_or_default();
         let failure_wakes = terminal.read(cx).failure_wakes.clone();
-        let activity_task = Self::tab_activity_task(
-            tab_id,
+        let activity_task = Self::pane_activity_task(
+            key.tab,
+            key.pane,
             activity,
             failure_wakes,
             window,
             cx,
         );
-        Some(TabView {
-            id: tab_id,
-            terminal: terminal_id,
+        Some(PaneView {
+            pane: key.pane,
+            terminal: key.terminal,
             committed,
-            names,
             view: terminal,
             activity_task,
         })
     }
 
-    /// The tab's activity drain: waits for terminal events or failures and
-    /// refreshes the tab in bounded batches.
-    fn tab_activity_task(
+    /// A pane's activity drain: waits for terminal events or failures and
+    /// refreshes the pane in bounded batches.
+    fn pane_activity_task(
         tab_id: TabId,
+        pane_id: PaneId,
         activity: ViewerWake,
         failure_wakes: async_channel::Receiver<()>,
         window: &mut Window,
@@ -4729,7 +5595,7 @@ impl WorkspaceView {
                 }
                 loop {
                     let more = view.update_in(cx, |view, window, cx| {
-                        view.refresh_tab(tab_id, window, cx)
+                        view.refresh_pane(tab_id, pane_id, window, cx)
                     });
                     match more {
                         Ok(Some(true)) => {
@@ -4895,7 +5761,7 @@ impl WorkspaceView {
                 .tabs
                 .iter()
                 .find(|tab| Some(tab.id) == active)
-                .map(|tab| tab.terminal),
+                .map(|tab| tab.focused().terminal),
             terminal_view: terminal.map(|terminal| terminal.downgrade()),
             contexts: window.context_stack(),
         };
@@ -4975,7 +5841,7 @@ impl WorkspaceView {
                 .tabs
                 .iter()
                 .find(|tab| Some(tab.id) == active)
-                .map(|tab| tab.terminal),
+                .map(|tab| tab.focused().terminal),
             terminal_view: self.active_view(cx).map(|view| view.downgrade()),
         };
         palette.update(cx, |palette, cx| {
@@ -5235,6 +6101,35 @@ impl WorkspaceView {
                 ids::NEXT_TAB | ids::PREVIOUS_TAB => {
                     self.check_navigation_available(cx)
                 }
+                ids::SPLIT_RIGHT
+                | ids::SPLIT_DOWN
+                | ids::SPLIT_LEFT
+                | ids::SPLIT_UP => {
+                    self.check_new_tab_available(cx)?;
+                    self.active_tab_id(cx).map(|_| ())
+                }
+                ids::CLOSE_PANE => {
+                    self.check_tab_close_available()?;
+                    self.active_tab_id(cx).map(|_| ())
+                }
+                ids::FOCUS_NEXT_PANE
+                | ids::FOCUS_PREVIOUS_PANE
+                | ids::FOCUS_PANE_LEFT
+                | ids::FOCUS_PANE_RIGHT
+                | ids::FOCUS_PANE_UP
+                | ids::FOCUS_PANE_DOWN => {
+                    self.check_navigation_available(cx)?;
+                    if self
+                        .active_tab_view(cx)
+                        .is_some_and(|tab| tab.panes.len() > 1)
+                    {
+                        Ok(())
+                    } else {
+                        Err(CommandError::Unavailable(
+                            "tab has one pane".to_owned(),
+                        ))
+                    }
+                }
                 ids::SELECT_TAB => self.check_navigation_available(cx),
                 ids::SELECT_RECENT_TAB => {
                     self.check_navigation_available(cx)?;
@@ -5403,9 +6298,9 @@ impl WorkspaceView {
             .iter()
             .find(|record| record.id == tab)
             .ok_or(CommandError::StaleTarget)?;
-        tab_directory_path(&tab.view.read(cx).metadata).ok_or_else(|| {
-            CommandError::Unavailable("directory unknown".to_owned())
-        })
+        tab_directory_path(&tab.focused_view().read(cx).metadata).ok_or_else(
+            || CommandError::Unavailable("directory unknown".to_owned()),
+        )
     }
 
     /// The tab's working directory when it is on this machine, so the file
@@ -5420,7 +6315,7 @@ impl WorkspaceView {
             .iter()
             .find(|record| record.id == tab)
             .ok_or(CommandError::StaleTarget)?;
-        match tab.view.read(cx).metadata.directory() {
+        match tab.focused_view().read(cx).metadata.directory() {
             Some(directory) if directory.is_local() => {
                 Ok(PathBuf::from(directory.path()))
             }
@@ -5707,6 +6602,29 @@ impl WorkspaceView {
         Ok(CommandOutcome::Accepted)
     }
 
+    fn run_pane_command(
+        &mut self,
+        id: huterm_protocol::CommandId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        use SplitDirection::{Down, Left, Right, Up};
+        match id {
+            ids::SPLIT_RIGHT => self.split_pane(Right, window, cx),
+            ids::SPLIT_DOWN => self.split_pane(Down, window, cx),
+            ids::SPLIT_LEFT => self.split_pane(Left, window, cx),
+            ids::SPLIT_UP => self.split_pane(Up, window, cx),
+            ids::CLOSE_PANE => self.close_focused_pane(window, cx),
+            ids::FOCUS_NEXT_PANE => self.cycle_pane(true, window, cx),
+            ids::FOCUS_PREVIOUS_PANE => self.cycle_pane(false, window, cx),
+            ids::FOCUS_PANE_LEFT => self.focus_neighbor(Left, window, cx),
+            ids::FOCUS_PANE_RIGHT => self.focus_neighbor(Right, window, cx),
+            ids::FOCUS_PANE_UP => self.focus_neighbor(Up, window, cx),
+            ids::FOCUS_PANE_DOWN => self.focus_neighbor(Down, window, cx),
+            other => Err(CommandError::UnknownCommand(other)),
+        }
+    }
+
     fn run_command(
         &mut self,
         invocation: &CommandInvocation,
@@ -5765,6 +6683,7 @@ impl WorkspaceView {
                 Ok(CommandOutcome::Accepted)
             }
             ids::NEXT_TAB => self.navigate(true, window, cx),
+            id if is_pane_command(id) => self.run_pane_command(id, window, cx),
             ids::PREVIOUS_TAB => self.navigate(false, window, cx),
             ids::SELECT_TAB => self.select_target(invocation, window, cx),
             ids::SELECT_RECENT_TAB => self.select_recent_tab(window, cx),
@@ -5839,10 +6758,14 @@ impl WorkspaceView {
             .windows
             .tab_titles(scope)
             .into_iter()
-            .map(|entry| TabTitle {
-                tab: entry.id,
-                terminal: entry.terminal,
-                title: entry.title.clone(),
+            .flat_map(|entry| {
+                let split = entry.panes.len() > 1;
+                entry.panes.iter().map(move |pane| TabTitle {
+                    tab: entry.id,
+                    terminal: pane.terminal,
+                    title: entry.title.clone(),
+                    pane: split.then(|| pane.title.clone()),
+                })
             })
             .collect();
         let jobs = self
@@ -5850,7 +6773,32 @@ impl WorkspaceView {
             .assessment
             .iter()
             .flat_map(CloseAssessment::terminal_jobs);
-        close_dialog_input(target, jobs, &titles)
+        // A lone pane's close reads as its tab's, as before splits existed;
+        // the runtime decides from the layout, not this window's views.
+        let pane_title = match target {
+            CloseTarget::Pane { tab, pane } => self
+                .tabs
+                .iter()
+                .find(|view| {
+                    view.id == *tab
+                        && cx
+                            .global::<Desktop>()
+                            .hierarchy
+                            .state()
+                            .tab(*tab)
+                            .is_some_and(|info| info.layout.pane_count() > 1)
+                })
+                .and_then(|view| {
+                    let pane = view.pane(*pane)?;
+                    Some(pane.label(
+                        view.fallback_name(pane.pane, cx),
+                        self.config.tabs,
+                        cx,
+                    ))
+                }),
+            _ => None,
+        };
+        close_dialog_input(target, jobs, &titles, pane_title.as_deref())
     }
 }
 
@@ -5870,6 +6818,19 @@ struct TabTitle {
     tab: TabId,
     terminal: TerminalId,
     title: String,
+    /// The pane's own title, in a split tab.
+    pane: Option<String>,
+}
+
+impl TabTitle {
+    /// The heading of this terminal's jobs: the tab title, followed by the
+    /// pane's in a split tab.
+    fn heading(&self) -> String {
+        match &self.pane {
+            Some(pane) => format!("{} › {pane}", self.title),
+            None => self.title.clone(),
+        }
+    }
 }
 
 /// Tab closes are refused while a confirmation is showing, or while the
@@ -5890,11 +6851,14 @@ fn tab_close_availability(
 /// Maps assessed job evidence onto the dialog's busy groups. `titles` lists
 /// the tabs the dialog may cover, in window order; idle terminals are
 /// omitted, and headings are set when the dialog covers more than one tab:
-/// a tab set, the application, or a window with more than one tab.
+/// a tab set, the application, or a window with more than one tab. A pane
+/// close with no `pane_title`, the close of a tab's only pane, reads as the
+/// tab's close.
 fn close_dialog_input<'a>(
     target: &CloseTarget,
     jobs: impl IntoIterator<Item = (TerminalId, &'a huterm_core::JobState)>,
     titles: &[TabTitle],
+    pane_title: Option<&str>,
 ) -> CloseDialogInput {
     let dialog_target = match target {
         CloseTarget::Tab(id) => CloseDialogTarget::Tab {
@@ -5904,14 +6868,32 @@ fn close_dialog_input<'a>(
                 .map(|entry| entry.title.clone())
                 .unwrap_or_default(),
         },
+        CloseTarget::Pane { tab, .. } => match pane_title {
+            Some(title) => CloseDialogTarget::Pane {
+                title: title.to_owned(),
+            },
+            None => CloseDialogTarget::Tab {
+                title: titles
+                    .iter()
+                    .find(|entry| entry.tab == *tab)
+                    .map(|entry| entry.title.clone())
+                    .unwrap_or_default(),
+            },
+        },
         CloseTarget::Tabs(ids) => CloseDialogTarget::Tabs { count: ids.len() },
         CloseTarget::Window | CloseTarget::Emptied => CloseDialogTarget::Window,
         CloseTarget::Application => CloseDialogTarget::Application,
     };
-    let headings = match dialog_target {
-        CloseDialogTarget::Tab { .. } => false,
-        CloseDialogTarget::Window => titles.len() > 1,
-        CloseDialogTarget::Tabs { .. } | CloseDialogTarget::Application => true,
+    // A split tab's jobs show under their panes' headings, so two busy
+    // panes stay distinguishable.
+    let headings = match (&dialog_target, target) {
+        (CloseDialogTarget::Pane { .. }, _)
+        | (CloseDialogTarget::Tab { .. }, CloseTarget::Pane { .. }) => false,
+        (CloseDialogTarget::Tab { .. }, CloseTarget::Tab(id)) => titles
+            .iter()
+            .any(|entry| entry.tab == *id && entry.pane.is_some()),
+        (CloseDialogTarget::Window, _) => titles.len() > 1,
+        _ => true,
     };
     let groups = jobs
         .into_iter()
@@ -5939,7 +6921,7 @@ fn close_dialog_input<'a>(
                     .find(|entry| entry.terminal == terminal)
                     .map_or_else(
                         || "Detached terminal".to_owned(),
-                        |entry| entry.title.clone(),
+                        TabTitle::heading,
                     )
             });
             Some(ProcessGroup { tab_title, state })
@@ -6256,10 +7238,10 @@ impl WorkspaceView {
             // before the terminals resize, so no PTY is sized for the
             // windowed chrome inside the fullscreen frame.
             self.sync_frame(window);
-            let geometry = self.terminal_geometry(window);
+            let views = self.pane_views_with_geometry(window, cx);
             let quake_presenting = self.quake_presenting();
-            for tab in &self.tabs {
-                tab.view.update(cx, |terminal, cx| {
+            for (view, geometry) in views {
+                view.update(cx, |terminal, cx| {
                     terminal.quiet_resize = quake_presenting;
                     terminal.geometry = geometry;
                     terminal.resize_if_needed(window);
@@ -6404,23 +7386,26 @@ impl WorkspaceView {
         self.reveal_active(window, cx);
         let visible = self.quake_visible();
         for tab in &self.tabs {
-            tab.view.update(cx, |view, cx| {
-                let was_visible = view.visible;
-                view.visible = visible && tab.id == id;
-                if view.visible {
-                    view.bell.viewed(window.is_window_active());
-                    view.resize_if_needed(window);
-                    if focus {
-                        view.focus.focus(window, cx);
+            let focused = tab.focused().pane;
+            for pane in &tab.panes {
+                pane.view.update(cx, |view, cx| {
+                    let was_visible = view.visible;
+                    view.visible = visible && tab.id == id;
+                    if view.visible {
+                        view.bell.viewed(window.is_window_active());
+                        view.resize_if_needed(window);
+                        if focus && pane.pane == focused {
+                            view.focus.focus(window, cx);
+                        }
+                        view.start_initial_snapshot(cx);
+                    } else {
+                        view.hide(cx);
                     }
-                    view.start_initial_snapshot(cx);
-                } else {
-                    view.hide(cx);
-                }
-                if was_visible != view.visible {
-                    cx.notify();
-                }
-            });
+                    if was_visible != view.visible {
+                        cx.notify();
+                    }
+                });
+            }
         }
         cx.notify();
     }
@@ -6762,6 +7747,11 @@ impl WorkspaceView {
                 workspace: self.workspace_id(cx)?,
                 tab: *tab,
             },
+            CloseTarget::Pane { tab, pane } => CloseRequest::Pane {
+                workspace: self.workspace_id(cx)?,
+                tab: *tab,
+                pane: *pane,
+            },
             CloseTarget::Tabs(tabs) => CloseRequest::Tabs {
                 workspace: self.workspace_id(cx)?,
                 tabs: tabs.clone(),
@@ -6795,6 +7785,11 @@ impl WorkspaceView {
                 .iter()
                 .any(|tab| tab.id == id)
                 .then_some(CloseTarget::Tab(id)),
+            CloseTarget::Pane { tab, pane } => self
+                .tabs
+                .iter()
+                .any(|view| view.id == tab && view.pane(pane).is_some())
+                .then_some(CloseTarget::Pane { tab, pane }),
             CloseTarget::Tabs(ids) => tabs_target(
                 self.tabs
                     .iter()
@@ -6861,22 +7856,35 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Whether the window no longer shows any tab or pane `target` names;
+    /// window-wide targets always apply.
+    fn shows_none_of(&self, target: &CloseTarget) -> bool {
+        match target {
+            CloseTarget::Pane { tab, pane } => !self
+                .tabs
+                .iter()
+                .any(|view| view.id == *tab && view.pane(*pane).is_some()),
+            target => target.tabs().is_some_and(|tabs| {
+                !tabs
+                    .iter()
+                    .any(|tab| self.tabs.iter().any(|v| v.id == *tab))
+            }),
+        }
+    }
+
     fn resume_close(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        let showing =
-            |tab: &TabId| self.tabs.iter().any(|view| view.id == *tab);
         if self
             .close
             .confirmation
             .as_ref()
-            .and_then(CloseTarget::tabs)
-            .is_some_and(|tabs| !tabs.iter().any(showing))
+            .is_some_and(|target| self.shows_none_of(target))
         {
-            // Every tab it asks about left the window, so its commit could
-            // only go stale. Queued closes stay queued and run below.
+            // Every tab or pane it asks about left the window, so its commit
+            // could only go stale. Queued closes stay queued and run below.
             self.close.dismiss_confirmation();
             self.release_exit_close_if_idle(cx);
             self.restore_tab_focus(window, cx);
@@ -6894,7 +7902,26 @@ impl WorkspaceView {
                 if !can_take {
                     return None;
                 }
-                cx.global_mut::<Desktop>().exit_closes.take(id, shows)
+                let desktop = cx.global_mut::<Desktop>();
+                let state = desktop.hierarchy.state();
+                let pane_tab = |pane: PaneId| {
+                    state.pane_tab(pane).filter(|tab| {
+                        tabs.iter().any(|view| {
+                            view.id == *tab && view.pane(pane).is_some()
+                        })
+                    })
+                };
+                let owed: Vec<(PaneId, TabId)> = desktop
+                    .exit_closes
+                    .owed()
+                    .filter_map(|pane| Some((pane, pane_tab(pane)?)))
+                    .collect();
+                let pane = desktop.exit_closes.take(id, |pane| {
+                    owed.iter().any(|(owed, _)| *owed == pane)
+                })?;
+                let (_, tab) =
+                    owed.into_iter().find(|(owed, _)| *owed == pane)?;
+                Some(CloseTarget::Pane { tab, pane })
             })
             .filter(|target| can_take || *target != CloseTarget::Emptied);
         if let Some(target) = target {
@@ -6920,10 +7947,15 @@ impl WorkspaceView {
         let generation = self.close.generation;
         // From here the commit's result decides the exit-close, even if
         // this window closes first.
-        let exit = cx
-            .global_mut::<Desktop>()
-            .exit_closes
-            .begin_commit(self.window);
+        let exit = {
+            let desktop = cx.global_mut::<Desktop>();
+            desktop
+                .exit_closes
+                .begin_commit(self.window)
+                .and_then(|pane| {
+                    Some((desktop.hierarchy.state().pane_tab(pane)?, pane))
+                })
+        };
         let id = self.window;
         self.publish_restorable_bounds(cx);
         let windows = if matches!(target, CloseTarget::Application) {
@@ -6958,9 +7990,9 @@ impl WorkspaceView {
             } else {
                 projected(&app, seq).await
             };
-            if let Some(tab) = exit {
-                let outcome = exit_commit_outcome(&result, &target, tab);
-                app.update(|cx| finish_exit_commit(cx, id, tab, outcome));
+            if let Some((tab, pane)) = exit {
+                let outcome = exit_commit_outcome(&result, &target, tab, pane);
+                app.update(|cx| finish_exit_commit(cx, id, pane, outcome));
             }
             let _ = view.update_in(cx, |view, window, cx| {
                 if view.close.generation != generation {
@@ -6998,6 +8030,9 @@ impl WorkspaceView {
                     CloseTarget::Tab(id) => {
                         view.remove_closed_tabs(&[id], window, cx);
                     }
+                    CloseTarget::Pane { tab, pane } => {
+                        view.remove_closed_pane(tab, pane, window, cx);
+                    }
                     CloseTarget::Tabs(ids) => {
                         view.remove_closed_tabs(&ids, window, cx);
                     }
@@ -7005,6 +8040,31 @@ impl WorkspaceView {
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    /// Drops the view of a committed pane close. When the pane was its
+    /// tab's last, the runtime closed the tab, which is removed as a tab
+    /// close is.
+    fn remove_closed_pane(
+        &mut self,
+        tab: TabId,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if cx.global::<Desktop>().hierarchy.state().tab(tab).is_none() {
+            self.remove_closed_tabs(&[tab], window, cx);
+            return;
+        }
+        self.drop_pane_views(tab, &[pane], window, cx);
+        self.reconcile(&Touched::default(), terminating(cx), cx);
+        if self.active_tab(cx) == Some(tab) {
+            self.select(tab, window, cx);
+        }
+        if self.resume_close(window, cx) {
+            return;
+        }
         cx.notify();
     }
 
@@ -7153,9 +8213,8 @@ impl WorkspaceView {
             self.family.clone_from(family);
             self.metrics = *metrics;
             // `layout_pending` resizes the views at the next sync.
-            let geometry = self.terminal_geometry(window);
-            for tab in &self.tabs {
-                tab.view.update(cx, |view, cx| {
+            for (view, geometry) in self.pane_views_with_geometry(window, cx) {
+                view.update(cx, |view, cx| {
                     let metrics = metrics.at_scale(view.metrics.scale_factor);
                     view.renderer.borrow_mut().reconfigure(
                         family.clone(),
@@ -8076,18 +9135,12 @@ impl Render for WorkspaceView {
                     }),
             );
         }
-        if let Some(tab) = self.active_view(cx) {
-            root = root.child(
-                div()
-                    .absolute()
-                    .left(layout.terminal.origin.x)
-                    .top(layout.terminal.origin.y)
-                    .w(layout.terminal.size.width)
-                    .h(layout.terminal.size.height)
-                    .overflow_hidden()
-                    .child(tab),
-            );
-        }
+        root = root.children(self.pane_elements(
+            layout.terminal,
+            colors,
+            window,
+            cx,
+        ));
         self.sync_tab_scrollbars();
         let strip = self.tab_strip(window);
         let vertical = strip.vertical;
@@ -8759,6 +9812,24 @@ fn modal_layer(overlay: gpui::Div, layout: &ChromeLayout) -> gpui::Div {
         .child(overlay.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS))
 }
 
+/// The split, close, and focus commands for panes.
+fn is_pane_command(command: huterm_protocol::CommandId) -> bool {
+    matches!(
+        command,
+        ids::SPLIT_RIGHT
+            | ids::SPLIT_DOWN
+            | ids::SPLIT_LEFT
+            | ids::SPLIT_UP
+            | ids::CLOSE_PANE
+            | ids::FOCUS_NEXT_PANE
+            | ids::FOCUS_PREVIOUS_PANE
+            | ids::FOCUS_PANE_LEFT
+            | ids::FOCUS_PANE_RIGHT
+            | ids::FOCUS_PANE_UP
+            | ids::FOCUS_PANE_DOWN
+    )
+}
+
 /// The `menu_*` commands act on the open menu instead of replacing it.
 fn is_menu_command(command: huterm_protocol::CommandId) -> bool {
     matches!(
@@ -9036,9 +10107,10 @@ impl WorkspaceView {
         cx: &App,
     ) -> Option<MenuModel> {
         let index = self.tabs.iter().position(|record| record.id == tab)?;
-        let directory_known =
-            tab_directory_path(&self.tabs[index].view.read(cx).metadata)
-                .is_some();
+        let directory_known = tab_directory_path(
+            &self.tabs[index].focused_view().read(cx).metadata,
+        )
+        .is_some();
         let input = TabMenuInput {
             platform: Platform::current(),
             index,
@@ -9629,6 +10701,70 @@ impl WorkspaceView {
                     f32::from(bounds.size.height)
                 )
             )
+        )
+    }
+
+    /// The active tab's panes for smoke fixtures, as `<prefix>` fields:
+    /// `panes` counts them and `pane_focus` is the focused pane's index.
+    /// In layout order and `;`-separated, `pane_grids` holds each pane's
+    /// requested grid as `columns,rows`, `pane_rects` its terminal bounds in
+    /// window points, and `pane_close` its title bar close button's centre
+    /// as `x,y`, or `none` while the tab is not split.
+    pub(super) fn pane_smoke_state(
+        &self,
+        prefix: &str,
+        window: &Window,
+        cx: &App,
+    ) -> String {
+        let tab = self.active_tab_view(cx);
+        let rects = tab.zip(self.terminal_geometry(window).bounds).and_then(
+            |(tab, bounds)| Self::tab_panes(tab.id, bounds, window, cx),
+        );
+        let panes: Vec<_> = rects
+            .iter()
+            .flat_map(|rects| &rects.panes)
+            .filter_map(|rect| Some((rect, tab?.pane(rect.pane)?)))
+            .collect();
+        let focus = tab
+            .and_then(|tab| {
+                let focused = tab.focused().pane;
+                panes.iter().position(|(rect, _)| rect.pane == focused)
+            })
+            .map_or_else(|| "none".to_owned(), |index| index.to_string());
+        let joined =
+            |field: &dyn Fn(&pane_geometry::PaneRect, &PaneView) -> String| {
+                panes
+                    .iter()
+                    .map(|(rect, pane)| field(rect, pane))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            };
+        let grids = joined(&|_, pane| {
+            let grid = pane.view.read(cx).requested_grid;
+            format!("{},{}", grid.columns, grid.rows)
+        });
+        let terminals = joined(&|rect, _| {
+            let bounds = rect.terminal;
+            format!(
+                "{},{},{},{}",
+                f32::from(bounds.origin.x),
+                f32::from(bounds.origin.y),
+                f32::from(bounds.size.width),
+                f32::from(bounds.size.height)
+            )
+        });
+        let closes = joined(&|rect, _| {
+            rect.title_bar.map_or_else(
+                || "none".to_owned(),
+                |bar| {
+                    let center = Self::pane_close_center(bar);
+                    format!("{},{}", f32::from(center.x), f32::from(center.y))
+                },
+            )
+        });
+        format!(
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes}",
+            panes.len()
         )
     }
 

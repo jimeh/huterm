@@ -695,6 +695,29 @@ pub mod ids {
     /// Activates the most recently used tab.
     pub const SELECT_RECENT_TAB: CommandId =
         CommandId::new("select_recent_tab");
+    /// Splits the focused pane, putting a new pane to its right.
+    pub const SPLIT_RIGHT: CommandId = CommandId::new("split_right");
+    /// Splits the focused pane, putting a new pane below it.
+    pub const SPLIT_DOWN: CommandId = CommandId::new("split_down");
+    /// Splits the focused pane, putting a new pane to its left.
+    pub const SPLIT_LEFT: CommandId = CommandId::new("split_left");
+    /// Splits the focused pane, putting a new pane above it.
+    pub const SPLIT_UP: CommandId = CommandId::new("split_up");
+    /// Closes the focused pane after assessment; a lone pane closes its tab.
+    pub const CLOSE_PANE: CommandId = CommandId::new("close_pane");
+    /// Focuses the next pane of the active tab, wrapping.
+    pub const FOCUS_NEXT_PANE: CommandId = CommandId::new("focus_next_pane");
+    /// Focuses the previous pane of the active tab, wrapping.
+    pub const FOCUS_PREVIOUS_PANE: CommandId =
+        CommandId::new("focus_previous_pane");
+    /// Focuses the pane to the left of the focused one.
+    pub const FOCUS_PANE_LEFT: CommandId = CommandId::new("focus_pane_left");
+    /// Focuses the pane to the right of the focused one.
+    pub const FOCUS_PANE_RIGHT: CommandId = CommandId::new("focus_pane_right");
+    /// Focuses the pane above the focused one.
+    pub const FOCUS_PANE_UP: CommandId = CommandId::new("focus_pane_up");
+    /// Focuses the pane below the focused one.
+    pub const FOCUS_PANE_DOWN: CommandId = CommandId::new("focus_pane_down");
     /// Opens the window's application menu.
     pub const OPEN_MENU: CommandId = CommandId::new("open_menu");
     /// Focuses the window's notice list.
@@ -1173,6 +1196,84 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Switch to Last Tab",
         "Activate the most recently used tab; repeat to toggle between two tabs.",
+        &[],
+    ),
+    spec(
+        ids::SPLIT_RIGHT,
+        CommandScope::Window,
+        "Split Right",
+        "Split the focused pane, opening a new pane to its right.",
+        &[],
+    ),
+    spec(
+        ids::SPLIT_DOWN,
+        CommandScope::Window,
+        "Split Down",
+        "Split the focused pane, opening a new pane below it.",
+        &[],
+    ),
+    spec(
+        ids::SPLIT_LEFT,
+        CommandScope::Window,
+        "Split Left",
+        "Split the focused pane, opening a new pane to its left.",
+        &[],
+    ),
+    spec(
+        ids::SPLIT_UP,
+        CommandScope::Window,
+        "Split Up",
+        "Split the focused pane, opening a new pane above it.",
+        &[],
+    ),
+    spec(
+        ids::CLOSE_PANE,
+        CommandScope::Window,
+        "Close Pane",
+        "Close the focused pane after assessing its processes; closing a \
+         tab's only pane closes the tab.",
+        &[],
+    ),
+    spec(
+        ids::FOCUS_NEXT_PANE,
+        CommandScope::Window,
+        "Focus Next Pane",
+        "Focus the pane after the focused one in the active tab, wrapping.",
+        &[],
+    ),
+    spec(
+        ids::FOCUS_PREVIOUS_PANE,
+        CommandScope::Window,
+        "Focus Previous Pane",
+        "Focus the pane before the focused one in the active tab, wrapping.",
+        &[],
+    ),
+    spec(
+        ids::FOCUS_PANE_LEFT,
+        CommandScope::Window,
+        "Focus Pane Left",
+        "Focus the pane to the left of the focused one.",
+        &[],
+    ),
+    spec(
+        ids::FOCUS_PANE_RIGHT,
+        CommandScope::Window,
+        "Focus Pane Right",
+        "Focus the pane to the right of the focused one.",
+        &[],
+    ),
+    spec(
+        ids::FOCUS_PANE_UP,
+        CommandScope::Window,
+        "Focus Pane Up",
+        "Focus the pane above the focused one.",
+        &[],
+    ),
+    spec(
+        ids::FOCUS_PANE_DOWN,
+        CommandScope::Window,
+        "Focus Pane Down",
+        "Focus the pane below the focused one.",
         &[],
     ),
     spec(

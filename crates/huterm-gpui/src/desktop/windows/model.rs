@@ -10,8 +10,12 @@
 //! projection on `Desktop`, and reconcile republishes titles and tab order
 //! into the model when the runtime changes them, such as after a rename.
 //!
-//! Not yet covered, for later extension: pane layouts (#28), panel placement
-//! (#27), and durable layout records (#42).
+//! Each tab entry lists its panes' terminals and titles. The pane layout is
+//! runtime state on the projection, and the window's pane focus lives in its
+//! view until durable layout records (#42) need it.
+//!
+//! Not yet covered, for later extension: panel placement (#27) and durable
+//! layout records (#42).
 
 use crate::config::TabPosition;
 use gpui::{Pixels, WindowBounds, WindowId};
@@ -19,11 +23,20 @@ use huterm_protocol::{
     AttachmentId, SessionId, TabId, TerminalId, WorkspaceId,
 };
 
+/// One pane of a tab as its window shows it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PaneTitle {
+    pub(super) terminal: TerminalId,
+    /// The pane's own title, for close dialog headings in a split tab.
+    pub(super) title: String,
+}
+
 /// One tab as its window shows it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TabEntry {
     pub(super) id: TabId,
-    pub(super) terminal: TerminalId,
+    /// The tab's panes, in the order the window installed them.
+    pub(super) panes: Vec<PaneTitle>,
     /// The display title the tab bar shows, including the exited suffix.
     pub(super) title: String,
 }
@@ -243,6 +256,25 @@ impl WindowModel {
             return false;
         }
         title.clone_into(&mut entry.title);
+        true
+    }
+
+    /// Publishes a tab's pane titles; returns whether they changed.
+    pub(super) fn set_pane_titles(
+        &mut self,
+        id: WindowId,
+        tab: TabId,
+        panes: Vec<PaneTitle>,
+    ) -> bool {
+        let Some(entry) = self.record_mut(id).and_then(|record| {
+            record.tabs.iter_mut().find(|entry| entry.id == tab)
+        }) else {
+            return false;
+        };
+        if entry.panes == panes {
+            return false;
+        }
+        entry.panes = panes;
         true
     }
 
