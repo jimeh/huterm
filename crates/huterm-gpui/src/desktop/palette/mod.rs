@@ -41,7 +41,9 @@ use crate::ui::text_field::{Changed, TextField};
 
 const PAGE_STEP: isize = 8;
 
-const FORWARDED_TEXT_COMMANDS: &[CommandId] = &[
+/// The text-field commands the palette and the Licenses view pass to their
+/// search field.
+pub(super) const FORWARDED_TEXT_COMMANDS: &[CommandId] = &[
     ids::TEXT_DELETE_BACKWARD,
     ids::TEXT_DELETE_FORWARD,
     ids::TEXT_DELETE_WORD_BACKWARD,

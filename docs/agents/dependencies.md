@@ -35,6 +35,11 @@ the same branch runs the generator:
 - `schemars`: `mise run schema:generate`, checked by `schema:check`.
 - `lucide-static`: `mise run ui-icons:generate`, checked by
   `ui-icons.test.ts`.
+- Any Cargo crate that ships, and the Rust toolchain:
+  `mise run licenses:generate`, checked by `licenses:check`. A toolchain bump
+  also needs fresh `third-party/licenses/rust/` texts and provenance, and a
+  crate that ships no license file needs a clarification; see
+  [the notices README](../../third-party/licenses/README.md).
 
 `gpui-pre` crates are ignored by Dependabot and upgrade through the vendor
 workflow below. A bump that changes lint behavior, such as `syn`, may also

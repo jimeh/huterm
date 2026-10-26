@@ -162,6 +162,7 @@ because it counts calendar days while the other tools require full hours.
 Toolchain and crate-specific pins, and the bumps that need a regeneration
 commit, are in [the dependencies guide](docs/agents/dependencies.md).
 
-Run `mise run license` after any dependency change. GPL and AGPL dependencies,
+Run `mise run license` and `mise run licenses:generate` after any dependency
+change. GPL and AGPL dependencies,
 unknown registries, Git dependencies, and Cargo wildcard requirements are not
 allowed.

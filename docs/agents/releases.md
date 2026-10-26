@@ -402,6 +402,17 @@ Draft release listings require push access even though the API accepts read-only
 tokens. Use a contents-write bot token for draft validation; keep the job token
 read-only and mint a fresh publishing token after the build.
 
+### License notices
+
+`third-party/licenses/licenses.json` is the one notices artifact; its
+[README](../../third-party/licenses/README.md) describes the inputs. The
+packager copies it to `Huterm.app/Contents/Resources/licenses.json`, and the
+Linux package policy copies it to `share/licenses/huterm/licenses.json`; both
+package checks compare its bytes with the committed file. Its `packaged:`
+entries name notices the Linux packager copies into that directory, such as
+the private XKB libraries' Debian copyright files; keep those names in step
+with `assets/linux/package-policy.json`.
+
 ### Linux packaging
 
 On Linux, `freetype-sys` 0.20.1 uses a system FreeType only when pkg-config

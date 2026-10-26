@@ -355,10 +355,14 @@ there, and the terminal ignores releases it does not own.
 Overlays share the palette's grammar: every keyboard action is a catalog
 command bound under a key context. The close dialog and the About panel use
 `confirming`, menus `menu`, and focused toasts `notices`; each binding is
-conditional, so it reserves no terminal key. A repeated close shortcut while
-`confirming` must not confirm. Menus and dialogs return focus to the terminal
-when they close; the menu button never keeps it, or terminal bindings stop
-matching until the user clicks back in.
+conditional, so it reserves no terminal key. The About panel's Licenses view
+takes the `Palette` context for its search field and list, so `TextField`
+editing works without new commands; `WorkspaceView` sends Palette-scope
+commands to it before the palette while it is open. Its element is deeper than
+the workspace root, so its Escape and Enter bindings win over `confirming`'s.
+A repeated close shortcut while `confirming` must not confirm. Menus and
+dialogs return focus to the terminal when they close; the menu button never
+keeps it, or terminal bindings stop matching until the user clicks back in.
 
 Each open menu carries a `MenuKind` and pointer anchor; derive button state
 and pick targets from them, not from whether any menu is open. A terminal

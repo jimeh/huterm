@@ -252,8 +252,8 @@ where it opens the window manager's menu.
 Menus and the command palette show each command's shortcut: in symbols on macOS
 (`⇧⌘P`) and in words on Linux (`Ctrl+Shift+P`), with Return, Tab, Backspace,
 and the arrows drawn as icons on both. The scroll pill, the close
-confirmation's buttons, and the About panel show key hints only with
-`shortcut_hints = true`.
+confirmation's buttons, the About panel, and the Licenses view show key hints
+only with `shortcut_hints = true`.
 
 Right-clicking any tab opens its context menu without activating it, and
 outlines the tab while the menu is open. The menu has:
@@ -272,8 +272,16 @@ showing. It uses the same keys, dismissal, and focus return as the window menu.
 **About Huterm** (`about`) opens a panel with the version, identifier,
 platform, terminal engine, and build profile, plus the short source revision
 when the build embedded one. On Linux the platform line includes the display
-backend. **Copy Details** copies those lines as text. Close, Enter, or Escape
-closes the panel, and terminal input is blocked while it shows.
+backend. **Copy Details** copies those lines as text. Close or Escape closes
+the panel, and terminal input is blocked while it shows. Tab and the arrow keys
+move focus between its buttons, and Enter presses the focused one; focus starts
+on Close.
+
+**Licenses** in the About panel lists the open source software this build
+ships, with each component's version, license, and full license text. Type to
+search by name, version, license, or kind; Up and Down select, Page Up and
+Page Down scroll the text, and **Copy** copies it. Escape clears the search,
+then returns to the About panel.
 
 Errors and warnings appear as notices in the bottom-right corner of the
 terminal. Configuration and keybinding diagnostics stay until a reload fixes

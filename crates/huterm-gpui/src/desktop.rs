@@ -96,6 +96,7 @@ mod grid_geometry;
 mod key_bench;
 mod key_hint;
 mod keyboard;
+mod licenses;
 mod links;
 mod menu;
 mod notices;
