@@ -1007,8 +1007,22 @@ Recorded with PR 4:
 - A drag's grab zone is clipped to its split's bounds, which for a direct
   child divider are the two panes' frames together.
 - Clamping to the minimum pane size bisects the dragged boundary between the
-  current and the requested weights against the same per-pane grid check
-  the split preflight uses, so drags and resize commands share one rule.
+  current and the requested weights against the same per-pane grids the
+  split preflight computes, so drags and resize commands share one rule. The
+  rule is relative per pane: a pane that met the minimum keeps it, and one
+  already under it after the window shrank may not shrink further, so it
+  cannot freeze the tab's other boundaries.
+- Each grab zone is an occluding element that claims its own left press,
+  not a window-level capture listener. Occlusion keeps the terminals beneath
+  from seeing the press, and overlays drawn later, such as toasts and a
+  revealed fullscreen tab bar, keep their presses, which a capture listener
+  would take. Capture listeners still own a drag's motion and release.
+- A drag holds its boundary rather than the split's weights and applies it
+  over the split as other changes leave it, so another window's resize of a
+  sibling boundary carries through, as the races table requires. The span
+  refreshes from each drawn frame.
+- Each window runs its resize commits through one ordered queue, so
+  repeated resize commands cannot land out of order.
 - A resize command on a zoomed tab unzooms it first, as navigation does.
 - The plan's tier 1 item for a zoom toggle and a divider move requesting no
   snapshot does not apply: both change the zoomed or dragged pane's grid, so
