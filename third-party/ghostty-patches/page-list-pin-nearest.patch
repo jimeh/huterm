@@ -1,5 +1,5 @@
 diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
-index 04ff24a..c5578d0 100644
+index 8a62b6f..f93f0d9 100644
 --- a/src/terminal/PageList.zig
 +++ b/src/terminal/PageList.zig
 @@ -1475,6 +1475,11 @@ fn resizeCols(
@@ -14,7 +14,7 @@ index 04ff24a..c5578d0 100644
      // Reflow all our rows.
      {
          var reflow_cursor: ReflowCursor = .init(first_rewritten_node);
-@@ -5708,6 +5713,46 @@ pub fn pin(self: *const PageList, pt: point.Point) ?Pin {
+@@ -5716,6 +5721,46 @@ pub fn pin(self: *const PageList, pt: point.Point) ?Pin {
      return p;
  }
  
@@ -61,7 +61,7 @@ index 04ff24a..c5578d0 100644
  /// Convert the given pin to a tracked pin. A tracked pin will always be
  /// automatically updated as the pagelist is modified. If the point the
  /// pin points to is removed completely, the tracked pin will be updated
-@@ -11152,6 +11197,101 @@ test "PageList grow fit in capacity" {
+@@ -11160,6 +11205,101 @@ test "PageList grow fit in capacity" {
      }
  }
  

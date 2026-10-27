@@ -59,10 +59,10 @@ state; it never connects to the user's tmux server.
 ## Native inputs and policy
 
 Huterm binds the C API through its own `huterm-ghostty` crate. Native Ghostty
-is pinned to `cec8b92f1ecd176a20a56aa405021e7ae991b996` and built with Zig
-0.17.0 using static linking. The crate's FFI declarations are generated from
-the pinned headers with `mise run ghostty:bindings` and checked with
-`mise run ghostty:bindings:check`. `scripts/ghostty-source.json` records the
+is pinned to the 1.4.0 release, `83fb95624b0439ee660c2679b43b38c8b63769cd`, and
+built with Zig 0.17.0 using static linking. The crate's FFI declarations are
+generated from the pinned headers with `mise run ghostty:bindings` and checked
+with `mise run ghostty:bindings:check`. `scripts/ghostty-source.json` records the
 reviewed archive and source-tree hashes. Required notices and provenance live
 in `third-party/ghostty`.
 
@@ -121,6 +121,12 @@ rows, the scan's row limit, in 0.5 ms locally with a million rows of history.
 A token that reaches the viewport's top-left cell reads the row above's own
 wrap flag: the next row's continuation flag can disagree with it after line
 insertion or deletion.
+
+`GridRef` and `RowRef` are untracked references that borrow the terminal, so
+no write or resize can run while one is held. Ghostty's garbage flag, which
+1.4.0 also sets on tracked pins whose history rows were erased, never applies
+to them. Keep them untracked; a tracked reference that outlives a write would
+need garbage handling.
 
 Reflow, not link lookup, bounds `ScrollbackLimit::MAX` at 100,000 rows. A width
 change rewraps all history on the runtime thread at about 65 ns per row in the
@@ -221,7 +227,7 @@ state at the time and do not define the shipped runtime after issue #118.
 ## Pin and native build
 
 Ghostty builds use native revision
-`cec8b92f1ecd176a20a56aa405021e7ae991b996` and Zig 0.17.0. Keep its
+`83fb95624b0439ee660c2679b43b38c8b63769cd` and Zig 0.17.0. Keep its
 `memset` C ABI fix: the first Zig 0.16 migration pin mishandled negative fill
 values and corrupted Rust hash-table control bytes. Run
 `mise run ghostty:prepare` before direct Cargo build commands; it checks the

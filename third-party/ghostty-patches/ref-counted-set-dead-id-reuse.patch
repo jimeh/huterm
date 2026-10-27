@@ -1,8 +1,8 @@
 diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
-index 8203178..4f508a7 100644
+index 0fd0167..c85e1ed 100644
 --- a/src/terminal/Screen.zig
 +++ b/src/terminal/Screen.zig
-@@ -11519,6 +11519,36 @@ test "Screen: hyperlink reuse" {
+@@ -11570,6 +11570,36 @@ test "Screen: hyperlink reuse" {
      }
  }
  

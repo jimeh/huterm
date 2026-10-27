@@ -534,14 +534,14 @@ mod tests {
     fn search_matches_name_version_license_and_kind_case_insensitively() {
         let component = Component {
             name: "Ghostty".to_owned(),
-            version: Some("cec8b92".to_owned()),
+            version: Some("83fb956".to_owned()),
             kind: "Library".to_owned(),
             license: "MIT".to_owned(),
             used: None,
             url: None,
             texts: Vec::new(),
         };
-        for query in ["", "ghost", "cec8", "mit", "library"] {
+        for query in ["", "ghost", "83fb", "mit", "library"] {
             assert!(component.matches(query), "{query}");
         }
         assert!(!component.matches("apache"));

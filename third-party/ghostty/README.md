@@ -4,7 +4,7 @@ These notices accompany the statically linked Ghostty VT engine.
 `provenance.json` records the origin and checksum of each notice.
 
 Huterm's own `huterm-ghostty` crate binds the C API directly. The native source
-is Ghostty `cec8b92f1ecd176a20a56aa405021e7ae991b996`, built with Zig 0.17.0.
+is Ghostty `83fb95624b0439ee660c2679b43b38c8b63769cd`, built with Zig 0.17.0.
 
 The VT build includes Ghostty, uucode 0.2.0 at
 ea62149739404a73c202b48a33bf6dd2af4bd9b0 (including Unicode and UTF-8 helper

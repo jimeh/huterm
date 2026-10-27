@@ -889,6 +889,64 @@ fn narrowing_reflows_history_within_the_line_limit() {
     assert!(history > 0);
 }
 
+/// The page node holding the active area's row `y`.
+fn active_page<H>(terminal: &Terminal<H>, y: u32) -> *mut std::ffi::c_void {
+    terminal.grid_ref(Point::active(0, y)).unwrap().position().0
+}
+
+/// GHSA-w9q4-5jvv-mcv4: a cursor style or hyperlink is an ID into its page's
+/// sets. When ED 22 scrolls the screen into history and the line limit then
+/// prunes the cursor's page, the cursor must register both again on the page
+/// it moves to; before Ghostty 1.4.0 it kept the freed page's IDs. Huterm's
+/// smallest nonzero history limit, one row, prunes that way. A zero-row limit
+/// sets zero bytes instead, which erases history as it grows, so the screen
+/// never spans two pages there.
+#[test]
+fn scroll_clear_keeps_the_cursor_style_and_link_when_its_page_is_pruned() {
+    for (start, styled) in
+        [("\x1b[1m", true), ("\x1b]8;;https://a.test/\x1b\\", false)]
+    {
+        let mut terminal =
+            Terminal::new(options(), Recorder::default()).unwrap();
+        terminal.set_scrollback_bytes(None).unwrap();
+        terminal.set_scrollback_lines(Some(1)).unwrap();
+        // Every row has text, so ED 22 scrolls the whole screen. Stop once
+        // the screen's top row is the last on its page.
+        terminal.write(b"x").unwrap();
+        let mut lines = 0;
+        while active_page(&terminal, 0) == active_page(&terminal, 2) {
+            assert!(lines < 100_000, "the screen never spanned two pages");
+            terminal.write(b"\r\nx").unwrap();
+            lines += 1;
+        }
+        let first_page = active_page(&terminal, 0);
+
+        terminal
+            .write(format!("\x1b[H{start}\x1b[22Jy").as_bytes())
+            .unwrap();
+        assert_ne!(active_page(&terminal, 0), first_page, "{start:?}");
+        let cell = terminal.grid_ref(Point::active(0, 0)).unwrap();
+        let mut text = [0; 1];
+        assert_eq!(cell.graphemes(&mut text).unwrap(), Fill::Written(1));
+        assert_eq!(text[0], u32::from('y'), "{start:?}");
+        let mut uri = [0; 32];
+        let Fill::Written(uri_len) = cell.hyperlink_uri(&mut uri).unwrap()
+        else {
+            panic!("hyperlink buffer too small");
+        };
+        let expected_uri: &[u8] = if styled { b"" } else { b"https://a.test/" };
+        assert_eq!(&uri[..uri_len], expected_uri, "{start:?}");
+
+        let mut render = RenderState::new().unwrap();
+        render.update(&mut terminal).unwrap();
+        let mut rows = render.rows().unwrap();
+        let mut row = rows.next().unwrap();
+        let mut cells = row.cells().unwrap();
+        assert!(cells.next());
+        assert_eq!(cells.style().unwrap().bold, styled, "{start:?}");
+    }
+}
+
 #[test]
 fn scrollbar_offsets_are_top_based_rows() {
     let mut terminal = terminal();

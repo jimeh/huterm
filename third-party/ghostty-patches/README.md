@@ -19,7 +19,7 @@ Upstream's own fix, from
 [`3267b63ef`](https://github.com/ghostty-org/ghostty/commit/3267b63ef9c3154c7c239ba71b378d8a663f0d98)
 by Mitchell Hashimoto. It was part of upstream's
 [offset data structure fixes](https://github.com/ghostty-org/ghostty/pull/13304),
-which were closed unmerged in September 2026, so `cec8b92` lacks it.
+which were closed unmerged in September 2026, so the 1.4.0 pin lacks it.
 
 When `insert` walks a probe chain and meets a dead item, it reclaims that
 bucket for the item it holds without comparing probe sequence lengths. If the
@@ -31,7 +31,7 @@ dead-ID path and the next patch's reuse path both do. The fix reclaims a dead
 bucket only when the held item's probe sequence is at least as long.
 
 The patch carries only upstream's code change and its two tests, adapted to
-`cec8b92`: the branch's `testSetInit` and `verifyIntegrity` helpers don't exist
+the pin: the branch's `testSetInit` and `verifyIntegrity` helpers don't exist
 there, so the tests build their sets inline and skip the integrity call. Both
 tests fail without the fix. Drop this patch once the pin includes the fix.
 
@@ -44,26 +44,26 @@ applies after `ref-counted-set-probe-invariant`, which keeps its delete and
 insert from hiding or duplicating live values.
 
 A standard page's hyperlink set has 4 buckets and 3 item slots
-([page.zig](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/page.zig#L125),
-[ref_counted_set.zig](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/ref_counted_set.zig#L185)).
+([page.zig](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/page.zig#L125),
+[ref_counted_set.zig](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/ref_counted_set.zig#L185)).
 ID 0 is reserved, so only IDs 1 and 2 are usable. A replaced link dies below a
 live ID, where the tail trim in `addContext` cannot reap it
-([L269](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/ref_counted_set.zig#L269)).
+([L269](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/ref_counted_set.zig#L269)).
 The next add then returns `NeedsRehash`
-([L298-L308](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/ref_counted_set.zig#L298-L308)).
+([L298-L308](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/ref_counted_set.zig#L298-L308)).
 `Screen.startHyperlink` answers with a same-capacity page clone
-([Screen.zig](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/Screen.zig#L2838),
-[PageList.zig](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/PageList.zig#L4219)),
+([Screen.zig](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/Screen.zig#L2889),
+[PageList.zig](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/PageList.zig#L4219)),
 and `RenderState.update` rebuilds every row when the viewport pin's node
 changes
-([render.zig](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/render.zig#L1020)).
+([render.zig](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/render.zig#L1020)).
 Each OSC 8 start without `id=` takes a new implicit ID, so rewriting the same
 URI triggers this too.
 
 The patch reuses a dead ID in place when the set is full and fewer than 90% of
 its IDs are live, with the same `deleteItem` and `insert` steps that
 `addWithIdContext` uses for a dead requested ID
-([L363-L364](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/ref_counted_set.zig#L363-L364)).
+([L363-L364](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/ref_counted_set.zig#L363-L364)).
 Dead items have no cell references, so nothing is renumbered. Style sets use
 the same type, so a full style set also stops cloning its page. If the living
 count ever drifts so that no dead ID exists, `add` returns `OutOfMemory`
@@ -99,7 +99,7 @@ link. Drop the patch once the pin includes an equivalent upstream fix.
 Makes `ghostty_terminal_grid_ref` cost independent of history length for
 rows near the active area. `PageList.pin` resolves a screen or history point
 as the first page's top-left moved down `y` rows
-([PageList.zig](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/PageList.zig#L5696-L5708)),
+([PageList.zig](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/PageList.zig#L5704-L5716)),
 which walks one page node at a time from the oldest history. Huterm's link
 lookup resolves rows above the viewport through screen points, so each such
 row cost a walk over every page of history above it.
