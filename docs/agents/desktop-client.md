@@ -544,8 +544,9 @@ missing directory through its nearest existing ancestor; keep the ancestor
 watched until the descendant's registration succeeds, and keep it when that
 registration fails. The ancestor's non-recursive watch misses edits inside the
 failed directory, so a reconcile that ends with a registration failed raises
-the `Unavailable` warning and reports watching off; the warning re-arms only
-after a reconcile ends with every registration held. Record each registered
+the `Unavailable` warning and reports watching off. A reconcile that ends with
+every registration held reports watching on, which takes the warning back from
+every window and the latch and re-arms it. Record each registered
 directory's identity and register it again when the identity changes or an event
 removes or renames the directory itself: inotify drops a removed directory's
 watch and keeps following a renamed one, so a directory replaced at the same

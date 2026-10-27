@@ -2288,6 +2288,51 @@ fn reloading(cx: &mut App) -> bool {
 }
 
 #[gpui::test]
+fn the_watch_warning_clears_once_every_watch_holds(cx: &mut TestAppContext) {
+    // The warning counts whether a window shows it or the latch holds it.
+    let warned = |cx: &mut App, window| {
+        let mut lines = notices(cx, window);
+        lines.extend(
+            cx.global::<Desktop>()
+                .latched
+                .iter()
+                .map(NoticeContent::smoke_line),
+        );
+        lines
+            .iter()
+            .filter(|line| line.contains("will not reload automatically"))
+            .count()
+    };
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    harness.wait_text(window, tab, "READY");
+    harness.cx.update(|cx| {
+        handle_watch_report(
+            cx,
+            config_watch::Report::Unavailable("watch limit reached".into()),
+        );
+        assert_eq!(warned(cx, window), 1);
+        handle_watch_report(
+            cx,
+            config_watch::Report::Status {
+                watching: false,
+                reconciliations: 1,
+            },
+        );
+        assert_eq!(warned(cx, window), 1, "watching is still off");
+        handle_watch_report(
+            cx,
+            config_watch::Report::Status {
+                watching: true,
+                reconciliations: 2,
+            },
+        );
+        assert_eq!(warned(cx, window), 0);
+    });
+}
+
+#[gpui::test]
 fn an_automatic_reload_starts_while_quit_is_pending_but_not_once_committed(
     cx: &mut TestAppContext,
 ) {

@@ -9474,6 +9474,9 @@ fn handle_watch_report(cx: &mut App, report: config_watch::Report) {
             watching,
             reconciliations,
         } => {
+            if watching {
+                clear_watch_unavailable(cx);
+            }
             #[cfg(target_os = "macos")]
             {
                 cx.global_mut::<Desktop>().watch_status = WatchStatus {
@@ -9490,6 +9493,8 @@ fn handle_watch_report(cx: &mut App, report: config_watch::Report) {
     }
 }
 
+const WATCH_UNAVAILABLE: &str = "Automatic reload unavailable";
+
 /// Raises the warning that changes in a directory the watcher cannot watch
 /// will not reload on their own, in the active window or, without one, the
 /// next window to show. The watcher raises it again only after a reconcile
@@ -9499,7 +9504,7 @@ fn show_watch_unavailable(cx: &mut App, error: &str) {
     let content = NoticeContent {
         severity: Severity::Warning,
         source: NoticeSource::Command,
-        title: "Automatic reload unavailable".into(),
+        title: WATCH_UNAVAILABLE.into(),
         message: format!(
             "Some configuration files will not reload automatically: {error}. Reload still works."
         ),
@@ -9527,6 +9532,29 @@ fn show_watch_unavailable(cx: &mut App, error: &str) {
     });
     if !shown {
         cx.global_mut::<Desktop>().latched.push(content);
+    }
+}
+
+/// Takes the watch warning back once every watch holds again, from the
+/// latch and from every window, since it no longer describes the watcher.
+fn clear_watch_unavailable(cx: &mut App) {
+    let warning = |content: &NoticeContent| {
+        content.source == NoticeSource::Command
+            && content.title == WATCH_UNAVAILABLE
+    };
+    cx.global_mut::<Desktop>()
+        .latched
+        .retain(|content| !warning(content));
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |root, _, cx| {
+            if let Ok(view) = root.downcast::<WorkspaceView>() {
+                view.update(cx, |view, cx| {
+                    if view.notices.dismiss_where(warning) {
+                        cx.notify();
+                    }
+                });
+            }
+        });
     }
 }
 
