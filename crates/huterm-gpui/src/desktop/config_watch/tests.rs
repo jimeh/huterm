@@ -401,7 +401,8 @@ fn watching(reports: &Reports) -> Option<bool> {
 }
 
 #[test]
-fn a_failed_descendant_registration_keeps_the_ancestor_and_warns_once() {
+fn a_failed_descendant_registration_keeps_the_ancestor_and_warns_once_per_failure()
+ {
     let scratch = Scratch::new();
     let directory = scratch.path("huterm");
     let config = scratch.path("huterm/config.toml");
@@ -428,6 +429,34 @@ fn a_failed_descendant_registration_keeps_the_ancestor_and_warns_once() {
     worker.event(&modified(&directory), now);
     settle(&mut worker, &mut now);
     assert_eq!(warnings(&reports), 1, "{:?}", reports.lock().unwrap());
+    assert_eq!(watching(&reports), Some(false));
+    // Once the directory can be watched, watching resumes and the warning
+    // re-arms.
+    backend.refused.lock().unwrap().remove(&directory);
+    worker.event(&modified(&directory), now);
+    settle(&mut worker, &mut now);
+    assert!(
+        worker.probe().installed.contains(&directory),
+        "{:?}",
+        worker.probe().installed
+    );
+    assert_eq!(watching(&reports), Some(true));
+    assert_eq!(warnings(&reports), 1, "{:?}", reports.lock().unwrap());
+    // A later failure warns again.
+    backend.refused.lock().unwrap().insert(directory.clone());
+    fs::remove_dir(&directory).unwrap();
+    worker.event(
+        &event(EventKind::Remove(RemoveKind::Folder), &directory),
+        now,
+    );
+    settle(&mut worker, &mut now);
+    fs::create_dir(&directory).unwrap();
+    worker.event(
+        &event(EventKind::Create(CreateKind::Folder), &directory),
+        now,
+    );
+    settle(&mut worker, &mut now);
+    assert_eq!(warnings(&reports), 2, "{:?}", reports.lock().unwrap());
     assert_eq!(watching(&reports), Some(false));
 }
 

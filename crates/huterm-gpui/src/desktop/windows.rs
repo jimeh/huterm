@@ -9490,8 +9490,10 @@ fn handle_watch_report(cx: &mut App, report: config_watch::Report) {
     }
 }
 
-/// Raises the one warning that the configuration will not reload on its
-/// own, in the active window or, without one, the next window to show.
+/// Raises the warning that changes in a directory the watcher cannot watch
+/// will not reload on their own, in the active window or, without one, the
+/// next window to show. The watcher raises it again only after a reconcile
+/// ends with every watch held.
 fn show_watch_unavailable(cx: &mut App, error: &str) {
     eprintln!("Huterm configuration watcher unavailable: {error}");
     let content = NoticeContent {
@@ -9499,7 +9501,7 @@ fn show_watch_unavailable(cx: &mut App, error: &str) {
         source: NoticeSource::Command,
         title: "Automatic reload unavailable".into(),
         message: format!(
-            "config.toml will not reload automatically: {error}. Reload still works."
+            "Some configuration files will not reload automatically: {error}. Reload still works."
         ),
         location: Some(path_for_status(cx)),
         actions: vec![super::notices::NoticeAction {
@@ -9539,9 +9541,10 @@ fn reload(cx: &mut App) -> CommandOutcome {
 
 /// Rereads the configuration on the background executor and applies it.
 /// The caller has latched `Desktop::reloads`. An automatic reload does not
-/// start once Quit is committed. One may start while Quit awaits
-/// confirmation, which can still be cancelled; Quit unregisters the global
-/// shortcuts only once approved, and `finish_reload` applies nothing after.
+/// start once Quit is committed. Until then one may start, both while Quit
+/// awaits confirmation, which can still be cancelled, and while its teardown
+/// runs: Quit unregisters the global shortcuts only once approved, and
+/// `finish_reload` applies nothing after.
 fn run_reload(cx: &mut App, kind: ReloadKind) {
     if kind == ReloadKind::Automatic && cx.global::<Desktop>().quit_committed {
         follow_up_reload(cx);

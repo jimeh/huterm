@@ -543,8 +543,9 @@ receives `Report`s. Watch directories non-recursively, never files, and a
 missing directory through its nearest existing ancestor; keep the ancestor
 watched until the descendant's registration succeeds, and keep it when that
 registration fails. The ancestor's non-recursive watch misses edits inside the
-failed directory, so any failed registration still raises the one-time
-`Unavailable` warning and reports watching off. Record each registered
+failed directory, so a reconcile that ends with a registration failed raises
+the `Unavailable` warning and reports watching off; the warning re-arms only
+after a reconcile ends with every registration held. Record each registered
 directory's identity and register it again when the identity changes or an event
 removes or renames the directory itself: inotify drops a removed directory's
 watch and keeps following a renamed one, so a directory replaced at the same
@@ -569,11 +570,11 @@ that finds the file missing is skipped silently, since editors remove it while
 saving. An editor that truncates the file and writes it more than `QUIET_PERIOD`
 (150 ms) later can briefly apply the empty file, that is the defaults, until the
 write's event reloads the full content; this risk is accepted. An automatic
-reload may start while the Quit confirmation is open, since Cancel would
-otherwise leave a change saved meanwhile unapplied, but none starts once Quit is
-committed. Committing Quit drops the watcher's handle, and a reload that
-finishes afterwards applies nothing, since applying would register the global
-shortcuts Quit just removed.
+reload may start until Quit is committed, while the confirmation is open and
+while teardown runs, since Cancel would otherwise leave a change saved meanwhile
+unapplied; none starts once Quit is committed. Committing Quit drops the
+watcher's handle, and a reload that finishes afterwards applies nothing, since
+applying would register the global shortcuts Quit just removed.
 
 The `huterm_config::document` patch service edits `config.toml` by splicing
 byte ranges, never by re-serializing, and refuses any splice whose reparsed

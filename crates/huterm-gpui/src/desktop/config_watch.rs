@@ -445,8 +445,8 @@ impl<B: Backend> Worker<B> {
     }
 
     /// Moves the registrations to the current topology. Returns whether any
-    /// registration changed. Warns once when a wanted registration fails,
-    /// and again only after every wanted registration has held since.
+    /// registration changed. Warns once when a reconcile ends with a wanted
+    /// registration failed, and again only after one ends fully covered.
     fn reconfigure(&mut self, settings: &Settings) -> bool {
         let mut changed = false;
         let mut failure = None;
@@ -520,13 +520,15 @@ impl<B: Backend> Worker<B> {
             break;
         }
         self.covered = covered;
-        if let Some(error) = failure {
-            if !self.unavailable {
-                self.unavailable = true;
-                (self.report)(Report::Unavailable(error));
-            }
-        } else if covered {
+        // A failure that a later attempt recovered from leaves full
+        // coverage, so it neither warns nor keeps the warning latched.
+        if covered {
             self.unavailable = false;
+        } else if let Some(error) = failure
+            && !self.unavailable
+        {
+            self.unavailable = true;
+            (self.report)(Report::Unavailable(error));
         }
         changed
     }
