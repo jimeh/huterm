@@ -1199,17 +1199,35 @@ impl SettingsView {
 }
 
 /// Whether a recorded key may be a global shortcut: one with Ctrl, Alt, or
-/// Cmd, or a function key.
+/// Cmd, or a function key the platform registers (F1-F20 on macOS, F1-F24
+/// on X11, as `quake::hotkeys` accepts).
 fn global_key_allowed(key: &str) -> bool {
     let Ok(stroke) = gpui::Keystroke::parse(key) else {
         return false;
     };
     let modifiers = stroke.modifiers;
+    let maximum_function_key = if cfg!(target_os = "macos") { 20 } else { 24 };
     modifiers.control
         || modifiers.alt
         || modifiers.platform
         || stroke
             .key
             .strip_prefix('f')
-            .is_some_and(|number| number.parse::<u8>().is_ok())
+            .and_then(|number| number.parse::<u8>().ok())
+            .is_some_and(|number| (1..=maximum_function_key).contains(&number))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_keys_need_a_modifier_or_a_registrable_function_key() {
+        for key in ["ctrl-alt-shift-y", "alt-space", "cmd-f13", "f1", "f20"] {
+            assert!(global_key_allowed(key), "{key}");
+        }
+        for key in ["a", "shift-a", "space", "f0", "f25", "f99"] {
+            assert!(!global_key_allowed(key), "{key}");
+        }
+    }
 }
