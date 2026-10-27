@@ -133,12 +133,13 @@ position = "top"
     }
     return text;
   }
-  /** Presses Tab until `name` has focus. */
+  /** Presses Tab until `name` has focus, waiting for each press to move it. */
   async function tabTo(name: string): Promise<void> {
     for (let step = 0; step < 12; step++) {
-      if (field(await current(), "focus") === name) return;
+      const focus = field(await current(), "focus");
+      if (focus === name) return;
       await key("tab");
-      await Bun.sleep(30);
+      await waitFor(async () => field(await current(), "focus") !== focus, `focus to leave ${focus}`);
     }
     await state(`settings.focus=${name}`);
   }
