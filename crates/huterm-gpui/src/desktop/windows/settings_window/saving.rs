@@ -4,8 +4,8 @@
 //! Reads, parsing, validation, and writes run on the background executor.
 //! One write runs at a time. A queued edit keeps the snapshot it was made
 //! against, so a later write cannot silently overwrite an edit made
-//! elsewhere; it moves to a newer snapshot only past this window's own
-//! writes that landed on an unchanged file.
+//! elsewhere. It moves to a newer snapshot only when that snapshot still
+//! holds the value the edit expected at its path.
 
 use gpui::{AppContext as _, Context, Window};
 use huterm_config::document::{ApplyError, ConfigFile, Patch, Snapshot};
@@ -33,12 +33,17 @@ pub(super) struct Conflict {
 /// One change waiting to be written.
 pub(super) struct Pending {
     setting: &'static Setting,
+    /// The dotted path the patch writes: the setting's, or `theme.name`.
+    path: &'static str,
     patch: Patch,
-    /// The value it stores; `None` resets.
+    /// The value it stores; `None` removes the path.
     value: Option<Value>,
     /// The snapshot the user saw when making the change; `None` reads the
     /// file first.
     base: Option<Snapshot>,
+    /// The value the path held, or was about to hold, when the change was
+    /// made; a newer snapshot that still holds it is a safe base.
+    expected: Option<Value>,
     /// The text typed into the setting's field, when a field made it.
     typed: Option<String>,
 }
@@ -54,19 +59,28 @@ struct Loaded {
 struct Written {
     snapshot: Snapshot,
     file: Result<FileValues, String>,
-    /// The file still matched the change's base, so the write changed
-    /// nothing but this setting.
-    clean: bool,
-    /// The base the write used.
-    base: Snapshot,
+}
+
+/// The path a setting's changes write: the theme row edits the theme's
+/// name, every other row its own path.
+pub(super) fn written_path(setting: &'static Setting) -> &'static str {
+    if special(&setting.path) == Some(Special::ThemePicker) {
+        "theme.name"
+    } else {
+        setting.path.as_str()
+    }
 }
 
 impl SettingsView {
-    /// Rereads and validates the file on the background executor.
+    /// Rereads and validates the file on the background executor. Only the
+    /// latest read applies, and only when no write finished since it began.
     pub(super) fn load(&mut self, cx: &mut Context<'_, Self>) {
         let file = ConfigFile::new(self.path.clone());
         let validate = crate::config::validator(self.path.clone());
         let epoch = self.epoch;
+        self.reads += 1;
+        self.loading += 1;
+        let read = self.reads;
         let task = cx.background_spawn(async move {
             let snapshot = file.load()?;
             let text = snapshot.text();
@@ -79,11 +93,11 @@ impl SettingsView {
         cx.spawn(async move |view, cx| {
             let loaded = task.await;
             let _ = view.update(cx, |view, cx| {
-                // A write finished since this read started; its snapshot is
-                // newer.
-                if view.epoch == epoch {
+                view.loading -= 1;
+                if view.epoch == epoch && view.reads == read {
                     view.loaded(loaded, cx);
                 }
+                cx.notify();
             });
         })
         .detach();
@@ -120,18 +134,22 @@ impl SettingsView {
             }
             Err(error) => self.status.failed(error.to_string()),
         }
-        cx.notify();
     }
 
-    /// Reads the selectable themes and their previews in the background.
+    /// Reads the selectable themes and their previews in the background;
+    /// only the latest scan applies.
     pub(super) fn load_themes(&mut self, cx: &mut Context<'_, Self>) {
         let path = self.path.clone();
+        self.scans += 1;
+        let scan = self.scans;
         let task = cx.background_spawn(async move { themes(&path) });
         cx.spawn(async move |view, cx| {
             let themes = task.await;
             let _ = view.update(cx, |view, cx| {
-                view.themes = themes;
-                cx.notify();
+                if view.scans == scan {
+                    view.themes = themes;
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -303,7 +321,18 @@ impl SettingsView {
             cx.notify();
             return;
         }
+        let target = written_path(setting);
+        let expected = match self.pending.get(key) {
+            Some(pending) => pending.clone(),
+            None => self.file.get(target).cloned(),
+        };
         self.pending.insert(key, value.clone());
+        // Use mine reads the file afresh for its own change only.
+        let base = if self.fresh.take() == Some(key) {
+            None
+        } else {
+            self.base.clone()
+        };
         if let Some(queued) = self
             .queued
             .iter_mut()
@@ -317,9 +346,11 @@ impl SettingsView {
         }
         let change = Pending {
             setting,
+            path: target,
             patch,
             value,
-            base: self.base.clone(),
+            base,
+            expected,
             typed,
         };
         if self.writing.is_some() {
@@ -338,15 +369,14 @@ impl SettingsView {
         let base = change.base.clone();
         let patch = change.patch.clone();
         let task = cx.background_spawn(async move {
-            let current = file.load()?;
-            let base = base.unwrap_or_else(|| current.clone());
-            let clean = current.revision() == base.revision();
+            let base = match base {
+                Some(base) => base,
+                None => file.load()?,
+            };
             let snapshot = file.apply(&base, &[patch], &validate)?;
             Ok::<_, ApplyError>(Written {
                 file: FileValues::parse(snapshot.text()),
                 snapshot,
-                clean,
-                base,
             })
         });
         cx.spawn(async move |view, cx| {
@@ -373,43 +403,51 @@ impl SettingsView {
                 let _ = super::super::reload(cx);
             });
         };
+        // A newer change to this setting keeps showing until it lands.
+        let settle = |view: &mut Self| {
+            if view.pending.get(key) == Some(&change.value) {
+                view.pending.remove(key);
+            }
+        };
+        let mut failed = false;
         match result {
             Ok(written) => {
                 self.errors.remove(key);
                 self.conflicts.remove(key);
-                if self.pending.get(key) == Some(&change.value) {
-                    self.pending.remove(key);
-                }
-                if let Ok(file) = written.file {
-                    self.file = file;
-                }
-                // Queued changes made on the same view now build on this
-                // write, unless the file had also changed elsewhere.
-                if written.clean {
-                    for queued in &mut self.queued {
-                        if queued.base.as_ref().is_some_and(|base| {
-                            base.revision() == written.base.revision()
-                        }) {
-                            queued.base = Some(written.snapshot.clone());
-                        }
+                settle(self);
+                let file = written.file.unwrap_or_default();
+                // A queued change whose path still holds what it expected
+                // can build on this write: nothing else touched it.
+                for queued in &mut self.queued {
+                    if file.get(queued.path) == queued.expected.as_ref() {
+                        queued.base = Some(written.snapshot.clone());
                     }
                 }
+                self.file = file;
                 self.base = Some(written.snapshot);
                 self.status.saved();
-                // The field shows the saved value in its display form, such
-                // as `15` for a typed `15.0`.
-                let typed_here = change.typed.as_ref().is_some_and(|typed| {
-                    self.fields
-                        .get(key)
-                        .is_some_and(|field| field.read(cx).text() == typed)
-                });
-                if typed_here {
-                    self.sync_field(key, true, cx);
+                if let Some(setting) = self.model.setting(key) {
+                    let text =
+                        field_text(shown(setting, &self.file, &self.defaults));
+                    // The field shows the saved value in its display form,
+                    // such as `15` for a typed `15.0`; text typed since
+                    // stays as a draft.
+                    let typed_here =
+                        change.typed.as_ref().is_some_and(|typed| {
+                            self.fields.get(key).is_some_and(|field| {
+                                field.read(cx).text() == typed
+                            })
+                        });
+                    self.synced.insert(key, text);
+                    if typed_here {
+                        self.sync_field(key, true, cx);
+                    }
                 }
                 self.sync_fields(cx);
                 reload(cx);
             }
             Err(ApplyError::Conflict(changes)) => {
+                failed = true;
                 // The control keeps showing the refused value.
                 self.conflicts.insert(
                     key,
@@ -426,6 +464,7 @@ impl SettingsView {
                 self.load(cx);
             }
             Err(ApplyError::InvalidFile(message)) => {
+                failed = true;
                 // Nothing can be written to an invalid file, so every
                 // pending change settles unsaved.
                 self.queued.clear();
@@ -435,18 +474,24 @@ impl SettingsView {
             }
             Err(ApplyError::WrittenNotDurable(error)) => {
                 // The file was replaced; it applies, with the warning.
-                self.pending.remove(key);
-                self.status.failed(error.to_string());
+                settle(self);
+                self.status.saved_with_warning(error.to_string());
                 self.load(cx);
                 reload(cx);
             }
             Err(error) => {
+                failed = true;
                 let message = error.to_string();
-                self.pending.remove(key);
+                settle(self);
                 self.errors.insert(key, message.clone());
                 self.status.failed(message);
                 self.sync_fields(cx);
             }
+        }
+        // A write that failed while closing keeps the window open, so the
+        // user sees it and can recover the entered value.
+        if failed {
+            self.closing = false;
         }
         if let Some(next) = self.queued.pop_front() {
             self.start(next, cx);
@@ -466,7 +511,8 @@ impl SettingsView {
     }
 
     /// Closes the window once pending writes settle, saving a focused
-    /// field's draft first. Returns whether it may close now.
+    /// field's draft first. Returns whether it may close now. A draft that
+    /// does not save, or an unsettled conflict, keeps it open.
     pub(super) fn request_close(
         &mut self,
         window: &mut Window,
@@ -474,6 +520,12 @@ impl SettingsView {
     ) -> bool {
         if let Some(setting) = self.focused_field(window, cx) {
             self.field_blurred(setting, cx);
+            if self.errors.contains_key(setting.path.as_str()) {
+                return false;
+            }
+        }
+        if !self.conflicts.is_empty() {
+            return false;
         }
         if self.busy() {
             self.closing = true;
@@ -494,7 +546,7 @@ impl SettingsView {
         let Some(setting) = self.model.setting(path) else {
             return;
         };
-        self.base = None;
+        self.fresh = Some(path);
         match conflict.patch {
             Some(refused) => {
                 self.submit(setting, refused, conflict.value, None, cx);
@@ -567,9 +619,10 @@ impl SettingsView {
             return;
         };
         let text = field.read(cx).text().to_owned();
-        // Saving a field again after a conflict keeps the entered value.
+        // Saving a field again after a conflict keeps the entered value,
+        // against a fresh read.
         if self.conflicts.remove(path).is_some() {
-            self.base = None;
+            self.fresh = Some(path);
         }
         let parsed = match &setting.kind {
             _ if special(path) == Some(Special::Size) => Ok(size_value(&text)),
@@ -583,8 +636,11 @@ impl SettingsView {
             Ok(value) => {
                 self.errors.remove(path);
                 if value.is_some() && value == self.value(setting) {
-                    // Nothing changed; show it in its display form.
-                    self.sync_field(path, true, cx);
+                    // Already saved or saving. A field that matches a
+                    // pending change keeps its text until that lands.
+                    if !self.pending.contains_key(path) {
+                        self.sync_field(path, true, cx);
+                    }
                     cx.notify();
                     return;
                 }
@@ -615,17 +671,26 @@ impl SettingsView {
         }
     }
 
-    /// Escape in a field: puts back what it showed before typing.
+    /// Escape in a field: puts back what it showed before typing, a
+    /// pending change's value while one is saving, or, in a conflict, the
+    /// file's value, as Use file does.
     pub(super) fn cancel_field(
         &mut self,
         path: &'static str,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.conflicts.contains_key(path) {
+            self.keep_file(path, cx);
+            return;
+        }
         self.errors.remove(path);
-        if let (Some(text), Some(field)) = (
-            self.synced.get(path).cloned(),
-            self.fields.get(path).cloned(),
-        ) {
+        let text = match self.pending.get(path) {
+            Some(value) => Some(field_text(value.clone())),
+            None => self.synced.get(path).cloned(),
+        };
+        if let (Some(text), Some(field)) =
+            (text, self.fields.get(path).cloned())
+        {
             field.update(cx, |field, cx| field.set_text(text, cx));
         }
         cx.notify();

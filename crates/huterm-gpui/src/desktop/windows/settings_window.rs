@@ -29,11 +29,11 @@ use super::super::menu::{
     Menu as MenuView, MenuEvent, MenuItem, MenuModel, MenuRow,
 };
 use super::super::overlay::Swatch;
-use super::super::settings::file_only;
 use super::super::settings::status::{FileStatus, Tone};
 use super::super::settings::values::{
     self, Defaults, FileValues, number, parse_number, shown,
 };
+use super::super::settings::{Special, file_only, special};
 use super::Desktop;
 use crate::APP_ID;
 use crate::commands::{InvokePalette, InvokeWindow};
@@ -161,14 +161,22 @@ pub(super) struct SettingsView {
     /// Incremented by every finished write; a load started before one is
     /// stale.
     epoch: u64,
+    /// Reads and theme scans started; only the latest of each applies.
+    reads: u64,
+    scans: u64,
+    /// Reads still running.
+    loading: u32,
+    /// A setting whose next change reads the file afresh, after Use mine.
+    fresh: Option<&'static str>,
     /// The last reload's error when the file itself validates, so the
     /// footer can say the settings were not applied.
     reload_error: Option<String>,
     /// Close was asked for while writes were pending.
     closing: bool,
     handle: gpui::AnyWindowHandle,
-    /// An open select's menu and the setting it edits.
-    menu: Option<(Entity<MenuView>, &'static Setting)>,
+    /// An open select's menu, the setting it edits, and the control that
+    /// opened it, which takes focus back.
+    menu: Option<(Entity<MenuView>, &'static Setting, FocusHandle)>,
     scroll: ScrollHandle,
     /// Every selectable theme with its colors, read when the window opens.
     themes: Vec<(String, Option<Theme>)>,
@@ -216,6 +224,10 @@ impl SettingsView {
             queued: VecDeque::new(),
             pending: HashMap::new(),
             epoch: 0,
+            reads: 0,
+            scans: 0,
+            loading: 0,
+            fresh: None,
             reload_error: None,
             closing: false,
             handle: window.window_handle(),
@@ -374,12 +386,14 @@ impl SettingsView {
         let model = self.model;
         match kind {
             "theme" => {
-                if let Some(theme) = model.setting("theme") {
+                if let Some(theme) = model.setting("theme")
+                    && self.selected_theme() != argument
+                {
                     let name = Value::String(argument.to_owned());
                     self.submit(
                         theme,
-                        values::patch_at("theme.name", Some(name)),
-                        None,
+                        values::patch_at("theme.name", Some(name.clone())),
+                        Some(name),
                         None,
                         cx,
                     );
@@ -433,6 +447,60 @@ impl SettingsView {
             _ => {}
         }
         cx.notify();
+    }
+
+    /// The theme the picker marks: a pending choice, else the file's.
+    fn selected_theme(&self) -> String {
+        let name = match self.pending.get("theme") {
+            Some(pending) => pending.as_ref(),
+            None => self.file.get("theme.name"),
+        };
+        name.and_then(Value::as_str)
+            .unwrap_or("huterm-dark")
+            .to_owned()
+    }
+
+    /// The first control a setting's row renders, for search to focus.
+    fn focus_target(
+        &mut self,
+        setting: &'static Setting,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<FocusHandle> {
+        let path = setting.path.as_str();
+        if let Some(field) = self.fields.get(path) {
+            return Some(field.read(cx).focus_handle(cx));
+        }
+        let key = match special(path) {
+            Some(Special::ThemePicker) => {
+                format!("theme:{}", self.selected_theme())
+            }
+            Some(Special::Modifiers) => format!(
+                "chip:{path}:{}",
+                if cfg!(target_os = "macos") {
+                    "cmd"
+                } else {
+                    "ctrl"
+                }
+            ),
+            Some(
+                Special::Keybindings
+                | Special::GlobalShortcuts
+                | Special::QuakeProfiles,
+            ) => format!("open:{path}"),
+            // Fields exist once their row renders.
+            Some(Special::FontPicker | Special::Size) => return None,
+            None if matches!(
+                setting.kind,
+                SettingKind::Integer { .. }
+                    | SettingKind::Number { .. }
+                    | SettingKind::Text { .. }
+            ) =>
+            {
+                return None;
+            }
+            None => return Some(self.stop(path, cx)),
+        };
+        Some(self.action_stop(key, cx))
     }
 
     fn visible_sections(&self) -> Vec<SectionId> {
@@ -594,7 +662,8 @@ impl SettingsView {
                 ))
             })
             .collect();
-        self.show_menu(setting, MenuModel::new(rows), window, cx);
+        let opener = self.stop(setting.path.as_str(), cx);
+        self.show_menu(setting, MenuModel::new(rows), opener, window, cx);
     }
 
     /// Opens a menu of the installed font families for `setting`.
@@ -608,13 +677,15 @@ impl SettingsView {
             .iter()
             .map(|name| MenuRow::Item(MenuItem::new(name, *name)))
             .collect();
-        self.show_menu(setting, MenuModel::new(rows), window, cx);
+        let opener = self.action_stop(format!("fonts:{}", setting.path), cx);
+        self.show_menu(setting, MenuModel::new(rows), opener, window, cx);
     }
 
     fn show_menu(
         &mut self,
         setting: &'static Setting,
         model: MenuModel,
+        opener: FocusHandle,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -632,14 +703,13 @@ impl SettingsView {
         })
         .detach();
         menu.read(cx).focus_handle(cx).focus(window, cx);
-        self.menu = Some((menu, setting));
+        self.menu = Some((menu, setting, opener));
         cx.notify();
     }
 
     fn close_menu(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if let Some((_, setting)) = self.menu.take() {
-            let handle = self.stop(setting.path.as_str(), cx);
-            handle.focus(window, cx);
+        if let Some((_, _, opener)) = self.menu.take() {
+            opener.focus(window, cx);
             cx.notify();
         }
     }
@@ -651,7 +721,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<(), CommandError> {
-        if let Some((menu, _)) = &self.menu
+        if let Some((menu, _, _)) = &self.menu
             && super::is_menu_command(invocation.id)
         {
             let menu = menu.clone();
@@ -802,10 +872,8 @@ impl SettingsView {
         let Some(setting) = first else {
             return;
         };
-        let path = setting.path.as_str();
-        match self.fields.get(path) {
-            Some(field) => field.read(cx).focus_handle(cx).focus(window, cx),
-            None => self.stop(path, cx).focus(window, cx),
+        if let Some(target) = self.focus_target(setting, cx) {
+            target.focus(window, cx);
         }
     }
 
@@ -1094,7 +1162,40 @@ impl SettingsView {
 
     /// Whether the first read finished and no write is in flight or queued.
     pub(super) fn settled(&self) -> bool {
-        self.base.is_some() && !self.busy()
+        self.base.is_some() && !self.busy() && self.loading == 0
+    }
+
+    pub(super) fn selected(&self) -> String {
+        self.selected_theme()
+    }
+
+    /// What has keyboard focus, as smoke state names it.
+    pub(super) fn focus_name(&self, window: &Window, cx: &App) -> String {
+        self.smoke_state(window, cx)
+            .split(' ')
+            .find_map(|field| field.strip_prefix("settings.focus="))
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    /// Gives the setting's field keyboard focus.
+    pub(super) fn focus_field(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let field = self.fields.get(path).expect("a rendered field").clone();
+        field.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    /// Dismisses an open menu, as Escape in it does.
+    pub(super) fn dismiss_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.close_menu(window, cx);
     }
 
     /// Steps the setting as an arrow key on its control does.

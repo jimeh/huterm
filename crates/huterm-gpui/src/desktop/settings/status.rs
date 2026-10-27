@@ -30,6 +30,8 @@ enum Event {
     Invalid(String),
     /// A write failed and left the file as it was.
     Failed(String),
+    /// A write replaced the file, but making that durable failed.
+    SavedUnsure(String),
     /// A reload failed for a reason outside the file, such as a global
     /// shortcut another application holds.
     NotApplied(String),
@@ -78,9 +80,18 @@ impl FileStatus {
     pub(crate) fn reloaded(&mut self) {
         let own = std::mem::take(&mut self.own_reload);
         let saving = matches!(self.latest, Some(Event::Saving));
-        if !(saving || own && matches!(self.latest, Some(Event::Saved))) {
+        let saved =
+            matches!(self.latest, Some(Event::Saved | Event::SavedUnsure(_)));
+        if !(saving || own && saved) {
             self.latest = Some(Event::Reloaded);
         }
+    }
+
+    /// A write replaced the file but could not make it durable. Like
+    /// "Saved", the warning stays through the reload the save asks for.
+    pub(crate) fn saved_with_warning(&mut self, message: impl Into<String>) {
+        self.latest = Some(Event::SavedUnsure(message.into()));
+        self.own_reload = true;
     }
 
     pub(crate) fn not_applied(&mut self, message: impl Into<String>) {
@@ -145,6 +156,11 @@ impl FileStatus {
                 text: format!("Not saved: {message}"),
                 action: None,
             },
+            Some(Event::SavedUnsure(message)) => Line {
+                tone: Tone::Warning,
+                text: format!("Saved, but {message}"),
+                action: None,
+            },
             Some(Event::NotApplied(message)) => Line {
                 tone: Tone::Error,
                 text: format!("Not applied: {message}"),
@@ -194,6 +210,16 @@ mod tests {
         // A later reload, such as from another editor, reports itself.
         status.reloaded();
         assert_eq!(text(&status), (Tone::Ok, "Reloaded".into(), None));
+        status.saved_with_warning("the disk did not confirm it");
+        status.reloaded();
+        assert_eq!(
+            text(&status),
+            (
+                Tone::Warning,
+                "Saved, but the disk did not confirm it".into(),
+                None
+            )
+        );
         status.not_applied("ctrl-` is taken");
         assert_eq!(
             text(&status),

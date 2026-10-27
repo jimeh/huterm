@@ -537,3 +537,140 @@ fn theme_cards_and_modifier_chips_work_from_the_keyboard(
         )
     );
 }
+
+#[gpui::test]
+fn pressing_enter_twice_before_the_save_keeps_the_new_value(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("enter-twice", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "15", window, cx);
+        view.enter("font.size", cx);
+        view.enter("font.size", cx);
+        assert_eq!(view.field_value("font.size", cx), "15");
+        view.blur("font.size", cx);
+    });
+    harness.wait_for("the save", settled);
+    assert_eq!(file.text(), "[font]\nsize = 15.0\n");
+}
+
+#[gpui::test]
+fn a_field_stepped_or_typed_during_its_save_raises_no_conflict(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("field-steps", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        // The field exists, so steps go through it.
+        view.type_into("font.size", "13", window, cx);
+        view.step_once("font.size", true, cx);
+        view.step_once("font.size", true, cx);
+    });
+    harness.wait_for("both steps", settled);
+    with_window(&mut harness, |view, window, cx| {
+        assert!(!view.conflicted("font.size"));
+        assert_eq!(view.field_value("font.size", cx), "15");
+        // Typing on while a save runs keeps the draft without a conflict.
+        view.type_into("font.size", "16", window, cx);
+        view.enter("font.size", cx);
+        view.type_into("font.size", "17", window, cx);
+    });
+    harness.wait_for("the save", settled);
+    with_window(&mut harness, |view, _, cx| {
+        assert!(!view.conflicted("font.size"));
+        assert_eq!(view.field_value("font.size", cx), "17");
+    });
+    assert_eq!(file.text(), "[font]\nsize = 16.0\n");
+}
+
+#[gpui::test]
+fn closing_stays_open_for_a_conflict_or_a_draft_that_does_not_save(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("close-fail", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    std::fs::write(file.path(), "[font]\nsize = 20.0\n").unwrap();
+    harness.cx.update(|cx| {
+        settings(cx)
+            .unwrap()
+            .update(cx, |view, window, cx| {
+                view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+                view.command(ids::CLOSE_PANE, window, cx)
+            })
+            .unwrap()
+            .unwrap();
+    });
+    harness.wait_for("the conflict", |cx| {
+        settled(cx) && conflicted(cx, "font.size")
+    });
+    harness.cx.run_until_parked();
+    harness
+        .cx
+        .update(|cx| assert!(settings(cx).is_some(), "Settings closed"));
+    // An unparseable draft keeps it open too.
+    with_window(&mut harness, |view, window, cx| {
+        view.use_file("font.size", cx);
+        view.type_into("terminal.scrollback_rows", "lots", window, cx);
+        view.focus_field("terminal.scrollback_rows", window, cx);
+        view.command(ids::CLOSE_PANE, window, cx).unwrap();
+    });
+    harness.cx.run_until_parked();
+    harness
+        .cx
+        .update(|cx| assert!(settings(cx).is_some(), "Settings closed"));
+    assert_eq!(file.text(), "[font]\nsize = 20.0\n");
+}
+
+#[gpui::test]
+fn escape_in_a_conflicted_field_keeps_the_file(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("escape-conflict", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    std::fs::write(file.path(), "[font]\nsize = 20.0\n").unwrap();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "15", window, cx);
+        view.enter("font.size", cx);
+    });
+    harness.wait_for("the conflict", |cx| {
+        settled(cx) && conflicted(cx, "font.size")
+    });
+    with_window(&mut harness, |view, _, cx| {
+        view.escape("font.size", cx);
+        assert!(!view.conflicted("font.size"));
+        assert_eq!(view.field_value("font.size", cx), "20");
+    });
+    assert_eq!(file.text(), "[font]\nsize = 20.0\n");
+}
+
+#[gpui::test]
+fn a_chosen_theme_shows_while_it_saves(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("theme-pending", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.press("theme:dracula", window, cx);
+        assert_eq!(view.selected(), "dracula");
+    });
+    harness.wait_for("the save", settled);
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.selected(), "dracula");
+    });
+    assert_eq!(file.text(), "[theme]\nname = \"dracula\"\n");
+}
+
+#[gpui::test]
+fn the_font_menu_gives_focus_back_to_its_button(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("font-menu", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.press("fonts:font.family", window, cx);
+        assert_eq!(view.focus_name(window, cx), "menu");
+        view.dismiss_menu(window, cx);
+        assert_eq!(view.focus_name(window, cx), "action:fonts:font.family");
+    });
+}

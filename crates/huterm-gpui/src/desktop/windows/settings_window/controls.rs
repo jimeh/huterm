@@ -258,8 +258,8 @@ impl SettingsView {
         let menu = self
             .menu
             .as_ref()
-            .filter(|(_, open)| open.path == path)
-            .map(|(menu, _)| menu.clone());
+            .filter(|(_, open, _)| open.path == path)
+            .map(|(menu, _, _)| menu.clone());
         div()
             .relative()
             .flex_none()
@@ -437,12 +437,7 @@ impl SettingsView {
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let selected = self
-            .file
-            .get("theme.name")
-            .and_then(Value::as_str)
-            .unwrap_or("huterm-dark")
-            .to_owned();
+        let selected = self.selected_theme();
         let mut cards = div().flex().flex_wrap().gap(px(8.0));
         let themes = self.themes.clone();
         for (name, preview) in &themes {
