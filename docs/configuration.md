@@ -36,8 +36,7 @@ is off, Settings notices a changed file when its window comes forward and
 offers Reload. Closing Settings saves the field you were typing in and
 waits for pending saves.
 
-Keybindings, global shortcuts, quake profiles, theme colors, and `[themes]`
-are edited in the file for now; their sections link to it. In the window,
+Theme colors and `[themes]` are edited in the file for now. In the window,
 Tab moves between controls, Space or Return toggles a switch or opens a
 select, the arrow keys step a control, Cmd+Backspace on macOS or
 Ctrl+Backspace on Linux resets the focused setting, and Return in the search
@@ -382,7 +381,10 @@ command = "toggle_quake"
 ```
 
 The `default` profile exists without configuration. Add named tables, such as
-`[quake.profiles.logs]`, for independent windows. `show_quake`, `hide_quake`,
+`[quake.profiles.logs]`, for independent windows. The Quake windows section of
+Settings picks a profile from a dropdown, adds and deletes named profiles, and
+records global shortcuts. It edits profiles whose names are bare TOML keys
+(letters, digits, `-`, and `_`); others stay in the file. `show_quake`, `hide_quake`,
 and `toggle_quake` accept an optional `profile` argument and also work in
 ordinary `[[keybinding]]` entries. A hidden window keeps its tabs, shells,
 scrollback, and selection. Toggling a visible but unfocused window raises it.

@@ -217,6 +217,7 @@ pub struct Section {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettingsModel {
     sections: Vec<Section>,
+    profile: Vec<Setting>,
 }
 
 /// Metadata the model cannot use, naming the schema property at fault.
@@ -267,6 +268,14 @@ impl SettingsModel {
         let mut settings = Vec::new();
         collect(schema, definitions, "", &mut settings)?;
         check(&settings)?;
+        let mut profile = Vec::new();
+        if let Some(definition) =
+            definitions.and_then(|definitions| definitions.get("Profile"))
+        {
+            collect(definition, definitions, "", &mut profile)?;
+            check(&profile)?;
+            profile.sort_by_key(|setting| setting.order);
+        }
         let mut sections: Vec<Section> = SectionId::ALL
             .into_iter()
             .map(|id| Section {
@@ -289,7 +298,7 @@ impl SettingsModel {
                 }),
             }
         }
-        Ok(Self { sections })
+        Ok(Self { sections, profile })
     }
 
     /// The ten sections in sidebar order, including any without settings.
@@ -309,6 +318,14 @@ impl SettingsModel {
     #[must_use]
     pub fn setting(&self, path: &str) -> Option<&Setting> {
         self.settings().find(|setting| setting.path == path)
+    }
+
+    /// The settings of one quake profile, in order, with paths relative to
+    /// its `[quake.profiles.<name>]` table. `visible_when` names a sibling
+    /// field the same way.
+    #[must_use]
+    pub fn profile_settings(&self) -> &[Setting] {
+        &self.profile
     }
 }
 
@@ -750,6 +767,49 @@ mod tests {
         let rows = rows.description.as_deref().unwrap();
         assert!(rows.starts_with("Live history each terminal keeps"));
         assert!(!rows.contains('\n'), "wrapped lines join: {rows}");
+    }
+
+    #[test]
+    fn every_profile_field_has_a_setting_with_its_default() {
+        let model = SettingsModel::load().unwrap();
+        let defaults =
+            toml::Table::try_from(crate::quake::Profile::default()).unwrap();
+        let mut paths: Vec<_> = model
+            .profile_settings()
+            .iter()
+            .map(|setting| setting.path.as_str())
+            .collect();
+        paths.sort_unstable();
+        let mut fields: Vec<_> = defaults.keys().map(String::as_str).collect();
+        fields.sort_unstable();
+        assert_eq!(paths, fields);
+        for setting in model.profile_settings() {
+            assert_eq!(
+                setting.default.as_ref(),
+                defaults.get(&setting.path),
+                "{}",
+                setting.path
+            );
+            assert_eq!(setting.section, SectionId::Quake);
+            assert_eq!(setting.apply, Apply::LaterEvents);
+        }
+        let width = &model.profile_settings()[1];
+        assert_eq!(width.path, "width");
+        assert_eq!(
+            width.visible_when,
+            Some(VisibleWhen {
+                setting: "fullscreen".into(),
+                equals: toml::Value::Boolean(false),
+            })
+        );
+        assert_eq!(
+            width.kind,
+            SettingKind::Number {
+                min: None,
+                max: Some(1.0),
+                exclusive_min: Some(0.0)
+            }
+        );
     }
 
     /// Every value a default configuration writes belongs to a setting, so

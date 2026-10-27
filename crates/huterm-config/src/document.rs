@@ -59,6 +59,12 @@ impl EntryLocator {
         &self.content
     }
 
+    /// The list the entry belongs to.
+    #[must_use]
+    pub fn list(&self) -> List {
+        self.list
+    }
+
     /// The entry's position when it was located.
     #[must_use]
     pub fn index(&self) -> usize {

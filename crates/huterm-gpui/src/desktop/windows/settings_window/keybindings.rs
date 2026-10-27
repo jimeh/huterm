@@ -40,7 +40,7 @@ use crate::ui::text_field::{Changed, TextField};
 pub(crate) const CHORD_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The key cap's width, and the tag's, so rows line up.
-const CAP_WIDTH: f32 = 96.0;
+pub(super) const CAP_WIDTH: f32 = 96.0;
 const TAG_WIDTH: f32 = 54.0;
 
 /// The menu item that leaves an argument unset.
@@ -73,6 +73,9 @@ impl Filter {
 pub(super) enum Target {
     Row(String),
     Add(CommandId),
+    /// A global shortcut's key, by entry.
+    Global(usize),
+    AddGlobal,
 }
 
 pub(super) struct Recording {
@@ -116,6 +119,8 @@ pub(super) struct Keys {
     /// A locator for each `[[keybinding]]` entry of the snapshot the list
     /// came from, parsed off the GPUI thread with it.
     pub(super) entries: Vec<huterm_config::document::EntryLocator>,
+    /// A locator for each `[[global_keybinding]]` entry, read with them.
+    pub(super) globals: Vec<huterm_config::document::EntryLocator>,
     /// The row whose change is being written.
     pub(super) writing_row: Option<String>,
     /// Strokes recorded across every recording; a chord timer finishes its
@@ -188,6 +193,7 @@ impl Keys {
             stranded: false,
             identities: HashMap::new(),
             entries: Vec::new(),
+            globals: Vec::new(),
             writing_row: None,
             strokes: 0,
             timed_out_at: None,
@@ -374,7 +380,7 @@ fn binding_of(listed: &ListedBinding) -> Binding {
 
 /// A static menu id for a quake profile name. Each distinct name leaks
 /// once; profiles are few and come from the user's file.
-fn interned(name: &str) -> &'static str {
+pub(super) fn interned(name: &str) -> &'static str {
     static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
     let mut names = NAMES
         .get_or_init(Mutex::default)
@@ -389,7 +395,7 @@ fn interned(name: &str) -> &'static str {
 }
 
 impl SettingsView {
-    fn keys_read_only(&self) -> bool {
+    pub(super) fn keys_read_only(&self) -> bool {
         self.locked() || self.keys.inventory.is_none()
     }
 
@@ -758,7 +764,7 @@ impl SettingsView {
         }
     }
 
-    fn start_recording(
+    pub(super) fn start_recording(
         &mut self,
         target: Target,
         focus: &FocusHandle,
@@ -827,7 +833,10 @@ impl SettingsView {
         };
         recording.strokes.push(keystroke.unparse());
         recording.generation = generation;
-        if recording.strokes.len() >= 2 {
+        // A global shortcut is one stroke.
+        let global =
+            matches!(recording.target, Target::Global(_) | Target::AddGlobal);
+        if global || recording.strokes.len() >= 2 {
             self.finish_recording(cx);
             return true;
         }
@@ -880,6 +889,8 @@ impl SettingsView {
                 self.keys.open.insert(command);
                 self.submit_keys(Edit::Add { key, command }, None, None, cx);
             }
+            Target::Global(entry) => self.finish_global(Some(entry), key, cx),
+            Target::AddGlobal => self.finish_global(None, key, cx),
         }
         cx.notify();
     }
@@ -1475,6 +1486,30 @@ impl SettingsView {
         );
     }
 
+    /// The menu item an argument's value matches: `true` or `false`, its
+    /// text, or the unset item.
+    pub(super) fn argument_choice(
+        &self,
+        name: &str,
+        argument: &str,
+    ) -> Option<String> {
+        let listed = self
+            .keys
+            .inventory
+            .as_ref()
+            .and_then(|inventory| row(inventory, name))?;
+        let profile = lookup(listed.binding.command.as_str())
+            .and_then(|spec| spec.argument(argument))
+            .is_some_and(|spec| spec.kind == ArgumentKind::QuakeProfile);
+        Some(match binding_of(listed).args.get(argument) {
+            Some(Value::Boolean(on)) => on.to_string(),
+            Some(Value::String(text)) => text.clone(),
+            Some(other) => other.to_string(),
+            None if profile => "default".to_owned(),
+            None => UNSET.to_owned(),
+        })
+    }
+
     /// Writes a value picked from an argument's menu.
     pub(super) fn pick_argument(
         &mut self,
@@ -1941,7 +1976,7 @@ impl SettingsView {
     }
 
     /// The keys recorded so far as the platform draws them, or a prompt.
-    fn recording_content(&self, swatch: Swatch) -> AnyElement {
+    pub(super) fn recording_content(&self, swatch: Swatch) -> AnyElement {
         match &self.keys.recording {
             Some(recording) if !recording.strokes.is_empty() => div()
                 .flex()
@@ -1963,7 +1998,7 @@ impl SettingsView {
     }
 
     /// What the recorder is waiting for, under the row it records into.
-    fn recording_hint(&self, swatch: Swatch) -> gpui::Div {
+    pub(super) fn recording_hint(&self, swatch: Swatch) -> gpui::Div {
         let waiting = self
             .keys
             .recording
@@ -2486,7 +2521,10 @@ fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
 }
 
 /// A small × that removes an entry from the file.
-fn remove_button(name: String, swatch: Swatch) -> gpui::Stateful<gpui::Div> {
+pub(super) fn remove_button(
+    name: String,
+    swatch: Swatch,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id(name))
         .flex()
@@ -2504,7 +2542,7 @@ fn remove_button(name: String, swatch: Swatch) -> gpui::Stateful<gpui::Div> {
         )
 }
 
-fn card(swatch: Swatch) -> gpui::Div {
+pub(super) fn card(swatch: Swatch) -> gpui::Div {
     div()
         .flex()
         .flex_col()
@@ -2515,7 +2553,11 @@ fn card(swatch: Swatch) -> gpui::Div {
         .bg(swatch.surface)
 }
 
-fn group_block(title: &str, card: gpui::Div, swatch: Swatch) -> AnyElement {
+pub(super) fn group_block(
+    title: &str,
+    card: gpui::Div,
+    swatch: Swatch,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -2531,7 +2573,7 @@ fn group_block(title: &str, card: gpui::Div, swatch: Swatch) -> AnyElement {
         .into_any_element()
 }
 
-fn small(text: String, color: gpui::Hsla) -> gpui::Div {
+pub(super) fn small(text: String, color: gpui::Hsla) -> gpui::Div {
     div().text_size(px(11.5)).text_color(color).child(text)
 }
 

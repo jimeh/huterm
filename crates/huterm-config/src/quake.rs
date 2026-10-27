@@ -50,12 +50,35 @@ impl Config {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
+    /// The display edge the window sits against. Center centers it on both
+    /// axes.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Profile",
+            "x-huterm-label" = "Position",
+            "x-huterm-order" = 10,
+            "x-huterm-apply" = "later_events"
+        ))
+    )]
     pub position: Position,
-    /// Active, pointer, primary, or `id:<platform display identifier>`.
-    /// Display availability is checked at runtime.
+    /// The display the window opens on: the active one, the one under the
+    /// pointer, the primary one, or `id:` and a platform display
+    /// identifier. Display availability is checked at runtime.
     #[cfg_attr(
         feature = "schema",
         schemars(regex(pattern = r"^(active|pointer|primary|id:.*\S.*)$"))
+    )]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Profile",
+            "x-huterm-label" = "Display",
+            "x-huterm-order" = 50,
+            "x-huterm-apply" = "later_events"
+        ))
     )]
     pub display: String,
     /// Fraction of the display work area, greater than zero and at most
@@ -64,6 +87,17 @@ pub struct Profile {
         feature = "schema",
         schemars(range(max = 1), extend("exclusiveMinimum" = 0))
     )]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Profile",
+            "x-huterm-label" = "Width",
+            "x-huterm-order" = 20,
+            "x-huterm-apply" = "later_events",
+            "x-huterm-visible-when" = {"setting": "fullscreen", "equals": false}
+        ))
+    )]
     pub width: f64,
     /// Fraction of the display work area, greater than zero and at most
     /// one. Fullscreen uses the full display frame.
@@ -71,12 +105,68 @@ pub struct Profile {
         feature = "schema",
         schemars(range(max = 1), extend("exclusiveMinimum" = 0))
     )]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Profile",
+            "x-huterm-label" = "Height",
+            "x-huterm-order" = 30,
+            "x-huterm-apply" = "later_events",
+            "x-huterm-visible-when" = {"setting": "fullscreen", "equals": false}
+        ))
+    )]
     pub height: f64,
+    /// Covers the whole display frame instead of a part of its work area.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Profile",
+            "x-huterm-label" = "Fullscreen",
+            "x-huterm-order" = 40,
+            "x-huterm-apply" = "later_events"
+        ))
+    )]
     pub fullscreen: bool,
+    /// Hides the window when another application takes focus.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Profile",
+            "x-huterm-label" = "Hide when it loses focus",
+            "x-huterm-order" = 60,
+            "x-huterm-apply" = "later_events"
+        ))
+    )]
     pub hide_on_focus_loss: bool,
+    /// How the window shows and hides. Auto fades fullscreen windows and
+    /// fades and slides others from their side.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Profile",
+            "x-huterm-label" = "Animation",
+            "x-huterm-order" = 70,
+            "x-huterm-apply" = "later_events"
+        ))
+    )]
     pub animation: Animation,
     /// Animation duration in milliseconds, from 0 to 1000.
     #[cfg_attr(feature = "schema", schemars(range(max = 1000)))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Profile",
+            "x-huterm-label" = "Duration",
+            "x-huterm-order" = 80,
+            "x-huterm-apply" = "later_events",
+            "x-huterm-unit" = "ms"
+        ))
+    )]
     pub animation_ms: u16,
 }
 impl Default for Profile {
@@ -122,27 +212,44 @@ impl Profile {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Position {
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Top")))]
     Top,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Bottom")))]
     Bottom,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Left")))]
     Left,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Right")))]
     Right,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Center")))]
     Center,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Animation {
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Auto")))]
     Auto,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "None")))]
     None,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Fade")))]
     Fade,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Slide")))]
     Slide,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Slide from the top")))]
     SlideTop,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Slide from the bottom")))]
     SlideBottom,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Slide from the left")))]
     SlideLeft,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Slide from the right")))]
     SlideRight,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Fade and slide from the top")))]
     FadeSlideTop,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Fade and slide from the bottom")))]
     FadeSlideBottom,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Fade and slide from the left")))]
     FadeSlideLeft,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Fade and slide from the right")))]
     FadeSlideRight,
 }
 

@@ -17,9 +17,9 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, Context, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, Pixels, Point, Render, ScrollHandle,
-    SharedString, Size, Styled, UTF16Selection, Window, canvas, div, point,
-    prelude::*, px,
+    EventEmitter, FocusHandle, Focusable, MouseMoveEvent, Pixels, Point,
+    Render, ScrollHandle, SharedString, Size, Styled, UTF16Selection, Window,
+    canvas, div, point, prelude::*, px,
 };
 
 use super::key_hint::KeyHint;
@@ -576,6 +576,18 @@ impl Menu {
         cx.notify();
     }
 
+    /// Selects the item `id`, such as the value a select shows, when it is
+    /// enabled.
+    pub(crate) fn select_item(
+        &mut self,
+        id: MenuItemId,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(selection) = self.model.selection_of(id) {
+            self.set_selection(Some(selection), cx);
+        }
+    }
+
     pub(crate) fn select_next(&mut self, cx: &mut Context<'_, Self>) {
         self.set_selection(self.model.next(self.selection), cx);
     }
@@ -706,11 +718,13 @@ impl Menu {
             .when(enabled, |item| {
                 item.active(|style| style.bg(swatch.accent_pressed()))
             })
-            .on_hover(cx.listener(move |menu, hovering: &bool, _, cx| {
-                if *hovering {
+            // Only a moving pointer selects: a menu that opens under a
+            // resting pointer keeps the selection it opened with.
+            .on_mouse_move(cx.listener(
+                move |menu, _: &MouseMoveEvent, _, cx| {
                     menu.hover(row, None, cx);
-                }
-            }))
+                },
+            ))
             .when(enabled, |item| {
                 item.on_click(cx.listener(move |_, _, _, cx| {
                     cx.emit(MenuEvent::Picked(id));
@@ -778,11 +792,9 @@ impl Menu {
                                 .text_color(swatch.bg)
                         })
                     })
-                    .on_hover(cx.listener(
-                        move |menu, hovering: &bool, _, cx| {
-                            if *hovering {
-                                menu.hover(row, Some(index), cx);
-                            }
+                    .on_mouse_move(cx.listener(
+                        move |menu, _: &MouseMoveEvent, _, cx| {
+                            menu.hover(row, Some(index), cx);
                         },
                     ))
                     .when(enabled, |button| {
@@ -1008,7 +1020,7 @@ impl Render for Menu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::size;
+    use gpui::{Entity, Modifiers, TestAppContext, size};
 
     fn item(id: MenuItemId, label: &str) -> MenuRow {
         MenuRow::Item(MenuItem::new(id, label))
@@ -1276,5 +1288,53 @@ mod tests {
         );
         assert_eq!(tall.origin.y, px(6.0));
         assert_eq!(tall.max_height, px(588.0));
+    }
+
+    /// Draws its menu once it has one, as a select does when clicked.
+    struct Host {
+        menu: Option<Entity<Menu>>,
+    }
+
+    impl Render for Host {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            _: &mut Context<'_, Self>,
+        ) -> impl IntoElement {
+            div().size_full().children(self.menu.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn a_menu_under_a_resting_pointer_keeps_its_selection(
+        cx: &mut TestAppContext,
+    ) {
+        let (host, cx) = cx.add_window_view(|_, _| Host { menu: None });
+        // The pointer rests where a later row will draw.
+        let resting = point(px(60.0), px(70.0));
+        cx.simulate_mouse_move(resting, None, Modifiers::none());
+        let menu = cx.update(|_, cx| {
+            let swatch = Swatch::from_theme(&huterm_config::Theme::default());
+            let menu = cx.new(|cx| Menu::new(model(), swatch, true, cx));
+            host.update(cx, |host, cx| {
+                host.menu = Some(menu.clone());
+                cx.notify();
+            });
+            menu
+        });
+        // A second frame settles hover under the resting pointer.
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let first = model().first();
+        assert_eq!(cx.read(|cx| menu.read(cx).selection()), first);
+        // Moving it selects the row under it.
+        cx.simulate_mouse_move(
+            resting + point(px(1.0), px(0.0)),
+            None,
+            Modifiers::none(),
+        );
+        let moved = cx.read(|cx| menu.read(cx).selection());
+        assert!(moved.is_some() && moved != first, "{moved:?}");
     }
 }

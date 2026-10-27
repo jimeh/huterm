@@ -5,7 +5,9 @@
 //! One write runs at a time. A queued edit keeps the snapshot it was made
 //! against, so a later write cannot silently overwrite an edit made
 //! elsewhere. It moves to a newer snapshot only when that snapshot still
-//! holds the value the edit expected at its path.
+//! holds the value the edit expected at its path. Use mine and a profile's
+//! deletion read the file afresh instead: the user chose to replace or
+//! remove what is there.
 
 use std::path::Path;
 
@@ -24,7 +26,7 @@ use super::super::super::settings::values::{
 };
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
-use super::{SettingsView, current, field_text, size_value, themes};
+use super::{SettingsView, current, field_text, quake, size_value, themes};
 use crate::keymap::{Inventory, Platform, inventory};
 
 /// A change the file changed under, kept until the user picks theirs or
@@ -98,6 +100,8 @@ struct Listed {
     inventory: Option<Inventory>,
     /// A locator for each `[[keybinding]]` entry, for edits to address.
     entries: Vec<EntryLocator>,
+    /// A locator for each `[[global_keybinding]]` entry.
+    globals: Vec<EntryLocator>,
 }
 
 /// Parses the file's keybindings, off the GPUI thread.
@@ -111,6 +115,7 @@ fn listed(snapshot: &Snapshot, path: &Path) -> Listed {
     Listed {
         inventory,
         entries: snapshot.entries(List::Keybinding),
+        globals: snapshot.entries(List::GlobalKeybinding),
     }
 }
 
@@ -202,6 +207,7 @@ impl SettingsView {
             }) => {
                 self.keys.inventory = keys.inventory;
                 self.keys.entries = keys.entries;
+                self.set_globals(keys.globals);
                 match (file, valid) {
                     (Ok(file), Ok(())) => {
                         self.file = file;
@@ -334,7 +340,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         let (Some(field), Some(setting)) =
-            (self.fields.get(path).cloned(), self.model.setting(path))
+            (self.fields.get(path).cloned(), self.setting_at(path))
         else {
             return;
         };
@@ -427,7 +433,8 @@ impl SettingsView {
             None => self.file.get(target).cloned(),
         };
         self.pending.insert(key, value.clone());
-        // Use mine reads the file afresh for its own change only.
+        // Use mine and a profile's deletion read the file afresh, for their
+        // own change only.
         let base = if self.fresh == Some(key) {
             self.fresh = None;
             None
@@ -486,7 +493,8 @@ impl SettingsView {
         if let Some(row) = &row {
             self.keys.errors.remove(row);
         }
-        let patches = match edit.patches(&self.keys.entries) {
+        let patches = match edit.patches(&self.keys.entries, &self.keys.globals)
+        {
             Ok(patches) => patches,
             Err(message) => {
                 self.status.failed(message);
@@ -576,6 +584,7 @@ impl SettingsView {
                 }
                 self.keys.inventory = written.keys.inventory;
                 self.keys.entries = written.keys.entries;
+                self.set_globals(written.keys.globals);
                 self.base = Some(written.snapshot);
                 self.rebase_queued_keys(&change.patches);
                 self.status.saved();
@@ -602,7 +611,7 @@ impl SettingsView {
                 // The field keeps its text as a draft for after the fix, as
                 // do fields whose queued edits go unwritten.
                 report(self, "config.toml has an error. Not saved.".to_owned());
-                self.drop_queue_for_invalid_file();
+                self.drop_queue_for_invalid_file(cx);
                 self.pending.clear();
                 self.status.invalid_file(message);
                 self.sync_fields(cx);
@@ -654,6 +663,77 @@ impl SettingsView {
         .detach();
     }
 
+    /// Whether the file holds `value` for `setting`, or will once its
+    /// pending change lands. Picking such a value writes nothing; picking a
+    /// default the file leaves unset still writes it.
+    pub(super) fn holds(
+        &self,
+        setting: &'static Setting,
+        value: &Value,
+    ) -> bool {
+        match self.pending.get(setting.path.as_str()) {
+            Some(pending) => pending.as_ref() == Some(value),
+            None => self.file.get(written_path(setting)) == Some(value),
+        }
+    }
+
+    /// Settles a refused creation or deletion of a profile at once: it has
+    /// no row to hold a conflict or an error, so the profile bar says why,
+    /// and the file is read again to show what it holds. `false` for any
+    /// other write.
+    fn profile_write_refused(
+        &mut self,
+        change: &Pending,
+        error: &ApplyError,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let key = change.setting.path.as_str();
+        if !quake::is_profile_table(key)
+            || matches!(error, ApplyError::WrittenNotDurable(_))
+        {
+            return false;
+        }
+        if self.pending.get(key) == Some(&change.value) {
+            self.pending.remove(key);
+        }
+        let message = match error {
+            ApplyError::Conflict(changes) => {
+                format!("config.toml changed: {}", changes.join("; "))
+            }
+            error => error.to_string(),
+        };
+        if change.value.is_some() {
+            // Edits to the new profile's settings would create it, or write
+            // into a profile another editor made, so they go, and their
+            // fields drop the text that would submit them again.
+            let prefix = format!("{key}.");
+            self.queued.retain(|queued| {
+                !matches!(queued, Queued::Setting(queued) if queued.path.starts_with(&prefix))
+            });
+            self.pending.retain(|path, _| !path.starts_with(&prefix));
+            let fields: Vec<&'static str> = self
+                .fields
+                .keys()
+                .copied()
+                .filter(|path| path.starts_with(&prefix))
+                .collect();
+            for path in fields {
+                self.sync_field(path, true, cx);
+            }
+        }
+        // This change's name comes back before any queued creation's.
+        self.profile_failed(key, change.value.is_some(), message.clone(), cx);
+        if let ApplyError::InvalidFile(invalid) = error {
+            self.drop_queue_for_invalid_file(cx);
+            self.pending.clear();
+            self.status.invalid_file(invalid.clone());
+        } else {
+            self.status.failed(message);
+            self.load(cx);
+        }
+        true
+    }
+
     fn written(
         &mut self,
         change: Pending,
@@ -676,6 +756,12 @@ impl SettingsView {
                 view.pending.remove(key);
             }
         };
+        if let Err(error) = &result
+            && self.profile_write_refused(&change, error, cx)
+        {
+            self.next_write(true, cx);
+            return;
+        }
         let mut failed = false;
         match result {
             Ok(written) => {
@@ -696,6 +782,7 @@ impl SettingsView {
                 }
                 self.keys.inventory = written.keys.inventory;
                 self.keys.entries = written.keys.entries;
+                self.set_globals(written.keys.globals);
                 self.base = Some(written.snapshot);
                 self.status.saved();
                 let saved = field_text(shown(
@@ -728,7 +815,7 @@ impl SettingsView {
                 failed = true;
                 // Nothing can be written to an invalid file, so every
                 // pending change settles unsaved.
-                self.drop_queue_for_invalid_file();
+                self.drop_queue_for_invalid_file(cx);
                 self.pending.clear();
                 self.status.invalid_file(message);
                 self.sync_fields(cx);
@@ -767,8 +854,21 @@ impl SettingsView {
     /// Drops every queued write after the file turned out invalid. A
     /// keybinding field whose edit goes unwritten keeps its text as a draft,
     /// marked, for after the fix.
-    fn drop_queue_for_invalid_file(&mut self) {
+    fn drop_queue_for_invalid_file(&mut self, cx: &mut Context<'_, Self>) {
         for queued in std::mem::take(&mut self.queued) {
+            // A queued profile creation gives its name back to retry.
+            if let Queued::Setting(change) = &queued
+                && change.value.is_some()
+                && quake::is_profile_table(change.path)
+            {
+                self.profile_failed(
+                    change.path,
+                    true,
+                    "config.toml has an error. Not saved.".to_owned(),
+                    cx,
+                );
+                continue;
+            }
             let Queued::Keys(KeyChange {
                 field: Some((key, saved)),
                 ..
@@ -797,7 +897,7 @@ impl SettingsView {
     /// removed goes, with its edit when nothing of that is left; and entries
     /// after a removed one move up.
     fn rebase_queued_keys(&mut self, landed: &[Patch]) {
-        let mut changed: Vec<(usize, Table, Option<Table>)> = Vec::new();
+        let mut changed: Vec<(List, usize, Table, Option<Table>)> = Vec::new();
         for patch in landed {
             match patch {
                 Patch::SetEntryField {
@@ -808,6 +908,7 @@ impl SettingsView {
                     let mut after = locator.content().clone();
                     after.insert(field.clone(), value.clone());
                     changed.push((
+                        locator.list(),
                         locator.index(),
                         locator.content().clone(),
                         Some(after),
@@ -817,6 +918,7 @@ impl SettingsView {
                     let mut after = locator.content().clone();
                     after.remove(field);
                     changed.push((
+                        locator.list(),
                         locator.index(),
                         locator.content().clone(),
                         Some(after),
@@ -824,6 +926,7 @@ impl SettingsView {
                 }
                 Patch::RemoveEntry { locator } => {
                     changed.push((
+                        locator.list(),
                         locator.index(),
                         locator.content().clone(),
                         None,
@@ -835,10 +938,10 @@ impl SettingsView {
         if changed.is_empty() {
             return;
         }
-        let removed: Vec<usize> = changed
+        let removed: Vec<(List, usize)> = changed
             .iter()
-            .filter(|(_, _, after)| after.is_none())
-            .map(|(index, _, _)| *index)
+            .filter(|(_, _, _, after)| after.is_none())
+            .map(|(list, index, _, _)| (*list, *index))
             .collect();
         self.queued.retain_mut(|queued| {
             let Queued::Keys(change) = queued else {
@@ -853,16 +956,24 @@ impl SettingsView {
                 else {
                     return true;
                 };
-                let index = locator.index();
-                let content = match changed.iter().find(|(at, before, _)| {
-                    *at == index && before == locator.content()
-                }) {
-                    Some((_, _, None)) => return false,
-                    Some((_, _, Some(after))) => after.clone(),
-                    None => locator.content().clone(),
-                };
+                let (list, index) = (locator.list(), locator.index());
+                let content =
+                    match changed.iter().find(|(within, at, before, _)| {
+                        *within == list
+                            && *at == index
+                            && before == locator.content()
+                    }) {
+                        Some((.., None)) => return false,
+                        Some((.., Some(after))) => after.clone(),
+                        None => locator.content().clone(),
+                    };
                 let moved = index
-                    - removed.iter().filter(|gone| **gone < index).count();
+                    - removed
+                        .iter()
+                        .filter(|(within, gone)| {
+                            *within == list && *gone < index
+                        })
+                        .count();
                 *locator = locator.rebased(moved, content);
                 true
             });
@@ -976,7 +1087,7 @@ impl SettingsView {
         if self.locked() {
             return;
         }
-        let Some(setting) = self.model.setting(path) else {
+        let Some(setting) = self.setting_at(path) else {
             return;
         };
         // A field draft settles through the field, which keeps the conflict
@@ -1177,7 +1288,7 @@ impl SettingsView {
             return;
         }
         self.errors.remove(path);
-        let text = match (self.pending.get(path), self.model.setting(path)) {
+        let text = match (self.pending.get(path), self.setting_at(path)) {
             // A pending reset shows the default.
             (Some(value), Some(setting)) => {
                 Some(self.display(setting, value.clone()))

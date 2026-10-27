@@ -95,6 +95,8 @@ impl SettingsView {
                 .flat_map(|group| &group.settings)
                 .map(|setting| match self.file.get(&setting.path) {
                     Some(toml::Value::Array(entries)) => entries.len(),
+                    // Profiles count the values they set.
+                    Some(_) if setting.path == "quake" => self.profile_values(),
                     Some(_) => 1,
                     None => 0,
                 })
@@ -248,7 +250,7 @@ impl SettingsView {
         )
     }
 
-    fn render_row(
+    pub(super) fn render_row(
         &mut self,
         setting: &'static Setting,
         swatch: Swatch,
@@ -531,6 +533,8 @@ impl SettingsView {
                 );
             body = if section == SectionId::Keybindings {
                 body.children(self.render_keybindings(swatch, window, cx))
+            } else if section == SectionId::Quake {
+                body.children(self.render_quake(swatch, window, cx))
             } else {
                 body.children(
                     self.render_groups(section, "", swatch, window, cx),
