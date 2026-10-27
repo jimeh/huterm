@@ -613,18 +613,35 @@ impl SettingsView {
         if self.locked() {
             return;
         }
-        let Some(conflict) = self.conflicts.remove(path) else {
-            return;
-        };
         let Some(setting) = self.model.setting(path) else {
             return;
         };
-        self.fresh = Some(path);
-        match conflict.patch {
-            Some(refused) => {
-                self.submit(setting, refused, conflict.value, None, cx);
+        // A field draft settles through the field, which keeps the conflict
+        // until the draft parses.
+        let Some(refused) = self
+            .conflicts
+            .get(path)
+            .and_then(|conflict| conflict.patch.clone())
+        else {
+            if self.conflicts.contains_key(path) {
+                self.commit_field(setting, cx);
             }
-            None => self.commit_field(setting, cx),
+            return;
+        };
+        let Some(conflict) = self.conflicts.remove(path) else {
+            return;
+        };
+        self.fresh = Some(path);
+        self.submit(setting, refused, conflict.value, None, cx);
+        self.clear_unused_fresh(path);
+    }
+
+    /// Drops a fresh read that no submitted change used, so a later change
+    /// to the setting builds on the window's snapshot and conflicts with an
+    /// edit made elsewhere instead of overwriting it.
+    fn clear_unused_fresh(&mut self, path: &'static str) {
+        if self.fresh == Some(path) {
+            self.fresh = None;
         }
     }
 
@@ -717,10 +734,8 @@ impl SettingsView {
             return;
         }
         // Saving a field again after a conflict keeps the entered value,
-        // against a fresh read.
-        if self.conflicts.remove(path).is_some() {
-            self.fresh = Some(path);
-        }
+        // against a fresh read; the conflict stays until the text parses.
+        let resolving = self.conflicts.contains_key(path);
         let parsed = match &setting.kind {
             _ if special(path) == Some(Special::Size) => Ok(size_value(&text)),
             SettingKind::Integer { .. } | SettingKind::Number { .. } => {
@@ -732,6 +747,9 @@ impl SettingsView {
         match parsed {
             Ok(value) => {
                 self.errors.remove(path);
+                if resolving {
+                    self.conflicts.remove(path);
+                }
                 if value.is_some() && value == self.value(setting) {
                     // Already saved or saving. A field that matches a
                     // pending change keeps its text until that lands.
@@ -745,8 +763,23 @@ impl SettingsView {
                     None if !self.resettable(setting) => {
                         self.sync_field(path, true, cx);
                     }
-                    None => self.reset(setting, cx),
-                    value => self.write_typed(setting, value, Some(text), cx),
+                    value => {
+                        if resolving {
+                            self.fresh = Some(path);
+                        }
+                        match value {
+                            None => self.reset(setting, cx),
+                            value => {
+                                self.write_typed(
+                                    setting,
+                                    value,
+                                    Some(text),
+                                    cx,
+                                );
+                            }
+                        }
+                        self.clear_unused_fresh(path);
+                    }
                 }
             }
             Err(message) => {

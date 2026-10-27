@@ -287,6 +287,40 @@ fn use_file_keeps_the_file_even_when_focus_leaves_the_field(
 }
 
 #[gpui::test]
+fn a_draft_that_does_not_parse_keeps_its_conflict_and_later_edits_still_conflict(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("conflict-parse", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "21", window, cx);
+    });
+    std::fs::write(file.path(), "[font]\nsize = 22.0\n").unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the draft's conflict", |cx| {
+        settled(cx) && conflicted(cx, "font.size")
+    });
+    // Saving text that does not parse keeps the conflict to settle.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "abc", window, cx);
+        view.enter("font.size", cx);
+        assert!(view.conflicted("font.size"));
+    });
+    // Another editor changes it again; a later change made here must
+    // conflict with that, not overwrite it from a fresh read.
+    with_view(&mut harness, |view, cx| view.use_file("font.size", cx));
+    std::fs::write(file.path(), "[font]\nsize = 23.0\n").unwrap();
+    with_view(&mut harness, |view, cx| {
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+    });
+    harness.wait_for("the refused write", |cx| {
+        settled(cx) && conflicted(cx, "font.size")
+    });
+    assert_eq!(file.text(), "[font]\nsize = 23.0\n");
+}
+
+#[gpui::test]
 fn a_reload_keeps_a_draft_and_reports_the_file_change(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("draft", "[font]\nsize = 13.0\n");
     let mut harness = DesktopHarness::new(cx);
