@@ -219,6 +219,8 @@ position = "top"
     await typeText("ack old");
     await key("enter");
     await state("ACK:ack old");
+    // A tab the key had started would publish before the window is idle.
+    await state("w0.busy=false");
     if (!(await current()).includes("w0.tabs=1")) throw new Error("the switched-off New Tab key opened a tab");
     // The new key opens one, and keys reach its shell.
     await key("search");

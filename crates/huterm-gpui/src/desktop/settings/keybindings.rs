@@ -481,8 +481,9 @@ pub(crate) enum Field {
     Argument(String),
 }
 
-/// One change the editor makes, resolved into patches against the snapshot
-/// the previous write left.
+/// One change the editor makes. It names user entries by index in the list
+/// it was made from; [`Edit::shift`] carries those indexes past the window's
+/// own removals, and its patches are built when its write starts.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Edit {
     /// Turn off an active default with an entry that matches only it.
@@ -512,6 +513,68 @@ pub(crate) enum Edit {
 }
 
 impl Edit {
+    /// The user entries this edit addresses, in a stable order.
+    pub(crate) fn entries(&self) -> Vec<usize> {
+        match self {
+            Self::SwitchOnDefault(entries) | Self::Remove(entries) => {
+                entries.clone()
+            }
+            Self::SwitchUser { entry, .. } | Self::ChangeUser { entry, .. } => {
+                vec![*entry]
+            }
+            Self::SwitchOffDefault(_)
+            | Self::ChangeDefault { .. }
+            | Self::Add { .. } => Vec::new(),
+        }
+    }
+
+    /// The entries this edit removes from the file.
+    pub(crate) fn removes(&self) -> &[usize] {
+        match self {
+            Self::SwitchOnDefault(entries) | Self::Remove(entries) => entries,
+            _ => &[],
+        }
+    }
+
+    /// This edit after the entries in `removed` left the file: later indexes
+    /// move down, and an entry that left is dropped. `None` when nothing it
+    /// addresses is left.
+    pub(crate) fn shift(&self, removed: &[usize]) -> Option<Self> {
+        let moved = |entry: usize| {
+            (!removed.contains(&entry)).then(|| {
+                entry - removed.iter().filter(|gone| **gone < entry).count()
+            })
+        };
+        Some(match self {
+            Self::SwitchOnDefault(entries) | Self::Remove(entries) => {
+                let left: Vec<usize> =
+                    entries.iter().filter_map(|entry| moved(*entry)).collect();
+                if left.is_empty() {
+                    return None;
+                }
+                if matches!(self, Self::Remove(_)) {
+                    Self::Remove(left)
+                } else {
+                    Self::SwitchOnDefault(left)
+                }
+            }
+            Self::SwitchUser { entry, on } => Self::SwitchUser {
+                entry: moved(*entry)?,
+                on: *on,
+            },
+            Self::ChangeUser {
+                entry,
+                field,
+                value,
+            } => Self::ChangeUser {
+                entry: moved(*entry)?,
+                field: field.clone(),
+                value: value.clone(),
+            },
+            other => other.clone(),
+        })
+    }
+
     /// The patches this edit writes against `snapshot`.
     ///
     /// # Errors

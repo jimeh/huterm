@@ -109,10 +109,13 @@ pub(super) struct Keys {
     pub(super) follow: Option<(String, String)>,
     /// A focused field went away with its row; focus moves to the window.
     pub(super) stranded: bool,
-    /// Each row's binding at the last sync, by key and command: a row whose
-    /// binding changed identity, such as after another editor removed an
-    /// earlier entry, is a different shortcut, and its fields start over.
-    pub(super) identities: HashMap<String, (String, CommandId)>,
+    /// Each row's binding at the last sync, written out whole: a row whose
+    /// binding changed, such as after another editor removed an earlier
+    /// entry, is a different shortcut, and its fields start over.
+    pub(super) identities: HashMap<String, String>,
+    /// The row the window's last write changed, which keeps its identity
+    /// through that change.
+    pub(super) own_row: Option<String>,
     /// Strokes recorded across every recording; a chord timer finishes its
     /// recording only while no later stroke has arrived.
     pub(super) strokes: u64,
@@ -174,6 +177,7 @@ impl Keys {
             follow: None,
             stranded: false,
             identities: HashMap::new(),
+            own_row: None,
             strokes: 0,
             timed_out_at: None,
         }
@@ -572,7 +576,8 @@ impl SettingsView {
     }
 
     /// Changes one field of a row's binding: in place for a user entry,
-    /// or as a disabled default plus a replacement.
+    /// or as a disabled default plus a replacement. `false` when nothing was
+    /// submitted.
     fn edit_row(
         &mut self,
         name: &str,
@@ -580,14 +585,14 @@ impl SettingsView {
         value: Option<Value>,
         origin: Option<(String, Option<String>)>,
         cx: &mut Context<'_, Self>,
-    ) {
+    ) -> bool {
         let Some(listed) = self
             .keys
             .inventory
             .as_ref()
             .and_then(|inventory| row(inventory, name))
         else {
-            return;
+            return false;
         };
         let edit = match (listed.binding.origin, listed.entry) {
             (Origin::User, Some(entry)) => Edit::ChangeUser {
@@ -602,7 +607,7 @@ impl SettingsView {
                 value,
             },
         };
-        self.submit_keys(edit, Some(name.to_owned()), origin, cx);
+        self.submit_keys(edit, Some(name.to_owned()), origin, cx)
     }
 
     /// After a changed default lands, the changed binding is the file's
@@ -910,32 +915,24 @@ impl SettingsView {
     /// edited keeps a draft, and only while its shortcut is active; fields
     /// whose rows are gone go.
     pub(super) fn sync_key_fields(&mut self, cx: &mut Context<'_, Self>) {
-        let identities: HashMap<String, (String, CommandId)> = self
-            .keys
-            .inventory
-            .as_ref()
-            .map(|inventory| {
-                rows(inventory)
-                    .into_iter()
-                    .map(|(name, listed)| {
-                        (
-                            name,
-                            (
-                                listed.binding.key.clone(),
-                                listed.binding.command,
-                            ),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // While the file is invalid there is nothing to compare against;
+        // fields and their drafts wait for the next good read.
+        let Some(inventory) = &self.keys.inventory else {
+            return;
+        };
+        let identities: HashMap<String, String> = rows(inventory)
+            .into_iter()
+            .map(|(name, listed)| (name, format!("{:?}", listed.binding)))
+            .collect();
         let previous = std::mem::replace(&mut self.keys.identities, identities);
+        let own = self.keys.own_row.take();
         let keys: Vec<String> = self.keys.fields.keys().cloned().collect();
         for key in keys {
             let moved = field_row(&key).is_some_and(|row| {
-                previous.get(row).is_some_and(|before| {
-                    self.keys.identities.get(row) != Some(before)
-                })
+                own.as_deref() != Some(row)
+                    && previous.get(row).is_some_and(|before| {
+                        self.keys.identities.get(row) != Some(before)
+                    })
             });
             let text = if moved {
                 None
@@ -1057,7 +1054,18 @@ impl SettingsView {
         // write lands does not write it again.
         self.keys.errors.remove(key);
         let saved = self.keys.synced.insert(key.to_owned(), text);
-        self.edit_row(&name, field, value, Some((key.to_owned(), saved)), cx);
+        let origin = Some((key.to_owned(), saved.clone()));
+        if !self.edit_row(&name, field, value, origin, cx) {
+            // Not submitted: the text is still unsaved.
+            match saved {
+                Some(saved) => {
+                    self.keys.synced.insert(key.to_owned(), saved);
+                }
+                None => {
+                    self.keys.synced.remove(key);
+                }
+            }
+        }
     }
 
     /// Puts a field back to its saved text.
@@ -1326,7 +1334,8 @@ impl SettingsView {
             return;
         }
         let value = match (picked, kind) {
-            (UNSET, _) => None,
+            // An unset profile is the `default` profile.
+            (UNSET, _) | ("default", ArgumentKind::QuakeProfile) => None,
             (picked, ArgumentKind::Bool) => {
                 Some(Value::Boolean(picked == "true"))
             }

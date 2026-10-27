@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use gpui::{AppContext as _, Context, Window};
-use huterm_config::document::{ApplyError, ConfigFile, Patch, Snapshot};
+use huterm_config::document::{ApplyError, ConfigFile, List, Patch, Snapshot};
 use huterm_config::settings::{
     Platform as SettingPlatform, Setting, SettingKind,
 };
@@ -57,10 +57,12 @@ pub(super) struct Pending {
 pub(super) struct KeyChange {
     pub(super) edit: Edit,
     pub(super) row: Option<String>,
-    /// Built when the edit was made, against the snapshot the user saw:
-    /// their locators match entries by content, so an earlier queued
-    /// removal cannot point them at a different entry.
-    patches: Vec<Patch>,
+    /// The command of each entry the edit addresses, in `Edit::entries`
+    /// order, as the user saw it. When the edit's turn comes its indexes
+    /// have moved past this window's removals; an entry there with another
+    /// command means the file shifted under it, and the edit conflicts
+    /// instead of changing a different shortcut.
+    commands: Vec<String>,
     /// The field that made the edit and the text it last saved, put back
     /// when the write fails so the entered text stays a draft to retry.
     pub(super) field: Option<(String, Option<String>)>,
@@ -93,6 +95,26 @@ fn listed(text: Option<&str>, path: &Path) -> Option<Inventory> {
     let config =
         crate::config::parse_at(text.unwrap_or_default(), path).ok()?;
     inventory(Platform::current(), &config.keybindings).ok()
+}
+
+/// The `command` of each listed `[[keybinding]]` entry in `snapshot`; an
+/// entry that is missing reads as empty.
+fn entry_commands(snapshot: &Snapshot, entries: &[usize]) -> Vec<String> {
+    entries
+        .iter()
+        .map(|&index| {
+            snapshot
+                .entry(List::Keybinding, index)
+                .and_then(|locator| {
+                    locator
+                        .content()
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 /// The path a setting's changes write: the theme row edits the theme's
@@ -438,38 +460,31 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Queues a keybinding edit after any write in flight. Its patches are
-    /// built now, against the snapshot the list came from; each applies to
-    /// the file the previous write left, so successive edits apply in
-    /// order and still address the entries the user saw.
+    /// Queues a keybinding edit after any write in flight; `false` when
+    /// the window cannot write. Its patches are built when its turn comes,
+    /// against the file the previous write left, so successive edits to one
+    /// entry build on each other.
     pub(super) fn submit_keys(
         &mut self,
         edit: Edit,
         row: Option<String>,
         field: Option<(String, Option<String>)>,
         cx: &mut Context<'_, Self>,
-    ) {
+    ) -> bool {
         if self.locked() {
-            return;
+            return false;
         }
         let Some(base) = &self.base else {
-            return;
+            return false;
         };
         if let Some(row) = &row {
             self.keys.errors.remove(row);
         }
-        let patches = match edit.patches(base) {
-            Ok(patches) => patches,
-            Err(message) => {
-                self.status.failed(message);
-                cx.notify();
-                return;
-            }
-        };
+        let commands = entry_commands(base, &edit.entries());
         let change = KeyChange {
             edit,
             row,
-            patches,
+            commands,
             field,
         };
         if self.writing.is_some() {
@@ -478,6 +493,7 @@ impl SettingsView {
             self.start_keys(change, cx);
         }
         cx.notify();
+        true
     }
 
     fn start_keys(&mut self, change: KeyChange, cx: &mut Context<'_, Self>) {
@@ -486,12 +502,27 @@ impl SettingsView {
         let file = ConfigFile::new(self.path.clone());
         let validate = crate::config::validator(self.path.clone());
         let path = self.path.clone();
-        let base = self.base.clone();
-        let patches = change.patches.clone();
+        // The entries must still be the shortcuts the user changed.
+        let built = self.base.clone().ok_or_else(Vec::new).and_then(|base| {
+            if entry_commands(&base, &change.edit.entries()) != change.commands
+            {
+                return Err(vec!["a shortcut it changes moved".to_owned()]);
+            }
+            change
+                .edit
+                .patches(&base)
+                .map(|patches| (base, patches))
+                .map_err(|message| vec![message])
+        });
         let task = cx.background_spawn(async move {
-            let base = match base {
-                Some(base) => base,
-                None => file.load()?,
+            let (base, patches) = match built {
+                Ok(built) => built,
+                Err(changes) if changes.is_empty() => {
+                    return Err(ApplyError::Conflict(vec![
+                        "config.toml was not read yet".to_owned(),
+                    ]));
+                }
+                Err(changes) => return Err(ApplyError::Conflict(changes)),
             };
             let snapshot = file.apply(&base, &patches, &validate)?;
             Ok::<_, ApplyError>(Written {
@@ -545,7 +576,11 @@ impl SettingsView {
                 }
                 self.keys.inventory = written.keys;
                 self.base = Some(written.snapshot);
+                self.shift_queued_keys(change.edit.removes());
                 self.status.saved();
+                // The row this write changed is the same shortcut, though
+                // its condition or arguments now differ.
+                self.keys.own_row.clone_from(&change.row);
                 self.follow_changed_default(
                     &change.edit,
                     change.row.as_deref(),
@@ -566,6 +601,8 @@ impl SettingsView {
                 true
             }
             Err(ApplyError::InvalidFile(message)) => {
+                // The field keeps its text as a draft for after the fix.
+                report(self, "config.toml has an error. Not saved.".to_owned());
                 self.queued.clear();
                 self.pending.clear();
                 self.status.invalid_file(message);
@@ -723,6 +760,36 @@ impl SettingsView {
             }
         }
         self.next_write(failed, cx);
+    }
+
+    /// Carries queued keybinding edits past entries this window just
+    /// removed: later indexes move down, and edits to a removed entry go.
+    fn shift_queued_keys(&mut self, removed: &[usize]) {
+        if removed.is_empty() {
+            return;
+        }
+        let removed = removed.to_vec();
+        self.queued.retain_mut(|queued| {
+            let Queued::Keys(change) = queued else {
+                return true;
+            };
+            let kept: Vec<String> = change
+                .edit
+                .entries()
+                .iter()
+                .zip(&change.commands)
+                .filter(|(entry, _)| !removed.contains(entry))
+                .map(|(_, command)| command.clone())
+                .collect();
+            match change.edit.shift(&removed) {
+                Some(edit) => {
+                    change.edit = edit;
+                    change.commands = kept;
+                    true
+                }
+                None => false,
+            }
+        });
     }
 
     /// Starts the next queued write, or closes a window waiting for its

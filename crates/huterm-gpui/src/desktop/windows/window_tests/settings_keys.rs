@@ -566,26 +566,120 @@ fn argument_picks_write_only_real_changes_on_active_shortcuts(
                     disabled = true\n\n[[keybinding]]\nkey = \"ctrl-alt-w\"\n\
                     command = \"toggle_quake\"\n";
     let file = ScratchConfig::new("keys-picks", original);
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config
+            .quake
+            .profiles
+            .insert("logs".into(), crate::quake::Profile::default());
+    });
     open_settings(&mut harness, &file.path());
     let quake = ArgumentKind::QuakeProfile;
     with_view(&mut harness, |view, cx| {
         // A switched-off shortcut's argument does not edit.
-        view.pick_key_argument("u0", "profile", quake, "default", cx);
+        view.pick_key_argument("u0", "profile", quake, "logs", cx);
+        // An unset profile is already `default`.
+        view.pick_key_argument("u1", "profile", quake, "default", cx);
     });
     harness.cx.run_until_parked();
     assert_eq!(file.text(), original);
     with_view(&mut harness, |view, cx| {
-        view.pick_key_argument("u1", "profile", quake, "default", cx);
+        view.pick_key_argument("u1", "profile", quake, "logs", cx);
     });
     saved(&mut harness, &file, |text| text.contains("profile"));
     let picked = file.text();
     // Picking the value it already has writes nothing.
     with_view(&mut harness, |view, cx| {
-        view.pick_key_argument("u1", "profile", quake, "default", cx);
+        view.pick_key_argument("u1", "profile", quake, "logs", cx);
     });
     harness.cx.run_until_parked();
     assert_eq!(file.text(), picked);
+}
+
+#[gpui::test]
+fn queued_steps_on_one_shortcut_build_on_each_other(cx: &mut TestAppContext) {
+    let original = "[[keybinding]]\nkey = \"ctrl-alt-l\"\n\
+                    command = \"resize_pane_right\"\nargs = { amount = 5 }\n";
+    let file = ScratchConfig::new("keys-steps", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("arg:u0:amount", "5", window, cx);
+        // Two steps before the first write lands.
+        view.step_key("arg:u0:amount", true, cx);
+        view.step_key("arg:u0:amount", true, cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("amount = 7"));
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.key_error("u0"), None);
+    });
+}
+
+#[gpui::test]
+fn a_draft_does_not_move_between_shortcuts_sharing_a_key(
+    cx: &mut TestAppContext,
+) {
+    let original = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_tab\"\n\n\
+                    [[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"copy\"\n\
+                    when = \"selection\"\n\n[[keybinding]]\nkey = \"ctrl-alt-b\"\n\
+                    command = \"copy\"\nwhen = \"Terminal\"\n";
+    let file = ScratchConfig::new("keys-twins", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:copy");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key("when:u1", window, cx);
+    });
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u1", "selection && split", window, cx);
+    });
+    // Another editor removes the first entry; row u1 is now the other copy.
+    let shifted = original.split_once("\n\n").unwrap().1.to_owned();
+    std::fs::write(file.path(), &shifted).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the reread", settled);
+    with_view(&mut harness, |view, cx| view.blur_key("when:u1", cx));
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), shifted);
+}
+
+#[gpui::test]
+fn a_draft_refused_by_an_invalid_file_waits_for_the_fix(
+    cx: &mut TestAppContext,
+) {
+    let original =
+        "[[keybinding]]\nkey = \"ctrl-alt-l\"\ncommand = \"new_tab\"\n";
+    let file = ScratchConfig::new("keys-refused", original);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.general.watch_config = false;
+    });
+    open_settings(&mut harness, &file.path());
+    // The file breaks after Settings read it, so the write is refused.
+    std::fs::write(file.path(), format!("{original}[window\n")).unwrap();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u0", "Terminal", window, cx);
+        view.enter_key("when:u0", cx);
+    });
+    harness.wait_for("the refusal", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.key_error("u0").is_some())
+                    .unwrap_or(false)
+            })
+    });
+    // Fixed and reread, the draft is still there to save.
+    std::fs::write(file.path(), original).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the reread", settled);
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal");
+        view.enter_key("when:u0", cx);
+    });
+    saved(&mut harness, &file, |text| {
+        text.contains("when = \"Terminal\"")
+    });
 }
 
 #[cfg(unix)]

@@ -832,12 +832,15 @@ same key, command, and condition; such an entry duplicates that binding, so
 the effect is the same.
 
 Keybinding changes join the window's write queue behind any other write.
-Each edit's patches are built when it is made, against the snapshot the list
-came from, and applied to the file the previous write left: their locators
-match entries by content, so an earlier queued removal cannot point a later
-edit at a different entry. The validator compiles the keymap, so a binding
-the compiler refuses is never written. A field whose write fails keeps the
-entered text, with the error, to retry.
+Each edit's patches are built when its turn comes, against the file the
+previous write left, so successive edits to one entry build on each other.
+An edit names entries by index in the list it was made from; the window's
+own removals shift queued indexes and drop edits to removed entries, and an
+entry whose command differs from the one the user saw makes the edit
+conflict instead of changing another shortcut. The validator compiles the
+keymap, so a binding the compiler refuses is never written. A field whose
+write fails, including against a file that turned invalid, keeps the
+entered text with the error to retry.
 
 ### Key recorder
 
