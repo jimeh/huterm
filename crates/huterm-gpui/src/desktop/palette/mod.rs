@@ -6,6 +6,9 @@
 //! operation arrives as a `Palette`-scope catalog command through
 //! [`CommandPalette::run`].
 
+// User input picks positions here, so a stale index must not panic.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 mod search;
 mod slots;
 
@@ -325,7 +328,8 @@ impl PaletteHierarchy {
                         tab: None,
                         custom_name: tab.custom_name.is_some(),
                     });
-                    let tab_label = &tabs[tabs.len() - 1].label;
+                    let tab_label =
+                        tabs.last().map_or("", |row: &IdentityRow| &row.label);
                     for pane in tab.layout.panes() {
                         panes.push(IdentityRow {
                             value: CommandValue::Pane(pane.id),
@@ -747,16 +751,14 @@ impl CommandPalette {
                 .map(|spec| (spec, request))
         });
         if let Some((spec, request)) = requested {
-            let editor = SlotEditor::new(
+            match SlotEditor::new(
                 spec,
                 &request.args,
                 &palette.domain_for(spec, &request.args),
                 true,
-            );
-            if editor.slots().is_empty() {
-                palette.rank("");
-            } else {
-                palette.enter_slots(editor, cx);
+            ) {
+                Some(editor) => palette.enter_slots(editor, cx),
+                None => palette.rank(""),
             }
         } else {
             let query = retained_query.unwrap_or_default();
@@ -1123,9 +1125,7 @@ impl CommandPalette {
             self.expand_search(cx);
             return;
         }
-        let editor =
-            SlotEditor::new(spec, &[], &self.domain_for(spec, &[]), false);
-        match editor.invocation() {
+        match slots::unprompted_invocation(spec, &self.domain_for(spec, &[])) {
             Ok(invocation) => {
                 cx.emit(PaletteEvent::Execute(invocation));
             }
@@ -1153,11 +1153,12 @@ impl CommandPalette {
             cx.notify();
             return;
         }
-        let editor =
-            SlotEditor::new(spec, &[], &self.domain_for(spec, &[]), false);
-        if editor.slots().is_empty() {
+        // A command whose arguments are all unprompted has nothing to open.
+        let Some(editor) =
+            SlotEditor::new(spec, &[], &self.domain_for(spec, &[]), false)
+        else {
             return;
-        }
+        };
         self.enter_slots(editor, cx);
     }
 
@@ -2180,7 +2181,7 @@ impl CommandPalette {
                 "next argument".to_owned(),
             ));
         }
-        let can_pop = editor.slots()[..active].iter().any(|slot| {
+        let can_pop = editor.slots().iter().take(active).any(|slot| {
             matches!(slot.state, SlotState::Committed | SlotState::Prefilled)
         });
         let leave = if requested { "close" } else { "back" };

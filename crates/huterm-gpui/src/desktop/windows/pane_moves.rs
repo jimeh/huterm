@@ -5,6 +5,9 @@
 //! operation on a worker. Reconcile then moves the affected pane views
 //! between tabs, so a moved pane keeps its view, viewer, and state.
 
+// User input picks positions here, so a stale index must not panic.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use huterm_core::{Beside, MoveDestination, PaneRef};
 use huterm_protocol::{LayoutChange, PaneNode, SIDES};
 
@@ -112,9 +115,13 @@ fn command_direction(
 
 /// The side a validated `side` argument names.
 fn side(name: &str) -> Option<SplitDirection> {
-    use SplitDirection::{Down, Left, Right, Up};
-    let index = SIDES.iter().position(|side| *side == name)?;
-    Some([Left, Right, Up, Down][index])
+    match SIDES.iter().position(|side| *side == name)? {
+        0 => Some(SplitDirection::Left),
+        1 => Some(SplitDirection::Right),
+        2 => Some(SplitDirection::Up),
+        3 => Some(SplitDirection::Down),
+        _ => None,
+    }
 }
 
 /// The workspace argument as a new-tab destination, defaulting to the

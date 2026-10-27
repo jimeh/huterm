@@ -3,6 +3,9 @@
 //! on each motion, draws the result it would have, and on release commits
 //! one Mux operation through the same path as the pane move commands.
 
+// User input picks positions here, so a stale index must not panic.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use gpui::Hsla;
 use huterm_core::{Beside, MoveDestination, PaneRef};
 

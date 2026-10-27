@@ -155,7 +155,10 @@ fn resolve_plain(
     text.push_str(&after);
     // An empty target is a wide spacer, which belongs to the preceding
     // character.
-    let target_offset = if after_cells[0].2 == after_cells[0].3 {
+    let target_offset = if after_cells
+        .first()
+        .is_some_and(|&(_, _, start, end)| start == end)
+    {
         base.saturating_sub(1)
     } else {
         base

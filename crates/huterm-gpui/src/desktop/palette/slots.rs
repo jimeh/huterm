@@ -67,7 +67,9 @@ pub(super) enum Exit {
 #[derive(Clone, Debug)]
 pub(super) struct SlotEditor {
     spec: &'static CommandSpec,
+    /// Never empty: [`SlotEditor::new`] refuses a command with no slots.
     slots: Vec<Slot>,
+    /// Always an index into `slots`, which the slot accessors rely on.
     active: usize,
     text: String,
     requested: bool,
@@ -97,71 +99,119 @@ pub(super) fn runs_without_prompt(
     })
 }
 
+/// The slots `spec` gets with `supplied` arguments: every supplied argument,
+/// and every prompted one, prefilled from `domain` where it has a default or
+/// a sole value. Unprompted arguments the caller did not supply get none.
+fn slots_for(
+    spec: &'static CommandSpec,
+    supplied: &[CommandArgument],
+    domain: &dyn SlotDomain,
+) -> Vec<Slot> {
+    spec.args
+        .iter()
+        .filter_map(|argument| {
+            let explicit = supplied
+                .iter()
+                .find(|supplied| supplied.name == argument.name);
+            if let Some(explicit) = explicit {
+                return Some(Slot {
+                    spec: argument,
+                    value: Some(explicit.value.clone()),
+                    state: SlotState::Explicit,
+                });
+            }
+            if !argument.prompt {
+                return None;
+            }
+            // A one-of member whose group the caller already satisfied
+            // gets no slot: prompting or auto-filling it would conflict.
+            if let Some(group) = argument.group()
+                && supplied.iter().any(|supplied| {
+                    spec.argument(&supplied.name)
+                        .is_some_and(|member| member.group() == Some(group))
+                })
+            {
+                return None;
+            }
+            let (value, state) =
+                match (argument.required, is_identity(argument.kind)) {
+                    (Requirement::Optional, true) => {
+                        let default = domain.default(argument.kind);
+                        let state = if default.is_some() {
+                            SlotState::Prefilled
+                        } else {
+                            SlotState::Empty
+                        };
+                        (default, state)
+                    }
+                    (Requirement::Always | Requirement::OneOf(_), true) => {
+                        // Required identities carry no preselection: the
+                        // picker's first row (most recently used) is the
+                        // likeliest choice.
+                        let values = domain.values(argument.kind);
+                        if values.len() == 1 {
+                            (values.into_iter().next(), SlotState::Sole)
+                        } else {
+                            (None, SlotState::Empty)
+                        }
+                    }
+                    (_, false) => (None, SlotState::Empty),
+                };
+            Some(Slot {
+                spec: argument,
+                value,
+                state,
+            })
+        })
+        .collect()
+}
+
+/// The invocation `spec` runs with when it needs no prompt: its prefilled
+/// and sole values, and nothing for its unprompted arguments.
+///
+/// # Errors
+/// Returns the validation error when a required argument has no value.
+pub(super) fn unprompted_invocation(
+    spec: &'static CommandSpec,
+    domain: &dyn SlotDomain,
+) -> Result<CommandInvocation, CommandError> {
+    invocation_of(spec, &slots_for(spec, &[], domain))
+}
+
+/// The invocation built from every slot holding a value.
+fn invocation_of(
+    spec: &'static CommandSpec,
+    slots: &[Slot],
+) -> Result<CommandInvocation, CommandError> {
+    let args = slots
+        .iter()
+        .filter(|slot| !matches!(slot.state, SlotState::Empty))
+        .filter_map(|slot| {
+            slot.value
+                .clone()
+                .map(|value| CommandArgument::new(slot.spec.name, value))
+        })
+        .collect();
+    let invocation = CommandInvocation::new(spec.id, args);
+    validate(&invocation)?;
+    Ok(invocation)
+}
+
 impl SlotEditor {
+    /// An editor for `spec`'s slots, or `None` for a command whose
+    /// arguments are all unprompted and unsupplied: it has nothing to edit,
+    /// and runs through [`unprompted_invocation`] instead. Every editor
+    /// holds at least one slot, and its active index is always one of them.
     pub(super) fn new(
         spec: &'static CommandSpec,
         supplied: &[CommandArgument],
         domain: &dyn SlotDomain,
         requested: bool,
-    ) -> Self {
-        let slots = spec
-            .args
-            .iter()
-            .filter_map(|argument| {
-                let explicit = supplied
-                    .iter()
-                    .find(|supplied| supplied.name == argument.name);
-                if let Some(explicit) = explicit {
-                    return Some(Slot {
-                        spec: argument,
-                        value: Some(explicit.value.clone()),
-                        state: SlotState::Explicit,
-                    });
-                }
-                if !argument.prompt {
-                    return None;
-                }
-                // A one-of member whose group the caller already satisfied
-                // gets no slot: prompting or auto-filling it would conflict.
-                if let Some(group) = argument.group()
-                    && supplied.iter().any(|supplied| {
-                        spec.argument(&supplied.name)
-                            .is_some_and(|member| member.group() == Some(group))
-                    })
-                {
-                    return None;
-                }
-                let (value, state) =
-                    match (argument.required, is_identity(argument.kind)) {
-                        (Requirement::Optional, true) => {
-                            let default = domain.default(argument.kind);
-                            let state = if default.is_some() {
-                                SlotState::Prefilled
-                            } else {
-                                SlotState::Empty
-                            };
-                            (default, state)
-                        }
-                        (Requirement::Always | Requirement::OneOf(_), true) => {
-                            // Required identities carry no preselection: the
-                            // picker's first row (most recently used) is the
-                            // likeliest choice.
-                            let values = domain.values(argument.kind);
-                            if values.len() == 1 {
-                                (values.into_iter().next(), SlotState::Sole)
-                            } else {
-                                (None, SlotState::Empty)
-                            }
-                        }
-                        (_, false) => (None, SlotState::Empty),
-                    };
-                Some(Slot {
-                    spec: argument,
-                    value,
-                    state,
-                })
-            })
-            .collect::<Vec<_>>();
+    ) -> Option<Self> {
+        let slots = slots_for(spec, supplied, domain);
+        if slots.is_empty() {
+            return None;
+        }
         let mut editor = Self {
             spec,
             slots,
@@ -179,7 +229,7 @@ impl SlotEditor {
             })
             .unwrap_or(0);
         editor.text = editor.reopen_text();
-        editor
+        Some(editor)
     }
 
     pub(super) fn spec(&self) -> &'static CommandSpec {
@@ -191,8 +241,20 @@ impl SlotEditor {
     pub(super) fn active_index(&self) -> usize {
         self.active
     }
+    /// The slot being edited.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`active` always indexes `slots`, which is never empty"
+    )]
     pub(super) fn active(&self) -> &Slot {
         &self.slots[self.active]
+    }
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`active` always indexes `slots`, which is never empty"
+    )]
+    fn active_mut(&mut self) -> &mut Slot {
+        &mut self.slots[self.active]
     }
     pub(super) fn text(&self) -> &str {
         &self.text
@@ -211,25 +273,15 @@ impl SlotEditor {
 
     /// The invocation built from every slot holding a value.
     pub(super) fn invocation(&self) -> Result<CommandInvocation, CommandError> {
-        let args = self
-            .slots
-            .iter()
-            .filter(|slot| !matches!(slot.state, SlotState::Empty))
-            .filter_map(|slot| {
-                slot.value
-                    .clone()
-                    .map(|value| CommandArgument::new(slot.spec.name, value))
-            })
-            .collect();
-        let invocation = CommandInvocation::new(self.spec.id, args);
-        validate(&invocation)?;
-        Ok(invocation)
+        invocation_of(self.spec, &self.slots)
     }
 
     /// Whether the slot at `index` still needs the user's input: it holds no
     /// committed value and its requirement is unsatisfied.
     fn needs_input(&self, index: usize) -> bool {
-        let slot = &self.slots[index];
+        let Some(slot) = self.slots.get(index) else {
+            return false;
+        };
         if slot.is_chip() {
             return false;
         }
@@ -296,14 +348,14 @@ impl SlotEditor {
         &mut self,
         picked: Option<CommandValue>,
     ) -> Result<(), String> {
-        let slot = &self.slots[self.active];
+        let slot = self.active();
         let name = slot.spec.name;
         let label = label(name);
         if is_identity(slot.spec.kind) {
             let Some(value) = picked else {
                 return Err(format!("No matching {name}"));
             };
-            let slot = &mut self.slots[self.active];
+            let slot = self.active_mut();
             slot.value = Some(value);
             slot.state = SlotState::Committed;
             return Ok(());
@@ -324,7 +376,7 @@ impl SlotEditor {
         } else {
             Some(parse_scalar(slot.spec, text)?)
         };
-        let slot = &mut self.slots[self.active];
+        let slot = self.active_mut();
         slot.value = value;
         slot.state = SlotState::Committed;
         Ok(())
@@ -339,10 +391,10 @@ impl SlotEditor {
         &mut self,
         picked: Option<CommandValue>,
     ) -> Result<(), String> {
-        let slot = &self.slots[self.active];
+        let slot = self.active();
         if is_identity(slot.spec.kind) {
             if let Some(value) = picked {
-                let slot = &mut self.slots[self.active];
+                let slot = self.active_mut();
                 slot.value = Some(value);
                 slot.state = SlotState::Committed;
             }
@@ -363,26 +415,40 @@ impl SlotEditor {
     }
 
     fn editable_after(&self, index: usize) -> Option<usize> {
-        (index + 1..self.slots.len()).find(|candidate| {
-            self.slots[*candidate].state != SlotState::Explicit
-        })
+        self.slots
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .find(|(_, slot)| slot.state != SlotState::Explicit)
+            .map(|(candidate, _)| candidate)
     }
 
     fn editable_before(&self, index: usize) -> Option<usize> {
-        (0..index).rev().find(|candidate| {
-            self.slots[*candidate].state != SlotState::Explicit
-        })
+        self.slots
+            .iter()
+            .enumerate()
+            .take(index)
+            .rev()
+            .find(|(_, slot)| slot.state != SlotState::Explicit)
+            .map(|(candidate, _)| candidate)
     }
 
     /// Backspace on an empty field: reopen the previous chip, or leave the
     /// stage when there is none.
     pub(super) fn pop(&mut self) -> Option<Exit> {
-        let previous = (0..self.active).rev().find(|index| {
-            matches!(
-                self.slots[*index].state,
-                SlotState::Committed | SlotState::Prefilled
-            )
-        });
+        let previous = self
+            .slots
+            .iter()
+            .enumerate()
+            .take(self.active)
+            .rev()
+            .find(|(_, slot)| {
+                matches!(
+                    slot.state,
+                    SlotState::Committed | SlotState::Prefilled
+                )
+            })
+            .map(|(index, _)| index);
         match previous {
             Some(index) => {
                 self.edit(index);
@@ -404,11 +470,15 @@ impl SlotEditor {
     /// Reopens slot `index` for editing. Its value stays as the preselection
     /// and, for scalars, as the draft text.
     pub(super) fn edit(&mut self, index: usize) {
-        if self.slots[index].state == SlotState::Explicit {
+        let Some(slot) = self
+            .slots
+            .get_mut(index)
+            .filter(|slot| slot.state != SlotState::Explicit)
+        else {
             return;
-        }
+        };
+        slot.state = SlotState::Empty;
         self.active = index;
-        self.slots[index].state = SlotState::Empty;
         self.text = self.reopen_text();
     }
 
@@ -563,7 +633,8 @@ mod tests {
     fn rename_runs_after_one_enter_with_the_prefilled_tab() {
         let domain = with_tabs(&[1, 2]);
         let mut editor =
-            SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false);
+            SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false)
+                .unwrap();
         assert_eq!(editor.active().spec.name, "name");
         assert_eq!(editor.slots()[1].state, SlotState::Prefilled);
         editor.set_text("work");
@@ -578,7 +649,8 @@ mod tests {
     fn blank_name_commits_as_a_clear_and_empty_pickers_report_a_message() {
         let domain = with_tabs(&[1]);
         let mut editor =
-            SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false);
+            SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false)
+                .unwrap();
         editor.set_text("  ");
         let Ok(Commit::Run(invocation)) = editor.commit(None) else {
             panic!("a blank name runs the rename, which clears the name");
@@ -589,7 +661,8 @@ mod tests {
             &[],
             &with_tabs(&[1, 2]),
             false,
-        );
+        )
+        .unwrap();
         assert_eq!(select.active().spec.name, "tab");
         assert_eq!(select.commit(None), Err("No matching tab".into()));
     }
@@ -599,7 +672,7 @@ mod tests {
         let domain = with_tabs(&[1, 2, 3]);
         assert!(!runs_without_prompt(spec(ids::SELECT_TAB), &domain));
         let mut editor =
-            SlotEditor::new(spec(ids::SELECT_TAB), &[], &domain, true);
+            SlotEditor::new(spec(ids::SELECT_TAB), &[], &domain, true).unwrap();
         assert_eq!(editor.slots().len(), 1, "index is unprompted");
         assert!(editor.requested());
         let Ok(Commit::Run(invocation)) =
@@ -620,35 +693,43 @@ mod tests {
         // One tab is the sole value; two would prompt.
         assert!(runs_without_prompt(spec(ids::SELECT_TAB), &domain));
         let editor =
-            SlotEditor::new(spec(ids::SELECT_TAB), &[], &domain, false);
+            SlotEditor::new(spec(ids::SELECT_TAB), &[], &domain, false)
+                .unwrap();
         assert_eq!(editor.slots()[0].state, SlotState::Sole);
         assert!(editor.complete());
     }
 
     #[test]
-    fn a_command_whose_arguments_are_all_unprompted_runs_with_no_slots() {
+    fn a_command_whose_arguments_are_all_unprompted_runs_with_no_editor() {
         let domain = with_tabs(&[1, 2]);
         for id in [ids::RESIZE_PANE_LEFT, ids::CLOSE_TAB] {
             assert!(runs_without_prompt(spec(id), &domain));
-            let editor = SlotEditor::new(spec(id), &[], &domain, false);
-            assert!(editor.slots().is_empty());
-            assert_eq!(editor.text(), "");
+            assert!(SlotEditor::new(spec(id), &[], &domain, false).is_none());
             assert_eq!(
-                editor.invocation(),
+                unprompted_invocation(spec(id), &domain),
                 Ok(CommandInvocation::new(id, vec![]))
             );
         }
     }
 
     #[test]
-    fn every_catalog_command_builds_an_editor_without_arguments() {
+    fn every_catalog_command_has_a_runnable_or_editable_form() {
         for domain in [with_tabs(&[]), with_tabs(&[1]), with_tabs(&[1, 2])] {
             for spec in catalog() {
-                let editor = SlotEditor::new(spec, &[], &domain, false);
-                let _ = editor.invocation();
-                let _ = runs_without_prompt(spec, &domain);
-                if !editor.slots().is_empty() {
-                    let _ = editor.active();
+                let runs = runs_without_prompt(spec, &domain);
+                let invocation = unprompted_invocation(spec, &domain);
+                match SlotEditor::new(spec, &[], &domain, false) {
+                    // Every editor has an active slot and its draft text.
+                    Some(editor) => {
+                        let _ = (editor.active(), editor.text());
+                        assert_eq!(editor.invocation(), invocation);
+                    }
+                    // A command with nothing to edit must run as it is.
+                    None => assert!(
+                        runs && invocation.is_ok(),
+                        "{} has no slots but cannot run: {invocation:?}",
+                        spec.id
+                    ),
                 }
             }
         }
@@ -658,7 +739,8 @@ mod tests {
     fn tab_commits_text_moves_on_and_leaves_empty_slots_uncommitted() {
         let domain = with_tabs(&[1, 2]);
         let mut editor =
-            SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false);
+            SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false)
+                .unwrap();
         editor.set_text("work");
         editor.next_slot(None).unwrap();
         assert_eq!(editor.active().spec.name, "tab");
@@ -697,7 +779,8 @@ mod tests {
             &[CommandArgument::new("index", CommandValue::Integer(1))],
             &domain,
             false,
-        );
+        )
+        .unwrap();
         // Explicit index satisfies the group; nothing to prompt.
         assert!(editor.complete());
         assert_eq!(editor.slots()[0].state, SlotState::Explicit);
@@ -713,7 +796,8 @@ mod tests {
     fn pop_reopens_the_previous_chip_then_exits() {
         let domain = with_tabs(&[1, 2]);
         let mut editor =
-            SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false);
+            SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false)
+                .unwrap();
         editor.set_text("work");
         editor.next_slot(None).unwrap();
         assert_eq!(editor.pop(), None);
@@ -721,7 +805,7 @@ mod tests {
         assert_eq!(editor.text(), "work");
         assert_eq!(editor.pop(), Some(Exit::Search));
         let requested =
-            SlotEditor::new(spec(ids::SELECT_TAB), &[], &domain, true);
+            SlotEditor::new(spec(ids::SELECT_TAB), &[], &domain, true).unwrap();
         assert_eq!(requested.exit(), Exit::Close);
     }
 
