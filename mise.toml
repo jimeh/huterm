@@ -1109,13 +1109,14 @@ esac
 '''
 
 [tasks."ci:benchmarks"]
-description = "Run CI scroll, output latency, keystroke snapshot, and link lookup budgets for Ghostty"
+description = "Run CI scroll, output latency, keystroke snapshot, link lookup, and history reflow budgets for Ghostty"
 depends = ["verify:toolchain"]
 run = [
   "mise run bench:scroll",
   "HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US=5000 mise run bench:output-latency",
   "HUTERM_OUTPUT_LATENCY_SNAPSHOTS_PER_KEY_BUDGET=1.5 mise run bench:output-latency -- keys",
   "mise run bench:links",
+  "mise run bench:engine",
 ]
 
 [tasks."smoke:renderer"]

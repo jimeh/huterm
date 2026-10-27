@@ -125,9 +125,12 @@ insertion or deletion.
 Reflow, not link lookup, bounds `ScrollbackLimit::MAX` at 100,000 rows. A width
 change rewraps all history on the runtime thread at about 65 ns per row in the
 `resize-history` fixture of `bench:engine`: 6.6 ms p50 at 100,000 rows and
-68 ms at a million locally. Saturated plain history at 120 columns takes about
-1 KB per row. Link lookup stays under 0.5 ms p95 at a million rows. Raising the
-maximum again needs cheaper reflow first.
+68 ms at a million locally, and 16 to 25 ms at 100,000 rows on CI's Linux
+runners. Saturated plain history at 120 columns takes about 1 KB per row.
+`ci:benchmarks` gates that fixture's median resize and peak RSS at the
+maximum, so a Ghostty pin bump or native patch that slows reflow or grows
+history memory fails CI. Link lookup stays under 0.5 ms p95 at a million rows.
+Raising the maximum again needs cheaper reflow first.
 
 Core seeds foreground, background, cursor, palette, grid, and physical cell size
 before spawning the child. It answers native OSC 4,
@@ -184,6 +187,8 @@ mise run bench:links
 
 The engine benchmark reports the fixed Ghostty revision, p50/p95 elapsed
 processing and snapshot times, row reuse, throughput, and retained history.
+Its `resize-history` fixture also reports resize times and peak RSS, and gates
+both at sizes within the maximum.
 The scroll and link gates keep their existing thresholds and queue limits.
 The link benchmark runs its viewport, above-viewport, mid-history, long-line,
 and scrolled fixtures with empty scrollback and with scrollback saturated at

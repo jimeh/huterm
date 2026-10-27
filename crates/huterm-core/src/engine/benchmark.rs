@@ -350,6 +350,46 @@ pub(super) const fn saturating_lines(rows: u32) -> usize {
     rows as usize / 5 * 6 + 1000
 }
 
+/// The benchmark process's peak resident set size, in KiB.
+#[cfg(target_os = "linux")]
+fn peak_rss_kib() -> i64 {
+    // `getrusage` keeps the peak of the image that ran before `execve`, the
+    // forked `cargo`, which doubled the first run after a build in CI. The
+    // memory map's own high-water mark starts at `execve`.
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .and_then(|value| value.trim().strip_suffix(" kB")?.parse().ok())
+        .expect("/proc/self/status reports VmHWM in kB")
+}
+
+/// The benchmark process's peak resident set size, in KiB.
+#[cfg(target_os = "macos")]
+fn peak_rss_kib() -> i64 {
+    use nix::sys::resource::{UsageWho, getrusage};
+    // macOS reports bytes.
+    getrusage(UsageWho::RUSAGE_SELF).unwrap().max_rss() / 1024
+}
+
+/// Budget for the median resize of `resize-history` at the configurable
+/// maximum. Across 76 runs on CI's Ubuntu runners, the median measured 15.9
+/// to 24.9 ms on AMD EPYC 7763, 9V45, and 9V74 and Intel Xeon 8573C and
+/// 6973P-C hosts, and 29.6 ms once on a host the job did not identify. CPU
+/// model set most of the spread: running after the other CI benchmarks
+/// matched standalone runs on the same host. The slowest of 20 resizes
+/// reached 36.1 ms, so the gate ignores it. Apple silicon measures 6.7 ms.
+/// 45 ms leaves 50% headroom over the slowest median and fails a doubling on
+/// hosts above 22.5 ms.
+const RESIZE_HISTORY_P50_BUDGET_US: u128 = 45_000;
+
+/// Budget for the benchmark process's peak resident size after
+/// `resize-history` at the configurable maximum. CI's Ubuntu runners measured
+/// 109,716 to 110,124 KiB across 38 runs and four CPU models, and Apple
+/// silicon about 111,000 KiB. 140 MiB leaves 30% headroom for allocator and
+/// platform differences.
+const RESIZE_HISTORY_PEAK_RSS_BUDGET_KIB: i64 = 140 * 1024;
+
 #[test]
 #[ignore = "release benchmark; run through mise run bench:engine"]
 fn engine_benchmark_resize_history() {
@@ -357,7 +397,11 @@ fn engine_benchmark_resize_history() {
         width: 8,
         height: 16,
     };
-    for rows in history_sizes() {
+    // The process peak only grows, so ascending sizes attribute each peak to
+    // the largest history so far.
+    let mut sizes = history_sizes();
+    sizes.sort_unstable();
+    for rows in sizes {
         let mut engine = TerminalEngine::new(
             TerminalId::new(1),
             GridSize::clamped(120, 40),
@@ -398,9 +442,24 @@ fn engine_benchmark_resize_history() {
         }
         resizing.sort_unstable();
         snapshots.sort_unstable();
+        let peak_rss = peak_rss_kib();
+        // Sizes above the configurable maximum are measured, not gated.
+        let gated = rows <= ScrollbackLimit::MAX.rows();
         println!(
-            "engine=ghostty fixture=resize-history iterations=20 columns=100/120 rows=40 limit_rows={rows} history_rows_before={before} history_rows_after={after} resize_us_p50={} resize_us_max={} snapshot_us_p50={} snapshot_us_max={}",
+            "engine=ghostty fixture=resize-history iterations=20 columns=100/120 rows=40 limit_rows={rows} history_rows_before={before} history_rows_after={after} gated={gated} resize_us_p50={} resize_us_max={} snapshot_us_p50={} snapshot_us_max={} peak_rss_kib={peak_rss}",
             resizing[10], resizing[19], snapshots[10], snapshots[19]
+        );
+        assert!(
+            !gated || resizing[10] <= RESIZE_HISTORY_P50_BUDGET_US,
+            "resize-history p50 exceeded {RESIZE_HISTORY_P50_BUDGET_US} us \
+             at {rows} rows: {} us",
+            resizing[10]
+        );
+        assert!(
+            !gated || peak_rss <= RESIZE_HISTORY_PEAK_RSS_BUDGET_KIB,
+            "resize-history peak RSS exceeded \
+             {RESIZE_HISTORY_PEAK_RSS_BUDGET_KIB} KiB at {rows} rows: \
+             {peak_rss} KiB"
         );
     }
 }

@@ -390,7 +390,7 @@ showed came up short on macOS CI.
 | macOS keyboard | `mise run smoke:macos-input` | Native input and composition through Ghostty, automatic reload with `watch_config` on and off, plus one legacy-config launch | CI or implementer |
 | macOS refresh | `mise run smoke:macos-refresh` | Native frame stop/resume, one pending callback across tab replacement, and idle activity-task cancellation; requires an unlocked GUI session | Implementer |
 | macOS Quit | `mise run smoke:macos-quit` | Cancellable AppKit termination through Ghostty | CI or implementer |
-| Scroll benchmark | `mise run ci:benchmarks` on Ubuntu 24.04 | Ghostty snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | CI or implementer |
+| Scroll benchmark | `mise run ci:benchmarks` on Ubuntu 24.04 | Ghostty snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive; history reflow time and peak RSS | CI or implementer |
 | macOS package | `mise run package:macos` | Universal app metadata, icon, executable, and both architectures | CI or implementer |
 | Linux package | `mise run package:linux` | Native AppImage and relocatable tarball, dependency policy, provenance, payload equality, and Ghostty input smoke | CI or implementer |
 
