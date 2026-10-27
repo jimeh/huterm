@@ -1104,14 +1104,16 @@ Recorded with PR 3:
 - Tier 2 covers an edge move and a centre swap, a tab bar slot, Escape, a
   release on the source pane, and a release outside the window, a refused
   zone, a shallow dip that still reorders, pane mode over a centre, an
-  opening menu that cancels pane mode, and a nest on an edge, spring timing at
+  opening menu that cancels pane mode, blur cancelling a spring-loaded pane
+  drag with a switch back and a held tab nest, and a nest on an edge, spring
+  timing at
   499 and 500 ms with the schedule's single deadline, a drop into the sprung
   tab with no centre offered there, switching back after Escape and after a
   release on the label, and a tab switch the drag did not make. The other
   three tab bar positions rely on the `TabStrip` unit tests, nesting a
   multi-pane tab and same-axis flattening on the protocol's `with_inserted`
   tests, and the remaining race rows on the cancellation rule below rather
-  than a test each. Blur, an opening palette, autoscroll re-arming, geometry
+  than a test each. An opening palette, autoscroll re-arming, geometry
   changes under a still pointer, and a refused commit that switches back,
   which needs its target to vanish between the last frame and the release,
   have no tier 2 test.

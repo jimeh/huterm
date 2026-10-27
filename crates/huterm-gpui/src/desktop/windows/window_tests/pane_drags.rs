@@ -635,3 +635,60 @@ fn a_refused_zone_takes_no_drop(cx: &mut TestAppContext) {
         assert_eq!(notices(cx, window), Vec::<String>::new());
     });
 }
+
+#[gpui::test]
+fn blur_cancels_a_spring_loaded_pane_drag_and_a_held_tab_nest(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, left, right, other, _) = two_tabs(&mut harness);
+    let seq = harness.seq();
+    // A pane drag that spring-loaded switches back when the window blurs.
+    let grab = harness.grab(window, right);
+    let label = harness.label(window, 1);
+    harness.press_at(window, grab);
+    harness.move_to(window, label);
+    harness.wait_for("the drag to arm the other tab", |cx| {
+        pane_drag(cx, window).is_some_and(|(_, armed)| armed == Some(other))
+    });
+    let (armed, _) = harness.armed(window);
+    harness.advance(window, armed + SPRING_LOAD_DELAY);
+    harness.wait_for("the other tab to activate", |cx| {
+        active(cx, window) == Some(other)
+    });
+    harness.deactivate(window);
+    harness.wait_for("blur to cancel and switch back", |cx| {
+        no_drag(cx, window) && active(cx, window) == Some(tab)
+    });
+    harness.release_at(window, label);
+    // A tab held over a pane edge in pane mode nests nothing after a blur.
+    harness.activate(window, tab);
+    harness.show_drawn(window, tab);
+    let frame = harness.frame(window, left);
+    let edge = gpui::point(frame.center().x, frame.bottom() - px(8.0));
+    harness.press_at(window, label);
+    harness.move_to(window, edge);
+    harness.wait_for("pane mode over the edge", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx)
+                        .reorder
+                        .as_ref()
+                        .is_some_and(|drag| drag.nest.is_some())
+                })
+            })
+            .unwrap_or(false)
+    });
+    harness.deactivate(window);
+    harness.wait_for("blur to cancel the tab drag", |cx| no_drag(cx, window));
+    harness.release_at(window, edge);
+    assert_eq!(harness.seq(), seq);
+    harness.cx.update(|cx| {
+        assert!(projected(cx, other));
+        assert_eq!(
+            panes_shown(cx, window, tab).map(|(panes, _)| panes),
+            Some(vec![left, right])
+        );
+    });
+}
