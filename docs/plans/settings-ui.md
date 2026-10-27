@@ -832,9 +832,12 @@ same key, command, and condition; such an entry duplicates that binding, so
 the effect is the same.
 
 Keybinding changes join the window's write queue behind any other write.
-Each is resolved into patches when its turn comes, against the snapshot the
-previous write left, so quick successive edits apply in order. The validator
-compiles the keymap, so a binding the compiler refuses is never written.
+Each edit's patches are built when it is made, against the snapshot the list
+came from, and applied to the file the previous write left: their locators
+match entries by content, so an earlier queued removal cannot point a later
+edit at a different entry. The validator compiles the keymap, so a binding
+the compiler refuses is never written. A field whose write fails keeps the
+entered text, with the error, to retry.
 
 ### Key recorder
 
@@ -866,7 +869,8 @@ compiles the keymap, so a binding the compiler refuses is never written.
   contexts with their descriptions, the list `docs/keybindings.md`
   documents; a test fails when the two differ. An empty name offers
   nothing. Up and Down move through the suggestions and Return takes one;
-  Tab only moves focus.
+  Tab and Escape first close an open list, keeping the text, and act
+  normally after that.
 - GPUI's predicate parser checks the text before anything is written: a
   syntax error shows under the shortcut and writes nothing. A known-syntax
   condition naming an unknown context saves with a warning that it never
@@ -937,8 +941,9 @@ the keyboard keeps working.
 - `crates/huterm-gpui/src/keymap.rs`: the inventory.
 - `crates/huterm-gpui/src/desktop/settings/keybindings.rs`: command groups,
   the context list, condition checks, and turning edits into patches.
-- `crates/huterm-gpui/src/desktop/windows/settings_window/keybindings.rs`
-  (the section, rows, and messages) and `recorder.rs` (the interceptor).
+- `crates/huterm-gpui/src/desktop/windows/settings_window/keybindings.rs`:
+  the section, its rows and notes, the recorder, and focus recovery; the
+  interceptor is registered in `settings_window.rs`.
 - `docs/keybindings.md`, `README.md`, and this plan.
 
 ### PR 4 verification

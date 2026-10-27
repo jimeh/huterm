@@ -57,6 +57,13 @@ pub(super) struct Pending {
 pub(super) struct KeyChange {
     pub(super) edit: Edit,
     pub(super) row: Option<String>,
+    /// Built when the edit was made, against the snapshot the user saw:
+    /// their locators match entries by content, so an earlier queued
+    /// removal cannot point them at a different entry.
+    patches: Vec<Patch>,
+    /// The field that made the edit and the text it last saved, put back
+    /// when the write fails so the entered text stays a draft to retry.
+    pub(super) field: Option<(String, Option<String>)>,
 }
 
 /// A write waiting behind the one in flight.
@@ -432,21 +439,39 @@ impl SettingsView {
     }
 
     /// Queues a keybinding edit after any write in flight. Its patches are
-    /// built when its turn comes, against the snapshot the previous write
-    /// left, so successive edits apply in order.
+    /// built now, against the snapshot the list came from; each applies to
+    /// the file the previous write left, so successive edits apply in
+    /// order and still address the entries the user saw.
     pub(super) fn submit_keys(
         &mut self,
         edit: Edit,
         row: Option<String>,
+        field: Option<(String, Option<String>)>,
         cx: &mut Context<'_, Self>,
     ) {
         if self.locked() {
             return;
         }
+        let Some(base) = &self.base else {
+            return;
+        };
         if let Some(row) = &row {
             self.keys.errors.remove(row);
         }
-        let change = KeyChange { edit, row };
+        let patches = match edit.patches(base) {
+            Ok(patches) => patches,
+            Err(message) => {
+                self.status.failed(message);
+                cx.notify();
+                return;
+            }
+        };
+        let change = KeyChange {
+            edit,
+            row,
+            patches,
+            field,
+        };
         if self.writing.is_some() {
             self.queued.push_back(Queued::Keys(change));
         } else {
@@ -462,15 +487,12 @@ impl SettingsView {
         let validate = crate::config::validator(self.path.clone());
         let path = self.path.clone();
         let base = self.base.clone();
-        let edit = change.edit.clone();
+        let patches = change.patches.clone();
         let task = cx.background_spawn(async move {
             let base = match base {
                 Some(base) => base,
                 None => file.load()?,
             };
-            let patches = edit
-                .patches(&base)
-                .map_err(|message| ApplyError::Conflict(vec![message]))?;
             let snapshot = file.apply(&base, &patches, &validate)?;
             Ok::<_, ApplyError>(Written {
                 file: FileValues::parse(snapshot.text()),
@@ -494,9 +516,25 @@ impl SettingsView {
     ) {
         self.writing = None;
         self.epoch += 1;
+        // A field's failed edit stays in the field as a draft to retry;
+        // any other shows under its row.
         let report = |view: &mut Self, message: String| {
-            if let Some(row) = &change.row {
-                view.keys.errors.insert(row.clone(), message.clone());
+            match (&change.field, &change.row) {
+                (Some((key, saved)), _) => {
+                    view.keys.errors.insert(key.clone(), message.clone());
+                    match saved {
+                        Some(saved) => {
+                            view.keys.synced.insert(key.clone(), saved.clone());
+                        }
+                        None => {
+                            view.keys.synced.remove(key);
+                        }
+                    }
+                }
+                (None, Some(row)) => {
+                    view.keys.errors.insert(row.clone(), message.clone());
+                }
+                (None, None) => {}
             }
             view.status.failed(message);
         };

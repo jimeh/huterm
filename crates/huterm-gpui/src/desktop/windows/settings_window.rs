@@ -443,6 +443,9 @@ impl SettingsView {
         key: String,
         cx: &mut Context<'_, Self>,
     ) -> FocusHandle {
+        // Controls ask for their stop while they draw, which marks them
+        // drawn for focus recovery.
+        self.drawn.insert(key.clone());
         self.actions
             .entry(key)
             .or_insert_with(|| cx.focus_handle().tab_stop(true))
@@ -1584,6 +1587,8 @@ impl SettingsView {
     ) {
         let field = self.key_field_for(key, window, cx);
         field.read(cx).focus_handle(cx).focus(window, cx);
+        // The test window does not deliver the focus event that marks it.
+        self.keys.editing = Some(key.to_owned());
     }
 
     /// Leaves a keybinding field, as moving focus away does.
@@ -1603,6 +1608,17 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         self.step_argument(key, up, cx);
+    }
+
+    pub(super) fn pick_key_argument(
+        &mut self,
+        row: &str,
+        name: &'static str,
+        kind: ArgumentKind,
+        value: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.pick_argument(row, name, kind, value, cx);
     }
 
     pub(super) fn completion_open(&self) -> bool {

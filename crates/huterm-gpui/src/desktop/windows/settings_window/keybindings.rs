@@ -109,6 +109,13 @@ pub(super) struct Keys {
     pub(super) follow: Option<(String, String)>,
     /// A focused field went away with its row; focus moves to the window.
     pub(super) stranded: bool,
+    /// Each row's binding at the last sync, by key and command: a row whose
+    /// binding changed identity, such as after another editor removed an
+    /// earlier entry, is a different shortcut, and its fields start over.
+    pub(super) identities: HashMap<String, (String, CommandId)>,
+    /// Strokes recorded across every recording; a chord timer finishes its
+    /// recording only while no later stroke has arrived.
+    pub(super) strokes: u64,
     /// When the recorder last saved by its chord timeout: a Return or Space
     /// meant to save, arriving just after, must not start recording again.
     pub(super) timed_out_at: Option<std::time::Instant>,
@@ -166,6 +173,8 @@ impl Keys {
             editing: None,
             follow: None,
             stranded: false,
+            identities: HashMap::new(),
+            strokes: 0,
             timed_out_at: None,
         }
     }
@@ -487,7 +496,7 @@ impl SettingsView {
                         format!("kcmd:{}", listed.binding.command.as_str()),
                         format!("kdel:{argument}"),
                     ));
-                    self.submit_keys(Edit::Remove(vec![entry]), None, cx);
+                    self.submit_keys(Edit::Remove(vec![entry]), None, None, cx);
                 }
             }
             "kreset" => {
@@ -505,7 +514,7 @@ impl SettingsView {
                         "search".to_owned(),
                         format!("kunbind:{argument}"),
                     ));
-                    self.submit_keys(Edit::Remove(vec![entry]), None, cx);
+                    self.submit_keys(Edit::Remove(vec![entry]), None, None, cx);
                 }
             }
             "karg" => {
@@ -543,7 +552,7 @@ impl SettingsView {
             }
             _ => return,
         };
-        self.submit_keys(edit, Some(name.to_owned()), cx);
+        self.submit_keys(edit, Some(name.to_owned()), None, cx);
     }
 
     /// Removes every user entry for `command`, including those that turn
@@ -558,7 +567,7 @@ impl SettingsView {
         };
         let (entries, _) = restorable(inventory, command);
         if !entries.is_empty() {
-            self.submit_keys(Edit::Remove(entries), None, cx);
+            self.submit_keys(Edit::Remove(entries), None, None, cx);
         }
     }
 
@@ -569,6 +578,7 @@ impl SettingsView {
         name: &str,
         field: Field,
         value: Option<Value>,
+        origin: Option<(String, Option<String>)>,
         cx: &mut Context<'_, Self>,
     ) {
         let Some(listed) = self
@@ -592,7 +602,7 @@ impl SettingsView {
                 value,
             },
         };
-        self.submit_keys(edit, Some(name.to_owned()), cx);
+        self.submit_keys(edit, Some(name.to_owned()), origin, cx);
     }
 
     /// After a changed default lands, the changed binding is the file's
@@ -604,7 +614,9 @@ impl SettingsView {
         edit: &Edit,
         row: Option<&str>,
     ) {
-        let (Edit::ChangeDefault { field, .. }, Some(row)) = (edit, row) else {
+        let (Edit::ChangeDefault { default, field, .. }, Some(row)) =
+            (edit, row)
+        else {
             return;
         };
         let Some(last) = self.keys.inventory.as_ref().and_then(|inventory| {
@@ -619,7 +631,23 @@ impl SettingsView {
         let control = |row: &str| match field {
             Field::Key => format!("krec:{row}"),
             Field::When => format!("when:{row}"),
-            Field::Argument(name) => format!("arg:{row}:{name}"),
+            // Selects are action stops; number and text arguments are
+            // fields.
+            Field::Argument(name) => {
+                let select = lookup(default.command.as_str())
+                    .and_then(|spec| spec.argument(name))
+                    .is_some_and(|argument| {
+                        !matches!(
+                            argument.kind,
+                            ArgumentKind::Integer { .. } | ArgumentKind::Text
+                        )
+                    });
+                if select {
+                    format!("karg:{row}:{name}")
+                } else {
+                    format!("arg:{row}:{name}")
+                }
+            }
         };
         self.keys.follow = Some((control(&format!("u{last}")), control(row)));
     }
@@ -728,13 +756,17 @@ impl SettingsView {
             }
             _ => {}
         }
+        let generation = self.keys.strokes + 1;
+        self.keys.strokes = generation;
+        let Some(recording) = &mut self.keys.recording else {
+            return false;
+        };
         recording.strokes.push(keystroke.unparse());
-        recording.generation += 1;
+        recording.generation = generation;
         if recording.strokes.len() >= 2 {
             self.finish_recording(cx);
             return true;
         }
-        let generation = recording.generation;
         cx.spawn(async move |view, cx| {
             cx.background_executor().timer(CHORD_TIMEOUT).await;
             let _ =
@@ -775,13 +807,14 @@ impl SettingsView {
                         &name,
                         Field::Key,
                         Some(Value::String(key)),
+                        None,
                         cx,
                     );
                 }
             }
             Target::Add(command) => {
                 self.keys.open.insert(command);
-                self.submit_keys(Edit::Add { key, command }, None, cx);
+                self.submit_keys(Edit::Add { key, command }, None, None, cx);
             }
         }
         cx.notify();
@@ -877,9 +910,39 @@ impl SettingsView {
     /// edited keeps a draft, and only while its shortcut is active; fields
     /// whose rows are gone go.
     pub(super) fn sync_key_fields(&mut self, cx: &mut Context<'_, Self>) {
+        let identities: HashMap<String, (String, CommandId)> = self
+            .keys
+            .inventory
+            .as_ref()
+            .map(|inventory| {
+                rows(inventory)
+                    .into_iter()
+                    .map(|(name, listed)| {
+                        (
+                            name,
+                            (
+                                listed.binding.key.clone(),
+                                listed.binding.command,
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let previous = std::mem::replace(&mut self.keys.identities, identities);
         let keys: Vec<String> = self.keys.fields.keys().cloned().collect();
         for key in keys {
-            let Some(text) = self.key_field_text(&key) else {
+            let moved = field_row(&key).is_some_and(|row| {
+                previous.get(row).is_some_and(|before| {
+                    self.keys.identities.get(row) != Some(before)
+                })
+            });
+            let text = if moved {
+                None
+            } else {
+                self.key_field_text(&key)
+            };
+            let Some(text) = text else {
                 // A field leaving while edited would keep focus with no
                 // element to dispatch from.
                 if self.keys.editing.as_ref() == Some(&key) {
@@ -888,14 +951,18 @@ impl SettingsView {
                 }
                 self.keys.fields.remove(&key);
                 self.keys.synced.remove(&key);
+                self.keys.errors.remove(&key);
                 continue;
             };
             let Some(field) = self.keys.fields.get(&key).cloned() else {
                 continue;
             };
             let current = field.read(cx).text().to_owned();
+            // A draft stays while it is being edited, or while it shows an
+            // error, such as a write that failed, so it can be retried.
             let draft = self.keys.synced.get(&key) != Some(&current)
-                && self.keys.editing.as_ref() == Some(&key)
+                && (self.keys.editing.as_ref() == Some(&key)
+                    || self.keys.errors.contains_key(&key))
                 && self.field_row_active(&key);
             if !draft {
                 field.update(cx, |field, cx| field.set_text(text.clone(), cx));
@@ -989,8 +1056,8 @@ impl SettingsView {
         // The text counts as saved now, so leaving the field before the
         // write lands does not write it again.
         self.keys.errors.remove(key);
-        self.keys.synced.insert(key.to_owned(), text);
-        self.edit_row(&name, field, value, cx);
+        let saved = self.keys.synced.insert(key.to_owned(), text);
+        self.edit_row(&name, field, value, Some((key.to_owned(), saved)), cx);
     }
 
     /// Puts a field back to its saved text.
@@ -1160,14 +1227,13 @@ impl SettingsView {
         else {
             return;
         };
-        let current = Some(current);
-        let next = match current {
-            Some(value) if up => value.saturating_add(1),
-            Some(value) => value.saturating_sub(1),
-            None => return,
+        let next = if up {
+            current.saturating_add(1)
+        } else {
+            current.saturating_sub(1)
         }
         .clamp(min, max);
-        if current == Some(next) {
+        if current == next {
             return;
         }
         field.update(cx, |field, cx| field.set_text(next.to_string(), cx));
@@ -1182,7 +1248,9 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.keys_read_only() {
+        if self.keys_read_only()
+            || !self.field_row_active(&format!("karg:{name}:{argument}"))
+        {
             return;
         }
         let Some(spec) = self
@@ -1253,6 +1321,10 @@ impl SettingsView {
         picked: &str,
         cx: &mut Context<'_, Self>,
     ) {
+        // Only an active shortcut's arguments edit.
+        if !self.field_row_active(&format!("karg:{name}:{argument}")) {
+            return;
+        }
         let value = match (picked, kind) {
             (UNSET, _) => None,
             (picked, ArgumentKind::Bool) => {
@@ -1260,7 +1332,23 @@ impl SettingsView {
             }
             (picked, _) => Some(Value::String(picked.to_owned())),
         };
-        self.edit_row(name, Field::Argument(argument.to_owned()), value, cx);
+        // Picking what the binding already has changes nothing.
+        let current = self
+            .keys
+            .inventory
+            .as_ref()
+            .and_then(|inventory| row(inventory, name))
+            .and_then(|listed| binding_of(listed).args.get(argument).cloned());
+        if value == current {
+            return;
+        }
+        self.edit_row(
+            name,
+            Field::Argument(argument.to_owned()),
+            value,
+            None,
+            cx,
+        );
     }
 }
 
@@ -1269,6 +1357,10 @@ impl SettingsView {
 fn control_row(key: &str) -> Option<&str> {
     key.strip_prefix("krec:")
         .or_else(|| key.strip_prefix("kon:"))
+        .or_else(|| {
+            key.strip_prefix("karg:")
+                .and_then(|rest| rest.split(':').next())
+        })
         .or_else(|| field_row(key))
 }
 

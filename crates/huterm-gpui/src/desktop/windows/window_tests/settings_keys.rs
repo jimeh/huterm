@@ -506,3 +506,165 @@ fn closing_saves_a_focused_condition_or_stays_to_show_its_error(
         file.text()
     );
 }
+
+/// Three shortcuts the user added, in file order.
+const THREE: &str = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_tab\"\n\n\
+                     [[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n\n\
+                     [[keybinding]]\nkey = \"ctrl-alt-c\"\ncommand = \"close_tab\"\n";
+
+#[gpui::test]
+fn a_queued_edit_after_a_removal_changes_the_entry_the_user_saw(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-queued", THREE);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // The switch is pressed before the removal ahead of it lands.
+    with_window(&mut harness, |view, window, cx| {
+        view.press("kdel:u0", window, cx);
+        view.press("kon:u1", window, cx);
+    });
+    saved(&mut harness, &file, |text| !text.contains("ctrl-alt-a"));
+    harness.cx.run_until_parked();
+    assert!(harness.cx.update(settled));
+    assert_eq!(
+        file.text(),
+        "[[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n\
+         disabled = true\n\n[[keybinding]]\nkey = \"ctrl-alt-c\"\ncommand = \"close_tab\"\n"
+    );
+}
+
+#[gpui::test]
+fn a_timer_from_an_earlier_recording_does_not_end_a_later_one(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-timers", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let timeout = super::super::settings_window::CHORD_TIMEOUT;
+    press(&mut harness, "kadd:new_window");
+    keystrokes(&mut harness, "ctrl-k");
+    harness.cx.executor().advance_clock(timeout / 5);
+    keystrokes(&mut harness, "escape");
+    press(&mut harness, "kadd:new_window");
+    keystrokes(&mut harness, "ctrl-j");
+    // The first recording's timer fires now; the second's has time left.
+    harness.cx.executor().advance_clock(timeout * 9 / 10);
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.recording(), Some(vec!["ctrl-j".to_owned()]));
+    });
+    assert_eq!(file.text(), "");
+}
+
+#[gpui::test]
+fn argument_picks_write_only_real_changes_on_active_shortcuts(
+    cx: &mut TestAppContext,
+) {
+    use huterm_protocol::ArgumentKind;
+    let original = "[[keybinding]]\nkey = \"ctrl-alt-q\"\ncommand = \"toggle_quake\"\n\
+                    disabled = true\n\n[[keybinding]]\nkey = \"ctrl-alt-w\"\n\
+                    command = \"toggle_quake\"\n";
+    let file = ScratchConfig::new("keys-picks", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let quake = ArgumentKind::QuakeProfile;
+    with_view(&mut harness, |view, cx| {
+        // A switched-off shortcut's argument does not edit.
+        view.pick_key_argument("u0", "profile", quake, "default", cx);
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), original);
+    with_view(&mut harness, |view, cx| {
+        view.pick_key_argument("u1", "profile", quake, "default", cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("profile"));
+    let picked = file.text();
+    // Picking the value it already has writes nothing.
+    with_view(&mut harness, |view, cx| {
+        view.pick_key_argument("u1", "profile", quake, "default", cx);
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), picked);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_failed_condition_save_stays_a_draft_to_retry(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    let original =
+        "[[keybinding]]\nkey = \"ctrl-alt-l\"\ncommand = \"new_tab\"\n";
+    let file = ScratchConfig::new("keys-retry", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let mode = |bits| std::fs::Permissions::from_mode(bits);
+    // A directory the save cannot write its temporary file into.
+    std::fs::set_permissions(&file.0, mode(0o500)).unwrap();
+    if std::fs::write(file.0.join("probe"), "").is_ok() {
+        std::fs::set_permissions(&file.0, mode(0o700)).unwrap();
+        return;
+    }
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u0", "Terminal", window, cx);
+        view.enter_key("when:u0", cx);
+    });
+    harness.wait_for("the failed save", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.key_error("u0").is_some())
+                    .unwrap_or(false)
+            })
+    });
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal");
+    });
+    std::fs::set_permissions(&file.0, mode(0o700)).unwrap();
+    // Return again retries the same text.
+    with_view(&mut harness, |view, cx| view.enter_key("when:u0", cx));
+    saved(&mut harness, &file, |text| {
+        text.contains("when = \"Terminal\"")
+    });
+}
+
+#[gpui::test]
+fn focus_stays_on_a_theme_card_across_a_render(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("keys-theme-focus", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::NEXT_TAB, window, cx).unwrap();
+    });
+    harness.cx.run_until_parked();
+    press(&mut harness, "theme:nord");
+    saved(&mut harness, &file, |text| text.contains("nord"));
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "action:theme:nord");
+}
+
+#[gpui::test]
+fn an_external_edit_that_shifts_entries_drops_a_moved_draft(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-shift", THREE);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_window");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key("when:u1", window, cx);
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "key:when:u1");
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u1", "Terminal", window, cx);
+    });
+    // Another editor removes the first entry, so row u1 is now close_tab.
+    let shifted = THREE.split_once("\n\n").unwrap().1.to_owned();
+    std::fs::write(file.path(), &shifted).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the reread", settled);
+    with_view(&mut harness, |view, cx| view.blur_key("when:u1", cx));
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), shifted);
+}

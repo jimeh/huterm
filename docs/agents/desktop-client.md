@@ -382,6 +382,15 @@ Give confirmation dialogs an explicit viewport-clamped width before measuring
 wrapped text. GPUI's w_full/max_w combination can measure a shorter height and
 let buttons escape the panel; keep text and button containers nonshrinking.
 
+Focus listeners (`on_focus`, `on_blur`) run inside a draw, where a
+`cx.notify()` or `window.refresh()` is lost until the next input event. Work
+whose result must show, such as validating a field on blur, goes through
+`cx.defer_in`. Keys match only along the focus path of the drawn tree, so a
+focus left on a control that went away leaves every binding dead. The
+Settings window records each control it draws (`action_stop` marks it) and
+moves focus to the window when the focused control was not drawn, or when
+focus stays across a frame outside the view's tree.
+
 GPUI dispatches input against the last drawn frame. A press that lands before
 the frame showing a dialog's scrim still reaches the covered terminal, whose
 mouse-down listener must `prevent_default` to stop `track_focus` from focusing

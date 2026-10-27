@@ -213,13 +213,19 @@ position = "top"
     await key("close");
     await state("settings.open=false", "w0.active=true", "w0.terminal_focused=true", "w0.tabs=1");
     await focusX11("");
+    // The switched-off default opens nothing: after a round trip through
+    // the shell, which the key would have reached first, one tab remains.
     await key("new-tab");
+    await typeText("ack old");
+    await key("enter");
+    await state("ACK:ack old");
+    if (!(await current()).includes("w0.tabs=1")) throw new Error("the switched-off New Tab key opened a tab");
+    // The new key opens one, and keys reach its shell.
     await key("search");
     await state("w0.tabs=2");
     await typeText("ack back");
     await key("enter");
     await state("ACK:ack back");
-    if (!(await current()).includes("w0.tabs=2")) throw new Error("the switched-off New Tab key opened a tab");
 
     console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved record=intercepted rebind=applied close=terminal comments=kept`);
     await command("quit");
