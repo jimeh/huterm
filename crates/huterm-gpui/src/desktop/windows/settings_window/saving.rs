@@ -328,7 +328,8 @@ impl SettingsView {
         };
         self.pending.insert(key, value.clone());
         // Use mine reads the file afresh for its own change only.
-        let base = if self.fresh.take() == Some(key) {
+        let base = if self.fresh == Some(key) {
+            self.fresh = None;
             None
         } else {
             self.base.clone()
@@ -415,15 +416,16 @@ impl SettingsView {
                 self.errors.remove(key);
                 self.conflicts.remove(key);
                 settle(self);
-                let file = written.file.unwrap_or_default();
                 // A queued change whose path still holds what it expected
                 // can build on this write: nothing else touched it.
-                for queued in &mut self.queued {
-                    if file.get(queued.path) == queued.expected.as_ref() {
-                        queued.base = Some(written.snapshot.clone());
+                if let Ok(file) = written.file {
+                    for queued in &mut self.queued {
+                        if file.get(queued.path) == queued.expected.as_ref() {
+                            queued.base = Some(written.snapshot.clone());
+                        }
                     }
+                    self.file = file;
                 }
-                self.file = file;
                 self.base = Some(written.snapshot);
                 self.status.saved();
                 self.adopt_saved_field(key, change.typed.as_deref(), cx);
@@ -457,8 +459,16 @@ impl SettingsView {
                 self.sync_fields(cx);
             }
             Err(ApplyError::WrittenNotDurable(error)) => {
-                // The file was replaced; it applies, with the warning.
+                // The file was replaced; it applies, with the warning. With
+                // no snapshot of it, a queued change to the same path reads
+                // the file afresh, and a closing window stays to show it.
                 settle(self);
+                for queued in &mut self.queued {
+                    if queued.path == change.path {
+                        queued.base = None;
+                    }
+                }
+                failed = true;
                 self.status.saved_with_warning(error.to_string());
                 self.load(cx);
                 reload(cx);
@@ -694,9 +704,17 @@ impl SettingsView {
             return;
         }
         self.errors.remove(path);
-        let text = match self.pending.get(path) {
-            Some(value) => Some(field_text(value.clone())),
-            None => self.synced.get(path).cloned(),
+        let text = match (self.pending.get(path), self.model.setting(path)) {
+            // A pending reset shows the default.
+            (Some(value), Some(setting)) => {
+                Some(field_text(value.clone().or_else(|| {
+                    self.defaults
+                        .get(path)
+                        .cloned()
+                        .or_else(|| setting.default.clone())
+                })))
+            }
+            _ => self.synced.get(path).cloned(),
         };
         if let (Some(text), Some(field)) =
             (text, self.fields.get(path).cloned())

@@ -472,7 +472,16 @@ impl SettingsView {
         }
         let key = match special(path) {
             Some(Special::ThemePicker) => {
-                format!("theme:{}", self.selected_theme())
+                // Before the scan lists it, or for a missing theme, the
+                // first card takes focus.
+                let selected = self.selected_theme();
+                let name =
+                    if self.themes.iter().any(|(name, _)| *name == selected) {
+                        selected
+                    } else {
+                        self.themes.first().map(|(name, _)| name.clone())?
+                    };
+                format!("theme:{name}")
             }
             Some(Special::Modifiers) => format!(
                 "chip:{path}:{}",

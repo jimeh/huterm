@@ -705,3 +705,19 @@ fn reset_and_menu_saves_update_an_untouched_field(cx: &mut TestAppContext) {
     harness.wait_for("Settings to settle", settled);
     assert_eq!(file.text(), "[font]\nfamily = \"Monaco\"\n");
 }
+
+#[gpui::test]
+fn escape_during_a_pending_reset_shows_the_default(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("escape-reset", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "13", window, cx);
+        view.set("font.size", None, cx);
+        view.escape("font.size", cx);
+        assert_eq!(view.field_value("font.size", cx), "14");
+    });
+    harness.wait_for("the reset", settled);
+    // The reset removes the only key, and the empty table with it.
+    assert_eq!(file.text(), "");
+}
