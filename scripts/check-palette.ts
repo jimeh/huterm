@@ -6,6 +6,7 @@ import { discoverX11Window, withOpenbox } from "./check-desktop-integration";
 import { checkClientFrame, withCompositor } from "./check-client-frame";
 import { checkMacTitlebar } from "./check-macos-titlebar";
 import { checkOverlays } from "./check-overlays";
+import { checkSettings } from "./check-settings";
 import { checkViewers } from "./check-viewers";
 import { commandFlag, macKeyEvents, optionFlag, shiftFlag } from "./macos-keys";
 
@@ -1128,17 +1129,18 @@ if (import.meta.main) {
   if (!(["darwin", "linux"] as string[]).includes(process.platform)) {
     console.log("Palette smoke requires macOS or Linux");
   } else {
-    // HUTERM_PALETTE_SMOKE_ONLY=palette|overlays|viewers|frame|titlebar
+    // HUTERM_PALETTE_SMOKE_ONLY=palette|overlays|viewers|settings|frame|titlebar
     // narrows a local run.
     const only = process.env.HUTERM_PALETTE_SMOKE_ONLY;
-    if (only && !["palette", "overlays", "viewers", "frame", "titlebar"].includes(only)) {
+    if (only && !["palette", "overlays", "viewers", "settings", "frame", "titlebar"].includes(only)) {
       // A typo would otherwise skip every check and still report success.
-      throw new Error(`unknown HUTERM_PALETTE_SMOKE_ONLY=${only}; expected palette, overlays, viewers, frame, or titlebar`);
+      throw new Error(`unknown HUTERM_PALETTE_SMOKE_ONLY=${only}; expected palette, overlays, viewers, settings, frame, or titlebar`);
     }
     const checks = async (wm?: X11Process) => {
       if (!only || only === "palette") await checkPalette(executable, "ghostty", wm);
       if (!only || only === "overlays") await checkOverlays(executable, wm);
       if (!only || only === "viewers") await checkViewers(executable);
+      if (!only || only === "settings") await checkSettings(executable, wm);
     };
     if (process.platform === "darwin") {
       await checks();

@@ -1,12 +1,9 @@
 //! How the Settings window edits each setting the settings model lists: a
 //! generic control for its kind, a special control from [`OVERRIDES`], or
 //! nothing for settings listed in [`FILE_ONLY`].
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the Settings window is the consumer")
-)]
 
-use huterm_config::settings::{Setting, SettingKind};
+pub(super) mod status;
+pub(super) mod values;
 
 /// A control the generic kit does not provide.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,16 +49,16 @@ pub(super) fn file_only(path: &str) -> bool {
     FILE_ONLY.contains(&path)
 }
 
-/// Whether a generic control can edit `setting`.
-pub(super) fn generic(setting: &Setting) -> bool {
-    !matches!(setting.kind, SettingKind::Compound)
-}
-
 #[cfg(test)]
 mod tests {
-    use huterm_config::settings::SettingsModel;
+    use huterm_config::settings::{Setting, SettingKind, SettingsModel};
 
     use super::*;
+
+    /// Whether a generic control can edit `setting`.
+    fn generic(setting: &Setting) -> bool {
+        !matches!(setting.kind, SettingKind::Compound)
+    }
 
     #[test]
     fn every_setting_has_a_control_or_stays_in_the_file() {

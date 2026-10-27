@@ -335,7 +335,7 @@ fn read_config(path: &Path, consumed: &mut Consumed) -> io::Result<String> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-pub(super) fn create_default(path: &Path) -> Result<(), ConfigFileError> {
+pub(crate) fn create_default(path: &Path) -> Result<(), ConfigFileError> {
     if path.exists() {
         return Ok(());
     }
@@ -434,10 +434,6 @@ fn fallback_general(source: &str) -> GeneralConfig {
 /// anything: parsing, values, theme resolution relative to `path`, the
 /// local keymap, and global shortcuts. Font resolution needs the GPUI text
 /// system and is left to the reload.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the Settings window is its first caller")
-)]
 pub(super) fn validator(
     path: PathBuf,
 ) -> impl Fn(&str) -> Result<(), String> + Send + Sync {

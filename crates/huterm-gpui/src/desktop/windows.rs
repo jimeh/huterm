@@ -164,6 +164,7 @@ mod pane_drag;
 mod pane_geometry;
 mod pane_moves;
 mod projection;
+mod settings_window;
 mod tab_bar;
 mod tab_menu;
 mod tab_position;
@@ -836,6 +837,8 @@ struct Desktop {
     quit_committed: bool,
     pending_spawns: usize,
     quit_pending: bool,
+    /// The Settings window, which is not in `windows`: it shows no session.
+    settings: Option<gpui::WindowHandle<settings_window::SettingsView>>,
     external_drag_window: Option<gpui::WindowId>,
     /// The window buttons the desktop asks title rows to draw.
     button_layout: ButtonLayout,
@@ -947,6 +950,9 @@ fn show_failure_in(
 /// Raises `message` as a command failure in the active window. Returns
 /// whether a window showed it.
 fn show_active_window_failure(cx: &mut App, message: &str) -> bool {
+    if settings_window::show_failure(cx, message) {
+        return true;
+    }
     let Some(window) = cx.active_window() else {
         return false;
     };
@@ -1042,6 +1048,16 @@ fn run_app_command(
             quake_windows::invoke(cx, invocation, reporter)
         }
         ids::RELOAD_CONFIG => Ok(reload(cx)),
+        ids::OPEN_SETTINGS => {
+            // Global actions run while the dispatching window is borrowed,
+            // and opening or activating a window updates another.
+            cx.defer(settings_window::open);
+            Ok(CommandOutcome::Accepted)
+        }
+        ids::OPEN_CONFIG_FILE => {
+            cx.defer(open_config_file);
+            Ok(CommandOutcome::Accepted)
+        }
         ids::CHECK_FOR_UPDATES => check_for_updates(cx),
         ids::QUIT => {
             // Global actions run while the dispatching window is borrowed.
@@ -1062,6 +1078,21 @@ fn run_app_command(
             Ok(CommandOutcome::Completed)
         }
         other => Err(CommandError::UnknownCommand(other)),
+    }
+}
+
+/// Opens `config.toml` in the system editor, creating it from the default
+/// template first.
+fn open_config_file(cx: &mut App) {
+    let path = cx.global::<Desktop>().config_path.clone();
+    match config::create_default(&path) {
+        Ok(()) => cx.open_with_system(&path),
+        Err(error) => {
+            show_active_window_failure(
+                cx,
+                &format!("Cannot open {}: {error}", path.display()),
+            );
+        }
     }
 }
 
@@ -1115,6 +1146,8 @@ fn app_command_availability(
         | ids::HIDE_QUAKE
         | ids::TOGGLE_QUAKE
         | ids::RELOAD_CONFIG
+        | ids::OPEN_SETTINGS
+        | ids::OPEN_CONFIG_FILE
         | ids::CHECK_FOR_UPDATES
         | ids::QUIT
         | ids::HIDE
@@ -1199,7 +1232,7 @@ fn config_diagnostics(
     warning: Option<&str>,
 ) -> Vec<NoticeContent> {
     let location = path.display().to_string();
-    let open_settings = || bare(ids::OPEN_SETTINGS);
+    let open_file = || bare(ids::OPEN_CONFIG_FILE);
     let mut diagnostics = Vec::new();
     if let Some(error) = error {
         diagnostics.push(
@@ -1210,7 +1243,7 @@ fn config_diagnostics(
                 error,
             )
             .location(location.clone())
-            .action("Open Settings", open_settings())
+            .action("Open Config File", open_file())
             .action("Reload", bare(ids::RELOAD_CONFIG)),
         );
     }
@@ -1223,7 +1256,7 @@ fn config_diagnostics(
                 error,
             )
             .location(location.clone())
-            .action("Open Settings", open_settings()),
+            .action("Open Config File", open_file()),
         );
     }
     if !conflicts.is_empty() {
@@ -1235,7 +1268,7 @@ fn config_diagnostics(
                 conflicts.join("; "),
             )
             .location(location.clone())
-            .action("Open Settings", open_settings()),
+            .action("Open Config File", open_file()),
         );
     }
     if let Some(warning) = warning {
@@ -1247,7 +1280,7 @@ fn config_diagnostics(
                 warning,
             )
             .location(location)
-            .action("Open Settings", open_settings()),
+            .action("Open Config File", open_file()),
         );
     }
     diagnostics
@@ -1288,7 +1321,7 @@ fn failed_reload_diagnostics(
                 error.trim_end()
             ),
         )
-        .action("Open Settings", bare(ids::OPEN_SETTINGS))
+        .action("Open Config File", bare(ids::OPEN_CONFIG_FILE))
         .action("Reload", bare(ids::RELOAD_CONFIG)),
     ];
     diagnostics.extend(retained.iter().cloned());
@@ -1412,6 +1445,7 @@ fn install_desktop(
         quitting: false,
         quit_committed: false,
         pending_spawns: 0,
+        settings: None,
         quit_pending: false,
         external_drag_window: None,
         button_layout: ButtonLayout::standard(),
@@ -1423,6 +1457,12 @@ fn install_desktop(
     start_hierarchy_drain(cx);
     cx.on_window_closed(|cx, window| {
         let desktop = cx.global_mut::<Desktop>();
+        if desktop
+            .settings
+            .is_some_and(|settings| settings.window_id() == window)
+        {
+            desktop.settings = None;
+        }
         desktop.windows.remove(window);
         // A close the window took and had not started committing never
         // reached the runtime.
@@ -1820,11 +1860,13 @@ fn request_quit(cx: &mut App) {
         return;
     }
     let desktop = cx.global::<Desktop>();
+    // Only a terminal window can host the confirmation; the Settings
+    // window has no record.
     let host = quit_host(cx.active_window(), &cx.windows(), |handle| {
         desktop
             .windows
             .record(handle.window_id())
-            .is_some_and(|record| record.closing)
+            .is_none_or(|record| record.closing)
     });
     if let Some(handle) = host {
         let _ = handle.update(cx, |root, window, cx| {
@@ -1839,11 +1881,17 @@ fn request_quit(cx: &mut App) {
     } else {
         // Give unviewed sessions a confirmation host without creating a shell.
         open_window_inner(cx, false);
-        if cx.windows().is_empty() {
+        // The Settings window cannot host, so it does not count.
+        let desktop = cx.global::<Desktop>();
+        let hosts = cx
+            .windows()
+            .iter()
+            .any(|handle| desktop.windows.record(handle.window_id()).is_some());
+        if hosts {
+            cx.defer(request_quit);
+        } else {
             #[cfg(target_os = "macos")]
             native_quit::cancel_request();
-        } else {
-            cx.defer(request_quit);
         }
     }
 }
@@ -1902,6 +1950,7 @@ fn approved_quit(cx: &mut App) {
         #[cfg(target_os = "macos")]
         let mut adapters = Vec::new();
         cx.update(|cx| {
+            settings_window::close(cx);
             quake_presentations = quake_windows::take_for_quit(cx);
             quake_windows::shutdown(cx);
             broadcast(cx, |view, _| {
@@ -7334,7 +7383,7 @@ impl WorkspaceView {
                     self.check_fullscreen_available(command)
                 }
                 ids::CLOSE_WINDOW => self.check_close_window_available(),
-                ids::ABOUT | ids::OPEN_SETTINGS => Ok(()),
+                ids::ABOUT => Ok(()),
                 other if pane_moves::is_pane_move_command(other) => {
                     self.pane_move_availability(other, cx)
                 }
@@ -7925,16 +7974,6 @@ impl WorkspaceView {
                 Ok(CommandOutcome::Completed)
             }
             ids::ABOUT => self.show_about(window, cx),
-            ids::OPEN_SETTINGS => {
-                let config_path = cx.global::<Desktop>().config_path.clone();
-                config::create_default(&config_path).map_err(|error| {
-                    CommandError::Runtime(format!(
-                        "failed to open settings: {error}"
-                    ))
-                })?;
-                cx.open_with_system(&config_path);
-                Ok(CommandOutcome::Completed)
-            }
             ids::OPEN_COMMAND_PALETTE => self.open_palette(window, cx),
             ids::RENAME_TAB | ids::RENAME_WORKSPACE | ids::RENAME_SESSION => {
                 let invocation = fill_rename_target(
@@ -9648,6 +9687,10 @@ fn finish_reload(
         (config, family, metrics)
     });
     report_config_reload_error(&result);
+    settings_window::reloaded(
+        cx,
+        result.as_ref().map(|_| ()).map_err(Clone::clone),
+    );
     let diagnostics = match &result {
         Ok(_) => cx.global::<Desktop>().diagnostics.clone(),
         Err(error) => failed_reload_diagnostics(

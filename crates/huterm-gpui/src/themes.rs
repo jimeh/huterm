@@ -132,6 +132,59 @@ fn parse_file(source: &str) -> Result<ThemeDefinition, ConfigError> {
         .map_err(ConfigError::Toml)
 }
 
+/// The themes Huterm ships, besides the built-in `huterm-dark`.
+const BUNDLED: [&str; 13] = [
+    "catppuccin-frappe",
+    "catppuccin-latte",
+    "catppuccin-macchiato",
+    "catppuccin-mocha",
+    "dracula",
+    "nord",
+    "one-dark-pro",
+    "tango-with-monokai",
+    "tokyo-night",
+    "tokyo-night-day",
+    "tokyo-night-moon",
+    "tokyo-night-storm",
+    "tomorrow-night",
+];
+
+/// The theme names `[theme] name` can select: `huterm-dark`, the bundled
+/// themes, and the files in `directory`, sorted without repeats.
+pub(super) fn names(directory: Option<&Path>) -> Vec<String> {
+    let mut names: Vec<String> = std::iter::once("huterm-dark")
+        .chain(BUNDLED)
+        .map(str::to_owned)
+        .collect();
+    if let Some(entries) = directory.and_then(|path| fs::read_dir(path).ok()) {
+        // Only stems that are valid theme names can be selected.
+        names.extend(entries.filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension()? != "toml" {
+                return None;
+            }
+            let stem = path.file_stem()?.to_str()?;
+            validate_name(stem).is_ok().then(|| stem.to_owned())
+        }));
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// A named theme's colors for a preview, or `None` when it does not
+/// resolve. Reads only the theme's own files.
+pub(super) fn preview(name: &str, directory: &Path) -> Option<Theme> {
+    resolve_named(
+        name,
+        &BTreeMap::new(),
+        directory,
+        &mut Consumed::new(),
+        &mut Vec::new(),
+    )
+    .ok()
+}
+
 fn bundled(name: &str) -> Option<&'static str> {
     match name {
         "tokyo-night" => Some(include_str!("../themes/tokyo-night.toml")),
@@ -183,6 +236,7 @@ mod tests {
             let name = path.file_stem().unwrap().to_str().unwrap();
             let source = bundled(name)
                 .unwrap_or_else(|| panic!("{name} is not in bundled()"));
+            assert!(BUNDLED.contains(&name), "{name} is not in BUNDLED");
             let definition = parse_file(source).unwrap();
             for (key, value) in [
                 ("tab_bar_background", &definition.tab_bar_background),
@@ -213,6 +267,25 @@ mod tests {
             .iter()
             .all(Option::is_some),
             "huterm-dark must set every UI color"
+        );
+    }
+
+    #[test]
+    fn names_list_only_theme_files_that_can_be_selected() {
+        let directory = std::env::temp_dir()
+            .join(format!("huterm-theme-names-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        for file in ["mine.toml", "my theme.toml", "notes.txt"] {
+            fs::write(directory.join(file), "").unwrap();
+        }
+        let names = names(Some(&directory));
+        fs::remove_dir_all(&directory).unwrap();
+        assert!(names.iter().any(|name| name == "mine"));
+        assert!(
+            !names
+                .iter()
+                .any(|name| name == "my theme" || name == "notes")
         );
     }
 }

@@ -264,6 +264,12 @@ keyboard confirm reads the current confirmation. A tier 2 test produces the
 stale click by cancelling and calling `Window::dispatch_event` in one update,
 before the end-of-update draw drops the dialog.
 
+The Settings window (`windows/settings_window.rs`) has no session and no
+`WindowModel` record; `Desktop::settings` holds its handle. Code that walks
+`cx.windows()` must downcast to `WorkspaceView` and skip what is not one, and
+Quit hosts only a window with a model record, or its confirmation would land
+in Settings and Quit would do nothing. Committing Quit closes Settings.
+
 ## Rendering
 
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
@@ -339,6 +345,14 @@ bindings, menus, and interactive requests; only executors run the full
 `validate`, so a binding may omit prompted arguments and the palette collects
 them. Keep the keybinding schema aligned: only unprompted `Always` arguments
 are schema-required.
+
+`app_command_availability` lists every Application command; a new one it
+omits is refused as unknown from every shortcut and menu, while a test that
+calls the handler directly still passes. Settings binds Space and the arrows
+under `SettingsControl`, which only its switches, selects, segmented controls,
+and section rows carry: a binding under `Settings` matched inside a focused
+text field too, because the field's `Palette` context binds no Space, and ate
+the space.
 
 A command whose arguments are all unprompted, such as `resize_pane_left` or
 `close_tab`, has no palette slot. `SlotEditor::new` returns `None` for it, and

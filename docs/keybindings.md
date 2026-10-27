@@ -154,7 +154,9 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has finished entering native or non-native fullscreen. Pending entry alone does not match. |
 | `palette` | The window owns an open command palette. |
-| `Palette` | The command palette or the About panel's Licenses view is open and has focus. |
+| `Palette` | The command palette or the About panel's Licenses view is open and has focus, or a Settings text field has focus. |
+| `Settings` | The Settings window has focus. |
+| `SettingsControl` | A Settings switch, select, segmented control, or section has focus. |
 
 Most contexts are bare words for the state of the view or window, such as
 `selection` and `pane_zoomed`. The `has_` prefix marks a context that says
@@ -205,8 +207,8 @@ the canonical session structure. The `pane`, `tab`, `workspace`, and
 palette prompts for them where a command needs one, and omitted targets
 default to the invoking window's active tab, workspace, or session.
 Palette-scope commands imply the `Palette` context, and dialog, menu, and
-notice commands imply `confirming`, `menu`, and `notices`. User bindings for
-them need no `when`.
+notice commands imply `confirming`, `menu`, and `notices`. Settings commands
+imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 
 | Command | Scope | Arguments |
 | --- | --- | --- |
@@ -220,7 +222,8 @@ them need no `when`.
 | `show_all` | Application | |
 | `reload_config` | Application | |
 | `check_for_updates` | Application | macOS release builds only. |
-| `open_settings` | Window | |
+| `open_settings` | Application | Opens the Settings window, or brings it forward. |
+| `open_config_file` | Application | Opens `config.toml` in the system editor, creating it first. |
 | `about` | Window | |
 | `open_command_palette` | Window | |
 | `new_tab` | Window | |
@@ -284,6 +287,13 @@ them need no `when`.
 | `notice_previous` | Window | Bound only while `notices`. |
 | `notice_run_action` | Window | Bound only while `notices`. |
 | `notice_dismiss` | Window | Bound only while `notices`. |
+| `settings_search` | Window | Bound only while `Settings`. |
+| `settings_focus_next` | Window | Bound only while `Settings`. |
+| `settings_focus_previous` | Window | Bound only while `Settings`. |
+| `settings_toggle` | Window | Bound only while `SettingsControl`. Toggles a switch, opens a select, or shows the focused section. |
+| `settings_increase` | Window | Bound only while `SettingsControl`. |
+| `settings_decrease` | Window | Bound only while `SettingsControl`. |
+| `settings_reset` | Window | Bound only while `SettingsControl`. |
 | `palette_select_next` | Palette | |
 | `palette_select_previous` | Palette | |
 | `palette_page_down` | Palette | |
@@ -422,3 +432,23 @@ the terminal.
 | `notice_previous` | `up` | `up` |
 | `notice_run_action` | `enter` | `enter` |
 | `notice_dismiss` | `escape`, `delete` | `escape`, `delete` |
+
+### Settings
+
+These bind only in the Settings window. Its text fields take the `Palette`
+context, so the palette bindings edit them: `palette_confirm` saves a field,
+or from the search field moves to the first match; `palette_expand` and
+`palette_previous_slot` move focus on and back; `palette_select_previous` and
+`palette_select_next` step a number; and `palette_back` clears the search. The
+window also reads `close_window`, `close_tab`, and `close_pane` as closing it,
+and `next_tab` and `previous_tab` as moving between sections.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `settings_search` | `cmd-f` | `ctrl-f` |
+| `settings_focus_next` | `tab` | `tab` |
+| `settings_focus_previous` | `shift-tab` | `shift-tab` |
+| `settings_toggle` | `space`, `enter` | `space`, `enter` |
+| `settings_increase` | `up`, `right` | `up`, `right` |
+| `settings_decrease` | `down`, `left` | `down`, `left` |
+| `settings_reset` | `cmd-backspace` | `ctrl-backspace` |

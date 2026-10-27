@@ -20,7 +20,14 @@ fn catalog_entries_are_unique_and_described() {
         assert!(
             matches!(
                 spec.context,
-                None | Some("Palette" | "confirming" | "menu" | "notices")
+                None | Some(
+                    "Palette"
+                        | "Settings"
+                        | "SettingsControl"
+                        | "confirming"
+                        | "menu"
+                        | "notices"
+                )
             ),
             "{} has unknown context {:?}",
             spec.id,

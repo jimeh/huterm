@@ -684,7 +684,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             default("cmd-v", ids::PASTE, "Paste from the clipboard"),
             default("cmd-a", ids::SELECT_ALL, "Select the whole terminal"),
             default("cmd-k", ids::CLEAR_SCROLLBACK, "Clear the scrollback"),
-            default("cmd-,", ids::OPEN_SETTINGS, "Open the configuration file"),
+            default("cmd-,", ids::OPEN_SETTINGS, "Open Settings"),
             // GPUI folds Shift+comma into '<' and clears Shift on both
             // backends, so the binding names the resulting symbol.
             default("cmd-<", ids::RELOAD_CONFIG, "Reload the configuration"),
@@ -707,11 +707,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
                 ids::SELECT_ALL,
                 "Select the whole terminal",
             ),
-            default(
-                "ctrl-,",
-                ids::OPEN_SETTINGS,
-                "Open the configuration file",
-            ),
+            default("ctrl-,", ids::OPEN_SETTINGS, "Open Settings"),
             default("ctrl-<", ids::RELOAD_CONFIG, "Reload the configuration"),
         ]),
     }
@@ -759,6 +755,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     entries.extend(dialog_defaults());
     entries.extend(menu_defaults());
     entries.extend(notice_defaults());
+    entries.extend(settings_defaults(platform));
     entries.extend(palette_defaults(platform));
     entries
 }
@@ -804,6 +801,40 @@ fn notice_defaults() -> Vec<BindingEntry> {
         default("escape", ids::NOTICE_DISMISS, "Dismiss"),
         default("delete", ids::NOTICE_DISMISS, "Dismiss"),
     ]
+}
+
+/// Settings window bindings. Search and focus movement carry the `Settings`
+/// context; toggling, stepping, and reset carry `SettingsControl`, which
+/// only switches, selects, and section rows set, so Space and the arrows
+/// still reach a focused text field, whose `Palette` context handles them.
+/// The window also reads the close and tab-switching shortcuts, so they
+/// need no bindings of their own.
+fn settings_defaults(platform: Platform) -> Vec<BindingEntry> {
+    let mut entries = vec![
+        default("tab", ids::SETTINGS_FOCUS_NEXT, "Next Control"),
+        default(
+            "shift-tab",
+            ids::SETTINGS_FOCUS_PREVIOUS,
+            "Previous Control",
+        ),
+        default("space", ids::SETTINGS_TOGGLE, "Toggle"),
+        default("enter", ids::SETTINGS_TOGGLE, "Toggle"),
+        default("up", ids::SETTINGS_INCREASE, "Increase"),
+        default("right", ids::SETTINGS_INCREASE, "Increase"),
+        default("down", ids::SETTINGS_DECREASE, "Decrease"),
+        default("left", ids::SETTINGS_DECREASE, "Decrease"),
+    ];
+    entries.extend(match platform {
+        Platform::MacOs => [
+            default("cmd-f", ids::SETTINGS_SEARCH, "Search"),
+            default("cmd-backspace", ids::SETTINGS_RESET, "Reset"),
+        ],
+        Platform::Linux => [
+            default("ctrl-f", ids::SETTINGS_SEARCH, "Search"),
+            default("ctrl-backspace", ids::SETTINGS_RESET, "Reset"),
+        ],
+    });
+    entries
 }
 
 fn palette_defaults(platform: Platform) -> Vec<BindingEntry> {
