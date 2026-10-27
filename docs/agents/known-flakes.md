@@ -260,6 +260,25 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   handling, then rerun. A non-panicking cleanup in the drop would keep one
   failure from aborting the binary.
 
+## `smoke:macos-input` empty state read
+
+- **Label:** `Smoke macOS input` in `Rust smoke (macOS arm64)`, "no
+  pane_rects in" followed by nothing, from `field(panes, "pane_rects")` at
+  `scripts/check-native-input.ts` right after the `pane-keys-consumed`
+  marker.
+- **Occurrences:** once, 2026-10-27, on PR #281 (run 40587040829, job
+  122481163722, head `5e1c3c66`). The PR does not change the input smoke or
+  the code it drives; the same job passed on its earlier head `60c82966`.
+- **Evidence:** `currentState()` returned an empty string, yet the state
+  read for the error message moments later held `pane_rects`. The smoke
+  writes `state` every 10ms with `std::fs::write`
+  (`desktop/input_smoke.rs`), which truncates the file before writing it,
+  so a read that lands in between sees it empty. `currentState()` turns a
+  failed read into an empty string as well.
+- **Triage:** rerun. A fix writes the state to a temporary file and renames
+  it into place, as the smoke's own command files do, or has the script
+  retry an empty read.
+
 ## `smoke:macos-palette` stray DEL at an early step
 
 - **Label:** an early terminal-bytes check in `scripts/check-palette.ts`
