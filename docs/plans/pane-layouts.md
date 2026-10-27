@@ -1,10 +1,8 @@
 # Pane layouts
 
-Status: proposed. Reviewed on 2026-10-27 in three Codex and three Claude
-rounds. Jim settled the open questions the same day (see "Settled
-decisions"), adding default cycle bindings and user-defined layouts. The
-template language and PR 3 were then added and reviewed in a fourth round
-by both reviewers, and a fifth round checked the corrections. Plans
+Status: approved on 2026-10-27, after five Codex and five Claude review
+rounds. Jim settled every open question that day (see "Settled
+decisions"), adding default cycle bindings and user-defined layouts. Plans
 [issue #30][issue-30] within [epic #12][issue-12].
 Builds on [the split panes plan](split-panes.md) (#28) and
 [the pane moves plan](pane-moves.md) (#29), both implemented. Layout undo,
@@ -111,7 +109,7 @@ Non-goals:
 
 - Saving the current tab's layout as a named layout ("Save Layout As…").
   It fits the template language later but needs its own design.
-- A visual layout editor or a layout preview in Settings (open question 3).
+- A visual layout editor or a layout preview in Settings (settled decision 11).
 - Balancing only the focused pane's split, as tmux's `select-layout -E`
   does.
 - A layout that applies to every tab of a window.
@@ -189,7 +187,7 @@ p4, and the second star takes p5 and p6.
 **Fewer panes than slots.** When `n < f`, the first `n` pane slots, in
 template order, take the panes; the rest stay empty and every star takes
 none. A template with no `*` and more panes than pane slots has nowhere to
-put them and is unavailable for that count (open question 2).
+put them and is unavailable for that count (settled decision 10).
 
 **Building the tree.** In a `columns` or `rows` split, a star with `m`
 panes becomes `m` siblings in that split, sharing the star's share equally.
@@ -760,7 +758,7 @@ and two thirds: weights 333,334 and 666,666.
 
 - `PanesConfig` gains `layouts`, a map from name to template string, and
   `layout_cycle`, a list of names that defaults to the five built-ins
-  (open question 1). `PanesConfig` stops being `Copy`.
+  (settled decision 9). `PanesConfig` stops being `Copy`.
 - Config validation parses every template with the protocol's
   `LayoutTemplate::parse`, which `huterm-config` can call because it
   already depends on `huterm-protocol`. It rejects a bad template, an
@@ -817,8 +815,8 @@ layouts follows the named quake profiles editor (`Special::QuakeProfiles`,
   another layout to the cycle first", as unchecking the last row is.
 - Renaming or removing a layout that a keybinding names is refused with a
   message naming the binding, as `delete_profile` refuses to delete a
-  quake profile a global shortcut uses (`quake.rs:539-551`) (open question
-  4). Bindings in the file are never rewritten.
+  quake profile a global shortcut uses (`quake.rs:539-551`) (settled decision
+  12). Bindings in the file are never rewritten.
 - Saving goes through the existing settings write path, so comments and
   formatting elsewhere in the file survive, as for every other setting.
 
@@ -1185,9 +1183,11 @@ Three PRs, each leaving `main` consistent and shippable:
    `docs/configuration.md` and `docs/keybindings.md`. About 1,000 to
    1,500 lines.
 
-PR 2's undo recording needs #256's client PR on `main`. If #256 is late,
-PR 2 ships without recording and #256 adds it, as its plan already allows.
-PR 3 needs only PR 2.
+PR 2's undo recording needs #256's client PR on `main`, which provides
+`record_layout_change`, so PR 2 opens only after that PR merges. PR 3
+waits for the decision on the shared UI components
+(`docs/plans/ui-components.md`): when those land, its rename and cycle
+list build on the shared InlineEdit and Listbox rather than their own.
 
 ## Documentation
 
@@ -1209,8 +1209,9 @@ PR 3 needs only PR 2.
 
 ## Settled decisions
 
-Jim decided these on 2026-10-27, after the first three review rounds. Each
-item names the alternatives he considered.
+Jim decided these on 2026-10-27: items 1 to 8 after the first three
+review rounds, and items 9 to 12 after the fifth. Each item names the
+alternatives he considered.
 
 1. **Main pane:** the first pane in traversal order, as in tmux. Not
    chosen: the focused pane.
@@ -1237,42 +1238,24 @@ item names the alternatives he considered.
    Settings window, written in the template language. Not chosen: a
    follow-up issue, or nested TOML tables.
 
+9. **Default cycle:** the five built-ins only; users add their own layouts
+   to `layout_cycle` by name. Not chosen: appending every user layout
+   automatically.
+10. **A template without `*` and more panes than slots:** unavailable for
+    that count, as tmux's custom layout strings apply only at their own
+    pane count. Not chosen: appending the extra panes to the template's
+    last split.
+11. **Settings preview:** none in PR 3. Not chosen: a drawing of the
+    template expanded for four panes.
+12. **Renaming or removing a layout a keybinding uses:** refused in
+    Settings with a message naming the binding, as the quake profile
+    editor refuses to delete a profile a global shortcut uses. Not chosen:
+    rewriting the bindings in the same save, or letting them show the
+    unknown-layout notice.
+
 ## Open questions
 
-These are smaller choices that the template language and PR 3 raise. Each
-has a recommendation the plan already follows.
-
-1. **The default cycle.** Recommend the five built-ins only, so a user adds
-   their own layouts to `layout_cycle` by name.
-   - For: defining a layout never changes what the cycle keys do; the list
-     is explicit and its order is the user's.
-   - Against: a new layout needs a second edit before the cycle key
-     reaches it. The alternative appends every user layout, in name order,
-     whenever `layout_cycle` is unset.
-2. **A template without `*` and more panes than slots.** Recommend treating
-   it as unavailable for that count, as tmux's custom layout strings apply
-   only at their own pane count.
-   - For: the result is always exactly what the template draws; cycling
-     skips it.
-   - Against: a fixed layout silently drops out of the cycle once a pane
-     is added. The alternative appends the extra panes to the template's
-     last split as equal siblings.
-3. **A preview in Settings.** Recommend leaving it out of PR 3.
-   - For: keeps PR 3 to text fields and the cycle list, and the parser's
-     messages catch syntax mistakes.
-   - Against: a template is hard to picture from text. A small drawing of
-     the template expanded for four panes, from `layout_panes`, would catch
-     a misplaced share at a glance, at the cost of a custom element in the
-     Settings window.
-4. **Renaming or removing a layout a keybinding uses.** Recommend refusing
-   it in Settings with a message naming the binding, as the quake profile
-   editor refuses to delete a profile a global shortcut uses.
-   - For: Settings never leaves a binding that silently stops working, and
-     it follows the existing precedent.
-   - Against: the user has to edit or remove the binding first. The
-     alternatives are rewriting the bindings in the same save, which
-     touches the keybinding list, or allowing it and letting the binding
-     show the unknown-layout notice when it runs.
+None.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-30]: https://github.com/jimeh/huterm/issues/30
