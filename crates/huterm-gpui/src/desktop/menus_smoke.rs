@@ -32,6 +32,7 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
                 when: Some("!confirming".into()),
                 args: None,
                 description: None,
+                disabled: None,
             },
             KeybindingEntry {
                 key: "cmd-r".into(),
@@ -39,6 +40,7 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
                 when: None,
                 args: None,
                 description: None,
+                disabled: None,
             },
             binding("cmd-enter", "toggle_fullscreen"),
             binding("cmd-tab", "next_tab"),
@@ -53,6 +55,7 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
         error: None,
         warning: None,
         fatal: false,
+        inputs: config::Inputs::default(),
     };
     let (installed, error) = windows::install_startup_keymap(cx, &loaded);
     anyhow::ensure!(error.is_empty(), "startup keymap: {error:?}");
@@ -108,6 +111,7 @@ fn binding(key: &str, command: &str) -> KeybindingEntry {
         when: None,
         args: None,
         description: None,
+        disabled: None,
     }
 }
 

@@ -55,10 +55,19 @@ when = "selection"
 key = "ctrl-h alt-r alt-f"
 command = "copy"
 `;
-  async function configure(policy: string, withConditional = true) {
-    await writeFile(config, `[terminal]\nclose_on_exit = false\nmacos_option_as_alt = "${policy}"\n[tabs]\nposition = "top"\nwidth = "fill"\n${bindings}${withConditional ? conditional : ""}`);
+  /**
+   * Saves the configuration as editors do, by renaming over it. Most steps
+   * turn watching off so only the Reload they press applies the change.
+   */
+  async function configure(policy: string, withConditional = true, watch = false) {
+    await writeFile(`${config}.tmp`, `[general]\nwatch_config = ${watch}\n[terminal]\nclose_on_exit = false\nmacos_option_as_alt = "${policy}"\n[tabs]\nposition = "top"\nwidth = "fill"\n${bindings}${withConditional ? conditional : ""}`);
+    await rename(`${config}.tmp`, config);
   }
-  await configure("off");
+  /** Reloads with Cmd-<. */
+  async function reload() {
+    await key(43, command | (1 << 17), "<", "<");
+  }
+  await configure("off", true, true);
   const recorder = join(directory, "recorder.ts");
   await writeFile(recorder, `import {openSync, writeSync} from "node:fs";
 const fd = openSync(${JSON.stringify(bytes)}, "a");
@@ -148,6 +157,21 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await key(8, option, "ç", "c");
     await key(3, option, "ƒ", "f");
     await check("option-symbols", "®çƒ");
+
+    // A saved change applies without Reload while watching is on, including
+    // the change that turns it off. Then only Reload applies one.
+    await state("watching=on");
+    await configure("both", true, true);
+    await state("policy=Both", "watching=on");
+    await configure("off", true, false);
+    await state("policy=Off", "watching=off");
+    await configure("both", true, false);
+    await reload();
+    await state("policy=Both", "watching=off", "reloading=false");
+    await configure("off", true, false);
+    await reload();
+    await state("policy=Off", "watching=off", "reloading=false");
+    await check("automatic-reload", "");
     await key(14, option, "´", "e");
     await key(14, 0, "e");
     await check("option-dead-key", "é");
@@ -234,6 +258,14 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await state("active=1");
     await key(14, 0, "e");
     await check("returning-tab-has-no-composition", "e");
+
+    // Reload turns watching back on, and saves apply on their own again.
+    await configure("both", false, true);
+    await reload();
+    await state("policy=Both", "watching=on", "reloading=false");
+    await configure("off", false, true);
+    await state("policy=Off", "watching=on");
+    await check("watching-resumes", "");
 
     // Panes: Cmd-D splits the tab and focuses the new pane's shell. The pane
     // keys move focus without reaching either shell, a native click focuses

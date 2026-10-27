@@ -80,6 +80,7 @@ impl DesktopHarness {
             error: None,
             warning: None,
             fatal: false,
+            inputs: config::Inputs::default(),
         };
         let app_runtime = Arc::clone(&runtime);
         cx.update(|cx| {
@@ -2273,6 +2274,148 @@ fn a_confirmed_quit_committing_when_its_windows_session_closes_still_quits(
     assert!(runtime.restore.lock().unwrap().is_some());
 }
 
+/// The report of a configuration change that differs from the last load.
+fn config_changed() -> config_watch::Report {
+    config_watch::Report::Changed {
+        differs: true,
+        fingerprint: config::Fingerprint::default(),
+    }
+}
+
+/// Whether a reload holds the latch.
+fn reloading(cx: &mut App) -> bool {
+    cx.global::<Desktop>().reloads.reloading()
+}
+
+#[gpui::test]
+fn the_watch_warning_clears_once_every_watch_holds(cx: &mut TestAppContext) {
+    // The warning counts whether a window shows it or the latch holds it.
+    let warned = |cx: &mut App, window| {
+        let mut lines = notices(cx, window);
+        lines.extend(
+            cx.global::<Desktop>()
+                .latched
+                .iter()
+                .map(NoticeContent::smoke_line),
+        );
+        lines
+            .iter()
+            .filter(|line| line.contains("will not reload automatically"))
+            .count()
+    };
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    harness.wait_text(window, tab, "READY");
+    harness.cx.update(|cx| {
+        handle_watch_report(
+            cx,
+            config_watch::Report::Unavailable("watch limit reached".into()),
+        );
+        assert_eq!(warned(cx, window), 1);
+        handle_watch_report(
+            cx,
+            config_watch::Report::Status {
+                watching: false,
+                reconciliations: 1,
+            },
+        );
+        assert_eq!(warned(cx, window), 1, "watching is still off");
+        handle_watch_report(
+            cx,
+            config_watch::Report::Status {
+                watching: true,
+                reconciliations: 2,
+            },
+        );
+        assert_eq!(warned(cx, window), 0);
+    });
+}
+
+#[gpui::test]
+fn an_automatic_reload_starts_while_quit_is_pending_but_not_once_committed(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().quitting = true;
+        handle_watch_report(cx, config_changed());
+        assert!(reloading(cx), "a pending Quit held back the reload");
+    });
+    harness.wait_for("the reload to finish", |cx| !reloading(cx));
+    harness.cx.update(|cx| {
+        commit_quit(cx);
+        handle_watch_report(cx, config_changed());
+        assert!(!reloading(cx), "a reload started after Quit committed");
+    });
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "the font size parses from an exact literal"
+)]
+#[gpui::test]
+fn a_change_during_a_cancelled_quit_is_applied(cx: &mut TestAppContext) {
+    let directory = std::env::temp_dir().join(format!(
+        "huterm-cancelled-quit-reload-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("config.toml");
+    std::fs::write(&path, "[font]\nsize = 19.0\n").unwrap();
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(RUNS_JOB);
+    let window = harness.attach_showing(&[tab]);
+    harness.wait_text(window, tab, "READY");
+    harness.cx.update(|cx| {
+        assert_ne!(cx.global::<Desktop>().config.font.size, 19.0);
+        cx.global_mut::<Desktop>().config_path = path;
+    });
+    harness.update_view(window, |view, window, cx| {
+        view.request_close(CloseTarget::Application, window, cx);
+    });
+    harness.wait_for("the Quit confirmation", |cx| confirming(cx, window));
+    harness
+        .cx
+        .update(|cx| handle_watch_report(cx, config_changed()));
+    harness.update_view(window, |view, window, cx| {
+        view.cancel_confirmation(window, cx);
+    });
+    harness.wait_for("the changed configuration to apply", |cx| {
+        !quitting(cx)
+            && !reloading(cx)
+            && cx.global::<Desktop>().config.font.size == 19.0
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[gpui::test]
+fn a_reload_finishing_after_quit_commits_applies_nothing(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    harness.wait_text(window, tab, "READY");
+    harness.cx.update(|cx| {
+        let size = cx.global::<Desktop>().config.font.size;
+        let mut changed = cx.global::<Desktop>().config.clone();
+        changed.font.size = size + 4.0;
+        commit_quit(cx);
+        finish_reload(
+            cx,
+            ReloadKind::Manual,
+            Path::new("huterm-test.toml"),
+            config::Reloaded {
+                config: Ok(changed),
+                inputs: config::Inputs::default(),
+                missing: false,
+            },
+        );
+        assert_eq!(cx.global::<Desktop>().config.font.size, size);
+    });
+}
+
 #[gpui::test]
 fn a_failed_emptied_close_assessment_raises_one_notice_and_is_not_retried(
     cx: &mut TestAppContext,
@@ -3466,6 +3609,7 @@ impl DesktopHarness {
                     args: None,
                     when: Some((*when).to_owned()),
                     description: None,
+                    disabled: None,
                 })
                 .collect();
         })

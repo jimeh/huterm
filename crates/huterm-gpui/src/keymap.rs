@@ -55,6 +55,12 @@ pub(crate) struct BindingEntry {
     pub(crate) when: Option<String>,
     pub(crate) description: Option<String>,
     pub(crate) origin: Origin,
+    /// As written: `Some(true)` removes matching earlier bindings instead of
+    /// binding, and any value is an error on `unbind`.
+    pub(crate) disabled: Option<bool>,
+    /// Whether the entry wrote `args`; a disabled entry without them matches
+    /// bindings with any arguments.
+    pub(crate) args_given: bool,
 }
 
 /// A binding that survived precedence resolution.
@@ -227,6 +233,8 @@ impl BindingEntry {
             when: entry.when.clone(),
             description: entry.description.clone(),
             origin: Origin::User,
+            disabled: entry.disabled,
+            args_given: entry.args.is_some(),
         })
     }
 }
@@ -323,6 +331,12 @@ fn compile_entries(
             if !entry.args.is_empty() {
                 return Err(fail("unbind takes no args".to_owned()));
             }
+            if entry.disabled.is_some() {
+                return Err(fail(
+                    "unbind already removes bindings and takes no `disabled`"
+                        .to_owned(),
+                ));
+            }
             if entry.when.is_some() {
                 return Err(fail(
                     "unbind removes every binding for the key and takes no \
@@ -354,6 +368,23 @@ fn compile_entries(
             })
             .transpose()?;
         effective.predicate.clone_from(&predicate);
+        if entry.disabled == Some(true) {
+            // Binds nothing: removes earlier bindings with the same keys,
+            // command, and combined predicate, and the same arguments when
+            // it gives any. Their reservations and menu accelerators go
+            // with them.
+            resolved.retain(|existing| {
+                !(same_keystrokes(&existing.keystrokes, &keystrokes)
+                    && existing.effective.command == effective.command
+                    && existing.predicate == predicate
+                    && (!entry.args_given
+                        || same_arguments(
+                            &existing.effective.args,
+                            &effective.args,
+                        )))
+            });
+            continue;
+        }
         if let Some(index) = resolved.iter().position(|existing| {
             same_keystrokes(&existing.keystrokes, &keystrokes)
                 && existing.predicate == predicate
@@ -432,6 +463,12 @@ fn parse_keystrokes(key: &str) -> Result<Vec<Keystroke>, String> {
         return Err("key must not be empty".to_owned());
     }
     Ok(keystrokes)
+}
+
+/// Argument lists with the same names and values, in any order.
+fn same_arguments(left: &[CommandArgument], right: &[CommandArgument]) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|argument| right.contains(argument))
 }
 
 fn same_keystrokes(left: &[Keystroke], right: &[Keystroke]) -> bool {
@@ -544,6 +581,8 @@ fn default_with(
         when: None,
         description: Some(description.to_owned()),
         origin: Origin::Default,
+        disabled: None,
+        args_given: !args.is_empty(),
     }
 }
 

@@ -23,6 +23,7 @@ fn fallback_bindings(chords: &[&str]) -> Vec<gpui::KeyBinding> {
             args: None,
             when: None,
             description: None,
+            disabled: None,
         })
         .collect::<Vec<_>>();
     keymap::compile(Platform::MacOs, &entries).unwrap().bindings
@@ -102,6 +103,7 @@ fn successive_fallback_actions_consume_only_their_own_prefixes() {
                 args: None,
                 when: None,
                 description: None,
+                disabled: None,
             }],
         )
         .unwrap()
@@ -366,6 +368,7 @@ fn matcher_consumes_alt_bindings_and_allows_conditional_and_unbound_meta() {
         args: None,
         when: when.map(str::to_owned),
         description: None,
+        disabled: None,
     };
     let key = stroke("r", Some("®"), true, false, false);
     let context = [
@@ -438,6 +441,7 @@ fn real_matcher_reports_an_option_chord_prefix_for_composition_cancellation() {
             args: None,
             when: None,
             description: None,
+            disabled: None,
         }],
     )
     .unwrap();

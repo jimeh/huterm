@@ -76,7 +76,13 @@ pub(crate) fn run() -> anyhow::Result<()> {
 fn read_state(cx: &mut gpui::App) -> String {
     let desktop = cx.global::<super::Desktop>();
     let policy = format!("{:?}", desktop.config.terminal.macos_option_as_alt);
-    let reloading = desktop.reloading;
+    let reloading = desktop.reloads.reloading();
+    let watching = if desktop.watch_status.watching {
+        "on"
+    } else {
+        "off"
+    };
+    let reconciliations = desktop.watch_status.reconciliations;
     let bindings = desktop.config.keybindings.len();
     // Smoke state is read from an App update with no window on the stack.
     let view = cx
@@ -122,7 +128,7 @@ fn read_state(cx: &mut gpui::App) -> String {
         .and_then(|window| window.update(cx, pane_state).ok())
         .unwrap_or_default();
     format!(
-        "policy={policy} reloading={reloading} bindings={bindings} tabs={tabs} selection={selection} pending={pending} exited={exited} ready={ready} active={active} {panes}"
+        "policy={policy} reloading={reloading} watching={watching} reconciliations={reconciliations} bindings={bindings} tabs={tabs} selection={selection} pending={pending} exited={exited} ready={ready} active={active} {panes}"
     )
 }
 

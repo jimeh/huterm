@@ -379,7 +379,7 @@ showed came up short on macOS CI.
 | Pull request | Named platform smoke steps on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64, supervised by `mise run ci:smoke:step` as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
 | Pull request | `mise run lint:docs`, `lint:agents`, `ci:workflows`, `smoke:schema-editor`, `vendor:check`, `license`, and `audit:scripts` as separate Policy steps on Ubuntu 24.04 | Documentation, agent guides, workflows, editor schema behavior, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
-| Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and a raw Ghostty PTY | CI or implementer |
+| Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, a raw Ghostty PTY, and automatic reload observed through OSC 11 | CI or implementer |
 | Linux clipboard | `mise run smoke:linux-clipboard` | Exact OSC 52 and tmux writes through Ghostty to an isolated X11 CLIPBOARD selection | CI or implementer |
 | macOS clipboard | `mise run smoke:macos-clipboard` | Exact OSC 52 and tmux writes through Ghostty, including NUL, with pasteboard preservation | CI or implementer |
 | Linux fullscreen | `mise run smoke:linux-fullscreen` | Openbox EWMH property, geometry, PTY input/resize, ignored-request timeout, and Quit capture | CI or implementer |
@@ -387,7 +387,7 @@ showed came up short on macOS CI.
 | Linux quake | `mise run smoke:linux-quake` | Native XTest shortcuts, external focus, composited fade pixels, animations, OS grab rollback, and PTY lifecycle | CI or implementer |
 | macOS quake | `mise run smoke:macos-quake` | Native session shortcuts, external AppKit focus, alpha/geometry, Space exit, and PTY lifecycle; requires event-posting permission | CI or implementer |
 | macOS menus | `mise run smoke:macos-menus` | Real AppKit shortcut values at startup and reload | CI or implementer |
-| macOS keyboard | `mise run smoke:macos-input` | Native input and composition through Ghostty, plus one legacy-config launch | CI or implementer |
+| macOS keyboard | `mise run smoke:macos-input` | Native input and composition through Ghostty, automatic reload with `watch_config` on and off, plus one legacy-config launch | CI or implementer |
 | macOS refresh | `mise run smoke:macos-refresh` | Native frame stop/resume, one pending callback across tab replacement, and idle activity-task cancellation; requires an unlocked GUI session | Implementer |
 | macOS Quit | `mise run smoke:macos-quit` | Cancellable AppKit termination through Ghostty | CI or implementer |
 | Scroll benchmark | `mise run ci:benchmarks` on Ubuntu 24.04 | Ghostty snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | CI or implementer |

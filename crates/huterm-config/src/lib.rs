@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub mod document;
 pub mod quake;
 
 #[cfg(feature = "schema")]
@@ -21,6 +22,34 @@ pub struct KeybindingEntry {
     pub args: Option<toml::Table>,
     pub when: Option<String>,
     pub description: Option<String>,
+    /// Kept as written: `false` is ordinary, but any value is an error on
+    /// `unbind` and on global shortcuts.
+    pub disabled: Option<bool>,
+}
+
+impl KeybindingEntry {
+    /// Whether this entry removes matching earlier bindings instead of
+    /// binding its key.
+    #[must_use]
+    pub fn is_disabled(&self) -> bool {
+        self.disabled == Some(true)
+    }
+}
+
+/// Application-wide behavior.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct GeneralConfig {
+    /// Reload the configuration file automatically when it, or a theme file
+    /// it uses, changes on disk.
+    pub watch_config: bool,
+}
+
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        Self { watch_config: true }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -910,6 +939,8 @@ const fn rgb(value: u32) -> Rgb {
 #[serde(deny_unknown_fields)]
 pub struct RawConfig {
     #[serde(default)]
+    pub general: GeneralConfig,
+    #[serde(default)]
     pub terminal: RawTerminal,
     #[serde(default)]
     pub font: RawFont,
@@ -948,6 +979,9 @@ pub struct RawKeybinding {
     pub args: Option<toml::Value>,
     pub when: Option<String>,
     pub description: Option<String>,
+    /// Remove earlier bindings with the same key, command, `when`, and any
+    /// given `args`, and bind nothing.
+    pub disabled: Option<bool>,
 }
 
 impl RawKeybinding {
@@ -1006,6 +1040,7 @@ impl RawKeybinding {
             args,
             when: self.when,
             description: self.description,
+            disabled: self.disabled,
         })
     }
 }

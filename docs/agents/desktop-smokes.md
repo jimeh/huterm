@@ -125,6 +125,11 @@ another tab in the window first: a window whose last tab moves away takes an
 emptied close, which detaches its attachment and revokes every viewer
 subscribed through it.
 
+A locked macOS session draws no frames, so host smokes that wait on drawn
+state, such as `smoke:macos-input`'s first `ready=true`, time out while the
+raw-PTY readiness file still appears. Check `CGSSessionScreenIsLocked` in
+`CGSessionCopyCurrentDictionary()` before treating that as a regression.
+
 Smoke state is sampled from the model, which can run ahead of the drawn frame.
 Before a smoke presses on a newly opened overlay, wait for a field set during
 render or paint, such as `dialog_drawn_groups` or `menu_rect`, not only for the

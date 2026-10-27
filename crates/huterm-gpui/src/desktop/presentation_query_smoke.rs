@@ -72,7 +72,7 @@ fn read_state(cx: &mut App) -> String {
     let mut output = format!(
         "windows={}\nreloading={}\n",
         cx.windows().len(),
-        cx.global::<Desktop>().reloading
+        cx.global::<Desktop>().reloads.reloading()
     );
     if let Some(handle) = cx.windows().first().copied() {
         let _ = handle.update(cx, |root, window, cx| {

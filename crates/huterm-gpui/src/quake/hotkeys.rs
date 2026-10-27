@@ -31,6 +31,11 @@ pub(crate) fn compile(
                     "global shortcuts cannot have a when predicate".into()
                 );
             }
+            if entry.disabled.is_some() {
+                return Err("global shortcuts cannot be disabled; remove the \
+                     entry instead"
+                    .into());
+            }
             let id = match entry.command.as_str() {
                 "show_quake" => ids::SHOW_QUAKE,
                 "hide_quake" => ids::HIDE_QUAKE,
@@ -496,6 +501,7 @@ mod tests {
             args: None,
             when: None,
             description: None,
+            disabled: None,
         };
         let compiled =
             compile(std::slice::from_ref(&entry), &profiles, &local).unwrap();
@@ -533,6 +539,19 @@ mod tests {
             },
         ] {
             assert!(compile(&[invalid], &profiles, &local).is_err());
+        }
+        // Global shortcuts cannot be disabled, whatever the value.
+        for value in [true, false] {
+            let error = compile(
+                &[KeybindingEntry {
+                    disabled: Some(value),
+                    ..entry.clone()
+                }],
+                &profiles,
+                &local,
+            )
+            .unwrap_err();
+            assert!(error.contains("cannot be disabled"), "{error}");
         }
         let mut local = local;
         local.bindings.push(gpui::KeyBinding::new(

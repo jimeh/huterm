@@ -1,19 +1,25 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::themes;
 pub(super) use huterm_config::{
-    ClipboardWritePolicy, ConfigError, FontConfig, KeybindingEntry,
-    LegacyTerminalEngine, LinkModifiers, MacosFullscreenMode, MacosOptionAsAlt,
-    RawConfig, RightClickAction, TabPosition, TabsConfig, TerminalConfig,
-    Theme, UpdateConfig, WindowConfig, keybinding_diagnostic,
+    ClipboardWritePolicy, ConfigError, FontConfig, GeneralConfig,
+    KeybindingEntry, LegacyTerminalEngine, LinkModifiers, MacosFullscreenMode,
+    MacosOptionAsAlt, RawConfig, RightClickAction, TabPosition, TabsConfig,
+    TerminalConfig, Theme, UpdateConfig, WindowConfig, keybinding_diagnostic,
 };
 
 pub(super) const LEGACY_ALACRITTY_WARNING: &str = "terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration.";
 
 pub(super) const DEFAULT_CONFIG: &str = r##"#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
+
+[general]
+# Reload this file automatically when it changes on disk.
+watch_config = true
 
 [terminal]
 # Terminal identity for new shells: "auto", "xterm-huterm", or
@@ -138,6 +144,7 @@ name = "huterm-dark"
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Config {
     pub(super) warning: Option<String>,
+    pub(super) general: GeneralConfig,
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
     pub(super) tabs: TabsConfig,
@@ -158,12 +165,82 @@ pub(super) struct LoadedConfig {
     pub(super) error: Option<String>,
     pub(super) warning: Option<String>,
     pub(super) fatal: bool,
+    pub(super) inputs: Inputs,
+}
+
+/// What one load or reload consumed: the theme files it read or probed, in
+/// order, and a fingerprint of those bytes and the configuration's. A
+/// change to any of them changes the fingerprint.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct Inputs {
+    pub(super) themes: Vec<PathBuf>,
+    pub(super) fingerprint: Fingerprint,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(super) struct Fingerprint(u64);
+
+/// Records the bytes a load consumes, in the order it consumes them.
+pub(super) struct Consumed {
+    hasher: DefaultHasher,
+    themes: Vec<PathBuf>,
+}
+
+impl Consumed {
+    pub(super) fn new() -> Self {
+        Self {
+            hasher: DefaultHasher::new(),
+            themes: Vec::new(),
+        }
+    }
+
+    /// The configuration file's bytes, or `None` when it could not be read.
+    fn config(&mut self, bytes: Option<&[u8]>) {
+        0_u8.hash(&mut self.hasher);
+        bytes.hash(&mut self.hasher);
+    }
+
+    /// An external theme file's bytes, or `None` when it was absent or
+    /// unreadable.
+    pub(super) fn theme(&mut self, path: &Path, bytes: Option<&[u8]>) {
+        1_u8.hash(&mut self.hasher);
+        path.hash(&mut self.hasher);
+        bytes.hash(&mut self.hasher);
+        self.themes.push(path.to_owned());
+    }
+
+    fn finish(self) -> Inputs {
+        Inputs {
+            themes: self.themes,
+            fingerprint: Fingerprint(self.hasher.finish()),
+        }
+    }
+}
+
+/// Recomputes the fingerprint a load of `config` would record if it read
+/// the same theme files as `themes`. `None` when the configuration file is
+/// missing, as it is for a moment while an editor saves by renaming.
+pub(super) fn fingerprint(
+    config: &Path,
+    themes: &[PathBuf],
+) -> Option<Fingerprint> {
+    let mut consumed = Consumed::new();
+    match fs::read(config) {
+        Ok(bytes) => consumed.config(Some(&bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(_) => consumed.config(None),
+    }
+    for theme in themes {
+        consumed.theme(theme, fs::read(theme).ok().as_deref());
+    }
+    Some(consumed.finish().fingerprint)
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             warning: None,
+            general: GeneralConfig::default(),
             font: FontConfig::default(),
             theme: Theme::huterm_dark(),
             window: WindowConfig::default(),
@@ -190,14 +267,17 @@ pub(super) fn load() -> LoadedConfig {
 }
 
 fn load_path(path: PathBuf) -> LoadedConfig {
-    match fs::read_to_string(&path) {
-        Ok(source) => match parse_at(&source, &path) {
+    let mut consumed = Consumed::new();
+    let source = read_config(&path, &mut consumed);
+    match source {
+        Ok(source) => match parse_consumed(&source, &path, &mut consumed) {
             Ok(config) => LoadedConfig {
                 warning: config.warning.clone(),
                 config,
                 path,
                 error: None,
                 fatal: false,
+                inputs: consumed.finish(),
             },
             Err(error) => {
                 let (warning, clipboard_write, fatal, error) =
@@ -216,6 +296,7 @@ fn load_path(path: PathBuf) -> LoadedConfig {
                 LoadedConfig {
                     config: Config {
                         warning: warning.clone(),
+                        general: fallback_general(&source),
                         terminal,
                         ..Config::default()
                     },
@@ -223,26 +304,35 @@ fn load_path(path: PathBuf) -> LoadedConfig {
                     error: Some(format!("{}: {error}", path.display())),
                     warning,
                     path,
+                    inputs: consumed.finish(),
                 }
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            LoadedConfig {
-                config: Config::default(),
-                path,
-                error: None,
-                warning: None,
-                fatal: false,
-            }
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => LoadedConfig {
+            config: Config::default(),
+            path,
+            error: None,
+            warning: None,
+            fatal: false,
+            inputs: consumed.finish(),
+        },
         Err(error) => LoadedConfig {
             config: Config::default(),
             fatal: false,
             error: Some(format!("{}: {error}", path.display())),
             warning: None,
             path,
+            inputs: consumed.finish(),
         },
     }
+}
+
+/// Reads the configuration file as text, recording its bytes.
+fn read_config(path: &Path, consumed: &mut Consumed) -> io::Result<String> {
+    let bytes = fs::read(path).inspect_err(|_| consumed.config(None))?;
+    consumed.config(Some(&bytes));
+    String::from_utf8(bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 pub(super) fn create_default(path: &Path) -> Result<(), ConfigFileError> {
@@ -300,11 +390,72 @@ pub(super) fn home_directory() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
-pub(super) fn reload(path: &Path) -> Result<Config, String> {
-    let source = fs::read_to_string(path)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    parse_at(&source, path)
-        .map_err(|error| format!("{}: {error}", path.display()))
+/// The outcome of rereading the configuration.
+pub(super) struct Reloaded {
+    pub(super) config: Result<Config, String>,
+    pub(super) inputs: Inputs,
+    /// The file was missing, as it is for a moment while an editor saves
+    /// by renaming.
+    pub(super) missing: bool,
+}
+
+pub(super) fn reload(path: &Path) -> Reloaded {
+    let mut consumed = Consumed::new();
+    let (config, missing) = match read_config(path, &mut consumed) {
+        Ok(source) => (
+            parse_consumed(&source, path, &mut consumed)
+                .map_err(|error| format!("{}: {error}", path.display())),
+            false,
+        ),
+        Err(error) => (
+            Err(format!("{}: {error}", path.display())),
+            error.kind() == io::ErrorKind::NotFound,
+        ),
+    };
+    Reloaded {
+        config,
+        inputs: consumed.finish(),
+        missing,
+    }
+}
+
+/// Reads `[general] watch_config` from a file that failed to load but is
+/// valid TOML, so a fix saved in an editor still loads on its own. Anything
+/// unreadable keeps the default.
+fn fallback_general(source: &str) -> GeneralConfig {
+    let watch_config = toml::from_str::<toml::Value>(source)
+        .ok()
+        .and_then(|value| value.get("general")?.get("watch_config")?.as_bool())
+        .unwrap_or(GeneralConfig::default().watch_config);
+    GeneralConfig { watch_config }
+}
+
+/// Checks a candidate file the way a reload does, without registering
+/// anything: parsing, values, theme resolution relative to `path`, the
+/// local keymap, and global shortcuts. Font resolution needs the GPUI text
+/// system and is left to the reload.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the Settings window is its first caller")
+)]
+pub(super) fn validator(
+    path: PathBuf,
+) -> impl Fn(&str) -> Result<(), String> + Send + Sync {
+    move |source| {
+        let config =
+            parse_at(source, &path).map_err(|error| error.to_string())?;
+        let local = crate::keymap::compile(
+            crate::keymap::Platform::current(),
+            &config.keybindings,
+        )
+        .map_err(|error| error.to_string())?;
+        crate::quake::hotkeys::compile(
+            &config.global_keybindings,
+            &config.quake,
+            &local,
+        )?;
+        Ok(())
+    }
 }
 
 fn fallback_terminal(
@@ -346,6 +497,14 @@ fn parse_engine(name: &str) -> Result<Option<String>, ConfigError> {
 }
 
 fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
+    parse_consumed(source, path, &mut Consumed::new())
+}
+
+fn parse_consumed(
+    source: &str,
+    path: &Path,
+    consumed: &mut Consumed,
+) -> Result<Config, ConfigError> {
     let value: toml::Value =
         toml::from_str(source).map_err(ConfigError::Toml)?;
     reject_moved_tab_settings(&value)?;
@@ -362,7 +521,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("themes");
-    let theme = themes::resolve(&raw.theme, &raw.themes, &directory)?;
+    let theme = themes::resolve(&raw.theme, &raw.themes, &directory, consumed)?;
     let keybindings = raw
         .keybinding
         .into_iter()
@@ -371,6 +530,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Config {
         warning,
+        general: raw.general,
         window: raw.window,
         tabs: raw.tabs,
         updates: raw.updates,

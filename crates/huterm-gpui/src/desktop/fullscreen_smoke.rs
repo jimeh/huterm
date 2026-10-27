@@ -227,7 +227,7 @@ fn read_state(cx: &mut App) -> String {
     let mut output = format!(
         "windows={}\nreloading={}\n",
         cx.windows().len(),
-        cx.global::<Desktop>().reloading
+        cx.global::<Desktop>().reloads.reloading()
     );
     for (index, handle) in cx.windows().into_iter().enumerate() {
         let _ = handle.update(cx, |root, window, cx| {

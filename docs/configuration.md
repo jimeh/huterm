@@ -43,9 +43,26 @@ display availability, shortcut conflicts, and global shortcut registration.
 
 ## Reload
 
-Choose **Reload Configuration** from the Huterm application menu on macOS or
-the window menu, or press Cmd+Shift+, on macOS or Ctrl+Shift+, on Linux with a
-US keyboard layout. GPUI represents these
+Huterm watches `config.toml` and reloads it shortly after it changes on disk,
+including when the file is a symlink and when an editor saves by renaming. It
+also watches the theme files the selected theme reads, so editing a theme in
+`themes/`, or a theme it extends, reloads too. A successful automatic reload
+shows no notice.
+
+```toml
+[general]
+# Reload this file automatically when it changes on disk.
+watch_config = true
+```
+
+Set `watch_config = false` to reload only on request. Saving that change still
+reloads once, since watching was on when it was saved; turning it back on
+takes a manual reload. If the file watcher cannot start, Huterm shows one
+warning and manual reload keeps working.
+
+To reload manually, choose **Reload Configuration** from the Huterm
+application menu on macOS or the window menu, or press Cmd+Shift+, on macOS or
+Ctrl+Shift+, on Linux with a US keyboard layout. GPUI represents these
 chords as Cmd+< and Ctrl+<; on other layouts use the corresponding less-than
 chord.
 
@@ -55,9 +72,16 @@ restarting shells or losing scrollback. Windows keep their size; visible grids
 are recalculated, and hidden grids resize when selected. Where a setting
 reloads differently, its section below says so.
 
-An invalid, unreadable, or missing file leaves the running settings in place
-and shows an error. To return to the defaults, empty the file and reload it.
-Reload is manual: Huterm does not watch the file.
+An invalid or unreadable file leaves the running settings in place and shows
+the configuration error, whether the reload was automatic or manual. Saving a
+fixed file, even one identical to the last working version, reloads it and
+clears the error. A file that disappears is left alone until it comes back,
+because editors briefly remove it while saving; a manual reload of a missing
+file shows an error. To return to the defaults, empty the file.
+
+At startup, a file that is not valid TOML stops Huterm. A valid file with a
+bad setting starts with the defaults, shows the error, and still honors its
+`watch_config`, so saving the fix applies it.
 
 ## Shells
 

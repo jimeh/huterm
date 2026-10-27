@@ -32,6 +32,7 @@ use super::close_dialog::{
     CloseDialogInput, CloseDialogTarget, DialogFocus, ProcessGroup,
     ProcessGroupState, ProcessRow, build_close_dialog, render_close_dialog,
 };
+use super::config_watch::ReloadKind;
 use super::licenses::{Done as LicensesDone, LicensesState, LicensesView};
 use super::menu::{
     MENU_MIN_WIDTH, Menu as MenuView, MenuAnchor, MenuEvent, MenuModel,
@@ -822,8 +823,17 @@ struct Desktop {
     views: Views,
     keymap: InstalledKeymap,
     frequency: CommandFrequency,
-    reloading: bool,
+    /// The reload latch and its follow-up flag.
+    reloads: config_watch::Reloads,
+    /// The configuration watcher's worker; `None` until startup runs it.
+    watch: Option<config_watch::Handle>,
+    /// The watcher's last acknowledged state, for smoke state.
+    #[cfg(target_os = "macos")]
+    watch_status: WatchStatus,
     quitting: bool,
+    /// Set once Quit is approved. A reload that finishes later applies
+    /// nothing, so it cannot register global shortcuts again.
+    quit_committed: bool,
     pending_spawns: usize,
     quit_pending: bool,
     external_drag_window: Option<gpui::WindowId>,
@@ -837,6 +847,15 @@ struct Desktop {
     updater: native_updater::Updater,
 }
 impl Global for Desktop {}
+
+/// What the configuration watcher last acknowledged. Only the macOS input
+/// smoke reads it; the Linux smoke observes reloads through the terminal.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Default)]
+struct WatchStatus {
+    watching: bool,
+    reconciliations: u64,
+}
 
 impl Desktop {
     fn stop_window_drag(window: &mut Window, cx: &mut App) {
@@ -1022,7 +1041,7 @@ fn run_app_command(
         ids::SHOW_QUAKE | ids::HIDE_QUAKE | ids::TOGGLE_QUAKE => {
             quake_windows::invoke(cx, invocation, reporter)
         }
-        ids::RELOAD_CONFIG => reload(cx),
+        ids::RELOAD_CONFIG => Ok(reload(cx)),
         ids::CHECK_FOR_UPDATES => check_for_updates(cx),
         ids::QUIT => {
             // Global actions run while the dispatching window is borrowed.
@@ -1088,11 +1107,6 @@ fn app_command_availability(
         ids::NEW_WINDOW if desktop.quitting || desktop.quit_pending => Err(
             CommandError::Unavailable("application is quitting".to_owned()),
         ),
-        ids::RELOAD_CONFIG if desktop.reloading => {
-            Err(CommandError::Unavailable(
-                "configuration reload in progress".to_owned(),
-            ))
-        }
         ids::QUIT if desktop.quitting => Err(CommandError::Unavailable(
             "application quit is already in progress".to_owned(),
         )),
@@ -1269,7 +1283,10 @@ fn failed_reload_diagnostics(
             Severity::Error,
             NoticeSource::Config,
             "Configuration reload failed",
-            format!("Config reload failed: {error}"),
+            format!(
+                "Config reload failed: {}\nPrevious settings are still active.",
+                error.trim_end()
+            ),
         )
         .action("Open Settings", bare(ids::OPEN_SETTINGS))
         .action("Reload", bare(ids::RELOAD_CONFIG)),
@@ -1305,6 +1322,7 @@ pub(super) fn run_with_startup(
     if let Some(warning) = &loaded.warning {
         eprintln!("Huterm configuration warning: {warning}");
     }
+    let inputs = loaded.inputs.clone();
     let runtime = Arc::new(DesktopRuntime::default());
     // Subscribe before any window or worker exists, so this is the only
     // time the UI thread takes the Mux lock for structure.
@@ -1320,11 +1338,13 @@ pub(super) fn run_with_startup(
     });
     application.run(move |cx| {
         install_desktop(cx, Arc::clone(&app_runtime), hierarchy, loaded);
+        start_config_watch(cx, inputs);
         #[cfg(target_os = "linux")]
         follow_button_layout(cx);
         install_native_quit(cx);
         quake_windows::install(cx);
         cx.on_app_quit(move |cx| {
+            commit_quit(cx);
             quake_windows::shutdown(cx);
             // AppKit terminate: does not return from Application::run. GPUI
             // allows only 100 ms for quit futures, so this terminal hook must
@@ -1385,8 +1405,12 @@ fn install_desktop(
         views: Views::default(),
         keymap,
         frequency: CommandFrequency::default(),
-        reloading: false,
+        reloads: config_watch::Reloads::default(),
+        watch: None,
+        #[cfg(target_os = "macos")]
+        watch_status: WatchStatus::default(),
         quitting: false,
+        quit_committed: false,
         pending_spawns: 0,
         quit_pending: false,
         external_drag_window: None,
@@ -1862,7 +1886,17 @@ fn maybe_exit(cx: &mut App) {
     .detach();
 }
 
+/// Marks Quit committed and stops the configuration watcher. Dropping the
+/// handle only sends the worker a message; the worker's own thread drops
+/// the platform watcher.
+fn commit_quit(cx: &mut App) {
+    let desktop = cx.global_mut::<Desktop>();
+    desktop.quit_committed = true;
+    desktop.watch = None;
+}
+
 fn approved_quit(cx: &mut App) {
+    commit_quit(cx);
     cx.spawn(async move |cx| {
         let mut quake_presentations = Vec::new();
         #[cfg(target_os = "macos")]
@@ -9398,74 +9432,241 @@ impl WorkspaceView {
     }
 }
 
-fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
-    if cx.global::<Desktop>().reloading {
-        return Err(CommandError::Unavailable(
-            "configuration reload in progress".to_owned(),
-        ));
+/// Starts the configuration watcher and hands it what the startup load
+/// consumed. Its reports reach the desktop on the UI thread.
+fn start_config_watch(cx: &mut App, inputs: config::Inputs) {
+    let (sender, receiver) = async_channel::unbounded();
+    let handle = config_watch::spawn(move |report| {
+        let _ = sender.send_blocking(report);
+    });
+    cx.global_mut::<Desktop>().watch = Some(handle);
+    configure_watch(cx, inputs);
+    cx.spawn(async move |cx| {
+        while let Ok(report) = receiver.recv().await {
+            cx.update(|cx| handle_watch_report(cx, report));
+        }
+    })
+    .detach();
+}
+
+/// Tells the watcher what the last load or reload consumed and whether the
+/// effective configuration wants watching. A failed reload keeps the
+/// previous configuration, and with it the previous setting.
+fn configure_watch(cx: &App, inputs: config::Inputs) {
+    let desktop = cx.global::<Desktop>();
+    if let Some(watch) = &desktop.watch {
+        watch.configure(config_watch::Settings {
+            enabled: desktop.config.general.watch_config,
+            config: desktop.config_path.clone(),
+            inputs,
+        });
     }
-    cx.global_mut::<Desktop>().reloading = true;
+}
+
+fn handle_watch_report(cx: &mut App, report: config_watch::Report) {
+    match report {
+        config_watch::Report::Changed { differs, .. } => {
+            if cx.global_mut::<Desktop>().reloads.changed(differs) {
+                run_reload(cx, ReloadKind::Automatic);
+            }
+        }
+        config_watch::Report::Status {
+            watching,
+            reconciliations,
+        } => {
+            if watching {
+                clear_watch_unavailable(cx);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                cx.global_mut::<Desktop>().watch_status = WatchStatus {
+                    watching,
+                    reconciliations,
+                };
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (watching, reconciliations);
+        }
+        config_watch::Report::Unavailable(error) => {
+            show_watch_unavailable(cx, &error);
+        }
+    }
+}
+
+const WATCH_UNAVAILABLE: &str = "Automatic reload unavailable";
+
+/// Raises the warning that changes in a directory the watcher cannot watch
+/// will not reload on their own, in the active window or, without one, the
+/// next window to show. The watcher raises it again only after a reconcile
+/// ends with every watch held.
+fn show_watch_unavailable(cx: &mut App, error: &str) {
+    eprintln!("Huterm configuration watcher unavailable: {error}");
+    let content = NoticeContent {
+        severity: Severity::Warning,
+        source: NoticeSource::Command,
+        title: WATCH_UNAVAILABLE.into(),
+        message: format!(
+            "Some configuration files will not reload automatically: {error}. Reload still works."
+        ),
+        location: Some(path_for_status(cx)),
+        actions: vec![super::notices::NoticeAction {
+            label: "Reload".into(),
+            command: bare(ids::RELOAD_CONFIG),
+        }],
+        lifetime: super::notices::Lifetime::Persistent,
+    };
+    let shown = cx.active_window().is_some_and(|window| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.update(cx, |view, cx| {
+                        if !view.can_show_notices(cx) {
+                            return false;
+                        }
+                        view.notify(content.clone(), cx);
+                        true
+                    })
+                })
+            })
+            .unwrap_or(false)
+    });
+    if !shown {
+        cx.global_mut::<Desktop>().latched.push(content);
+    }
+}
+
+/// Takes the watch warning back once every watch holds again, from the
+/// latch and from every window, since it no longer describes the watcher.
+fn clear_watch_unavailable(cx: &mut App) {
+    let warning = |content: &NoticeContent| {
+        content.source == NoticeSource::Command
+            && content.title == WATCH_UNAVAILABLE
+    };
+    cx.global_mut::<Desktop>()
+        .latched
+        .retain(|content| !warning(content));
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |root, _, cx| {
+            if let Ok(view) = root.downcast::<WorkspaceView>() {
+                view.update(cx, |view, cx| {
+                    if view.notices.dismiss_where(warning) {
+                        cx.notify();
+                    }
+                });
+            }
+        });
+    }
+}
+
+/// Reloads on request, whatever the fingerprints say. During another
+/// reload it runs right after that one.
+fn reload(cx: &mut App) -> CommandOutcome {
+    if cx.global_mut::<Desktop>().reloads.manual() {
+        run_reload(cx, ReloadKind::Manual);
+    }
+    CommandOutcome::Accepted
+}
+
+/// Rereads the configuration on the background executor and applies it.
+/// The caller has latched `Desktop::reloads`. An automatic reload does not
+/// start once Quit is committed. Until then one may start, both while Quit
+/// awaits confirmation, which can still be cancelled, and while its teardown
+/// runs: Quit unregisters the global shortcuts only once approved, and
+/// `finish_reload` applies nothing after.
+fn run_reload(cx: &mut App, kind: ReloadKind) {
+    if kind == ReloadKind::Automatic && cx.global::<Desktop>().quit_committed {
+        follow_up_reload(cx);
+        return;
+    }
     let path = cx.global::<Desktop>().config_path.clone();
     let reload_path = path.clone();
     let task = cx
         .background_executor()
         .spawn(async move { config::reload(&reload_path) });
     cx.spawn(async move |cx| {
-        let result = task.await;
-        cx.update(|cx| {
-            cx.global_mut::<Desktop>().reloading = false;
-            let result = result.and_then(|config| {
-                let (family, metrics) = resolve_metrics(&config, cx)
-                    .map_err(|error| error.to_string())?;
-                let compiled =
-                    keymap::compile(Platform::current(), &config.keybindings)
-                        .map_err(|error| {
-                        format!("{}: {error}", path_for_status(cx))
-                    })?;
-                quake_windows::replace_registrations(cx, &config, &compiled)?;
-                Ok((config, family, metrics, compiled))
-            });
-            let result = result.map(|(config, family, metrics, compiled)| {
-                #[cfg(all(target_os = "macos", feature = "macos-updater"))]
-                apply_update_config(cx, &config);
-                let desktop = cx.global_mut::<Desktop>();
-                desktop.config = config.clone();
-                desktop.diagnostics =
-                    reload_diagnostics(&path, &config, &compiled);
-                desktop.latched.clear();
-                quake_windows::reconcile(cx);
-                let keymap = bind_keymap(cx, compiled);
-                cx.global_mut::<Desktop>().keymap = keymap;
-                maybe_exit(cx);
-                (config, family, metrics)
-            });
-            report_config_reload_error(&result);
-            let diagnostics = match &result {
-                Ok(_) => cx.global::<Desktop>().diagnostics.clone(),
-                Err(error) => failed_reload_diagnostics(
-                    error,
-                    &cx.global::<Desktop>().diagnostics,
-                ),
-            };
-            for handle in cx.windows() {
-                let _ = handle.update(cx, |root, window, cx| {
-                    if let Ok(view) = root.downcast::<WorkspaceView>() {
-                        view.update(cx, |view, cx| {
-                            view.apply_reload(
-                                result.as_ref().ok(),
-                                &diagnostics,
-                                window,
-                                cx,
-                            );
-                        });
-                    }
-                });
-            }
-            palette_smoke::record_reload_titles(cx);
-        });
+        let reloaded = task.await;
+        cx.update(|cx| finish_reload(cx, kind, &path, reloaded));
     })
     .detach();
-    Ok(CommandOutcome::Accepted)
+}
+
+fn finish_reload(
+    cx: &mut App,
+    kind: ReloadKind,
+    path: &Path,
+    reloaded: config::Reloaded,
+) {
+    // Quit already unregistered the global shortcuts and is closing the
+    // windows; applying now would register the shortcuts again.
+    if cx.global::<Desktop>().quit_committed {
+        return;
+    }
+    let config::Reloaded {
+        config: result,
+        inputs,
+        missing,
+    } = reloaded;
+    // An editor saving by renaming leaves no file for a moment. Skip the
+    // round quietly; the event that brings the file back reloads again.
+    if kind == ReloadKind::Automatic && missing {
+        follow_up_reload(cx);
+        return;
+    }
+    let result = result.and_then(|config| {
+        let (family, metrics) =
+            resolve_metrics(&config, cx).map_err(|error| error.to_string())?;
+        let compiled =
+            keymap::compile(Platform::current(), &config.keybindings)
+                .map_err(|error| format!("{}: {error}", path_for_status(cx)))?;
+        quake_windows::replace_registrations(cx, &config, &compiled)?;
+        Ok((config, family, metrics, compiled))
+    });
+    let result = result.map(|(config, family, metrics, compiled)| {
+        #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+        apply_update_config(cx, &config);
+        let desktop = cx.global_mut::<Desktop>();
+        desktop.config = config.clone();
+        desktop.diagnostics = reload_diagnostics(path, &config, &compiled);
+        desktop.latched.clear();
+        quake_windows::reconcile(cx);
+        let keymap = bind_keymap(cx, compiled);
+        cx.global_mut::<Desktop>().keymap = keymap;
+        maybe_exit(cx);
+        (config, family, metrics)
+    });
+    report_config_reload_error(&result);
+    let diagnostics = match &result {
+        Ok(_) => cx.global::<Desktop>().diagnostics.clone(),
+        Err(error) => failed_reload_diagnostics(
+            error,
+            &cx.global::<Desktop>().diagnostics,
+        ),
+    };
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |root, window, cx| {
+            if let Ok(view) = root.downcast::<WorkspaceView>() {
+                view.update(cx, |view, cx| {
+                    view.apply_reload(
+                        result.as_ref().ok(),
+                        &diagnostics,
+                        window,
+                        cx,
+                    );
+                });
+            }
+        });
+    }
+    palette_smoke::record_reload_titles(cx);
+    configure_watch(cx, inputs);
+    follow_up_reload(cx);
+}
+
+/// Releases the reload latch, running one more reload when something
+/// changed while this one ran.
+fn follow_up_reload(cx: &mut App) {
+    if let Some(kind) = cx.global_mut::<Desktop>().reloads.finished() {
+        run_reload(cx, kind);
+    }
 }
 
 impl WorkspaceView {
