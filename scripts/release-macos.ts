@@ -116,14 +116,49 @@ export interface MacReleasePipeline {
   createFinalArchive(): Promise<void>;
 }
 
-export async function runMacReleasePipeline(pipeline: MacReleasePipeline): Promise<void> {
+// Stapling and staple validation fetch the notarization ticket from Apple's
+// CloudKit, which occasionally drops the connection and can lag behind an
+// accepted notarization; Gatekeeper assessment may look the ticket up online
+// too. None of these steps re-signs the app, so repeating them is safe. Every
+// failure is retried because a genuine ticket problem still fails after the
+// last attempt, while a network error variant that a classifier missed would
+// fail the release at once.
+const appleTicketRetryDelaysMs: readonly number[] = [15_000, 30_000, 45_000, 60_000];
+
+export interface AppleTicketRetry {
+  sleep?: (milliseconds: number) => Promise<void>;
+  log?: (message: string) => void;
+}
+
+async function retryAppleTicketStep(label: string, step: () => Promise<void>, retry: AppleTicketRetry = {}): Promise<void> {
+  const sleep = retry.sleep ?? Bun.sleep;
+  const log = retry.log ?? console.error;
+  const attempts = appleTicketRetryDelaysMs.length + 1;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await step();
+      return;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const delay = appleTicketRetryDelaysMs[attempt - 1];
+      if (delay === undefined) {
+        log(`${label} failed on attempt ${attempt} of ${attempts}: ${reason}; giving up`);
+        throw error;
+      }
+      log(`${label} failed on attempt ${attempt} of ${attempts}: ${reason}; retrying in ${delay / 1000}s`);
+      await sleep(delay);
+    }
+  }
+}
+
+export async function runMacReleasePipeline(pipeline: MacReleasePipeline, retry: AppleTicketRetry = {}): Promise<void> {
   await pipeline.signAndVerify();
   await pipeline.createNotarizationArchive();
   await pipeline.submitNotarization();
-  await pipeline.staple();
-  await pipeline.validateStaple();
+  await retryAppleTicketStep("stapler staple", () => pipeline.staple(), retry);
+  await retryAppleTicketStep("stapler validate", () => pipeline.validateStaple(), retry);
   await pipeline.verifyStapledSignatures();
-  await pipeline.assessGatekeeper();
+  await retryAppleTicketStep("Gatekeeper assessment", () => pipeline.assessGatekeeper(), retry);
   await pipeline.createFinalArchive();
 }
 
@@ -243,6 +278,43 @@ async function runInherited(command: string, args: string[], env?: Record<string
   });
   const exitCode = await processHandle.exited;
   if (exitCode !== 0) throw new Error(`${command} exited with status ${exitCode}`);
+}
+
+// Names the cause in a failed Apple tool's output: the NSError domain and code
+// when it printed one, otherwise its last line.
+export function commandFailureReason(output: string): string | undefined {
+  const nsError = /Error Domain=.*?(?= UserInfo=|$)/m.exec(output)?.[0];
+  const reason = nsError ?? output.split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1);
+  return reason && reason.length > 300 ? `${reason.slice(0, 300)}...` : reason;
+}
+
+async function teeStream(stream: ReadableStream<Uint8Array>, sink: NodeJS.WriteStream): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = "";
+  for await (const chunk of stream) {
+    sink.write(chunk);
+    text += decoder.decode(chunk, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+// Streams output like runInherited and adds the tool's failure reason to the error.
+export async function runReported(command: string, args: string[]): Promise<void> {
+  const processHandle = Bun.spawn([command, ...args], {
+    cwd: repoRoot,
+    env: mergedEnvironment(),
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    teeStream(processHandle.stdout, process.stdout),
+    teeStream(processHandle.stderr, process.stderr),
+    processHandle.exited,
+  ]);
+  if (exitCode === 0) return;
+  const reason = commandFailureReason(`${stdout}\n${stderr}`);
+  throw new Error(`${command} exited with status ${exitCode}${reason ? `: ${reason}` : ""}`);
 }
 
 async function readPlist(plistPath: string): Promise<JsonObject> {
@@ -732,10 +804,10 @@ async function buildRelease(): Promise<void> {
         if (result.status !== "Accepted") throw new Error(`notarization finished with status ${String(result.status)}`);
         console.log(`notarization accepted: ${String(result.id)}`);
       },
-      staple: () => runInherited("xcrun", ["stapler", "staple", appPath]),
-      validateStaple: () => runInherited("xcrun", ["stapler", "validate", appPath]),
+      staple: () => runReported("xcrun", ["stapler", "staple", appPath]),
+      validateStaple: () => runReported("xcrun", ["stapler", "validate", appPath]),
       verifyStapledSignatures: () => verifySignedApp(teamId),
-      assessGatekeeper: () => runInherited("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath]),
+      assessGatekeeper: () => runReported("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath]),
       createFinalArchive: () => zipApp(finalArchive),
     });
     await generateSbom(dist, appPath, inputs.version);
