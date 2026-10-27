@@ -120,11 +120,16 @@ fn reading_a_compressed_cell_restores_exactly_its_page() {
         return;
     }
     let mut terminal = paged_terminal();
-    let points = [7, 1234, 2001].map(|y| Point::screen(6, y));
+    // Every seventh line carries an OSC 8 link from column 10, after its line
+    // number, a wide, a combining, and a narrow cell.
+    let points = [7, 1232, 2002].map(|y| Point::screen(10, y));
     let expected = points.map(|point| read(&terminal, point));
+    for (point, (_, _, _, uri)) in points.iter().zip(&expected) {
+        assert_eq!(uri, b"https://example.test/", "{point:?}");
+    }
     drain(&mut terminal);
     let compressed = terminal.memory_usage().unwrap().primary.compressed_pages;
-    // Rows 1234 and 2001 sit on different pages, more than one page apart.
+    // Rows 1232 and 2002 sit on different pages, more than one page apart.
     for (restored, (point, expected)) in
         points.iter().zip(&expected).enumerate().skip(1)
     {
@@ -155,8 +160,13 @@ fn the_activity_token_follows_history_changes_and_ignores_reads() {
     // Reads, including ones that restore a page, leave it alone.
     let mut render = RenderState::new().unwrap();
     render.update(&mut terminal).unwrap();
-    terminal.memory_usage().unwrap();
+    let compressed = terminal.memory_usage().unwrap().primary.compressed_pages;
     read(&terminal, Point::screen(0, 100));
+    assert_eq!(
+        terminal.memory_usage().unwrap().primary.compressed_pages,
+        compressed - 1,
+        "the read restored a page"
+    );
     terminal.write(b"\x1b[2;1Hredraw").unwrap();
     assert_eq!(terminal.compression_activity().unwrap(), token);
 

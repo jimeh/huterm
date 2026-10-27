@@ -317,12 +317,28 @@ const RESIZE_COMPRESSED_P50_BUDGET_US: u128 = 250_000;
 /// Linux arm64 measured 89.8 MiB for plain history.
 const RESIZE_COMPRESSED_PEAK_RSS_BUDGET_KIB: i64 = 200 * 1024;
 
+/// The pages a pass left compressed, asserting that it compressed most of
+/// history.
+fn compressed_pages(engine: &TerminalEngine) -> u64 {
+    let usage = engine.memory_usage().unwrap().primary;
+    assert!(
+        usage.compressed_pages * 10 >= usage.pages * 9,
+        "a pass compressed only {} of {} pages",
+        usage.compressed_pages,
+        usage.pages
+    );
+    usage.compressed_pages
+}
+
 #[test]
 #[ignore = "release benchmark; run through mise run bench:compression"]
 fn compression_benchmark_resize() {
     let mut engine = saturated(build_log);
     let history = engine.snapshot().unwrap().history_size;
     drain(&mut engine);
+    // Every timed resize must start from compressed history, or the gates
+    // would time an uncompressed reflow.
+    let compressed = compressed_pages(&engine);
     reset_peak_rss();
     let started = Instant::now();
     engine.resize(GridSize::clamped(100, ROWS), cell()).unwrap();
@@ -336,6 +352,7 @@ fn compression_benchmark_resize() {
         let started = Instant::now();
         drain(&mut engine);
         passes.push(started.elapsed().as_micros());
+        compressed_pages(&engine);
         let size = GridSize::clamped(
             if iteration % 2 == 0 { COLUMNS } else { 100 },
             ROWS,
@@ -351,7 +368,7 @@ fn compression_benchmark_resize() {
     let p50 = quantile(&resizing, 0.5);
     let gated = cfg!(target_os = "linux");
     println!(
-        "compression-benchmark fixture=resize-build-log history_rows={history} after_rows={after} first_resize_us={first} resize_us_p50={p50} resize_us_max={} pass_ms_p50={} peak_rss_kib={peak} peak_since_reset={gated}",
+        "compression-benchmark fixture=resize-build-log history_rows={history} after_rows={after} compressed_pages={compressed} first_resize_us={first} resize_us_p50={p50} resize_us_max={} pass_ms_p50={} peak_rss_kib={peak} peak_since_reset={gated}",
         resizing.last().unwrap(),
         quantile(&passes, 0.5) / 1000
     );

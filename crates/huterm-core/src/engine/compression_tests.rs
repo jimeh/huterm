@@ -4,7 +4,9 @@
 
 use super::*;
 use huterm_ghostty::{COMPRESSION_SUPPORTED, Compression};
-use huterm_protocol::{BufferPoint, BufferRange, MousePosition};
+use huterm_protocol::{
+    BufferPoint, BufferRange, LinkLookup, MousePosition, TerminalRow,
+};
 use std::fmt::Write as _;
 
 const COLUMNS: u16 = 120;
@@ -96,8 +98,11 @@ impl Pair {
 
     /// Compares snapshot rows, the cursor, and link lookups at several scroll
     /// positions, so rendering restores the pages it shows, then the full
-    /// text, which restores the rest.
-    fn assert_same(&mut self, label: &str) {
+    /// text, which restores the rest. Snapshot rows carry no hyperlinks, so
+    /// every OSC 8 label on screen is looked up and its destination checked.
+    /// Returns how many such labels it checked.
+    fn assert_same(&mut self, label: &str) -> usize {
+        let mut explicit = 0;
         for offset in [0, 600, 1_500, usize::MAX] {
             self.apply(|engine| {
                 engine.scroll(ScrollCommand::Absolute(offset)).unwrap();
@@ -121,10 +126,56 @@ impl Pair {
                     "{label}: link at {offset} {row},{column}"
                 );
             }
+            for (row, number) in compressed
+                .rows
+                .iter()
+                .enumerate()
+                .filter_map(|(row, cells)| Some((row, link_label(cells)?)))
+            {
+                let point = MousePosition {
+                    row: u32::try_from(row).unwrap(),
+                    column: u32::from(LINK_COLUMN) + 1,
+                };
+                let found = self.compressed.lookup_link(&compressed, point);
+                assert_eq!(
+                    found,
+                    self.twin.lookup_link(&twin, point),
+                    "{label}: OSC 8 link at {offset} row {row}"
+                );
+                let LinkLookup::Match(link) = found else {
+                    panic!("{label}: no OSC 8 link at {offset} row {row}");
+                };
+                assert_eq!(
+                    link.destination,
+                    format!("https://example.test/{number}"),
+                    "{label}: OSC 8 destination at {offset} row {row}"
+                );
+                explicit += 1;
+            }
         }
         self.apply(|engine| engine.scroll(ScrollCommand::Live).unwrap());
         assert_eq!(text(&self.compressed), text(&self.twin), "{label}: text");
+        explicit
     }
+}
+
+/// Where `history` writes each OSC 8 label.
+const LINK_COLUMN: u16 = 12;
+
+/// The line number of a row that starts a `history` line with an OSC 8
+/// label.
+fn link_label(row: &TerminalRow) -> Option<usize> {
+    let text = |range: std::ops::Range<usize>| -> String {
+        row.cells[range]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect()
+    };
+    let start = usize::from(LINK_COLUMN);
+    if row.cells.len() < start + 4 || text(start..start + 4) != "link" {
+        return None;
+    }
+    text(0..5).parse().ok()
 }
 
 /// The history rows just above the screen.
@@ -191,7 +242,7 @@ fn compressed_history_reads_like_uncompressed_history() {
         "rendering scrolled history restored no page"
     );
     pair.compressed.scroll(ScrollCommand::Live).unwrap();
-    pair.assert_same("compressed");
+    assert!(pair.assert_same("compressed") > 0);
 }
 
 #[test]
@@ -210,8 +261,11 @@ fn reflow_restores_compressed_history_without_changing_it() {
         pair.apply(|engine| {
             engine.resize(size, cell).unwrap();
         });
-        pair.assert_same(&format!("{columns}x{rows}"));
+        assert!(pair.assert_same(&format!("{columns}x{rows}")) > 0);
     }
+    // Pages compressed after a reflow read back like the twin's.
+    assert!(pair.compress() > 0);
+    assert!(pair.assert_same("compressed after reflow") > 0);
 }
 
 #[test]
@@ -220,14 +274,14 @@ fn a_pass_on_the_alternate_screen_compresses_primary_history() {
         return;
     }
     let mut pair = Pair::new(3_000);
-    pair.assert_same("before");
+    assert!(pair.assert_same("before") > 0);
     pair.process("\x1b[?1049h\x1b[Halternate screen\r\n");
     let compressed = pair.compress();
     assert!(compressed > 0);
     let usage = pair.compressed.memory_usage().unwrap();
     assert_eq!(usage.alternate.compressed_pages, 0, "{usage:?}");
     pair.process("\x1b[?1049l");
-    pair.assert_same("after the alternate screen");
+    assert!(pair.assert_same("after the alternate screen") > 0);
 }
 
 #[test]
@@ -240,14 +294,14 @@ fn erasing_compressed_history_matches_the_twin() {
     pair.apply(|engine| {
         engine.set_scrollback(limit).unwrap();
     });
-    pair.assert_same("lowered limit");
+    assert!(pair.assert_same("lowered limit") > 0);
 
     pair.process(&history(2_000));
     assert!(pair.compress() > 0);
     pair.apply(|engine| {
         engine.clear_history().unwrap();
     });
-    pair.assert_same("cleared");
+    assert!(pair.assert_same("cleared") > 0);
 
     pair.process(&history(2_000));
     assert!(pair.compress() > 0);
@@ -290,6 +344,31 @@ fn scroll_clear_over_compressed_history_matches_the_twin() {
                 assert!(above.contains("screen line"), "{label}: {above:?}");
             }
             pair.process("styled after clear\r\n");
+            // The text after the clear carries the cursor's hyperlink, which
+            // scrollClear moved with the cursor.
+            let snapshot = pair.compressed.snapshot().unwrap();
+            let row = snapshot
+                .rows
+                .iter()
+                .position(|row| {
+                    row.cells[..7]
+                        .iter()
+                        .map(|cell| cell.text.as_str())
+                        .collect::<String>()
+                        == "styled "
+                })
+                .expect("the text written after the clear is on screen");
+            let point = MousePosition {
+                row: u32::try_from(row).unwrap(),
+                column: 2,
+            };
+            let twin = pair.twin.snapshot().unwrap();
+            let found = pair.compressed.lookup_link(&snapshot, point);
+            assert_eq!(found, pair.twin.lookup_link(&twin, point), "{label}");
+            let LinkLookup::Match(link) = found else {
+                panic!("{label}: the cursor lost its hyperlink");
+            };
+            assert_eq!(link.destination, "https://example.test/cursor");
             pair.assert_same(&format!("{label}, round {round}"));
         }
     }
