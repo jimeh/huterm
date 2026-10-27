@@ -25,17 +25,18 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
   }
 }
 
-type SettingsKey = "open" | "search" | "select-all" | "enter" | "space" | "tab" | "up" | "reset" | "close";
+type SettingsKey =
+  | "open" | "search" | "select-all" | "enter" | "space" | "tab" | "shift-tab" | "up" | "reset" | "close";
 
 // AppKit key codes, modifier flags, and characters.
 const macKeys: Record<SettingsKey, [number, number, string]> = {
   open: [43, commandFlag, ","], search: [3, commandFlag, "f"], "select-all": [0, commandFlag, "a"],
   enter: [36, 0, "\r"], space: [49, 0, " "], tab: [48, 0, "\\t"], up: [126, 0, ""],
-  reset: [51, commandFlag, "\x7f"], close: [13, commandFlag, "w"],
+  "shift-tab": [48, shiftFlag, "\\t"], reset: [51, commandFlag, "\x7f"], close: [13, commandFlag, "w"],
 };
 const x11Keys: Record<SettingsKey, string> = {
   open: "ctrl+comma", search: "ctrl+f", "select-all": "ctrl+a", enter: "Return", space: "space",
-  tab: "Tab", up: "Up", reset: "ctrl+BackSpace", close: "ctrl+shift+w",
+  tab: "Tab", "shift-tab": "shift+Tab", up: "Up", reset: "ctrl+BackSpace", close: "ctrl+shift+w",
 };
 
 /** The value of `settings.<name>` in the smoke state. */
@@ -157,9 +158,12 @@ position = "top"
     await key("reset");
     await saved((text) => !text.includes("visual"), "visual bell reset in config.toml");
 
-    // Tab moves focus on from the switch.
+    // Tab moves focus on from the switch, and Shift-Tab comes back to it, so
+    // the switch is in the tab order.
     await key("tab");
     await waitFor(async () => field(await current(), "focus") !== "terminal.bell.visual", "focus to leave the switch");
+    await key("shift-tab");
+    await state("settings.focus=terminal.bell.visual");
 
     // Up steps a number field.
     await key("search");
@@ -180,7 +184,7 @@ position = "top"
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=moved step=saved close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

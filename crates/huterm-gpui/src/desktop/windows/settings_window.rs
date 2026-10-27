@@ -121,9 +121,10 @@ pub(super) fn close(cx: &mut App) {
 }
 
 /// A change the file changed under, kept until the user picks theirs or
-/// the file's.
+/// the file's. `patch` is the refused write; a field draft that a reload
+/// changed under has none, and saving it again writes the draft.
 struct Conflict {
-    patch: Patch,
+    patch: Option<Patch>,
     message: String,
 }
 
@@ -145,6 +146,11 @@ pub(super) struct SettingsView {
     search: Entity<TextField>,
     /// Number and text fields, by setting path.
     fields: HashMap<&'static str, Entity<TextField>>,
+    /// The text each field last showed from the file; a field whose text
+    /// differs holds an unsaved draft that a reload must not replace.
+    synced: HashMap<&'static str, String>,
+    /// Reset buttons, which the keyboard reaches too.
+    resets: HashMap<&'static str, FocusHandle>,
     /// Focus handles for every other control, by stop.
     stops: HashMap<&'static str, FocusHandle>,
     sections: HashMap<SectionId, FocusHandle>,
@@ -191,6 +197,8 @@ impl SettingsView {
             advanced: HashSet::new(),
             search,
             fields: HashMap::new(),
+            synced: HashMap::new(),
+            resets: HashMap::new(),
             stops: HashMap::new(),
             sections: HashMap::new(),
             errors: HashMap::new(),
@@ -290,25 +298,59 @@ impl SettingsView {
         self.load(cx);
     }
 
-    /// Puts each field's text back to what the file and defaults show,
-    /// except fields holding a conflicted entry.
+    /// Puts each field's text back to what the file and defaults show. A
+    /// field holding an unsaved draft keeps it; when the file changed that
+    /// setting meanwhile, the row shows a conflict instead.
     fn sync_fields(&mut self, cx: &mut Context<'_, Self>) {
-        for (path, field) in &self.fields {
+        let paths: Vec<&'static str> = self.fields.keys().copied().collect();
+        for path in paths {
             if self.conflicts.contains_key(path)
                 || self.errors.contains_key(path)
             {
                 continue;
             }
-            let Some(setting) = self.model.setting(path) else {
-                continue;
-            };
-            let text = field_text(shown(setting, &self.file, &self.defaults));
-            field.update(cx, |field, cx| {
-                if field.text() != text {
-                    field.set_text(text, cx);
-                }
-            });
+            self.sync_field(path, false, cx);
         }
+    }
+
+    /// Shows the file's value in `path`'s field, replacing a draft only when
+    /// `discard` is set.
+    fn sync_field(
+        &mut self,
+        path: &'static str,
+        discard: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let (Some(field), Some(setting)) =
+            (self.fields.get(path).cloned(), self.model.setting(path))
+        else {
+            return;
+        };
+        let text = field_text(shown(setting, &self.file, &self.defaults));
+        let current = field.read(cx).text().to_owned();
+        let draft = self
+            .synced
+            .get(path)
+            .is_some_and(|synced| *synced != current);
+        if draft && !discard && current != text {
+            if self.synced.get(path) != Some(&text) {
+                self.conflicts.insert(
+                    path,
+                    Conflict {
+                        patch: None,
+                        message: format!(
+                            "config.toml changed this to {} while you were editing",
+                            if text.is_empty() { "its default" } else { &text }
+                        ),
+                    },
+                );
+            }
+            return;
+        }
+        if current != text {
+            field.update(cx, |field, cx| field.set_text(text.clone(), cx));
+        }
+        self.synced.insert(path, text);
     }
 
     /// Saves `value` for `setting`, or resets it when `None`.
@@ -321,7 +363,9 @@ impl SettingsView {
         if self.status.invalid() {
             return;
         }
+        // A size's forms are checked by the validator.
         if let Some(value) = &value
+            && special(&setting.path) != Some(Special::Size)
             && let Err(message) = values::check(setting, value)
         {
             self.errors.insert(setting.path.as_str(), message);
@@ -397,7 +441,7 @@ impl SettingsView {
                 self.conflicts.insert(
                     key,
                     Conflict {
-                        patch,
+                        patch: Some(patch),
                         message: format!(
                             "config.toml changed this setting: {}",
                             changes.join("; ")
@@ -436,13 +480,17 @@ impl SettingsView {
             return;
         };
         self.base = None;
-        self.submit(setting, conflict.patch, cx);
+        match conflict.patch {
+            Some(refused) => self.submit(setting, refused, cx),
+            None => self.commit_field(setting, cx),
+        }
     }
 
+    /// Discards the entered value and shows the file's.
     fn keep_file(&mut self, path: &'static str, cx: &mut Context<'_, Self>) {
         self.conflicts.remove(path);
         self.errors.remove(path);
-        self.sync_fields(cx);
+        self.sync_field(path, true, cx);
         cx.notify();
     }
 
@@ -463,6 +511,10 @@ impl SettingsView {
             return;
         };
         let text = field.read(cx).text().to_owned();
+        // Saving a field again after a conflict keeps the entered value.
+        if self.conflicts.remove(setting.path.as_str()).is_some() {
+            self.base = None;
+        }
         let parsed = match &setting.kind {
             _ if special(&setting.path) == Some(Special::Size) => {
                 Ok(size_value(&text))
@@ -482,11 +534,6 @@ impl SettingsView {
                     return;
                 }
                 match value {
-                    None if setting.default.is_none()
-                        && self.defaults.get(&setting.path).is_none() =>
-                    {
-                        self.reset(setting, cx);
-                    }
                     None => self.reset(setting, cx),
                     value => self.write(setting, value, cx),
                 }
@@ -495,6 +542,18 @@ impl SettingsView {
                 self.errors.insert(setting.path.as_str(), message);
                 cx.notify();
             }
+        }
+    }
+
+    /// Saves a field when focus leaves it. Leaving a conflicted field, such
+    /// as to press Use file, keeps the conflict for the user to settle.
+    fn field_blurred(
+        &mut self,
+        setting: &'static Setting,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !self.conflicts.contains_key(setting.path.as_str()) {
+            self.commit_field(setting, cx);
         }
     }
 
@@ -523,10 +582,12 @@ impl SettingsView {
         });
         let handle = field.read(cx).focus_handle(cx).tab_stop(true);
         cx.on_blur(&handle, window, move |view, _, cx| {
-            view.commit_field(setting, cx);
+            view.field_blurred(setting, cx);
         })
         .detach();
         self.fields.insert(setting.path.as_str(), field.clone());
+        self.synced
+            .insert(setting.path.as_str(), text_for(field.read(cx)));
         field
     }
 
@@ -537,7 +598,18 @@ impl SettingsView {
     ) -> FocusHandle {
         self.stops
             .entry(path)
-            .or_insert_with(|| cx.focus_handle())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone()
+    }
+
+    fn reset_stop(
+        &mut self,
+        path: &'static str,
+        cx: &mut Context<'_, Self>,
+    ) -> FocusHandle {
+        self.resets
+            .entry(path)
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone()
     }
 
@@ -548,7 +620,7 @@ impl SettingsView {
     ) -> FocusHandle {
         self.sections
             .entry(section)
-            .or_insert_with(|| cx.focus_handle())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone()
     }
 
@@ -822,7 +894,15 @@ impl SettingsView {
             ids::SETTINGS_FOCUS_NEXT => window.focus_next(cx),
             ids::SETTINGS_FOCUS_PREVIOUS => window.focus_prev(cx),
             ids::SETTINGS_TOGGLE => {
-                if let Some(section) = self
+                if let Some(path) = self
+                    .resets
+                    .iter()
+                    .find(|(_, handle)| handle.is_focused(window))
+                    .map(|(path, _)| *path)
+                    && let Some(setting) = self.model.setting(path)
+                {
+                    self.reset(setting, cx);
+                } else if let Some(section) = self
                     .sections
                     .iter()
                     .find(|(_, handle)| handle.is_focused(window))
@@ -1028,6 +1108,10 @@ fn current() -> SettingPlatform {
     }
 }
 
+fn text_for(field: &TextField) -> String {
+    field.text().to_owned()
+}
+
 fn field_text(value: Option<Value>) -> String {
     match value {
         Some(Value::Float(value)) => number(value),
@@ -1180,6 +1264,48 @@ impl SettingsView {
             Some(value) => self.write(setting, Some(value), cx),
             None => self.reset(setting, cx),
         }
+    }
+
+    /// Types `text` into the setting's field without saving it.
+    pub(super) fn type_into(
+        &mut self,
+        path: &str,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let setting = self.model.setting(path).expect("a known setting");
+        let field = self.field(setting, window, cx);
+        field.update(cx, |field, cx| field.set_text(text, cx));
+    }
+
+    pub(super) fn field_value(&self, path: &str, cx: &App) -> String {
+        self.fields
+            .get(path)
+            .map(|field| field.read(cx).text().to_owned())
+            .unwrap_or_default()
+    }
+
+    /// Saves the field as Enter does.
+    pub(super) fn enter(&mut self, path: &str, cx: &mut Context<'_, Self>) {
+        let setting = self.model.setting(path).expect("a known setting");
+        self.commit_field(setting, cx);
+    }
+
+    /// Moves focus out of the field, as clicking elsewhere does.
+    pub(super) fn blur(&mut self, path: &str, cx: &mut Context<'_, Self>) {
+        let setting = self.model.setting(path).expect("a known setting");
+        self.field_blurred(setting, cx);
+    }
+
+    pub(super) fn use_file(&mut self, path: &str, cx: &mut Context<'_, Self>) {
+        let setting = self.model.setting(path).expect("a known setting");
+        self.keep_file(setting.path.as_str(), cx);
+    }
+
+    /// Follows a reload that applied the file.
+    pub(super) fn follow_reload(&mut self, cx: &mut Context<'_, Self>) {
+        self.reloaded(Ok(()), cx);
     }
 
     pub(super) fn use_mine(&mut self, path: &str, cx: &mut Context<'_, Self>) {

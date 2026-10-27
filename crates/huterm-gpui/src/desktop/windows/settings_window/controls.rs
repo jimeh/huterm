@@ -102,12 +102,11 @@ impl SettingsView {
         let on = shown(setting, &self.file, &self.defaults)
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        let handle = self.stop(path, cx);
+        let handle = self.stop(path, cx).tab_stop(!read_only);
         div()
             .id(id(format!("settings-switch-{path}")))
             .track_focus(&handle)
             .key_context("SettingsControl")
-            .tab_stop(!read_only)
             .flex_none()
             .w(px(34.0))
             .h(px(20.0))
@@ -148,12 +147,11 @@ impl SettingsView {
         let path = setting.path.as_str();
         let current = shown(setting, &self.file, &self.defaults)
             .and_then(|value| value.as_bool());
-        let handle = self.stop(path, cx);
+        let handle = self.stop(path, cx).tab_stop(!read_only);
         let mut group =
             segment_group(format!("settings-tristate-{path}"), swatch)
                 .track_focus(&handle)
-                .key_context("SettingsControl")
-                .tab_stop(!read_only);
+                .key_context("SettingsControl");
         for (label, state) in
             [("Default", None), ("On", Some(true)), ("Off", Some(false))]
         {
@@ -189,12 +187,11 @@ impl SettingsView {
     ) -> AnyElement {
         let path = setting.path.as_str();
         let selected = shown(setting, &self.file, &self.defaults);
-        let handle = self.stop(path, cx);
+        let handle = self.stop(path, cx).tab_stop(!read_only);
         let mut group =
             segment_group(format!("settings-segments-{path}"), swatch)
                 .track_focus(&handle)
-                .key_context("SettingsControl")
-                .tab_stop(!read_only);
+                .key_context("SettingsControl");
         for choice in choices {
             let on = selected.as_ref().and_then(Value::as_str)
                 == Some(choice.value.as_str());
@@ -236,11 +233,10 @@ impl SettingsView {
                 choices.iter().find(|choice| choice.value == value)
             })
             .map_or_else(|| "Default".to_owned(), option_label);
-        let handle = self.stop(path, cx);
+        let handle = self.stop(path, cx).tab_stop(!read_only);
         let trigger = select_trigger(format!("settings-select-{path}"), swatch)
             .track_focus(&handle)
             .key_context("SettingsControl")
-            .tab_stop(!read_only)
             .when(read_only, |control| control.opacity(0.5))
             .child(div().flex_1().child(label))
             .child(caret(swatch))
@@ -338,11 +334,10 @@ impl SettingsView {
     ) -> AnyElement {
         let path = setting.path.as_str();
         let field = self.render_field(setting, read_only, swatch, window, cx);
-        let handle = self.stop(path, cx);
+        let handle = self.stop(path, cx).tab_stop(!read_only);
         let pick = select_trigger(format!("settings-fonts-{path}"), swatch)
             .track_focus(&handle)
             .key_context("SettingsControl")
-            .tab_stop(!read_only)
             .min_w(px(0.0))
             .when(read_only, |control| control.opacity(0.5))
             .child("Installed")
@@ -474,18 +469,18 @@ impl SettingsView {
             .gap(px(8.0))
             .w_full()
             .when(read_only, |block| block.opacity(0.5))
-            .child(cards)
             .when(!overrides.is_empty(), |block| {
                 block.child(
                     div()
                         .text_size(px(11.5))
-                        .text_color(swatch.muted)
+                        .text_color(swatch.warning)
                         .child(format!(
                             "Your [theme] sets {}, which applies on top of any theme.",
                             overrides.join(", ")
                         )),
                 )
             })
+            .child(cards)
             .into_any_element()
     }
 }

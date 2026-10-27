@@ -14,14 +14,15 @@ impl FileValues {
     /// Reads a snapshot's text; a missing file sets nothing.
     ///
     /// # Errors
-    /// Returns the parser's message when the text is not TOML.
+    /// Returns the parser's message, with the line and column at fault,
+    /// when the text is not TOML.
     pub(crate) fn parse(text: Option<&str>) -> Result<Self, String> {
         match text {
             None => Ok(Self::default()),
             Some(text) => text
                 .parse::<Table>()
                 .map(Self)
-                .map_err(|error| error.message().to_owned()),
+                .map_err(|error| error.to_string()),
         }
     }
 
@@ -229,7 +230,8 @@ mod tests {
             None
         );
         assert_eq!(FileValues::parse(None), Ok(FileValues::default()));
-        assert!(FileValues::parse(Some("[font\n")).is_err());
+        let error = FileValues::parse(Some("[font]\nsize 13.0\n")).unwrap_err();
+        assert!(error.contains("line 2"), "{error}");
     }
 
     #[test]

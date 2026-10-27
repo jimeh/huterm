@@ -204,3 +204,106 @@ fn an_invalid_file_makes_settings_read_only(cx: &mut TestAppContext) {
     assert!(harness.cx.update(settled));
     assert_eq!(file.text(), broken);
 }
+
+/// Runs `update` on the open Settings view with its window.
+fn with_window<R>(
+    harness: &mut DesktopHarness,
+    update: impl FnOnce(
+        &mut SettingsView,
+        &mut gpui::Window,
+        &mut gpui::Context<'_, SettingsView>,
+    ) -> R,
+) -> R {
+    harness.cx.update(|cx| {
+        settings(cx)
+            .expect("Settings is open")
+            .update(cx, |view, window, cx| update(view, window, cx))
+            .unwrap()
+    })
+}
+
+fn conflicted(cx: &mut App, path: &str) -> bool {
+    settings(cx).is_some_and(|handle| {
+        handle
+            .read_with(cx, |view, _| view.conflicted(path))
+            .unwrap_or(false)
+    })
+}
+
+#[gpui::test]
+fn use_file_keeps_the_file_even_when_focus_leaves_the_field(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("use-file", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    std::fs::write(file.path(), "[font]\nsize = 20.0\n").unwrap();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "15", window, cx);
+        view.enter("font.size", cx);
+    });
+    harness.wait_for("the conflict", |cx| {
+        settled(cx) && conflicted(cx, "font.size")
+    });
+    // Pressing Use file first moves focus out of the field.
+    with_window(&mut harness, |view, _, cx| {
+        view.blur("font.size", cx);
+        view.use_file("font.size", cx);
+    });
+    harness.wait_for("the file's value", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, cx| view.field_value("font.size", cx))
+                    .is_ok_and(|text| text == "20")
+            })
+    });
+    assert_eq!(file.text(), "[font]\nsize = 20.0\n");
+}
+
+#[gpui::test]
+fn a_reload_keeps_a_draft_and_reports_the_file_change(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("draft", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "21", window, cx);
+    });
+    std::fs::write(file.path(), "[font]\nsize = 22.0\n").unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the draft's conflict", |cx| {
+        settled(cx) && conflicted(cx, "font.size")
+    });
+    with_window(&mut harness, |view, _, cx| {
+        assert_eq!(view.field_value("font.size", cx), "21");
+        // Saving the draft again keeps it over the file's change.
+        view.enter("font.size", cx);
+    });
+    harness.wait_for("the draft to save", |cx| {
+        settled(cx) && !conflicted(cx, "font.size")
+    });
+    assert_eq!(file.text(), "[font]\nsize = 21.0\n");
+}
+
+#[gpui::test]
+fn the_size_limit_accepts_a_size_and_a_byte_count(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("size", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("terminal.scrollback_bytes", "64MiB", window, cx);
+        view.enter("terminal.scrollback_bytes", cx);
+    });
+    harness.wait_for("the size to save", |cx| {
+        settled(cx) && file.text().contains("scrollback_bytes")
+    });
+    assert_eq!(file.text(), "[terminal]\nscrollback_bytes = \"64MiB\"\n");
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("terminal.scrollback_bytes", "67108864", window, cx);
+        view.enter("terminal.scrollback_bytes", cx);
+    });
+    harness.wait_for("the byte count to save", |cx| {
+        settled(cx) && file.text().contains("67108864")
+    });
+    assert_eq!(file.text(), "[terminal]\nscrollback_bytes = 67108864\n");
+}

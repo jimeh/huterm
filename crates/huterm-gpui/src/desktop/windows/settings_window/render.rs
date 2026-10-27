@@ -77,7 +77,6 @@ impl SettingsView {
                     .id(id(format!("settings-section-{}", section.id())))
                     .track_focus(&handle)
                     .key_context("SettingsControl")
-                    .tab_stop(true)
                     .flex()
                     .items_center()
                     .h(px(28.0))
@@ -172,9 +171,19 @@ impl SettingsView {
                     div()
                         .text_size(px(12.0))
                         .text_color(swatch.muted)
-                        .child(format!(
-                            "{message}. Huterm keeps running with the last valid settings, and Settings is read-only until the file is fixed."
-                        )),
+                        .child(
+                            "Huterm keeps running with the last valid settings, and Settings is read-only until the file is fixed.",
+                        ),
+                )
+                .child(
+                    div()
+                        .p(px(8.0))
+                        .rounded(px(5.0))
+                        .bg(swatch.bg)
+                        .font_family(mono_font_family())
+                        .text_size(px(11.5))
+                        .text_color(swatch.fg)
+                        .child(message.trim_end().to_owned()),
                 )
                 .child(
                     div().flex().child(
@@ -204,9 +213,13 @@ impl SettingsView {
         let label = self.render_label(setting, foreign, swatch, cx);
         let control =
             self.render_control(setting, read_only, swatch, window, cx);
+        let reset_stop = self.reset_stop(path, cx);
         let reset = (self.file.is_set(path) && !read_only).then(|| {
             div()
                 .id(id(format!("settings-reset-{path}")))
+                .track_focus(&reset_stop)
+                .key_context("SettingsControl")
+                .focus(|style| style.shadow(swatch.focus_ring()))
                 .flex_none()
                 .px(px(6.0))
                 .h(px(22.0))
