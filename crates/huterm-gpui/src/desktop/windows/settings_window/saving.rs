@@ -428,7 +428,12 @@ impl SettingsView {
                 }
                 self.base = Some(written.snapshot);
                 self.status.saved();
-                self.adopt_saved_field(key, change.typed.as_deref(), cx);
+                let saved = field_text(shown(
+                    change.setting,
+                    &self.file,
+                    &self.defaults,
+                ));
+                self.adopt_saved_field(key, change.typed.as_deref(), saved, cx);
                 self.sync_fields(cx);
                 reload(cx);
             }
@@ -468,6 +473,8 @@ impl SettingsView {
                         queued.base = None;
                     }
                 }
+                let saved = self.display(change.setting, change.value.clone());
+                self.adopt_saved_field(key, change.typed.as_deref(), saved, cx);
                 failed = true;
                 self.status.saved_with_warning(error.to_string());
                 self.load(cx);
@@ -508,21 +515,29 @@ impl SettingsView {
         &mut self,
         key: &'static str,
         typed: Option<&str>,
+        saved: String,
         cx: &mut Context<'_, Self>,
     ) {
-        let (Some(field), Some(setting)) =
-            (self.fields.get(key), self.model.setting(key))
-        else {
+        let Some(field) = self.fields.get(key) else {
             return;
         };
         let current = field.read(cx).text().to_owned();
-        let saved = field_text(shown(setting, &self.file, &self.defaults));
         if typed == Some(current.as_str()) {
             self.synced.insert(key, saved);
             self.sync_field(key, true, cx);
         } else if self.synced.get(key) != Some(&current) {
             self.synced.insert(key, saved);
         }
+    }
+
+    /// How a field shows `value`, or the default for a reset.
+    fn display(&self, setting: &Setting, value: Option<Value>) -> String {
+        field_text(value.or_else(|| {
+            self.defaults
+                .get(setting.path.as_str())
+                .cloned()
+                .or_else(|| setting.default.clone())
+        }))
     }
 
     /// Whether writes are in flight or queued.
@@ -639,6 +654,15 @@ impl SettingsView {
             return;
         };
         let text = field.read(cx).text().to_owned();
+        // A field showing a pending change, such as the default during a
+        // reset, has nothing new to save.
+        if !self.conflicts.contains_key(path)
+            && self.pending.get(path).is_some_and(|value| {
+                text == self.display(setting, value.clone())
+            })
+        {
+            return;
+        }
         // Saving a field again after a conflict keeps the entered value,
         // against a fresh read.
         if self.conflicts.remove(path).is_some() {
@@ -707,12 +731,7 @@ impl SettingsView {
         let text = match (self.pending.get(path), self.model.setting(path)) {
             // A pending reset shows the default.
             (Some(value), Some(setting)) => {
-                Some(field_text(value.clone().or_else(|| {
-                    self.defaults
-                        .get(path)
-                        .cloned()
-                        .or_else(|| setting.default.clone())
-                })))
+                Some(self.display(setting, value.clone()))
             }
             _ => self.synced.get(path).cloned(),
         };

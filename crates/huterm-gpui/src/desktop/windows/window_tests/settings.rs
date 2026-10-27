@@ -402,6 +402,38 @@ fn a_saved_field_shows_its_value_without_a_conflict(cx: &mut TestAppContext) {
         .update(|cx| assert!(!conflicted(cx, "font.size")));
 }
 
+#[cfg(unix)]
+#[gpui::test]
+fn a_save_that_is_not_durable_shows_its_value_without_a_conflict(
+    cx: &mut TestAppContext,
+) {
+    use std::os::unix::fs::PermissionsExt;
+    let file = ScratchConfig::new("not-durable", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // Without read permission the directory cannot be opened to sync the
+    // rename, so the write lands but reports that it is not durable.
+    let mode = |bits| std::fs::Permissions::from_mode(bits);
+    std::fs::set_permissions(&file.0, mode(0o300)).unwrap();
+    if std::fs::read_dir(&file.0).is_ok() {
+        // Permissions do not bind this user, such as root.
+        std::fs::set_permissions(&file.0, mode(0o700)).unwrap();
+        return;
+    }
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "15.0", window, cx);
+        view.enter("font.size", cx);
+    });
+    harness
+        .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
+    std::fs::set_permissions(&file.0, mode(0o700)).unwrap();
+    with_window(&mut harness, |view, _, cx| {
+        assert!(view.status_text().starts_with("Saved, but"));
+        assert!(!view.conflicted("font.size"));
+        assert_eq!(view.field_value("font.size", cx), "15");
+    });
+}
+
 #[gpui::test]
 fn escape_in_a_field_puts_back_its_value(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("escape", "[font]\nsize = 13.0\n");
@@ -716,6 +748,8 @@ fn escape_during_a_pending_reset_shows_the_default(cx: &mut TestAppContext) {
         view.set("font.size", None, cx);
         view.escape("font.size", cx);
         assert_eq!(view.field_value("font.size", cx), "14");
+        // Leaving the field showing the pending default keeps the reset.
+        view.blur("font.size", cx);
     });
     harness.wait_for("the reset", settled);
     // The reset removes the only key, and the empty table with it.
