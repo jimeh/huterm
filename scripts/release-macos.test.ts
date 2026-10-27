@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   assertPublicAssetMatches,
+  commandFailureReason,
   embeddedNotesStubPlist,
   parseDeveloperIdentity,
   minimumMacosVersion,
@@ -11,6 +12,7 @@ import {
   privacyUsageDescriptions,
   releaseEntitlements,
   runMacReleasePipeline,
+  runReported,
   signingPlan,
   sparklePublicKeyFromArchive,
   updaterPlistValues,
@@ -290,6 +292,94 @@ test("the final archive is created only after notarization and stapled-app verif
     "final archive",
   ]);
   expect(calls.filter(call => call === "sign")).toHaveLength(1);
+});
+
+const ticketLookupLost = 'xcrun exited with status 68: Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."';
+
+function recordingPipeline(failures: Record<string, string[]>) {
+  const calls: string[] = [];
+  const step = (name: string) => async () => {
+    calls.push(name);
+    const failure = failures[name]?.shift();
+    if (failure) throw new Error(failure);
+  };
+  const pipeline = {
+    signAndVerify: step("sign"),
+    createNotarizationArchive: step("notarization archive"),
+    submitNotarization: step("notarize"),
+    staple: step("staple"),
+    validateStaple: step("validate staple"),
+    verifyStapledSignatures: step("verify signatures"),
+    assessGatekeeper: step("spctl"),
+    createFinalArchive: step("final archive"),
+  };
+  const sleeps: number[] = [];
+  const logs: string[] = [];
+  const retry = {
+    sleep: async (milliseconds: number) => { sleeps.push(milliseconds); },
+    log: (message: string) => { logs.push(message); },
+  };
+  return { pipeline, retry, calls, sleeps, logs };
+}
+
+test("ticket steps ride through transient Apple failures before the final archive", async () => {
+  const run = recordingPipeline({
+    staple: [ticketLookupLost, ticketLookupLost],
+    "validate staple": [ticketLookupLost],
+    spctl: ["spctl exited with status 1: rejected"],
+  });
+  await expect(runMacReleasePipeline(run.pipeline, run.retry)).resolves.toBeUndefined();
+  expect(run.calls).toEqual([
+    "sign",
+    "notarization archive",
+    "notarize",
+    "staple",
+    "staple",
+    "staple",
+    "validate staple",
+    "validate staple",
+    "verify signatures",
+    "spctl",
+    "spctl",
+    "final archive",
+  ]);
+  expect(run.sleeps).toEqual([15_000, 30_000, 15_000, 15_000]);
+  expect(run.logs).toEqual([
+    `stapler staple failed on attempt 1 of 5: ${ticketLookupLost}; retrying in 15s`,
+    `stapler staple failed on attempt 2 of 5: ${ticketLookupLost}; retrying in 30s`,
+    `stapler validate failed on attempt 1 of 5: ${ticketLookupLost}; retrying in 15s`,
+    "Gatekeeper assessment failed on attempt 1 of 5: spctl exited with status 1: rejected; retrying in 15s",
+  ]);
+});
+
+test("a ticket step that keeps failing stops the release with its final error", async () => {
+  const failures = [1, 2, 3, 4, 5].map(attempt => `xcrun exited with status 68: attempt ${attempt}`);
+  const run = recordingPipeline({ "validate staple": [...failures] });
+  await expect(runMacReleasePipeline(run.pipeline, run.retry)).rejects.toThrow("xcrun exited with status 68: attempt 5");
+  expect(run.calls.filter(call => call === "validate staple")).toHaveLength(5);
+  expect(run.calls).not.toContain("verify signatures");
+  expect(run.calls).not.toContain("final archive");
+  expect(run.sleeps).toEqual([15_000, 30_000, 45_000, 60_000]);
+  expect(run.logs.at(-1)).toBe("stapler validate failed on attempt 5 of 5: xcrun exited with status 68: attempt 5; giving up");
+});
+
+test("Apple tool failure reasons name the NSError instead of the generic exit line", () => {
+  const stapler = [
+    "Processing: /Users/runner/work/huterm/huterm/target/release/bundle/Huterm.app",
+    'error is Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost." UserInfo={_kCFStreamErrorCodeKey=-4, NSErrorFailingURLStringKey=https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup}',
+    "CloudKit's response is inconsistent with expections: (null)",
+    "The validate action failed! Error 68.",
+    "",
+  ].join("\n");
+  expect(commandFailureReason(stapler)).toBe('Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."');
+  expect(commandFailureReason("Processing: Huterm.app\nThe staple and validate action failed! Error 65.\n\n")).toBe("The staple and validate action failed! Error 65.");
+  expect(commandFailureReason("\n")).toBeUndefined();
+});
+
+test("a failed reported command names its exit status and NSError", async () => {
+  const script = 'echo Processing; echo \'error is Error Domain=NSURLErrorDomain Code=-1005 "lost" UserInfo={x}\' >&2; exit 68';
+  await expect(runReported("sh", ["-c", script])).rejects.toThrow('sh exited with status 68: Error Domain=NSURLErrorDomain Code=-1005 "lost"');
+  await expect(runReported("sh", ["-c", "echo ok"])).resolves.toBeUndefined();
 });
 
 test("release-please can update explicit package versions and centralized exact pins", async () => {
