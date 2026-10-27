@@ -7,6 +7,7 @@
 //! field added without metadata fails [`SettingsModel::load`].
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
 
@@ -98,12 +99,12 @@ impl SectionId {
 pub enum Apply {
     /// Open windows and terminals change at once.
     Live,
-    /// Tabs opened afterwards use it.
-    NewTabs,
+    /// Tabs and panes opened afterwards use it. New windows do not.
+    NewTabsAndPanes,
     /// Terminals started afterwards use it.
     NewTerminals,
-    /// Later events use it, such as the next exit, key, or fullscreen
-    /// toggle.
+    /// Later events use it, such as the next exit, key, quake summon, or
+    /// fullscreen toggle.
     LaterEvents,
     /// The command palette uses it the next time it opens.
     NextPaletteOpen,
@@ -113,7 +114,7 @@ impl Apply {
     fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "live" => Self::Live,
-            "new_tabs" => Self::NewTabs,
+            "new_tabs_and_panes" => Self::NewTabsAndPanes,
             "new_terminals" => Self::NewTerminals,
             "later_events" => Self::LaterEvents,
             "next_palette_open" => Self::NextPaletteOpen,
@@ -234,18 +235,26 @@ impl fmt::Display for ModelError {
 impl std::error::Error for ModelError {}
 
 impl SettingsModel {
-    /// Reads the committed schema.
+    /// The model of the committed schema, parsed on first use.
     ///
     /// # Errors
     /// Returns an error when the schema is not JSON or its metadata is
     /// incomplete; tests keep the committed schema valid.
-    pub fn load() -> Result<Self, ModelError> {
-        let schema =
-            serde_json::from_str(SCHEMA).map_err(|error| ModelError {
-                path: "$".into(),
-                message: error.to_string(),
-            })?;
-        Self::from_schema(&schema)
+    pub fn load() -> Result<&'static Self, ModelError> {
+        static MODEL: OnceLock<Result<SettingsModel, ModelError>> =
+            OnceLock::new();
+        MODEL
+            .get_or_init(|| {
+                let schema = serde_json::from_str(SCHEMA).map_err(|error| {
+                    ModelError {
+                        path: "$".into(),
+                        message: error.to_string(),
+                    }
+                })?;
+                Self::from_schema(&schema)
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     /// Reads a configuration schema.
@@ -437,10 +446,8 @@ fn setting(
         group: required("group")?,
         label: required("label")?,
         order,
-        description: field("description")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        kind: kind(property, target),
+        description: field("description").and_then(Value::as_str).map(prose),
+        kind: kind(path, property, target)?,
         default: property
             .get("default")
             .and_then(|default| toml::Value::try_from(default).ok()),
@@ -481,9 +488,28 @@ fn visible_when(
     })
 }
 
-fn kind(property: &Value, target: &Value) -> SettingKind {
-    if let Some(choices) = choices(target) {
-        return SettingKind::Choice(choices);
+/// Joins the lines of each paragraph, since doc comments wrap at the
+/// source's line width and a control wraps at its own.
+fn prose(text: &str) -> String {
+    text.split("\n\n")
+        .map(|paragraph| {
+            paragraph
+                .lines()
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn kind(
+    path: &str,
+    property: &Value,
+    target: &Value,
+) -> Result<SettingKind, ModelError> {
+    if let Some(choices) = choices(path, target)? {
+        return Ok(SettingKind::Choice(choices));
     }
     let number = |key: &str| {
         property
@@ -497,7 +523,7 @@ fn kind(property: &Value, target: &Value) -> SettingKind {
             .or_else(|| target.get(key))
             .and_then(Value::as_i64)
     };
-    match target.get("type").and_then(Value::as_str) {
+    Ok(match target.get("type").and_then(Value::as_str) {
         Some("boolean") => SettingKind::Bool,
         Some("integer") => SettingKind::Integer {
             min: integer("minimum"),
@@ -515,14 +541,18 @@ fn kind(property: &Value, target: &Value) -> SettingKind {
                 .map(str::to_owned),
         },
         _ => SettingKind::Compound,
-    }
+    })
 }
 
 /// The options of a string enum, written as `enum`, as `oneOf` members with
-/// `const` and optional labels, or as a mix of both.
-fn choices(schema: &Value) -> Option<Vec<Choice>> {
+/// `const` and an optional label, or as a mix of both. `None` when the
+/// schema is not a string enum.
+fn choices(
+    path: &str,
+    schema: &Value,
+) -> Result<Option<Vec<Choice>>, ModelError> {
     if let Some(values) = schema.get("enum").and_then(Value::as_array) {
-        return values
+        return Ok(values
             .iter()
             .map(|value| {
                 Some(Choice {
@@ -531,28 +561,48 @@ fn choices(schema: &Value) -> Option<Vec<Choice>> {
                     description: None,
                 })
             })
-            .collect();
+            .collect());
     }
-    let members = schema.get("oneOf")?.as_array()?;
+    let Some(members) = schema.get("oneOf").and_then(Value::as_array) else {
+        return Ok(None);
+    };
     let mut choices = Vec::new();
     for member in members {
-        if let Some(value) = member.get("const") {
-            choices.push(Choice {
-                value: value.as_str()?.to_owned(),
-                label: member
-                    .get("x-huterm-label")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                description: member
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            });
-        } else {
-            choices.extend(self::choices(member)?);
+        let Some(value) = member.get("const") else {
+            match self::choices(path, member)? {
+                Some(nested) => choices.extend(nested),
+                None => return Ok(None),
+            }
+            continue;
+        };
+        let Some(value) = value.as_str() else {
+            return Ok(None);
+        };
+        let invalid = |message: &str| {
+            Err(error(path, format!("option {value}: {message}")))
+        };
+        if let Some(key) =
+            metadata_keys(member).find(|key| *key != "x-huterm-label")
+        {
+            return invalid(&format!("unknown metadata key {key}"));
         }
+        let label = match member.get("x-huterm-label") {
+            None => None,
+            Some(Value::String(label)) if !label.trim().is_empty() => {
+                Some(label.clone())
+            }
+            Some(_) => return invalid("x-huterm-label must be non-blank text"),
+        };
+        choices.push(Choice {
+            value: value.to_owned(),
+            label,
+            description: member
+                .get("description")
+                .and_then(Value::as_str)
+                .map(prose),
+        });
     }
-    Some(choices)
+    Ok(Some(choices))
 }
 
 /// Checks what no single property can: unique orders within a section, and
@@ -697,6 +747,60 @@ mod tests {
             model.setting("terminal.term").unwrap().apply,
             Apply::NewTerminals
         );
+        let rows = rows.description.as_deref().unwrap();
+        assert!(rows.starts_with("Live history each terminal keeps"));
+        assert!(!rows.contains('\n'), "wrapped lines join: {rows}");
+    }
+
+    /// Every value a default configuration writes belongs to a setting, so
+    /// the walk misses no field the schema defines.
+    #[test]
+    fn every_default_value_belongs_to_a_setting() {
+        fn leaves(value: &toml::Value, path: &str, out: &mut Vec<String>) {
+            match value {
+                toml::Value::Table(table) if !table.is_empty() => {
+                    for (key, value) in table {
+                        let path = if path.is_empty() {
+                            key.clone()
+                        } else {
+                            format!("{path}.{key}")
+                        };
+                        leaves(value, &path, out);
+                    }
+                }
+                _ => out.push(path.to_owned()),
+            }
+        }
+        let model = SettingsModel::load().unwrap();
+        let defaults = toml::Value::try_from(crate::RawConfig {
+            general: crate::GeneralConfig::default(),
+            terminal: crate::RawTerminal::default(),
+            font: crate::RawFont::default(),
+            window: crate::WindowConfig::default(),
+            tabs: crate::TabsConfig::default(),
+            updates: crate::UpdateConfig {
+                automatic_checks: Some(true),
+                check_interval_hours: Some(24),
+            },
+            palette: crate::PaletteConfig::default(),
+            panes: crate::PanesConfig::default(),
+            theme: crate::ThemeDefinition::default(),
+            themes: BTreeMap::new(),
+            keybinding: Vec::new(),
+            quake: crate::quake::Config::default(),
+            global_keybinding: Vec::new(),
+        })
+        .unwrap();
+        let mut paths = Vec::new();
+        leaves(&defaults, "", &mut paths);
+        assert!(paths.len() > 40, "{paths:?}");
+        for path in paths {
+            let owned = std::iter::successors(Some(path.as_str()), |path| {
+                path.rsplit_once('.').map(|(parent, _)| parent)
+            })
+            .any(|path| model.setting(path).is_some());
+            assert!(owned, "{path} belongs to no setting");
+        }
     }
 
     fn schema(properties: &Value) -> Value {
@@ -750,6 +854,40 @@ mod tests {
                 json!({"a": setting(&json!({"x-huterm-apply": null}))}),
                 "a",
                 "x-huterm-apply is required",
+            ),
+            (
+                json!({"a": setting(&json!({"x-huterm-apply": "soon"}))}),
+                "a",
+                "unknown apply soon",
+            ),
+            (
+                json!({"a": setting(&json!({"x-huterm-platform": "windows"}))}),
+                "a",
+                "unknown platform windows",
+            ),
+            (
+                json!({"tabs": {
+                    "x-huterm-group": "Tab bar",
+                    "properties": {"a": setting(&json!({}))}
+                }}),
+                "tabs",
+                "x-huterm-group needs x-huterm-label to make a setting",
+            ),
+            (
+                json!({"a": setting(&json!({
+                    "type": null,
+                    "oneOf": [{"const": "pill", "x-huterm-label": " "}]
+                }))}),
+                "a",
+                "option pill: x-huterm-label must be non-blank text",
+            ),
+            (
+                json!({"a": setting(&json!({
+                    "type": null,
+                    "oneOf": [{"const": "pill", "x-huterm-lable": "Pill"}]
+                }))}),
+                "a",
+                "option pill: unknown metadata key x-huterm-lable",
             ),
             (
                 json!({"a": setting(&json!({"x-huterm-lable": "Typo"}))}),

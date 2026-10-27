@@ -621,4 +621,5 @@ what no single type owns. Every schema property needs `x-huterm-label` unless
 it is a namespace object, or `SettingsModel::load` fails, and the coverage
 test in `desktop/settings.rs` fails until a new setting has a generic control,
 an override, or a file-only entry. Doc comments become schema descriptions
-with their line breaks, which editors render as soft wraps.
+with their line breaks; editors render them as soft wraps, and the model joins
+each paragraph's lines.

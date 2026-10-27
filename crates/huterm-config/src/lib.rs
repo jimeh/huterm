@@ -1368,7 +1368,7 @@ pub struct RawConfig {
         "x-huterm-group" = "Profiles",
         "x-huterm-label" = "Quake profiles",
         "x-huterm-order" = 10,
-        "x-huterm-apply" = "live",
+        "x-huterm-apply" = "later_events",
     )))]
     pub quake: quake::Config,
     #[serde(default)]
@@ -1535,9 +1535,9 @@ pub struct RawTerminal {
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Shell",
-        "x-huterm-label" = "New tabs start in",
+        "x-huterm-label" = "New tabs and panes start in",
         "x-huterm-order" = 10,
-        "x-huterm-apply" = "new_tabs",
+        "x-huterm-apply" = "new_tabs_and_panes",
     )))]
     pub new_tab_directory: NewTabDirectory,
     pub bell: BellConfig,

@@ -488,7 +488,7 @@ Every setting carries its metadata on the field that defines it, through
 | `x-huterm-group` | Card title within the section, such as `"Font"` | yes |
 | `x-huterm-label` | Row label, sentence case | yes |
 | `x-huterm-order` | Integer, unique within its section | yes |
-| `x-huterm-apply` | `live`, `new_tabs`, `new_terminals`, `later_events`, or `next_palette_open` | yes |
+| `x-huterm-apply` | `live`, `new_tabs_and_panes`, `new_terminals`, `later_events`, or `next_palette_open` | yes |
 | `x-huterm-unit` | Display unit, such as `"pt"`, `"rows"`, `"s"`, `"ms"`, `"h"` | no |
 | `x-huterm-platform` | `macos` or `linux` | no |
 | `x-huterm-advanced` | `true` | no |
@@ -505,11 +505,14 @@ the model recurses into it. Compound settings carry their own label at the
 
 Apply semantics follow the runtime, checked against `docs/configuration.md`
 and the reload path: `terminal.term` applies to new terminals,
-`terminal.new_tab_directory` to new tabs, `terminal.close_on_exit`,
-`terminal.macos_option_as_alt`, and `window.macos_fullscreen_mode` to later
-events, `palette.retain_query` and `palette.retain_query_seconds` to the next
-palette open, and every other setting live. `palette.placement` moves an open
-palette, so it is live, unlike the mockup.
+`terminal.new_tab_directory` to new tabs and split panes but not new windows,
+`terminal.close_on_exit`, `terminal.macos_option_as_alt`, and
+`window.macos_fullscreen_mode` to later events, `palette.retain_query` and
+`palette.retain_query_seconds` to the next palette open, and every other
+setting live. `palette.placement` moves an open palette, so it is live,
+unlike the mockup. `quake` applies to later events as a whole: removing a
+profile changes its window at once, but a changed profile reaches its window
+at the next summon.
 
 ### Constraints and descriptions move onto the types
 
@@ -529,17 +532,20 @@ comparison script proves it during review; it is not committed.
 Behind a new `settings` feature that enables `serde_json`. The model embeds
 `schemas/huterm.schema.json` and parses it once.
 
-- `SettingsModel::load()` and `SettingsModel::from_schema(&Value)` return
-  `Result<SettingsModel, ModelError>`. Missing or malformed metadata, an
-  unknown section, apply, or platform value, a duplicate order, or a
-  visible-when naming an unknown setting or a value outside its choices is an
-  error naming the setting path.
+- `SettingsModel::load()` returns the cached
+  `Result<&'static SettingsModel, ModelError>`, and
+  `SettingsModel::from_schema(&Value)` builds one from any schema. Missing or
+  malformed metadata, an unknown section, apply, or platform value, a
+  duplicate order, a blank or misspelled option label, or a visible-when
+  naming an unknown setting or a value outside its choices is an error naming
+  the setting path.
 - `sections()` returns the ten sections in sidebar order with their titles,
   each holding groups ordered by their lowest setting order, each holding
   settings in order. `setting(path)` finds one setting by dotted path.
-- A `Setting` holds its path, label, description, kind, default as a
-  `toml::Value` when the schema has one, unit, apply, platform, advanced,
-  visible-when, and whether it is deprecated.
+- A `Setting` holds its path, label, description with each paragraph's
+  lines joined, kind, default as a `toml::Value` when the schema has one,
+  unit, apply, platform, advanced, visible-when, and whether it is
+  deprecated.
 - `SettingKind` is `Bool`, `Choice(options)` with each option's value, label,
   and description, `Integer { min, max }`, `Number { min, max,
   exclusive_min }`, `Text { pattern }`, or `Compound` for objects, maps,
@@ -569,6 +575,7 @@ Initial entries:
 | The committed schema parses into a model with ten sections and every setting the config defines | `huterm-config` test with the `settings` feature |
 | Every setting has a generic control, an override, or a file-only entry; every entry names a real setting; deprecated settings are file-only | `huterm-gpui` coverage test |
 | Every `Choice` option outside overrides and the file-only list has a label | The same coverage test |
+| Every value a default configuration writes belongs to some setting, so the walk misses no field | `huterm-config` test serializing a default `RawConfig` |
 | Malformed metadata is rejected with the setting path | Focused tests feeding small schemas to `from_schema` |
 | Visible-when references resolve and their values are valid choices | Covered by `load()` plus one rejection test |
 | Moved constraints keep the schema unchanged | `mise run schema:check` on the regenerated files, the one-off comparison, and `smoke:schema-editor` for Taplo |

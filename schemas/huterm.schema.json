@@ -6836,9 +6836,9 @@
             }
           ],
           "default": "inherit",
-          "x-huterm-apply": "new_tabs",
+          "x-huterm-apply": "new_tabs_and_panes",
           "x-huterm-group": "Shell",
-          "x-huterm-label": "New tabs start in",
+          "x-huterm-label": "New tabs and panes start in",
           "x-huterm-order": 10,
           "x-huterm-section": "terminal"
         },
@@ -7757,7 +7757,7 @@
           "$ref": "#/definitions/Config"
         }
       ],
-      "x-huterm-apply": "live",
+      "x-huterm-apply": "later_events",
       "x-huterm-group": "Profiles",
       "x-huterm-label": "Quake profiles",
       "x-huterm-order": 10,
