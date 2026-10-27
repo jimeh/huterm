@@ -54,11 +54,13 @@ export async function checkSettings(executable: string, wm?: X11Process): Promis
   const directory = await mkdtemp(join(tmpdir(), "huterm-settings-"));
   const shell = join(directory, "shell");
   const config = join(directory, "config.toml");
+  // A switched-off Linux shortcut reaches the shell as a control byte, such
+  // as ^T before "ack old", so the acknowledgment drops what precedes "ack ".
   await writeFile(shell, `#!/bin/sh
 printf 'READY\\n'
 while IFS= read -r line; do
   case "$line" in
-    ack*) printf 'ACK:%s\\n' "$line";;
+    *"ack "*) printf 'ACK:ack %s\\n' "\${line#*ack }";;
   esac
 done
 `, { mode: 0o700 });
