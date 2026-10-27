@@ -38,8 +38,8 @@ struct Restore {
     inserted: Vec<Insertion>,
     /// Terminals whose session changes.
     revoked: Vec<TerminalId>,
-    /// Whether a terminal changes tabs or a tab changes position, which
-    /// changes what a close covers.
+    /// Whether a terminal changes tabs or a tab opens, is removed, or
+    /// changes workspace or position, which changes what a close covers.
     advances: bool,
 }
 

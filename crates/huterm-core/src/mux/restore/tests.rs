@@ -16,16 +16,21 @@ fn current(mux: &Mux, change: &LayoutChange) -> Vec<TabSnapshot> {
         .collect()
 }
 
-/// Undoes and redoes `change`, checking that each returns the exact
-/// recorded records, then runs `check`.
+/// Undoes and redoes `change`, checking that each leaves the exact
+/// recorded records and reports the change it made, then runs `check`.
 fn round_trip(mux: &mut Mux, change: &LayoutChange, check: impl Fn(&Mux)) {
     assert!(!change.is_empty());
     assert_eq!(current(mux, change), change.after);
-    mux.restore_tabs(change, Undo).unwrap();
+    let undone = mux.restore_tabs(change, Undo).unwrap();
     assert_eq!(current(mux, change), change.before, "undo");
+    assert_eq!(undone.before, change.after);
+    assert_eq!(undone.after, change.before);
+    assert_eq!(undone.placed, change.placed);
     check(mux);
-    mux.restore_tabs(change, Redo).unwrap();
+    let redone = mux.restore_tabs(change, Redo).unwrap();
     assert_eq!(current(mux, change), change.after, "redo");
+    assert_eq!(redone.before, change.before);
+    assert_eq!(redone.after, change.after);
     check(mux);
 }
 
@@ -323,6 +328,34 @@ fn restores_of_swaps_keep_the_revision_and_of_moves_advance_it() {
     mux.shutdown().unwrap();
 }
 
+#[test]
+fn restores_of_a_tab_placed_in_another_session_advance_and_revoke() {
+    let (mut mux, alpha) = idle_runtime();
+    let other = mux.create_session(None).unwrap();
+    let beta = mux.create_workspace(other, None).unwrap();
+    let (tab, pane) = open(&mut mux, alpha);
+    let placed = mux
+        .move_pane(
+            pane_ref(&mux, pane),
+            MoveDestination::NewTab {
+                workspace: beta,
+                before: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(placed.placed, [tab]);
+    let terminal = mux.tab(tab).unwrap().first_pane().terminal_id;
+    for (direction, workspace) in [(Undo, alpha), (Redo, beta)] {
+        let watcher = TestClient::new(&mux.terminals[&terminal]);
+        let revision = mux.revision;
+        mux.restore_tabs(&placed, direction).unwrap();
+        assert_eq!(mux.select_tab(tab).unwrap().workspace, Some(workspace));
+        assert!(mux.revision > revision, "{direction:?} kept the revision");
+        assert!(watcher.poll().revoked, "{direction:?} kept the viewer");
+    }
+    mux.shutdown().unwrap();
+}
+
 /// `layout` with its root split's identity replaced.
 fn with_root_split(layout: &PaneLayout, id: SplitId) -> PaneLayout {
     let PaneNode::Split(mut split) = layout.root().clone() else {
@@ -464,6 +497,31 @@ fn refused_restores_change_nothing() {
         placed: Vec::new(),
     };
     refused(&mut mux, &reopened, "LayoutChanged");
+    // Sides that name different tabs, or one tab twice.
+    let mismatched = LayoutChange {
+        after: Vec::new(),
+        ..now.clone()
+    };
+    refused(&mut mux, &mismatched, "InvalidRestore");
+    let doubled = LayoutChange {
+        before: vec![current.clone(), current.clone()],
+        after: vec![current.clone(), current.clone()],
+        placed: Vec::new(),
+    };
+    refused(&mut mux, &doubled, "InvalidRestore");
+    // A restored split that a tab the restore does not touch holds.
+    let (held, _) = root_split(&mux, moved);
+    let collides = LayoutChange {
+        before: vec![TabSnapshot {
+            tab,
+            record: Some(TabRecord {
+                layout: with_root_split(&record.layout, held),
+                ..record.clone()
+            }),
+        }],
+        ..now.clone()
+    };
+    refused(&mut mux, &collides, "LayoutChanged");
     // A change from another runtime.
     let mut other = Mux::default();
     let session = other.create_session(None).unwrap();

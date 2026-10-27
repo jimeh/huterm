@@ -212,9 +212,14 @@ moves away is removed, unlike an emptied workspace or session.
 only while every touched tab keeps the splits, panes, terminals, and session
 the change left. Weights, zoom, names, and positions never block it, and
 only tabs in `placed` return to their recorded workspace and position. Undo
-reopens a removed tab with its old `TabId`. That is safe only because the
-restore accepts IDs at or below `next_id` that are not in use, so keep that
-check if allocation ever changes.
+reopens a removed tab with its old `TabId`. Every kind shares one counter,
+so the restore's check that an ID is at or below `next_id` and not in use
+refuses only IDs never allocated. Core-produced records are what make reuse
+safe; a client that can forge records over IPC needs a stronger check.
+A restore advances the revision when a terminal changes tabs or a tab
+opens, is removed, or changes workspace or position, and emits
+`PanesRearranged` even for one tab, where the forward swap emitted
+`PaneLayoutChanged`.
 Moves retain empty workspaces and sessions and never change terminal lifetime.
 Desktop windows retain their attachment identity for assessed close. Orphaned
 spawn cleanup must preserve resources adopted by another attachment or moved
