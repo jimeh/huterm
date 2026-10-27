@@ -828,6 +828,7 @@ struct Desktop {
     /// The configuration watcher's worker; `None` until startup runs it.
     watch: Option<config_watch::Handle>,
     /// The watcher's last acknowledged state, for smoke state.
+    #[cfg(target_os = "macos")]
     watch_status: WatchStatus,
     quitting: bool,
     pending_spawns: usize,
@@ -844,7 +845,9 @@ struct Desktop {
 }
 impl Global for Desktop {}
 
-/// What the configuration watcher last acknowledged.
+/// What the configuration watcher last acknowledged. Only the macOS input
+/// smoke reads it; the Linux smoke observes reloads through the terminal.
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, Default)]
 struct WatchStatus {
     watching: bool,
@@ -1397,6 +1400,7 @@ fn install_desktop(
         frequency: CommandFrequency::default(),
         reloads: config_watch::Reloads::default(),
         watch: None,
+        #[cfg(target_os = "macos")]
         watch_status: WatchStatus::default(),
         quitting: false,
         pending_spawns: 0,
@@ -9452,10 +9456,15 @@ fn handle_watch_report(cx: &mut App, report: config_watch::Report) {
             watching,
             reconciliations,
         } => {
-            cx.global_mut::<Desktop>().watch_status = WatchStatus {
-                watching,
-                reconciliations,
-            };
+            #[cfg(target_os = "macos")]
+            {
+                cx.global_mut::<Desktop>().watch_status = WatchStatus {
+                    watching,
+                    reconciliations,
+                };
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (watching, reconciliations);
         }
         config_watch::Report::Unavailable(error) => {
             show_watch_unavailable(cx, &error);

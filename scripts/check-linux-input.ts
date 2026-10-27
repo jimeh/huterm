@@ -98,6 +98,8 @@ while (!existsSync(${JSON.stringify(stop)})) {
   // Pace the queries; the smoke polls the published answer.
   await Bun.sleep(50);
 }
+// The open stdin reader would keep Bun running after the loop.
+process.exit(0);
 `);
   const settings = `[terminal]
 close_on_exit = false
