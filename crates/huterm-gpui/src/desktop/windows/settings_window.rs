@@ -222,6 +222,9 @@ pub(super) struct SettingsView {
     menu: Option<(Entity<MenuView>, MenuFor, FocusHandle)>,
     /// The Keybindings section.
     keys: Keys,
+    /// The action and keybinding field keys the last frame drew, so focus
+    /// left on a control that went away can move on.
+    drawn: HashSet<String>,
     /// Takes key-downs while a shortcut records.
     _recorder: gpui::Subscription,
     scroll: ScrollHandle,
@@ -267,6 +270,7 @@ impl SettingsView {
         let mut view = Self {
             focus: cx.focus_handle(),
             keys,
+            drawn: HashSet::new(),
             _recorder: recorder,
             model,
             themes: Vec::new(),
@@ -845,6 +849,14 @@ impl SettingsView {
             return Ok(());
         }
         match invocation.id {
+            // In Keybindings, search finds commands in the section.
+            ids::SETTINGS_SEARCH
+                if self.section == SectionId::Keybindings
+                    && self.query(cx).is_empty() =>
+            {
+                let handle = self.keys.search.read(cx).focus_handle(cx);
+                handle.focus(window, cx);
+            }
             ids::SETTINGS_SEARCH => {
                 let handle = self.search.read(cx).focus_handle(cx);
                 handle.focus(window, cx);
@@ -998,24 +1010,34 @@ impl SettingsView {
                     cx,
                 );
             }
-            ids::PALETTE_CONFIRM | ids::PALETTE_EXPAND
-                if completing && self.accept_completion(key, None, cx) => {}
-            ids::PALETTE_CONFIRM => {
-                if key != "search" {
-                    self.commit_key_field(key, cx);
-                }
+            // Up and Down step a number argument.
+            ids::PALETTE_SELECT_NEXT | ids::PALETTE_SELECT_PREVIOUS
+                if key.starts_with("arg:") =>
+            {
+                self.step_argument(
+                    key,
+                    invocation.id == ids::PALETTE_SELECT_PREVIOUS,
+                    cx,
+                );
             }
-            ids::PALETTE_EXPAND => window.focus_next(cx),
+            ids::PALETTE_CONFIRM
+                if completing && self.accept_completion(key, None, cx) => {}
+            ids::PALETTE_CONFIRM if key == "search" => {
+                self.focus_first_command(window, cx);
+            }
+            ids::PALETTE_CONFIRM => self.commit_key_field(key, cx),
+            // Tab moves on; a suggestion takes Return or a click.
+            ids::PALETTE_EXPAND => {
+                self.keys.completion = None;
+                window.focus_next(cx);
+            }
             ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
             ids::PALETTE_BACK if completing => self.keys.completion = None,
-            ids::PALETTE_BACK => {
-                if key == "search" {
-                    field.update(cx, |field, cx| field.set_text("", cx));
-                } else {
-                    self.cancel_key_field(key, cx);
-                }
-                self.focus.focus(window, cx);
+            ids::PALETTE_BACK if key == "search" => {
+                field.update(cx, |field, cx| field.set_text("", cx));
             }
+            // Escape puts the saved text back and stays in the field.
+            ids::PALETTE_BACK => self.cancel_key_field(key, cx),
             _ => {
                 let _ = field
                     .update(cx, |field, cx| field.run(invocation, window, cx));
@@ -1076,6 +1098,8 @@ impl SettingsView {
             format!("section:{}", section.id())
         } else if let Some(key) = self.focused_action(window) {
             format!("action:{key}")
+        } else if let Some((key, _)) = self.focused_key_field(window, cx) {
+            format!("key:{key}")
         } else if let Some(setting) = self.focused_setting(window, cx) {
             setting.path.clone()
         } else {
@@ -1302,8 +1326,26 @@ impl Render for SettingsView {
         let swatch = Self::swatch(cx);
         let query = self.query(cx);
         let searching = !query.is_empty();
+        self.drawn.clear();
         let sidebar = self.render_sidebar(swatch, searching, cx);
         let main = self.render_main(swatch, &query, window, cx);
+        // A followed control, or focus stranded on a control this frame did
+        // not draw, moves once the frame is done; a stranded focus would
+        // leave no binding able to match.
+        let stranded = self
+            .focused_action(window)
+            .or_else(|| self.focused_key_field(window, cx).map(|(key, _)| key))
+            .is_some_and(|key| key != "search" && !self.drawn.contains(&key));
+        if self.keys.follow.is_some() || stranded {
+            cx.defer_in(window, move |view, window, cx| {
+                if view.keys.follow.is_some() {
+                    view.focus_follow(window, cx);
+                } else if stranded {
+                    view.focus.focus(window, cx);
+                }
+                cx.notify();
+            });
+        }
         let mut context = KeyContext::default();
         context.add("Settings");
         div()
@@ -1518,6 +1560,35 @@ impl SettingsView {
 
     pub(super) fn key_error(&self, row: &str) -> Option<String> {
         self.keys.errors.get(row).cloned()
+    }
+
+    /// Focuses a keybinding field, creating it as its row would.
+    pub(super) fn focus_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let field = self.key_field_for(key, window, cx);
+        field.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    /// Leaves a keybinding field, as moving focus away does.
+    pub(super) fn blur_key(&mut self, key: &str, cx: &mut Context<'_, Self>) {
+        self.keys.editing = None;
+        self.commit_key_field(key, cx);
+    }
+
+    pub(super) fn completion_open(&self) -> bool {
+        self.keys.completion.is_some()
+    }
+
+    pub(super) fn key_text(&self, key: &str, cx: &App) -> String {
+        self.keys
+            .fields
+            .get(key)
+            .map(|field| field.read(cx).text().to_owned())
+            .unwrap_or_default()
     }
 
     /// The strokes recorded so far, while recording.

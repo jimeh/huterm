@@ -116,6 +116,14 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
     press(&mut harness, "kadd:new_tab");
     keystrokes(&mut harness, "escape");
     with_view(&mut harness, |view, _| assert_eq!(view.recording(), None));
+    // So does Escape after a first stroke.
+    press(&mut harness, "kadd:new_tab");
+    keystrokes(&mut harness, "ctrl-k escape");
+    with_view(&mut harness, |view, _| assert_eq!(view.recording(), None));
+    harness
+        .cx
+        .executor()
+        .advance_clock(super::super::settings_window::CHORD_TIMEOUT);
     harness.cx.run_until_parked();
     assert_eq!(file.text(), before);
 }
@@ -201,4 +209,129 @@ fn the_editor_writes_nothing_while_the_file_is_invalid(
     });
     harness.cx.run_until_parked();
     assert_eq!(file.text(), broken);
+}
+
+/// Select Tab's first default, which carries an `index` argument.
+const SELECT_FIRST: &str = if cfg!(target_os = "macos") {
+    "cmd-1"
+} else {
+    "alt-1"
+};
+
+fn focus_name(harness: &mut DesktopHarness) -> String {
+    with_window(harness, |view, window, cx| view.focus_name(window, cx))
+}
+
+#[gpui::test]
+fn a_condition_completes_on_return_and_tab_never_writes_a_suggestion(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-complete", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let next = row(&mut harness, ids::NEXT_TAB, "ctrl-tab");
+    let when = format!("when:{next}");
+    press(&mut harness, "kgo:next_tab");
+    harness.cx.run_until_parked();
+    // Focusing the empty field offers nothing, and Tab moves on.
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key(&when, window, cx);
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| assert!(!view.completion_open()));
+    keystrokes(&mut harness, "tab");
+    harness.cx.run_until_parked();
+    assert_ne!(focus_name(&mut harness), format!("key:{when}"));
+    assert_eq!(file.text(), "");
+    // Nor does a field emptied while focused, so Return saves nothing.
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key(&when, window, cx);
+    });
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key(&when, "", window, cx);
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| assert!(!view.completion_open()));
+    keystrokes(&mut harness, "enter");
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), "");
+    // A typed name completes on Return, and the next Return saves it.
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key(&when, window, cx);
+    });
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key(&when, "Te", window, cx);
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| assert!(view.completion_open()));
+    keystrokes(&mut harness, "enter");
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text(&when, cx), "Terminal");
+        assert!(!view.completion_open());
+    });
+    assert_eq!(file.text(), "");
+    keystrokes(&mut harness, "enter");
+    saved(&mut harness, &file, |text| {
+        text.contains("when = \"Terminal\"")
+    });
+    // Focus follows the changed binding to its new row.
+    let follow = row(&mut harness, ids::NEXT_TAB, "ctrl-tab");
+    assert_eq!(follow, next, "the default keeps its row");
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "key:when:u1");
+}
+
+#[gpui::test]
+fn changing_a_default_argument_writes_one_replacement(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("keys-default-arg", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let first = row(&mut harness, ids::SELECT_TAB, SELECT_FIRST);
+    let index = format!("arg:{first}:index");
+    press(&mut harness, "kgo:select_tab");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key(&index, window, cx);
+        view.type_key(&index, "4", window, cx);
+        view.enter_key(&index, cx);
+        // Leaving the field before the save lands writes nothing more.
+        view.blur_key(&index, cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("index = 4"));
+    harness.cx.run_until_parked();
+    let text = file.text();
+    assert_eq!(text.matches("index = 4").count(), 1, "{text}");
+    assert_eq!(text.matches("disabled = true").count(), 1, "{text}");
+    assert_eq!(focus_name(&mut harness), "key:arg:u1:index");
+    // The switched-off default shows the file's value again.
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text(&index, cx), "1");
+    });
+}
+
+#[gpui::test]
+fn restoring_defaults_moves_focus_to_the_command_and_keys_keep_working(
+    cx: &mut TestAppContext,
+) {
+    let original = "[[keybinding]]\nkey = \"ctrl-tab\"\ncommand = \"next_tab\"\ndisabled = true\n";
+    let file = ScratchConfig::new("keys-restore-focus", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:next_tab");
+    harness.cx.run_until_parked();
+    press(&mut harness, "kreset:next_tab");
+    saved(&mut harness, &file, str::is_empty);
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "action:kcmd:next_tab");
+    let find = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+    keystrokes(&mut harness, find);
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "key:search");
 }

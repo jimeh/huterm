@@ -7,14 +7,14 @@ live in the same file as the other settings; see
 
 The Keybindings section of Settings edits them in place. Each command row
 expands to its shortcuts: click a key, or press Space on it, then press the new
-shortcut; a second key within a second makes a chord, Escape cancels, and the
-recorder takes keys that are bound elsewhere, so `cmd-w` records instead of
-closing the window. Each shortcut also has a `when` field that completes
-context names and checks the condition before saving, its argument values, and
-a switch. Changing or switching off a default writes a `disabled = true` entry
-for exactly that shortcut, plus the changed binding; Restore defaults removes
-the command's entries. Keys the operating system or a global shortcut takes
-first cannot be recorded.
+shortcut. A second key within a second makes a chord, Return saves at once,
+and Escape cancels. The recorder takes keys that are bound elsewhere, so
+`cmd-w` records instead of closing the window. Each shortcut also has a `when`
+field that completes context names and checks the condition before saving,
+its argument values, and a switch. Changing or switching off a default writes
+a `disabled = true` entry for exactly that shortcut, plus the changed binding;
+Restore defaults removes the command's entries. Keys the operating system or a
+global shortcut takes first cannot be recorded.
 
 ## Command palette
 
@@ -452,11 +452,12 @@ or from the search field moves to the first match; `palette_expand` and
 `palette_previous_slot` move focus on and back; `palette_select_previous` and
 `palette_select_next` step a number; and `palette_back` clears the search. In a
 shortcut's `when` field, `palette_select_next` and `palette_select_previous`
-move through the context suggestions, and `palette_confirm` or
-`palette_expand` takes one. `settings_reset` on a command in Keybindings
-restores its defaults. The window also reads `close_window`, `close_tab`, and
-`close_pane` as closing it, and `next_tab` and `previous_tab` as moving between
-sections.
+move through the context suggestions and `palette_confirm` takes one; in an
+argument's number field they step it. In Keybindings, `settings_search`
+focuses the section's own search, where `palette_confirm` moves to the first
+command, and `settings_reset` on a command restores its defaults. The window
+also reads `close_window`, `close_tab`, and `close_pane` as closing it, and
+`next_tab` and `previous_tab` as moving between sections.
 
 | Command | macOS | Linux |
 | --- | --- | --- |

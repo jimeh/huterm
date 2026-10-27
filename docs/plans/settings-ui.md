@@ -839,16 +839,18 @@ compiles the keymap, so a binding the compiler refuses is never written.
 ### Key recorder
 
 - Clicking a key cap, Space or Return on it, or Add shortcut starts
-  recording; the cap reads "Press a shortcut…". While it records, an
+  recording; the cap reads "Press keys", and a line under the row says how
+  recording ends. While it records, an
   application keystroke interceptor takes the window's key-down events and
   stops their propagation, so no binding, menu key equivalent, or text field
   acts on them. A key that the operating system or a registered global
   shortcut takes first cannot be recorded.
-- Modifier-only presses are ignored. Escape with no stroke yet cancels;
-  Return after a stroke finishes. A second stroke within one second, GPUI's
+- Modifier-only presses are ignored. Escape cancels at any point; Return
+  after a stroke saves at once. A second stroke within one second, GPUI's
   own chord timeout, records a two-stroke chord; recording ends after the
   second stroke or one second after the first. Focus leaving the cap, the
-  window losing focus, or a click elsewhere cancels.
+  window losing focus, or a click elsewhere cancels. The cap shows the
+  strokes so far as key glyphs.
 - The result is written in the form `docs/keybindings.md` documents and
   `parse_keystrokes` accepts, including shifted punctuation as its symbol.
   Recording the binding's current key writes nothing.
@@ -857,10 +859,14 @@ compiles the keymap, so a binding the compiler refuses is never written.
 
 - Each shortcut's `when` is a text field (placeholder "Anywhere", or the
   implied context for commands that have one) saved on Enter or blur, like
-  the scalar fields. Escape puts back the saved condition.
-- Typing offers completion from a code-level list of contexts with their
-  descriptions, the list `docs/keybindings.md` documents; a test fails when
-  the two differ.
+  the scalar fields. Escape puts back the saved condition and keeps focus.
+  Only an active shortcut's fields edit; a field keeps a draft only while
+  it is being edited.
+- Typing a context name offers completion from a code-level list of
+  contexts with their descriptions, the list `docs/keybindings.md`
+  documents; a test fails when the two differ. An empty name offers
+  nothing. Up and Down move through the suggestions and Return takes one;
+  Tab only moves focus.
 - GPUI's predicate parser checks the text before anything is written: a
   syntax error shows under the shortcut and writes nothing. A known-syntax
   condition naming an unknown context saves with a warning that it never
@@ -868,27 +874,38 @@ compiles the keymap, so a binding the compiler refuses is never written.
 
 ### Keybinding arguments
 
-Only the arguments a config can carry appear; tab, pane, workspace, and
-session targets never do. Every argument is optional in a binding: an empty
-control writes nothing, and the palette prompts for a prompted argument or
-the command uses its default.
+Only the arguments a config can carry appear, on a line under the
+shortcut, each labeled before its control; tab, pane, workspace, and
+session targets never do. Up and Down step a number field. Every argument
+is optional in a binding: an empty control writes nothing, and the palette
+prompts for a prompted argument or the command uses its default.
 
 | Kind | Control |
 | --- | --- |
 | `Bool` | Select: "Default", "On", "Off" |
 | `Integer` | Number field with the range from the catalog, empty for none |
 | `Text` | Text field, saved on Enter or blur |
-| `QuakeProfile` | Select of `default` and the configured profiles, plus "Ask" |
+| `QuakeProfile` | Select of the configured profiles; unset shows `default` |
 | `Side` | Select of the sides, plus "Ask" |
 
 ### Keybinding messages
 
-Under each shortcut, as the mockup shows: a condition error or unknown
-context; "Removed by an unbind entry for …"; "Disabled by a disabled = true
-entry"; "Replaced by your binding with the same key and condition"; a
-warning when another command's active binding has the same key and
-condition ("The later entry in config.toml wins"); and a note when the key
-also runs another command under a different condition.
+Under each shortcut: an error for the typed text, then notes about the
+file's binding from one pure function, `notes`:
+
+- what became of it: switched off, replaced (naming the shortcut and
+  command that took the key), or passed through by an `unbind` entry;
+- a warning on the shortcut that took a key from another command;
+- for a user shortcut sharing its key with another command, where the other
+  uses it, with a warning when the shortcut has no condition and so can
+  take the key there;
+- a warning on a user shortcut without a condition on a bare key, and a
+  note on Ctrl and a letter, which terminal programs stop receiving;
+- a warning for a saved condition naming an unknown context.
+
+Pairs of shipped defaults get no notes. Restore defaults shows only when
+the command has entries to remove, and says when they include shortcuts the
+user added.
 
 ### Keybinding saves and status
 
@@ -905,7 +922,15 @@ Command rows are `SettingsControl` stops: Space and Return expand and
 collapse them, and `settings_reset` restores the command's defaults. Inside
 an expanded row, Tab reaches the key cap, the `when` field (a `Palette`
 text field), argument controls, the switch, the remove button, Add
-shortcut, and Restore defaults. No new commands or bindings.
+shortcut, and Restore defaults. In the section, `settings_search` focuses
+its own search, and Return there moves to the first command listed. No new
+commands or bindings.
+
+Focus never stays on a control that went away: removing a shortcut or
+restoring defaults moves it to the command row, removing an `unbind` entry
+to the section's search, and a changed default's new row takes focus on
+the control that changed it. Anything else falls back to the window, so
+the keyboard keeps working.
 
 ### PR 4 files
 

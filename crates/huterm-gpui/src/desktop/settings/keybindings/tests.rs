@@ -228,3 +228,105 @@ fn adding_and_removing_entries_keeps_the_others() {
          [[keybinding]]\nkey = \"ctrl-alt-c\"\ncommand = \"new_window\"\n"
     );
 }
+
+fn entry(key: &str, command: &str) -> crate::config::KeybindingEntry {
+    crate::config::KeybindingEntry {
+        key: key.into(),
+        command: command.into(),
+        args: None,
+        when: None,
+        description: None,
+        disabled: None,
+    }
+}
+
+/// The notes for `command`'s binding on `key`, from macOS defaults plus
+/// `user`.
+fn notes_for(
+    user: &[crate::config::KeybindingEntry],
+    command: CommandId,
+    key: &str,
+    origin: Origin,
+) -> Vec<Note> {
+    let inventory = inventory(Platform::MacOs, user).unwrap();
+    let listed = inventory
+        .bindings
+        .iter()
+        .find(|listed| {
+            listed.binding.command == command
+                && listed.binding.key == key
+                && listed.binding.origin == origin
+        })
+        .unwrap();
+    notes(&inventory, listed)
+}
+
+#[test]
+fn taking_a_key_names_both_commands() {
+    let user = [entry("ctrl-tab", "split_right")];
+    assert_eq!(
+        notes_for(&user, ids::NEXT_TAB, "ctrl-tab", Origin::Default),
+        [Note::info(
+            "Replaced: your ctrl-tab shortcut for Split Right took this key."
+                .to_owned()
+        )]
+    );
+    assert!(
+        notes_for(&user, ids::SPLIT_RIGHT, "ctrl-tab", Origin::User).contains(
+            &Note::warning(
+                "Took this key from Next Tab, which no longer has it."
+                    .to_owned()
+            )
+        )
+    );
+}
+
+#[test]
+fn a_shortcut_without_a_condition_warns_where_it_shares_a_key() {
+    let user = [entry("cmd-f", "split_right")];
+    let notes = notes_for(&user, ids::SPLIT_RIGHT, "cmd-f", Origin::User);
+    assert!(
+        notes.iter().any(|note| note.warning
+            && note.text.starts_with(
+                "Settings: Search also uses this key in Settings."
+            )),
+        "{notes:?}"
+    );
+    // With a condition it only says so.
+    let mut conditional = entry("cmd-f", "split_right");
+    conditional.when = Some("Terminal".into());
+    let notes =
+        notes_for(&[conditional], ids::SPLIT_RIGHT, "cmd-f", Origin::User);
+    assert!(notes.iter().all(|note| !note.warning), "{notes:?}");
+}
+
+#[test]
+fn keys_programs_need_say_so_and_default_pairs_say_nothing() {
+    let notes = notes_for(
+        &[entry("tab", "new_tab")],
+        ids::NEW_TAB,
+        "tab",
+        Origin::User,
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.warning
+                && note.text.starts_with("Without a condition")),
+        "{notes:?}"
+    );
+    let notes = notes_for(
+        &[entry("ctrl-c", "copy")],
+        ids::COPY,
+        "ctrl-c",
+        Origin::User,
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.text.starts_with("Programs in the terminal")),
+        "{notes:?}"
+    );
+    // Copy and Text: Copy share cmd-c as shipped.
+    assert_eq!(notes_for(&[], ids::COPY, "cmd-c", Origin::Default), []);
+}

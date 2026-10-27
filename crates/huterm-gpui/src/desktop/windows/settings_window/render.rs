@@ -31,6 +31,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> Stateful<Div> {
         let handle = self.action_stop(key.clone(), cx);
+        self.drawn.insert(key.clone());
         element
             .track_focus(&handle)
             .key_context("SettingsControl")

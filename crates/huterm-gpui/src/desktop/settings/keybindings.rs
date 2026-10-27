@@ -3,7 +3,9 @@
 
 use gpui::KeyBindingContextPredicate;
 use huterm_config::document::{EntryLocator, List, Patch, Snapshot};
-use huterm_protocol::{CommandArgument, CommandId, CommandValue, ids};
+use huterm_protocol::{CommandArgument, CommandId, CommandValue, ids, lookup};
+
+use crate::keymap::{BindingState, Inventory, ListedBinding, Origin};
 use toml::{Table, Value};
 
 /// The group for commands that act inside an overlay or text field, which
@@ -219,6 +221,177 @@ pub(crate) fn completions(text: &str, caret: usize) -> (usize, Vec<Context>) {
         .copied()
         .collect();
     (start, matches)
+}
+
+/// One note under a shortcut; a warning asks the user to look.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Note {
+    pub(crate) text: String,
+    pub(crate) warning: bool,
+}
+
+impl Note {
+    pub(crate) fn info(text: String) -> Self {
+        Self {
+            text,
+            warning: false,
+        }
+    }
+
+    pub(crate) fn warning(text: String) -> Self {
+        Self {
+            text,
+            warning: true,
+        }
+    }
+}
+
+/// How many other commands on a key the notes name before summing up.
+const NAMED: usize = 2;
+
+/// What a shortcut's row says about it: what became of it, keys it took
+/// or shares, and conditions or keys likely to surprise. Pairs of defaults
+/// are left alone; they are the shipped keymap.
+pub(crate) fn notes(
+    inventory: &Inventory,
+    listed: &ListedBinding,
+) -> Vec<Note> {
+    let title = |command: CommandId| {
+        lookup(command.as_str()).map_or_else(
+            || command.as_str().to_owned(),
+            |spec| spec.title.to_owned(),
+        )
+    };
+    let user = listed.binding.origin == Origin::User;
+    let mut notes = Vec::new();
+    if let Some(when) = &listed.binding.when
+        && let Ok(unknown) = check_condition(when)
+        && !unknown.is_empty()
+    {
+        let names = unknown
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        notes.push(Note::warning(format!(
+            "No context is named {names}, so this shortcut never runs."
+        )));
+    }
+    match &listed.state {
+        BindingState::Unbound(_) => notes.push(Note::info(
+            "Passed through to programs by an unbind entry.".to_owned(),
+        )),
+        BindingState::Disabled(_) if user => notes.push(Note::info(
+            "Switched off by a later disabled = true entry in config.toml.".to_owned(),
+        )),
+        BindingState::Disabled(_) => notes.push(Note::info(
+            "Switched off. config.toml keeps it off with a disabled = true entry."
+                .to_owned(),
+        )),
+        BindingState::SwitchedOff => notes.push(Note::info(
+            "Switched off; the entry stays in config.toml.".to_owned(),
+        )),
+        BindingState::Replaced(by) => {
+            let winner = inventory
+                .bindings
+                .iter()
+                .find(|other| other.entry == Some(*by));
+            notes.push(Note::info(match winner {
+                Some(winner) if winner.binding.command != listed.binding.command => format!(
+                    "Replaced: your {} shortcut for {} took this key.",
+                    winner.binding.key,
+                    title(winner.binding.command)
+                ),
+                _ => "Replaced by your later shortcut on the same key.".to_owned(),
+            }));
+        }
+        BindingState::Active => active_notes(inventory, listed, &title, &mut notes),
+    }
+    notes
+}
+
+fn active_notes(
+    inventory: &Inventory,
+    listed: &ListedBinding,
+    title: &dyn Fn(CommandId) -> String,
+    notes: &mut Vec<Note>,
+) {
+    let binding = &listed.binding;
+    let user = binding.origin == Origin::User;
+    let unconditional = binding.when.is_none() && binding.context.is_none();
+    for taken in inventory.bindings.iter().filter(|other| {
+        listed.entry.is_some()
+            && other.state
+                == BindingState::Replaced(listed.entry.unwrap_or_default())
+            && other.binding.command != binding.command
+    }) {
+        notes.push(Note::warning(format!(
+            "Took this key from {}, which no longer has it.",
+            title(taken.binding.command)
+        )));
+    }
+    let shared: Vec<&ListedBinding> = inventory
+        .bindings
+        .iter()
+        .filter(|other| {
+            other.state == BindingState::Active
+                && other.binding.key == binding.key
+                && other.binding.command != binding.command
+                && (user || other.binding.origin == Origin::User)
+        })
+        .collect();
+    for other in shared.iter().take(NAMED) {
+        let place = match (&other.binding.when, other.binding.context) {
+            (Some(when), _) => format!("when {when}"),
+            (None, Some(context)) => format!("in {context}"),
+            (None, None) => "everywhere else".to_owned(),
+        };
+        let other_title = title(other.binding.command);
+        notes.push(if user && unconditional && place != "everywhere else" {
+            Note::warning(format!(
+                "{other_title} also uses this key {place}. Without a condition, \
+                 this shortcut can take it there; add one to leave it to \
+                 {other_title}."
+            ))
+        } else {
+            Note::info(format!("This key also runs {other_title} {place}."))
+        });
+    }
+    if shared.len() > NAMED {
+        notes.push(Note::info(format!(
+            "{} more commands also use this key.",
+            shared.len() - NAMED
+        )));
+    }
+    if user
+        && unconditional
+        && let Some(stroke) = binding
+            .key
+            .split_whitespace()
+            .next()
+            .and_then(|stroke| gpui::Keystroke::parse(stroke).ok())
+    {
+        let modifiers = stroke.modifiers;
+        if !(modifiers.control
+            || modifiers.alt
+            || modifiers.platform
+            || modifiers.function)
+        {
+            notes.push(Note::warning(
+                "Without a condition, this key stops reaching text fields, \
+                 dialogs, and programs."
+                    .to_owned(),
+            ));
+        } else if modifiers.control
+            && !(modifiers.shift || modifiers.alt || modifiers.platform)
+        {
+            notes.push(Note::info(
+                "Programs in the terminal no longer receive this key; a \
+                 condition such as Terminal && selection shares it."
+                    .to_owned(),
+            ));
+        }
+    }
 }
 
 /// A binding as a `[[keybinding]]` entry writes it.
