@@ -1,9 +1,10 @@
 # Pane layouts
 
 Status: approved on 2026-10-27, after five Codex and five Claude review
-rounds. Jim settled every open question that day (see "Settled
-decisions"), adding default cycle bindings and user-defined layouts. Plans
-[issue #30][issue-30] within [epic #12][issue-12].
+rounds; PR 1, runtime arrangements, is in progress. Jim settled every open
+question that day (see "Settled decisions"), adding default cycle bindings
+and user-defined layouts. Plans [issue #30][issue-30] within
+[epic #12][issue-12].
 Builds on [the split panes plan](split-panes.md) (#28) and
 [the pane moves plan](pane-moves.md) (#29), both implemented. Layout undo,
 [#256][issue-256], is related with no ordering dependency; this plan assumes
@@ -1183,11 +1184,16 @@ Three PRs, each leaving `main` consistent and shippable:
    `docs/configuration.md` and `docs/keybindings.md`. About 1,000 to
    1,500 lines.
 
-PR 2's undo recording needs #256's client PR on `main`, which provides
-`record_layout_change`, so PR 2 opens only after that PR merges. PR 3
-waits for the decision on the shared UI components
-(`docs/plans/ui-components.md`): when those land, its rename and cycle
-list build on the shared InlineEdit and Listbox rather than their own.
+PR 2's undo recording uses `WorkspaceView::record_layout_change`, which
+the client PR of #256 (#281, merged) added, and PR 2 opens after PR 1
+merges. PR 3
+waits for the shared UI component library (`huterm-ui`, approved in
+`docs/plans/ui-components.md`) and builds on it instead of its own
+controls: the cycle list on its `Listbox` (step 2), the name and template
+fields on `Input` and `InputGroup` (step 4), and rename and the refusal
+prompts on the `Field` and `InputGroup` composition and `AlertDialog` of
+step 7, which also adds quake profile rename (#277). Its "Settings window"
+section is revised against those components when PR 3 starts.
 
 ## Documentation
 

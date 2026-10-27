@@ -587,6 +587,51 @@ mod tests {
     }
 
     #[test]
+    fn reducer_follows_every_arrangement_and_its_undo_and_redo() {
+        use crate::mux::RestoreDirection::{Redo, Undo};
+        use huterm_protocol::BUILT_IN_LAYOUTS;
+        let mut mux = Mux::default();
+        let (mut state, subscription) = mux.subscribe_hierarchy();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let tab = open(&mut mux, workspace);
+        let a = mux.tab(tab).unwrap().first_pane().id;
+        let b = split(&mut mux, workspace, tab, a, SplitDirection::Right);
+        split(&mut mux, workspace, tab, b, SplitDirection::Down);
+        mux.set_pane_zoom(workspace, tab, Some(b)).unwrap();
+        converge(&mut mux, &mut state, &subscription);
+        let names = BUILT_IN_LAYOUTS.iter().map(|layout| layout.name.as_str());
+        // Tiled is balanced already; main left's 60/40 is not.
+        for name in names.chain(["main_left", "balance"]) {
+            let current = mux.tab(tab).unwrap().layout().clone();
+            let panes: Vec<PaneId> =
+                current.panes().iter().map(|pane| pane.id).collect();
+            let arrangement = match huterm_protocol::NamedLayout::built_in(name)
+            {
+                Some(layout) => layout.template.expand(&panes).unwrap(),
+                None => current.balanced(),
+            };
+            let change = mux
+                .arrange_panes(workspace, tab, &current, &arrangement)
+                .unwrap();
+            assert!(!change.is_empty(), "{name} changed nothing");
+            converge(&mut mux, &mut state, &subscription);
+            assert_eq!(
+                state.tab(tab).unwrap().layout,
+                *mux.tab(tab).unwrap().layout()
+            );
+            // The change records what undo needs, a weights-only balance
+            // included.
+            for direction in [Undo, Redo] {
+                mux.restore_tabs(&change, direction).unwrap();
+                converge(&mut mux, &mut state, &subscription);
+            }
+        }
+        mux.shutdown().unwrap();
+        converge(&mut mux, &mut state, &subscription);
+    }
+
+    #[test]
     fn rejected_and_unchanged_operations_emit_nothing() {
         let mut mux = Mux::default();
         let session = mux.create_session(None).unwrap();

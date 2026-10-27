@@ -8,6 +8,7 @@ use std::sync::Arc;
 mod cell_text;
 mod command;
 mod hierarchy;
+mod layout_template;
 mod pane_layout;
 mod viewer;
 pub use cell_text::CellText;
@@ -21,10 +22,14 @@ pub use hierarchy::{
     LayoutChange, ResyncReason, SessionInfo, StreamId, TabChange, TabInfo,
     TabRecord, TabSnapshot, Touched, WorkspaceInfo, resolve_tab_name,
 };
+pub use layout_template::{
+    BUILT_IN_LAYOUTS, LayoutTemplate, MAX_LAYOUT_NAME_LEN, MAX_TEMPLATE_DEPTH,
+    MAX_TEMPLATE_LEN, NamedLayout, TemplateError, TemplateErrorKind,
+};
 pub use pane_layout::{
-    LayoutError, MAX_SPLIT_CHILDREN, NORMALIZED_EXTENT, NodeId, NormalizedRect,
-    PaneInfo, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis, SplitChild,
-    SplitDirection, SplitNode,
+    Arrangement, LayoutError, MAX_SPLIT_CHILDREN, NORMALIZED_EXTENT, NodeId,
+    NormalizedRect, PaneInfo, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis,
+    SplitChild, SplitDirection, SplitNode,
 };
 pub use viewer::{
     InputStamp, TERMINAL_FAILURE_CAPACITY, TerminalFailure, TerminalLifecycle,

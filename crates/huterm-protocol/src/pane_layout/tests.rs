@@ -1104,3 +1104,164 @@ fn stepping_a_pane_moves_it_one_place_in_traversal_order_with_wrap() {
     );
     assert_eq!(row.step_target(pane_id(9), true), None);
 }
+
+/// `[(1 over (2 | 3 | 4)) | 5]` at uneven weights.
+fn uneven() -> PaneLayout {
+    layout(split(
+        10,
+        SplitAxis::Columns,
+        vec![
+            (
+                700_000,
+                split(
+                    11,
+                    SplitAxis::Rows,
+                    vec![
+                        (100_000, leaf(1)),
+                        (
+                            900_000,
+                            split(
+                                12,
+                                SplitAxis::Columns,
+                                vec![
+                                    (100_000, leaf(2)),
+                                    (200_000, leaf(3)),
+                                    (700_000, leaf(4)),
+                                ],
+                            ),
+                        ),
+                    ],
+                ),
+            ),
+            (300_000, leaf(5)),
+        ],
+    ))
+}
+
+/// A counter of split identities from 100, recording each one handed out.
+fn counter(handed: &mut Vec<u64>) -> impl FnMut() -> SplitId + '_ {
+    move || {
+        let value = 100 + handed.len() as u64;
+        handed.push(value);
+        split_id(value)
+    }
+}
+
+#[test]
+fn balancing_gives_equal_weights_at_every_split_and_keeps_the_tree() {
+    let uneven = uneven();
+    let mut handed = Vec::new();
+    let balanced = uneven
+        .arranged(&uneven.balanced(), counter(&mut handed))
+        .unwrap();
+    assert_eq!(
+        shape(&balanced),
+        "C[500000:R[500000:1 500000:C[333334:2 333333:3 333333:4]] 500000:5]"
+    );
+    assert_eq!(handed, Vec::<u64>::new());
+    assert!(balanced.same_structure(&uneven));
+    assert_eq!(balanced.split_ids(), uneven.split_ids());
+    // The result depends only on the tree.
+    assert_eq!(balanced.balanced(), uneven.balanced());
+    assert_eq!(
+        balanced.arranged(&balanced.balanced(), counter(&mut handed)),
+        Ok(balanced.clone())
+    );
+    let single = PaneLayout::single(info(1));
+    assert_eq!(single.balanced(), Arrangement::Pane(pane_id(1)));
+}
+
+#[test]
+fn arranging_keeps_split_ids_for_the_same_shape_and_takes_fresh_ones_otherwise()
+{
+    let uneven = uneven();
+    let pane = |value| Arrangement::Pane(pane_id(value));
+    // The same shape at new weights keeps every split identity.
+    let mut reweighted = uneven.balanced();
+    let Arrangement::Split { children, .. } = &mut reweighted else {
+        unreachable!()
+    };
+    children[0].0 = 600_000;
+    children[1].0 = 400_000;
+    let mut handed = Vec::new();
+    let kept = uneven.arranged(&reweighted, counter(&mut handed)).unwrap();
+    assert_eq!(handed, Vec::<u64>::new());
+    assert_eq!(kept.split_ids(), uneven.split_ids());
+    assert_eq!(kept.arrangement(), reweighted);
+    // Another shape takes fresh identities in traversal order and keeps
+    // each pane's record.
+    let rows = |children: Vec<(u32, Arrangement)>| Arrangement::Split {
+        axis: SplitAxis::Rows,
+        children,
+    };
+    let columns = |children: Vec<(u32, Arrangement)>| Arrangement::Split {
+        axis: SplitAxis::Columns,
+        children,
+    };
+    let other = rows(vec![
+        (500_000, columns(vec![(HALF, pane(1)), (HALF, pane(2))])),
+        (
+            500_000,
+            columns(vec![
+                (300_000, pane(3)),
+                (300_000, pane(4)),
+                (400_000, pane(5)),
+            ]),
+        ),
+    ]);
+    let arranged = uneven.arranged(&other, counter(&mut handed)).unwrap();
+    assert_eq!(handed, [100, 101, 102]);
+    assert_eq!(
+        arranged.split_ids(),
+        [split_id(100), split_id(101), split_id(102)]
+    );
+    assert_eq!(arranged.arrangement(), other);
+    assert_eq!(
+        arranged.panes().into_iter().cloned().collect::<Vec<_>>(),
+        (1..=5).map(info).collect::<Vec<_>>()
+    );
+    // A fresh identity already in use is a repeat.
+    let mut repeated = || split_id(7);
+    assert_eq!(
+        uneven.arranged(&other, &mut repeated),
+        Err(LayoutError::DuplicateId)
+    );
+}
+
+#[test]
+fn arranging_refuses_to_add_drop_or_repeat_a_pane() {
+    let uneven = uneven();
+    let pane = |value| Arrangement::Pane(pane_id(value));
+    let columns = |panes: &[u64]| Arrangement::Split {
+        axis: SplitAxis::Columns,
+        children: panes
+            .iter()
+            .zip(apportion(&vec![1.0; panes.len()]))
+            .map(|(value, weight)| (weight, pane(*value)))
+            .collect(),
+    };
+    let mut handed = Vec::new();
+    for (arrangement, error) in [
+        (columns(&[1, 2, 3, 4, 9]), LayoutError::UnknownPane),
+        (columns(&[1, 2, 3, 4, 5, 6]), LayoutError::UnknownPane),
+        (columns(&[1, 2, 3, 4, 4]), LayoutError::DuplicateId),
+        (columns(&[1, 2, 3, 4]), LayoutError::MissingPane),
+        (pane(1), LayoutError::MissingPane),
+    ] {
+        assert_eq!(
+            uneven.arranged(&arrangement, counter(&mut handed)),
+            Err(error)
+        );
+    }
+    assert_eq!(handed, Vec::<u64>::new());
+    // An arrangement that breaks an invariant fails as the layout would.
+    let mut uneven_weights = columns(&[1, 2, 3, 4, 5]);
+    let Arrangement::Split { children, .. } = &mut uneven_weights else {
+        unreachable!()
+    };
+    children[0].0 += 1;
+    assert_eq!(
+        uneven.arranged(&uneven_weights, counter(&mut handed)),
+        Err(LayoutError::InvalidWeights)
+    );
+}

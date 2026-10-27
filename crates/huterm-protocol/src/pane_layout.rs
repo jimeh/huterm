@@ -9,7 +9,7 @@
 //! the transforms, which all validate, so every value upholds the
 //! invariants.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::{PaneId, SplitId, TerminalId};
@@ -151,6 +151,11 @@ pub enum LayoutError {
     LastPane,
     /// The target lies inside the layout being moved.
     SelfTarget,
+    /// An arrangement leaves out a pane of the layout, or a template
+    /// was given no panes.
+    MissingPane,
+    /// A layout template without `*` has fewer pane slots than panes.
+    TooManyPanes,
 }
 
 impl fmt::Display for LayoutError {
@@ -167,11 +172,95 @@ impl fmt::Display for LayoutError {
             Self::PaneTooSmall => "pane is too small to split",
             Self::LastPane => "pane is the layout's only pane",
             Self::SelfTarget => "target is inside the moved layout",
+            Self::MissingPane => "a pane of the layout is missing",
+            Self::TooManyPanes => "the layout holds fewer panes",
         })
     }
 }
 
 impl std::error::Error for LayoutError {}
+
+/// A split tree of a tab's panes without split identities or terminals:
+/// what a layout template, balancing, or a client's fit proposes.
+/// [`PaneLayout::arranged`] turns it into a layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Arrangement {
+    /// One pane.
+    Pane(PaneId),
+    /// A division of space among children.
+    Split {
+        /// How the children are arranged.
+        axis: SplitAxis,
+        /// Children in order along the axis, each with its weight out of
+        /// [`SPLIT_TOTAL`].
+        children: Vec<(u32, Arrangement)>,
+    },
+}
+
+impl Arrangement {
+    /// The panes in traversal order: depth first, children in order.
+    #[must_use]
+    pub fn panes(&self) -> Vec<PaneId> {
+        let mut panes = Vec::new();
+        self.collect_panes(&mut panes);
+        panes
+    }
+
+    fn collect_panes(&self, panes: &mut Vec<PaneId>) {
+        match self {
+            Self::Pane(pane) => panes.push(*pane),
+            Self::Split { children, .. } => {
+                for (_, child) in children {
+                    child.collect_panes(panes);
+                }
+            }
+        }
+    }
+
+    /// Whether `other` has the same splits, axes, child counts, and pane
+    /// places, ignoring weights.
+    pub(crate) fn same_shape(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Pane(a), Self::Pane(b)) => a == b,
+            (
+                Self::Split { axis, children },
+                Self::Split {
+                    axis: other_axis,
+                    children: others,
+                },
+            ) => {
+                axis == other_axis
+                    && children.len() == others.len()
+                    && children
+                        .iter()
+                        .zip(others)
+                        .all(|((_, a), (_, b))| a.same_shape(b))
+            }
+            _ => false,
+        }
+    }
+
+    /// The sum of absolute weight differences from `other`, which must
+    /// have the same shape.
+    pub(crate) fn weight_distance(&self, other: &Self) -> u64 {
+        match (self, other) {
+            (
+                Self::Split { children, .. },
+                Self::Split {
+                    children: others, ..
+                },
+            ) => children
+                .iter()
+                .zip(others)
+                .map(|((a_weight, a), (b_weight, b))| {
+                    u64::from(a_weight.abs_diff(*b_weight))
+                        + a.weight_distance(b)
+                })
+                .sum(),
+            _ => 0,
+        }
+    }
+}
 
 /// A rectangle in normalized geometry: `[x0, x1)` by `[y0, y1)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -394,6 +483,63 @@ impl PaneLayout {
         same_shape(&self.root, &other.root, true)
     }
 
+    /// The layout's tree as an arrangement, weights included.
+    pub(crate) fn arrangement(&self) -> Arrangement {
+        arrangement_of(&self.root)
+    }
+
+    /// The same tree with equal weights among every split's children,
+    /// recursively. The result depends only on the tree, so balancing a
+    /// balanced layout gives the same arrangement.
+    #[must_use]
+    pub fn balanced(&self) -> Arrangement {
+        balanced(&self.root)
+    }
+
+    /// Builds the layout `arrangement` describes from this layout's panes.
+    ///
+    /// Each pane of the arrangement must be a pane of this layout, exactly
+    /// once, and every pane of this layout must appear, so no pane or
+    /// terminal appears or vanishes. Each pane keeps its record from this
+    /// layout. An arrangement of the same shape keeps this layout's split
+    /// identities and changes only weights; otherwise every split takes an
+    /// identity from `fresh`, in traversal order, and `fresh` is not called
+    /// for a same-shape arrangement.
+    ///
+    /// # Errors
+    /// Rejects a pane not in this layout, a repeated pane, a missing pane,
+    /// and any arrangement that breaks a layout invariant.
+    pub fn arranged(
+        &self,
+        arrangement: &Arrangement,
+        mut fresh: impl FnMut() -> SplitId,
+    ) -> Result<Self, LayoutError> {
+        let panes: HashMap<PaneId, &PaneInfo> = self
+            .panes()
+            .into_iter()
+            .map(|pane| (pane.id, pane))
+            .collect();
+        let placed = arrangement.panes();
+        let mut seen = HashSet::with_capacity(placed.len());
+        for pane in &placed {
+            if !panes.contains_key(pane) {
+                return Err(LayoutError::UnknownPane);
+            }
+            if !seen.insert(*pane) {
+                return Err(LayoutError::DuplicateId);
+            }
+        }
+        if seen.len() != panes.len() {
+            return Err(LayoutError::MissingPane);
+        }
+        let root = if arrangement.same_shape(&self.arrangement()) {
+            reweighted(&self.root, arrangement)
+        } else {
+            built(arrangement, &panes, &mut fresh)
+        };
+        Self::new(root)
+    }
+
     /// Removes `target`. Its weight goes to its previous sibling, or the
     /// next one when it was first. A split left with one child is replaced
     /// by that child, and a child split that then shares its new parent's
@@ -575,6 +721,123 @@ impl PaneLayout {
             })
             .min()
             .map(|candidate| candidate.5)
+    }
+}
+
+/// Converts a split's child fractions to weights. Every child first gets 1
+/// unit, and the remaining `SPLIT_TOTAL - c` units, for `c` children, are
+/// apportioned in proportion to the fractions by largest remainder, ties
+/// going to the earlier child. Equal fractions give `SPLIT_TOTAL / c` each,
+/// with the remainder going one unit each to the first children.
+///
+/// The arithmetic runs in one fixed order, so every client computes the
+/// same weights.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "each quota is a nonnegative fraction of at most SPLIT_TOTAL"
+)]
+pub(crate) fn apportion(fractions: &[f64]) -> Vec<u32> {
+    let count = u32::try_from(fractions.len()).unwrap_or(u32::MAX);
+    let spare = SPLIT_TOTAL.saturating_sub(count);
+    let sum: f64 = fractions.iter().sum();
+    let quotas: Vec<f64> = fractions
+        .iter()
+        .map(|fraction| f64::from(spare) * fraction / sum)
+        .collect();
+    let mut weights: Vec<u32> = quotas
+        .iter()
+        .map(|quota| 1 + quota.floor() as u32)
+        .collect();
+    let given: u32 = quotas.iter().map(|quota| quota.floor() as u32).sum();
+    let mut order: Vec<usize> = (0..quotas.len()).collect();
+    order.sort_by(|&a, &b| {
+        let remainder = |index: usize| quotas[index] - quotas[index].floor();
+        remainder(b).total_cmp(&remainder(a)).then(a.cmp(&b))
+    });
+    let left = usize::try_from(spare.saturating_sub(given)).unwrap_or(0);
+    for index in order.into_iter().take(left) {
+        weights[index] += 1;
+    }
+    weights
+}
+
+fn arrangement_of(node: &PaneNode) -> Arrangement {
+    match node {
+        PaneNode::Pane(pane) => Arrangement::Pane(pane.id),
+        PaneNode::Split(split) => Arrangement::Split {
+            axis: split.axis,
+            children: split
+                .children
+                .iter()
+                .map(|child| (child.weight, arrangement_of(&child.node)))
+                .collect(),
+        },
+    }
+}
+
+fn balanced(node: &PaneNode) -> Arrangement {
+    match node {
+        PaneNode::Pane(pane) => Arrangement::Pane(pane.id),
+        PaneNode::Split(split) => {
+            let weights = apportion(&vec![1.0; split.children.len()]);
+            Arrangement::Split {
+                axis: split.axis,
+                children: weights
+                    .into_iter()
+                    .zip(&split.children)
+                    .map(|(weight, child)| (weight, balanced(&child.node)))
+                    .collect(),
+            }
+        }
+    }
+}
+
+/// `node` with the weights of `arrangement`, which has the same shape.
+fn reweighted(node: &PaneNode, arrangement: &Arrangement) -> PaneNode {
+    match (node, arrangement) {
+        (PaneNode::Split(split), Arrangement::Split { children, .. }) => {
+            PaneNode::Split(SplitNode {
+                id: split.id,
+                axis: split.axis,
+                children: split
+                    .children
+                    .iter()
+                    .zip(children)
+                    .map(|(child, (weight, arranged))| SplitChild {
+                        weight: *weight,
+                        node: reweighted(&child.node, arranged),
+                    })
+                    .collect(),
+            })
+        }
+        _ => node.clone(),
+    }
+}
+
+/// The tree `arrangement` describes, with each pane's record from `panes`
+/// and a fresh identity for every split, in traversal order.
+fn built(
+    arrangement: &Arrangement,
+    panes: &HashMap<PaneId, &PaneInfo>,
+    fresh: &mut impl FnMut() -> SplitId,
+) -> PaneNode {
+    match arrangement {
+        Arrangement::Pane(pane) => PaneNode::Pane(panes[pane].clone()),
+        Arrangement::Split { axis, children } => {
+            let id = fresh();
+            PaneNode::Split(SplitNode {
+                id,
+                axis: *axis,
+                children: children
+                    .iter()
+                    .map(|(weight, child)| SplitChild {
+                        weight: *weight,
+                        node: built(child, panes, fresh),
+                    })
+                    .collect(),
+            })
+        }
     }
 }
 

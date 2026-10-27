@@ -1158,3 +1158,39 @@ fn splits_make_pane_and_tab_closes_stale_but_resizes_and_zoom_do_not() {
         .unwrap();
     assert_eq!(mux.terminal_count(), 0);
 }
+
+#[test]
+fn arrangements_leave_pane_and_tab_close_assessments_valid() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let (first, second) =
+        split_tab(&mut mux, workspace, "printf READY; read value", "READY");
+    let tab = first.tab.id;
+    let pane_close = CloseRequest::Pane {
+        workspace,
+        tab,
+        pane: first.tab.first_pane().id,
+    };
+    let tab_close = CloseRequest::Tab { workspace, tab };
+    let pane_assessment = mux.prepare_close(pane_close).unwrap().check_jobs();
+    let tab_assessment = mux.prepare_close(tab_close).unwrap().check_jobs();
+    // Another window rearranges the tab into rows, which takes a new split
+    // identity, then balances it.
+    let current = mux.tab(tab).unwrap().layout().clone();
+    let panes: Vec<_> = current.panes().iter().map(|pane| pane.id).collect();
+    let rows = huterm_protocol::NamedLayout::built_in("rows")
+        .unwrap()
+        .template
+        .expand(&panes)
+        .unwrap();
+    mux.arrange_panes(workspace, tab, &current, &rows).unwrap();
+    assert!(!mux.tab(tab).unwrap().layout().same_shape(&current));
+    // Neither changes what either close covers.
+    mux.validate_close(&pane_assessment, &pane_assessment.recheck(), false)
+        .unwrap();
+    mux.commit_close(&tab_assessment, &tab_assessment.recheck(), false)
+        .unwrap();
+    assert!(second.client.read_snapshot().is_err());
+    assert_eq!(mux.terminal_count(), 0);
+}
