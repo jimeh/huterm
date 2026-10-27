@@ -72,7 +72,6 @@ impl KeyHint {
     }
 
     /// The platform spelling as plain text: `⇧⌘P` or `Ctrl+Shift+P`.
-    #[cfg(test)]
     pub(crate) fn text(&self) -> String {
         self.tokens
             .iter()

@@ -5,7 +5,8 @@ use gpui::KeyBindingContextPredicate;
 use huterm_config::document::{EntryLocator, List, Patch, Snapshot};
 use huterm_protocol::{CommandArgument, CommandId, CommandValue, ids, lookup};
 
-use crate::keymap::{BindingState, Inventory, ListedBinding, Origin};
+use super::super::key_hint::KeyHint;
+use crate::keymap::{BindingState, Inventory, ListedBinding, Origin, Platform};
 use toml::{Table, Value};
 
 /// The group for commands that act inside an overlay or text field, which
@@ -299,7 +300,7 @@ pub(crate) fn notes(
             notes.push(Note::info(match winner {
                 Some(winner) if winner.binding.command != listed.binding.command => format!(
                     "Replaced: your {} shortcut for {} took this key.",
-                    winner.binding.key,
+                    KeyHint::parse(&winner.binding.key, Platform::current()).text(),
                     title(winner.binding.command)
                 ),
                 _ => "Replaced by your later shortcut on the same key.".to_owned(),
@@ -343,15 +344,15 @@ fn active_notes(
     for other in shared.iter().take(NAMED) {
         let place = match (&other.binding.when, other.binding.context) {
             (Some(when), _) => format!("when {when}"),
-            (None, Some(context)) => format!("in {context}"),
+            (None, Some(context)) => format!("in {}", place_name(context)),
             (None, None) => "everywhere else".to_owned(),
         };
         let other_title = title(other.binding.command);
         notes.push(if user && unconditional && place != "everywhere else" {
             Note::warning(format!(
-                "{other_title} also uses this key {place}. Without a condition, \
-                 this shortcut can take it there; add one to leave it to \
-                 {other_title}."
+                "{other_title} also uses this key {place}, where a shortcut \
+                 without a condition usually runs instead. Add a condition to \
+                 leave the key to {other_title}."
             ))
         } else {
             Note::info(format!("This key also runs {other_title} {place}."))
@@ -379,7 +380,7 @@ fn active_notes(
         {
             notes.push(Note::warning(
                 "Without a condition, this key stops reaching text fields, \
-                 dialogs, and programs."
+                 dialogs, programs, and moving around Settings."
                     .to_owned(),
             ));
         } else if modifiers.control
@@ -391,6 +392,21 @@ fn active_notes(
                     .to_owned(),
             ));
         }
+    }
+}
+
+/// Where a context applies, in words: the places a user sees.
+fn place_name(context: &str) -> &str {
+    match context {
+        "Terminal" => "terminals",
+        "Workspace" => "windows",
+        "confirming" => "dialogs",
+        "menu" => "menus",
+        "notices" => "notices",
+        "Palette" => "the palette and text fields",
+        "Settings" => "Settings",
+        "SettingsControl" => "Settings controls",
+        other => other,
     }
 }
 

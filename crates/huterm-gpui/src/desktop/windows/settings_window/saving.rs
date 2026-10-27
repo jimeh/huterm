@@ -508,7 +508,10 @@ impl SettingsView {
                 self.keys.inventory = written.keys;
                 self.base = Some(written.snapshot);
                 self.status.saved();
-                self.follow_changed_default(&change.edit);
+                self.follow_changed_default(
+                    &change.edit,
+                    change.row.as_deref(),
+                );
                 self.sync_key_fields(cx);
                 cx.defer(|cx| {
                     let _ = super::super::reload(cx);

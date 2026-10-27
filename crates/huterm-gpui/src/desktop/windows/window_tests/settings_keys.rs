@@ -2,6 +2,7 @@
 
 use huterm_protocol::CommandId;
 
+use super::super::settings_window::SettingsView;
 use super::settings::{
     ScratchConfig, open_settings, settings, settled, with_view, with_window,
 };
@@ -104,6 +105,14 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
              command = \"next_tab\"\n"
         )
     );
+    // A Return meant to save, landing just after the timeout saved, does
+    // not start another recording; a later one does.
+    press(&mut harness, "kadd:new_window");
+    with_view(&mut harness, |view, _| assert_eq!(view.recording(), None));
+    harness
+        .cx
+        .executor()
+        .advance_clock(super::super::settings_window::CHORD_TIMEOUT);
     // A second stroke makes a chord.
     press(&mut harness, "kadd:new_window");
     keystrokes(&mut harness, "ctrl-k ctrl-t");
@@ -156,6 +165,11 @@ fn a_user_entry_changes_in_place_and_a_bad_condition_writes_nothing(
     with_window(&mut harness, |view, window, cx| {
         view.type_key(&amount, "500", window, cx);
         view.enter_key(&amount, cx);
+        assert!(view.key_error(&resize).is_some());
+        // Leaving the field shows the same error.
+        view.cancel_key(&amount, cx);
+        view.type_key(&amount, "500", window, cx);
+        view.blur_key(&amount, cx);
         assert!(view.key_error(&resize).is_some());
         view.type_key(&amount, "", window, cx);
         view.enter_key(&amount, cx);
@@ -331,6 +345,79 @@ fn restoring_defaults_moves_focus_to_the_command_and_keys_keep_working(
     } else {
         "ctrl-f"
     };
+    keystrokes(&mut harness, find);
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "key:search");
+}
+
+#[gpui::test]
+fn focus_follows_a_changed_default_only_while_it_stays_put(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-follow", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let next = row(&mut harness, ids::NEXT_TAB, "ctrl-tab");
+    let when = format!("when:{next}");
+    press(&mut harness, "kgo:next_tab");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key(&when, window, cx);
+    });
+    harness.cx.run_until_parked();
+    // Saving and then searching before the write lands: the search keeps
+    // focus, so typed text never lands in the new row's condition.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key(&when, "Terminal", window, cx);
+        view.enter_key(&when, cx);
+        view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
+    });
+    saved(&mut harness, &file, |text| {
+        text.contains("when = \"Terminal\"")
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "key:search");
+}
+
+#[gpui::test]
+fn focus_on_a_field_that_goes_away_returns_to_the_window(
+    cx: &mut TestAppContext,
+) {
+    let original = "[[keybinding]]\nkey = \"ctrl-alt-l\"\n\
+                    command = \"resize_pane_right\"\nwhen = \"Terminal\"\n";
+    let file = ScratchConfig::new("keys-stranded", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let find = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+    // The section's search, when the section changes.
+    press(&mut harness, "kgo:resize_pane_right");
+    harness.cx.run_until_parked();
+    keystrokes(&mut harness, find);
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "key:search");
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::NEXT_TAB, window, cx).unwrap();
+    });
+    harness.cx.run_until_parked();
+    keystrokes(&mut harness, find);
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "search");
+    // A condition field whose entry another editor removed.
+    press(&mut harness, "kgo:resize_pane_right");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key("when:u0", window, cx);
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "key:when:u0");
+    std::fs::write(file.path(), "").unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the reread", settled);
+    harness.cx.run_until_parked();
     keystrokes(&mut harness, find);
     harness.cx.run_until_parked();
     assert_eq!(focus_name(&mut harness), "key:search");

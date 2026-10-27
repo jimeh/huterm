@@ -104,12 +104,26 @@ pub(super) struct Keys {
     pub(super) completion: Option<(String, usize)>,
     /// The field being edited, whose draft a read must not replace.
     pub(super) editing: Option<String>,
-    /// A control to focus once it draws: the new row's counterpart of the
-    /// control that changed a default.
-    pub(super) follow: Option<String>,
+    /// A control to focus once it draws, and the control focus must still
+    /// be on for the move to happen: the user may have moved on.
+    pub(super) follow: Option<(String, String)>,
+    /// A focused field went away with its row; focus moves to the window.
+    pub(super) stranded: bool,
+    /// When the recorder last saved by its chord timeout: a Return or Space
+    /// meant to save, arriving just after, must not start recording again.
+    pub(super) timed_out_at: Option<std::time::Instant>,
 }
 
 impl Keys {
+    /// The first error shown under a row: its write's or its fields'.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) fn row_error(&self, row: &str) -> Option<String> {
+        self.errors
+            .iter()
+            .find(|(key, _)| key.as_str() == row || field_row(key) == Some(row))
+            .map(|(_, error)| error.clone())
+    }
+
     /// The row showing `command`'s binding on `key`.
     #[cfg(all(test, feature = "test-support"))]
     pub(super) fn row_named(
@@ -151,6 +165,8 @@ impl Keys {
             completion: None,
             editing: None,
             follow: None,
+            stranded: false,
+            timed_out_at: None,
         }
     }
 }
@@ -465,22 +481,28 @@ impl SettingsView {
                     .and_then(|inventory| row(inventory, argument))
                     && let Some(entry) = listed.entry
                 {
-                    self.keys.follow = Some(format!(
-                        "kcmd:{}",
-                        listed.binding.command.as_str()
+                    self.keys.follow = Some((
+                        format!("kcmd:{}", listed.binding.command.as_str()),
+                        format!("kdel:{argument}"),
                     ));
                     self.submit_keys(Edit::Remove(vec![entry]), None, cx);
                 }
             }
             "kreset" => {
                 if let Some(spec) = lookup(argument) {
-                    self.keys.follow = Some(format!("kcmd:{argument}"));
+                    self.keys.follow = Some((
+                        format!("kcmd:{argument}"),
+                        format!("kreset:{argument}"),
+                    ));
                     self.restore_defaults(spec.id, cx);
                 }
             }
             "kunbind" => {
                 if let Ok(entry) = argument.parse() {
-                    self.keys.follow = Some("search".to_owned());
+                    self.keys.follow = Some((
+                        "search".to_owned(),
+                        format!("kunbind:{argument}"),
+                    ));
                     self.submit_keys(Edit::Remove(vec![entry]), None, cx);
                 }
             }
@@ -572,10 +594,15 @@ impl SettingsView {
     }
 
     /// After a changed default lands, the changed binding is the file's
-    /// last entry; focus moves to the same control on its row, so further
-    /// typing edits it rather than the default it replaced.
-    pub(super) fn follow_changed_default(&mut self, edit: &Edit) {
-        let Edit::ChangeDefault { field, .. } = edit else {
+    /// last entry; when focus is still on the control that changed it,
+    /// focus moves to the same control on the new row, so further typing
+    /// edits that row rather than the default it replaced.
+    pub(super) fn follow_changed_default(
+        &mut self,
+        edit: &Edit,
+        row: Option<&str>,
+    ) {
+        let (Edit::ChangeDefault { field, .. }, Some(row)) = (edit, row) else {
             return;
         };
         let Some(last) = self.keys.inventory.as_ref().and_then(|inventory| {
@@ -587,11 +614,12 @@ impl SettingsView {
         }) else {
             return;
         };
-        self.keys.follow = Some(match field {
-            Field::Key => format!("krec:u{last}"),
-            Field::When => format!("when:u{last}"),
-            Field::Argument(name) => format!("arg:u{last}:{name}"),
-        });
+        let control = |row: &str| match field {
+            Field::Key => format!("krec:{row}"),
+            Field::When => format!("when:{row}"),
+            Field::Argument(name) => format!("arg:{row}:{name}"),
+        };
+        self.keys.follow = Some((control(&format!("u{last}")), control(row)));
     }
 
     /// Focuses a followed control once it draws.
@@ -600,9 +628,15 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(target) = self.keys.follow.take() else {
+        let Some((target, origin)) = self.keys.follow.take() else {
             return;
         };
+        let focused = self
+            .focused_action(window)
+            .or_else(|| self.focused_key_field(window, cx).map(|(key, _)| key));
+        if focused.as_deref() != Some(origin.as_str()) {
+            return;
+        }
         if target == "search" {
             self.keys.search.read(cx).focus_handle(cx).focus(window, cx);
         } else if let Some(field) = self.keys.fields.get(&target) {
@@ -624,6 +658,14 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         if self.keys_read_only() {
+            return;
+        }
+        // A Return meant to save, landing just after the chord timeout
+        // already saved, would otherwise start a new recording.
+        if self.keys.timed_out_at.take().is_some_and(|at| {
+            cx.background_executor().now().duration_since(at)
+                < CHORD_TIMEOUT / 2
+        }) {
             return;
         }
         focus.focus(window, cx);
@@ -685,6 +727,8 @@ impl SettingsView {
                         recording.generation == generation
                     }) {
                         view.finish_recording(cx);
+                        view.keys.timed_out_at =
+                            Some(cx.background_executor().now());
                     }
                 });
         })
@@ -815,6 +859,12 @@ impl SettingsView {
         let keys: Vec<String> = self.keys.fields.keys().cloned().collect();
         for key in keys {
             let Some(text) = self.key_field_text(&key) else {
+                // A field leaving while edited would keep focus with no
+                // element to dispatch from.
+                if self.keys.editing.as_ref() == Some(&key) {
+                    self.keys.editing = None;
+                    self.keys.stranded = true;
+                }
                 self.keys.fields.remove(&key);
                 self.keys.synced.remove(&key);
                 continue;
@@ -866,7 +916,7 @@ impl SettingsView {
         if self.keys.synced.get(key).map(|synced| synced.trim())
             == Some(text.as_str())
         {
-            if self.keys.errors.remove(&name).is_some() {
+            if self.keys.errors.remove(key).is_some() {
                 cx.notify();
             }
             return;
@@ -880,7 +930,7 @@ impl SettingsView {
             None => match check_condition(&text) {
                 Err(message) => {
                     self.keys.errors.insert(
-                        name,
+                        key.to_owned(),
                         format!("{}. Not saved.", sentence(&message)),
                     );
                     cx.notify();
@@ -904,7 +954,7 @@ impl SettingsView {
                 match parse_argument(spec, &text) {
                     Ok(value) => value,
                     Err(message) => {
-                        self.keys.errors.insert(name, message);
+                        self.keys.errors.insert(key.to_owned(), message);
                         cx.notify();
                         return;
                     }
@@ -917,6 +967,7 @@ impl SettingsView {
         };
         // The text counts as saved now, so leaving the field before the
         // write lands does not write it again.
+        self.keys.errors.remove(key);
         self.keys.synced.insert(key.to_owned(), text);
         self.edit_row(&name, field, value, cx);
     }
@@ -934,9 +985,7 @@ impl SettingsView {
         ) {
             field.update(cx, |field, cx| field.set_text(text, cx));
         }
-        if let Some(name) = field_row(key) {
-            self.keys.errors.remove(name);
-        }
+        self.keys.errors.remove(key);
         cx.notify();
     }
 
@@ -1354,6 +1403,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let search = self.keys.search.clone();
+        self.drawn.insert("search".to_owned());
         let mut segments = div()
             .flex()
             .flex_none()
@@ -1547,6 +1597,7 @@ impl SettingsView {
         };
         let mut buttons = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(8.0))
             .pt(px(4.0))
@@ -1571,7 +1622,16 @@ impl SettingsView {
                 swatch,
                 cx,
             ));
-            if added > 0 {
+            // With no defaults, removing what the user added is all the
+            // button does, and it needs no note.
+            let has_defaults =
+                self.keys.inventory.as_ref().is_some_and(|inventory| {
+                    inventory.bindings.iter().any(|listed| {
+                        listed.binding.command == spec.id
+                            && listed.binding.origin == Origin::Default
+                    })
+                });
+            if added > 0 && has_defaults {
                 buttons = buttons.child(small(
                     if added == 1 {
                         "Also removes the shortcut you added.".to_owned()
@@ -1703,7 +1763,7 @@ impl SettingsView {
             cx,
         );
         let _ = when.read(cx).focus_handle(cx).tab_stop(editable);
-        let invalid = self.keys.errors.contains_key(name);
+        let invalid = self.keys.errors.contains_key(&when_key);
         let completion =
             self.render_completion(&when_key, &when, swatch, window, cx);
         let when_box = div()
@@ -1724,6 +1784,7 @@ impl SettingsView {
                     } else {
                         swatch.line_strong
                     })
+                    .overflow_hidden()
                     .bg(swatch.bg)
                     .text_size(px(12.0))
                     .font_family(mono_font_family())
@@ -1937,6 +1998,10 @@ impl SettingsView {
                 } else {
                     64.0
                 };
+                let invalid = self
+                    .keys
+                    .errors
+                    .contains_key(&format!("arg:{name}:{}", argument.name));
                 div()
                     .flex()
                     .items_center()
@@ -1951,7 +2016,12 @@ impl SettingsView {
                             .items_center()
                             .rounded(px(6.0))
                             .border_1()
-                            .border_color(swatch.line_strong)
+                            .border_color(if invalid {
+                                swatch.danger
+                            } else {
+                                swatch.line_strong
+                            })
+                            .overflow_hidden()
                             .bg(swatch.bg)
                             .text_size(px(12.0))
                             .key_context("Palette")
@@ -2001,7 +2071,11 @@ impl SettingsView {
         listed: &ListedBinding,
         swatch: Swatch,
     ) -> Vec<AnyElement> {
-        let error = self.keys.errors.get(name).map(|error| {
+        // The row's write failure, then its fields' input errors.
+        let errors = self.keys.errors.iter().filter(|(key, _)| {
+            key.as_str() == name || field_row(key) == Some(name)
+        });
+        let error = errors.map(|(_, error)| {
             small(error.clone(), swatch.danger).into_any_element()
         });
         let notes = self

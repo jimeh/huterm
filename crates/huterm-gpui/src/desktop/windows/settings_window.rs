@@ -225,6 +225,9 @@ pub(super) struct SettingsView {
     /// The action and keybinding field keys the last frame drew, so focus
     /// left on a control that went away can move on.
     drawn: HashSet<String>,
+    /// What had focus at the last render, to tell a control that left the
+    /// tree from one that just took focus and has yet to draw.
+    last_focus: Option<FocusHandle>,
     /// Takes key-downs while a shortcut records.
     _recorder: gpui::Subscription,
     scroll: ScrollHandle,
@@ -271,6 +274,7 @@ impl SettingsView {
             focus: cx.focus_handle(),
             keys,
             drawn: HashSet::new(),
+            last_focus: None,
             _recorder: recorder,
             model,
             themes: Vec::new(),
@@ -1026,13 +1030,13 @@ impl SettingsView {
                 self.focus_first_command(window, cx);
             }
             ids::PALETTE_CONFIRM => self.commit_key_field(key, cx),
-            // Tab moves on; a suggestion takes Return or a click.
-            ids::PALETTE_EXPAND => {
+            // Tab and Escape close an open suggestion list first, keeping
+            // the text; a suggestion takes Return or a click.
+            ids::PALETTE_EXPAND | ids::PALETTE_BACK if completing => {
                 self.keys.completion = None;
-                window.focus_next(cx);
             }
+            ids::PALETTE_EXPAND => window.focus_next(cx),
             ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
-            ids::PALETTE_BACK if completing => self.keys.completion = None,
             ids::PALETTE_BACK if key == "search" => {
                 field.update(cx, |field, cx| field.set_text("", cx));
             }
@@ -1332,10 +1336,19 @@ impl Render for SettingsView {
         // A followed control, or focus stranded on a control this frame did
         // not draw, moves once the frame is done; a stranded focus would
         // leave no binding able to match.
+        // Focus held across a frame by something the last frame did not
+        // draw inside this view, such as a field whose row went away.
+        let focused = window.focused(cx);
+        let orphaned = focused.is_some()
+            && focused == self.last_focus
+            && !self.focus.contains_focused(window, cx);
+        self.last_focus = focused;
         let stranded = self
             .focused_action(window)
             .or_else(|| self.focused_key_field(window, cx).map(|(key, _)| key))
-            .is_some_and(|key| key != "search" && !self.drawn.contains(&key));
+            .is_some_and(|key| !self.drawn.contains(&key))
+            || std::mem::take(&mut self.keys.stranded)
+            || orphaned;
         if self.keys.follow.is_some() || stranded {
             cx.defer_in(window, move |view, window, cx| {
                 if view.keys.follow.is_some() {
@@ -1559,7 +1572,7 @@ impl SettingsView {
     }
 
     pub(super) fn key_error(&self, row: &str) -> Option<String> {
-        self.keys.errors.get(row).cloned()
+        self.keys.row_error(row)
     }
 
     /// Focuses a keybinding field, creating it as its row would.
@@ -1577,6 +1590,10 @@ impl SettingsView {
     pub(super) fn blur_key(&mut self, key: &str, cx: &mut Context<'_, Self>) {
         self.keys.editing = None;
         self.commit_key_field(key, cx);
+    }
+
+    pub(super) fn cancel_key(&mut self, key: &str, cx: &mut Context<'_, Self>) {
+        self.cancel_key_field(key, cx);
     }
 
     pub(super) fn completion_open(&self) -> bool {

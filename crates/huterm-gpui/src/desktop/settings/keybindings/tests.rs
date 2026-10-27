@@ -4,6 +4,7 @@ use huterm_config::document::ConfigFile;
 use huterm_protocol::catalog;
 
 use super::*;
+use crate::desktop::key_hint::KeyHint;
 use crate::keymap::{BindingState, Origin, Platform, inventory};
 
 #[test]
@@ -266,10 +267,10 @@ fn taking_a_key_names_both_commands() {
     let user = [entry("ctrl-tab", "split_right")];
     assert_eq!(
         notes_for(&user, ids::NEXT_TAB, "ctrl-tab", Origin::Default),
-        [Note::info(
-            "Replaced: your ctrl-tab shortcut for Split Right took this key."
-                .to_owned()
-        )]
+        [Note::info(format!(
+            "Replaced: your {} shortcut for Split Right took this key.",
+            KeyHint::parse("ctrl-tab", Platform::current()).text()
+        ))]
     );
     assert!(
         notes_for(&user, ids::SPLIT_RIGHT, "ctrl-tab", Origin::User).contains(
@@ -288,7 +289,7 @@ fn a_shortcut_without_a_condition_warns_where_it_shares_a_key() {
     assert!(
         notes.iter().any(|note| note.warning
             && note.text.starts_with(
-                "Settings: Search also uses this key in Settings."
+                "Settings: Search also uses this key in Settings,"
             )),
         "{notes:?}"
     );
