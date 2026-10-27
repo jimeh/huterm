@@ -9,9 +9,36 @@ their own page: [Commands and keybindings](keybindings.md).
 
 Huterm reads `$HUTERM_CONFIG_FILE` when it is set. Otherwise it reads
 `$XDG_CONFIG_HOME/huterm/config.toml`, falling back to
-`~/.config/huterm/config.toml`, on both macOS and Linux. The **Open Settings**
-command (`open_settings`) creates a documented default file if none exists and
-opens it in the system editor.
+`~/.config/huterm/config.toml`, on both macOS and Linux. The **Open Config
+File** command (`open_config_file`) creates a documented default file if none
+exists and opens it in the system editor.
+
+## Settings window
+
+**Open Settings** (`open_settings`, Cmd+, on macOS and Ctrl+, on Linux) opens
+the Settings window, or brings it forward when it is open. It edits the same
+file: each change saves at once and changes only the lines that setting owns,
+so comments, ordering, and formatting stay as you wrote them. A dot marks each
+setting the file sets, and Reset removes it, returning the setting to its
+default. A setting that does not apply at once says when it does, such as
+"Applies to new terminals". Search finds settings in every section, and
+settings marked Advanced appear after you turn on Show advanced settings in
+their section.
+
+Saving applies the change even when `watch_config` is off. When the file does
+not parse or has an invalid setting, Settings shows the error, keeps the
+running settings, and is read-only until the file is fixed. When another
+editor changed the same setting since Settings read it, the row keeps your
+value and offers **Use mine**, which saves it over the file's, or **Use
+file**, which keeps the file's. While watching is off, Settings notices a
+changed file when its window comes forward and offers Reload.
+
+Keybindings, global shortcuts, quake profiles, theme colors, and `[themes]`
+are edited in the file for now; their sections link to it. In the window,
+Tab moves between controls, Space or Return toggles a switch or opens a
+select, the arrow keys step a control, Cmd+Backspace on macOS or
+Ctrl+Backspace on Linux resets the focused setting, and Return in the search
+field moves to the first match.
 
 ## Schema
 

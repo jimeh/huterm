@@ -662,8 +662,10 @@ pub mod ids {
     pub const SHOW_ALL: CommandId = CommandId::new("show_all");
     /// Reloads the configuration file.
     pub const RELOAD_CONFIG: CommandId = CommandId::new("reload_config");
-    /// Opens the configuration file for editing.
+    /// Opens the Settings window, or focuses it when it is open.
     pub const OPEN_SETTINGS: CommandId = CommandId::new("open_settings");
+    /// Opens the configuration file in the system editor.
+    pub const OPEN_CONFIG_FILE: CommandId = CommandId::new("open_config_file");
     /// Opens the command palette in the current window.
     pub const OPEN_COMMAND_PALETTE: CommandId =
         CommandId::new("open_command_palette");
@@ -845,6 +847,24 @@ pub mod ids {
         CommandId::new("notice_run_action");
     /// Dismisses the selected notice.
     pub const NOTICE_DISMISS: CommandId = CommandId::new("notice_dismiss");
+    /// Focuses the Settings search field.
+    pub const SETTINGS_SEARCH: CommandId = CommandId::new("settings_search");
+    /// Moves Settings focus to the next control.
+    pub const SETTINGS_FOCUS_NEXT: CommandId =
+        CommandId::new("settings_focus_next");
+    /// Moves Settings focus to the previous control.
+    pub const SETTINGS_FOCUS_PREVIOUS: CommandId =
+        CommandId::new("settings_focus_previous");
+    /// Toggles the focused switch, or opens the focused select.
+    pub const SETTINGS_TOGGLE: CommandId = CommandId::new("settings_toggle");
+    /// Steps the focused control up or to its next option.
+    pub const SETTINGS_INCREASE: CommandId =
+        CommandId::new("settings_increase");
+    /// Steps the focused control down or to its previous option.
+    pub const SETTINGS_DECREASE: CommandId =
+        CommandId::new("settings_decrease");
+    /// Resets the focused setting to its default.
+    pub const SETTINGS_RESET: CommandId = CommandId::new("settings_reset");
     /// Moves the palette selection down.
     pub const PALETTE_SELECT_NEXT: CommandId =
         CommandId::new("palette_select_next");
@@ -1072,9 +1092,16 @@ const CATALOG: &[CommandSpec] = &[
     ),
     spec(
         ids::OPEN_SETTINGS,
-        CommandScope::Window,
+        CommandScope::Application,
         "Open Settings",
-        "Open the configuration file for editing.",
+        "Open the Settings window.",
+        &[],
+    ),
+    spec(
+        ids::OPEN_CONFIG_FILE,
+        CommandScope::Application,
+        "Open Config File",
+        "Open the configuration file in the system editor.",
         &[],
     ),
     spec(
@@ -1712,6 +1739,62 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Notices: Dismiss",
         "Dismiss the selected notice.",
+        &[],
+    ),
+    spec_in(
+        "Settings",
+        ids::SETTINGS_SEARCH,
+        CommandScope::Window,
+        "Settings: Search",
+        "Focus the search field.",
+        &[],
+    ),
+    spec_in(
+        "Settings",
+        ids::SETTINGS_FOCUS_NEXT,
+        CommandScope::Window,
+        "Settings: Next Control",
+        "Move focus to the next control.",
+        &[],
+    ),
+    spec_in(
+        "Settings",
+        ids::SETTINGS_FOCUS_PREVIOUS,
+        CommandScope::Window,
+        "Settings: Previous Control",
+        "Move focus to the previous control.",
+        &[],
+    ),
+    spec_in(
+        "SettingsControl",
+        ids::SETTINGS_TOGGLE,
+        CommandScope::Window,
+        "Settings: Toggle",
+        "Toggle the focused switch, or open the focused select.",
+        &[],
+    ),
+    spec_in(
+        "SettingsControl",
+        ids::SETTINGS_INCREASE,
+        CommandScope::Window,
+        "Settings: Increase",
+        "Step the focused control up, or to its next option.",
+        &[],
+    ),
+    spec_in(
+        "SettingsControl",
+        ids::SETTINGS_DECREASE,
+        CommandScope::Window,
+        "Settings: Decrease",
+        "Step the focused control down, or to its previous option.",
+        &[],
+    ),
+    spec_in(
+        "SettingsControl",
+        ids::SETTINGS_RESET,
+        CommandScope::Window,
+        "Settings: Reset",
+        "Reset the focused setting to its default.",
         &[],
     ),
     spec_in(

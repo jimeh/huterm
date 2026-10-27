@@ -804,6 +804,7 @@ fn read_state(cx: &mut App) -> String {
         cx.global::<ReloadTitles>().reloads,
         cx.global::<ReloadTitles>().titles.join(";"),
     );
+    writeln!(output, "{}", settings_state(cx)).unwrap();
     for (index, handle) in cx.windows().into_iter().enumerate() {
         let _ = handle.update(cx, |root, window, cx| {
             let Ok(entity) = root.downcast::<WorkspaceView>() else {
@@ -886,6 +887,18 @@ fn read_state(cx: &mut App) -> String {
         });
     }
     output
+}
+
+/// The Settings window's `settings.` fields, or `settings.open=false`.
+fn settings_state(cx: &mut App) -> String {
+    cx.global::<Desktop>()
+        .settings
+        .and_then(|handle| {
+            handle
+                .update(cx, |view, window, cx| view.smoke_state(window, cx))
+                .ok()
+        })
+        .unwrap_or_else(|| "settings.open=false".to_owned())
 }
 
 /// Transient UI, tab geometry, and the active terminal's scroll state for

@@ -306,11 +306,11 @@ fn startup_diagnostics_become_separate_notices_that_reloads_replace() {
     assert_eq!(
         actions(0),
         [
-            ("Open Settings", ids::OPEN_SETTINGS),
+            ("Open Config File", ids::OPEN_CONFIG_FILE),
             ("Reload", ids::RELOAD_CONFIG)
         ]
     );
-    assert_eq!(actions(3), [("Open Settings", ids::OPEN_SETTINGS)]);
+    assert_eq!(actions(3), [("Open Config File", ids::OPEN_CONFIG_FILE)]);
 
     let now = Instant::now();
     let mut stack = NoticeStack::default();

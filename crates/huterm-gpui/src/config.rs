@@ -434,10 +434,6 @@ fn fallback_general(source: &str) -> GeneralConfig {
 /// anything: parsing, values, theme resolution relative to `path`, the
 /// local keymap, and global shortcuts. Font resolution needs the GPUI text
 /// system and is left to the reload.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the Settings window is its first caller")
-)]
 pub(super) fn validator(
     path: PathBuf,
 ) -> impl Fn(&str) -> Result<(), String> + Send + Sync {

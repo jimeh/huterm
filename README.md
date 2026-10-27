@@ -40,7 +40,8 @@ GPUI for rendering.
   before closing anything with running jobs. An idle shell closes without a
   prompt.
 - **Configuration:** a TOML file with a published JSON Schema, 14 built-in
-  themes, custom themes, and automatic reload without restarting shells.
+  themes, custom themes, and automatic reload without restarting shells. A
+  Settings window edits it in place, keeping comments and formatting.
 
 These are not available yet:
 
@@ -95,8 +96,10 @@ XWayland. Linux builds do not update themselves.
 
 Huterm reads `$HUTERM_CONFIG_FILE` when it is set. Otherwise it reads
 `$XDG_CONFIG_HOME/huterm/config.toml`, falling back to
-`~/.config/huterm/config.toml`, on both macOS and Linux. The **Open Settings**
-command (`open_settings`) creates a documented default file if none exists and
+`~/.config/huterm/config.toml`, on both macOS and Linux. **Open Settings**
+(`open_settings`) opens a Settings window that saves each change to that file
+and keeps its comments and formatting. **Open Config File**
+(`open_config_file`) creates a documented default file if none exists and
 opens it in the system editor. Add this header to get completion and validation
 from the published JSON Schema in Taplo or the Even Better TOML editor
 extension:
@@ -237,8 +240,8 @@ next stages are:
 
 - **Desktop expansion:** session and workspace switching, pane layout
   presets and layout undo, moving tabs between windows, shell
-  integration, a settings UI, window transparency, and restoring sessions and
-  history after a restart.
+  integration, keybinding and quake editors in Settings, window
+  transparency, and restoring sessions and history after a restart.
 - **Terminal compatibility:** notifications and progress, extended underlines,
   SGR-pixel mouse reports, the Kitty keyboard protocol, and inline graphics.
 - **Optional server:** versioned local IPC, named servers, CLI control, and
