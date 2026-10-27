@@ -292,9 +292,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   absorbed the drop. A `giving up` line means five attempts over about two and
   a half minutes failed. Read the reasons: the same network error each time
   points at an Apple outage, so check Apple's developer system status and
-  rerun the job; a ticket error such as stapler's Error 65 points at the
-  notarization or signature. Remove this entry once about ten releases pass
-  without a `giving up` line.
+  rerun the job. Stapler's Error 65 means it found no ticket; right after an
+  accepted notarization that is usually propagation lag, so rerun once before
+  investigating the notarization or signature. Remove this entry once about
+  ten releases pass without a `giving up` line.
 
 ## CI tool installation
 
