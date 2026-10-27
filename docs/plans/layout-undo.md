@@ -1,7 +1,8 @@
 # Layout undo
 
-Status: approved on 2026-10-27, with Jim's answers to its seven open
-questions recorded under "Settled decisions". Plans
+Status: in progress. Approved on 2026-10-27, with Jim's answers to its
+seven open questions recorded under "Settled decisions". PR 1 (runtime
+restore) is in review; PR 2 (client history) follows it. Plans
 [issue #256][issue-256] under [epic #12][issue-12], related to
 [#29][issue-29] and [#30][issue-30]. This plan builds on the runtime hooks
 that [the pane moves plan](pane-moves.md) delivered; all three of #29's PRs

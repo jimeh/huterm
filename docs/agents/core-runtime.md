@@ -208,6 +208,13 @@ checks `next_id` before calling `allocate`, which advances the revision before
 it detects exhaustion, so a refused move leaves pending close tickets valid.
 Moves advance the revision; swaps, like resizes, do not. A tab whose last pane
 moves away is removed, unlike an emptied workspace or session.
+`restore_tabs` (`mux/restore.rs`) undoes or redoes a move's `LayoutChange`
+only while every touched tab keeps the splits, panes, terminals, and session
+the change left. Weights, zoom, names, and positions never block it, and
+only tabs in `placed` return to their recorded workspace and position. Undo
+reopens a removed tab with its old `TabId`. That is safe only because the
+restore accepts IDs at or below `next_id` that are not in use, so keep that
+check if allocation ever changes.
 Moves retain empty workspaces and sessions and never change terminal lifetime.
 Desktop windows retain their attachment identity for assessed close. Orphaned
 spawn cleanup must preserve resources adopted by another attachment or moved

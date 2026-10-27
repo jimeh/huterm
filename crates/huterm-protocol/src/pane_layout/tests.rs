@@ -949,6 +949,46 @@ fn same_shape_ignores_split_identities_and_weights_only() {
 }
 
 #[test]
+fn same_structure_compares_split_identities_and_ignores_weights() {
+    let base = left_and_stack();
+    let reweighted = layout(split(
+        10,
+        SplitAxis::Columns,
+        vec![
+            (100_000, leaf(1)),
+            (
+                900_000,
+                split(
+                    11,
+                    SplitAxis::Rows,
+                    vec![(1, leaf(2)), (SPLIT_TOTAL - 1, leaf(3))],
+                ),
+            ),
+        ],
+    ));
+    assert!(base.same_structure(&reweighted));
+    let renamed = layout(split(
+        10,
+        SplitAxis::Columns,
+        vec![
+            (HALF, leaf(1)),
+            (
+                HALF,
+                split(
+                    41,
+                    SplitAxis::Rows,
+                    vec![(HALF, leaf(2)), (HALF, leaf(3))],
+                ),
+            ),
+        ],
+    ));
+    assert!(base.same_shape(&renamed));
+    assert!(!base.same_structure(&renamed));
+    let swapped = base.with_swapped(pane_id(2), pane_id(3)).unwrap();
+    assert!(!base.same_structure(&swapped));
+}
+
+#[test]
 fn an_insertion_forms_a_split_only_at_the_root_or_across_the_parent_axis() {
     let lone = PaneLayout::single(info(1));
     assert_eq!(

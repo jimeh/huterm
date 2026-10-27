@@ -2,11 +2,13 @@ use std::collections::BTreeMap;
 mod hierarchy;
 mod lifecycle;
 mod moves;
+mod restore;
 pub use hierarchy::{HierarchyRecvError, HierarchySubscription};
 pub use lifecycle::{
     CloseAssessment, CloseEffect, CloseRequest, CloseTicket, HierarchySnapshot,
 };
 pub use moves::{Beside, MoveDestination, PaneRef};
+pub use restore::RestoreDirection;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::terminal::RuntimeClient;
@@ -1224,9 +1226,19 @@ pub enum MuxError {
     /// zoomed a tab's only pane.
     #[error("invalid pane layout: {0}")]
     InvalidLayout(LayoutError),
+    /// A tab a layout restore touches no longer matches what the recorded
+    /// change left, or a workspace it names is gone or in another session.
+    #[error("the layout changed")]
+    LayoutChanged,
+    /// A layout restore names identities or records this runtime could not
+    /// have recorded.
+    #[error("the recorded layout change is invalid")]
+    InvalidRestore,
     /// Terminal startup or shutdown failed.
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
 }
+#[cfg(test)]
+mod live_fixture;
 #[cfg(test)]
 mod tests;

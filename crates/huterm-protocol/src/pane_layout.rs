@@ -384,7 +384,14 @@ impl PaneLayout {
     /// and weights.
     #[must_use]
     pub fn same_shape(&self, other: &Self) -> bool {
-        same_shape(&self.root, &other.root)
+        same_shape(&self.root, &other.root, false)
+    }
+
+    /// Whether `other` has the same shape and the same split identities,
+    /// ignoring only weights.
+    #[must_use]
+    pub fn same_structure(&self, other: &Self) -> bool {
+        same_shape(&self.root, &other.root, true)
     }
 
     /// Removes `target`. Its weight goes to its previous sibling, or the
@@ -753,16 +760,19 @@ fn swap_leaves(node: &mut PaneNode, a: &PaneInfo, b: &PaneInfo) {
     }
 }
 
-fn same_shape(a: &PaneNode, b: &PaneNode) -> bool {
+/// Whether two trees have the same shape and panes, and with `splits`,
+/// the same split identities.
+fn same_shape(a: &PaneNode, b: &PaneNode, splits: bool) -> bool {
     match (a, b) {
         (PaneNode::Pane(a), PaneNode::Pane(b)) => a == b,
         (PaneNode::Split(a), PaneNode::Split(b)) => {
-            a.axis == b.axis
+            (!splits || a.id == b.id)
+                && a.axis == b.axis
                 && a.children.len() == b.children.len()
                 && a.children
                     .iter()
                     .zip(&b.children)
-                    .all(|(a, b)| same_shape(&a.node, &b.node))
+                    .all(|(a, b)| same_shape(&a.node, &b.node, splits))
         }
         _ => false,
     }

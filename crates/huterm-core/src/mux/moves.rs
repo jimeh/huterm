@@ -82,6 +82,7 @@ impl Mux {
         Ok(LayoutChange {
             before,
             after: vec![self.snapshot(tab)],
+            placed: Vec::new(),
         })
     }
 
@@ -169,6 +170,7 @@ impl Mux {
         Ok(LayoutChange {
             before,
             after: vec![self.snapshot(tab), self.snapshot(target.tab)],
+            placed: Vec::new(),
         })
     }
 
@@ -207,6 +209,7 @@ impl Mux {
         Ok(LayoutChange {
             before,
             after: vec![self.snapshot(from.tab)],
+            placed: Vec::new(),
         })
     }
 
@@ -262,6 +265,7 @@ impl Mux {
         Ok(LayoutChange {
             before,
             after: vec![self.snapshot(from.tab), self.snapshot(to.target.tab)],
+            placed: Vec::new(),
         })
     }
 
@@ -335,6 +339,7 @@ impl Mux {
         Ok(LayoutChange {
             before: snapshot_before,
             after: vec![self.snapshot(from.tab), self.snapshot(id)],
+            placed: Vec::new(),
         })
     }
 
@@ -373,6 +378,7 @@ impl Mux {
         Ok(LayoutChange {
             before: snapshot_before,
             after: vec![self.snapshot(from.tab)],
+            placed: vec![from.tab],
         })
     }
 
@@ -453,7 +459,7 @@ impl Mux {
     }
 
     /// Removes a tab from its workspace without closing its terminals.
-    fn remove_tab_record(
+    pub(super) fn remove_tab_record(
         &mut self,
         workspace: WorkspaceId,
         tab: TabId,
