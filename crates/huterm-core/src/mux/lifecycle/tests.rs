@@ -1176,7 +1176,7 @@ fn arrangements_leave_pane_and_tab_close_assessments_valid() {
     let pane_assessment = mux.prepare_close(pane_close).unwrap().check_jobs();
     let tab_assessment = mux.prepare_close(tab_close).unwrap().check_jobs();
     // Another window rearranges the tab into rows, which takes a new split
-    // identity, then balances it.
+    // identity.
     let current = mux.tab(tab).unwrap().layout().clone();
     let panes: Vec<_> = current.panes().iter().map(|pane| pane.id).collect();
     let rows = huterm_protocol::NamedLayout::built_in("rows")
@@ -1186,7 +1186,7 @@ fn arrangements_leave_pane_and_tab_close_assessments_valid() {
         .unwrap();
     mux.arrange_panes(workspace, tab, &current, &rows).unwrap();
     assert!(!mux.tab(tab).unwrap().layout().same_shape(&current));
-    // Neither changes what either close covers.
+    // That changes neither close's scope.
     mux.validate_close(&pane_assessment, &pane_assessment.recheck(), false)
         .unwrap();
     mux.commit_close(&tab_assessment, &tab_assessment.recheck(), false)

@@ -332,6 +332,13 @@ fn templates_are_limited_in_length_and_depth() {
             kind: TemplateErrorKind::TooLong,
         })
     );
+    // A character that crosses the limit is reported where it starts, so
+    // the offset can slice the text.
+    let crossing =
+        format!("{}é", &padded(MAX_TEMPLATE_LEN)[..MAX_TEMPLATE_LEN - 1]);
+    let error = LayoutTemplate::parse(&crossing).unwrap_err();
+    assert_eq!(error.offset, MAX_TEMPLATE_LEN - 1);
+    assert!(crossing.is_char_boundary(error.offset));
     // `depth` alternating splits, each beside a pane, around a grid.
     let nested = |depth: usize| {
         let mut source = String::new();
@@ -720,6 +727,16 @@ fn matching_finds_the_nearest_layout_of_the_same_shape() {
         Some(4)
     );
     assert_eq!(unmatched.matching_layout(&[]), None);
+    // Two layouts that differ only in a nested split's weights: the
+    // distance counts every split, not only the root.
+    let nested = [
+        named("low", "columns(pane 50%, rows(pane 30%, pane))"),
+        named("high", "columns(pane 50%, rows(pane 70%, pane))"),
+    ];
+    for (index, layout) in nested.iter().enumerate() {
+        let exact = in_layout(&nested, &layout.name, 3);
+        assert_eq!(exact.matching_layout(&nested), Some(index));
+    }
 }
 
 /// A `fit` for a view large enough for every layout.
@@ -777,9 +794,17 @@ fn stepping_the_default_cycle_visits_every_available_layout() {
     }
     // Two panes: tiled equals columns, so a cycle has four layouts, and a
     // step back from columns skips tiled.
-    let columns = in_layout(&cycle, "columns", 2);
-    assert_eq!(walk(&cycle, columns.clone(), true, 5), [1, 2, 3, 4, 1]);
-    assert_eq!(walk(&cycle, columns, false, 4), [3, 2, 1, 0]);
+    for (name, forward, back) in [
+        ("columns", [1, 2, 3, 4, 1], [3, 2, 1, 0, 3]),
+        ("rows", [2, 3, 4, 1, 2], [0, 3, 2, 1, 0]),
+        ("main_left", [3, 4, 1, 2, 3], [1, 0, 3, 2, 1]),
+        ("main_top", [4, 1, 2, 3, 4], [2, 1, 0, 3, 2]),
+        ("tiled", [1, 2, 3, 4, 1], [3, 2, 1, 0, 3]),
+    ] {
+        let layout = in_layout(&cycle, name, 2);
+        assert_eq!(walk(&cycle, layout.clone(), true, 5), forward, "{name}");
+        assert_eq!(walk(&cycle, layout, false, 5), back, "{name}");
+    }
     let distinct = |n: usize, steps: usize| {
         let mut layout = in_layout(&cycle, "columns", n);
         let mut seen = vec![layout.arrangement()];
@@ -795,9 +820,23 @@ fn stepping_the_default_cycle_visits_every_available_layout() {
     assert_eq!(distinct(2, 8), 4);
     assert_eq!(distinct(4, 10), 5);
     // 257 panes: columns and rows are unavailable.
-    let main_left = in_layout(&cycle, "main_left", 257);
-    assert_eq!(walk(&cycle, main_left.clone(), true, 4), [3, 4, 2, 3]);
-    assert_eq!(walk(&cycle, main_left, false, 4), [4, 3, 2, 4]);
+    for (name, forward, back) in [
+        ("main_left", [3, 4, 2, 3], [4, 3, 2, 4]),
+        ("main_top", [4, 2, 3, 4], [2, 4, 3, 2]),
+        ("tiled", [2, 3, 4, 2], [3, 2, 4, 3]),
+    ] {
+        let layout = in_layout(&cycle, name, 257);
+        assert_eq!(walk(&cycle, layout.clone(), true, 4), forward, "{name}");
+        assert_eq!(walk(&cycle, layout, false, 4), back, "{name}");
+    }
+    let unmatched_257 = layout_of(
+        &template("rows(columns(*), columns(*))")
+            .expand(&ids(257))
+            .unwrap(),
+    );
+    assert_eq!(unmatched_257.matching_layout(&cycle), None);
+    assert_eq!(walk(&cycle, unmatched_257.clone(), true, 4), [2, 3, 4, 2]);
+    assert_eq!(walk(&cycle, unmatched_257, false, 4), [4, 3, 2, 4]);
     // 258 panes: only tiled is available.
     let unmatched = layout_of(
         &template("rows(columns(*), columns(*))")

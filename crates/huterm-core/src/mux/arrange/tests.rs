@@ -175,7 +175,7 @@ fn layouts_take_fresh_split_ids_and_weights_keep_them_without_the_revision() {
 fn no_ops_and_refusals_change_nothing() {
     let mut mux = Mux::default();
     let idle = command("read value");
-    let (workspace, tab, [first, second, _]) = three_panes(&mut mux, &idle);
+    let (workspace, tab, [first, second, third]) = three_panes(&mut mux, &idle);
     let lone = mux.open_tab(workspace, &idle).unwrap().tab;
     let lone_pane = lone.first_pane().id;
     mux.set_pane_zoom(workspace, tab, Some(second)).unwrap();
@@ -232,6 +232,19 @@ fn no_ops_and_refusals_change_nothing() {
         ),
         (columns(&[first, second, second]), LayoutError::DuplicateId),
         (Arrangement::Pane(first), LayoutError::MissingPane),
+        // A new shape that holds every pane but breaks a layout invariant:
+        // it is refused after its split identities were predicted, and
+        // none is reserved.
+        (
+            Arrangement::Split {
+                axis: huterm_protocol::SplitAxis::Rows,
+                children: [first, second, third]
+                    .into_iter()
+                    .map(|pane| (1, Arrangement::Pane(pane)))
+                    .collect(),
+            },
+            LayoutError::InvalidWeights,
+        ),
     ] {
         assert!(matches!(
             mux.arrange_panes(workspace, tab, &current, &arrangement),
@@ -269,6 +282,37 @@ fn no_ops_and_refusals_change_nothing() {
     assert_eq!(layout(&mux, tab), current);
     assert_eq!(mux.next_id, next);
     other.shutdown().unwrap();
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_stale_expected_layout_of_the_same_shape_is_refused() {
+    let mut mux = Mux::default();
+    let idle = command("read value");
+    let (workspace, tab, _) = three_panes(&mut mux, &idle);
+    let columns = built_in(&mux, tab, "columns");
+    mux.arrange_panes(workspace, tab, &layout(&mux, tab), &columns)
+        .unwrap();
+    let stale = layout(&mux, tab);
+    // Another window arranges rows, then columns again: the tab has the
+    // stale layout's shape, but its root split is a new one.
+    let rows = built_in(&mux, tab, "rows");
+    mux.arrange_panes(workspace, tab, &stale, &rows).unwrap();
+    mux.arrange_panes(workspace, tab, &layout(&mux, tab), &columns)
+        .unwrap();
+    let current = layout(&mux, tab);
+    assert!(current.same_shape(&stale));
+    assert!(!current.same_structure(&stale));
+    let (seq, revision, next) =
+        (mux.hierarchy_seq(), mux.revision, mux.next_id);
+    assert!(matches!(
+        mux.arrange_panes(workspace, tab, &stale, &rows),
+        Err(MuxError::InvalidLayout(LayoutError::ChildrenChanged))
+    ));
+    assert_eq!(mux.hierarchy_seq(), seq);
+    assert_eq!(mux.revision, revision);
+    assert_eq!(mux.next_id, next);
+    assert_eq!(layout(&mux, tab), current);
     mux.shutdown().unwrap();
 }
 

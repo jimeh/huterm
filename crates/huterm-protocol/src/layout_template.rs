@@ -158,8 +158,14 @@ impl LayoutTemplate {
     /// split of one child that is not `*`, and the length and depth limits.
     pub fn parse(source: &str) -> Result<Self, TemplateError> {
         if source.len() > MAX_TEMPLATE_LEN {
+            // The first character that does not fit, so the offset can
+            // slice the text.
+            let mut offset = MAX_TEMPLATE_LEN;
+            while !source.is_char_boundary(offset) {
+                offset -= 1;
+            }
             return Err(TemplateError {
-                offset: MAX_TEMPLATE_LEN,
+                offset,
                 kind: TemplateErrorKind::TooLong,
             });
         }

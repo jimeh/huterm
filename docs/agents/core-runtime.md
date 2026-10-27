@@ -214,8 +214,8 @@ client-fitted `Arrangement`, for named layouts, cycling, and balancing. It
 refuses a tab whose structure no longer matches the caller's `expected` layout
 (`PaneLayout::same_structure`, which ignores weights), and builds the result
 through `PaneLayout::arranged`, which refuses an added, dropped, or repeated
-pane. A new shape's split identities come from `reserve_ids`, the one
-allocation that does not advance the revision, because no close ticket names a
+pane. A new shape's split identities come from `reserve_ids`, which, unlike
+`allocate`, does not advance the revision, because no close ticket names a
 split; check `next_id.checked_add(count)` before any change, as moves do. A
 change clears the shared zoom in its one `PaneLayoutChanged`; a no-op leaves
 it.

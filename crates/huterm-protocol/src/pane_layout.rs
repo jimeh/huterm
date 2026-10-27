@@ -173,7 +173,7 @@ impl fmt::Display for LayoutError {
             Self::LastPane => "pane is the layout's only pane",
             Self::SelfTarget => "target is inside the moved layout",
             Self::MissingPane => "a pane of the layout is missing",
-            Self::TooManyPanes => "the layout holds fewer panes",
+            Self::TooManyPanes => "the layout has fewer pane slots than panes",
         })
     }
 }
