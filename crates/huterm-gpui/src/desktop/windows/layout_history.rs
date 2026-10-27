@@ -1,14 +1,15 @@
 //! Each window's layout history: the last pane rearrangement it made, which
 //! undo restores, and the last one it undid, which redo reapplies.
 //!
-//! The history holds one entry each way. An entry is checked against the
-//! projection after every batch that touches its tabs, and dropped once the
-//! runtime would refuse to restore it, so menus and the palette only offer
-//! what can still apply. The runtime checks again under its lock, so a
+//! The history holds one entry each way. Both are checked against the
+//! projection after every batch, and dropped once the runtime would refuse
+//! to restore them, so menus and the palette only offer what can still
+//! apply. Checking costs one comparison per touched tab of each entry,
+//! however large the batch. The runtime checks again under its lock, so a
 //! projection that lags never applies a restore to the wrong state.
 
 use huterm_core::RestoreDirection;
-use huterm_protocol::{HierarchyState, LayoutChange, PaneId, Touched};
+use huterm_protocol::{HierarchyState, LayoutChange, PaneId};
 
 /// One recorded rearrangement and the pane to focus once it is restored.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,13 +44,6 @@ impl HistoryEntry {
             )
         })
     }
-
-    fn touched_by(&self, touched: &Touched) -> bool {
-        self.change
-            .before
-            .iter()
-            .any(|snapshot| touched.contains_tab(snapshot.tab))
-    }
 }
 
 /// A window's undo entry and redo entry.
@@ -57,6 +51,9 @@ impl HistoryEntry {
 pub(super) struct LayoutHistory {
     undo: Option<HistoryEntry>,
     redo: Option<HistoryEntry>,
+    /// The newest sequence any entry was filed at, kept after the entry is
+    /// taken or pruned.
+    newest: u64,
 }
 
 impl LayoutHistory {
@@ -66,10 +63,10 @@ impl LayoutHistory {
     /// out of commit order, and the newer entry already covers its tabs'
     /// later state.
     pub(super) fn record(&mut self, entry: HistoryEntry) -> bool {
-        let newest = self.undo.iter().chain(&self.redo).map(|entry| entry.seq);
-        if newest.max().is_some_and(|newest| entry.seq < newest) {
+        if entry.seq < self.newest {
             return false;
         }
+        self.newest = entry.seq;
         self.undo = Some(entry);
         self.redo = None;
         true
@@ -105,20 +102,25 @@ impl LayoutHistory {
         seq: u64,
     ) {
         entry.seq = seq;
+        self.newest = self.newest.max(seq);
         *self.slot_mut(opposite(direction)) = Some(entry);
     }
 
-    /// Drops each entry whose tabs `touched` names and that the projection
-    /// would no longer let restore.
-    pub(super) fn prune(&mut self, touched: &Touched, state: &HierarchyState) {
+    /// Drops each entry the projection would no longer let restore, and
+    /// reports whether it dropped one.
+    pub(super) fn prune(&mut self, state: &HierarchyState) -> bool {
+        let mut pruned = false;
         for direction in [RestoreDirection::Undo, RestoreDirection::Redo] {
             let slot = self.slot_mut(direction);
-            if slot.as_ref().is_some_and(|entry| {
-                entry.touched_by(touched) && !entry.restorable(direction, state)
-            }) {
+            if slot
+                .as_ref()
+                .is_some_and(|entry| !entry.restorable(direction, state))
+            {
                 *slot = None;
+                pruned = true;
             }
         }
+        pruned
     }
 
     fn slot_mut(

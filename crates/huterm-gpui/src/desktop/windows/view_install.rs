@@ -192,6 +192,12 @@ impl WorkspaceView {
         } else if self.emptied_close_may_retry(cx) {
             self.owe_emptied_close(cx);
         }
+        if let Some(pane) = self.restore_focus
+            && targets.iter().any(|target| target.pane == pane)
+        {
+            self.restore_focus = None;
+            self.focus_restored_pane(pane, window, cx);
+        }
         // A pane split into a tab while its install was in flight was
         // excluded then; installs that failed stay excluded.
         if current {

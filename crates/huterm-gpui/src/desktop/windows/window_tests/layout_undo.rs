@@ -89,6 +89,11 @@ fn undoing_a_tab_drop_reopens_the_tab_with_its_views(cx: &mut TestAppContext) {
     // Undo reopens the tab with its identity, name, and place, and shows
     // and focuses the pane it had focused, through the same views.
     harness.invoke(window, ids::UNDO).unwrap();
+    // A second press while the first runs does nothing, without a notice.
+    assert!(matches!(
+        harness.invoke(window, ids::UNDO),
+        Ok(CommandOutcome::Completed)
+    ));
     harness.wait_for("the dropped tab to come back", |cx| {
         tab_order(cx, window) == [first, dropped, target]
             && active(cx, window) == Some(dropped)
@@ -200,22 +205,120 @@ fn an_undo_the_runtime_refuses_shows_one_notice_and_drops_the_entry(
     ));
 }
 
+/// The platform's default undo key.
+const UNDO_KEY: &str = if cfg!(target_os = "macos") {
+    "cmd-z"
+} else {
+    "ctrl-shift-z"
+};
+
+/// What `window`'s open palette says about `undo`: its title override and
+/// why it is unavailable.
+fn palette_undo(
+    cx: &mut App,
+    window: AnyWindowHandle,
+) -> Option<(Option<String>, Option<String>)> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            let palette = view.read(cx).palette.clone()?;
+            let palette = palette.read(cx);
+            Some((
+                palette.titles.get(&ids::UNDO).cloned(),
+                palette.availability.get(&ids::UNDO).cloned(),
+            ))
+        })
+        .ok()
+        .flatten()
+}
+
 #[gpui::test]
-fn undo_with_the_palette_open_changes_nothing(cx: &mut TestAppContext) {
+fn the_undo_key_in_the_palette_does_nothing_and_the_palette_follows_pruning(
+    cx: &mut TestAppContext,
+) {
     let mut harness = DesktopHarness::new(cx);
-    let (window, tab, ..) = swapped(&mut harness);
+    let (window, tab, left, right) = swapped(&mut harness);
     let layout = harness.runtime.lock().tab(tab).unwrap().layout().clone();
     harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
-    assert!(matches!(
-        harness.invoke(window, ids::UNDO),
-        Err(CommandError::Unavailable(reason)) if reason.contains("palette")
-    ));
+    harness.wait_for("the palette to offer the undo", |cx| {
+        palette_undo(cx, window)
+            == Some((Some("Undo Swap Panes".to_owned()), None))
+    });
+    // The key reaches the window from the palette's search field, which has
+    // no undo of its own: nothing changes and no notice appears.
+    harness.press(window, UNDO_KEY);
+    harness.cx.run_until_parked();
     assert_eq!(*harness.runtime.lock().tab(tab).unwrap().layout(), layout);
     harness.cx.update(|cx| {
+        assert_eq!(notices(cx, window), Vec::<String>::new());
         assert_eq!(
             next_label(cx, window, RestoreDirection::Undo),
             Some("Swap Panes")
         );
+    });
+    // Another client swaps the panes back, which prunes the entry, and the
+    // open palette stops offering it.
+    let workspace = harness.workspace;
+    harness
+        .runtime
+        .lock()
+        .swap_panes(workspace, tab, left, right)
+        .unwrap();
+    harness.wait_for("the palette to drop the undo", |cx| {
+        palette_undo(cx, window)
+            == Some((None, Some("nothing to undo".to_owned())))
+    });
+}
+
+#[gpui::test]
+fn undo_focuses_a_pane_whose_view_has_to_install_again(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let kept = harness.first_pane(tab);
+    let moving = harness.split(tab, kept, SplitDirection::Right, ECHO);
+    let elsewhere = harness
+        .runtime
+        .lock()
+        .create_workspace(harness.session, None)
+        .unwrap();
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_for("both panes to show", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(panes, _)| panes.len() == 2)
+    });
+    harness.focus(window, tab, moving);
+    // The pane leaves for a workspace this window does not show, so the
+    // window drops its view.
+    harness
+        .invoke_with(
+            window,
+            &CommandInvocation::new(
+                ids::MOVE_PANE_TO_NEW_TAB,
+                vec![CommandArgument::new(
+                    "workspace",
+                    CommandValue::Workspace(elsewhere),
+                )],
+            ),
+        )
+        .unwrap();
+    harness.wait_for("the pane to leave and the move to record", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![kept], kept))
+            && next_label(cx, window, RestoreDirection::Undo).is_some()
+    });
+    // Undo brings it back through a new view, which takes the focus once
+    // it installs.
+    harness.invoke(window, ids::UNDO).unwrap();
+    harness.wait_for("the returned pane to take keyboard focus", |cx| {
+        panes_shown(cx, window, tab)
+            .is_some_and(|(panes, _)| panes == [kept, moving])
+            && pane_focused(cx, window, tab, moving)
+    });
+    harness.type_line(window, "back");
+    harness.wait_for("the returned pane to read the line", |cx| {
+        pane_screen(cx, window, tab, moving)
+            .is_some_and(|text| text.contains("got:back"))
     });
 }
 

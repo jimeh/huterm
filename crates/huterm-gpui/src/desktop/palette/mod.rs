@@ -660,8 +660,11 @@ pub(super) struct CommandPalette {
     /// The projection sequence `hierarchy` reflects.
     hierarchy_seq: u64,
     profiles: Vec<IdentityRow>,
-    availability: HashMap<CommandId, String>,
-    titles: HashMap<CommandId, String>,
+    /// Why each unavailable command is unavailable.
+    pub(super) availability: HashMap<CommandId, String>,
+    /// Row titles that extend a command's own, as [`PaletteOpen`] gives
+    /// them.
+    pub(super) titles: HashMap<CommandId, String>,
     keymap: InstalledKeymap,
     colors: OverlayColors,
     placement: PalettePlacement,

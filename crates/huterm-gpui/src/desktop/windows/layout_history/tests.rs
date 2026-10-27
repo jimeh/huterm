@@ -84,10 +84,15 @@ fn an_operation_that_committed_before_the_newest_entry_is_ignored() {
     assert_eq!(label(&history, Redo), Some("Move Pane"));
     assert!(history.record(entry("Balance", LayoutChange::default(), 7)));
     assert_eq!(label(&history, Undo), Some("Balance"));
+    // The newest sequence outlives its entry: with sequence 7 taken for an
+    // undo still in flight, an older completion is still ignored.
+    let _in_flight = history.take(Undo).unwrap();
+    assert!(!history.record(entry("Move Pane", LayoutChange::default(), 6)));
+    assert_eq!(label(&history, Undo), None);
 }
 
 #[test]
-fn pruning_drops_only_entries_whose_tabs_changed_shape() -> Result<(), MuxError>
+fn pruning_drops_only_entries_the_runtime_would_refuse() -> Result<(), MuxError>
 {
     let mut mux = Mux::default();
     let session = mux.create_session(None)?;
@@ -104,20 +109,22 @@ fn pruning_drops_only_entries_whose_tabs_changed_shape() -> Result<(), MuxError>
     // A rename and a zoom change no structure, so both entries stay.
     mux.rename_tab(one, Some("renamed"))?;
     mux.set_pane_zoom(workspace, one, Some(a))?;
-    history.prune(&Touched::everything(), &projection(&mut mux));
+    assert!(!history.prune(&projection(&mut mux)));
     assert!(history.peek(Undo).is_some() && history.peek(Redo).is_some());
     // A split changes tab one's shape: its undo entry goes, and the redo
     // entry on tab two stays.
     mux.split_pane(workspace, one, a, SplitDirection::Down, &idle())?;
     let state = projection(&mut mux);
     assert!(!history.peek(Undo).unwrap().restorable(Undo, &state));
-    history.prune(&Touched::everything(), &state);
+    assert!(history.prune(&state));
     assert!(history.peek(Undo).is_none());
     assert!(history.peek(Redo).unwrap().restorable(Redo, &state));
-    // A batch that names neither tab leaves the history alone.
-    mux.split_pane(workspace, two, c, SplitDirection::Down, &idle())?;
-    history.prune(&Touched::default(), &projection(&mut mux));
-    assert!(history.peek(Redo).is_some());
+    // Moving the workspace into another session changes no tab, but the
+    // runtime refuses a restore across sessions, so the entry goes.
+    let other = mux.create_session(None)?;
+    mux.move_workspace(session, workspace, other, None)?;
+    assert!(history.prune(&projection(&mut mux)));
+    assert!(history.peek(Redo).is_none());
     mux.shutdown()?;
     Ok(())
 }

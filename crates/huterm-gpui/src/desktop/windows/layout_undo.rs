@@ -3,7 +3,7 @@
 //! the runtime refuses when the touched tabs no longer match the entry.
 
 use huterm_core::RestoreDirection;
-use huterm_protocol::{LayoutChange, Touched};
+use huterm_protocol::LayoutChange;
 
 use super::layout_history::HistoryEntry;
 use super::{
@@ -59,7 +59,7 @@ impl WorkspaceView {
     /// records nothing, and a change older than the newest entry is
     /// ignored. The history is then checked against the projection.
     pub(super) fn record_layout_change(
-        &self,
+        &mut self,
         label: &'static str,
         focus: Option<PaneId>,
         change: LayoutChange,
@@ -69,6 +69,7 @@ impl WorkspaceView {
         if change.is_empty() {
             return;
         }
+        self.restore_focus = None;
         let Desktop {
             windows, hierarchy, ..
         } = cx.global_mut::<Desktop>();
@@ -82,7 +83,7 @@ impl WorkspaceView {
             seq,
         };
         if history.record(entry) {
-            history.prune(&Touched::everything(), hierarchy.state());
+            history.prune(hierarchy.state());
         }
     }
 
@@ -113,8 +114,9 @@ impl WorkspaceView {
         Ok(())
     }
 
-    /// Runs `undo` or `redo`. With nothing to restore it does nothing, so
-    /// its key is quietly taken. Otherwise the entry leaves the history
+    /// Runs `undo` or `redo`. With nothing to restore, or while another
+    /// structural operation runs, it does nothing, so a repeated press is
+    /// quietly taken. Otherwise the entry leaves the history
     /// while the restore runs; once the projection holds the result, it
     /// moves to the other direction and the window shows and focuses the
     /// entry's pane. A refusal drops the entry and raises a notice.
@@ -124,6 +126,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        if self.busy {
+            return Ok(CommandOutcome::Completed);
+        }
         self.check_new_tab_available(cx)?;
         let entry = cx
             .global_mut::<Desktop>()
@@ -135,6 +140,7 @@ impl WorkspaceView {
         };
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         self.busy = true;
+        self.restore_focus = None;
         let change = entry.change.clone();
         let task = cx.background_executor().spawn(async move {
             runtime.commit_layout_restore(&change, direction)
@@ -191,15 +197,44 @@ impl WorkspaceView {
         } = cx.global_mut::<Desktop>();
         if let Some(history) = windows.layout_history_mut(self.window) {
             history.finish(direction, entry, seq);
-            history.prune(&Touched::everything(), hierarchy.state());
+            history.prune(hierarchy.state());
         }
-        if let Some(pane) = focus
-            && let Some(tab) = self.tab_showing(pane)
+        let Some(pane) = focus else {
+            return;
+        };
+        if !self.focus_restored_pane(pane, window, cx)
+            && self.projects(pane, cx)
         {
-            if self.active_tab(cx) != Some(tab) {
-                self.select(tab, window, cx);
-            }
-            self.focus_pane(tab, pane, window, cx);
+            // The pane came back into this window, and its view is still
+            // installing.
+            self.restore_focus = Some(pane);
         }
+    }
+
+    /// Shows the tab that holds `pane` and focuses it there, if this window
+    /// has its view.
+    pub(super) fn focus_restored_pane(
+        &mut self,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let Some(tab) = self.tab_showing(pane) else {
+            return false;
+        };
+        if self.active_tab(cx) != Some(tab) {
+            self.select(tab, window, cx);
+        }
+        self.focus_pane(tab, pane, window, cx);
+        true
+    }
+
+    /// Whether the projection puts `pane` in this window's workspace.
+    fn projects(&self, pane: PaneId, cx: &App) -> bool {
+        let state = cx.global::<Desktop>().hierarchy.state();
+        let workspace = state
+            .pane_tab(pane)
+            .and_then(|tab| state.tab_workspace(tab));
+        workspace.is_some() && workspace == self.workspace_id(cx)
     }
 }

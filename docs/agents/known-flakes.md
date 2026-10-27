@@ -300,6 +300,15 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   already held before Enter was sent, so the smoke never observed the
   refusal. This is unconfirmed: the recorded terminal bytes contain no ESC
   from the Escape that followed, so where that Escape went is unexplained.
+- **Related signature:** on PR #279 (run 40578248073, job 122451107921,
+  head `ad33b662`), the same `busy-on` step timed out instead, waiting for
+  `selected=new_tab` and "structural operation in progress". The state had
+  `w0.busy=true` but `w0.palette=false`: the palette shortcut that
+  `shortcut("palette")` sends through `xdotool` just before `busy-on` never
+  opened the palette, although the `D` typed before it reached the terminal,
+  whose last bytes were `1f 43 44`. The next head passed the same job. Both
+  failures sit in the `busy-on` step, where `xdotool` input and the smoke's
+  file commands are not ordered.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused

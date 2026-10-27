@@ -67,12 +67,16 @@ Layout history (`windows/layout_history.rs`) lives in the window record, so
 it dies with the window and needs no view to prune it. Every rearrangement
 completion records through `record_layout_change`, which keeps the commit's
 hierarchy sequence and ignores a completion older than the newest entry.
-`reconcile` prunes every window's entries against the projection, not only
-the windows `windows_to_visit` returns, because an entry can name tabs in
-workspaces its window does not show. Undo and redo take their entry off the
-history while the restore runs, so a batch that arrives in between has
-nothing to prune. The runtime checks the restore again under its lock, so a
-lagging projection costs a notice, never a wrong layout.
+`reconcile` prunes every window's entries against the projection after
+every non-empty batch, not only in the windows `windows_to_visit` returns:
+an entry can name tabs in workspaces its window does not show, and a
+workspace moved to another session touches none of its tabs. A window that
+loses an entry is notified, so an open palette or menu stops offering it.
+Undo and redo take their entry off the history while the restore runs, so a
+batch that arrives in between has nothing to prune. A restored pane that
+comes back without a view keeps `restore_focus` until its install
+finishes, then takes the focus. The runtime checks the restore again under
+its lock, so a lagging projection costs a notice, never a wrong layout.
 
 What a window draws for a tab comes from `shown_layout` and `shown_zoom`. The
 layout is the projection's, with the window's divider drag and the resizes it

@@ -292,7 +292,10 @@ pending mark becomes unnecessary too: a pass that drops the old entry
 while the window's own new operation is in flight drops an entry the
 completion replaces anyway, and an undo or redo has already taken the only
 entry off its stack. What remains is a guard check of one entry per
-stack after each batch.
+stack after each batch. The first version checks both entries after every
+non-empty batch, not only entries that name a touched tab: a workspace
+moved into another session touches no tab, yet every tab in it now fails
+the session guard.
 
 ### Limit
 
@@ -332,8 +335,8 @@ control and must reach the shell, so undo takes the shifted form, as copy
 and paste do; `ctrl-shift-z` reaches applications only as plain `ctrl-z` in
 legacy encoding, so binding it hides nothing a shell relies on.
 `ctrl-shift-y` mirrors the `ctrl-y` redo convention. Neither is a current
-default or a known desktop or IBus binding; `docs/keybindings.md` lists them
-with the other Linux conflicts.
+default or a known desktop or IBus binding; `docs/keybindings.md` notes why
+they leave `ctrl-z` to the shell.
 
 The commands are generic `undo` and `redo` rather than layout-specific
 names, so a later undoable action joins the same history. They are

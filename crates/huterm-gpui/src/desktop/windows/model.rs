@@ -21,8 +21,7 @@ use super::layout_history::LayoutHistory;
 use crate::config::TabPosition;
 use gpui::{Pixels, WindowBounds, WindowId};
 use huterm_protocol::{
-    AttachmentId, HierarchyState, SessionId, TabId, TerminalId, Touched,
-    WorkspaceId,
+    AttachmentId, HierarchyState, SessionId, TabId, TerminalId, WorkspaceId,
 };
 
 /// One pane of a tab as its window shows it.
@@ -336,16 +335,19 @@ impl WindowModel {
         self.record_mut(id).map(|record| &mut record.layout_history)
     }
 
-    /// Drops the history entries `touched` made unrestorable, in every
-    /// window, including windows that do not show the touched tabs.
+    /// Drops the history entries the projection no longer lets restore,
+    /// in every window, including windows that do not show their tabs, and
+    /// returns the windows that lost one.
     pub(super) fn prune_layout_histories(
         &mut self,
-        touched: &Touched,
         state: &HierarchyState,
-    ) {
-        for record in &mut self.records {
-            record.layout_history.prune(touched, state);
-        }
+    ) -> Vec<WindowId> {
+        self.records
+            .iter_mut()
+            .filter_map(|record| {
+                record.layout_history.prune(state).then_some(record.id)
+            })
+            .collect()
     }
 
     pub(super) fn record(&self, id: WindowId) -> Option<&WindowRecord> {

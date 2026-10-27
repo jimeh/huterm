@@ -1627,7 +1627,7 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     desktop
         .exit_closes
         .retain(|pane| state.pane_tab(pane).is_some());
-    desktop.windows.prune_layout_histories(touched, state);
+    let pruned = desktop.windows.prune_layout_histories(state);
     let desktop = cx.global::<Desktop>();
     let terminating = desktop.runtime.terminating.load(Ordering::Acquire);
     let windows = windows_to_visit(&desktop.windows, touched);
@@ -1656,6 +1656,9 @@ fn reconcile(cx: &mut App, touched: &Touched) {
             cx.notify();
         }
     });
+    // A window whose history lost an entry refreshes its open palette and
+    // menu, which may offer the entry.
+    update_windows(cx, &pruned, |_, cx| cx.notify());
     if !activate.is_empty() {
         // Selecting needs the window, which reconcile does not have here;
         // a deferred update runs once no window is on GPUI's update stack.
@@ -2287,6 +2290,7 @@ fn open_window_with_profile(
                 focus: cx.focus_handle(),
                 busy: false,
                 installs: PendingInstalls::default(),
+                restore_focus: None,
                 close: CloseState::default(),
                 notices: NoticeStack::default(),
                 notice_focus: cx.focus_handle(),
@@ -3371,6 +3375,9 @@ struct WorkspaceView {
     busy: bool,
     /// Views this window is installing for tabs it did not spawn.
     installs: PendingInstalls,
+    /// The pane an undo or redo focuses once its view installs, when the
+    /// restore brought it back into this window without one.
+    restore_focus: Option<PaneId>,
     close: CloseState,
     notices: NoticeStack,
     /// Focus for the toast column; `notices` bindings match while it holds
@@ -3467,6 +3474,9 @@ struct PaletteRefreshState {
     confirming: bool,
     reordering: bool,
     quake: Option<(bool, bool)>,
+    /// What undo and redo would restore, which pruning can change while
+    /// the palette is open.
+    restorable: [Option<&'static str>; 2],
 }
 
 impl Drop for WorkspaceView {
@@ -7248,6 +7258,8 @@ impl WorkspaceView {
                 .quake
                 .as_ref()
                 .map(|state| (state.visible(), state.fullscreen_context())),
+            restorable: [RestoreDirection::Undo, RestoreDirection::Redo]
+                .map(|direction| self.layout_restore_label(direction, cx)),
         }
     }
 
@@ -7928,6 +7940,11 @@ impl WorkspaceView {
         validate(invocation)?;
         if self.palette.is_some() && invocation.id != ids::OPEN_COMMAND_PALETTE
         {
+            // The palette's search field has no undo, so its undo keys do
+            // nothing rather than raise a notice.
+            if layout_undo::restore_direction(invocation.id).is_some() {
+                return Ok(CommandOutcome::Completed);
+            }
             return Err(CommandError::Unavailable(
                 "command palette is open".to_owned(),
             ));
