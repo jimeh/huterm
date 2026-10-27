@@ -63,6 +63,17 @@ tab waits for the projection and assesses again there. When the pane left
 the window instead, only that close ends, without a notice: an exit-close
 returns to owed, and closes queued behind it still run.
 
+Layout history (`windows/layout_history.rs`) lives in the window record, so
+it dies with the window and needs no view to prune it. Every rearrangement
+completion records through `record_layout_change`, which keeps the commit's
+hierarchy sequence and ignores a completion older than the newest entry.
+`reconcile` prunes every window's entries against the projection, not only
+the windows `windows_to_visit` returns, because an entry can name tabs in
+workspaces its window does not show. Undo and redo take their entry off the
+history while the restore runs, so a batch that arrives in between has
+nothing to prune. The runtime checks the restore again under its lock, so a
+lagging projection costs a notice, never a wrong layout.
+
 What a window draws for a tab comes from `shown_layout` and `shown_zoom`. The
 layout is the projection's, with the window's divider drag and the resizes it
 committed but the projection does not hold yet applied. The zoom is the tab

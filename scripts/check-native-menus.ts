@@ -3,6 +3,7 @@ import { checkSmokeProcess, runSmokeProcess } from "./smoke-process.ts";
 export function checkNativeMenus(exitCode: number, output: string): void {
   const expected = [
     "default-fullscreen-shortcut",
+    "default-undo-shortcuts",
     "startup-update-command",
     "startup-user-shortcut",
     "untouched-default-shortcut",

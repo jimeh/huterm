@@ -96,16 +96,30 @@ pub(super) struct WindowMenuInput {
     pub(super) selection: bool,
     /// Waiting notices; Show Notices appears with this badge while non-zero.
     pub(super) notices: usize,
+    /// Which of Undo and Redo have an entry, which enables them.
+    pub(super) restorable: Restorable,
+}
+
+/// Whether the window has a layout change to undo and one to redo.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct Restorable {
+    pub(super) undo: bool,
+    pub(super) redo: bool,
 }
 
 impl WindowMenuInput {
     /// The build's platform and updater facts.
-    pub(super) fn for_build(selection: bool, notices: usize) -> Self {
+    pub(super) fn for_build(
+        selection: bool,
+        notices: usize,
+        restorable: Restorable,
+    ) -> Self {
         Self {
             platform: Platform::current(),
             updater: cfg!(all(target_os = "macos", feature = "macos-updater")),
             selection,
             notices,
+            restorable,
         }
     }
 }
@@ -162,6 +176,14 @@ pub(super) fn window_menu_model(
             MenuItem::new(id.as_str(), label(id)).shortcut(shortcut(id)),
         )
     };
+    let restore_item = |id: CommandId, enabled: bool, hint: &str| {
+        let item = MenuItem::new(id.as_str(), label(id)).shortcut(shortcut(id));
+        MenuRow::Item(if enabled {
+            item
+        } else {
+            item.disabled(Some(hint.to_owned()))
+        })
+    };
     let mut rows = vec![
         item(ids::OPEN_COMMAND_PALETTE),
         MenuRow::Separator,
@@ -176,6 +198,8 @@ pub(super) fn window_menu_model(
         item(ids::CLOSE_TAB),
         item(ids::CLOSE_WINDOW),
         MenuRow::Separator,
+        restore_item(ids::UNDO, input.restorable.undo, "Nothing to undo"),
+        restore_item(ids::REDO, input.restorable.redo, "Nothing to redo"),
         MenuRow::Buttons {
             label: "Edit".to_owned(),
             buttons: vec![

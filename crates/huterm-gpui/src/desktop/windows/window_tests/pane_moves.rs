@@ -9,7 +9,7 @@ use huterm_protocol::ViewerId;
 use super::*;
 
 /// The entity and viewer of `window`'s view of `pane` in `tab`.
-fn identity(
+pub(super) fn identity(
     cx: &mut App,
     window: AnyWindowHandle,
     tab: TabId,
@@ -21,7 +21,7 @@ fn identity(
 }
 
 /// The tab `window` shows as active.
-fn active(cx: &mut App, window: AnyWindowHandle) -> Option<TabId> {
+pub(super) fn active(cx: &mut App, window: AnyWindowHandle) -> Option<TabId> {
     window
         .update(cx, |root, _, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
@@ -32,7 +32,7 @@ fn active(cx: &mut App, window: AnyWindowHandle) -> Option<TabId> {
 }
 
 /// Whether `window`'s view of `pane` in `tab` has keyboard focus.
-fn pane_focused(
+pub(super) fn pane_focused(
     cx: &mut App,
     window: AnyWindowHandle,
     tab: TabId,
@@ -66,7 +66,7 @@ impl DesktopHarness {
     }
 
     /// Runs `invocation` in `window` as a binding or the palette would.
-    fn invoke_with(
+    pub(super) fn invoke_with(
         &mut self,
         window: AnyWindowHandle,
         invocation: &CommandInvocation,
@@ -77,7 +77,12 @@ impl DesktopHarness {
     }
 
     /// Focuses `pane` of `tab` in `window`, activating the tab.
-    fn focus(&mut self, window: AnyWindowHandle, tab: TabId, pane: PaneId) {
+    pub(super) fn focus(
+        &mut self,
+        window: AnyWindowHandle,
+        tab: TabId,
+        pane: PaneId,
+    ) {
         self.update_view(window, |view, window, cx| {
             view.select(tab, window, cx);
             view.focus_pane(tab, pane, window, cx);

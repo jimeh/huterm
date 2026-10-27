@@ -201,6 +201,26 @@ pub struct TabSnapshot {
     pub record: Option<TabRecord>,
 }
 
+impl TabSnapshot {
+    /// Whether `now`, the same tab's current snapshot, still holds the
+    /// structure this one recorded, so a layout restore may leave it: both
+    /// absent, or both present with the same splits, panes, and terminals,
+    /// ignoring weights, in the same session. A `placed` tab must also be
+    /// in the same workspace. Zoom, position, and name never matter.
+    #[must_use]
+    pub fn still_matches(&self, now: &Self, placed: bool) -> bool {
+        match (&self.record, &now.record) {
+            (None, None) => true,
+            (Some(then), Some(now)) => {
+                then.session == now.session
+                    && then.layout.same_structure(&now.layout)
+                    && (!placed || then.workspace == now.workspace)
+            }
+            _ => false,
+        }
+    }
+}
+
 /// What a pane rearrangement did: every tab it touched, before and after,
 /// in the same order. Empty when the operation changed nothing.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -619,6 +639,25 @@ impl HierarchyState {
     #[must_use]
     pub fn tab_workspace(&self, id: TabId) -> Option<WorkspaceId> {
         self.tabs.get(&id).map(|entry| entry.workspace)
+    }
+
+    /// A tab's current structural record, or its absence, as core's layout
+    /// changes record it.
+    #[must_use]
+    pub fn tab_snapshot(&self, id: TabId) -> TabSnapshot {
+        let record = self.tabs.get(&id).and_then(|entry| {
+            let workspace = self.workspaces.get(&entry.workspace)?;
+            let index = workspace.tabs.iter().position(|tab| *tab == id)?;
+            Some(TabRecord {
+                session: workspace.session,
+                workspace: entry.workspace,
+                index: u32::try_from(index).ok()?,
+                custom_name: entry.info.custom_name.clone(),
+                layout: entry.info.layout.clone(),
+                zoomed: entry.info.zoomed,
+            })
+        });
+        TabSnapshot { tab: id, record }
     }
 
     /// Returns the tab that holds a pane.

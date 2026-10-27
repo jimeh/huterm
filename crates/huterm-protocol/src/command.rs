@@ -790,6 +790,10 @@ pub mod ids {
         CommandId::new("move_pane_to_new_tab");
     /// Moves a whole tab beside a chosen pane of another tab.
     pub const MOVE_TAB_TO_PANE: CommandId = CommandId::new("move_tab_to_pane");
+    /// Undoes the last layout change this window made.
+    pub const UNDO: CommandId = CommandId::new("undo");
+    /// Redoes the layout change this window undid last.
+    pub const REDO: CommandId = CommandId::new("redo");
     /// Opens the window's application menu.
     pub const OPEN_MENU: CommandId = CommandId::new("open_menu");
     /// Focuses the window's notice list.
@@ -1554,6 +1558,20 @@ const CATALOG: &[CommandSpec] = &[
             TARGET_PANE,
             SIDE,
         ],
+    ),
+    spec(
+        ids::UNDO,
+        CommandScope::Window,
+        "Undo",
+        "Undo this window's last pane move, swap, or tab drop.",
+        &[],
+    ),
+    spec(
+        ids::REDO,
+        CommandScope::Window,
+        "Redo",
+        "Redo the layout change this window undid last.",
+        &[],
     ),
     spec(
         ids::OPEN_MENU,
