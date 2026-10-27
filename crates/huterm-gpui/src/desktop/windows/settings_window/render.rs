@@ -1,7 +1,9 @@
 //! The Settings window's layout: the sidebar, the banner, and the pane of
 //! grouped rows.
 
-use gpui::{AnyElement, Context, Div, ElementId, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, Context, Div, ElementId, Stateful, Window, div, prelude::*, px,
+};
 use huterm_config::settings::{
     Platform as SettingPlatform, SectionId, Setting,
 };
@@ -9,6 +11,7 @@ use huterm_config::settings::{
 use super::super::super::overlay::{Swatch, mono_font_family};
 use super::super::super::settings::status::Action;
 use super::super::super::settings::{Special, special};
+use super::super::Desktop;
 use super::{
     SIDEBAR_WIDTH, SettingsView, apply_note, button, current, link, tone_color,
 };
@@ -18,6 +21,26 @@ fn id(name: String) -> ElementId {
 }
 
 impl SettingsView {
+    /// Makes `element` a keyboard stop that runs the action `key` names,
+    /// by click or by `settings_toggle`.
+    pub(super) fn actionable(
+        &mut self,
+        element: Stateful<Div>,
+        key: String,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Stateful<Div> {
+        let handle = self.action_stop(key.clone(), cx);
+        element
+            .track_focus(&handle)
+            .key_context("SettingsControl")
+            .focus(|style| style.shadow(swatch.focus_ring()))
+            .on_click(cx.listener(move |view, _, window, cx| {
+                handle.focus(window, cx);
+                view.act(&key, window, cx);
+            }))
+    }
+
     pub(super) fn render_sidebar(
         &mut self,
         swatch: Swatch,
@@ -52,7 +75,7 @@ impl SettingsView {
                 ),
             )
             .child(div().flex_1().child(nav))
-            .child(self.render_footer(swatch))
+            .child(self.render_footer(swatch, cx))
             .into_any_element()
     }
 
@@ -105,18 +128,32 @@ impl SettingsView {
     }
 
     /// The file status with its action, and the link that opens the file.
-    fn render_footer(&self, swatch: Swatch) -> Div {
+    fn render_footer(
+        &mut self,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
         let line = self.status.line();
         let action = line.action.map(|action| match action {
-            Action::Reload => link("settings-footer-reload", swatch)
-                .child("Reload")
-                .on_click(|_, _, cx| {
-                    let _ = super::super::reload(cx);
-                }),
-            Action::Open => link("settings-footer-open-error", swatch)
-                .child("Open")
-                .on_click(|_, _, cx| super::super::open_config_file(cx)),
+            Action::Reload => self.actionable(
+                link("settings-footer-reload", swatch).child("Reload"),
+                "reload:footer".to_owned(),
+                swatch,
+                cx,
+            ),
+            Action::Open => self.actionable(
+                link("settings-footer-open-error", swatch).child("Open"),
+                "open:footer-error".to_owned(),
+                swatch,
+                cx,
+            ),
         });
+        let open = self.actionable(
+            link("settings-footer-open", swatch).child("Open config.toml"),
+            "open:footer".to_owned(),
+            swatch,
+            cx,
+        );
         div()
             .flex()
             .flex_col()
@@ -141,15 +178,31 @@ impl SettingsView {
                     .child(div().flex_1().min_w_0().truncate().child(line.text))
                     .children(action),
             )
-            .child(
-                link("settings-footer-open", swatch)
-                    .child("Open config.toml")
-                    .on_click(|_, _, cx| super::super::open_config_file(cx)),
-            )
+            .child(open)
     }
 
-    fn render_banner(&self, swatch: Swatch) -> Option<AnyElement> {
-        let message = self.status.invalid_message()?;
+    fn render_banner(
+        &mut self,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let message = self.status.invalid_message()?.to_owned();
+        let open = self.actionable(
+            button("settings-banner-open", swatch).child("Open config.toml"),
+            "open:banner".to_owned(),
+            swatch,
+            cx,
+        );
+        // With watching off, a fixed file applies only on a reload.
+        let watching = cx.global::<Desktop>().config.general.watch_config;
+        let reload = (!watching).then(|| {
+            self.actionable(
+                button("settings-banner-reload", swatch).child("Reload"),
+                "reload:banner".to_owned(),
+                swatch,
+                cx,
+            )
+        });
         Some(
             div()
                 .flex()
@@ -185,15 +238,7 @@ impl SettingsView {
                         .text_color(swatch.fg)
                         .child(message.trim_end().to_owned()),
                 )
-                .child(
-                    div().flex().child(
-                        button("settings-banner-open", swatch)
-                            .child("Open config.toml")
-                            .on_click(|_, _, cx| {
-                                super::super::open_config_file(cx);
-                            }),
-                    ),
-                )
+                .child(div().flex().gap(px(6.0)).child(open).children(reload))
                 .into_any_element(),
         )
     }
@@ -213,13 +258,9 @@ impl SettingsView {
         let label = self.render_label(setting, foreign, swatch, cx);
         let control =
             self.render_control(setting, read_only, swatch, window, cx);
-        let reset_stop = self.reset_stop(path, cx);
-        let reset = (self.file.is_set(path) && !read_only).then(|| {
-            div()
+        let reset = (self.resettable(setting) && !read_only).then(|| {
+            let element = div()
                 .id(id(format!("settings-reset-{path}")))
-                .track_focus(&reset_stop)
-                .key_context("SettingsControl")
-                .focus(|style| style.shadow(swatch.focus_ring()))
                 .flex_none()
                 .px(px(6.0))
                 .h(px(22.0))
@@ -229,10 +270,8 @@ impl SettingsView {
                 .text_size(px(11.5))
                 .text_color(swatch.muted)
                 .hover(|style| style.bg(swatch.hover))
-                .child("Reset")
-                .on_click(
-                    cx.listener(move |view, _, _, cx| view.reset(setting, cx)),
-                )
+                .child("Reset");
+            self.actionable(element, format!("reset:{path}"), swatch, cx)
         });
         // The theme picker's cards need the row's width.
         let wide = special(path) == Some(Special::ThemePicker);
@@ -260,13 +299,30 @@ impl SettingsView {
 
     /// The file's path, with buttons that open it and show it in the file
     /// manager.
-    fn render_file_card(&self, swatch: Swatch) -> AnyElement {
+    fn render_file_card(
+        &mut self,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
         let path = self.path.clone();
-        let reveal = if cfg!(target_os = "macos") {
-            "Show in Finder"
-        } else {
-            "Show in Folder"
-        };
+        let open = self.actionable(
+            button("settings-file-open", swatch).child("Open"),
+            "open:card".to_owned(),
+            swatch,
+            cx,
+        );
+        let reveal = self.actionable(
+            button("settings-file-reveal", swatch).child(
+                if cfg!(target_os = "macos") {
+                    "Show in Finder"
+                } else {
+                    "Show in Folder"
+                },
+            ),
+            "reveal:card".to_owned(),
+            swatch,
+            cx,
+        );
         div()
             .flex()
             .items_center()
@@ -302,23 +358,15 @@ impl SettingsView {
                             ),
                     ),
             )
-            .child(
-                button("settings-file-open", swatch)
-                    .child("Open")
-                    .on_click(|_, _, cx| super::super::open_config_file(cx)),
-            )
-            .child(
-                button("settings-file-reveal", swatch)
-                    .child(reveal)
-                    .on_click(move |_, _, cx| cx.reveal_path(&path)),
-            )
+            .child(open)
+            .child(reveal)
             .into_any_element()
     }
 
     /// A row's label: the setting's name with a dot when the file sets it,
     /// then its description, apply note, and any error or conflict.
     fn render_label(
-        &self,
+        &mut self,
         setting: &'static Setting,
         foreign: bool,
         swatch: Swatch,
@@ -339,27 +387,31 @@ impl SettingsView {
         } else {
             setting.description.clone()
         };
-        let message = if let Some(conflict) = self.conflicts.get(path) {
+        let message = if let Some(text) = self
+            .conflicts
+            .get(path)
+            .map(|conflict| conflict.message.clone())
+        {
+            let mine = self.actionable(
+                link(format!("settings-mine-{path}"), swatch).child("Use mine"),
+                format!("mine:{path}"),
+                swatch,
+                cx,
+            );
+            let file = self.actionable(
+                link(format!("settings-file-{path}"), swatch).child("Use file"),
+                format!("file:{path}"),
+                swatch,
+                cx,
+            );
             Some(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(small(conflict.message.clone(), swatch.warning))
-                    .child(
-                        link(format!("settings-mine-{path}"), swatch)
-                            .child("Use mine")
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                view.keep_mine(path, cx);
-                            })),
-                    )
-                    .child(
-                        link(format!("settings-file-{path}"), swatch)
-                            .child("Use file")
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                view.keep_file(path, cx);
-                            })),
-                    ),
+                    .child(small(text, swatch.warning))
+                    .child(mine)
+                    .child(file),
             )
         } else {
             self.errors
@@ -422,7 +474,7 @@ impl SettingsView {
         let searching = !query.is_empty();
         let mut body =
             div().flex().flex_col().w_full().gap(px(6.0)).p(px(24.0));
-        if let Some(banner) = self.render_banner(swatch) {
+        if let Some(banner) = self.render_banner(swatch, cx) {
             body = body.child(banner);
         }
         if searching {
@@ -464,7 +516,7 @@ impl SettingsView {
                 )
                 .children(
                     (section == SectionId::General)
-                        .then(|| self.render_file_card(swatch)),
+                        .then(|| self.render_file_card(swatch, cx)),
                 )
                 .children(self.render_groups(section, "", swatch, window, cx))
                 .children(self.render_advanced(section, swatch, cx));
@@ -543,7 +595,7 @@ impl SettingsView {
     /// The switch that shows a section's advanced settings, when it has any
     /// available here.
     fn render_advanced(
-        &self,
+        &mut self,
         section: SectionId,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
@@ -557,27 +609,27 @@ impl SettingsView {
             return None;
         }
         let on = self.advanced.contains(&section);
+        let element = div()
+            .id("settings-advanced")
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .text_size(px(12.0))
+            .text_color(swatch.muted)
+            .hover(|style| style.text_color(swatch.fg))
+            .child(if on {
+                "Hide advanced settings"
+            } else {
+                "Show advanced settings"
+            });
         Some(
-            div()
-                .id("settings-advanced")
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .text_size(px(12.0))
-                .text_color(swatch.muted)
-                .hover(|style| style.text_color(swatch.fg))
-                .child(if on {
-                    "Hide advanced settings"
-                } else {
-                    "Show advanced settings"
-                })
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    if !view.advanced.remove(&section) {
-                        view.advanced.insert(section);
-                    }
-                    cx.notify();
-                }))
-                .into_any_element(),
+            self.actionable(
+                element,
+                format!("advanced:{}", section.id()),
+                swatch,
+                cx,
+            )
+            .into_any_element(),
         )
     }
 }

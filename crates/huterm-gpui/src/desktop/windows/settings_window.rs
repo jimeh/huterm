@@ -17,7 +17,7 @@ use gpui::{
     ScrollHandle, SharedString, Stateful, Window, WindowBounds, WindowKind,
     WindowOptions, div, point, prelude::*, px, size,
 };
-use huterm_config::document::{ApplyError, ConfigFile, Patch, Snapshot};
+use huterm_config::document::Snapshot;
 use huterm_config::settings::{
     Apply, Choice, Platform as SettingPlatform, SectionId, Setting,
     SettingKind, SettingsModel,
@@ -29,11 +29,11 @@ use super::super::menu::{
     Menu as MenuView, MenuEvent, MenuItem, MenuModel, MenuRow,
 };
 use super::super::overlay::Swatch;
+use super::super::settings::file_only;
 use super::super::settings::status::{FileStatus, Tone};
 use super::super::settings::values::{
     self, Defaults, FileValues, number, parse_number, shown,
 };
-use super::super::settings::{Special, file_only, special};
 use super::Desktop;
 use crate::APP_ID;
 use crate::commands::{InvokePalette, InvokeWindow};
@@ -120,16 +120,11 @@ pub(super) fn close(cx: &mut App) {
     }
 }
 
-/// A change the file changed under, kept until the user picks theirs or
-/// the file's. `patch` is the refused write; a field draft that a reload
-/// changed under has none, and saving it again writes the draft.
-struct Conflict {
-    patch: Option<Patch>,
-    message: String,
-}
-
 mod controls;
 mod render;
+mod saving;
+
+use saving::{Conflict, Pending};
 
 pub(super) struct SettingsView {
     focus: FocusHandle,
@@ -149,15 +144,29 @@ pub(super) struct SettingsView {
     /// The text each field last showed from the file; a field whose text
     /// differs holds an unsaved draft that a reload must not replace.
     synced: HashMap<&'static str, String>,
-    /// Reset buttons, which the keyboard reaches too.
-    resets: HashMap<&'static str, FocusHandle>,
     /// Focus handles for every other control, by stop.
     stops: HashMap<&'static str, FocusHandle>,
     sections: HashMap<SectionId, FocusHandle>,
+    /// Focus handles for buttons and cards that act rather than hold a
+    /// value, by action key such as `theme:nord`; see `act`.
+    actions: HashMap<String, FocusHandle>,
     errors: HashMap<&'static str, String>,
     conflicts: HashMap<&'static str, Conflict>,
-    writing: bool,
-    queued: VecDeque<(&'static Setting, Patch)>,
+    /// The setting whose write is in flight.
+    writing: Option<&'static str>,
+    queued: VecDeque<Pending>,
+    /// The latest value requested for each setting whose write has not
+    /// settled; controls show it, and steps build on it.
+    pending: HashMap<&'static str, Option<Value>>,
+    /// Incremented by every finished write; a load started before one is
+    /// stale.
+    epoch: u64,
+    /// The last reload's error when the file itself validates, so the
+    /// footer can say the settings were not applied.
+    reload_error: Option<String>,
+    /// Close was asked for while writes were pending.
+    closing: bool,
+    handle: gpui::AnyWindowHandle,
     /// An open select's menu and the setting it edits.
     menu: Option<(Entity<MenuView>, &'static Setting)>,
     scroll: ScrollHandle,
@@ -187,7 +196,7 @@ impl SettingsView {
         let mut view = Self {
             focus: cx.focus_handle(),
             model,
-            themes: themes(&path),
+            themes: Vec::new(),
             path,
             base: None,
             file: FileValues::default(),
@@ -198,17 +207,29 @@ impl SettingsView {
             search,
             fields: HashMap::new(),
             synced: HashMap::new(),
-            resets: HashMap::new(),
             stops: HashMap::new(),
             sections: HashMap::new(),
+            actions: HashMap::new(),
             errors: HashMap::new(),
             conflicts: HashMap::new(),
-            writing: false,
+            writing: None,
             queued: VecDeque::new(),
+            pending: HashMap::new(),
+            epoch: 0,
+            reload_error: None,
+            closing: false,
+            handle: window.window_handle(),
             menu: None,
             scroll: ScrollHandle::new(),
         };
         view.load(cx);
+        view.load_themes(cx);
+        // Closing waits for pending writes, so none is lost.
+        let weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            weak.update(cx, |view, cx| view.request_close(window, cx))
+                .unwrap_or(true)
+        });
         // With watching off nothing reports an edit made elsewhere, so the
         // window looks when it comes forward.
         cx.observe_window_activation(window, |view, window, cx| {
@@ -226,338 +247,6 @@ impl SettingsView {
 
     fn query(&self, cx: &App) -> String {
         self.search.read(cx).text().trim().to_lowercase()
-    }
-
-    /// Rereads the file on the background executor.
-    fn load(&mut self, cx: &mut Context<'_, Self>) {
-        let file = ConfigFile::new(self.path.clone());
-        let task = cx.background_spawn(async move { file.load() });
-        cx.spawn(async move |view, cx| {
-            let loaded = task.await;
-            let _ = view.update(cx, |view, cx| view.loaded(loaded, cx));
-        })
-        .detach();
-    }
-
-    fn loaded(
-        &mut self,
-        loaded: Result<Snapshot, ApplyError>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        match loaded {
-            Ok(snapshot) => {
-                match FileValues::parse(snapshot.text()) {
-                    Ok(file) => self.file = file,
-                    Err(message) => self.status.invalid_file(message),
-                }
-                self.base = Some(snapshot);
-                self.sync_fields(cx);
-            }
-            Err(error) => self.status.failed(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    /// Reports a file that changed since it was read while watching is
-    /// off. The controls keep showing what was read, as the running
-    /// settings do, until a reload.
-    fn check_disk(&mut self, cx: &mut Context<'_, Self>) {
-        if cx.global::<Desktop>().config.general.watch_config {
-            return;
-        }
-        let Some(base) = self.base.clone() else {
-            return;
-        };
-        let file = ConfigFile::new(self.path.clone());
-        let task = cx.background_spawn(async move { file.load() });
-        cx.spawn(async move |view, cx| {
-            if let Ok(current) = task.await
-                && current.revision() != base.revision()
-            {
-                let _ = view.update(cx, |view, cx| {
-                    view.status.changed_on_disk();
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
-    }
-
-    /// Follows a reload: the file is reread and every control follows it.
-    fn reloaded(
-        &mut self,
-        outcome: Result<(), String>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.status
-            .watching(cx.global::<Desktop>().config.general.watch_config);
-        match outcome {
-            Ok(()) => self.status.reloaded(),
-            Err(message) => self.status.invalid_file(message),
-        }
-        self.load(cx);
-    }
-
-    /// Puts each field's text back to what the file and defaults show. A
-    /// field holding an unsaved draft keeps it; when the file changed that
-    /// setting meanwhile, the row shows a conflict instead.
-    fn sync_fields(&mut self, cx: &mut Context<'_, Self>) {
-        let paths: Vec<&'static str> = self.fields.keys().copied().collect();
-        for path in paths {
-            if self.conflicts.contains_key(path)
-                || self.errors.contains_key(path)
-            {
-                continue;
-            }
-            self.sync_field(path, false, cx);
-        }
-    }
-
-    /// Shows the file's value in `path`'s field, replacing a draft only when
-    /// `discard` is set.
-    fn sync_field(
-        &mut self,
-        path: &'static str,
-        discard: bool,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let (Some(field), Some(setting)) =
-            (self.fields.get(path).cloned(), self.model.setting(path))
-        else {
-            return;
-        };
-        let text = field_text(shown(setting, &self.file, &self.defaults));
-        let current = field.read(cx).text().to_owned();
-        let draft = self
-            .synced
-            .get(path)
-            .is_some_and(|synced| *synced != current);
-        if draft && !discard && current != text {
-            if self.synced.get(path) != Some(&text) {
-                self.conflicts.insert(
-                    path,
-                    Conflict {
-                        patch: None,
-                        message: format!(
-                            "config.toml changed this to {} while you were editing",
-                            if text.is_empty() { "its default" } else { &text }
-                        ),
-                    },
-                );
-            }
-            return;
-        }
-        if current != text {
-            field.update(cx, |field, cx| field.set_text(text.clone(), cx));
-        }
-        self.synced.insert(path, text);
-    }
-
-    /// Saves `value` for `setting`, or resets it when `None`.
-    fn write(
-        &mut self,
-        setting: &'static Setting,
-        value: Option<Value>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if self.status.invalid() {
-            return;
-        }
-        // A size's forms are checked by the validator.
-        if let Some(value) = &value
-            && special(&setting.path) != Some(Special::Size)
-            && let Err(message) = values::check(setting, value)
-        {
-            self.errors.insert(setting.path.as_str(), message);
-            cx.notify();
-            return;
-        }
-        self.submit(setting, values::patch(setting, value), cx);
-    }
-
-    /// Writes `patch` for `setting`, after any write in flight.
-    fn submit(
-        &mut self,
-        setting: &'static Setting,
-        patch: Patch,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if self.status.invalid() {
-            return;
-        }
-        if self.writing {
-            self.queued.push_back((setting, patch));
-            return;
-        }
-        self.writing = true;
-        self.status.saving();
-        let file = ConfigFile::new(self.path.clone());
-        let base = self.base.clone();
-        let sent = patch.clone();
-        let validate = crate::config::validator(self.path.clone());
-        let task = cx.background_spawn(async move {
-            let base = match base {
-                Some(base) => base,
-                None => file.load()?,
-            };
-            file.apply(&base, &[sent], &validate)
-        });
-        cx.spawn(async move |view, cx| {
-            let result = task.await;
-            let _ = view.update(cx, |view, cx| {
-                view.written(setting, patch, result, cx);
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
-    fn written(
-        &mut self,
-        setting: &'static Setting,
-        patch: Patch,
-        result: Result<Snapshot, ApplyError>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.writing = false;
-        let key = setting.path.as_str();
-        match result {
-            Ok(snapshot) => {
-                self.errors.remove(key);
-                self.conflicts.remove(key);
-                if let Ok(file) = FileValues::parse(snapshot.text()) {
-                    self.file = file;
-                }
-                self.base = Some(snapshot);
-                self.status.saved();
-                self.sync_fields(cx);
-                // Watching may be off, so the save asks for the reload
-                // itself; a watcher that also saw it coalesces.
-                cx.defer(|cx| {
-                    let _ = super::reload(cx);
-                });
-            }
-            Err(ApplyError::Conflict(changes)) => {
-                self.conflicts.insert(
-                    key,
-                    Conflict {
-                        patch: Some(patch),
-                        message: format!(
-                            "config.toml changed this setting: {}",
-                            changes.join("; ")
-                        ),
-                    },
-                );
-                self.status.failed("config.toml changed on disk");
-                self.load(cx);
-            }
-            Err(ApplyError::InvalidFile(message)) => {
-                self.status.invalid_file(message);
-            }
-            Err(ApplyError::WrittenNotDurable(error)) => {
-                self.status.failed(error.to_string());
-                self.load(cx);
-            }
-            Err(error) => {
-                let message = error.to_string();
-                self.errors.insert(key, message.clone());
-                self.status.failed(message);
-                self.sync_fields(cx);
-            }
-        }
-        if let Some((setting, patch)) = self.queued.pop_front() {
-            self.submit(setting, patch, cx);
-        }
-        cx.notify();
-    }
-
-    /// Keeps the entered value: reapplies it against a fresh read.
-    fn keep_mine(&mut self, path: &'static str, cx: &mut Context<'_, Self>) {
-        let Some(conflict) = self.conflicts.remove(path) else {
-            return;
-        };
-        let Some(setting) = self.model.setting(path) else {
-            return;
-        };
-        self.base = None;
-        match conflict.patch {
-            Some(refused) => self.submit(setting, refused, cx),
-            None => self.commit_field(setting, cx),
-        }
-    }
-
-    /// Discards the entered value and shows the file's.
-    fn keep_file(&mut self, path: &'static str, cx: &mut Context<'_, Self>) {
-        self.conflicts.remove(path);
-        self.errors.remove(path);
-        if self.conflicts.is_empty() {
-            self.status.settled();
-        }
-        self.sync_field(path, true, cx);
-        cx.notify();
-    }
-
-    fn reset(&mut self, setting: &'static Setting, cx: &mut Context<'_, Self>) {
-        if self.file.is_set(&setting.path) {
-            self.errors.remove(setting.path.as_str());
-            self.write(setting, None, cx);
-        }
-    }
-
-    /// Commits a number or text field's text.
-    fn commit_field(
-        &mut self,
-        setting: &'static Setting,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(field) = self.fields.get(setting.path.as_str()) else {
-            return;
-        };
-        let text = field.read(cx).text().to_owned();
-        // Saving a field again after a conflict keeps the entered value.
-        if self.conflicts.remove(setting.path.as_str()).is_some() {
-            self.base = None;
-        }
-        let parsed = match &setting.kind {
-            _ if special(&setting.path) == Some(Special::Size) => {
-                Ok(size_value(&text))
-            }
-            SettingKind::Integer { .. } | SettingKind::Number { .. } => {
-                parse_number(setting, &text)
-            }
-            _ if text.trim().is_empty() => Ok(None),
-            _ => Ok(Some(Value::String(text.trim().to_owned()))),
-        };
-        match parsed {
-            Ok(value) => {
-                self.errors.remove(setting.path.as_str());
-                let current = shown(setting, &self.file, &self.defaults);
-                if value == current && value.is_some() {
-                    cx.notify();
-                    return;
-                }
-                match value {
-                    None => self.reset(setting, cx),
-                    value => self.write(setting, value, cx),
-                }
-            }
-            Err(message) => {
-                self.errors.insert(setting.path.as_str(), message);
-                cx.notify();
-            }
-        }
-    }
-
-    /// Saves a field when focus leaves it. Leaving a conflicted field, such
-    /// as to press Use file, keeps the conflict for the user to settle.
-    fn field_blurred(
-        &mut self,
-        setting: &'static Setting,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if !self.conflicts.contains_key(setting.path.as_str()) {
-            self.commit_field(setting, cx);
-        }
     }
 
     fn field(
@@ -605,17 +294,6 @@ impl SettingsView {
             .clone()
     }
 
-    fn reset_stop(
-        &mut self,
-        path: &'static str,
-        cx: &mut Context<'_, Self>,
-    ) -> FocusHandle {
-        self.resets
-            .entry(path)
-            .or_insert_with(|| cx.focus_handle().tab_stop(true))
-            .clone()
-    }
-
     fn section_stop(
         &mut self,
         section: SectionId,
@@ -647,6 +325,114 @@ impl SettingsView {
                     .map(|(path, _)| *path)
             })?;
         self.model.setting(path)
+    }
+
+    /// The setting whose number or text field has focus.
+    fn focused_field(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<&'static Setting> {
+        let path = self
+            .fields
+            .iter()
+            .find(|(_, field)| {
+                field.read(cx).focus_handle(cx).is_focused(window)
+            })
+            .map(|(path, _)| *path)?;
+        self.model.setting(path)
+    }
+
+    /// The focus handle for an action key, created on first use.
+    fn action_stop(
+        &mut self,
+        key: String,
+        cx: &mut Context<'_, Self>,
+    ) -> FocusHandle {
+        self.actions
+            .entry(key)
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone()
+    }
+
+    /// The action key whose control has focus.
+    fn focused_action(&self, window: &Window) -> Option<String> {
+        self.actions
+            .iter()
+            .find(|(_, handle)| handle.is_focused(window))
+            .map(|(key, _)| key.clone())
+    }
+
+    /// Runs the control an action key names, as a click on it does.
+    fn act(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let (kind, argument) = key.split_once(':').unwrap_or((key, ""));
+        let model = self.model;
+        match kind {
+            "theme" => {
+                if let Some(theme) = model.setting("theme") {
+                    let name = Value::String(argument.to_owned());
+                    self.submit(
+                        theme,
+                        values::patch_at("theme.name", Some(name)),
+                        None,
+                        None,
+                        cx,
+                    );
+                }
+            }
+            "chip" => {
+                if let Some((path, modifier)) = argument.split_once(':')
+                    && let Some(setting) = model.setting(path)
+                    && let Some(next) =
+                        toggled_modifiers(self.value(setting), modifier)
+                {
+                    self.write(setting, Some(Value::String(next)), cx);
+                }
+            }
+            "advanced" => {
+                if let Some(section) = SectionId::ALL
+                    .into_iter()
+                    .find(|section| section.id() == argument)
+                    && !self.advanced.remove(&section)
+                {
+                    self.advanced.insert(section);
+                }
+            }
+            "fonts" => {
+                if let Some(setting) = model.setting(argument) {
+                    self.open_fonts(setting, window, cx);
+                }
+            }
+            "mine" => {
+                if let Some(setting) = model.setting(argument) {
+                    self.keep_mine(setting.path.as_str(), cx);
+                }
+            }
+            "file" => {
+                if let Some(setting) = model.setting(argument) {
+                    self.keep_file(setting.path.as_str(), cx);
+                }
+            }
+            "reset" => {
+                if let Some(setting) = model.setting(argument) {
+                    self.reset(setting, cx);
+                }
+            }
+            "reload" => {
+                cx.defer(|cx| {
+                    let _ = super::reload(cx);
+                });
+            }
+            "open" => cx.defer(super::open_config_file),
+            "reveal" => cx.reveal_path(&self.path),
+            _ => {}
+        }
+        cx.notify();
     }
 
     fn visible_sections(&self) -> Vec<SectionId> {
@@ -730,7 +516,8 @@ impl SettingsView {
     }
 
     /// Steps the focused control: a switch on or off, a choice to its
-    /// neighbour, a number by one unit.
+    /// neighbour, a number by one unit. A number field steps from its
+    /// typed value.
     fn step(
         &mut self,
         forward: bool,
@@ -740,44 +527,35 @@ impl SettingsView {
         let Some(setting) = self.focused_setting(window, cx) else {
             return;
         };
-        let current = shown(setting, &self.file, &self.defaults);
-        let next = match (&setting.kind, current) {
-            (SettingKind::Bool, _) => Some(Value::Boolean(forward)),
-            (SettingKind::Choice(choices), current) => {
-                let index = choices.iter().position(|choice| {
-                    current.as_ref().and_then(Value::as_str)
-                        == Some(choice.value.as_str())
-                });
-                let next = match (index, forward) {
-                    (Some(index), true) => (index + 1).min(choices.len() - 1),
-                    (Some(index), false) => index.saturating_sub(1),
-                    (None, _) => 0,
-                };
-                choices
-                    .get(next)
-                    .map(|choice| Value::String(choice.value.clone()))
-            }
-            (SettingKind::Integer { .. }, Some(Value::Integer(value))) => {
-                Some(Value::Integer(if forward {
-                    value + 1
-                } else {
-                    value - 1
-                }))
-            }
-            (SettingKind::Number { .. }, Some(Value::Float(value))) => {
-                Some(Value::Float(if forward {
-                    value + 1.0
-                } else {
-                    value - 1.0
-                }))
-            }
-            _ => None,
+        self.step_setting(setting, forward, cx);
+    }
+
+    fn step_setting(
+        &mut self,
+        setting: &'static Setting,
+        forward: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let field = self.fields.get(setting.path.as_str()).cloned();
+        let typed = field
+            .as_ref()
+            .map(|field| field.read(cx).text().to_owned())
+            .and_then(|text| parse_number(setting, &text).ok().flatten());
+        let current = typed.or_else(|| self.value(setting));
+        let Some(value) = stepped(setting, current.clone(), forward) else {
+            return;
         };
-        if let Some(value) = next
-            && Some(&value)
-                != shown(setting, &self.file, &self.defaults).as_ref()
-        {
-            self.write(setting, Some(value), cx);
+        if Some(&value) == current.as_ref() {
+            return;
+        }
+        match field {
+            Some(field) => {
+                field.update(cx, |field, cx| {
+                    field.set_text(field_text(Some(value.clone())), cx);
+                });
+                self.commit_field(setting, cx);
+            }
+            None => self.write(setting, Some(value), cx),
         }
     }
 
@@ -787,7 +565,8 @@ impl SettingsView {
         };
         match &setting.kind {
             SettingKind::Bool => {
-                let on = shown(setting, &self.file, &self.defaults)
+                let on = self
+                    .value(setting)
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false);
                 self.write(setting, Some(Value::Boolean(!on)), cx);
@@ -897,14 +676,8 @@ impl SettingsView {
             ids::SETTINGS_FOCUS_NEXT => window.focus_next(cx),
             ids::SETTINGS_FOCUS_PREVIOUS => window.focus_prev(cx),
             ids::SETTINGS_TOGGLE => {
-                if let Some(path) = self
-                    .resets
-                    .iter()
-                    .find(|(_, handle)| handle.is_focused(window))
-                    .map(|(path, _)| *path)
-                    && let Some(setting) = self.model.setting(path)
-                {
-                    self.reset(setting, cx);
+                if let Some(key) = self.focused_action(window) {
+                    self.act(&key, window, cx);
                 } else if let Some(section) = self
                     .sections
                     .iter()
@@ -924,7 +697,14 @@ impl SettingsView {
                 }
             }
             ids::CLOSE_WINDOW | ids::CLOSE_TAB | ids::CLOSE_PANE => {
-                window.remove_window();
+                if self.request_close(window, cx) {
+                    window.remove_window();
+                }
+            }
+            ids::MINIMIZE => window.minimize_window(),
+            ids::ZOOM => window.zoom_window(),
+            ids::TOGGLE_FULLSCREEN | ids::TOGGLE_NATIVE_FULLSCREEN => {
+                window.toggle_fullscreen();
             }
             other => {
                 return Err(CommandError::Unavailable(format!(
@@ -982,8 +762,12 @@ impl SettingsView {
             ids::PALETTE_EXPAND => window.focus_next(cx),
             ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
             ids::PALETTE_BACK => {
-                if focused.is_none() {
-                    search.update(cx, |search, cx| search.set_text("", cx));
+                match focused {
+                    // Escape in a field cancels its typing.
+                    Some((path, _)) => self.cancel_field(path, cx),
+                    None => {
+                        search.update(cx, |search, cx| search.set_text("", cx));
+                    }
                 }
                 self.focus.focus(window, cx);
             }
@@ -1039,6 +823,8 @@ impl SettingsView {
             .map(|(section, _)| *section)
         {
             format!("section:{}", section.id())
+        } else if let Some(key) = self.focused_action(window) {
+            format!("action:{key}")
         } else if let Some(setting) = self.focused_setting(window, cx) {
             setting.path.clone()
         } else {
@@ -1051,7 +837,7 @@ impl SettingsView {
             self.query(cx),
             self.status.line().text,
             self.status.invalid(),
-            self.writing || !self.queued.is_empty(),
+            self.busy(),
         )
     }
 }
@@ -1101,6 +887,75 @@ fn size_value(text: &str) -> Option<Value> {
     } else {
         Some(Value::String(text.to_owned()))
     }
+}
+
+/// The value one step from `current`: a switch on or off, a choice's
+/// neighbour, or a number one unit up or down. A `Number` written in
+/// integer form steps as a float.
+fn stepped(
+    setting: &Setting,
+    current: Option<Value>,
+    forward: bool,
+) -> Option<Value> {
+    let delta: i64 = if forward { 1 } else { -1 };
+    match (&setting.kind, current) {
+        (SettingKind::Bool, _) => Some(Value::Boolean(forward)),
+        (SettingKind::Choice(choices), current) => {
+            let index = choices.iter().position(|choice| {
+                current.as_ref().and_then(Value::as_str)
+                    == Some(choice.value.as_str())
+            });
+            let next = match (index, forward) {
+                (Some(index), true) => (index + 1).min(choices.len() - 1),
+                (Some(index), false) => index.saturating_sub(1),
+                (None, _) => 0,
+            };
+            choices
+                .get(next)
+                .map(|choice| Value::String(choice.value.clone()))
+        }
+        (SettingKind::Integer { .. }, Some(Value::Integer(value))) => {
+            Some(Value::Integer(value + delta))
+        }
+        (SettingKind::Number { .. }, Some(Value::Float(value))) => {
+            Some(Value::Float(value + if forward { 1.0 } else { -1.0 }))
+        }
+        (SettingKind::Number { .. }, Some(Value::Integer(value))) => {
+            Some(Value::Float(number_from(value + delta)))
+        }
+        _ => None,
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "setting values are far below 2^52"
+)]
+fn number_from(value: i64) -> f64 {
+    value as f64
+}
+
+/// Link modifiers with `modifier` switched, or `None` when that would leave
+/// none.
+fn toggled_modifiers(current: Option<Value>, modifier: &str) -> Option<String> {
+    let current = match current {
+        Some(Value::String(text)) => text,
+        _ if cfg!(target_os = "macos") => "cmd".to_owned(),
+        _ => "ctrl".to_owned(),
+    };
+    let held: Vec<&str> = current.split('-').collect();
+    let on = held.contains(&modifier);
+    let next: Vec<&str> = ["cmd", "ctrl", "alt", "shift"]
+        .into_iter()
+        .filter(|token| {
+            if *token == modifier {
+                !on
+            } else {
+                held.contains(token)
+            }
+        })
+        .collect();
+    (!next.is_empty()).then(|| next.join("-"))
 }
 
 fn current() -> SettingPlatform {
@@ -1205,10 +1060,9 @@ impl Render for SettingsView {
             .track_focus(&self.focus)
             .on_action(cx.listener(
                 |view, action: &InvokeWindow, window, cx| {
-                    if let Err(error) = view.run(&action.0, window, cx) {
-                        view.status.failed(error.to_string());
-                        cx.notify();
-                    }
+                    // A command for terminal windows has nothing to act on
+                    // here; it is not a failed save.
+                    let _ = view.run(&action.0, window, cx);
                 },
             ))
             .on_action(cx.listener(
@@ -1240,7 +1094,44 @@ impl SettingsView {
 
     /// Whether the first read finished and no write is in flight or queued.
     pub(super) fn settled(&self) -> bool {
-        self.base.is_some() && !self.writing && self.queued.is_empty()
+        self.base.is_some() && !self.busy()
+    }
+
+    /// Steps the setting as an arrow key on its control does.
+    pub(super) fn step_once(
+        &mut self,
+        path: &str,
+        forward: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let setting = self.model.setting(path).expect("a known setting");
+        self.step_setting(setting, forward, cx);
+    }
+
+    /// Runs the control an action key names, as Space on it does.
+    pub(super) fn press(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.action_stop(key.to_owned(), cx).focus(window, cx);
+        self.command(ids::SETTINGS_TOGGLE, window, cx).unwrap();
+    }
+
+    /// Escape in the setting's field.
+    pub(super) fn escape(&mut self, path: &str, cx: &mut Context<'_, Self>) {
+        let setting = self.model.setting(path).expect("a known setting");
+        self.cancel_field(setting.path.as_str(), cx);
+    }
+
+    /// Follows a reload that failed with `message`.
+    pub(super) fn follow_failed_reload(
+        &mut self,
+        message: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.reloaded(Err(message.to_owned()), cx);
     }
 
     pub(super) fn status_text(&self) -> String {

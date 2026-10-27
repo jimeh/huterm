@@ -638,13 +638,14 @@ say so and open the file.
 - A row shows its label, a dot when the file sets it, its description, an
   apply note when it is not live ("Applies to new terminals"), and an inline
   error. Its control sits on the right with a reset button when the file
-  sets it; reset removes the key.
+  sets it; reset removes the key. The Theme row's Reset removes only
+  `theme.name`, keeping color overrides, and the Keybindings, Global
+  shortcuts, and Quake rows have none until their editors exist.
 - A setting whose visible-when condition does not hold is hidden. A setting
   for another platform is hidden, unless the file sets it, in which case it
   shows read-only with "macOS only. Set in config.toml and ignored here."
-- Search filters every section by label, description, and path, groups the
-  results by section, and offers the matching section as a link when nothing
-  in its cards matches, such as "keybindings".
+- Search filters every section by label, description, and path, and groups
+  the results by section.
 - General adds a card with the file's path and Open and Show in Finder (or
   Folder) buttons above `watch_config`. Keybindings and Quake windows show
   their rows with an Open config.toml button.
@@ -684,28 +685,40 @@ static for the process, so their strings serve as menu item identifiers.
 
 ### Saving and status
 
-- The window keeps a base `Snapshot`, loaded when it opens and after every
-  save and reload. A change becomes one `Patch::Set` or `Patch::Remove` and
-  runs `ConfigFile::apply` with `config::validator` on the background
-  executor. Writes are serialized: a change made while one is in flight
-  queues behind it.
+- The window keeps a base `Snapshot`, loaded and validated on the
+  background executor when it opens and after every save and reload. A
+  change becomes one `Patch::Set` or `Patch::Remove` and runs
+  `ConfigFile::apply` with `config::validator` on the background executor.
+  Writes are serialized: a change made while one is in flight queues behind
+  it, replacing a queued change to the same setting. A queued change keeps
+  the snapshot it was made against, moving on only past this window's own
+  writes that met an unchanged file, so it conflicts with an edit made
+  elsewhere instead of overwriting it.
+- Controls show a change's value until its write settles, so repeated steps
+  and toggles build on each other. Closing the window saves a focused
+  field's draft and waits for pending writes; Quit does not wait.
 - After a successful write the window asks for a manual reload, so the
   change applies whether or not watching is on, and shows "Saved".
 - The footer shows one status: "Watching config.toml", "Not watching
   config.toml", "Saved", "Reloaded", "config.toml changed on disk" with
   Reload, or an error with its action. While watching is off, the window
   checks the file when it comes forward.
-- An invalid file, from a reload or from `ApplyError::InvalidFile`, puts a
-  banner over the controls with the parser's message and an Open
-  config.toml button, and makes every control read-only until the file
-  parses. The running settings stay as they were.
+- An invalid file, from the window's own validation or from
+  `ApplyError::InvalidFile`, puts a banner over the controls with the
+  parser's message and an Open config.toml button, plus Reload while
+  watching is off, and makes every control read-only until the file
+  validates. Pending changes settle unsaved. The running settings stay as
+  they were. A reload that fails for a reason outside the file, such as a
+  global shortcut another application holds, shows "Not applied" instead.
 - `ApplyError::Conflict` keeps the entered value in its control, marks the
   row, and shows the conflict with "Use mine", which reapplies the value on
   a freshly loaded base, and "Use file", which discards it. Other write
-  errors show the message in the footer and under the row, and the control
-  returns to the file's value.
-- A reload refreshes the base and every control. A row whose value changed
-  on disk flashes once.
+  errors show the message in the footer and under the row; a field keeps
+  its text so it can be corrected, and other controls return to the file's
+  value.
+- A reload refreshes the base and every control. A field holding an unsaved
+  draft keeps it, and the row shows a conflict when the file changed that
+  setting. Escape in a field puts back its value.
 
 ### Keyboard
 
@@ -722,10 +735,12 @@ tab stops.
 
 ### PR 3 files
 
-- `crates/huterm-gpui/src/desktop/settings.rs` and a `settings/` directory:
-  `window.rs` (the view), `controls.rs`, `values.rs` (pure value lookup,
-  defaults, input checks, and patch building), and `status.rs` (the footer
-  state).
+- `crates/huterm-gpui/src/desktop/settings/`: `values.rs` (pure value
+  lookup, defaults, input checks, and patch building) and `status.rs` (the
+  footer state).
+- `crates/huterm-gpui/src/desktop/windows/settings_window.rs` (the view and
+  its commands) with `controls.rs`, `render.rs`, and `saving.rs` (loads,
+  the write queue, conflicts, and drafts).
 - `windows.rs`: opening and focusing the window, reload notifications, and
   Quit.
 - `huterm-protocol` and `keymap.rs`: the new commands and their bindings.

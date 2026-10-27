@@ -311,3 +311,229 @@ fn the_size_limit_accepts_a_size_and_a_byte_count(cx: &mut TestAppContext) {
     });
     assert_eq!(file.text(), "[terminal]\nscrollback_bytes = 67108864\n");
 }
+
+#[gpui::test]
+fn reset_on_the_theme_clears_only_its_name(cx: &mut TestAppContext) {
+    let original = "theme = { name = \"nord\", background = \"#000000\" }\n\n[[keybinding]]\nkey = \"cmd-k\"\ncommand = \"copy\"\n";
+    let file = ScratchConfig::new("reset-theme", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_view(&mut harness, |view, cx| {
+        // Keybindings have no Reset until their editor exists.
+        view.set("keybinding", None, cx);
+        view.set("theme", None, cx);
+    });
+    harness.wait_for("the theme name to reset", |cx| {
+        settled(cx) && !file.text().contains("nord")
+    });
+    assert_eq!(
+        file.text(),
+        "theme = { background = \"#000000\" }\n\n[[keybinding]]\nkey = \"cmd-k\"\ncommand = \"copy\"\n"
+    );
+}
+
+#[gpui::test]
+fn a_queued_edit_conflicts_with_an_external_change_to_its_setting(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("queued", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // Another editor changes the font size after Settings read the file.
+    std::fs::write(file.path(), "[font]\nsize = 20.0\n").unwrap();
+    with_view(&mut harness, |view, cx| {
+        // The first write rebases over the external change; the second,
+        // queued behind it, must not overwrite it.
+        view.set("tabs.always_show", Some(toml::Value::Boolean(true)), cx);
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+    });
+    harness.wait_for("the queued conflict", |cx| {
+        settled(cx) && conflicted(cx, "font.size")
+    });
+    assert_eq!(
+        file.text(),
+        "[font]\nsize = 20.0\n\n[tabs]\nalways_show = true\n"
+    );
+}
+
+#[gpui::test]
+fn repeated_steps_build_on_each_other_before_they_save(
+    cx: &mut TestAppContext,
+) {
+    // The file writes an integer for a float setting.
+    let file = ScratchConfig::new("steps", "[font]\nsize = 13\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_view(&mut harness, |view, cx| {
+        view.step_once("font.size", true, cx);
+        view.step_once("font.size", true, cx);
+        view.step_once("terminal.bell.visual", false, cx);
+        view.step_once("terminal.bell.visual", true, cx);
+    });
+    harness.wait_for("both settings to save", |cx| {
+        settled(cx) && file.text().contains("15.0")
+    });
+    assert_eq!(
+        file.text(),
+        "[font]\nsize = 15.0\n\n[terminal.bell]\nvisual = true\n"
+    );
+}
+
+#[gpui::test]
+fn a_saved_field_shows_its_value_without_a_conflict(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("display", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "15.0", window, cx);
+        view.enter("font.size", cx);
+    });
+    harness
+        .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
+    with_window(&mut harness, |view, _, cx| {
+        assert!(!view.conflicted("font.size"));
+        assert_eq!(view.field_value("font.size", cx), "15");
+    });
+    // A reload after the save leaves it alone too.
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the reload's read", settled);
+    harness
+        .cx
+        .update(|cx| assert!(!conflicted(cx, "font.size")));
+}
+
+#[gpui::test]
+fn escape_in_a_field_puts_back_its_value(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("escape", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "99", window, cx);
+        view.escape("font.size", cx);
+        assert_eq!(view.field_value("font.size", cx), "13");
+        // Leaving the field afterwards saves nothing.
+        view.blur("font.size", cx);
+    });
+    harness.wait_for("Settings to settle", settled);
+    assert_eq!(file.text(), "[font]\nsize = 13.0\n");
+}
+
+#[gpui::test]
+fn closing_settings_waits_for_its_saves_and_applies_them(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("close", "");
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.general.watch_config = false;
+    });
+    open_settings(&mut harness, &file.path());
+    harness.cx.update(|cx| {
+        settings(cx)
+            .unwrap()
+            .update(cx, |view, window, cx| {
+                view.set(
+                    "tabs.always_show",
+                    Some(toml::Value::Boolean(true)),
+                    cx,
+                );
+                view.set("font.size", Some(toml::Value::Float(16.0)), cx);
+                view.command(ids::CLOSE_PANE, window, cx)
+            })
+            .unwrap()
+            .unwrap();
+    });
+    harness.wait_for("Settings to close after saving", |cx| {
+        settings(cx).is_none() && cx.global::<Desktop>().config.font.size > 15.0
+    });
+    assert_eq!(
+        file.text(),
+        "[tabs]\nalways_show = true\n\n[font]\nsize = 16.0\n"
+    );
+}
+
+#[gpui::test]
+fn an_invalid_file_settles_every_pending_save(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("settle", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let broken = "[font]\nsize 13.0\n";
+    std::fs::write(file.path(), broken).unwrap();
+    with_view(&mut harness, |view, cx| {
+        view.set("tabs.always_show", Some(toml::Value::Boolean(true)), cx);
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+    });
+    harness.wait_for("the queue to settle", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.read_only())
+                    .unwrap_or(false)
+            })
+    });
+    assert_eq!(file.text(), broken);
+}
+
+#[gpui::test]
+fn a_semantically_invalid_file_opens_read_only(cx: &mut TestAppContext) {
+    let invalid = "[tabs]\nmin_width = 300.0\nmax_width = 100.0\n";
+    let file = ScratchConfig::new("semantic", invalid);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_view(&mut harness, |view, _| assert!(view.read_only()));
+}
+
+#[gpui::test]
+fn a_reload_refused_outside_the_file_keeps_settings_editable(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("not-applied", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_view(&mut harness, |view, cx| {
+        view.follow_failed_reload("ctrl-` is held by another application", cx);
+    });
+    // The reload's read decides whether the file is to blame.
+    harness.wait_for("the reload's read", |cx| {
+        settings(cx).is_some_and(|handle| {
+            handle
+                .read_with(cx, |view, _| {
+                    view.status_text().starts_with("Not applied")
+                })
+                .unwrap_or(false)
+        })
+    });
+    with_view(&mut harness, |view, _| {
+        assert!(!view.read_only());
+        assert_eq!(
+            view.status_text(),
+            "Not applied: ctrl-` is held by another application"
+        );
+    });
+}
+
+#[gpui::test]
+fn theme_cards_and_modifier_chips_work_from_the_keyboard(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keyboard", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.press("theme:nord", window, cx);
+        view.press("chip:terminal.link_modifiers:shift", window, cx);
+    });
+    harness.wait_for("both saves", |cx| {
+        settled(cx) && file.text().contains("link_modifiers")
+    });
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    assert_eq!(
+        file.text(),
+        format!(
+            "[theme]\nname = \"nord\"\n\n[terminal]\nlink_modifiers = \"{modifier}-shift\"\n"
+        )
+    );
+}

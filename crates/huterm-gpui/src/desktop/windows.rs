@@ -1878,11 +1878,17 @@ fn request_quit(cx: &mut App) {
     } else {
         // Give unviewed sessions a confirmation host without creating a shell.
         open_window_inner(cx, false);
-        if cx.windows().is_empty() {
+        // The Settings window cannot host, so it does not count.
+        let desktop = cx.global::<Desktop>();
+        let hosts = cx
+            .windows()
+            .iter()
+            .any(|handle| desktop.windows.record(handle.window_id()).is_some());
+        if hosts {
+            cx.defer(request_quit);
+        } else {
             #[cfg(target_os = "macos")]
             native_quit::cancel_request();
-        } else {
-            cx.defer(request_quit);
         }
     }
 }

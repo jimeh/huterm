@@ -2,14 +2,13 @@
 //! controls the override table names.
 
 use gpui::{
-    AnyElement, Context, ElementId, Window, anchored, deferred, div,
-    prelude::*, px,
+    AnyElement, Context, ElementId, Focusable as _, Window, anchored, deferred,
+    div, prelude::*, px,
 };
 use huterm_config::settings::{Choice, Setting, SettingKind};
 use toml::Value;
 
 use super::super::super::overlay::Swatch;
-use super::super::super::settings::values::{patch_at, shown};
 use super::super::super::settings::{Special, special};
 use super::{
     SEGMENTED_MAX, SettingsView, button, modifier_label, option_label,
@@ -43,13 +42,17 @@ impl SettingsView {
                 | Special::GlobalShortcuts
                 | Special::QuakeProfiles,
             ) => {
-                return button(
-                    format!("settings-open-{}", setting.path),
-                    swatch,
-                )
-                .child("Open config.toml")
-                .on_click(|_, _, cx| super::super::open_config_file(cx))
-                .into_any_element();
+                let element =
+                    button(format!("settings-open-{}", setting.path), swatch)
+                        .child("Open config.toml");
+                return self
+                    .actionable(
+                        element,
+                        format!("open:{}", setting.path),
+                        swatch,
+                        cx,
+                    )
+                    .into_any_element();
             }
             Some(Special::Modifiers) => {
                 return self.render_modifiers(setting, read_only, swatch, cx);
@@ -99,7 +102,8 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
-        let on = shown(setting, &self.file, &self.defaults)
+        let on = self
+            .value(setting)
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
         let handle = self.stop(path, cx).tab_stop(!read_only);
@@ -145,8 +149,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
-        let current = shown(setting, &self.file, &self.defaults)
-            .and_then(|value| value.as_bool());
+        let current = self.value(setting).and_then(|value| value.as_bool());
         let handle = self.stop(path, cx).tab_stop(!read_only);
         let mut group =
             segment_group(format!("settings-tristate-{path}"), swatch)
@@ -186,7 +189,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
-        let selected = shown(setting, &self.file, &self.defaults);
+        let selected = self.value(setting);
         let handle = self.stop(path, cx).tab_stop(!read_only);
         let mut group =
             segment_group(format!("settings-segments-{path}"), swatch)
@@ -226,7 +229,8 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
-        let label = shown(setting, &self.file, &self.defaults)
+        let label = self
+            .value(setting)
             .as_ref()
             .and_then(Value::as_str)
             .and_then(|value| {
@@ -281,6 +285,7 @@ impl SettingsView {
     ) -> AnyElement {
         let path = setting.path.as_str();
         let field = self.field(setting, window, cx);
+        let _ = field.read(cx).focus_handle(cx).tab_stop(!read_only);
         let width = match (&setting.kind, special(path)) {
             (SettingKind::Text { .. }, _) => 180.0,
             (_, Some(Special::Size)) => 120.0,
@@ -334,7 +339,8 @@ impl SettingsView {
     ) -> AnyElement {
         let path = setting.path.as_str();
         let field = self.render_field(setting, read_only, swatch, window, cx);
-        let handle = self.stop(path, cx).tab_stop(!read_only);
+        let key = format!("fonts:{path}");
+        let handle = self.action_stop(key.clone(), cx).tab_stop(!read_only);
         let pick = select_trigger(format!("settings-fonts-{path}"), swatch)
             .track_focus(&handle)
             .key_context("SettingsControl")
@@ -344,8 +350,8 @@ impl SettingsView {
             .child(caret(swatch))
             .when(!read_only, |control| {
                 control.on_click(cx.listener(move |view, _, window, cx| {
-                    view.stop(path, cx).focus(window, cx);
-                    view.open_fonts(setting, window, cx);
+                    handle.focus(window, cx);
+                    view.act(&key, window, cx);
                 }))
             });
         div()
@@ -366,12 +372,12 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
-        let current = match shown(setting, &self.file, &self.defaults) {
-            Some(Value::String(text)) => text,
+        let current = self.value(setting);
+        let held = match &current {
+            Some(Value::String(text)) => text.clone(),
             _ if cfg!(target_os = "macos") => "cmd".to_owned(),
             _ => "ctrl".to_owned(),
         };
-        let held: Vec<&str> = current.split('-').collect();
         // macOS rejects Ctrl: Control-click opens the context menu.
         let offered: &[&str] = if cfg!(target_os = "macos") {
             &["cmd", "alt", "shift"]
@@ -380,20 +386,19 @@ impl SettingsView {
         };
         let mut chips = div().flex().flex_none().gap(px(4.0));
         for modifier in offered {
-            let on = held.contains(modifier);
-            let next: Vec<&str> = ["cmd", "ctrl", "alt", "shift"]
-                .into_iter()
-                .filter(|token| {
-                    if token == modifier {
-                        !on
-                    } else {
-                        held.contains(token)
-                    }
-                })
-                .collect();
+            let on = held.split('-').any(|token| token == *modifier);
+            // A link needs at least one modifier.
+            let enabled = !read_only
+                && super::toggled_modifiers(current.clone(), modifier)
+                    .is_some();
+            let key = format!("chip:{path}:{modifier}");
+            let handle = self.action_stop(key.clone(), cx).tab_stop(enabled);
             chips = chips.child(
                 div()
                     .id(id(format!("settings-{path}-{modifier}")))
+                    .track_focus(&handle)
+                    .key_context("SettingsControl")
+                    .focus(|style| style.shadow(swatch.focus_ring()))
                     .px(px(8.0))
                     .h(px(22.0))
                     .flex()
@@ -410,12 +415,13 @@ impl SettingsView {
                     .text_color(swatch.fg)
                     .child(modifier_label(modifier))
                     .when(read_only, |chip| chip.opacity(0.5))
-                    // A link needs at least one modifier.
-                    .when(!read_only && !next.is_empty(), |chip| {
-                        let value = Value::String(next.join("-"));
-                        chip.on_click(cx.listener(move |view, _, _, cx| {
-                            view.write(setting, Some(value.clone()), cx);
-                        }))
+                    .when(enabled, |chip| {
+                        chip.on_click(cx.listener(
+                            move |view, _, window, cx| {
+                                handle.focus(window, cx);
+                                view.act(&key, window, cx);
+                            },
+                        ))
                     }),
             );
         }
@@ -438,23 +444,27 @@ impl SettingsView {
             .unwrap_or("huterm-dark")
             .to_owned();
         let mut cards = div().flex().flex_wrap().gap(px(8.0));
-        for (name, preview) in &self.themes {
+        let themes = self.themes.clone();
+        for (name, preview) in &themes {
             let on = *name == selected;
-            let value = Value::String(name.clone());
-            cards =
-                cards.child(
-                    theme_card(name, preview.as_ref(), on, read_only, swatch)
-                        .when(!read_only && !on, |card| {
-                            card.on_click(cx.listener(move |view, _, _, cx| {
-                                view.submit(
-                                    setting,
-                                    patch_at("theme.name", Some(value.clone())),
-                                    cx,
-                                );
-                            }))
-                        }),
-                );
+            let key = format!("theme:{name}");
+            let handle = self.action_stop(key.clone(), cx).tab_stop(!read_only);
+            cards = cards.child(
+                theme_card(name, preview.as_ref(), on, read_only, swatch)
+                    .track_focus(&handle)
+                    .key_context("SettingsControl")
+                    .focus(|style| style.shadow(swatch.focus_ring()))
+                    .when(!read_only && !on, |card| {
+                        card.on_click(cx.listener(
+                            move |view, _, window, cx| {
+                                handle.focus(window, cx);
+                                view.act(&key, window, cx);
+                            },
+                        ))
+                    }),
+            );
         }
+        let _ = setting;
         let overrides: Vec<String> = self
             .file
             .get("theme")

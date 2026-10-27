@@ -30,6 +30,9 @@ enum Event {
     Invalid(String),
     /// A write failed and left the file as it was.
     Failed(String),
+    /// A reload failed for a reason outside the file, such as a global
+    /// shortcut another application holds.
+    NotApplied(String),
 }
 
 /// The footer's status line.
@@ -44,6 +47,8 @@ pub(crate) struct Line {
 pub(crate) struct FileStatus {
     watching: bool,
     latest: Option<Event>,
+    /// The next reload is the one a save asked for, so it keeps "Saved".
+    own_reload: bool,
 }
 
 impl FileStatus {
@@ -51,6 +56,7 @@ impl FileStatus {
         Self {
             watching,
             latest: None,
+            own_reload: false,
         }
     }
 
@@ -64,14 +70,21 @@ impl FileStatus {
 
     pub(crate) fn saved(&mut self) {
         self.latest = Some(Event::Saved);
+        self.own_reload = true;
     }
 
-    /// A reload applied the file. One that follows this window's own save
-    /// keeps reporting the save.
+    /// A reload applied the file. The reload a save asked for keeps
+    /// reporting the save, as does one while a save is running.
     pub(crate) fn reloaded(&mut self) {
-        if !matches!(self.latest, Some(Event::Saving | Event::Saved)) {
+        let own = std::mem::take(&mut self.own_reload);
+        let saving = matches!(self.latest, Some(Event::Saving));
+        if !(saving || own && matches!(self.latest, Some(Event::Saved))) {
             self.latest = Some(Event::Reloaded);
         }
+    }
+
+    pub(crate) fn not_applied(&mut self, message: impl Into<String>) {
+        self.latest = Some(Event::NotApplied(message.into()));
     }
 
     pub(crate) fn changed_on_disk(&mut self) {
@@ -117,15 +130,25 @@ impl FileStatus {
                 "config.toml changed on disk",
                 Some(Action::Reload),
             ),
+            // With watching off, a fixed file applies only on a reload.
             Some(Event::Invalid(_)) => line(
                 Tone::Error,
                 "config.toml has an error",
-                Some(Action::Open),
+                Some(if self.watching {
+                    Action::Open
+                } else {
+                    Action::Reload
+                }),
             ),
             Some(Event::Failed(message)) => Line {
                 tone: Tone::Error,
                 text: format!("Not saved: {message}"),
                 action: None,
+            },
+            Some(Event::NotApplied(message)) => Line {
+                tone: Tone::Error,
+                text: format!("Not applied: {message}"),
+                action: Some(Action::Reload),
             },
             None if self.watching => {
                 line(Tone::Ok, "Watching config.toml", None)
@@ -168,6 +191,18 @@ mod tests {
         status.saved();
         status.reloaded();
         assert_eq!(text(&status), (Tone::Ok, "Saved".into(), None));
+        // A later reload, such as from another editor, reports itself.
+        status.reloaded();
+        assert_eq!(text(&status), (Tone::Ok, "Reloaded".into(), None));
+        status.not_applied("ctrl-` is taken");
+        assert_eq!(
+            text(&status),
+            (
+                Tone::Error,
+                "Not applied: ctrl-` is taken".into(),
+                Some(Action::Reload)
+            )
+        );
         status.failed("permission denied");
         assert_eq!(
             text(&status),
@@ -210,6 +245,9 @@ mod tests {
         assert!(status.invalid());
         assert_eq!(status.invalid_message(), Some("expected `=` at line 14"));
         assert_eq!(status.line().action, Some(Action::Open));
+        // With watching off, the fix applies only on a reload.
+        status.watching(false);
+        assert_eq!(status.line().action, Some(Action::Reload));
         status.reloaded();
         assert!(!status.invalid());
         assert_eq!(status.invalid_message(), None);

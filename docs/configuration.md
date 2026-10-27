@@ -30,8 +30,11 @@ not parse or has an invalid setting, Settings shows the error, keeps the
 running settings, and is read-only until the file is fixed. When another
 editor changed the same setting since Settings read it, the row keeps your
 value and offers **Use mine**, which saves it over the file's, or **Use
-file**, which keeps the file's. While watching is off, Settings notices a
-changed file when its window comes forward and offers Reload.
+file**, which keeps the file's. A field you are still typing in keeps your
+text when the file reloads, and Escape puts its value back. While watching
+is off, Settings notices a changed file when its window comes forward and
+offers Reload. Closing Settings saves the field you were typing in and
+waits for pending saves.
 
 Keybindings, global shortcuts, quake profiles, theme colors, and `[themes]`
 are edited in the file for now; their sections link to it. In the window,
