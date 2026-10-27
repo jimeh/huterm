@@ -966,7 +966,7 @@ run_smoke_step() {
 case "$(uname -s)" in
   Darwin)
     case "$smoke_step" in
-      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-refresh|macos-clipboard|macos-palette|macos-overlays|macos-viewers|macos-titlebar|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
+      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-refresh|macos-clipboard|macos-palette|macos-overlays|macos-viewers|macos-settings|macos-titlebar|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
       *) echo "Unknown macOS smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -1002,6 +1002,9 @@ case "$(uname -s)" in
     if run_smoke_step macos-viewers; then
       HUTERM_PALETTE_SMOKE_ONLY=viewers bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
     fi
+    if run_smoke_step macos-settings; then
+      HUTERM_PALETTE_SMOKE_ONLY=settings bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
+    fi
     if run_smoke_step macos-titlebar; then
       HUTERM_PALETTE_SMOKE_ONLY=titlebar bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
     fi
@@ -1021,7 +1024,7 @@ case "$(uname -s)" in
     ;;
   Linux)
     case "$smoke_step" in
-      all|renderer|presentation-queries|linux-desktop|linux-input|linux-clipboard|linux-palette|linux-overlays|linux-viewers|linux-client-frame|linux-integration|linux-fullscreen|linux-quake) ;;
+      all|renderer|presentation-queries|linux-desktop|linux-input|linux-clipboard|linux-palette|linux-overlays|linux-viewers|linux-settings|linux-client-frame|linux-integration|linux-fullscreen|linux-quake) ;;
       *) echo "Unknown Linux smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -1085,6 +1088,10 @@ case "$(uname -s)" in
     fi
     if run_smoke_step linux-viewers; then
       HUTERM_PALETTE_SMOKE_ONLY=viewers xvfb-run -a -e "$evidence_dir/linux-viewers-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
+        bun scripts/check-palette.ts target/debug/examples/palette_smoke
+    fi
+    if run_smoke_step linux-settings; then
+      HUTERM_PALETTE_SMOKE_ONLY=settings xvfb-run -a -e "$evidence_dir/linux-settings-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
         bun scripts/check-palette.ts target/debug/examples/palette_smoke
     fi
     if run_smoke_step linux-client-frame; then

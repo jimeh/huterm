@@ -757,7 +757,7 @@ tab stops.
 | A switch, select, number field, and reset each write only their key, preserving comments | GPUI tests writing a fixture file and reading it back |
 | A change applies with watching off | GPUI test |
 | An invalid file makes controls read-only; a conflict keeps the entered value | GPUI tests |
-| Keyboard: open Settings, search, move between controls, toggle, step, reset, and return to a terminal | A `settings` step in `smoke:macos-palette` and `smoke:linux-palette` (`HUTERM_PALETTE_SMOKE_ONLY=settings` runs it alone) |
+| Keyboard: open Settings, search, move between controls, toggle, step, reset, and return to a terminal | A `settings` step in `smoke:macos-palette` and `smoke:linux-palette` (`HUTERM_PALETTE_SMOKE_ONLY=settings` runs it alone), and the `macos-settings` and `linux-settings` CI smoke steps |
 | The window in the running app | `ux-review` |
 
 ### Non-goals for PR 3
