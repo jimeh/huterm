@@ -109,13 +109,9 @@ pub(super) struct Keys {
     pub(super) follow: Option<(String, String)>,
     /// A focused field went away with its row; focus moves to the window.
     pub(super) stranded: bool,
-    /// Each row's binding at the last sync, written out whole: a row whose
-    /// binding changed, such as after another editor removed an earlier
-    /// entry, is a different shortcut, and its fields start over.
-    pub(super) identities: HashMap<String, String>,
-    /// The row the window's last write changed, which keeps its identity
-    /// through that change.
-    pub(super) own_row: Option<String>,
+    /// Each row's binding at the last sync, to follow a field's shortcut
+    /// when another editor shifts or edits the entries.
+    pub(super) identities: HashMap<String, Identity>,
     /// Strokes recorded across every recording; a chord timer finishes its
     /// recording only while no later stroke has arrived.
     pub(super) strokes: u64,
@@ -125,6 +121,14 @@ pub(super) struct Keys {
 }
 
 impl Keys {
+    /// The key a field is held under.
+    pub(super) fn key_of(&self, id: gpui::EntityId) -> Option<String> {
+        self.fields
+            .iter()
+            .find(|(_, field)| field.entity_id() == id)
+            .map(|(key, _)| key.clone())
+    }
+
     /// The first error shown under a row: its write's or its fields'.
     #[cfg(all(test, feature = "test-support"))]
     pub(super) fn row_error(&self, row: &str) -> Option<String> {
@@ -177,10 +181,32 @@ impl Keys {
             follow: None,
             stranded: false,
             identities: HashMap::new(),
-            own_row: None,
             strokes: 0,
             timed_out_at: None,
         }
+    }
+}
+
+/// A row's binding, to recognize it when the entries move.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Identity {
+    whole: String,
+    key: String,
+    command: CommandId,
+}
+
+impl Identity {
+    fn of(listed: &ListedBinding) -> Self {
+        Self {
+            whole: format!("{:?}", listed.binding),
+            key: listed.binding.key.clone(),
+            command: listed.binding.command,
+        }
+    }
+
+    /// The same shortcut with another condition or other arguments.
+    fn same_shortcut(&self, other: &Self) -> bool {
+        self.key == other.key && self.command == other.command
     }
 }
 
@@ -845,20 +871,23 @@ impl SettingsView {
             field
         });
         let handle = field.read(cx).focus_handle(cx).tab_stop(true);
-        let focused = key.clone();
+        // Listeners find the field's key when they run: a field moves with
+        // its shortcut when another editor shifts the entries.
+        let id = field.entity_id();
         cx.on_focus(&handle, window, move |view, _, _| {
-            view.keys.editing = Some(focused.clone());
+            view.keys.editing = view.keys.key_of(id);
         })
         .detach();
-        let blurred = key.clone();
         cx.on_blur(&handle, window, move |view, window, cx| {
+            let Some(blurred) = view.keys.key_of(id) else {
+                return;
+            };
             if view.keys.editing.as_ref() == Some(&blurred) {
                 view.keys.editing = None;
             }
             view.keys.completion = None;
             // Blur runs inside a draw, where a redraw request is lost; the
             // save waits until the draw is done, so an error it finds shows.
-            let blurred = blurred.clone();
             cx.defer_in(window, move |view, _, cx| {
                 view.commit_key_field(&blurred, cx);
             });
@@ -867,16 +896,20 @@ impl SettingsView {
         if key.starts_with("when:") {
             // Typing a name in the focused field offers its completions;
             // an empty name, or text set from the file, offers none.
-            let changed = key.clone();
             cx.subscribe_in(
                 &field,
                 window,
                 move |view, field, _: &Changed, window, cx| {
-                    let field = field.read(cx);
-                    view.keys.completion =
-                        (field.focus_handle(cx).is_focused(window)
-                            && suggestions(field).is_some())
-                        .then(|| (changed.clone(), 0));
+                    let open = {
+                        let field = field.read(cx);
+                        field.focus_handle(cx).is_focused(window)
+                            && suggestions(field).is_some()
+                    };
+                    view.keys.completion = view
+                        .keys
+                        .key_of(id)
+                        .filter(|_| open)
+                        .map(|key| (key, 0));
                     cx.notify();
                 },
             )
@@ -911,35 +944,25 @@ impl SettingsView {
             .map(|listed| argument_text(listed, argument).unwrap_or_default())
     }
 
-    /// Brings every keybinding field up to the file. Only the field being
-    /// edited keeps a draft, and only while its shortcut is active; fields
-    /// whose rows are gone go.
+    /// Brings every keybinding field up to the file. Fields follow their
+    /// shortcut: one whose binding now sits at another row moves there with
+    /// its draft; one whose binding changed in place, keeping its key and
+    /// command, stays; any other row change drops it. A draft stays while
+    /// it is being edited or shows an error, such as a failed write, and
+    /// its shortcut is active. While the file is invalid fields wait.
     pub(super) fn sync_key_fields(&mut self, cx: &mut Context<'_, Self>) {
-        // While the file is invalid there is nothing to compare against;
-        // fields and their drafts wait for the next good read.
         let Some(inventory) = &self.keys.inventory else {
             return;
         };
-        let identities: HashMap<String, String> = rows(inventory)
+        let identities: HashMap<String, Identity> = rows(inventory)
             .into_iter()
-            .map(|(name, listed)| (name, format!("{:?}", listed.binding)))
+            .map(|(name, listed)| (name, Identity::of(listed)))
             .collect();
         let previous = std::mem::replace(&mut self.keys.identities, identities);
-        let own = self.keys.own_row.take();
+        self.follow_moved_rows(&previous);
         let keys: Vec<String> = self.keys.fields.keys().cloned().collect();
         for key in keys {
-            let moved = field_row(&key).is_some_and(|row| {
-                own.as_deref() != Some(row)
-                    && previous.get(row).is_some_and(|before| {
-                        self.keys.identities.get(row) != Some(before)
-                    })
-            });
-            let text = if moved {
-                None
-            } else {
-                self.key_field_text(&key)
-            };
-            let Some(text) = text else {
+            let Some(text) = self.key_field_text(&key) else {
                 // A field leaving while edited would keep focus with no
                 // element to dispatch from.
                 if self.keys.editing.as_ref() == Some(&key) {
@@ -955,8 +978,6 @@ impl SettingsView {
                 continue;
             };
             let current = field.read(cx).text().to_owned();
-            // A draft stays while it is being edited, or while it shows an
-            // error, such as a write that failed, so it can be retried.
             let draft = self.keys.synced.get(&key) != Some(&current)
                 && (self.keys.editing.as_ref() == Some(&key)
                     || self.keys.errors.contains_key(&key))
@@ -967,6 +988,97 @@ impl SettingsView {
             self.keys.synced.insert(key, text);
         }
         cx.notify();
+    }
+
+    /// Moves or drops fields whose rows changed since `previous`.
+    fn follow_moved_rows(&mut self, previous: &HashMap<String, Identity>) {
+        let rows: HashSet<String> = self
+            .keys
+            .fields
+            .keys()
+            .filter_map(|key| field_row(key).map(str::to_owned))
+            .collect();
+        let mut moves: HashMap<String, Option<String>> = HashMap::new();
+        for row in rows {
+            let Some(before) = previous.get(&row) else {
+                continue;
+            };
+            if self.keys.identities.get(&row) == Some(before) {
+                continue;
+            }
+            let elsewhere: Vec<&String> = self
+                .keys
+                .identities
+                .iter()
+                .filter(|(_, now)| *now == before)
+                .map(|(name, _)| name)
+                .collect();
+            let action = match elsewhere.as_slice() {
+                [to] => Some((*to).clone()),
+                _ if self
+                    .keys
+                    .identities
+                    .get(&row)
+                    .is_some_and(|now| now.same_shortcut(before)) =>
+                {
+                    continue;
+                }
+                _ => None,
+            };
+            moves.insert(row, action);
+        }
+        if moves.is_empty() {
+            return;
+        }
+        // A field moving into a row displaces whatever stayed there.
+        let targets: HashSet<String> =
+            moves.values().flatten().cloned().collect();
+        let mut fields = HashMap::new();
+        let mut synced = HashMap::new();
+        let mut errors = HashMap::new();
+        let mut editing = None;
+        for (key, field) in std::mem::take(&mut self.keys.fields) {
+            let row = field_row(&key).map(str::to_owned);
+            let to = match row.as_ref().map(|row| moves.get(row)) {
+                Some(Some(Some(to))) => Some(key.replacen(
+                    row.as_deref().unwrap_or_default(),
+                    to,
+                    1,
+                )),
+                Some(Some(None)) => None,
+                _ if row.as_ref().is_some_and(|row| targets.contains(row)) => {
+                    None
+                }
+                _ => Some(key.clone()),
+            };
+            let Some(to) = to else {
+                if self.keys.editing.as_ref() == Some(&key) {
+                    self.keys.stranded = true;
+                }
+                continue;
+            };
+            if self.keys.editing.as_ref() == Some(&key) {
+                editing = Some(to.clone());
+            }
+            if let Some(text) = self.keys.synced.remove(&key) {
+                synced.insert(to.clone(), text);
+            }
+            if let Some(error) = self.keys.errors.remove(&key) {
+                errors.insert(to.clone(), error);
+            }
+            fields.insert(to, field);
+        }
+        // Row-level errors stay with their rows.
+        errors.extend(
+            std::mem::take(&mut self.keys.errors)
+                .into_iter()
+                .filter(|(key, _)| field_row(key).is_none()),
+        );
+        self.keys.fields = fields;
+        self.keys.synced = synced;
+        self.keys.errors = errors;
+        self.keys.editing = editing;
+        self.keys.completion = None;
     }
 
     /// Whether a field key's row is an active shortcut, which edits apply
@@ -1004,6 +1116,15 @@ impl SettingsView {
             if self.keys.errors.remove(key).is_some() {
                 cx.notify();
             }
+            return;
+        }
+        // While the file is invalid the draft waits, marked, for the fix.
+        if self.keys.inventory.is_none() || self.status.invalid() {
+            self.keys.errors.insert(
+                key.to_owned(),
+                "config.toml has an error. Not saved.".to_owned(),
+            );
+            cx.notify();
             return;
         }
         // Only an active shortcut is editable; anything else shows the file.
@@ -1052,10 +1173,11 @@ impl SettingsView {
         };
         // The text counts as saved now, so leaving the field before the
         // write lands does not write it again.
-        self.keys.errors.remove(key);
         let saved = self.keys.synced.insert(key.to_owned(), text);
         let origin = Some((key.to_owned(), saved.clone()));
-        if !self.edit_row(&name, field, value, origin, cx) {
+        if self.edit_row(&name, field, value, origin, cx) {
+            self.keys.errors.remove(key);
+        } else {
             // Not submitted: the text is still unsaved.
             match saved {
                 Some(saved) => {

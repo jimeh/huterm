@@ -59,6 +59,16 @@ impl EntryLocator {
         &self.content
     }
 
+    /// The same entry after a change the caller made to it, so a patch built
+    /// before that change still finds it.
+    #[must_use]
+    pub fn with_content(&self, content: Table) -> Self {
+        Self {
+            content,
+            ..self.clone()
+        }
+    }
+
     /// Finds the entry in `tree`: the one at the same index when its content
     /// is unchanged, else the only entry anywhere with that exact content.
     fn resolve(&self, tree: &Table) -> Result<usize, String> {

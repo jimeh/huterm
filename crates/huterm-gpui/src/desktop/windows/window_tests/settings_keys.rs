@@ -615,7 +615,7 @@ fn queued_steps_on_one_shortcut_build_on_each_other(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_draft_does_not_move_between_shortcuts_sharing_a_key(
+fn a_draft_follows_its_shortcut_past_one_sharing_its_key(
     cx: &mut TestAppContext,
 ) {
     let original = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_tab\"\n\n\
@@ -634,14 +634,26 @@ fn a_draft_does_not_move_between_shortcuts_sharing_a_key(
     with_window(&mut harness, |view, window, cx| {
         view.type_key("when:u1", "selection && split", window, cx);
     });
-    // Another editor removes the first entry; row u1 is now the other copy.
+    // Another editor removes the first entry; the draft's shortcut is now
+    // row u0, and row u1 is the other copy.
     let shifted = original.split_once("\n\n").unwrap().1.to_owned();
     std::fs::write(file.path(), &shifted).unwrap();
     with_view(&mut harness, SettingsView::follow_reload);
     harness.wait_for("the reread", settled);
-    with_view(&mut harness, |view, cx| view.blur_key("when:u1", cx));
-    harness.cx.run_until_parked();
-    assert_eq!(file.text(), shifted);
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "selection && split");
+        assert_eq!(view.key_text("when:u1", cx), "Terminal");
+        view.blur_key("when:u0", cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("split"));
+    assert_eq!(
+        file.text(),
+        shifted.replacen(
+            "when = \"selection\"",
+            "when = \"selection && split\"",
+            1
+        )
+    );
 }
 
 #[gpui::test]
@@ -737,7 +749,7 @@ fn focus_stays_on_a_theme_card_across_a_render(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn an_external_edit_that_shifts_entries_drops_a_moved_draft(
+fn an_external_edit_that_shifts_entries_moves_a_draft_with_it(
     cx: &mut TestAppContext,
 ) {
     let file = ScratchConfig::new("keys-shift", THREE);
@@ -753,12 +765,124 @@ fn an_external_edit_that_shifts_entries_drops_a_moved_draft(
     with_window(&mut harness, |view, window, cx| {
         view.type_key("when:u1", "Terminal", window, cx);
     });
-    // Another editor removes the first entry, so row u1 is now close_tab.
+    // Another editor removes the first entry, so the draft's shortcut is
+    // now row u0 and row u1 is close_tab.
     let shifted = THREE.split_once("\n\n").unwrap().1.to_owned();
     std::fs::write(file.path(), &shifted).unwrap();
     with_view(&mut harness, SettingsView::follow_reload);
     harness.wait_for("the reread", settled);
-    with_view(&mut harness, |view, cx| view.blur_key("when:u1", cx));
+    assert_eq!(focus_name(&mut harness), "key:when:u0");
+    with_view(&mut harness, |view, cx| view.blur_key("when:u0", cx));
+    saved(&mut harness, &file, |text| text.contains("when"));
+    assert_eq!(
+        file.text(),
+        shifted.replacen(
+            "command = \"new_window\"\n",
+            "command = \"new_window\"\nwhen = \"Terminal\"\n",
+            1
+        )
+    );
+}
+
+/// Two `copy` shortcuts the user added.
+const TWINS: &str = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"copy\"\n\
+                     when = \"selection\"\n\n[[keybinding]]\nkey = \"ctrl-alt-b\"\n\
+                     command = \"copy\"\nwhen = \"Terminal\"\n";
+
+#[gpui::test]
+fn a_queued_edit_never_lands_on_a_shortcut_that_shifted_into_its_place(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-twin-shift", TWINS);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // A setting's write runs first; the condition edit for the first copy
+    // waits behind it, and another editor removes that copy meanwhile.
+    let shifted = TWINS.split_once("\n\n").unwrap().1.to_owned();
+    with_window(&mut harness, |view, window, cx| {
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+        view.type_key("when:u0", "selection && split", window, cx);
+        view.enter_key("when:u0", cx);
+        std::fs::write(file.path(), &shifted).unwrap();
+    });
+    harness.wait_for("both writes", settled);
     harness.cx.run_until_parked();
-    assert_eq!(file.text(), shifted);
+    let text = file.text();
+    assert!(text.contains("when = \"Terminal\""), "{text}");
+    assert!(!text.contains("split"), "{text}");
+}
+
+#[gpui::test]
+fn a_conflicted_draft_survives_the_refresh(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("keys-conflict", TWINS);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // Another editor changes the same entry before the write applies.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u0", "selection && split", window, cx);
+        view.enter_key("when:u0", cx);
+        std::fs::write(
+            file.path(),
+            TWINS.replacen("when = \"selection\"", "when = \"Workspace\"", 1),
+        )
+        .unwrap();
+    });
+    harness.wait_for("the conflict and its refresh", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.key_error("u0").is_some())
+                    .unwrap_or(false)
+            })
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "selection && split");
+        assert!(view.key_error("u0").is_some());
+    });
+}
+
+#[gpui::test]
+fn a_focused_draft_survives_a_reread_that_finds_the_file_invalid(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-invalid-draft", TWINS);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:copy");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key("when:u0", window, cx);
+    });
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u0", "selection && split", window, cx);
+    });
+    std::fs::write(file.path(), format!("{TWINS}[window\n")).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the invalid reread", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.read_only())
+                    .unwrap_or(false)
+            })
+    });
+    // Focus leaves the hidden field; its save waits for the fix.
+    with_view(&mut harness, |view, cx| view.blur_key("when:u0", cx));
+    std::fs::write(file.path(), TWINS).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the good reread", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| !view.read_only())
+                    .unwrap_or(false)
+            })
+    });
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "selection && split");
+        view.enter_key("when:u0", cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("split"));
 }
