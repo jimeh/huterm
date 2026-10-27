@@ -2,7 +2,7 @@
 
 Status: in progress. Approved on 2026-10-26 after four Codex review rounds.
 PR 1 (the foundation) shipped in #263, and PR 2 (the settings model)
-in #266. PR 3 (the window and controls) is in #269, and PR 4 (the
+in #266, and PR 3 (the window and controls) in #269. PR 4 (the
 keybinding editor) is in progress. Plans
 [issue #35][issue-35] and [issue #34][issue-34] within
 [epic #14][issue-14]. The UI decisions come from two rounds of HTML mockups
