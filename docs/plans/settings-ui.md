@@ -1016,8 +1016,8 @@ PR of the series; it closes #35.
 - Writes join the window's setting queue and conflict checks unchanged;
   their paths are dotted, so profile names Settings edits are bare TOML keys
   (letters, digits, `_`, and `-`). A profile whose name needs quoting is
-  listed, and its card shows the values read-only with a note to edit it in
-  `config.toml`.
+  listed, and its card says it stays in `config.toml`; dotted paths cannot
+  reach its values.
 
 ### Profiles
 
@@ -1067,8 +1067,10 @@ PR of the series; it closes #35.
 
 The dropdown, New profile, the name field and its buttons, the fields,
 Delete profile, and every global shortcut control are tab stops in that
-order. Removing a global shortcut moves focus to the next row's key cap, or
-to Add global shortcut; deleting a profile moves focus to the dropdown.
+order. Removing a global shortcut moves focus to Add global shortcut;
+deleting a profile moves focus to the dropdown. In a sidebar search, the
+Quake profiles and Global shortcuts rows offer Show, which opens the
+section.
 Saving, conflicts, invalid files, and read-only behavior follow PR 3. The
 sidebar count for Quake windows is the number of profile values the file
 sets plus the number of global shortcuts. No new commands or bindings.
@@ -1077,6 +1079,10 @@ sets plus the number of global shortcuts. No new commands or bindings.
 
 - `crates/huterm-config/src/quake.rs` and `settings.rs`: profile metadata
   and the template.
+- `crates/huterm-config/src/document/splice.rs`: `Set` of a table of plain
+  values that does not exist writes its own `[section]`, and `Remove` of a
+  table written as sections removes them with their comments. The profile
+  map joins the tables that go once empty.
 - `crates/huterm-gpui/src/desktop/windows/settings_window/quake.rs`: the
   section, the profile dropdown and lifecycle, and global shortcut rows.
 - `crates/huterm-gpui/src/desktop/settings/`: global shortcut edits as

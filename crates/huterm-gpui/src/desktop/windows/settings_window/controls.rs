@@ -37,11 +37,16 @@ impl SettingsView {
             Some(Special::ThemePicker) => {
                 return self.render_themes(setting, read_only, swatch, cx);
             }
-            Some(
-                Special::Keybindings
-                | Special::GlobalShortcuts
-                | Special::QuakeProfiles,
-            ) => {
+            // Search results lead to the section's editors.
+            Some(Special::GlobalShortcuts | Special::QuakeProfiles) => {
+                let element =
+                    button(format!("settings-show-{}", setting.path), swatch)
+                        .child("Show");
+                return self
+                    .actionable(element, "qgo".to_owned(), swatch, cx)
+                    .into_any_element();
+            }
+            Some(Special::Keybindings) => {
                 let element =
                     button(format!("settings-open-{}", setting.path), swatch)
                         .child("Open config.toml");
@@ -233,10 +238,17 @@ impl SettingsView {
             .value(setting)
             .as_ref()
             .and_then(Value::as_str)
-            .and_then(|value| {
-                choices.iter().find(|choice| choice.value == value)
-            })
-            .map_or_else(|| "Default".to_owned(), option_label);
+            .map_or_else(
+                || "Default".to_owned(),
+                // A value the menu does not offer, such as a display's
+                // `id:` identifier, shows as itself.
+                |value| {
+                    choices
+                        .iter()
+                        .find(|choice| choice.value == value)
+                        .map_or_else(|| value.to_owned(), option_label)
+                },
+            );
         let handle = self.stop(path, cx).tab_stop(!read_only);
         let trigger = select_trigger(format!("settings-select-{path}"), swatch)
             .track_focus(&handle)
@@ -581,7 +593,10 @@ fn segment(
         })
 }
 
-fn select_trigger(name: String, swatch: Swatch) -> gpui::Stateful<gpui::Div> {
+pub(super) fn select_trigger(
+    name: String,
+    swatch: Swatch,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id(name))
         .flex()
@@ -599,6 +614,6 @@ fn select_trigger(name: String, swatch: Swatch) -> gpui::Stateful<gpui::Div> {
         .focus(|style| style.shadow(swatch.focus_ring()))
 }
 
-fn caret(swatch: Swatch) -> gpui::Div {
+pub(super) fn caret(swatch: Swatch) -> gpui::Div {
     div().flex_none().text_color(swatch.dim).child("▾")
 }

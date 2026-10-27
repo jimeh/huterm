@@ -189,6 +189,50 @@ fn resetting_a_named_profile_last_key_keeps_the_profile() {
 }
 
 #[test]
+fn a_new_table_of_plain_values_gets_its_own_section() {
+    let source = "# Mine.\n[quake.profiles.logs]\nheight = 0.3\n\n[[global_keybinding]]\nkey = \"ctrl-alt-t\"\ncommand = \"toggle_quake\"\n";
+    assert_eq!(
+        rendered(
+            source,
+            &[set("quake.profiles.build", Value::Table(Table::new()))]
+        ),
+        "# Mine.\n[quake.profiles.logs]\nheight = 0.3\n\n[quake.profiles.build]\n\n[[global_keybinding]]\nkey = \"ctrl-alt-t\"\ncommand = \"toggle_quake\"\n"
+    );
+    assert_eq!(
+        rendered(
+            "",
+            &[set(
+                "quake.profiles.logs",
+                Value::Table(table("height = 0.3"))
+            )]
+        ),
+        "[quake.profiles.logs]\nheight = 0.3\n"
+    );
+}
+
+#[test]
+fn removing_a_table_section_removes_it_with_its_comments() {
+    let source = "# Mine.\n[font]\nsize = 14.0\n\n# Logs.\n[quake.profiles.logs]\nheight = 0.3 # short\n\n[quake.profiles.main]\nwidth = 1.0\n";
+    assert_eq!(
+        rendered(source, &[remove("quake.profiles.logs")]),
+        "# Mine.\n[font]\nsize = 14.0\n\n[quake.profiles.main]\nwidth = 1.0\n"
+    );
+    // The last profile takes the tables only it defined with it.
+    let source = "[font]\nsize = 14.0\n\n[quake.profiles.logs]\nheight = 0.3\n";
+    assert_eq!(
+        rendered(source, &[remove("quake.profiles.logs")]),
+        "[font]\nsize = 14.0\n"
+    );
+    // An inline profile goes as a value, and the emptied map with it.
+    let source =
+        "[font]\nsize = 14.0\n\n[quake.profiles]\nlogs = { height = 0.3 }\n";
+    assert_eq!(
+        rendered(source, &[remove("quake.profiles.logs")]),
+        "[font]\nsize = 14.0\n"
+    );
+}
+
+#[test]
 fn dotted_keys_gain_dotted_statements_and_lose_single_statements() {
     let source = "font.size = 13\nfont.family = \"Menlo\" # face\n\n[tabs]\nstyle = \"strip\"\n";
     assert_eq!(

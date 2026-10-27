@@ -32,8 +32,9 @@ impl Seg {
     }
 }
 
-/// Sections of `RawConfig` with fixed fields. An empty one means the same as
-/// an absent one, so it may be removed once it has no keys and no comments.
+/// Tables of `RawConfig` where an empty one means the same as an absent
+/// one: sections with fixed fields, and the quake profile map. One may be
+/// removed once it has no keys and no comments.
 const GROUPING_TABLES: &[&[&str]] = &[
     &["general"],
     &["terminal"],
@@ -46,6 +47,7 @@ const GROUPING_TABLES: &[&[&str]] = &[
     &["panes"],
     &["theme"],
     &["quake"],
+    &["quake", "profiles"],
 ];
 
 fn is_grouping(path: &[Seg]) -> bool {
@@ -667,13 +669,31 @@ fn insert(
         }
     }
     // A new section, before the first array of tables so entries stay last.
-    let header = format!("[{}]", render_keys(parent)?);
-    let key = render_keys(&path[parent.len()..])?;
+    // A table of plain values becomes its own section, such as
+    // `[quake.profiles.logs]`; anything else is a key in its parent's.
     let at = layout
         .items
         .iter()
         .find(|item| matches!(item.kind, Kind::Header { array: true }))
         .map_or(layout.source.len(), |item| item.lead);
+    if let Value::Table(table) = value
+        && !table
+            .values()
+            .any(|value| matches!(value, Value::Table(_) | Value::Array(_)))
+    {
+        let mut lines = vec![format!("[{}]", render_keys(path)?)];
+        for (key, value) in table {
+            lines.push(format!(
+                "{} = {}",
+                render_key(key),
+                render_value(value)
+            ));
+        }
+        insert_block(layout, edits, at, &lines);
+        return Ok(());
+    }
+    let header = format!("[{}]", render_keys(parent)?);
+    let key = render_keys(&path[parent.len()..])?;
     insert_block(layout, edits, at, &[header, format!("{key} = {rendered}")]);
     Ok(())
 }
@@ -825,6 +845,36 @@ fn remove(layout: &Layout<'_>, path: &[Seg]) -> Result<Edits, ApplyError> {
         let ranges = owned_ranges(layout, path);
         if !ranges.is_empty() {
             return Ok(remove_ranges(layout, ranges));
+        }
+    }
+    // A table written as its own sections, such as `[quake.profiles.logs]`,
+    // goes whole with the dotted keys below it, and so do the parents only
+    // it defined.
+    if let Some(Value::Table(_)) = lookup(&layout.tree, path)
+        && !path.iter().any(|seg| matches!(seg, Seg::Index(_)))
+    {
+        let ranges = owned_ranges(layout, path);
+        if !ranges.is_empty() {
+            let mut edits = remove_ranges(layout, ranges);
+            let mut tree = layout.tree.clone();
+            remove_at(&mut tree, path);
+            for end in (1..path.len()).rev() {
+                let parent = &path[..end];
+                let empty = matches!(
+                    lookup(&tree, parent),
+                    Some(Value::Table(parent)) if parent.is_empty()
+                );
+                let defined = layout.items.iter().any(|item| {
+                    item.path.starts_with(parent)
+                        && !item.path.starts_with(path)
+                });
+                if !empty || defined || !is_grouping(parent) {
+                    break;
+                }
+                edits.dropped.push(parent.to_vec());
+                remove_at(&mut tree, parent);
+            }
+            return Ok(edits);
         }
     }
     if lookup(&layout.tree, path).is_some() {

@@ -1,13 +1,14 @@
 /**
  * Drive the Settings window with native keys against the palette smoke
- * binary: open it, search, toggle and reset a switch, step a number, and
- * close it, checking `config.toml` after each save and that keys reach the
- * terminal again afterwards.
+ * binary: open it, search, toggle and reset a switch, step a number, rebind
+ * a command, edit a quake profile and record a global shortcut, and close it,
+ * checking `config.toml` after each save and that keys reach the terminal
+ * again afterwards.
  */
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandFlag, macKeyEvents, shiftFlag } from "./macos-keys";
+import { commandFlag, controlFlag, macKeyEvents, optionFlag, shiftFlag } from "./macos-keys";
 
 type X11Process = Pick<Bun.Subprocess, "pid" | "exitCode" | "signalCode">;
 
@@ -27,19 +28,19 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
 
 type SettingsKey =
   | "open" | "search" | "select-all" | "enter" | "space" | "tab" | "shift-tab" | "up" | "reset" | "close"
-  | "new-tab";
+  | "new-tab" | "global";
 
 // AppKit key codes, modifier flags, and characters.
 const macKeys: Record<SettingsKey, [number, number, string]> = {
   open: [43, commandFlag, ","], search: [3, commandFlag, "f"], "select-all": [0, commandFlag, "a"],
   enter: [36, 0, "\r"], space: [49, 0, " "], tab: [48, 0, "\\t"], up: [126, 0, ""],
   "shift-tab": [48, shiftFlag, "\\t"], reset: [51, commandFlag, "\x7f"], close: [13, commandFlag, "w"],
-  "new-tab": [17, commandFlag, "t"],
+  "new-tab": [17, commandFlag, "t"], global: [16, controlFlag | optionFlag | shiftFlag, "y"],
 };
 const x11Keys: Record<SettingsKey, string> = {
   open: "ctrl+comma", search: "ctrl+f", "select-all": "ctrl+a", enter: "Return", space: "space",
   tab: "Tab", "shift-tab": "shift+Tab", up: "Up", reset: "ctrl+BackSpace", close: "ctrl+shift+w",
-  "new-tab": "ctrl+shift+t",
+  "new-tab": "ctrl+shift+t", global: "ctrl+alt+shift+y",
 };
 // What the recorder writes for the search key, and New Tab's default.
 const searchKey = process.platform === "darwin" ? "cmd-f" : "ctrl-f";
@@ -132,6 +133,15 @@ position = "top"
     }
     return text;
   }
+  /** Presses Tab until `name` has focus. */
+  async function tabTo(name: string): Promise<void> {
+    for (let step = 0; step < 12; step++) {
+      if (field(await current(), "focus") === name) return;
+      await key("tab");
+      await Bun.sleep(30);
+    }
+    await state(`settings.focus=${name}`);
+  }
   /** Focuses this app's visible X11 window whose name matches `name`. */
   async function focusX11(name: string): Promise<void> {
     if (!wm) return;
@@ -185,6 +195,29 @@ position = "top"
     await key("up");
     await saved((text) => /\[font\]\nsize = 15(\.0)?\n/.test(text), "font size stepped in config.toml");
 
+    // Search leads to the Quake windows section, where the default
+    // profile's height saves and a global shortcut records one stroke.
+    await key("search");
+    await state("settings.focus=search");
+    await key("select-all");
+    await typeText("quake profiles");
+    await key("enter");
+    await state("settings.focus=action:qgo");
+    await key("space");
+    await state("settings.section=quake", "settings.focus=action:qprof");
+    await tabTo("quake.profiles.default.height");
+    await key("select-all");
+    await typeText("0.4");
+    await key("enter");
+    await saved((text) => text.includes("[quake.profiles.default]\nheight = 0.4\n"), "default profile height in config.toml");
+    await tabTo("action:gadd");
+    await key("space");
+    await key("global");
+    await saved(
+      (text) => text.includes('[[global_keybinding]]\nkey = "ctrl-alt-shift-y"\ncommand = "toggle_quake"\n'),
+      "global shortcut in config.toml",
+    );
+
     // Search finds a command; Space opens it in Keybindings.
     await key("search");
     await state("settings.focus=search");
@@ -231,7 +264,7 @@ position = "top"
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved record=intercepted rebind=applied close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved record=intercepted rebind=applied quake=saved global=recorded close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

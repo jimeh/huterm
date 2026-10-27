@@ -4,21 +4,68 @@
   "additionalProperties": false,
   "definitions": {
     "Animation": {
-      "enum": [
-        "auto",
-        "none",
-        "fade",
-        "slide",
-        "slide_top",
-        "slide_bottom",
-        "slide_left",
-        "slide_right",
-        "fade_slide_top",
-        "fade_slide_bottom",
-        "fade_slide_left",
-        "fade_slide_right"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "auto",
+          "type": "string",
+          "x-huterm-label": "Auto"
+        },
+        {
+          "const": "none",
+          "type": "string",
+          "x-huterm-label": "None"
+        },
+        {
+          "const": "fade",
+          "type": "string",
+          "x-huterm-label": "Fade"
+        },
+        {
+          "const": "slide",
+          "type": "string",
+          "x-huterm-label": "Slide"
+        },
+        {
+          "const": "slide_top",
+          "type": "string",
+          "x-huterm-label": "Slide from the top"
+        },
+        {
+          "const": "slide_bottom",
+          "type": "string",
+          "x-huterm-label": "Slide from the bottom"
+        },
+        {
+          "const": "slide_left",
+          "type": "string",
+          "x-huterm-label": "Slide from the left"
+        },
+        {
+          "const": "slide_right",
+          "type": "string",
+          "x-huterm-label": "Slide from the right"
+        },
+        {
+          "const": "fade_slide_top",
+          "type": "string",
+          "x-huterm-label": "Fade and slide from the top"
+        },
+        {
+          "const": "fade_slide_bottom",
+          "type": "string",
+          "x-huterm-label": "Fade and slide from the bottom"
+        },
+        {
+          "const": "fade_slide_left",
+          "type": "string",
+          "x-huterm-label": "Fade and slide from the left"
+        },
+        {
+          "const": "fade_slide_right",
+          "type": "string",
+          "x-huterm-label": "Fade and slide from the right"
+        }
+      ]
     },
     "BellConfig": {
       "additionalProperties": false,
@@ -485,14 +532,33 @@
       "type": "object"
     },
     "Position": {
-      "enum": [
-        "top",
-        "bottom",
-        "left",
-        "right",
-        "center"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "top",
+          "type": "string",
+          "x-huterm-label": "Top"
+        },
+        {
+          "const": "bottom",
+          "type": "string",
+          "x-huterm-label": "Bottom"
+        },
+        {
+          "const": "left",
+          "type": "string",
+          "x-huterm-label": "Left"
+        },
+        {
+          "const": "right",
+          "type": "string",
+          "x-huterm-label": "Right"
+        },
+        {
+          "const": "center",
+          "type": "string",
+          "x-huterm-label": "Center"
+        }
+      ]
     },
     "Profile": {
       "additionalProperties": false,
@@ -503,7 +569,13 @@
               "$ref": "#/definitions/Animation"
             }
           ],
-          "default": "auto"
+          "default": "auto",
+          "description": "How the window shows and hides. Auto fades fullscreen windows and\nfades and slides others from their side.",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Profile",
+          "x-huterm-label": "Animation",
+          "x-huterm-order": 70,
+          "x-huterm-section": "quake"
         },
         "animation_ms": {
           "default": 150,
@@ -511,17 +583,34 @@
           "format": "uint16",
           "maximum": 1000,
           "minimum": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Profile",
+          "x-huterm-label": "Duration",
+          "x-huterm-order": 80,
+          "x-huterm-section": "quake",
+          "x-huterm-unit": "ms"
         },
         "display": {
           "default": "active",
-          "description": "Active, pointer, primary, or `id:<platform display identifier>`.\nDisplay availability is checked at runtime.",
+          "description": "The display the window opens on: the active one, the one under the\npointer, the primary one, or `id:` and a platform display\nidentifier. Display availability is checked at runtime.",
           "pattern": "^(active|pointer|primary|id:.*\\S.*)$",
-          "type": "string"
+          "type": "string",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Profile",
+          "x-huterm-label": "Display",
+          "x-huterm-order": 50,
+          "x-huterm-section": "quake"
         },
         "fullscreen": {
           "default": false,
-          "type": "boolean"
+          "description": "Covers the whole display frame instead of a part of its work area.",
+          "type": "boolean",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Profile",
+          "x-huterm-label": "Fullscreen",
+          "x-huterm-order": 40,
+          "x-huterm-section": "quake"
         },
         "height": {
           "default": 0.5,
@@ -529,11 +618,26 @@
           "exclusiveMinimum": 0,
           "format": "double",
           "maximum": 1,
-          "type": "number"
+          "type": "number",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Profile",
+          "x-huterm-label": "Height",
+          "x-huterm-order": 30,
+          "x-huterm-section": "quake",
+          "x-huterm-visible-when": {
+            "equals": false,
+            "setting": "fullscreen"
+          }
         },
         "hide_on_focus_loss": {
           "default": true,
-          "type": "boolean"
+          "description": "Hides the window when another application takes focus.",
+          "type": "boolean",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Profile",
+          "x-huterm-label": "Hide when it loses focus",
+          "x-huterm-order": 60,
+          "x-huterm-section": "quake"
         },
         "position": {
           "allOf": [
@@ -541,7 +645,13 @@
               "$ref": "#/definitions/Position"
             }
           ],
-          "default": "top"
+          "default": "top",
+          "description": "The display edge the window sits against. Center centers it on both\naxes.",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Profile",
+          "x-huterm-label": "Position",
+          "x-huterm-order": 10,
+          "x-huterm-section": "quake"
         },
         "width": {
           "default": 1.0,
@@ -549,7 +659,16 @@
           "exclusiveMinimum": 0,
           "format": "double",
           "maximum": 1,
-          "type": "number"
+          "type": "number",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Profile",
+          "x-huterm-label": "Width",
+          "x-huterm-order": 20,
+          "x-huterm-section": "quake",
+          "x-huterm-visible-when": {
+            "equals": false,
+            "setting": "fullscreen"
+          }
         }
       },
       "type": "object"

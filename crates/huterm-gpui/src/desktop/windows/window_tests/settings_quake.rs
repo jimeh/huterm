@@ -1,0 +1,225 @@
+//! The Settings window's Quake windows section through the desktop
+//! harness: profiles and global shortcuts.
+
+use toml::Value;
+
+use super::settings::{
+    ScratchConfig, open_settings, settings, settled, with_view, with_window,
+};
+use super::*;
+
+const LOGS: &str = "# Mine.\n\n[quake.profiles.logs]\nheight = 0.3 # short\n";
+
+fn press(harness: &mut DesktopHarness, key: &str) {
+    with_window(harness, |view, window, cx| view.press(key, window, cx));
+    harness.cx.run_until_parked();
+}
+
+fn keystrokes(harness: &mut DesktopHarness, keys: &str) {
+    let window: gpui::AnyWindowHandle =
+        harness.cx.update(|cx| settings(cx).unwrap().into());
+    for key in keys.split(' ') {
+        harness
+            .cx
+            .dispatch_keystroke(window, gpui::Keystroke::parse(key).unwrap());
+    }
+}
+
+fn saved(
+    harness: &mut DesktopHarness,
+    file: &ScratchConfig,
+    check: impl Fn(&str) -> bool,
+) {
+    harness.wait_for("the save", |cx| settled(cx) && check(&file.text()));
+}
+
+/// Opens Settings on the Quake windows section.
+fn open_quake(harness: &mut DesktopHarness, file: &ScratchConfig) {
+    open_settings(harness, &file.path());
+    press(harness, "qgo");
+}
+
+#[gpui::test]
+fn profile_fields_write_and_reset_only_their_key(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-fields", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.shown_profile_name(), "default");
+        view.set(
+            "quake.profiles.default.position",
+            Some(Value::String("bottom".into())),
+            cx,
+        );
+    });
+    saved(&mut harness, &file, |text| text.contains("bottom"));
+    assert_eq!(
+        file.text(),
+        format!("{LOGS}\n[quake.profiles.default]\nposition = \"bottom\"\n")
+    );
+    with_view(&mut harness, |view, cx| {
+        view.set("quake.profiles.logs.height", None, cx);
+    });
+    saved(&mut harness, &file, |text| !text.contains("0.3"));
+    assert_eq!(
+        file.text(),
+        "# Mine.\n\n[quake.profiles.logs]\n\n[quake.profiles.default]\n\
+         position = \"bottom\"\n"
+    );
+}
+
+#[gpui::test]
+fn new_profiles_need_a_new_bare_name(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-new", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    for name in ["", "my logs", "logs", "default"] {
+        with_window(&mut harness, |view, window, cx| {
+            view.type_profile_name(name, window, cx);
+            view.press("qcreate", window, cx);
+            assert!(view.quake_message().is_some(), "{name:?} was accepted");
+        });
+    }
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), LOGS);
+    with_window(&mut harness, |view, window, cx| {
+        view.type_profile_name("build-1", window, cx);
+        view.press("qcreate", window, cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("build-1"));
+    assert_eq!(file.text(), format!("{LOGS}\n[quake.profiles.build-1]\n"));
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.shown_profile_name(), "build-1");
+        assert_eq!(view.profile_names(), ["default", "build-1", "logs"]);
+    });
+}
+
+#[gpui::test]
+fn deleting_a_profile_waits_for_its_global_shortcuts(cx: &mut TestAppContext) {
+    let original = format!(
+        "{LOGS}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+         command = \"toggle_quake\"\nargs = {{ profile = \"logs\" }}\n"
+    );
+    let file = ScratchConfig::new("quake-delete", &original);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_view(&mut harness, |view, _| view.pick_profile("logs"));
+    press(&mut harness, "qdel");
+    press(&mut harness, "qdelyes");
+    with_view(&mut harness, |view, _| {
+        assert!(
+            view.quake_message().is_some_and(|message| {
+                message.contains("uses this profile")
+            })
+        );
+    });
+    assert_eq!(file.text(), original);
+    // With its shortcut gone, the profile goes.
+    press(&mut harness, "gdel:0");
+    saved(&mut harness, &file, |text| {
+        !text.contains("global_keybinding")
+    });
+    with_view(&mut harness, |view, _| view.pick_profile("logs"));
+    press(&mut harness, "qdel");
+    press(&mut harness, "qdelyes");
+    saved(&mut harness, &file, |text| !text.contains("logs"));
+    assert_eq!(file.text(), "# Mine.\n");
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.shown_profile_name(), "default");
+    });
+}
+
+#[gpui::test]
+fn global_shortcuts_record_change_and_go(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-globals", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    // A new shortcut toggles the profile on show.
+    with_view(&mut harness, |view, _| view.pick_profile("logs"));
+    press(&mut harness, "gadd");
+    keystrokes(&mut harness, "ctrl-alt-shift-y");
+    saved(&mut harness, &file, |text| {
+        text.contains("global_keybinding")
+    });
+    assert_eq!(
+        file.text(),
+        format!(
+            "{LOGS}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+             command = \"toggle_quake\"\nargs = {{ profile = \"logs\" }}\n"
+        )
+    );
+    with_view(&mut harness, |view, cx| {
+        view.pick_global(0, "command", "show_quake", cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("show_quake"));
+    with_view(&mut harness, |view, cx| {
+        view.pick_global(0, "profile", "default", cx);
+    });
+    saved(&mut harness, &file, |text| !text.contains("args"));
+    press(&mut harness, "grec:0");
+    keystrokes(&mut harness, "ctrl-alt-shift-u");
+    saved(&mut harness, &file, |text| {
+        text.contains("ctrl-alt-shift-u")
+    });
+    assert_eq!(
+        file.text(),
+        format!(
+            "{LOGS}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-u\"\n\
+             command = \"show_quake\"\n"
+        )
+    );
+    press(&mut harness, "gdel:0");
+    saved(&mut harness, &file, |text| {
+        !text.contains("global_keybinding")
+    });
+    assert_eq!(file.text(), LOGS);
+}
+
+#[gpui::test]
+fn a_global_key_an_in_app_binding_starts_with_writes_nothing(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("quake-conflict", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    press(&mut harness, "gadd");
+    keystrokes(
+        &mut harness,
+        if cfg!(target_os = "macos") {
+            "cmd-t"
+        } else {
+            "ctrl-shift-t"
+        },
+    );
+    harness.wait_for("the refused save", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| {
+                        view.global_error("gadd").is_some()
+                    })
+                    .unwrap_or(false)
+            })
+    });
+    assert_eq!(file.text(), LOGS);
+}
+
+#[gpui::test]
+fn a_profile_whose_name_needs_quoting_stays_in_the_file(
+    cx: &mut TestAppContext,
+) {
+    let original = "[quake.profiles.\"my logs\"]\nheight = 0.3\n";
+    let file = ScratchConfig::new("quake-quoted", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.profile_names(), ["default", "my logs"]);
+        view.pick_profile("my logs");
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.shown_profile_name(), "my logs");
+        assert!(view.profile_field("my logs", "height").is_none());
+        assert!(view.profile_field("logs", "height").is_some());
+    });
+}

@@ -96,7 +96,12 @@ impl Scratch {
     fn apply(&self, edit: &Edit) -> String {
         let file = ConfigFile::new(self.path());
         let base = file.load().unwrap();
-        let patches = edit.patches(&base.entries(List::Keybinding)).unwrap();
+        let patches = edit
+            .patches(
+                &base.entries(List::Keybinding),
+                &base.entries(List::GlobalKeybinding),
+            )
+            .unwrap();
         file.apply(&base, &patches, &crate::config::validator(self.path()))
             .unwrap();
         std::fs::read_to_string(self.path()).unwrap()
@@ -330,4 +335,37 @@ fn keys_programs_need_say_so_and_default_pairs_say_nothing() {
     );
     // Copy and Text: Copy share cmd-c as shipped.
     assert_eq!(notes_for(&[], ids::COPY, "cmd-c", Origin::Default), []);
+}
+
+#[test]
+fn global_shortcut_edits_change_only_their_entry() {
+    let original = "# Mine.\n[quake.profiles.logs]\nheight = 0.3\n";
+    let file = Scratch::new("globals", original);
+    let added = file.apply(&Edit::AddGlobal {
+        key: "ctrl-alt-shift-y".into(),
+        profile: Some("logs".into()),
+    });
+    assert!(added.starts_with(original), "{added}");
+    assert!(
+        added.contains(
+            "[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+             command = \"toggle_quake\"\nargs = { profile = \"logs\" }\n"
+        ),
+        "{added}"
+    );
+    let change = |field, value: Option<&str>| Edit::ChangeGlobal {
+        entry: 0,
+        field,
+        value: value.map(|value| Value::String(value.to_owned())),
+    };
+    let text = file.apply(&change("command", Some("show_quake")));
+    assert!(text.contains("command = \"show_quake\""), "{text}");
+    let text = file.apply(&change("key", Some("ctrl-alt-shift-u")));
+    assert!(text.contains("key = \"ctrl-alt-shift-u\""), "{text}");
+    // The default profile leaves `args` out.
+    let text = file.apply(&change("profile", None));
+    assert!(!text.contains("args"), "{text}");
+    let text = file.apply(&Edit::RemoveGlobal(0));
+    assert!(!text.contains("global_keybinding"), "{text}");
+    assert!(text.starts_with(original), "{text}");
 }

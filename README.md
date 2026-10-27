@@ -99,7 +99,9 @@ Huterm reads `$HUTERM_CONFIG_FILE` when it is set. Otherwise it reads
 `~/.config/huterm/config.toml`, on both macOS and Linux. **Open Settings**
 (`open_settings`) opens a Settings window that saves each change to that file
 and keeps its comments and formatting. Its Keybindings section lists every
-command with its shortcuts, records new keys, and switches defaults off.
+command with its shortcuts, records new keys, and switches defaults off. Its
+Quake windows section adds, edits, and deletes quake profiles and records
+global shortcuts.
 **Open Config File**
 (`open_config_file`) creates a documented default file if none exists and
 opens it in the system editor. Add this header to get completion and validation
@@ -242,8 +244,8 @@ next stages are:
 
 - **Desktop expansion:** session and workspace switching, pane layout
   presets and layout undo, moving tabs between windows, shell
-  integration, a quake profile editor in Settings, window
-  transparency, and restoring sessions and history after a restart.
+  integration, window transparency, and restoring sessions and history after
+  a restart.
 - **Terminal compatibility:** notifications and progress, extended underlines,
   SGR-pixel mouse reports, the Kitty keyboard protocol, and inline graphics.
 - **Optional server:** versioned local IPC, named servers, CLI control, and

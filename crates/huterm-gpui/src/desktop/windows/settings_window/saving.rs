@@ -98,6 +98,8 @@ struct Listed {
     inventory: Option<Inventory>,
     /// A locator for each `[[keybinding]]` entry, for edits to address.
     entries: Vec<EntryLocator>,
+    /// A locator for each `[[global_keybinding]]` entry.
+    globals: Vec<EntryLocator>,
 }
 
 /// Parses the file's keybindings, off the GPUI thread.
@@ -111,6 +113,7 @@ fn listed(snapshot: &Snapshot, path: &Path) -> Listed {
     Listed {
         inventory,
         entries: snapshot.entries(List::Keybinding),
+        globals: snapshot.entries(List::GlobalKeybinding),
     }
 }
 
@@ -202,6 +205,7 @@ impl SettingsView {
             }) => {
                 self.keys.inventory = keys.inventory;
                 self.keys.entries = keys.entries;
+                self.keys.globals = keys.globals;
                 match (file, valid) {
                     (Ok(file), Ok(())) => {
                         self.file = file;
@@ -334,7 +338,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         let (Some(field), Some(setting)) =
-            (self.fields.get(path).cloned(), self.model.setting(path))
+            (self.fields.get(path).cloned(), self.setting_at(path))
         else {
             return;
         };
@@ -486,7 +490,8 @@ impl SettingsView {
         if let Some(row) = &row {
             self.keys.errors.remove(row);
         }
-        let patches = match edit.patches(&self.keys.entries) {
+        let patches = match edit.patches(&self.keys.entries, &self.keys.globals)
+        {
             Ok(patches) => patches,
             Err(message) => {
                 self.status.failed(message);
@@ -576,6 +581,7 @@ impl SettingsView {
                 }
                 self.keys.inventory = written.keys.inventory;
                 self.keys.entries = written.keys.entries;
+                self.keys.globals = written.keys.globals;
                 self.base = Some(written.snapshot);
                 self.rebase_queued_keys(&change.patches);
                 self.status.saved();
@@ -696,6 +702,7 @@ impl SettingsView {
                 }
                 self.keys.inventory = written.keys.inventory;
                 self.keys.entries = written.keys.entries;
+                self.keys.globals = written.keys.globals;
                 self.base = Some(written.snapshot);
                 self.status.saved();
                 let saved = field_text(shown(
@@ -797,7 +804,7 @@ impl SettingsView {
     /// removed goes, with its edit when nothing of that is left; and entries
     /// after a removed one move up.
     fn rebase_queued_keys(&mut self, landed: &[Patch]) {
-        let mut changed: Vec<(usize, Table, Option<Table>)> = Vec::new();
+        let mut changed: Vec<(List, usize, Table, Option<Table>)> = Vec::new();
         for patch in landed {
             match patch {
                 Patch::SetEntryField {
@@ -808,6 +815,7 @@ impl SettingsView {
                     let mut after = locator.content().clone();
                     after.insert(field.clone(), value.clone());
                     changed.push((
+                        locator.list(),
                         locator.index(),
                         locator.content().clone(),
                         Some(after),
@@ -817,6 +825,7 @@ impl SettingsView {
                     let mut after = locator.content().clone();
                     after.remove(field);
                     changed.push((
+                        locator.list(),
                         locator.index(),
                         locator.content().clone(),
                         Some(after),
@@ -824,6 +833,7 @@ impl SettingsView {
                 }
                 Patch::RemoveEntry { locator } => {
                     changed.push((
+                        locator.list(),
                         locator.index(),
                         locator.content().clone(),
                         None,
@@ -835,10 +845,10 @@ impl SettingsView {
         if changed.is_empty() {
             return;
         }
-        let removed: Vec<usize> = changed
+        let removed: Vec<(List, usize)> = changed
             .iter()
-            .filter(|(_, _, after)| after.is_none())
-            .map(|(index, _, _)| *index)
+            .filter(|(_, _, _, after)| after.is_none())
+            .map(|(list, index, _, _)| (*list, *index))
             .collect();
         self.queued.retain_mut(|queued| {
             let Queued::Keys(change) = queued else {
@@ -853,16 +863,24 @@ impl SettingsView {
                 else {
                     return true;
                 };
-                let index = locator.index();
-                let content = match changed.iter().find(|(at, before, _)| {
-                    *at == index && before == locator.content()
-                }) {
-                    Some((_, _, None)) => return false,
-                    Some((_, _, Some(after))) => after.clone(),
-                    None => locator.content().clone(),
-                };
+                let (list, index) = (locator.list(), locator.index());
+                let content =
+                    match changed.iter().find(|(within, at, before, _)| {
+                        *within == list
+                            && *at == index
+                            && before == locator.content()
+                    }) {
+                        Some((.., None)) => return false,
+                        Some((.., Some(after))) => after.clone(),
+                        None => locator.content().clone(),
+                    };
                 let moved = index
-                    - removed.iter().filter(|gone| **gone < index).count();
+                    - removed
+                        .iter()
+                        .filter(|(within, gone)| {
+                            *within == list && *gone < index
+                        })
+                        .count();
                 *locator = locator.rebased(moved, content);
                 true
             });
@@ -976,7 +994,7 @@ impl SettingsView {
         if self.locked() {
             return;
         }
-        let Some(setting) = self.model.setting(path) else {
+        let Some(setting) = self.setting_at(path) else {
             return;
         };
         // A field draft settles through the field, which keeps the conflict
@@ -1177,7 +1195,7 @@ impl SettingsView {
             return;
         }
         self.errors.remove(path);
-        let text = match (self.pending.get(path), self.model.setting(path)) {
+        let text = match (self.pending.get(path), self.setting_at(path)) {
             // A pending reset shows the default.
             (Some(value), Some(setting)) => {
                 Some(self.display(setting, value.clone()))

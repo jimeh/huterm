@@ -1,6 +1,7 @@
 /** AppKit key events for smokes that post native input through their app. */
 
 export const commandFlag = 1 << 20;
+export const controlFlag = 1 << 18;
 export const optionFlag = 1 << 19;
 export const shiftFlag = 1 << 17;
 
@@ -40,6 +41,17 @@ const macKeyCodes: Record<string, number> = {
   z: 6,
   " ": 49,
   "-": 27,
+  ".": 47,
+  "0": 29,
+  "1": 18,
+  "2": 19,
+  "3": 20,
+  "4": 21,
+  "5": 23,
+  "6": 22,
+  "7": 26,
+  "8": 28,
+  "9": 25,
 };
 
 export function macKeyEvents(text: string): MacKeyEvent[] {

@@ -510,27 +510,42 @@ pub(crate) enum Edit {
     Add { key: String, command: CommandId },
     /// Remove user entries: one, or every entry for a command.
     Remove(Vec<usize>),
+    /// Add a global shortcut that toggles `profile`, or the default
+    /// profile when `None`.
+    AddGlobal {
+        key: String,
+        profile: Option<String>,
+    },
+    /// Set or clear one field of a global shortcut: `key`, `command`, or
+    /// the `profile` argument.
+    ChangeGlobal {
+        entry: usize,
+        field: &'static str,
+        value: Option<Value>,
+    },
+    /// Remove a global shortcut.
+    RemoveGlobal(usize),
 }
 
 impl Edit {
-    /// The patches this edit writes, from `entries`, a locator for each
-    /// `[[keybinding]]` entry of the snapshot the list came from.
+    /// The patches this edit writes, from `entries` and `globals`, a
+    /// locator for each `[[keybinding]]` and `[[global_keybinding]]` entry
+    /// of the snapshot the list came from.
     ///
     /// # Errors
     /// When an entry it addresses is not among them.
     pub(crate) fn patches(
         &self,
         entries: &[EntryLocator],
+        globals: &[EntryLocator],
     ) -> Result<Vec<Patch>, String> {
-        let locate = |index: usize| -> Result<EntryLocator, String> {
-            entries
-                .iter()
+        let find = |list: &[EntryLocator], index: usize, name: &str| {
+            list.iter()
                 .find(|entry| entry.index() == index)
                 .cloned()
-                .ok_or_else(|| {
-                    format!("keybinding entry {} is gone", index + 1)
-                })
+                .ok_or_else(|| format!("{name} {} is gone", index + 1))
         };
+        let locate = |index| find(entries, index, "keybinding entry");
         let append = |entry| Patch::AppendEntry {
             list: List::Keybinding,
             entry,
@@ -597,6 +612,73 @@ impl Edit {
                     Binding::new(key, *command, None, &[]).entry(false),
                 )]
             }
+            Self::AddGlobal { .. }
+            | Self::ChangeGlobal { .. }
+            | Self::RemoveGlobal(_) => self.global_patches(globals)?,
+        })
+    }
+
+    /// The patches a global shortcut edit writes, from `globals`.
+    fn global_patches(
+        &self,
+        globals: &[EntryLocator],
+    ) -> Result<Vec<Patch>, String> {
+        let global = |index: usize| {
+            globals
+                .iter()
+                .find(|entry| entry.index() == index)
+                .cloned()
+                .ok_or_else(|| format!("global shortcut {} is gone", index + 1))
+        };
+        Ok(match self {
+            Self::AddGlobal { key, profile } => {
+                let mut entry = Table::new();
+                entry.insert("key".into(), Value::String(key.clone()));
+                entry.insert(
+                    "command".into(),
+                    Value::String(ids::TOGGLE_QUAKE.as_str().into()),
+                );
+                if let Some(profile) = profile {
+                    entry.insert(
+                        "args".into(),
+                        Value::Table(Table::from_iter([(
+                            "profile".to_owned(),
+                            Value::String(profile.clone()),
+                        )])),
+                    );
+                }
+                vec![Patch::AppendEntry {
+                    list: List::GlobalKeybinding,
+                    entry,
+                }]
+            }
+            Self::ChangeGlobal {
+                entry,
+                field: "profile",
+                value,
+            } => {
+                vec![argument_patch(global(*entry)?, "profile", value.as_ref())]
+            }
+            Self::ChangeGlobal {
+                entry,
+                field,
+                value,
+            } => {
+                let locator = global(*entry)?;
+                let field = (*field).to_owned();
+                vec![match value {
+                    Some(value) => Patch::SetEntryField {
+                        locator,
+                        field,
+                        value: value.clone(),
+                    },
+                    None => Patch::ClearEntryField { locator, field },
+                }]
+            }
+            Self::RemoveGlobal(entry) => vec![Patch::RemoveEntry {
+                locator: global(*entry)?,
+            }],
+            _ => Vec::new(),
         })
     }
 }

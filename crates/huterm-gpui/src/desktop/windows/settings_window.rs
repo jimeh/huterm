@@ -140,6 +140,7 @@ pub(super) fn close(cx: &mut App) {
 
 mod controls;
 mod keybindings;
+mod quake;
 mod render;
 mod saving;
 
@@ -157,6 +158,13 @@ pub(super) enum MenuFor {
         name: &'static str,
         kind: ArgumentKind,
     },
+    /// The Quake windows section's profile dropdown.
+    Profile,
+    /// A global shortcut's `command` or `profile`.
+    Global {
+        entry: usize,
+        field: &'static str,
+    },
 }
 
 impl MenuFor {
@@ -165,6 +173,12 @@ impl MenuFor {
         match self {
             Self::Setting(setting) => setting.path.clone(),
             Self::Argument { row, name, .. } => format!("karg:{row}:{name}"),
+            Self::Profile => "qprof".to_owned(),
+            Self::Global {
+                entry,
+                field: "command",
+            } => format!("gcmd:{entry}"),
+            Self::Global { entry, .. } => format!("gprofile:{entry}"),
         }
     }
 }
@@ -225,6 +239,8 @@ pub(super) struct SettingsView {
     menu: Option<(Entity<MenuView>, MenuFor, FocusHandle)>,
     /// The Keybindings section.
     keys: Keys,
+    /// The Quake windows section.
+    quake: quake::Quake,
     /// The action and keybinding field keys the last frame drew, so focus
     /// left on a control that went away can move on.
     drawn: HashSet<String>,
@@ -276,6 +292,7 @@ impl SettingsView {
         let mut view = Self {
             focus: cx.focus_handle(),
             keys,
+            quake: quake::Quake::new(),
             drawn: HashSet::new(),
             last_focus: None,
             _recorder: recorder,
@@ -422,7 +439,14 @@ impl SettingsView {
                     })
                     .map(|(path, _)| *path)
             })?;
-        self.model.setting(path)
+        self.setting_at(path)
+    }
+
+    /// The setting at `path`: one of the model's, or a quake profile's.
+    fn setting_at(&self, path: &str) -> Option<&'static Setting> {
+        self.model
+            .setting(path)
+            .or_else(|| quake::profile_setting(self.model, path))
     }
 
     /// The setting whose number or text field has focus.
@@ -438,7 +462,7 @@ impl SettingsView {
                 field.read(cx).focus_handle(cx).is_focused(window)
             })
             .map(|(path, _)| *path)?;
-        self.model.setting(path)
+        self.setting_at(path)
     }
 
     /// The focus handle for an action key, created on first use.
@@ -472,7 +496,9 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         let (kind, argument) = key.split_once(':').unwrap_or((key, ""));
-        if self.act_keys(kind, argument, window, cx) {
+        if self.act_keys(kind, argument, window, cx)
+            || self.act_quake(kind, argument, window, cx)
+        {
             cx.notify();
             return;
         }
@@ -516,17 +542,17 @@ impl SettingsView {
                 }
             }
             "mine" => {
-                if let Some(setting) = model.setting(argument) {
+                if let Some(setting) = self.setting_at(argument) {
                     self.keep_mine(setting.path.as_str(), cx);
                 }
             }
             "file" => {
-                if let Some(setting) = model.setting(argument) {
+                if let Some(setting) = self.setting_at(argument) {
                     self.keep_file(setting.path.as_str(), cx);
                 }
             }
             "reset" => {
-                if let Some(setting) = model.setting(argument) {
+                if let Some(setting) = self.setting_at(argument) {
                     self.reset(setting, cx);
                 }
             }
@@ -584,11 +610,10 @@ impl SettingsView {
                     "ctrl"
                 }
             ),
-            Some(
-                Special::Keybindings
-                | Special::GlobalShortcuts
-                | Special::QuakeProfiles,
-            ) => format!("open:{path}"),
+            Some(Special::Keybindings) => format!("open:{path}"),
+            Some(Special::GlobalShortcuts | Special::QuakeProfiles) => {
+                "qgo".to_owned()
+            }
             // Fields exist once their row renders.
             Some(Special::FontPicker | Special::Size) => return None,
             None if matches!(
@@ -640,7 +665,7 @@ impl SettingsView {
             return false;
         }
         setting.visible_when.as_ref().is_none_or(|condition| {
-            self.model.setting(&condition.setting).is_some_and(|other| {
+            self.setting_at(&condition.setting).is_some_and(|other| {
                 shown(other, &self.file, &self.defaults).as_ref()
                     == Some(&condition.equals)
             })
@@ -755,7 +780,7 @@ impl SettingsView {
         let SettingKind::Choice(choices) = &setting.kind else {
             return;
         };
-        let rows = choices
+        let mut rows: Vec<MenuRow> = choices
             .iter()
             .map(|choice| {
                 MenuRow::Item(MenuItem::new(
@@ -764,6 +789,13 @@ impl SettingsView {
                 ))
             })
             .collect();
+        // A value the menu does not offer stays one to pick.
+        if let Some(Value::String(value)) = self.value(setting)
+            && !choices.iter().any(|choice| choice.value == value)
+        {
+            let value = keybindings::interned(&value);
+            rows.push(MenuRow::Item(MenuItem::new(value, value)));
+        }
         let opener = self.stop(setting.path.as_str(), cx);
         self.show_menu(
             MenuFor::Setting(setting),
@@ -819,6 +851,11 @@ impl SettingsView {
                     Some(MenuFor::Argument { row, name, kind }) => {
                         let (row, name, kind) = (row.clone(), *name, *kind);
                         view.pick_argument(&row, name, kind, value, cx);
+                    }
+                    Some(MenuFor::Profile) => view.pick_profile(value),
+                    Some(MenuFor::Global { entry, field }) => {
+                        let (entry, field) = (*entry, *field);
+                        view.pick_global(entry, field, value, cx);
                     }
                     None => {}
                 }
@@ -938,6 +975,21 @@ impl SettingsView {
             cx.notify();
             return;
         }
+        if let Some(field) = self.focused_name_field(window, cx) {
+            match invocation.id {
+                ids::PALETTE_CONFIRM => self.create_profile(window, cx),
+                ids::PALETTE_BACK => self.act("qcancel", window, cx),
+                ids::PALETTE_EXPAND => window.focus_next(cx),
+                ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
+                _ => {
+                    let _ = field.update(cx, |field, cx| {
+                        field.run(invocation, window, cx)
+                    });
+                }
+            }
+            cx.notify();
+            return;
+        }
         let search = self.search.clone();
         let focused = self
             .fields
@@ -956,7 +1008,7 @@ impl SettingsView {
         match invocation.id {
             ids::PALETTE_CONFIRM => {
                 if let Some((path, _)) = focused
-                    && let Some(setting) = self.model.setting(path)
+                    && let Some(setting) = self.setting_at(path)
                 {
                     self.commit_field(setting, cx);
                 } else {
@@ -1450,7 +1502,7 @@ impl SettingsView {
         forward: bool,
         cx: &mut Context<'_, Self>,
     ) {
-        let setting = self.model.setting(path).expect("a known setting");
+        let setting = self.setting_at(path).expect("a known setting");
         self.step_setting(setting, forward, cx);
     }
 
@@ -1467,7 +1519,7 @@ impl SettingsView {
 
     /// Escape in the setting's field.
     pub(super) fn escape(&mut self, path: &str, cx: &mut Context<'_, Self>) {
-        let setting = self.model.setting(path).expect("a known setting");
+        let setting = self.setting_at(path).expect("a known setting");
         self.cancel_field(setting.path.as_str(), cx);
     }
 
@@ -1499,7 +1551,7 @@ impl SettingsView {
         value: Option<Value>,
         cx: &mut Context<'_, Self>,
     ) {
-        let setting = self.model.setting(path).expect("a known setting");
+        let setting = self.setting_at(path).expect("a known setting");
         match value {
             Some(value) => self.write(setting, Some(value), cx),
             None => self.reset(setting, cx),
@@ -1514,7 +1566,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let setting = self.model.setting(path).expect("a known setting");
+        let setting = self.setting_at(path).expect("a known setting");
         let field = self.field(setting, window, cx);
         field.update(cx, |field, cx| field.set_text(text, cx));
     }
@@ -1528,18 +1580,18 @@ impl SettingsView {
 
     /// Saves the field as Enter does.
     pub(super) fn enter(&mut self, path: &str, cx: &mut Context<'_, Self>) {
-        let setting = self.model.setting(path).expect("a known setting");
+        let setting = self.setting_at(path).expect("a known setting");
         self.commit_field(setting, cx);
     }
 
     /// Moves focus out of the field, as clicking elsewhere does.
     pub(super) fn blur(&mut self, path: &str, cx: &mut Context<'_, Self>) {
-        let setting = self.model.setting(path).expect("a known setting");
+        let setting = self.setting_at(path).expect("a known setting");
         self.field_blurred(setting, cx);
     }
 
     pub(super) fn use_file(&mut self, path: &str, cx: &mut Context<'_, Self>) {
-        let setting = self.model.setting(path).expect("a known setting");
+        let setting = self.setting_at(path).expect("a known setting");
         self.keep_file(setting.path.as_str(), cx);
     }
 
@@ -1646,7 +1698,7 @@ impl SettingsView {
     }
 
     pub(super) fn use_mine(&mut self, path: &str, cx: &mut Context<'_, Self>) {
-        let setting = self.model.setting(path).expect("a known setting");
+        let setting = self.setting_at(path).expect("a known setting");
         self.keep_mine(setting.path.as_str(), cx);
     }
 }
