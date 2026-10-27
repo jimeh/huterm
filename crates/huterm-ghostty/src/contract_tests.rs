@@ -895,55 +895,80 @@ fn active_page<H>(terminal: &Terminal<H>, y: u32) -> *mut std::ffi::c_void {
 }
 
 /// GHSA-w9q4-5jvv-mcv4: a cursor style or hyperlink is an ID into its page's
-/// sets. When ED 22 scrolls the screen into history and the line limit then
-/// prunes the cursor's page, the cursor must register both again on the page
-/// it moves to; before Ghostty 1.4.0 it kept the freed page's IDs. Huterm's
-/// smallest nonzero history limit, one row, prunes that way. A zero-row limit
-/// sets zero bytes instead, which erases history as it grows, so the screen
-/// never spans two pages there.
+/// sets. When ED 22 scrolls the screen into history and the scrollback limit
+/// then prunes the cursor's page, the cursor must register both again on the
+/// page it moves to; before Ghostty 1.4.0 it kept the freed page's IDs.
+/// Huterm's smallest nonzero history limit sets one line. Its zero-row limit
+/// sets zero bytes, which still lets ED 22 grow history, and prunes the
+/// cursor's page once the screen spans pages, as a 400 by 200 one does.
 #[test]
 fn scroll_clear_keeps_the_cursor_style_and_link_when_its_page_is_pruned() {
-    for (start, styled) in
-        [("\x1b[1m", true), ("\x1b]8;;https://a.test/\x1b\\", false)]
-    {
-        let mut terminal =
-            Terminal::new(options(), Recorder::default()).unwrap();
-        terminal.set_scrollback_bytes(None).unwrap();
-        terminal.set_scrollback_lines(Some(1)).unwrap();
-        // Every row has text, so ED 22 scrolls the whole screen. Stop once
-        // the screen's top row is the last on its page.
-        terminal.write(b"x").unwrap();
-        let mut lines = 0;
-        while active_page(&terminal, 0) == active_page(&terminal, 2) {
-            assert!(lines < 100_000, "the screen never spanned two pages");
-            terminal.write(b"\r\nx").unwrap();
-            lines += 1;
-        }
-        let first_page = active_page(&terminal, 0);
-
-        terminal
-            .write(format!("\x1b[H{start}\x1b[22Jy").as_bytes())
+    let limits = [(8, 3, Some(1), None), (400, 200, None, Some(0))];
+    let attributes =
+        [("\x1b[1m", true), ("\x1b]8;;https://a.test/\x1b\\", false)];
+    for (columns, rows, lines, bytes) in limits {
+        for (start, styled) in attributes {
+            let case = format!(
+                "{columns}x{rows}, lines {lines:?}, bytes {bytes:?}, {start:?}"
+            );
+            let mut terminal = Terminal::new(
+                Options {
+                    columns,
+                    rows,
+                    ..options()
+                },
+                Recorder::default(),
+            )
             .unwrap();
-        assert_ne!(active_page(&terminal, 0), first_page, "{start:?}");
-        let cell = terminal.grid_ref(Point::active(0, 0)).unwrap();
-        let mut text = [0; 1];
-        assert_eq!(cell.graphemes(&mut text).unwrap(), Fill::Written(1));
-        assert_eq!(text[0], u32::from('y'), "{start:?}");
-        let mut uri = [0; 32];
-        let Fill::Written(uri_len) = cell.hyperlink_uri(&mut uri).unwrap()
-        else {
-            panic!("hyperlink buffer too small");
-        };
-        let expected_uri: &[u8] = if styled { b"" } else { b"https://a.test/" };
-        assert_eq!(&uri[..uri_len], expected_uri, "{start:?}");
+            terminal.set_scrollback_bytes(bytes).unwrap();
+            terminal.set_scrollback_lines(lines).unwrap();
+            // Every row has text, so ED 22 scrolls the whole screen. Write
+            // until the screen spans two pages, its top row on the first.
+            terminal.write(b"x").unwrap();
+            for _ in 1..rows {
+                terminal.write(b"\r\nx").unwrap();
+            }
+            let bottom = u32::from(rows - 1);
+            let mut written = 0;
+            while active_page(&terminal, 0) == active_page(&terminal, bottom) {
+                assert!(written < 100_000, "{case}: never spanned two pages");
+                terminal.write(b"\r\nx").unwrap();
+                written += 1;
+            }
+            let first_page = active_page(&terminal, 0);
+            let history = terminal.scrollback_rows().unwrap();
 
-        let mut render = RenderState::new().unwrap();
-        render.update(&mut terminal).unwrap();
-        let mut rows = render.rows().unwrap();
-        let mut row = rows.next().unwrap();
-        let mut cells = row.cells().unwrap();
-        assert!(cells.next());
-        assert_eq!(cells.style().unwrap().bold, styled, "{start:?}");
+            terminal
+                .write(format!("\x1b[H{start}\x1b[22Jy").as_bytes())
+                .unwrap();
+            // Without pruning, history would gain every screen row.
+            let pruned = terminal.scrollback_rows().unwrap();
+            assert!(
+                pruned < history + usize::from(rows),
+                "{case}: history went from {history} to {pruned} rows"
+            );
+            assert_ne!(active_page(&terminal, 0), first_page, "{case}");
+            let cell = terminal.grid_ref(Point::active(0, 0)).unwrap();
+            let mut text = [0; 1];
+            assert_eq!(cell.graphemes(&mut text).unwrap(), Fill::Written(1));
+            assert_eq!(text[0], u32::from('y'), "{case}");
+            let mut uri = [0; 32];
+            let Fill::Written(uri_len) = cell.hyperlink_uri(&mut uri).unwrap()
+            else {
+                panic!("hyperlink buffer too small");
+            };
+            let expected_uri: &[u8] =
+                if styled { b"" } else { b"https://a.test/" };
+            assert_eq!(&uri[..uri_len], expected_uri, "{case}");
+
+            let mut render = RenderState::new().unwrap();
+            render.update(&mut terminal).unwrap();
+            let mut render_rows = render.rows().unwrap();
+            let mut row = render_rows.next().unwrap();
+            let mut cells = row.cells().unwrap();
+            assert!(cells.next());
+            assert_eq!(cells.style().unwrap().bold, styled, "{case}");
+        }
     }
 }
 
