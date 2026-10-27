@@ -139,7 +139,10 @@ position = "top"
       const focus = field(await current(), "focus");
       if (focus === name) return;
       await key("tab");
-      await waitFor(async () => field(await current(), "focus") !== focus, `focus to leave ${focus}`);
+      await waitFor(async () => {
+        const now = field(await current(), "focus");
+        return now !== undefined && now !== focus;
+      }, `focus to leave ${focus}`);
     }
     await state(`settings.focus=${name}`);
   }

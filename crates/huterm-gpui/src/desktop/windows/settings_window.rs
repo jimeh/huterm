@@ -226,7 +226,8 @@ pub(super) struct SettingsView {
     /// A read finished while writes were pending and was dropped; the file
     /// is read again when the queue drains.
     reread: bool,
-    /// A setting whose next change reads the file afresh, after Use mine.
+    /// A setting whose next change reads the file afresh: after Use mine,
+    /// or a profile's deletion.
     fresh: Option<&'static str>,
     /// The last reload's error when the file itself validates, so the
     /// footer can say the settings were not applied.
@@ -853,7 +854,7 @@ impl SettingsView {
                     Some(MenuFor::Setting(setting)) => {
                         let setting = *setting;
                         let picked = Value::String((*value).to_owned());
-                        if view.value(setting).as_ref() != Some(&picked) {
+                        if !view.holds(setting, &picked) {
                             view.write(setting, Some(picked), cx);
                         }
                     }

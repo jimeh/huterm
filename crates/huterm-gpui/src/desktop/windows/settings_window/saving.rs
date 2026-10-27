@@ -5,7 +5,9 @@
 //! One write runs at a time. A queued edit keeps the snapshot it was made
 //! against, so a later write cannot silently overwrite an edit made
 //! elsewhere. It moves to a newer snapshot only when that snapshot still
-//! holds the value the edit expected at its path.
+//! holds the value the edit expected at its path. Use mine and a profile's
+//! deletion read the file afresh instead: the user chose to replace or
+//! remove what is there.
 
 use std::path::Path;
 
@@ -431,7 +433,8 @@ impl SettingsView {
             None => self.file.get(target).cloned(),
         };
         self.pending.insert(key, value.clone());
-        // Use mine reads the file afresh for its own change only.
+        // Use mine and a profile's deletion read the file afresh, for their
+        // own change only.
         let base = if self.fresh == Some(key) {
             self.fresh = None;
             None
@@ -608,7 +611,7 @@ impl SettingsView {
                 // The field keeps its text as a draft for after the fix, as
                 // do fields whose queued edits go unwritten.
                 report(self, "config.toml has an error. Not saved.".to_owned());
-                self.drop_queue_for_invalid_file();
+                self.drop_queue_for_invalid_file(cx);
                 self.pending.clear();
                 self.status.invalid_file(message);
                 self.sync_fields(cx);
@@ -660,6 +663,20 @@ impl SettingsView {
         .detach();
     }
 
+    /// Whether the file holds `value` for `setting`, or will once its
+    /// pending change lands. Picking such a value writes nothing; picking a
+    /// default the file leaves unset still writes it.
+    pub(super) fn holds(
+        &self,
+        setting: &'static Setting,
+        value: &Value,
+    ) -> bool {
+        match self.pending.get(setting.path.as_str()) {
+            Some(pending) => pending.as_ref() == Some(value),
+            None => self.file.get(written_path(setting)) == Some(value),
+        }
+    }
+
     /// Settles a refused creation or deletion of a profile at once: it has
     /// no row to hold a conflict or an error, so the profile bar says why,
     /// and the file is read again to show what it holds. `false` for any
@@ -685,8 +702,17 @@ impl SettingsView {
             }
             error => error.to_string(),
         };
+        if change.value.is_some() {
+            // Edits to the new profile's settings would create it, or write
+            // into a profile another editor made.
+            let prefix = format!("{key}.");
+            self.queued.retain(|queued| {
+                !matches!(queued, Queued::Setting(queued) if queued.path.starts_with(&prefix))
+            });
+            self.pending.retain(|path, _| !path.starts_with(&prefix));
+        }
         if let ApplyError::InvalidFile(invalid) = error {
-            self.drop_queue_for_invalid_file();
+            self.drop_queue_for_invalid_file(cx);
             self.pending.clear();
             self.status.invalid_file(invalid.clone());
         } else {
@@ -778,7 +804,7 @@ impl SettingsView {
                 failed = true;
                 // Nothing can be written to an invalid file, so every
                 // pending change settles unsaved.
-                self.drop_queue_for_invalid_file();
+                self.drop_queue_for_invalid_file(cx);
                 self.pending.clear();
                 self.status.invalid_file(message);
                 self.sync_fields(cx);
@@ -817,8 +843,21 @@ impl SettingsView {
     /// Drops every queued write after the file turned out invalid. A
     /// keybinding field whose edit goes unwritten keeps its text as a draft,
     /// marked, for after the fix.
-    fn drop_queue_for_invalid_file(&mut self) {
+    fn drop_queue_for_invalid_file(&mut self, cx: &mut Context<'_, Self>) {
         for queued in std::mem::take(&mut self.queued) {
+            // A queued profile creation gives its name back to retry.
+            if let Queued::Setting(change) = &queued
+                && change.value.is_some()
+                && quake::is_profile_table(change.path)
+            {
+                self.profile_failed(
+                    change.path,
+                    true,
+                    "config.toml has an error. Not saved.".to_owned(),
+                    cx,
+                );
+                continue;
+            }
             let Queued::Keys(KeyChange {
                 field: Some((key, saved)),
                 ..

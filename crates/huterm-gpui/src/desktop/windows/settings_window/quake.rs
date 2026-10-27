@@ -8,6 +8,7 @@ use gpui::{
     AnyElement, App, Context, Entity, Focusable, InteractiveElement,
     IntoElement, ParentElement, Styled, Window, div, prelude::*, px,
 };
+use huterm_config::document::EntryLocator;
 use huterm_config::settings::{Choice, Setting, SettingKind, SettingsModel};
 use huterm_protocol::{ids, lookup};
 use toml::{Table, Value};
@@ -220,20 +221,29 @@ impl SettingsView {
     /// Takes a new list of global shortcuts. Messages under their rows
     /// describe the list they were made against, so they go once it
     /// changes, such as after another editor's change.
-    pub(super) fn set_globals(
-        &mut self,
-        globals: Vec<huterm_config::document::EntryLocator>,
-    ) {
+    pub(super) fn set_globals(&mut self, globals: Vec<EntryLocator>) {
         if self.keys.globals != globals {
             // An open editor names its shortcut by position, which may now
             // be another shortcut's.
-            if self.keys.recording.as_ref().is_some_and(|recording| {
-                matches!(recording.target, Target::Global(_))
-            }) {
+            let moved = |entry: usize| {
+                self.keys.globals.get(entry).map(EntryLocator::content)
+                    != globals.get(entry).map(EntryLocator::content)
+            };
+            if let Some(Target::Global(entry)) = self
+                .keys
+                .recording
+                .as_ref()
+                .map(|recording| recording.target.clone())
+                && moved(entry)
+            {
                 self.keys.recording = None;
             }
-            if matches!(self.menu, Some((_, MenuFor::Global { .. }, _))) {
+            if let Some((_, MenuFor::Global { entry, .. }, _)) = &self.menu
+                && moved(*entry)
+            {
+                // Focus held by the menu goes to the window.
                 self.menu = None;
+                self.keys.stranded = true;
             }
             self.keys.errors.retain(|row, _| {
                 row != "gadd"
@@ -398,14 +408,25 @@ impl SettingsView {
             return;
         };
         if created {
-            let swatch = Self::swatch(cx);
-            let field = cx.new(|cx| {
-                let mut field = TextField::new("Profile name", swatch.fg, cx);
-                field.set_text(name, cx);
-                field
+            // A name typed for another profile since stays in the field.
+            let typing = self.quake.naming.as_ref().is_some_and(|field| {
+                let text = field.read(cx).text().trim();
+                !text.is_empty() && text != name
             });
-            self.quake.naming = Some(field);
-            self.quake.name_error = Some(message);
+            if typing {
+                self.quake.name_error = Some(format!("{name}: {message}"));
+            } else {
+                let swatch = Self::swatch(cx);
+                let field = cx.new(|cx| {
+                    let mut field =
+                        TextField::new("Profile name", swatch.fg, cx);
+                    field.set_text(name, cx);
+                    field
+                });
+                let _ = field.read(cx).focus_handle(cx).tab_stop(true);
+                self.quake.naming = Some(field);
+                self.quake.name_error = Some(message);
+            }
         } else {
             self.pick_profile(name);
             self.quake.delete_error = Some(message);
@@ -502,7 +523,13 @@ impl SettingsView {
     ) {
         let name = self.shown_profile();
         self.quake.deleting = false;
-        if name == DEFAULT || self.locked() {
+        if name == DEFAULT {
+            return;
+        }
+        if self.locked() {
+            self.quake.delete_error =
+                Some("config.toml has an error. Not saved.".to_owned());
+            self.action_stop("qdel".to_owned(), cx).focus(window, cx);
             return;
         }
         // The validator refuses a global shortcut for a missing profile.

@@ -464,3 +464,105 @@ fn picking_a_display_identifier_again_writes_nothing(cx: &mut TestAppContext) {
     });
     assert_eq!(file.text(), original);
 }
+
+#[gpui::test]
+fn a_refused_create_keeps_a_newer_name_and_drops_its_queued_edits(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("quake-refused-draft", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    // Another editor adds an empty `build` before Settings rereads.
+    let theirs = format!("{LOGS}\n[quake.profiles.build]\n");
+    std::fs::write(file.path(), &theirs).unwrap();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_profile_name("build", window, cx);
+        view.press("qcreate", window, cx);
+        // Queued behind the creation, and a newer name in the field.
+        view.set("quake.profiles.build.height", Some(Value::Float(0.4)), cx);
+        view.type_profile_name("other", window, cx);
+    });
+    harness.wait_for("the refused create", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.quake_message().is_some())
+                    .unwrap_or(false)
+            })
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), theirs);
+    with_window(&mut harness, |view, _, cx| {
+        assert_eq!(view.profile_name_text(cx), "other");
+        assert!(view.quake_message().unwrap().starts_with("build: "));
+    });
+}
+
+#[gpui::test]
+fn a_queued_create_gives_its_name_back_when_the_file_turns_invalid(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("quake-queued-invalid", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        view.set("font.size", Some(Value::Float(15.0)), cx);
+        view.type_profile_name("build", window, cx);
+        view.press("qcreate", window, cx);
+    });
+    // The file turns invalid before the write ahead of the creation runs.
+    std::fs::write(file.path(), format!("{LOGS}[window\n")).unwrap();
+    harness.wait_for("the refused writes", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.quake_prompts().0)
+                    .unwrap_or(false)
+            })
+    });
+    with_window(&mut harness, |view, _, cx| {
+        assert_eq!(view.profile_name_text(cx), "build");
+        assert!(view.quake_message().is_some());
+    });
+}
+
+#[gpui::test]
+fn a_global_menu_stays_open_while_another_shortcut_saves(
+    cx: &mut TestAppContext,
+) {
+    let two = "[[global_keybinding]]\nkey = \"ctrl-alt-shift-u\"\n\
+               command = \"hide_quake\"\n\n[[global_keybinding]]\n\
+               key = \"ctrl-alt-shift-y\"\ncommand = \"toggle_quake\"\n";
+    let file = ScratchConfig::new("quake-menu-own-write", two);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    press(&mut harness, "gprofile:1");
+    with_view(&mut harness, |view, cx| {
+        view.pick_global(0, "command", "show_quake", cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("show_quake"));
+    with_view(&mut harness, |view, _| assert!(view.global_menu_open()));
+}
+
+#[gpui::test]
+fn a_delete_on_an_invalid_file_says_why(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-locked-delete", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_view(&mut harness, |view, _| view.pick_profile("logs"));
+    press(&mut harness, "qdel");
+    std::fs::write(file.path(), format!("{LOGS}[window\n")).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the invalid reread", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.read_only())
+                    .unwrap_or(false)
+            })
+    });
+    press(&mut harness, "qdelyes");
+    with_view(&mut harness, |view, _| {
+        assert!(view.quake_message().is_some());
+    });
+}

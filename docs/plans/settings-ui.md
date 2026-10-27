@@ -1088,9 +1088,12 @@ reads the file afresh, since the user confirmed deleting the profile as it
 is. A global shortcut needs Ctrl, Alt, or Cmd (Super on Linux), or a
 function key, because it reaches every application; Settings refuses
 others, while the file still accepts them. An open global shortcut menu or
-recorder closes when the list of shortcuts changes, because it names its
-shortcut by position. Picking the value a select already shows writes
-nothing.
+recorder closes when its own shortcut changes, because it names the
+shortcut by position. Picking the value the file already holds, or will
+hold once a pending change lands, writes nothing. A refused creation keeps
+a name typed since for another profile, and drops edits queued for the
+refused profile; a creation still queued when the file turns invalid gives
+its name back.
 
 ### PR 5 files
 
