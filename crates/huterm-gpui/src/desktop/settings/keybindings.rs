@@ -320,6 +320,36 @@ fn active_notes(
     let binding = &listed.binding;
     let user = binding.origin == Origin::User;
     let unconditional = binding.when.is_none() && binding.context.is_none();
+    // What this key stops doing comes first; it matters most.
+    if user
+        && unconditional
+        && let Some(stroke) = binding
+            .key
+            .split_whitespace()
+            .next()
+            .and_then(|stroke| gpui::Keystroke::parse(stroke).ok())
+    {
+        let modifiers = stroke.modifiers;
+        if !(modifiers.control
+            || modifiers.alt
+            || modifiers.platform
+            || modifiers.function)
+        {
+            notes.push(Note::warning(
+                "Without a condition, this key stops reaching text fields, \
+                 dialogs, programs, and moving around Settings."
+                    .to_owned(),
+            ));
+        } else if modifiers.control
+            && !(modifiers.shift || modifiers.alt || modifiers.platform)
+        {
+            notes.push(Note::info(
+                "Programs in the terminal no longer receive this key; a \
+                 condition such as Terminal && selection shares it."
+                    .to_owned(),
+            ));
+        }
+    }
     for taken in inventory.bindings.iter().filter(|other| {
         listed.entry.is_some()
             && other.state
@@ -363,35 +393,6 @@ fn active_notes(
             "{} more commands also use this key.",
             shared.len() - NAMED
         )));
-    }
-    if user
-        && unconditional
-        && let Some(stroke) = binding
-            .key
-            .split_whitespace()
-            .next()
-            .and_then(|stroke| gpui::Keystroke::parse(stroke).ok())
-    {
-        let modifiers = stroke.modifiers;
-        if !(modifiers.control
-            || modifiers.alt
-            || modifiers.platform
-            || modifiers.function)
-        {
-            notes.push(Note::warning(
-                "Without a condition, this key stops reaching text fields, \
-                 dialogs, programs, and moving around Settings."
-                    .to_owned(),
-            ));
-        } else if modifiers.control
-            && !(modifiers.shift || modifiers.alt || modifiers.platform)
-        {
-            notes.push(Note::info(
-                "Programs in the terminal no longer receive this key; a \
-                 condition such as Terminal && selection shares it."
-                    .to_owned(),
-            ));
-        }
     }
 }
 

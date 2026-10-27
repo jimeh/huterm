@@ -225,6 +225,13 @@ fn the_editor_writes_nothing_while_the_file_is_invalid(
     assert_eq!(file.text(), broken);
 }
 
+/// Resize Pane Right's default, which sets no `amount`.
+const RESIZE_RIGHT: &str = if cfg!(target_os = "macos") {
+    "cmd-ctrl-right"
+} else {
+    "ctrl-super-shift-right"
+};
+
 /// Select Tab's first default, which carries an `index` argument.
 const SELECT_FIRST: &str = if cfg!(target_os = "macos") {
     "cmd-1"
@@ -421,4 +428,81 @@ fn focus_on_a_field_that_goes_away_returns_to_the_window(
     keystrokes(&mut harness, find);
     harness.cx.run_until_parked();
     assert_eq!(focus_name(&mut harness), "key:search");
+}
+
+#[gpui::test]
+fn shift_tab_from_an_edited_default_lands_on_its_new_row(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-shift-tab", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let next = row(&mut harness, ids::NEXT_TAB, "ctrl-tab");
+    let when = format!("when:{next}");
+    press(&mut harness, "kgo:next_tab");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key(&when, window, cx);
+    });
+    harness.cx.run_until_parked();
+    // Shift-Tab saves the condition and moves to the default's key cap,
+    // which the save switches off; focus goes on to the new row's cap.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key(&when, "Terminal", window, cx);
+        view.command(ids::SETTINGS_FOCUS_PREVIOUS, window, cx)
+            .unwrap();
+        // The test window does not deliver the blur that saves.
+        view.blur_key(&when, cx);
+    });
+    saved(&mut harness, &file, |text| {
+        text.contains("when = \"Terminal\"")
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(focus_name(&mut harness), "action:krec:u1");
+    // An empty number argument has no value to step from.
+    let resize = row(&mut harness, ids::RESIZE_PANE_RIGHT, RESIZE_RIGHT);
+    let amount = format!("arg:{resize}:amount");
+    let before = file.text();
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key(&amount, window, cx);
+        view.step_key(&amount, true, cx);
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), before);
+}
+
+#[gpui::test]
+fn closing_saves_a_focused_condition_or_stays_to_show_its_error(
+    cx: &mut TestAppContext,
+) {
+    let original = "[[keybinding]]\nkey = \"ctrl-alt-l\"\n\
+                    command = \"resize_pane_right\"\n";
+    let file = ScratchConfig::new("keys-close", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:resize_pane_right");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_key("when:u0", window, cx);
+    });
+    harness.cx.run_until_parked();
+    // A condition that does not parse keeps the window open.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u0", "Terminal &&", window, cx);
+        view.command(ids::CLOSE_WINDOW, window, cx).unwrap();
+    });
+    harness.cx.run_until_parked();
+    assert!(harness.cx.update(|cx| settings(cx).is_some()));
+    assert_eq!(file.text(), original);
+    // A valid one saves, and the window closes once it has.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u0", "Terminal", window, cx);
+        view.command(ids::CLOSE_WINDOW, window, cx).unwrap();
+    });
+    harness.wait_for("the save and the close", |cx| settings(cx).is_none());
+    assert!(
+        file.text().contains("when = \"Terminal\""),
+        "{}",
+        file.text()
+    );
 }

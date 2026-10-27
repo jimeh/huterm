@@ -449,6 +449,8 @@ impl SettingsView {
                     handle.focus(window, cx);
                 }
             }
+            // Only an active shortcut's key records.
+            "krec" if !self.field_row_active(&format!("krec:{argument}")) => {}
             "krec" => {
                 let handle = self.action_stop(format!("krec:{argument}"), cx);
                 self.start_recording(
@@ -634,9 +636,23 @@ impl SettingsView {
         let focused = self
             .focused_action(window)
             .or_else(|| self.focused_key_field(window, cx).map(|(key, _)| key));
-        if focused.as_deref() != Some(origin.as_str()) {
+        let Some(focused) = focused else {
             return;
-        }
+        };
+        // Focus on the changed control follows it to the new row. Focus
+        // moved to another editing control of the default, which is now
+        // switched off, moves to that control on the new row instead.
+        let target = if focused == origin {
+            target
+        } else if let (Some(from), Some(to)) =
+            (control_row(&origin), control_row(&target))
+            && control_row(&focused) == Some(from)
+            && !focused.starts_with("kon:")
+        {
+            focused.replacen(from, to, 1)
+        } else {
+            return;
+        };
         if target == "search" {
             self.keys.search.read(cx).focus_handle(cx).focus(window, cx);
         } else if let Some(field) = self.keys.fields.get(&target) {
@@ -797,12 +813,17 @@ impl SettingsView {
         })
         .detach();
         let blurred = key.clone();
-        cx.on_blur(&handle, window, move |view, _, cx| {
+        cx.on_blur(&handle, window, move |view, window, cx| {
             if view.keys.editing.as_ref() == Some(&blurred) {
                 view.keys.editing = None;
             }
             view.keys.completion = None;
-            view.commit_key_field(&blurred, cx);
+            // Blur runs inside a draw, where a redraw request is lost; the
+            // save waits until the draw is done, so an error it finds shows.
+            let blurred = blurred.clone();
+            cx.defer_in(window, move |view, _, cx| {
+                view.commit_key_field(&blurred, cx);
+            });
         })
         .detach();
         if key.starts_with("when:") {
@@ -887,7 +908,7 @@ impl SettingsView {
     /// Whether a field key's row is an active shortcut, which edits apply
     /// to.
     fn field_row_active(&self, key: &str) -> bool {
-        field_row(key)
+        control_row(key)
             .and_then(|name| row(self.keys.inventory.as_ref()?, name))
             .is_some_and(|listed| listed.state == BindingState::Active)
     }
@@ -1133,12 +1154,17 @@ impl SettingsView {
         let Some(field) = self.keys.fields.get(key).cloned() else {
             return;
         };
-        let current = field.read(cx).text().trim().parse::<i64>().ok();
+        // An empty field uses the command's default, which the catalog
+        // does not state, so there is nothing to step from.
+        let Some(current) = field.read(cx).text().trim().parse::<i64>().ok()
+        else {
+            return;
+        };
+        let current = Some(current);
         let next = match current {
             Some(value) if up => value.saturating_add(1),
             Some(value) => value.saturating_sub(1),
-            None if up => min,
-            None => max,
+            None => return,
         }
         .clamp(min, max);
         if current == Some(next) {
@@ -1236,6 +1262,14 @@ impl SettingsView {
         };
         self.edit_row(name, Field::Argument(argument.to_owned()), value, cx);
     }
+}
+
+/// The row an editing control belongs to: a key cap `krec:<row>`, a switch
+/// `kon:<row>`, or a field.
+fn control_row(key: &str) -> Option<&str> {
+    key.strip_prefix("krec:")
+        .or_else(|| key.strip_prefix("kon:"))
+        .or_else(|| field_row(key))
 }
 
 /// The row a field key belongs to: `when:<row>` or `arg:<row>:<name>`.

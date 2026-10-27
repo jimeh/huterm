@@ -1596,6 +1596,15 @@ impl SettingsView {
         self.cancel_key_field(key, cx);
     }
 
+    pub(super) fn step_key(
+        &mut self,
+        key: &str,
+        up: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.step_argument(key, up, cx);
+    }
+
     pub(super) fn completion_open(&self) -> bool {
         self.keys.completion.is_some()
     }

@@ -762,6 +762,16 @@ impl SettingsView {
                 return false;
             }
         }
+        // A keybinding field's draft saves too; one that does not save
+        // keeps the window open to show why.
+        if let Some((key, _)) = self.focused_key_field(window, cx)
+            && key != "search"
+        {
+            self.commit_key_field(&key, cx);
+            if self.keys.errors.contains_key(&key) {
+                return false;
+            }
+        }
         if !self.conflicts.is_empty() {
             return false;
         }
