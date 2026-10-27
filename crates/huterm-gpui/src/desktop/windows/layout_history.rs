@@ -4,8 +4,8 @@
 //! The history holds one entry each way. Both are checked against the
 //! projection after every batch, and dropped once the runtime would refuse
 //! to restore them, so menus and the palette only offer what can still
-//! apply. Checking costs one comparison per touched tab of each entry,
-//! however large the batch. The runtime checks again under its lock, so a
+//! apply. Checking an entry compares only the tabs the entry itself
+//! recorded, however large the batch. The runtime checks again under its lock, so a
 //! projection that lags never applies a restore to the wrong state.
 
 use huterm_core::RestoreDirection;

@@ -326,6 +326,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   and exits at once. Ending well before the 1,500ms deadline means both
   pipes closed early, as if the descendant never held them; no output from
   the descendant was kept.
+- **Second signature:** a local `mise run test` on macOS, 2026-10-27, while
+  Cargo built in parallel, failed the same test at its 1,500ms deadline:
+  `process.kill(-child.pid, "SIGTERM")` in `smoke-process.ts` threw `EPERM`
+  instead of signalling the group. EPERM there suggests the group's leader
+  had already exited and its ID belonged to a group the user cannot signal.
+  The file passed alone right after.
 - **Triage:** rerun the file alone. If it recurs, record whether the
   descendant started, for example by having it write a marker file.
 

@@ -5,6 +5,7 @@
 use huterm_core::RestoreDirection;
 
 use super::pane_moves::{active, identity, pane_focused};
+use super::worker_hooks::Stage;
 use super::*;
 
 /// The label `window` would undo or redo next.
@@ -383,5 +384,78 @@ fn a_change_to_a_tab_the_window_does_not_show_prunes_its_entry(
             view.window_menu_input(cx).restorable,
             window_menu::Restorable::default()
         );
+    });
+}
+
+/// Whether `window`'s open palette has keyboard focus.
+fn palette_focused(cx: &mut App, window: AnyWindowHandle) -> bool {
+    window
+        .update(cx, |root, window, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            let palette = view.read(cx).palette.clone()?;
+            Some(palette.read(cx).focus_handle(cx).is_focused(window))
+        })
+        .ok()
+        .flatten()
+        .unwrap_or(false)
+}
+
+#[gpui::test]
+fn a_palette_opened_while_a_restored_view_installs_keeps_focus(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let lone = harness.open_tab(ECHO);
+    let pane = harness.first_pane(lone);
+    let elsewhere = harness
+        .runtime
+        .lock()
+        .create_workspace(harness.session, None)
+        .unwrap();
+    let window = harness.attach_window();
+    harness.activate(window, first);
+    harness.focus(window, lone, pane);
+    // The tab's only pane moves its whole tab out of this window.
+    harness
+        .invoke_with(
+            window,
+            &CommandInvocation::new(
+                ids::MOVE_PANE_TO_NEW_TAB,
+                vec![CommandArgument::new(
+                    "workspace",
+                    CommandValue::Workspace(elsewhere),
+                )],
+            ),
+        )
+        .unwrap();
+    harness.wait_for("the tab to leave and the move to record", |cx| {
+        tab_order(cx, window) == [first]
+            && next_label(cx, window, RestoreDirection::Undo).is_some()
+    });
+    // Undo brings the tab back, but its view's install waits; the palette
+    // opens meanwhile.
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Subscribe);
+    harness.invoke(window, ids::UNDO).unwrap();
+    harness.wait_for("the restored tab's install to start", |cx| {
+        hooks.held(Stage::Subscribe) == 1 && !busy(cx, window)
+    });
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    harness.wait_for("the palette to take focus", |cx| {
+        palette_focused(cx, window)
+    });
+    hooks.release(Stage::Subscribe);
+    // The tab shows again behind the palette, which keeps keyboard focus.
+    harness.wait_for("the restored tab to show", |cx| {
+        active(cx, window) == Some(lone)
+            && panes_shown(cx, window, lone)
+                .is_some_and(|(panes, _)| panes == [pane])
+    });
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert!(palette_focused(cx, window));
+        assert!(!pane_focused(cx, window, lone, pane));
     });
 }

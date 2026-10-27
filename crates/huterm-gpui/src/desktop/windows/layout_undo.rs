@@ -212,7 +212,8 @@ impl WorkspaceView {
     }
 
     /// Shows the tab that holds `pane` and focuses it there, if this window
-    /// has its view.
+    /// has its view. An overlay that opened meanwhile keeps keyboard focus,
+    /// as it does when any tab is selected behind it.
     pub(super) fn focus_restored_pane(
         &mut self,
         pane: PaneId,
@@ -223,7 +224,8 @@ impl WorkspaceView {
             return false;
         };
         if self.active_tab(cx) != Some(tab) {
-            self.select(tab, window, cx);
+            let focus = !self.overlay_holds_focus();
+            self.select_tab(tab, focus, window, cx);
         }
         self.focus_pane(tab, pane, window, cx);
         true
