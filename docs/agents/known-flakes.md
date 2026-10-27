@@ -131,7 +131,8 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   ("foreground job not observed"). Under heavier load other job-control
   tests in `terminal::tests` fail the same way, among them
   `foreground_jobs_are_named_while_running_and_cleared_on_return`,
-  `osc7_reports_apply_only_while_their_reporter_holds_the_foreground`, and
+  `osc7_reports_apply_only_while_their_reporter_holds_the_foreground`,
+  `job_titles_apply_only_while_the_job_holds_the_foreground`, and
   `shutdown_should_terminate_a_distinct_foreground_process_group`.
 - **Rate:** about 1 in 3 full `cargo test -p huterm-core --lib` runs on a
   developer Mac, at the 3-second "foreground job not detected" deadline. All
@@ -152,7 +153,13 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   runtime branch (#29 PR 1), which changes no job or close-assessment code,
   failed the orphan test with a new signature: the `sleep 30` job was found
   but reported as foreground (`assert!(!orphan.foreground)`). The cause is
-  unconfirmed. The rerun passed all 391 tests.
+  unconfirmed. The rerun passed all 391 tests. On 2026-10-27, during the
+  pane drag work (#29 PR 3), which changes no `huterm-core` code, one full
+  local `mise run test` failed three at once:
+  `foreground_exit_and_unavailable_runtime_are_assessed_conservatively`,
+  `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`, and
+  `job_titles_apply_only_while_the_job_holds_the_foreground`. The rerun
+  passed, at a load average near 9.
 - **Cause:** the system shell's job control, not Huterm. These tests already
   poll their conditions. With the load average around 90 on a 16-core Mac
   (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.

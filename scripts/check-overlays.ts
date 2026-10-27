@@ -42,6 +42,18 @@ type OverlayInput = {
   click(x: number, y: number, button?: PointerButton): Promise<void>;
   /** A left-button drag from one point to another, released at the end. */
   drag(fromX: number, fromY: number, toX: number, toY: number): Promise<void>;
+  /** Presses the left button at a point and holds it. */
+  press(x: number, y: number): Promise<void>;
+  /** Moves the pointer with the left button held. */
+  dragTo(x: number, y: number): Promise<void>;
+  /** Releases the held left button at a point. */
+  release(x: number, y: number): Promise<void>;
+  /**
+   * A key pressed while the left button is held. xdotool's
+   * `--clearmodifiers` would release the button around the key and press it
+   * again, a click the drag never made.
+   */
+  keyHeld(name: OverlayKey): Promise<void>;
   /** Wheel steps up at the pointer; absent where no synthetic wheel exists. */
   wheelUp?: () => Promise<void>;
   windowName(): Promise<string>;
@@ -77,6 +89,16 @@ function x11Input(windowId: string, scale: number): OverlayInput {
       await moveTo(toX, toY);
       run(["xdotool", "mouseup", "1"]);
     },
+    press: async (x, y) => {
+      await moveTo(x, y);
+      run(["xdotool", "mousedown", "1"]);
+    },
+    dragTo: moveTo,
+    release: async (x, y) => {
+      await moveTo(x, y);
+      run(["xdotool", "mouseup", "1"]);
+    },
+    keyHeld: async (name) => { run(["xdotool", "key", x11Keys[name]]); },
     wheelUp: async () => { run(["xdotool", "click", "--repeat", "3", "4"]); },
     windowName: async () => run(["xdotool", "getwindowname", windowId]),
   };
@@ -108,11 +130,12 @@ export function appKitInput(command: (value: string) => Promise<string>): Overla
     if (x < 1) throw new Error(`pointer x ${x} is inside the fractional range`);
     await post(["mouse", 5, x, y]);
   };
+  const key = async (name: OverlayKey) => {
+    const [code, flags, text] = macKeys[name];
+    await post([code, flags, text, text]);
+  };
   return {
-    key: async (name) => {
-      const [code, flags, text] = macKeys[name];
-      await post([code, flags, text, text]);
-    },
+    key,
     typeText: async (text) => {
       for (const event of macKeyEvents(text)) await post([event.code, event.flags, event.text, event.plain]);
     },
@@ -130,6 +153,13 @@ export function appKitInput(command: (value: string) => Promise<string>): Overla
       await post(["mouse", 6, toX, toY]);
       await post(["mouse", 2, toX, toY]);
     },
+    press: async (x, y) => {
+      await moveTo(x, y);
+      await post(["mouse", 1, x, y]);
+    },
+    dragTo: async (x, y) => { await post(["mouse", 6, x, y]); },
+    release: async (x, y) => { await post(["mouse", 2, x, y]); },
+    keyHeld: key,
     windowName: () => command("native-title"),
   };
 }
@@ -678,6 +708,74 @@ label = "title"
     const narrowed = Math.floor(80 / Number(field(split, "cell").split(",")[0])) - 1;
     await stateWhere((text) => columnsOf(text) <= leftColumns - narrowed, "the divider drag to narrow the first pane");
     await ack("ackafterdrag");
+    // Pane drags by the title bar: onto a sibling's edge, which moves the
+    // pane there, onto its centre, which swaps them back, and Escape, which
+    // cancels. Each waits for the drawn target before releasing, and each
+    // shell still answers its own line.
+    const grabOf = (text: string, index: number) => {
+      const [x, y] = field(text, "pane_grab").split(";")[index]!.split(",").map(Number);
+      return { x: x!, y: y! };
+    };
+    const paneOf = (text: string, index: number) => field(text, "pane_rects").split(";").map(parseRect)[index]!;
+    const dragPane = async (from: { x: number; y: number }, to: { x: number; y: number }, drop: string) => {
+      await native().press(from.x, from.y);
+      await native().dragTo((from.x + to.x) / 2, (from.y + to.y) / 2);
+      await native().dragTo(to.x, to.y);
+      await state(`w0.drop=${drop}`);
+    };
+    let dragged = await current();
+    const rightPane = paneOf(dragged, 1);
+    const rightEdge = { x: rightPane.x + rightPane.w - 8, y: rightPane.y + rightPane.h / 2 };
+    await dragPane(grabOf(dragged, 0), rightEdge, "pane:1:right");
+    await native().release(rightEdge.x, rightEdge.y);
+    await state("w0.drop=none", "w0.busy=false", "w0.panes=2", "w0.pane_focus=1");
+    await ack("ackpanemoved");
+    dragged = await current();
+    const swapped = rectCentre(field(dragged, "pane_rects").split(";")[0]!);
+    await dragPane(grabOf(dragged, 1), swapped, "pane:0:centre");
+    await native().release(swapped.x, swapped.y);
+    await state("w0.drop=none", "w0.busy=false", "w0.panes=2", "w0.pane_focus=0");
+    await ack("ackpaneswapped");
+    dragged = await current();
+    const kept = rectCentre(field(dragged, "pane_rects").split(";")[1]!);
+    await dragPane(grabOf(dragged, 0), kept, "pane:1:centre");
+    await native().keyHeld("escape");
+    await state("w0.drop=none");
+    await native().release(kept.x, kept.y);
+    await state("w0.busy=false", "w0.panes=2", "w0.pane_focus=0", "w0.terminal_focused=true");
+    await ack("ackdragescaped");
+    // Spring-loading: a pane drag held still on another tab's label
+    // activates that tab after its delay, which the smoke waits out by
+    // polling; Escape then switches back, and a second spring drops the
+    // pane beside the other tab's pane.
+    const tabsBefore = Number(field(await current(), "tabs"));
+    const origin = Number(field(await current(), "active_index"));
+    await newTab(tabsBefore + 1);
+    const originLabel = rectCentre(field(await current(), "tabs_rects").split(";")[origin]!);
+    await click(originLabel.x, originLabel.y);
+    await state(`w0.active_index=${origin}`, "w0.panes=2");
+    const spring = async () => {
+      const text = await current();
+      const label = rectCentre(field(text, "tabs_rects").split(";")[tabsBefore]!);
+      await dragPane(grabOf(text, 1), label, `spring:${tabsBefore}`);
+      await state(`w0.spring=${tabsBefore}`);
+      await state(`w0.active_index=${tabsBefore}`);
+      return label;
+    };
+    const sprungFrom = await spring();
+    await native().keyHeld("escape");
+    await native().release(sprungFrom.x, sprungFrom.y);
+    await state(`w0.active_index=${origin}`, "w0.drop=none", "w0.panes=2", "w0.pane_focus=1", "w0.terminal_focused=true");
+    await ack("ackspringback");
+    const sprung = await spring();
+    const lone = paneOf(await stateWhere((text) => field(text, "panes") === "1", "the sprung tab's pane"), 0);
+    const loneEdge = { x: lone.x + lone.w - 8, y: lone.y + lone.h / 2 };
+    await native().dragTo((sprung.x + loneEdge.x) / 2, (sprung.y + loneEdge.y) / 2);
+    await native().dragTo(loneEdge.x, loneEdge.y);
+    await state("w0.drop=pane:0:right");
+    await native().release(loneEdge.x, loneEdge.y);
+    await state(`w0.active_index=${tabsBefore}`, "w0.drop=none", "w0.busy=false", "w0.panes=2", "w0.pane_focus=1");
+    await ack("ackspringdropped");
     // The title bar's zoom toggle zooms its pane and unzooms it again.
     const clickZoom = async () => {
       const [, zoom] = field(await current(), "pane_zoom").split(";");
@@ -759,7 +857,7 @@ label = "title"
     }
     await reloadedTitles(configDocument);
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard pane-drags=edge-centre-escape-spring-back-drop`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

@@ -159,6 +159,7 @@ mod button_layout;
 mod client_frame;
 mod exit_closes;
 mod model;
+mod pane_drag;
 mod pane_geometry;
 mod pane_moves;
 mod projection;
@@ -190,9 +191,10 @@ use model::{
     PaneTitle, QuakeRecord, TabEntry, TitleScope, WindowLayout, WindowModel,
     WindowRecord, WindowRestore, apply_tab_order,
 };
+use pane_drag::{DropTarget, PaneDrag, PaneMode};
 use pane_geometry::{
-    Divider, TabPanes, boundary_position, dragged_weights, layout_panes,
-    with_boundary,
+    Divider, PaneRect, TabPanes, boundary_position, dragged_weights,
+    layout_panes, with_boundary,
 };
 use projection::{
     Drained, Install, PendingInstalls, Projection, ReconcileTarget, Resolution,
@@ -2183,6 +2185,9 @@ fn open_window_with_profile(
                 resize_commit_counter: 0,
                 resize_queue: None,
                 drawn_dividers: RefCell::new(Vec::new()),
+                drawn_panes: RefCell::new(None),
+                drawn_drop: RefCell::new(None),
+                pane_drag: None,
                 reveal: Reveal::default(),
                 reveal_context: None,
                 pointer_reveal: PointerReveal::default(),
@@ -2262,6 +2267,8 @@ fn open_window_with_profile(
                     }
                     if !window.is_window_active() {
                         view.cancel_divider_drag(cx);
+                        view.cancel_reorder(window, cx);
+                        view.cancel_pane_drag(window, cx);
                     }
                     view.refresh_tab_visibility(window, cx);
                     // A failure latched while every window was hidden or
@@ -2383,13 +2390,27 @@ impl refresh::Animated for WorkspaceView {
         if self.scroll_target.is_some()
             || self.reorder.as_ref().is_some_and(|drag| {
                 drag.dragging
+                    && !drag.nesting
                     && drag
                         .strip
                         .autoscroll(drag.pointer, Duration::from_millis(16))
                         != self.tab_scroll
             })
+            || self
+                .pane_drag
+                .as_ref()
+                .is_some_and(|drag| drag.scrolls(self.tab_scroll))
         {
             next = next.merge(AnimationSchedule::FRAME);
+        }
+        // A pane drag resting on a label waits on one deadline and draws
+        // no frames.
+        if let Some(deadline) = self
+            .pane_drag
+            .as_ref()
+            .and_then(|drag| drag.spring.deadline())
+        {
+            next = next.merge(AnimationSchedule::at(deadline));
         }
         if let Some(state) = &self.quake {
             next = next.merge(state.frame_schedule());
@@ -2413,13 +2434,15 @@ impl refresh::Animated for WorkspaceView {
         if self.pointer_reveal.probe_at.is_some_and(|at| now >= at) {
             self.refresh_tab_visibility(window, cx);
         }
-        if self.advance_tab_scroll(now, window)
-            | self.tab_scrollbars.advance(now)
-            | self.reveal.tick(now)
-        {
+        let scrolled = self.advance_tab_scroll(now, window);
+        if scrolled {
+            self.rearm_after_scroll(now, window, cx);
+        }
+        if scrolled | self.tab_scrollbars.advance(now) | self.reveal.tick(now) {
             self.sync_tab_layout(window, cx);
             cx.notify();
         }
+        self.advance_spring(now, window, cx);
         self.update_pointer_probe(now, window);
     }
 }
@@ -3235,6 +3258,13 @@ struct WorkspaceView {
     /// The active tab's dividers as the last frame drew them, which
     /// presses hit-test against.
     drawn_dividers: RefCell<Vec<Divider>>,
+    /// The active tab's pane rectangles as the last frame drew them, which
+    /// pane and tab drags hit-test against.
+    drawn_panes: RefCell<Option<(TabId, Vec<PaneRect>)>>,
+    /// The drop target the last frame drew, for smoke state.
+    drawn_drop: RefCell<Option<String>>,
+    /// A press on a pane title bar, or the drag it became.
+    pane_drag: Option<PaneDrag>,
     reveal: Reveal,
     reveal_context: Option<(TabPosition, bool, bool)>,
     pointer_reveal: PointerReveal,
@@ -3377,6 +3407,12 @@ struct TabReorder {
     dragging: bool,
     original_scroll: Pixels,
     strip: TabStrip,
+    /// Pane mode: the pointer is over a pane of the active tab, deep enough
+    /// past the bar that a release nests the tab instead of reordering.
+    nesting: bool,
+    /// The pane zone a release in pane mode nests into; a centre offers
+    /// none.
+    nest: Option<DropTarget>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4117,6 +4153,7 @@ impl WorkspaceView {
     ) -> Vec<gpui::AnyElement> {
         let Some(tab) = self.active_tab_view(cx) else {
             self.drawn_dividers.borrow_mut().clear();
+            *self.drawn_panes.borrow_mut() = None;
             return Vec::new();
         };
         let tab_id = tab.id;
@@ -4133,6 +4170,8 @@ impl WorkspaceView {
             .as_ref()
             .map(|rects| rects.dividers.clone())
             .unwrap_or_default();
+        *self.drawn_panes.borrow_mut() =
+            rects.as_ref().map(|rects| (tab_id, rects.panes.clone()));
         let mut elements = Vec::new();
         for pane in &tab.panes {
             // A view the layout no longer holds, such as one still closing,
@@ -5572,6 +5611,14 @@ impl WorkspaceView {
         )
     }
 
+    /// Whether the window draws its tab bar: reserved, or an overlay bar
+    /// part way or fully revealed.
+    fn bar_drawn(&self) -> bool {
+        self.presentation() == Presentation::Reserved
+            || self.presentation() == Presentation::Overlay
+                && self.reveal.progress > 0.0
+    }
+
     fn reveal_active(&mut self, window: &Window, cx: &App) {
         self.scroll_target = None;
         let active = self.active_tab(cx);
@@ -5824,6 +5871,8 @@ impl WorkspaceView {
             dragging: false,
             original_scroll: self.tab_scroll,
             strip: self.tab_strip(window),
+            nesting: false,
+            nest: None,
         });
         cx.notify();
     }
@@ -5860,6 +5909,14 @@ impl WorkspaceView {
                 self.last_scroll = Instant::now();
             }
         }
+        let mode = self.reorder_pane_mode(window, cx);
+        if let Some(drag) = &mut self.reorder {
+            drag.nesting = mode.is_some();
+            drag.nest = match mode {
+                Some(PaneMode::Edge(target)) => Some(target),
+                Some(PaneMode::Centre) | None => None,
+            };
+        }
         cx.notify();
     }
 
@@ -5869,10 +5926,17 @@ impl WorkspaceView {
         let strip = self.tab_strip(window);
         let next = if let Some(drag) = &mut self.reorder {
             drag.strip = strip;
-            if !drag.dragging {
+            // A tab held over a pane to nest it leaves the bar where it is.
+            if !drag.dragging || drag.nesting {
                 return false;
             }
             drag.strip.autoscroll(drag.pointer, elapsed)
+        } else if let Some(next) = self
+            .pane_drag
+            .as_mut()
+            .and_then(|drag| drag.autoscroll(strip.clone(), elapsed))
+        {
+            next
         } else if let Some(target) = self.scroll_target {
             let target = target.clamp(px(0.0), strip.max_offset());
             let next = strip.toward(target, elapsed);
@@ -5926,6 +5990,10 @@ impl WorkspaceView {
         }
         if !drag.dragging {
             self.select(drag.source.tab, window, cx);
+            return;
+        }
+        if drag.nesting {
+            self.finish_nest(drag.source, drag.nest, window, cx);
             return;
         }
         let before = self.tabs.get(drag.strip.slot(pointer)).map(|tab| tab.id);
@@ -6083,6 +6151,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         self.cancel_reorder(window, cx);
+        self.cancel_pane_drag(window, cx);
         self.resizing_sidebar = false;
         self.check_new_tab_available(cx)?;
         let mut command = shell_command(
@@ -6806,6 +6875,7 @@ impl WorkspaceView {
                 "application is quitting".to_owned(),
             ));
         }
+        self.cancel_pane_drag(window, cx);
 
         let terminal = self.active_view(cx);
         if let Some(terminal) = &terminal {
@@ -8068,6 +8138,7 @@ impl WorkspaceView {
         }
         self.check_available(false)?;
         self.cancel_reorder(window, cx);
+        self.cancel_pane_drag(window, cx);
         self.resizing_sidebar = false;
         if let Some(terminal) = self.active_view(cx) {
             terminal.update(cx, TerminalView::clear_composition);
@@ -8565,6 +8636,8 @@ impl WorkspaceView {
         if !cx.global_mut::<Desktop>().windows.select(self.window, id) {
             return;
         }
+        // Only a pane drag's own spring load switches tabs under it.
+        self.interrupt_pane_drag(id);
         if self
             .divider_drag
             .as_ref()
@@ -8727,6 +8800,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         self.cancel_reorder(window, cx);
+        self.cancel_pane_drag(window, cx);
         self.cancel_divider_drag(cx);
         self.resizing_sidebar = false;
         let Some(target) = self.current_close_target(target) else {
@@ -10041,6 +10115,15 @@ impl Render for WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let active_tab = self.active_tab(cx);
+        // A pane drag whose pane left its tab, or under a tab switch it did
+        // not make, ends even while the pointer rests.
+        if self.pane_drag.is_some() && !self.pane_drag_valid(cx) {
+            cx.defer_in(window, |view, window, cx| {
+                if view.pane_drag.is_some() && !view.pane_drag_valid(cx) {
+                    view.cancel_pane_drag(window, cx);
+                }
+            });
+        }
         self.measure_tab_widths(window, cx);
         self.sync_frame(window);
         self.refresh_tab_visibility(window, cx);
@@ -10096,6 +10179,14 @@ impl Render for WorkspaceView {
                         view.cancel_reorder(window, cx);
                         // GPUI skips raw keystroke observers after propagation
                         // stops, so this Escape cannot also reach the terminal.
+                        cx.stop_propagation();
+                    } else if view
+                        .pane_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.dragging)
+                        && event.keystroke.key == "escape"
+                    {
+                        view.cancel_pane_drag(window, cx);
                         cx.stop_propagation();
                     }
                 },
@@ -10161,6 +10252,13 @@ impl Render for WorkspaceView {
                                         cx.stop_propagation();
                                     } else if view.reorder.is_some() {
                                         view.update_reorder(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    } else if view.pane_drag.is_some() {
+                                        view.update_pane_drag(
                                             event.position,
                                             window,
                                             cx,
@@ -10259,6 +10357,13 @@ impl Render for WorkspaceView {
                                             cx,
                                         );
                                         cx.stop_propagation();
+                                    } else if view.pane_drag.is_some() {
+                                        view.finish_pane_drag(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
                                     } else if view.tab_scrollbars.dragging() {
                                         view.tab_scrollbar_release(cx);
                                         cx.stop_propagation();
@@ -10274,9 +10379,7 @@ impl Render for WorkspaceView {
         );
         let titlebar = self.title_row();
         let top_chrome = titlebar + self.fullscreen_insets.top.max(px(0.0));
-        let bar_drawn = self.presentation() == Presentation::Reserved
-            || self.presentation() == Presentation::Overlay
-                && self.reveal.progress > 0.0;
+        let bar_drawn = self.bar_drawn();
         // The tab bar and the title strip are one row: the tabs cover the
         // strip, whose trailing space keeps the title bar's gestures.
         let merged_row = position == TabPosition::Titlebar && bar_drawn;
@@ -10548,26 +10651,28 @@ impl Render for WorkspaceView {
                         size(strip.tab_extent(index), layout.tabs.size.height),
                     )
                 };
-                let item = TabItem {
-                    id: tab.id,
-                    index,
-                    title,
-                    status,
-                    activity: if Some(tab.id) == active_tab {
-                        Activity::Active
-                    } else if index > 0
-                        && Some(self.tabs[index - 1].id) == active_tab
-                    {
-                        Activity::FollowsActive
-                    } else {
-                        Activity::Inactive
-                    },
-                    flush_start: index == 0 && strip.offset == px(0.0),
-                    targeted: self
-                        .menu
-                        .as_ref()
-                        .is_some_and(|menu| menu.kind == MenuKind::Tab(tab.id)),
-                };
+                let item =
+                    TabItem {
+                        id: tab.id,
+                        index,
+                        title,
+                        status,
+                        activity: if Some(tab.id) == active_tab {
+                            Activity::Active
+                        } else if index > 0
+                            && Some(self.tabs[index - 1].id) == active_tab
+                        {
+                            Activity::FollowsActive
+                        } else {
+                            Activity::Inactive
+                        },
+                        flush_start: index == 0 && strip.offset == px(0.0),
+                        targeted: self.menu.as_ref().is_some_and(|menu| {
+                            menu.kind == MenuKind::Tab(tab.id)
+                        }) || self.pane_drag.as_ref().is_some_and(
+                            |drag| drag.spring.tab() == Some(tab.id),
+                        ),
+                    };
                 bar = bar
                     .child(Self::tab_element(&item, bounds, tabs, colors, cx));
             }
@@ -10757,6 +10862,7 @@ impl Render for WorkspaceView {
                             MouseButton::Left,
                             cx.listener(|view, _, window, cx| {
                                 view.cancel_reorder(window, cx);
+                                view.cancel_pane_drag(window, cx);
                                 view.resizing_sidebar = true;
                                 cx.stop_propagation();
                             }),
@@ -10923,7 +11029,12 @@ impl Render for WorkspaceView {
                 .iter()
                 .position(|tab| tab.id == drag.source.tab)
                 .unwrap_or_default();
-            let preview = strip.preview(drag.pointer, source);
+            // In pane mode the preview returns to the tab's slot, dimmed.
+            let preview = if drag.nesting {
+                strip.label(source)
+            } else {
+                strip.preview(drag.pointer, source)
+            };
             let title = self
                 .tabs
                 .iter()
@@ -10946,19 +11057,22 @@ impl Render for WorkspaceView {
                     .border_1()
                     .border_color(colors.border)
                     .text_color(colors.foreground)
-                    .opacity(0.9)
+                    .opacity(if drag.nesting { 0.45 } else { 0.9 })
                     .child(title),
             );
-            root = root.child(
-                div()
-                    .absolute()
-                    .left(marker.origin.x)
-                    .top(marker.origin.y)
-                    .w(marker.size.width)
-                    .h(marker.size.height)
-                    .bg(colors.accent),
-            );
+            if !drag.nesting {
+                root = root.child(
+                    div()
+                        .absolute()
+                        .left(marker.origin.x)
+                        .top(marker.origin.y)
+                        .w(marker.size.width)
+                        .h(marker.size.height)
+                        .bg(colors.accent),
+                );
+            }
         }
+        root = root.children(self.drag_overlay(colors, window, cx));
         if let Some(notices) = self.render_notices(layout.terminal, cx) {
             root = root.child(notices);
         }
@@ -11426,6 +11540,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // An opening menu ends a tab or pane drag; the menu then takes focus.
+        self.cancel_reorder(window, cx);
+        self.cancel_pane_drag(window, cx);
         let swatch = Swatch::from_theme(&self.config.theme);
         let clock = Rc::clone(&self.frame_clock);
         let view = cx.new(|cx| {
@@ -12050,6 +12167,20 @@ impl WorkspaceView {
         };
         let closes = button(Self::pane_close_center);
         let zooms = button(Self::pane_zoom_center);
+        // Where a press grabs each title bar for a drag: its title text.
+        let grabs =
+            button(|bar| gpui::point(bar.origin.x + px(40.0), bar.center().y));
+        let drop = self
+            .drawn_drop
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| "none".to_owned());
+        let spring = self
+            .pane_drag
+            .as_ref()
+            .and_then(|drag| drag.spring.tab())
+            .and_then(|armed| self.tabs.iter().position(|tab| tab.id == armed))
+            .map_or_else(|| "none".to_owned(), |index| index.to_string());
         let dividers = self
             .drawn_dividers
             .borrow()
@@ -12058,7 +12189,7 @@ impl WorkspaceView {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_dividers={}",
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}drop={drop} {prefix}spring={spring} {prefix}pane_dividers={}",
             panes.len(),
             if dividers.is_empty() {
                 "none"

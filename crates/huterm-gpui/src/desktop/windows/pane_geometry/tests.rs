@@ -280,3 +280,74 @@ fn a_carried_boundary_keeps_the_other_childrens_weights() {
     assert_eq!(with_boundary(split, 0, 900_000), [499_999, 1, 500_000]);
     assert_eq!(with_boundary(split, 1, 0), [400_000, 1, 599_999]);
 }
+
+#[test]
+fn drop_zones_split_a_frame_into_edge_quarters_and_a_centre() {
+    use SplitDirection::{Down, Left, Right, Up};
+    // A 400 by 200 frame whose top title bar is part of it.
+    let frame =
+        Bounds::new(point(px(100.0), px(50.0)), size(px(400.0), px(200.0)));
+    let at =
+        |x: f32, y: f32| drop_zone(frame, point(px(100.0 + x), px(50.0 + y)));
+    assert_eq!(at(10.0, 100.0), Some(Zone::Edge(Left)));
+    assert_eq!(at(390.0, 100.0), Some(Zone::Edge(Right)));
+    assert_eq!(
+        at(200.0, 5.0),
+        Some(Zone::Edge(Up)),
+        "the title bar is in the frame"
+    );
+    assert_eq!(at(200.0, 190.0), Some(Zone::Edge(Down)));
+    assert_eq!(at(200.0, 100.0), Some(Zone::Centre));
+    assert_eq!(
+        at(100.0, 50.0),
+        Some(Zone::Centre),
+        "a quarter's inner edge is centre"
+    );
+    // Near a corner the edge nearer as a fraction of its own extent wins.
+    assert_eq!(
+        at(20.0, 40.0),
+        Some(Zone::Edge(Left)),
+        "5% across beats 20% down"
+    );
+    assert_eq!(
+        at(80.0, 4.0),
+        Some(Zone::Edge(Up)),
+        "2% down beats 20% across"
+    );
+    assert_eq!(
+        at(392.0, 196.0),
+        Some(Zone::Edge(Down)),
+        "2% up beats 2% across: a tie"
+    );
+    assert_eq!(
+        at(380.0, 4.0),
+        Some(Zone::Edge(Up)),
+        "2% down beats 5% across"
+    );
+    assert_eq!(
+        at(396.0, 180.0),
+        Some(Zone::Edge(Right)),
+        "1% across beats 10% up"
+    );
+    // Exact ties go to the top or bottom edge, on both diagonals.
+    assert_eq!(at(20.0, 10.0), Some(Zone::Edge(Up)));
+    assert_eq!(at(380.0, 190.0), Some(Zone::Edge(Down)));
+    // Outside the frame there is no zone.
+    assert_eq!(at(-1.0, 100.0), None);
+    assert_eq!(at(200.0, 200.0), None);
+}
+
+#[test]
+fn a_zone_previews_the_half_an_edge_drop_takes_or_the_whole_frame() {
+    let frame =
+        Bounds::new(point(px(100.0), px(50.0)), size(px(400.0), px(200.0)));
+    assert_eq!(zone_preview(frame, Zone::Centre), frame);
+    assert_eq!(
+        zone_preview(frame, Zone::Edge(SplitDirection::Right)),
+        Bounds::new(point(px(300.0), px(50.0)), size(px(200.0), px(200.0)))
+    );
+    assert_eq!(
+        zone_preview(frame, Zone::Edge(SplitDirection::Up)),
+        Bounds::new(point(px(100.0), px(50.0)), size(px(400.0), px(100.0)))
+    );
+}

@@ -136,7 +136,8 @@ intents, so later invalidation cannot replay a stale target.
 
 Tab reorder uses source-window capture listeners registered before terminal
 mouse handlers. Project movement onto the tab-bar axis and clamp preview/drop
-geometry, including release outside the window. Stop propagation when Escape
+geometry, including release outside the window, except in pane mode (see
+"Pane drags, tab nesting, and spring-loaded tabs"). Stop propagation when Escape
 cancels a drag: GPUI then skips raw keystroke observers. Keep terminal focus
 during the drag to avoid false application focus-out/in reports. TabStrip owns
 pixel geometry for rendering, reveal, wheel input, and drag slots;
@@ -183,6 +184,47 @@ releases accepted gestures and finalizes the selection, and the hidden panes
 keep requesting their split geometry, so zoom resizes only the zoomed pane.
 Every path that sets pane visibility, tab selection and the Quake visibility
 sync alike, asks `zoom_shows`.
+
+## Pane drags, tab nesting, and spring-loaded tabs
+
+A press on a pane title bar's title, not its buttons, focuses the pane and
+starts a `PaneDrag` once it moves past the tab drag threshold. The window's
+capture listeners own its motion and release, as they do for a reorder, and
+the drag keeps terminal focus, so no application sees a focus report. Each
+motion resolves the target from the last drawn frame (`drawn_panes`, only
+while it shows the active tab): an edge or centre zone of a pane from
+`drop_zone`, a tab bar insertion slot, or an inactive label's spring zone
+from `TabStrip::label_zone`. The bar targets cover the strip's bounds, not
+the window buttons or title-row controls beside it. Escape cancels only a
+press that has become a drag; before that it reaches the terminal. The centre is
+offered only on a pane in the dragged pane's own tab, because a swap
+exchanges panes within one tab. A zone whose result would leave a pane under
+the minimum size is drawn refused and takes no drop. A release commits one
+Mux operation through the move commands' `commit_pane_move`.
+
+A reorder enters pane mode only over a pane of the active tab, which is not
+the dragged tab, at least `PANE_DROP_DEPTH` (32 points) past the bar's inner
+edge. Its preview then returns to the tab's slot, dimmed, and the bar does
+not autoscroll; an edge nests the tab with `move_tab_to_pane`, and a centre
+or refused zone does nothing. Everywhere else a reorder projects onto the
+bar as before, including a release outside the window, so a sloppy reorder
+cannot become a nest. Blur and an opening menu cancel a reorder as they
+cancel a pane drag, so a release afterwards nests nothing.
+
+A pane drag resting on an inactive label arms `SpringLoad`, which reports one
+deadline, `SPRING_LOAD_DELAY` (500 ms), through the window's animation
+schedule and requests no frames. At the deadline the pointer is resolved
+again against the strip as drawn now: still the armed tab's spring zone, the
+tab activates through `select_tab` with focus; another tab's, the delay
+restarts; anything else disarms. Autoscroll re-arms each tick, so a
+scrolling bar never springs. The drag records the tab it sprang to, and
+`select_tab` drops a pane drag for any other switch, so only the drag's own
+spring load switches tabs under it. A drag that ends without a drop, by
+Escape, a release without a target, blur, an overlay opening, a close
+request, or a refused commit, switches back to the tab it started in when
+the sprung tab is still active, without taking focus from an overlay. A
+render that finds the dragged pane gone from its tab, or an unexpected
+active tab, defers the cancel, so a drag also ends while the pointer rests.
 
 ## Links and file drops
 

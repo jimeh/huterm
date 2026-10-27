@@ -8,11 +8,12 @@
 use huterm_core::{Beside, MoveDestination, PaneRef};
 use huterm_protocol::{LayoutChange, PaneNode, SIDES};
 
+use super::pane_drag::SpringBack;
 use super::*;
 
-/// One rearrangement a command commits.
+/// One rearrangement a command or a drop commits.
 #[derive(Clone, Copy, Debug)]
-enum PaneMove {
+pub(super) enum PaneMove {
     /// Swaps two panes of one tab.
     Swap {
         workspace: WorkspaceId,
@@ -225,7 +226,7 @@ impl WorkspaceView {
                 .map(|view| view.focused().pane),
             _ => Some(pane),
         };
-        self.commit_pane_move(change, focus, window, cx);
+        self.commit_pane_move(change, focus, None, window, cx);
         Ok(CommandOutcome::Accepted)
     }
 
@@ -329,7 +330,7 @@ impl WorkspaceView {
     /// Refuses a move whose destination tab would leave a pane under the
     /// minimum pane size in this window, as a split refuses: a pane that
     /// met the minimum must keep it, and a pane that arrives must meet it.
-    fn check_move_fits(
+    pub(super) fn check_move_fits(
         &self,
         change: PaneMove,
         window: &Window,
@@ -420,11 +421,13 @@ impl WorkspaceView {
 
     /// Commits `change` on a worker. Once the projection holds the result,
     /// reconcile has moved the pane views; the window then shows the tab
-    /// that holds `focus` and focuses it there.
-    fn commit_pane_move(
+    /// that holds `focus` and focuses it there. A refused drop that
+    /// spring-loaded switches `back`.
+    pub(super) fn commit_pane_move(
         &mut self,
         change: PaneMove,
         focus: Option<PaneId>,
+        back: Option<SpringBack>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -477,6 +480,11 @@ impl WorkspaceView {
                     );
                 }
                 view.reconcile_own(window, cx);
+                if result.is_err()
+                    && let Some(back) = back
+                {
+                    view.switch_back(back, window, cx);
+                }
                 if result.is_ok()
                     && let Some(pane) = focus
                     && let Some(tab) = view.tab_showing(pane)
