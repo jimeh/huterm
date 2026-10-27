@@ -1761,7 +1761,7 @@ impl CommandPalette {
             let unavailable = self.availability.get(&spec.id).cloned();
             let selected = row == search.selected;
             let hovered = self.hover == Some(row);
-            let badge = if spec.args.is_empty() {
+            let badge = if !slots::has_slots(spec) {
                 None
             } else if slots::runs_without_prompt(
                 spec,
@@ -1869,7 +1869,7 @@ impl CommandPalette {
             below.push(band(message.clone(), swatch, true));
         }
         let selected_spec = search.selected().map(|matched| matched.spec);
-        let has_args = selected_spec.is_some_and(|spec| !spec.args.is_empty());
+        let has_args = selected_spec.is_some_and(slots::has_slots);
         let runs = selected_spec.is_some_and(|spec| {
             spec.args.is_empty()
                 || slots::runs_without_prompt(spec, &self.domain_for(spec, &[]))

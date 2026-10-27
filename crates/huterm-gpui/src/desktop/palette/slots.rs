@@ -99,6 +99,13 @@ pub(super) fn runs_without_prompt(
     })
 }
 
+/// Whether the palette opens slots for `spec` when nothing is supplied:
+/// only prompted arguments get one, so a command whose arguments are all
+/// unprompted has nothing for Tab to open.
+pub(super) fn has_slots(spec: &CommandSpec) -> bool {
+    spec.args.iter().any(|argument| argument.prompt)
+}
+
 /// The slots `spec` gets with `supplied` arguments: every supplied argument,
 /// and every prompted one, prefilled from `domain` where it has a default or
 /// a sole value. Unprompted arguments the caller did not supply get none.
@@ -718,7 +725,10 @@ mod tests {
             for spec in catalog() {
                 let runs = runs_without_prompt(spec, &domain);
                 let invocation = unprompted_invocation(spec, &domain);
-                match SlotEditor::new(spec, &[], &domain, false) {
+                let editor = SlotEditor::new(spec, &[], &domain, false);
+                // The Tab hints promise slots exactly when an editor opens.
+                assert_eq!(has_slots(spec), editor.is_some(), "{}", spec.id);
+                match editor {
                     // Every editor has an active slot and its draft text.
                     Some(editor) => {
                         let _ = (editor.active(), editor.text());
