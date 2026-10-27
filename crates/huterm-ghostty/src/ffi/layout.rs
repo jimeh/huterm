@@ -295,6 +295,99 @@ pub(crate) const STRUCTS: &[Struct] = &[
         ],
     },
     Struct {
+        name: "GhosttyTerminalMemoryUsage",
+        size: size_of::<ffi::GhosttyTerminalMemoryUsage>(),
+        align: align_of::<ffi::GhosttyTerminalMemoryUsage>(),
+        fields: &[
+            ("size", offset_of!(ffi::GhosttyTerminalMemoryUsage, size)),
+            (
+                "compression_supported",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    compression_supported
+                ),
+            ),
+            (
+                "primary_pages",
+                offset_of!(ffi::GhosttyTerminalMemoryUsage, primary_pages),
+            ),
+            (
+                "primary_virtual_bytes",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    primary_virtual_bytes
+                ),
+            ),
+            (
+                "primary_resident_bytes",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    primary_resident_bytes
+                ),
+            ),
+            (
+                "primary_compressed_pages",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    primary_compressed_pages
+                ),
+            ),
+            (
+                "primary_compressed_bytes",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    primary_compressed_bytes
+                ),
+            ),
+            (
+                "primary_image_bytes",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    primary_image_bytes
+                ),
+            ),
+            (
+                "alternate_pages",
+                offset_of!(ffi::GhosttyTerminalMemoryUsage, alternate_pages),
+            ),
+            (
+                "alternate_virtual_bytes",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    alternate_virtual_bytes
+                ),
+            ),
+            (
+                "alternate_resident_bytes",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    alternate_resident_bytes
+                ),
+            ),
+            (
+                "alternate_compressed_pages",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    alternate_compressed_pages
+                ),
+            ),
+            (
+                "alternate_compressed_bytes",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    alternate_compressed_bytes
+                ),
+            ),
+            (
+                "alternate_image_bytes",
+                offset_of!(
+                    ffi::GhosttyTerminalMemoryUsage,
+                    alternate_image_bytes
+                ),
+            ),
+        ],
+    },
+    Struct {
         name: "GhosttyClipboardContent",
         size: size_of::<ffi::GhosttyClipboardContent>(),
         align: align_of::<ffi::GhosttyClipboardContent>(),
@@ -802,6 +895,48 @@ pub(crate) const ENUMS: &[Enum] = &[
             (
                 "GHOSTTY_POINT_TAG_MAX_VALUE",
                 ffi::GHOSTTY_POINT_TAG_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
+        name: "GhosttyTerminalCompressionMode",
+        size: size_of::<ffi::GhosttyTerminalCompressionMode>(),
+        align: align_of::<ffi::GhosttyTerminalCompressionMode>(),
+        values: &[
+            (
+                "GHOSTTY_TERMINAL_COMPRESSION_MODE_INCREMENTAL",
+                ffi::GHOSTTY_TERMINAL_COMPRESSION_MODE_INCREMENTAL as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_COMPRESSION_MODE_FULL",
+                ffi::GHOSTTY_TERMINAL_COMPRESSION_MODE_FULL as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_COMPRESSION_MODE_MAX_VALUE",
+                ffi::GHOSTTY_TERMINAL_COMPRESSION_MODE_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
+        name: "GhosttyTerminalCompressionResult",
+        size: size_of::<ffi::GhosttyTerminalCompressionResult>(),
+        align: align_of::<ffi::GhosttyTerminalCompressionResult>(),
+        values: &[
+            (
+                "GHOSTTY_TERMINAL_COMPRESSION_RESULT_UNSUPPORTED",
+                ffi::GHOSTTY_TERMINAL_COMPRESSION_RESULT_UNSUPPORTED as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING",
+                ffi::GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_COMPRESSION_RESULT_COMPLETE",
+                ffi::GHOSTTY_TERMINAL_COMPRESSION_RESULT_COMPLETE as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_COMPRESSION_RESULT_MAX_VALUE",
+                ffi::GHOSTTY_TERMINAL_COMPRESSION_RESULT_MAX_VALUE as i64,
             ),
         ],
     },

@@ -20,6 +20,8 @@ pub type GhosttyRowData = ::core::ffi::c_int;
 pub type GhosttyStyleColorTag = ::core::ffi::c_int;
 pub type GhosttyPointTag = ::core::ffi::c_int;
 pub type GhosttyMode = u16;
+pub type GhosttyTerminalCompressionMode = ::core::ffi::c_int;
+pub type GhosttyTerminalCompressionResult = ::core::ffi::c_int;
 pub type GhosttyTerminalScrollViewportTag = ::core::ffi::c_int;
 pub type GhosttyTerminalScreen = ::core::ffi::c_int;
 pub type GhosttyTerminalBellFn = ::core::option::Option<
@@ -300,6 +302,24 @@ pub struct GhosttyTerminalScrollbar {
     pub len: u64,
 }
 #[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct GhosttyTerminalMemoryUsage {
+    pub size: usize,
+    pub compression_supported: bool,
+    pub primary_pages: u64,
+    pub primary_virtual_bytes: u64,
+    pub primary_resident_bytes: u64,
+    pub primary_compressed_pages: u64,
+    pub primary_compressed_bytes: u64,
+    pub primary_image_bytes: u64,
+    pub alternate_pages: u64,
+    pub alternate_virtual_bytes: u64,
+    pub alternate_resident_bytes: u64,
+    pub alternate_compressed_pages: u64,
+    pub alternate_compressed_bytes: u64,
+    pub alternate_image_bytes: u64,
+}
+#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct GhosttyClipboardContent {
     pub mime: GhosttyString,
@@ -463,6 +483,20 @@ pub const GHOSTTY_POINT_TAG_VIEWPORT: GhosttyPointTag = 1;
 pub const GHOSTTY_POINT_TAG_SCREEN: GhosttyPointTag = 2;
 pub const GHOSTTY_POINT_TAG_HISTORY: GhosttyPointTag = 3;
 pub const GHOSTTY_POINT_TAG_MAX_VALUE: GhosttyPointTag = 2147483647;
+pub const GHOSTTY_TERMINAL_COMPRESSION_MODE_INCREMENTAL:
+    GhosttyTerminalCompressionMode = 0;
+pub const GHOSTTY_TERMINAL_COMPRESSION_MODE_FULL:
+    GhosttyTerminalCompressionMode = 1;
+pub const GHOSTTY_TERMINAL_COMPRESSION_MODE_MAX_VALUE:
+    GhosttyTerminalCompressionMode = 2147483647;
+pub const GHOSTTY_TERMINAL_COMPRESSION_RESULT_UNSUPPORTED:
+    GhosttyTerminalCompressionResult = 0;
+pub const GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING:
+    GhosttyTerminalCompressionResult = 1;
+pub const GHOSTTY_TERMINAL_COMPRESSION_RESULT_COMPLETE:
+    GhosttyTerminalCompressionResult = 2;
+pub const GHOSTTY_TERMINAL_COMPRESSION_RESULT_MAX_VALUE:
+    GhosttyTerminalCompressionResult = 2147483647;
 pub const GHOSTTY_SCROLL_VIEWPORT_TOP: GhosttyTerminalScrollViewportTag = 0;
 pub const GHOSTTY_SCROLL_VIEWPORT_BOTTOM: GhosttyTerminalScrollViewportTag = 1;
 pub const GHOSTTY_SCROLL_VIEWPORT_DELTA: GhosttyTerminalScrollViewportTag = 2;
@@ -1017,6 +1051,15 @@ unsafe extern "C" {
         terminal: GhosttyTerminal,
         behavior: GhosttyTerminalScrollViewport,
     );
+    pub fn ghostty_terminal_compression_activity(
+        terminal: GhosttyTerminal,
+        out_activity: *mut u64,
+    ) -> GhosttyResult;
+    pub fn ghostty_terminal_compress(
+        terminal: GhosttyTerminal,
+        mode: GhosttyTerminalCompressionMode,
+        out_result: *mut GhosttyTerminalCompressionResult,
+    ) -> GhosttyResult;
     pub fn ghostty_terminal_get(
         terminal: GhosttyTerminal,
         data: GhosttyTerminalData,

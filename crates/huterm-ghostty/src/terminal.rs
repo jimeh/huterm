@@ -10,9 +10,9 @@ use crate::ffi::{
 };
 use crate::native::{AllocatorRef, NativeBytes, NativeTerminal};
 use crate::types::{
-    Cell as GridCell, DeviceAttributes, Effect, Fill, Mode, Palette, Point,
-    PointSpace, Rgb, Row, Screen, Scroll, Scrollbar, palette_from_ffi,
-    palette_to_ffi,
+    Cell as GridCell, Compression, DeviceAttributes, Effect, Fill, MemoryUsage,
+    Mode, Palette, Point, PointSpace, Rgb, Row, Screen, ScreenMemory, Scroll,
+    Scrollbar, palette_from_ffi, palette_to_ffi,
 };
 
 /// Construction options for a [`Terminal`].
@@ -190,6 +190,73 @@ impl<H> Terminal<H> {
     pub fn scroll(&mut self, scroll: Scroll) -> Result<()> {
         self.native_mut()?.scroll(scroll);
         Ok(())
+    }
+
+    /// Compresses at most one page of cold history: complete history pages
+    /// outside the viewport and the active area. Reading a compressed page
+    /// later restores it transparently. Each call does bounded work, so
+    /// call it while the terminal is idle until it stops returning
+    /// [`Compression::Pending`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Poisoned`] if a host callback panicked, or
+    /// [`Error::InvalidValue`] for a result this binding does not know.
+    pub fn compress_step(&mut self) -> Result<Compression> {
+        match self.native_mut()?.compress()? {
+            ffi::GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING => {
+                Ok(Compression::Pending)
+            }
+            ffi::GHOSTTY_TERMINAL_COMPRESSION_RESULT_COMPLETE => {
+                Ok(Compression::Complete)
+            }
+            ffi::GHOSTTY_TERMINAL_COMPRESSION_RESULT_UNSUPPORTED => {
+                Ok(Compression::Unsupported)
+            }
+            _ => Err(Error::InvalidValue),
+        }
+    }
+
+    /// An opaque token that changes when history changes in a way that may
+    /// leave compression work: new or recycled pages, scrolling, resizing,
+    /// erasing or limit enforcement on the primary screen. Only equality is
+    /// meaningful.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Poisoned`] if a host callback panicked.
+    pub fn compression_activity(&self) -> Result<u64> {
+        self.native()?.as_ref().compression_activity()
+    }
+
+    /// Page memory for both screens. This reads page metadata only and
+    /// never restores a compressed page, but it visits every page.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Poisoned`] if a host callback panicked.
+    pub fn memory_usage(&self) -> Result<MemoryUsage> {
+        let mut usage = ffi::sized::<ffi::GhosttyTerminalMemoryUsage>();
+        self.native()?
+            .as_ref()
+            .get::<data::MemoryUsage>(&mut usage)?;
+        Ok(MemoryUsage {
+            compression_supported: usage.compression_supported,
+            primary: ScreenMemory {
+                pages: usage.primary_pages,
+                virtual_bytes: usage.primary_virtual_bytes,
+                resident_bytes: usage.primary_resident_bytes,
+                compressed_pages: usage.primary_compressed_pages,
+                compressed_bytes: usage.primary_compressed_bytes,
+            },
+            alternate: ScreenMemory {
+                pages: usage.alternate_pages,
+                virtual_bytes: usage.alternate_virtual_bytes,
+                resident_bytes: usage.alternate_resident_bytes,
+                compressed_pages: usage.alternate_compressed_pages,
+                compressed_bytes: usage.alternate_compressed_bytes,
+            },
+        })
     }
 
     /// Sets the default foreground; `None` unsets it.
