@@ -271,6 +271,13 @@ impl SettingsView {
         view
     }
 
+    /// Whether controls are read-only: the file is invalid, or the first
+    /// read has not finished, so an edit cannot race the default file's
+    /// creation or build on a file the window has not seen.
+    fn locked(&self) -> bool {
+        self.status.invalid() || self.base.is_none()
+    }
+
     fn swatch(cx: &App) -> Swatch {
         Swatch::from_theme(&cx.global::<Desktop>().config.theme)
     }
@@ -931,7 +938,7 @@ impl SettingsView {
             self.section.id(),
             self.query(cx),
             self.status.line().text,
-            self.status.invalid(),
+            self.locked(),
             self.busy(),
         )
     }
@@ -1267,7 +1274,7 @@ impl SettingsView {
     }
 
     pub(super) fn read_only(&self) -> bool {
-        self.status.invalid()
+        self.locked()
     }
 
     pub(super) fn conflicted(&self, path: &str) -> bool {

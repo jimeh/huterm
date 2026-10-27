@@ -330,7 +330,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         let key = setting.path.as_str();
-        if self.status.invalid() {
+        if self.locked() {
             return;
         }
         if let Some(platform) = setting.platform
@@ -599,7 +599,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         // An invalid file refuses the write; the conflict waits for a fix.
-        if self.status.invalid() {
+        if self.locked() {
             return;
         }
         let Some(conflict) = self.conflicts.remove(path) else {
@@ -623,7 +623,7 @@ impl SettingsView {
         path: &'static str,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.status.invalid() {
+        if self.locked() {
             return;
         }
         self.conflicts.remove(path);

@@ -351,6 +351,28 @@ fn opening_settings_creates_the_file_from_the_template(
     assert!(file.text().starts_with("#:schema "), "{}", file.text());
 }
 
+#[gpui::test]
+fn an_edit_before_the_first_read_writes_nothing(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("early-edit", "");
+    std::fs::remove_file(file.path()).unwrap();
+    let mut harness = DesktopHarness::new(cx);
+    let path = file.path();
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().config_path = path;
+        let open = CommandInvocation::new(ids::OPEN_SETTINGS, Vec::new());
+        Desktop::invoke(cx, &open, None).unwrap();
+    });
+    // The window exists, but its first read has not run.
+    with_view(&mut harness, |view, cx| {
+        assert!(view.read_only());
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+    });
+    harness.wait_for("Settings to read the file", settled);
+    let text = file.text();
+    assert!(text.starts_with("#:schema "), "{text}");
+    assert!(!text.contains("15.0"), "{text}");
+}
+
 #[cfg(unix)]
 #[gpui::test]
 fn settings_reports_a_file_it_cannot_create_or_open(cx: &mut TestAppContext) {

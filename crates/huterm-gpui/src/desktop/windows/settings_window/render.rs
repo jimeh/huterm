@@ -254,7 +254,7 @@ impl SettingsView {
         let foreign = setting
             .platform
             .is_some_and(|platform| platform != current());
-        let read_only = foreign || self.status.invalid();
+        let read_only = foreign || self.locked();
         let label = self.render_label(setting, foreign, swatch, cx);
         let control =
             self.render_control(setting, read_only, swatch, window, cx);
@@ -411,9 +411,7 @@ impl SettingsView {
                     .gap(px(8.0))
                     .child(small(text, swatch.warning))
                     // An invalid file cannot take either choice yet.
-                    .when(!self.status.invalid(), |row| {
-                        row.child(mine).child(file)
-                    }),
+                    .when(!self.locked(), |row| row.child(mine).child(file)),
             )
         } else {
             self.errors
