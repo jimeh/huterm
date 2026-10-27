@@ -2,8 +2,9 @@
 
 Status: in progress. Approved on 2026-10-26 after four Codex review rounds.
 PR 1 (the foundation) shipped in #263, and PR 2 (the settings model)
-in #266, and PR 3 (the window and controls) in #269. PR 4 (the
-keybinding editor) is in progress. Plans
+in #266, PR 3 (the window and controls) in #269, and PR 4 (the
+keybinding editor) in #274. PR 5 (quake profiles and global shortcuts) is
+in progress. Plans
 [issue #35][issue-35] and [issue #34][issue-34] within
 [epic #14][issue-14]. The UI decisions come from two rounds of HTML mockups
 ([round two][mockups], [the chosen layout][mockup-a1]).
@@ -979,6 +980,129 @@ Global shortcuts and Quake profiles (PR 5); editing an entry's
 `description`; writing or editing `unbind` entries beyond removing them;
 reordering entries; and showing other platforms' defaults.
 
+## PR 5: quake profiles and global shortcuts
+
+### What PR 5 delivers
+
+The Quake windows section edits `[quake.profiles.*]` tables and
+`[[global_keybinding]]` entries in place, replacing its two "Open
+config.toml" rows. A profile dropdown picks the profile to edit, New profile
+adds one, and the profile's card shows a control for each profile setting.
+A Global shortcuts card under it lists every global shortcut with a key
+recorder, its command, its profile, and a remove button. This is the last
+PR of the series; it closes #35.
+
+### Profile settings
+
+- Profile fields gain `x-huterm-*` metadata on `huterm_config::quake::Profile`,
+  as PR 2 did for other settings: label, order, unit, apply, and
+  visible-when. Every field applies at later events: the next summon reads
+  the profile. `width` and `height` show only while `fullscreen` is off.
+- `SettingsModel` walks the `Profile` definition with the same rules into a
+  template of settings, and Settings makes one copy per profile with paths
+  under `quake.profiles.<name>`. A test fails when a `Profile` field has no
+  setting. The copies are interned, as PR 4 interns profile names, since
+  controls hold `&'static Setting`.
+- The fields use the generic controls: a select for `position` and
+  `animation`, switches for `fullscreen` and `hide_on_focus_loss`, number
+  fields for `width` and `height` (fractions of the display's work area,
+  greater than 0 through 1, as the file stores them; the mockup's percent
+  sliders would need a control the kit lacks) and `animation_ms` (0 through
+  1000 ms). A dot
+  marks a value the file sets, and Reset removes it, as for other settings.
+- `display` is a select of Active display, Display under the pointer, and
+  Primary display. A file value `id:<identifier>` shows as one more option
+  labeled with the identifier; listing connected displays is a non-goal.
+- Writes join the window's setting queue and conflict checks unchanged;
+  their paths are dotted, so profile names Settings edits are bare TOML keys
+  (letters, digits, `_`, and `-`). A profile whose name needs quoting is
+  listed, and its card shows the values read-only with a note to edit it in
+  `config.toml`.
+
+### Profiles
+
+- The dropdown lists `default` first, then the file's profiles by name. It
+  starts on `default` and keeps its choice while the window is open; a
+  profile that disappears on reload falls back to `default`.
+- New profile opens an inline name field with Create and Cancel. Return
+  creates, Escape cancels. A blank name, a name that needs quoting, or an
+  existing name shows an error under the field and writes nothing. Create
+  writes an empty `[quake.profiles.<name>]` table and selects the profile.
+- A named profile's card ends with Delete profile. It asks inline, as in "Delete
+  profile logs? Its settings and comments are removed from config.toml.",
+  with Delete and Cancel, and focus on Cancel. Deleting removes the table,
+  and the dropdown returns to `default`. When a global shortcut uses the
+  profile, the delete is refused with a message naming the shortcut's key,
+  because the validator would reject the file. The note under the button
+  says that an open window of a deleted profile becomes an ordinary window
+  and keeps its tabs.
+- `default` has no Delete. Its fields reset like any profile's; removing its
+  last value leaves an empty table, which the patch service keeps as written.
+
+### Global shortcuts
+
+- The card lists `[[global_keybinding]]` entries in file order. Each row has
+  a key cap, a command select (Toggle Quake, Show Quake, Hide Quake), a
+  profile select (configured profiles; unset shows `default`), and a remove
+  button. Add global shortcut records a key and appends `{key, command =
+  "toggle_quake"}`, with `args = { profile = <name> }` when the selected
+  profile is not `default`.
+- The key cap uses PR 4's recorder in a single-stroke mode: recording ends
+  after the first non-modifier stroke, and Return and Escape keep their
+  meanings. Recording the current key writes nothing.
+- Edits address entries through `EntryLocator`s for `List::GlobalKeybinding`,
+  parsed off the GPUI thread with the keybinding entries, and join the
+  window's keybinding queue with the same rebasing and read rules.
+- The validator already compiles global shortcuts, so a key that conflicts
+  with the first stroke of an in-app binding, a duplicate key, or an
+  unsupported key shows its message under the row and writes nothing. A
+  registration the operating system refuses shows after the reload, in the
+  footer, as PR 3 reports reload errors.
+- Under a Wayland or XWayland session the card says global shortcuts need
+  macOS or a native X11 session, and still edits the file.
+- An empty card says no global shortcuts are set and offers Add global
+  shortcut.
+
+### PR 5 keyboard access and status
+
+The dropdown, New profile, the name field and its buttons, the fields,
+Delete profile, and every global shortcut control are tab stops in that
+order. Removing a global shortcut moves focus to the next row's key cap, or
+to Add global shortcut; deleting a profile moves focus to the dropdown.
+Saving, conflicts, invalid files, and read-only behavior follow PR 3. The
+sidebar count for Quake windows is the number of profile values the file
+sets plus the number of global shortcuts. No new commands or bindings.
+
+### PR 5 files
+
+- `crates/huterm-config/src/quake.rs` and `settings.rs`: profile metadata
+  and the template.
+- `crates/huterm-gpui/src/desktop/windows/settings_window/quake.rs`: the
+  section, the profile dropdown and lifecycle, and global shortcut rows.
+- `crates/huterm-gpui/src/desktop/settings/`: global shortcut edits as
+  patches, beside the keybinding edits.
+- `docs/configuration.md`, `README.md`, and this plan.
+
+### PR 5 verification
+
+| Behavior | Evidence |
+| --- | --- |
+| Every `Profile` field has a template setting with its range and default | `settings.rs` unit tests |
+| Changing and resetting a named profile's field writes only that key | GPUI tests through the desktop harness |
+| New profile writes an empty table; blank, quoted, and duplicate names write nothing | GPUI tests |
+| Deleting a profile removes its table; a delete refused while a global shortcut uses it | GPUI tests |
+| Recording, changing the command and profile of, and removing a global shortcut write the expected entry | GPUI tests and edit unit tests |
+| A global key that conflicts with an in-app binding shows the validator's message and writes nothing | GPUI test |
+| A quoted profile name shows read-only | GPUI test |
+| Changing the default profile's height and recording a global shortcut with native keys, checking the file | A `settings` step in `smoke:macos-palette` and `smoke:linux-palette` |
+| The section in the running app | `ux-review` |
+
+### Non-goals for PR 5
+
+Renaming profiles; listing connected displays for `display`; editing
+`args` other than `profile`; and checking a key against other
+applications' shortcuts before the reload.
+
 ## Later PRs
 
 Each later PR gets its own contract when it starts, built on this section.
@@ -1007,7 +1131,8 @@ Each later PR gets its own contract when it starts, built on this section.
    capture context the window keymap cannot intercept, `when` completion from
    the context list and validation, argument controls, and the enable switch
    that writes `disabled` entries.
-4. **Quake profiles** with a profile dropdown, and global shortcuts.
+4. **Quake profiles and global shortcuts.** Its contract is PR 5 above.
+   Quake profiles with a profile dropdown, and global shortcuts.
 
 Native keyboard and focus smokes cover navigation, save, reset, and returning
 to a terminal, as issue #35 requires.
