@@ -261,6 +261,26 @@ impl TextField {
         cx.notify();
     }
 
+    /// The caret's byte offset.
+    pub(crate) fn cursor(&self) -> usize {
+        self.buffer.cursor()
+    }
+
+    /// Replaces `range` with `text` and puts the caret after it, as typing
+    /// over a selection does.
+    pub(crate) fn replace(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let end = self.buffer.content.len();
+        let range = range.start.min(end)..range.end.min(end);
+        self.buffer.content.replace_range(range.clone(), text);
+        self.buffer.move_to(range.start + text.len());
+        Self::changed(cx);
+    }
+
     pub(crate) fn set_text(
         &mut self,
         text: impl Into<String>,

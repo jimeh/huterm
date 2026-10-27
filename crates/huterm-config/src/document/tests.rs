@@ -1393,3 +1393,36 @@ fn stale_temporaries_are_removed_and_fresh_ones_kept() {
     assert!(fresh.exists());
     assert!(unrelated.exists());
 }
+
+#[test]
+fn entries_locate_every_entry_and_a_rebased_locator_finds_its_change() {
+    let source = "[[keybinding]]\nkey = \"a\"\ncommand = \"new_tab\"\n\n\
+                  [[keybinding]]\nkey = \"b\"\ncommand = \"new_tab\"\n";
+    let snapshot = snapshot_of(source);
+    let entries = snapshot.entries(List::Keybinding);
+    assert_eq!(
+        entries,
+        vec![locator(source, 0), locator(source, 1)],
+        "one parse gives what `entry` gives"
+    );
+    // After the caller set `when` on the second entry, its old locator no
+    // longer matches; the rebased one does.
+    let changed = rendered(
+        source,
+        &[Patch::SetEntryField {
+            locator: entries[1].clone(),
+            field: "when".into(),
+            value: Value::String("Terminal".into()),
+        }],
+    );
+    let mut content = entries[1].content().clone();
+    content.insert("when".into(), Value::String("Terminal".into()));
+    let rebased = entries[1].rebased(1, content);
+    assert_eq!(rebased.index(), 1);
+    let removed =
+        rendered(&changed, &[Patch::RemoveEntry { locator: rebased }]);
+    assert_eq!(
+        removed,
+        "[[keybinding]]\nkey = \"a\"\ncommand = \"new_tab\"\n"
+    );
+}

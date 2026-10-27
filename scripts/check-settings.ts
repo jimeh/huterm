@@ -26,18 +26,24 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
 }
 
 type SettingsKey =
-  | "open" | "search" | "select-all" | "enter" | "space" | "tab" | "shift-tab" | "up" | "reset" | "close";
+  | "open" | "search" | "select-all" | "enter" | "space" | "tab" | "shift-tab" | "up" | "reset" | "close"
+  | "new-tab";
 
 // AppKit key codes, modifier flags, and characters.
 const macKeys: Record<SettingsKey, [number, number, string]> = {
   open: [43, commandFlag, ","], search: [3, commandFlag, "f"], "select-all": [0, commandFlag, "a"],
   enter: [36, 0, "\r"], space: [49, 0, " "], tab: [48, 0, "\\t"], up: [126, 0, ""],
   "shift-tab": [48, shiftFlag, "\\t"], reset: [51, commandFlag, "\x7f"], close: [13, commandFlag, "w"],
+  "new-tab": [17, commandFlag, "t"],
 };
 const x11Keys: Record<SettingsKey, string> = {
   open: "ctrl+comma", search: "ctrl+f", "select-all": "ctrl+a", enter: "Return", space: "space",
   tab: "Tab", "shift-tab": "shift+Tab", up: "Up", reset: "ctrl+BackSpace", close: "ctrl+shift+w",
+  "new-tab": "ctrl+shift+t",
 };
+// What the recorder writes for the search key, and New Tab's default.
+const searchKey = process.platform === "darwin" ? "cmd-f" : "ctrl-f";
+const newTabKey = process.platform === "darwin" ? "cmd-t" : "ctrl-shift-t";
 
 /** The value of `settings.<name>` in the smoke state. */
 function field(state: string, name: string): string | undefined {
@@ -48,11 +54,13 @@ export async function checkSettings(executable: string, wm?: X11Process): Promis
   const directory = await mkdtemp(join(tmpdir(), "huterm-settings-"));
   const shell = join(directory, "shell");
   const config = join(directory, "config.toml");
+  // A switched-off Linux shortcut reaches the shell as a control byte, such
+  // as ^T before "ack old", so the acknowledgment drops what precedes "ack ".
   await writeFile(shell, `#!/bin/sh
 printf 'READY\\n'
 while IFS= read -r line; do
   case "$line" in
-    ack*) printf 'ACK:%s\\n' "$line";;
+    *"ack "*) printf 'ACK:ack %s\\n' "\${line#*ack }";;
   esac
 done
 `, { mode: 0o700 });
@@ -177,15 +185,53 @@ position = "top"
     await key("up");
     await saved((text) => /\[font\]\nsize = 15(\.0)?\n/.test(text), "font size stepped in config.toml");
 
-    // Closing returns keys to the terminal.
+    // Search finds a command; Space opens it in Keybindings.
+    await key("search");
+    await state("settings.focus=search");
+    await key("select-all");
+    // By its key, which no setting mentions.
+    await typeText(newTabKey);
+    await state(`settings.query="${newTabKey}"`);
+    await key("enter");
+    await state("settings.focus=action:kgo:new_tab");
+    await key("space");
+    await state("settings.section=keybindings", "settings.focus=action:kcmd:new_tab");
+    // The recorder takes the search key instead of its binding, and
+    // replaces New Tab's default with it after the chord timeout.
+    await key("tab");
+    await state("settings.focus=action:krec:");
+    await key("space");
+    await key("search");
+    await saved(
+      (text) =>
+        text.includes(`key = "${newTabKey}"\ncommand = "new_tab"\ndisabled = true`) &&
+        text.includes(`key = "${searchKey}"\ncommand = "new_tab"\n`),
+      "New Tab rebound in config.toml",
+    );
+    await state("settings.focus=action:krec:");
+
+    // Closing returns keys to the terminal, where the new key opens a tab
+    // and the switched-off default does nothing.
     await key("close");
-    await state("settings.open=false", "w0.active=true", "w0.terminal_focused=true");
+    await state("settings.open=false", "w0.active=true", "w0.terminal_focused=true", "w0.tabs=1");
     await focusX11("");
+    // The switched-off default opens nothing: after a round trip through
+    // the shell, which the key would have reached first, one tab remains.
+    await key("new-tab");
+    await typeText("ack old");
+    await key("enter");
+    await state("ACK:ack old");
+    // A tab the key had started would publish before the window is idle.
+    await state("w0.busy=false");
+    if (!(await current()).includes("w0.tabs=1")) throw new Error("the switched-off New Tab key opened a tab");
+    // The new key opens one, and keys reach its shell.
+    await key("search");
+    await state("w0.tabs=2");
     await typeText("ack back");
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved record=intercepted rebind=applied close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

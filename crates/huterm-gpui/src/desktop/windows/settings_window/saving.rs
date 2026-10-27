@@ -7,19 +7,25 @@
 //! elsewhere. It moves to a newer snapshot only when that snapshot still
 //! holds the value the edit expected at its path.
 
+use std::path::Path;
+
 use gpui::{AppContext as _, Context, Window};
-use huterm_config::document::{ApplyError, ConfigFile, Patch, Snapshot};
+use huterm_config::document::{
+    ApplyError, ConfigFile, EntryLocator, List, Patch, Snapshot,
+};
 use huterm_config::settings::{
     Platform as SettingPlatform, Setting, SettingKind,
 };
-use toml::Value;
+use toml::{Table, Value};
 
+use super::super::super::settings::keybindings::Edit;
 use super::super::super::settings::values::{
     self, FileValues, parse_number, patch_at, shown,
 };
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
 use super::{SettingsView, current, field_text, size_value, themes};
+use crate::keymap::{Inventory, Platform, inventory};
 
 /// A change the file changed under, kept until the user picks theirs or
 /// the file's. `patch` is the refused write; a field draft that a reload
@@ -48,17 +54,64 @@ pub(super) struct Pending {
     typed: Option<String>,
 }
 
+/// A keybinding edit waiting to be written, and the shortcut row that
+/// shows its errors.
+pub(super) struct KeyChange {
+    pub(super) edit: Edit,
+    pub(super) row: Option<String>,
+    /// Built when the edit was made, from the locators of the snapshot the
+    /// user saw. A locator finds its entry by position and content, so a
+    /// change made elsewhere to that entry conflicts instead of editing
+    /// another one; this window's own writes rebase them
+    /// (`rebase_queued_keys`).
+    patches: Vec<Patch>,
+    /// The field that made the edit and the text it last saved, put back
+    /// when the write fails so the entered text stays a draft to retry.
+    pub(super) field: Option<(String, Option<String>)>,
+}
+
+/// A write waiting behind the one in flight.
+pub(super) enum Queued {
+    Setting(Pending),
+    Keys(KeyChange),
+}
+
 /// What a background read found.
 struct Loaded {
     snapshot: Snapshot,
     file: Result<FileValues, String>,
     valid: Result<(), String>,
+    keys: Listed,
 }
 
 /// What a background write produced.
 struct Written {
     snapshot: Snapshot,
     file: Result<FileValues, String>,
+    keys: Listed,
+}
+
+/// What a read or write found about the file's keybindings.
+struct Listed {
+    /// The bindings with what became of each, or `None` when they do not
+    /// compile.
+    inventory: Option<Inventory>,
+    /// A locator for each `[[keybinding]]` entry, for edits to address.
+    entries: Vec<EntryLocator>,
+}
+
+/// Parses the file's keybindings, off the GPUI thread.
+fn listed(snapshot: &Snapshot, path: &Path) -> Listed {
+    let inventory =
+        crate::config::parse_at(snapshot.text().unwrap_or_default(), path)
+            .ok()
+            .and_then(|config| {
+                inventory(Platform::current(), &config.keybindings).ok()
+            });
+    Listed {
+        inventory,
+        entries: snapshot.entries(List::Keybinding),
+    }
 }
 
 /// The path a setting's changes write: the theme row edits the theme's
@@ -100,6 +153,7 @@ impl SettingsView {
     pub(super) fn load(&mut self, cx: &mut Context<'_, Self>) {
         let file = ConfigFile::new(self.path.clone());
         let validate = crate::config::validator(self.path.clone());
+        let path = self.path.clone();
         let epoch = self.epoch;
         self.reads += 1;
         self.loading += 1;
@@ -110,6 +164,7 @@ impl SettingsView {
             Ok::<_, ApplyError>(Loaded {
                 file: FileValues::parse(text),
                 valid: text.map_or(Ok(()), &validate),
+                keys: listed(&snapshot, &path),
                 snapshot,
             })
         });
@@ -117,8 +172,15 @@ impl SettingsView {
             let loaded = task.await;
             let _ = view.update(cx, |view, cx| {
                 view.loading -= 1;
+                // A read that finishes while this window's writes are
+                // pending would mix its list with theirs, so the file is
+                // read again when the queue drains.
                 if view.epoch == epoch && view.reads == read {
-                    view.loaded(loaded, cx);
+                    if view.busy() {
+                        view.reread = true;
+                    } else {
+                        view.loaded(loaded, cx);
+                    }
                 }
                 cx.notify();
             });
@@ -136,7 +198,10 @@ impl SettingsView {
                 snapshot,
                 file,
                 valid,
+                keys,
             }) => {
+                self.keys.inventory = keys.inventory;
+                self.keys.entries = keys.entries;
                 match (file, valid) {
                     (Ok(file), Ok(())) => {
                         self.file = file;
@@ -154,6 +219,7 @@ impl SettingsView {
                 }
                 self.base = Some(snapshot);
                 self.sync_fields(cx);
+                self.sync_key_fields(cx);
             }
             Err(error) => self.status.failed(error.to_string()),
         }
@@ -368,10 +434,13 @@ impl SettingsView {
         } else {
             self.base.clone()
         };
-        if let Some(queued) = self
-            .queued
-            .iter_mut()
-            .find(|queued| queued.setting.path == key)
+        if let Some(queued) =
+            self.queued.iter_mut().find_map(|queued| match queued {
+                Queued::Setting(queued) if queued.setting.path == key => {
+                    Some(queued)
+                }
+                _ => None,
+            })
         {
             queued.patch = patch;
             queued.value = value;
@@ -389,11 +458,172 @@ impl SettingsView {
             typed,
         };
         if self.writing.is_some() {
-            self.queued.push_back(change);
+            self.queued.push_back(Queued::Setting(change));
         } else {
             self.start(change, cx);
         }
         cx.notify();
+    }
+
+    /// Queues a keybinding edit after any write in flight; `false` when
+    /// the window cannot write. Its patches are built now, against the
+    /// snapshot the list came from; writes this window makes before its
+    /// turn rebase them, so successive edits to one entry build on each
+    /// other.
+    pub(super) fn submit_keys(
+        &mut self,
+        edit: Edit,
+        row: Option<String>,
+        field: Option<(String, Option<String>)>,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if self.locked() {
+            return false;
+        }
+        if self.base.is_none() {
+            return false;
+        }
+        if let Some(row) = &row {
+            self.keys.errors.remove(row);
+        }
+        let patches = match edit.patches(&self.keys.entries) {
+            Ok(patches) => patches,
+            Err(message) => {
+                self.status.failed(message);
+                cx.notify();
+                return false;
+            }
+        };
+        let change = KeyChange {
+            edit,
+            row,
+            patches,
+            field,
+        };
+        if self.writing.is_some() {
+            self.queued.push_back(Queued::Keys(change));
+        } else {
+            self.start_keys(change, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    fn start_keys(&mut self, change: KeyChange, cx: &mut Context<'_, Self>) {
+        self.writing = Some("keybinding");
+        self.keys.writing_row.clone_from(&change.row);
+        self.status.saving();
+        let file = ConfigFile::new(self.path.clone());
+        let validate = crate::config::validator(self.path.clone());
+        let path = self.path.clone();
+        let base = self.base.clone();
+        let patches = change.patches.clone();
+        let task = cx.background_spawn(async move {
+            let base = match base {
+                Some(base) => base,
+                None => file.load()?,
+            };
+            let snapshot = file.apply(&base, &patches, &validate)?;
+            Ok::<_, ApplyError>(Written {
+                file: FileValues::parse(snapshot.text()),
+                keys: listed(&snapshot, &path),
+                snapshot,
+            })
+        });
+        cx.spawn(async move |view, cx| {
+            let result = task.await;
+            let _ = view
+                .update(cx, |view, cx| view.written_keys(&change, result, cx));
+        })
+        .detach();
+    }
+
+    fn written_keys(
+        &mut self,
+        change: &KeyChange,
+        result: Result<Written, ApplyError>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.writing = None;
+        self.keys.writing_row = None;
+        self.epoch += 1;
+        // A field's failed edit stays in the field as a draft to retry;
+        // any other shows under its row.
+        let report = |view: &mut Self, message: String| {
+            match (&change.field, &change.row) {
+                (Some((key, saved)), _) => {
+                    view.keys.errors.insert(key.clone(), message.clone());
+                    match saved {
+                        Some(saved) => {
+                            view.keys.synced.insert(key.clone(), saved.clone());
+                        }
+                        None => {
+                            view.keys.synced.remove(key);
+                        }
+                    }
+                }
+                (None, Some(row)) => {
+                    view.keys.errors.insert(row.clone(), message.clone());
+                }
+                (None, None) => {}
+            }
+            view.status.failed(message);
+        };
+        let failed = match result {
+            Ok(written) => {
+                if let Ok(file) = written.file {
+                    self.file = file;
+                }
+                self.keys.inventory = written.keys.inventory;
+                self.keys.entries = written.keys.entries;
+                self.base = Some(written.snapshot);
+                self.rebase_queued_keys(&change.patches);
+                self.status.saved();
+                self.follow_changed_default(
+                    &change.edit,
+                    change.row.as_deref(),
+                );
+                self.sync_key_fields(cx);
+                cx.defer(|cx| {
+                    let _ = super::super::reload(cx);
+                });
+                false
+            }
+            // An entry another editor changed: show the file as it is.
+            Err(ApplyError::Conflict(changes)) => {
+                report(
+                    self,
+                    format!("config.toml changed: {}", changes.join("; ")),
+                );
+                self.load(cx);
+                true
+            }
+            Err(ApplyError::InvalidFile(message)) => {
+                // The field keeps its text as a draft for after the fix, as
+                // do fields whose queued edits go unwritten.
+                report(self, "config.toml has an error. Not saved.".to_owned());
+                self.drop_queue_for_invalid_file();
+                self.pending.clear();
+                self.status.invalid_file(message);
+                self.sync_fields(cx);
+                true
+            }
+            Err(ApplyError::WrittenNotDurable(error)) => {
+                // The write landed; queued edits move past it as after any other.
+                self.rebase_queued_keys(&change.patches);
+                self.status.saved_with_warning(error.to_string());
+                self.load(cx);
+                cx.defer(|cx| {
+                    let _ = super::super::reload(cx);
+                });
+                true
+            }
+            Err(error) => {
+                report(self, error.to_string());
+                true
+            }
+        };
+        self.next_write(failed, cx);
     }
 
     fn start(&mut self, change: Pending, cx: &mut Context<'_, Self>) {
@@ -401,6 +631,7 @@ impl SettingsView {
         self.status.saving();
         let file = ConfigFile::new(self.path.clone());
         let validate = crate::config::validator(self.path.clone());
+        let config_path = self.path.clone();
         let base = change.base.clone();
         let patch = change.patch.clone();
         let task = cx.background_spawn(async move {
@@ -411,6 +642,7 @@ impl SettingsView {
             let snapshot = file.apply(&base, &[patch], &validate)?;
             Ok::<_, ApplyError>(Written {
                 file: FileValues::parse(snapshot.text()),
+                keys: listed(&snapshot, &config_path),
                 snapshot,
             })
         });
@@ -454,12 +686,16 @@ impl SettingsView {
                 // can build on this write: nothing else touched it.
                 if let Ok(file) = written.file {
                     for queued in &mut self.queued {
-                        if file.get(queued.path) == queued.expected.as_ref() {
+                        if let Queued::Setting(queued) = queued
+                            && file.get(queued.path) == queued.expected.as_ref()
+                        {
                             queued.base = Some(written.snapshot.clone());
                         }
                     }
                     self.file = file;
                 }
+                self.keys.inventory = written.keys.inventory;
+                self.keys.entries = written.keys.entries;
                 self.base = Some(written.snapshot);
                 self.status.saved();
                 let saved = field_text(shown(
@@ -492,7 +728,7 @@ impl SettingsView {
                 failed = true;
                 // Nothing can be written to an invalid file, so every
                 // pending change settles unsaved.
-                self.queued.clear();
+                self.drop_queue_for_invalid_file();
                 self.pending.clear();
                 self.status.invalid_file(message);
                 self.sync_fields(cx);
@@ -503,7 +739,9 @@ impl SettingsView {
                 // the file afresh, and a closing window stays to show it.
                 settle(self);
                 for queued in &mut self.queued {
-                    if queued.path == change.path {
+                    if let Queued::Setting(queued) = queued
+                        && queued.path == change.path
+                    {
                         queued.base = None;
                     }
                 }
@@ -523,19 +761,134 @@ impl SettingsView {
                 self.sync_fields(cx);
             }
         }
-        // A write that failed while closing keeps the window open, so the
-        // user sees it and can recover the entered value.
+        self.next_write(failed, cx);
+    }
+
+    /// Drops every queued write after the file turned out invalid. A
+    /// keybinding field whose edit goes unwritten keeps its text as a draft,
+    /// marked, for after the fix.
+    fn drop_queue_for_invalid_file(&mut self) {
+        for queued in std::mem::take(&mut self.queued) {
+            let Queued::Keys(KeyChange {
+                field: Some((key, saved)),
+                ..
+            }) = queued
+            else {
+                continue;
+            };
+            self.keys.errors.insert(
+                key.clone(),
+                "config.toml has an error. Not saved.".to_owned(),
+            );
+            match saved {
+                Some(saved) => {
+                    self.keys.synced.insert(key, saved);
+                }
+                None => {
+                    self.keys.synced.remove(&key);
+                }
+            }
+        }
+    }
+
+    /// Carries queued keybinding edits past a write this window just made.
+    /// A queued patch for an entry that write changed, matched by position
+    /// and content, now finds it by its new content; one for an entry it
+    /// removed goes, with its edit when nothing of that is left; and entries
+    /// after a removed one move up.
+    fn rebase_queued_keys(&mut self, landed: &[Patch]) {
+        let mut changed: Vec<(usize, Table, Option<Table>)> = Vec::new();
+        for patch in landed {
+            match patch {
+                Patch::SetEntryField {
+                    locator,
+                    field,
+                    value,
+                } => {
+                    let mut after = locator.content().clone();
+                    after.insert(field.clone(), value.clone());
+                    changed.push((
+                        locator.index(),
+                        locator.content().clone(),
+                        Some(after),
+                    ));
+                }
+                Patch::ClearEntryField { locator, field } => {
+                    let mut after = locator.content().clone();
+                    after.remove(field);
+                    changed.push((
+                        locator.index(),
+                        locator.content().clone(),
+                        Some(after),
+                    ));
+                }
+                Patch::RemoveEntry { locator } => {
+                    changed.push((
+                        locator.index(),
+                        locator.content().clone(),
+                        None,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        let removed: Vec<usize> = changed
+            .iter()
+            .filter(|(_, _, after)| after.is_none())
+            .map(|(index, _, _)| *index)
+            .collect();
+        self.queued.retain_mut(|queued| {
+            let Queued::Keys(change) = queued else {
+                return true;
+            };
+            let had = change.patches.len();
+            change.patches.retain_mut(|patch| {
+                let (Patch::SetEntryField { locator, .. }
+                | Patch::ClearEntryField { locator, .. }
+                | Patch::RemoveEntry { locator }
+                | Patch::UpdateEntry { locator, .. }) = patch
+                else {
+                    return true;
+                };
+                let index = locator.index();
+                let content = match changed.iter().find(|(at, before, _)| {
+                    *at == index && before == locator.content()
+                }) {
+                    Some((_, _, None)) => return false,
+                    Some((_, _, Some(after))) => after.clone(),
+                    None => locator.content().clone(),
+                };
+                let moved = index
+                    - removed.iter().filter(|gone| **gone < index).count();
+                *locator = locator.rebased(moved, content);
+                true
+            });
+            had == 0 || !change.patches.is_empty()
+        });
+    }
+
+    /// Starts the next queued write, or closes a window waiting for its
+    /// writes. A write that failed while closing keeps the window open, so
+    /// the user sees it and can recover the entered value.
+    fn next_write(&mut self, failed: bool, cx: &mut Context<'_, Self>) {
         if failed {
             self.closing = false;
         }
-        if let Some(next) = self.queued.pop_front() {
-            self.start(next, cx);
-        } else if self.closing {
-            let handle = self.handle;
-            cx.defer(move |cx| {
-                let _ =
-                    handle.update(cx, |_, window, _| window.remove_window());
-            });
+        match self.queued.pop_front() {
+            Some(Queued::Setting(next)) => self.start(next, cx),
+            Some(Queued::Keys(next)) => self.start_keys(next, cx),
+            None if self.closing => {
+                let handle = self.handle;
+                cx.defer(move |cx| {
+                    let _ = handle
+                        .update(cx, |_, window, _| window.remove_window());
+                });
+            }
+            None if std::mem::take(&mut self.reread) => self.load(cx),
+            None => {}
         }
         cx.notify();
     }
@@ -590,6 +943,16 @@ impl SettingsView {
         if let Some(setting) = self.focused_field(window, cx) {
             self.field_blurred(setting, cx);
             if self.errors.contains_key(setting.path.as_str()) {
+                return false;
+            }
+        }
+        // A keybinding field's draft saves too; one that does not save
+        // keeps the window open to show why.
+        if let Some((key, _)) = self.focused_key_field(window, cx)
+            && key != "search"
+        {
+            self.commit_key_field(&key, cx);
+            if self.keys.errors.contains_key(&key) {
                 return false;
             }
         }

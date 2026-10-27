@@ -59,6 +59,23 @@ impl EntryLocator {
         &self.content
     }
 
+    /// The entry's position when it was located.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// The same entry after changes the caller made, at `index` with
+    /// `content`, so a patch built before them still finds it.
+    #[must_use]
+    pub fn rebased(&self, index: usize, content: Table) -> Self {
+        Self {
+            index,
+            content,
+            ..self.clone()
+        }
+    }
+
     /// Finds the entry in `tree`: the one at the same index when its content
     /// is unchanged, else the only entry anywhere with that exact content.
     fn resolve(&self, tree: &Table) -> Result<usize, String> {
@@ -167,6 +184,33 @@ impl Snapshot {
     #[must_use]
     pub fn revision(&self) -> &Revision {
         &self.revision
+    }
+
+    /// A locator for every entry of `list`, in order, from one parse.
+    #[must_use]
+    pub fn entries(&self, list: List) -> Vec<EntryLocator> {
+        let Some(tree) = self
+            .text
+            .as_deref()
+            .and_then(|text| toml::from_str::<Table>(text).ok())
+        else {
+            return Vec::new();
+        };
+        match tree.get(list.key()) {
+            Some(Value::Array(entries)) => entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| match entry {
+                    Value::Table(content) => Some(EntryLocator {
+                        list,
+                        index,
+                        content: content.clone(),
+                    }),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// A locator for entry `index` of `list`, if the snapshot has one.

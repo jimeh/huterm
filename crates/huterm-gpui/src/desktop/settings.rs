@@ -2,6 +2,7 @@
 //! generic control for its kind, a special control from [`OVERRIDES`], or
 //! nothing for settings listed in [`FILE_ONLY`].
 
+pub(super) mod keybindings;
 pub(super) mod status;
 pub(super) mod values;
 

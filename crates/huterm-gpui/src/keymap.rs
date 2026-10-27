@@ -301,14 +301,119 @@ impl Resolved {
     }
 }
 
+/// What became of one binding while later entries resolved.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum BindingState {
+    Active,
+    /// Turned off by the `disabled = true` user entries at these indexes.
+    Disabled(Vec<usize>),
+    /// Replaced by the user entry at this index, which has the same keys and
+    /// combined predicate.
+    Replaced(usize),
+    /// Removed by the `unbind` user entry at this index.
+    Unbound(usize),
+    /// A `disabled = true` user entry that turned nothing off.
+    SwitchedOff,
+}
+
+/// A binding's fields, without the compiled predicate, so a listing can
+/// cross threads.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Bound {
+    pub(crate) key: String,
+    pub(crate) command: CommandId,
+    pub(crate) args: Vec<CommandArgument>,
+    /// The command's implied context, if any.
+    pub(crate) context: Option<&'static str>,
+    pub(crate) when: Option<String>,
+    pub(crate) origin: Origin,
+}
+
+impl From<EffectiveBinding> for Bound {
+    fn from(binding: EffectiveBinding) -> Self {
+        Self {
+            key: binding.key,
+            command: binding.command,
+            args: binding.args,
+            context: binding.context,
+            when: binding.when,
+            origin: binding.origin,
+        }
+    }
+}
+
+/// One default or user binding with its outcome, for listing.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ListedBinding {
+    pub(crate) binding: Bound,
+    /// The user entry's 0-based index in `[[keybinding]]`.
+    pub(crate) entry: Option<usize>,
+    pub(crate) state: BindingState,
+}
+
+/// Every binding the defaults and the user's entries name, in resolution
+/// order, with what became of each.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Inventory {
+    /// Defaults and user bindings. A `disabled = true` entry that turned a
+    /// binding off is listed only through that binding's state.
+    pub(crate) bindings: Vec<ListedBinding>,
+    /// `unbind` entries: their 0-based indexes and keys.
+    pub(crate) unbinds: Vec<(usize, String)>,
+}
+
+/// Resolves defaults and user entries into the same inventory `compile`
+/// uses.
+///
+/// # Errors
+/// As [`compile`].
+pub(crate) fn inventory(
+    platform: Platform,
+    user: &[KeybindingEntry],
+) -> Result<Inventory, KeymapError> {
+    let mut entries = defaults(platform);
+    for (index, entry) in user.iter().enumerate() {
+        let entry = BindingEntry::from_config(entry).map_err(|message| {
+            KeymapError(keybinding_diagnostic(index + 1, &entry.key, message))
+        })?;
+        entries.push(entry);
+    }
+    let resolution = resolve_entries(&entries)?;
+    Ok(Inventory {
+        bindings: resolution
+            .items
+            .into_iter()
+            .map(|item| ListedBinding {
+                binding: item.resolved.effective.into(),
+                entry: item.entry,
+                state: item.state,
+            })
+            .collect(),
+        unbinds: resolution.unbinds,
+    })
+}
+
+struct Item {
+    resolved: Resolved,
+    entry: Option<usize>,
+    state: BindingState,
+}
+
+struct Resolution {
+    items: Vec<Item>,
+    unbinds: Vec<(usize, String)>,
+    conflicts: Vec<String>,
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "resolution validates and preserves one ordered binding pipeline"
 )]
-fn compile_entries(
+fn resolve_entries(
     entries: &[BindingEntry],
-) -> Result<CompiledKeymap, KeymapError> {
-    let mut resolved: Vec<Resolved> = Vec::new();
+) -> Result<Resolution, KeymapError> {
+    let mut items: Vec<Item> = Vec::new();
+    let mut unbinds = Vec::new();
     let mut conflicts = Vec::new();
     let mut user_position = 0;
     for entry in entries {
@@ -316,6 +421,7 @@ fn compile_entries(
             user_position += 1;
         }
         let position = user_position;
+        let index = (entry.origin == Origin::User).then(|| position - 1);
         let fail = |message: String| {
             KeymapError(match entry.origin {
                 Origin::User => {
@@ -344,9 +450,14 @@ fn compile_entries(
                         .to_owned(),
                 ));
             }
-            resolved.retain(|existing| {
-                !same_keystrokes(&existing.keystrokes, &keystrokes)
-            });
+            for item in &mut items {
+                if item.state == BindingState::Active
+                    && same_keystrokes(&item.resolved.keystrokes, &keystrokes)
+                {
+                    item.state = BindingState::Unbound(position - 1);
+                }
+            }
+            unbinds.push((position - 1, entry.key.clone()));
             continue;
         }
         let (spec, action, mut effective) =
@@ -368,47 +479,97 @@ fn compile_entries(
             })
             .transpose()?;
         effective.predicate.clone_from(&predicate);
-        if entry.disabled == Some(true) {
-            // Binds nothing: removes earlier bindings with the same keys,
-            // command, and combined predicate, and the same arguments when
-            // it gives any. Their reservations and menu accelerators go
-            // with them.
-            resolved.retain(|existing| {
-                !(same_keystrokes(&existing.keystrokes, &keystrokes)
-                    && existing.effective.command == effective.command
-                    && existing.predicate == predicate
-                    && (!entry.args_given
-                        || same_arguments(
-                            &existing.effective.args,
-                            &effective.args,
-                        )))
-            });
-            continue;
-        }
-        if let Some(index) = resolved.iter().position(|existing| {
-            same_keystrokes(&existing.keystrokes, &keystrokes)
-                && existing.predicate == predicate
-        }) {
-            let earlier = resolved.remove(index);
-            if earlier.effective.origin == Origin::User {
-                conflicts.push(keybinding_diagnostic(
-                    position,
-                    &entry.key,
-                    format!(
-                        "replaces keybinding {} with the same key and when",
-                        earlier.position
-                    ),
-                ));
-            }
-        }
-        resolved.push(Resolved {
+        let resolved = Resolved {
             keystrokes,
             predicate,
             action,
             effective,
             position,
+        };
+        if entry.disabled == Some(true) {
+            // Binds nothing: turns off earlier bindings with the same keys,
+            // command, and combined predicate, and the same arguments when
+            // it gives any. Their reservations and menu accelerators go
+            // with them.
+            let mut matched = false;
+            for item in &mut items {
+                let existing = &item.resolved;
+                if matches!(
+                    item.state,
+                    BindingState::Active | BindingState::Disabled(_)
+                ) && same_keystrokes(
+                    &existing.keystrokes,
+                    &resolved.keystrokes,
+                ) && existing.effective.command == resolved.effective.command
+                    && existing.predicate == resolved.predicate
+                    && (!entry.args_given
+                        || same_arguments(
+                            &existing.effective.args,
+                            &resolved.effective.args,
+                        ))
+                {
+                    match &mut item.state {
+                        BindingState::Disabled(by) => by.push(position - 1),
+                        state => {
+                            *state = BindingState::Disabled(vec![position - 1]);
+                        }
+                    }
+                    matched = true;
+                }
+            }
+            if !matched {
+                items.push(Item {
+                    resolved,
+                    entry: index,
+                    state: BindingState::SwitchedOff,
+                });
+            }
+            continue;
+        }
+        if let Some(earlier) = items.iter_mut().find(|item| {
+            item.state == BindingState::Active
+                && same_keystrokes(
+                    &item.resolved.keystrokes,
+                    &resolved.keystrokes,
+                )
+                && item.resolved.predicate == resolved.predicate
+        }) {
+            earlier.state = BindingState::Replaced(position - 1);
+            if earlier.resolved.effective.origin == Origin::User {
+                conflicts.push(keybinding_diagnostic(
+                    position,
+                    &entry.key,
+                    format!(
+                        "replaces keybinding {} with the same key and when",
+                        earlier.resolved.position
+                    ),
+                ));
+            }
+        }
+        items.push(Item {
+            resolved,
+            entry: index,
+            state: BindingState::Active,
         });
     }
+    Ok(Resolution {
+        items,
+        unbinds,
+        conflicts,
+    })
+}
+
+fn compile_entries(
+    entries: &[BindingEntry],
+) -> Result<CompiledKeymap, KeymapError> {
+    let Resolution {
+        items, conflicts, ..
+    } = resolve_entries(entries)?;
+    let mut resolved: Vec<Resolved> = items
+        .into_iter()
+        .filter(|item| item.state == BindingState::Active)
+        .map(|item| item.resolved)
+        .collect();
     let mut reserved = ReservedKeys::default();
     let mut effective = Vec::with_capacity(resolved.len());
     for binding in &resolved {

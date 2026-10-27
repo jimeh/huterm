@@ -2,7 +2,8 @@
 
 Status: in progress. Approved on 2026-10-26 after four Codex review rounds.
 PR 1 (the foundation) shipped in #263, and PR 2 (the settings model)
-in #266. PR 3 (the window and controls) is in progress. Plans
+in #266, and PR 3 (the window and controls) in #269. PR 4 (the
+keybinding editor) is in progress. Plans
 [issue #35][issue-35] and [issue #34][issue-34] within
 [epic #14][issue-14]. The UI decisions come from two rounds of HTML mockups
 ([round two][mockups], [the chosen layout][mockup-a1]).
@@ -765,6 +766,219 @@ tab stops.
 The keybinding editor, the quake profile editor, global shortcuts, editing
 theme colors, and themes defined in `[themes]`.
 
+## PR 4: keybinding editor
+
+### What PR 4 delivers
+
+The Keybindings section lists every catalog command with its shortcuts and
+edits `[[keybinding]]` entries in place, following the revised A1 mockup
+("Expanding command rows"). A command row expands to show each of its
+shortcuts with a key recorder, a `when` field with completion, argument
+controls, a Default or Custom tag, an enable switch, and, for the user's own
+entries, a remove button. Global shortcuts and Quake profiles stay
+placeholders until PR 5.
+
+### Keybinding list
+
+- `keymap.rs` gains an inventory beside `compile`: the same resolution over
+  the platform defaults and the file's entries, recording what happened to
+  each binding instead of only the survivors. A default is active, disabled
+  by a `disabled = true` entry, replaced by a later entry with the same keys
+  and combined predicate, or removed by an `unbind`. A user entry is active,
+  switched off by its own `disabled = true`, replaced, or unbound, and keeps
+  its index for an `EntryLocator`. The Settings window builds it from the
+  file it read, not the installed keymap, so it is right with watching off.
+- Commands appear in groups: Tabs, Panes, Window, Terminal, Application,
+  Quake, and "Overlays and text fields" for commands with an implied context
+  (`Palette`, `menu`, `notices`, `confirming`, `Settings`,
+  `SettingsControl`). A GPUI-side table assigns the groups, and a test fails
+  when a catalog command has none.
+- A collapsed row shows the title, description, a dot when the command is
+  customized (it has a user entry, or a default is not active), up to two
+  active shortcuts as key caps, "+N" for more, a "when" chip when an active
+  shortcut has a condition, and "No shortcut" when none is active.
+- The section has its own search field, matching titles, command ids, key
+  text, and conditions, and a segmented filter: All, Customized,
+  Conditional, and Disabled. The sidebar search also lists matching
+  commands under Keybindings; choosing one opens the section with that
+  command expanded.
+- `unbind` entries appear after the groups as "Passed through to programs",
+  each with a remove button.
+- The sidebar count for Keybindings is the number of `[[keybinding]]`
+  entries in the file, matching the other sections' count of settings the
+  file sets.
+
+### Keybinding edits
+
+Each edit is one `ConfigFile::apply` of one or more patches, so a pair of
+entries lands together or not at all. Patches address user entries through
+`EntryLocator`s from the window's snapshot.
+
+| Edit | Patches |
+| --- | --- |
+| Switch off an active default | Append `{key, command, when, args, disabled = true}` matching exactly that default (`when` and `args` only when the default has them) |
+| Switch on a disabled default | Remove the entries that disable it |
+| Switch a user entry off or on | Set or clear its `disabled` field |
+| Change a default's key, `when`, or argument | Append the disabling entry (unless one exists) and a replacement entry with the changed binding |
+| Change a user entry's key, `when`, or argument | Set or clear that field |
+| Add shortcut | Record a key, then append `{key, command}` |
+| Remove a user entry | Remove it |
+| Restore defaults (per command) | Remove every user entry for that command; `unbind` entries stay |
+| Remove an `unbind` entry | Remove it |
+
+Settings never writes `unbind`. Switching a user entry off writes
+`disabled = true` on it, which also turns off an earlier binding with the
+same key, command, and condition; such an entry duplicates that binding, so
+the effect is the same.
+
+Keybinding changes join the window's write queue behind any other write.
+Each edit's patches are built when it is made, from locators the
+background read made for the snapshot the list came from; a locator finds
+its entry by position and content, so a change made elsewhere to that
+entry makes the edit conflict instead of editing another shortcut. When
+the window's own write lands, queued locators for the entries it changed,
+matched by position and content, take their new content, those for entries
+it removed go, and later positions move up, so successive edits to one
+entry build on each other. A default with a change queued or being
+written takes no other change until it lands, since the list still shows
+it active; focus then follows to the new row. A read that finishes while
+the window's writes are pending is dropped, so queued edits and the list
+never mix snapshots, and the file is read again once the queue drains. The
+validator compiles the keymap, so a binding the compiler refuses is never
+written. A field whose write fails, including against a file that turned
+invalid, keeps the entered text with the error to retry.
+
+Fields follow their shortcut across reads: when another editor shifts the
+entries, a field and its draft move to the row its binding now has; a
+binding changed in place that keeps its key and command keeps its fields;
+any other change drops them.
+
+### Key recorder
+
+- Clicking a key cap, Space or Return on it, or Add shortcut starts
+  recording; the cap reads "Press keys", and a line under the row says how
+  recording ends. While it records, an
+  application keystroke interceptor takes the window's key-down events and
+  stops their propagation, so no binding, menu key equivalent, or text field
+  acts on them. A key that the operating system or a registered global
+  shortcut takes first cannot be recorded.
+- Modifier-only presses are ignored. Escape cancels at any point; Return
+  after a stroke saves at once. A second stroke within one second, GPUI's
+  own chord timeout, records a two-stroke chord; recording ends after the
+  second stroke or one second after the first. Focus leaving the cap, the
+  window losing focus, or a click elsewhere cancels. The cap shows the
+  strokes so far as key glyphs.
+- The result is written in the form `docs/keybindings.md` documents and
+  `parse_keystrokes` accepts, including shifted punctuation as its symbol.
+  Recording the binding's current key writes nothing.
+
+### Keybinding conditions
+
+- Each shortcut's `when` is a text field (placeholder "Anywhere", or the
+  implied context for commands that have one) saved on Enter or blur, like
+  the scalar fields. Escape puts back the saved condition and keeps focus.
+  Only an active shortcut's fields edit; a field keeps a draft only while
+  it is being edited.
+- Typing a context name offers completion from a code-level list of
+  contexts with their descriptions, the list `docs/keybindings.md`
+  documents; a test fails when the two differ. An empty name offers
+  nothing. Up and Down move through the suggestions and Return takes one;
+  Tab and Escape first close an open list, keeping the text, and act
+  normally after that.
+- GPUI's predicate parser checks the text before anything is written: a
+  syntax error shows under the shortcut and writes nothing. A known-syntax
+  condition naming an unknown context saves with a warning that it never
+  matches.
+
+### Keybinding arguments
+
+Only the arguments a config can carry appear, on a line under the
+shortcut, each labeled before its control; tab, pane, workspace, and
+session targets never do. Up and Down step a number field. Every argument
+is optional in a binding: an empty control writes nothing, and the palette
+prompts for a prompted argument or the command uses its default.
+
+| Kind | Control |
+| --- | --- |
+| `Bool` | Select: "Default", "On", "Off" |
+| `Integer` | Number field with the range from the catalog, empty for none |
+| `Text` | Text field, saved on Enter or blur |
+| `QuakeProfile` | Select of the configured profiles; unset shows `default` |
+| `Side` | Select of the sides, plus "Ask" |
+
+### Keybinding messages
+
+Under each shortcut: an error for the typed text, then notes about the
+file's binding from one pure function, `notes`:
+
+- what became of it: switched off, replaced (naming the shortcut and
+  command that took the key), or passed through by an `unbind` entry;
+- a warning on the shortcut that took a key from another command;
+- for a user shortcut sharing its key with another command, where the other
+  uses it, with a warning when the shortcut has no condition and so can
+  take the key there;
+- a warning on a user shortcut without a condition on a bare key, and a
+  note on Ctrl and a letter, which terminal programs stop receiving;
+- a warning for a saved condition naming an unknown context.
+
+Pairs of shipped defaults get no notes. Restore defaults shows only when
+the command has entries to remove, and says when they include shortcuts the
+user added.
+
+### Keybinding saves and status
+
+Saving follows PR 3: "Saved" and a manual reload after each write, an
+invalid file makes every control read-only, and other failures show in the
+footer. A conflict on a keybinding write, such as an entry another editor
+changed, shows "Not saved" with the patch service's message and refreshes
+the list from the file; a binding edit can span several fields and entries,
+so it has no Use mine or Use file.
+
+### Keybinding keyboard access
+
+Command rows are `SettingsControl` stops: Space and Return expand and
+collapse them, and `settings_reset` restores the command's defaults. Inside
+an expanded row, Tab reaches the key cap, the `when` field (a `Palette`
+text field), argument controls, the switch, the remove button, Add
+shortcut, and Restore defaults. In the section, `settings_search` focuses
+its own search, and Return there moves to the first command listed. No new
+commands or bindings.
+
+Focus never stays on a control that went away: removing a shortcut or
+restoring defaults moves it to the command row, removing an `unbind` entry
+to the section's search, and a changed default's new row takes focus on
+the control that changed it. Anything else falls back to the window, so
+the keyboard keeps working.
+
+### PR 4 files
+
+- `crates/huterm-gpui/src/keymap.rs`: the inventory.
+- `crates/huterm-gpui/src/desktop/settings/keybindings.rs`: command groups,
+  the context list, condition checks, and turning edits into patches.
+- `crates/huterm-gpui/src/desktop/windows/settings_window/keybindings.rs`:
+  the section, its rows and notes, the recorder, and focus recovery; the
+  interceptor is registered in `settings_window.rs`.
+- `docs/keybindings.md`, `README.md`, and this plan.
+
+### PR 4 verification
+
+| Behavior | Evidence |
+| --- | --- |
+| Inventory states for defaults and user entries: active, disabled, replaced, unbound, switched off | `keymap.rs` unit tests |
+| Each edit's patches, applied to a fixture file, keep comments and other entries and compile | `keybindings.rs` unit tests |
+| Condition checks and completion; the context list matches the docs table; every command has a group | `keybindings.rs` unit tests |
+| Switching a default off and on, changing a default's key, editing and removing a user entry, adding a shortcut, and restoring defaults write the expected entries | GPUI tests through the desktop harness |
+| The recorder takes keys bound elsewhere (`cmd-w` does not close Settings), records a chord, and cancels on Escape | GPUI tests with simulated keystrokes and the test clock |
+| An invalid condition writes nothing; an invalid file makes the editor read-only | GPUI tests |
+| Recording a shortcut and switching a default off with native keys, checking the file and that the switched-off key no longer runs its command | The `settings` step of `smoke:macos-palette` and `smoke:linux-palette` |
+| The editor in the running app | `ux-review` |
+
+### Non-goals for PR 4
+
+Global shortcuts and Quake profiles (PR 5); editing an entry's
+`description`; writing or editing `unbind` entries beyond removing them;
+reordering entries; and showing other platforms' defaults.
+
 ## Later PRs
 
 Each later PR gets its own contract when it starts, built on this section.
@@ -788,7 +1002,8 @@ Each later PR gets its own contract when it starts, built on this section.
    settings, reset, validation, and the theme picker with color overrides. A
    GPUI-side override table gives special controls, hides settings, or puts
    them behind Advanced.
-3. **Keybinding editor.** Expanding command rows, a key recorder with a
+3. **Keybinding editor.** Its contract is PR 4 above. Expanding command
+   rows, a key recorder with a
    capture context the window keymap cannot intercept, `when` completion from
    the context list and validation, argument controls, and the enable switch
    that writes `disabled` entries.

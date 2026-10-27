@@ -39,6 +39,7 @@ const macKeyCodes: Record<string, number> = {
   y: 16,
   z: 6,
   " ": 49,
+  "-": 27,
 };
 
 export function macKeyEvents(text: string): MacKeyEvent[] {

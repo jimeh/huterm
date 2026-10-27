@@ -98,7 +98,9 @@ Huterm reads `$HUTERM_CONFIG_FILE` when it is set. Otherwise it reads
 `$XDG_CONFIG_HOME/huterm/config.toml`, falling back to
 `~/.config/huterm/config.toml`, on both macOS and Linux. **Open Settings**
 (`open_settings`) opens a Settings window that saves each change to that file
-and keeps its comments and formatting. **Open Config File**
+and keeps its comments and formatting. Its Keybindings section lists every
+command with its shortcuts, records new keys, and switches defaults off.
+**Open Config File**
 (`open_config_file`) creates a documented default file if none exists and
 opens it in the system editor. Add this header to get completion and validation
 from the published JSON Schema in Taplo or the Even Better TOML editor
@@ -240,7 +242,7 @@ next stages are:
 
 - **Desktop expansion:** session and workspace switching, pane layout
   presets and layout undo, moving tabs between windows, shell
-  integration, keybinding and quake editors in Settings, window
+  integration, a quake profile editor in Settings, window
   transparency, and restoring sessions and history after a restart.
 - **Terminal compatibility:** notifications and progress, extended underlines,
   SGR-pixel mouse reports, the Kitty keyboard protocol, and inline graphics.
