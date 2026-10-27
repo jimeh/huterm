@@ -16,7 +16,7 @@ test-support = ["gpui/test-support"]
 
 [dependencies]
 anyhow.workspace = true
-huterm-config.workspace = true
+huterm-config = { workspace = true, features = ["settings"] }
 huterm-core.workspace = true
 huterm-protocol.workspace = true
 toml.workspace = true

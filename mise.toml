@@ -128,7 +128,7 @@ if [ -n "$dependencies" ]; then
   echo "$dependencies" >&2
   exit 1
 fi
-config_dependencies="$(cargo tree --locked -p huterm-config --features schema --prefix none --edges normal,build)"
+config_dependencies="$(cargo tree --locked -p huterm-config --features schema,settings --prefix none --edges normal,build)"
 if echo "$config_dependencies" | rg '^(gpui|huterm-core|huterm-ghostty|alacritty_terminal|portable-pty)( |-)'; then
   echo "huterm-config must remain independent of desktop and terminal engines" >&2
   exit 1

@@ -104,6 +104,7 @@ mod notices;
 mod overlay;
 pub(crate) mod palette;
 mod refresh;
+mod settings;
 pub(crate) use windows::{
     fullscreen_smoke, integration_smoke, palette_smoke,
     presentation_query_smoke, quake_smoke, refresh_smoke,
