@@ -192,10 +192,13 @@ impl Canvas {
     }
 
     fn polygon(&mut self, points: &[(f32, f32)]) {
+        let Some((&(x, y), rest)) = points.split_first() else {
+            return;
+        };
         self.geometry.fills.push(ShapePath {
             width: px(0.0),
-            start: self.point(points[0].0, points[0].1),
-            segments: points[1..]
+            start: self.point(x, y),
+            segments: rest
                 .iter()
                 .map(|&(x, y)| Segment::Line(self.point(x, y)))
                 .collect(),

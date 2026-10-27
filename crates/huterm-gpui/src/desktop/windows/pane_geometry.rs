@@ -5,6 +5,9 @@
 //! rectangles. Divider drags move one boundary through [`dragged_weights`],
 //! and a pane or tab drag finds where it would land through [`drop_zone`].
 
+// User input picks positions here, so a stale index must not panic.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use gpui::{Bounds, Pixels, Size, point, px, size};
 use huterm_protocol::{
     PaneId, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis, SplitDirection,
@@ -119,14 +122,14 @@ pub(super) fn with_boundary(
 ) -> Vec<u32> {
     let mut weights: Vec<u32> =
         split.children.iter().map(|child| child.weight).collect();
-    if index + 1 >= weights.len() {
-        return weights;
+    let before: u32 = weights.iter().take(index).sum();
+    if let Some([left, right]) = weights.get_mut(index..=index + 1) {
+        // Validated layouts give every child at least one weight unit.
+        let pair = *left + *right;
+        let first = boundary.saturating_sub(before).clamp(1, pair.max(2) - 1);
+        *left = first;
+        *right = pair.saturating_sub(first);
     }
-    let before: u32 = weights[..index].iter().sum();
-    let pair = weights[index] + weights[index + 1];
-    let first = boundary.saturating_sub(before).clamp(1, pair - 1);
-    weights[index] = first;
-    weights[index + 1] = pair - first;
     weights
 }
 

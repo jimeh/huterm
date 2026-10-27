@@ -1,3 +1,6 @@
+// User input picks positions here, so a stale index must not panic.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use super::{
     Bounds, CONTROL_SLOT, Pixels, TAB_HEIGHT, VERTICAL_END_MARGIN, point, px,
     size,
@@ -102,9 +105,13 @@ impl TabStrip {
         strip.offset = offset.clamp(px(0.0), strip.max_offset());
         strip
     }
-    /// Where tab `index` begins along the axis, before scrolling.
+    /// Where tab `index` begins along the axis, before scrolling; past the
+    /// last tab, where the last one ends.
     pub(super) fn start(&self, index: usize) -> Pixels {
-        self.edges[index.min(self.count)]
+        self.edges
+            .get(index.min(self.count))
+            .copied()
+            .unwrap_or(px(0.0))
     }
     pub(super) fn tab_extent(&self, index: usize) -> Pixels {
         self.start(index + 1) - self.start(index)
@@ -150,7 +157,7 @@ impl TabStrip {
             return 0;
         }
         let previous = next - 1;
-        if position - self.edges[previous] < self.edges[next] - position {
+        if position - self.start(previous) < self.start(next) - position {
             previous
         } else {
             next

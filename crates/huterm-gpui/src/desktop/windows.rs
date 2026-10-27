@@ -3233,7 +3233,7 @@ fn directory_label(
 fn shorten_path(path: &str) -> String {
     let mut parts: Vec<String> = path.split('/').map(str::to_owned).collect();
     let last = parts.len().saturating_sub(1);
-    for part in &mut parts[..last] {
+    for part in parts.iter_mut().take(last) {
         if part == "~" {
             continue;
         }
@@ -3678,7 +3678,8 @@ fn tabs_after(order: &[TabId], tab: TabId) -> Vec<TabId> {
     order
         .iter()
         .position(|id| *id == tab)
-        .map(|index| order[index + 1..].to_vec())
+        .and_then(|index| order.get(index + 1..))
+        .map(<[TabId]>::to_vec)
         .unwrap_or_default()
 }
 
@@ -4551,18 +4552,23 @@ impl WorkspaceView {
             return target;
         }
         let from = preview.weights.clone();
-        if index + 1 >= from.len() {
+        // `target` comes from the same split, so it has the same children.
+        let (Some(&first), Some(&second), Some(&aim)) =
+            (from.get(index), from.get(index + 1), target.get(index))
+        else {
             return from;
-        }
-        let pair = from[index] + from[index + 1];
+        };
+        let pair = first + second;
         let with = |first: u32| {
             let mut weights = from.clone();
-            weights[index] = first;
-            weights[index + 1] = pair - first;
+            if let Some([left, right]) = weights.get_mut(index..=index + 1) {
+                *left = first;
+                *right = pair - first;
+            }
             weights
         };
         // The fitting end stays at `good`; the boundary moves toward `bad`.
-        let (mut good, mut bad) = (from[index], target[index]);
+        let (mut good, mut bad) = (first, aim);
         while good.abs_diff(bad) > 1 {
             let middle = good.midpoint(bad);
             if fits(&with(middle)) {
@@ -8764,12 +8770,19 @@ impl WorkspaceView {
             .iter()
             .position(|tab| Some(tab.id) == active)
             .unwrap_or(0);
+        let count = self.tabs.len();
         let next = if forward {
-            (index + 1) % self.tabs.len()
+            index + 1
         } else {
-            (index + self.tabs.len() - 1) % self.tabs.len()
+            index + count.saturating_sub(1)
         };
-        self.select_from_command(self.tabs[next].id, window, cx);
+        // The model and the views agree on a window's tabs, but a window
+        // without tab views has nothing to cycle through.
+        if let Some(tab) =
+            next.checked_rem(count).and_then(|next| self.tabs.get(next))
+        {
+            self.select_from_command(tab.id, window, cx);
+        }
         Ok(CommandOutcome::Completed)
     }
 
@@ -10693,6 +10706,14 @@ impl Render for WorkspaceView {
             window,
             cx,
         ));
+        // A drag resolves against the drawn panes, which this frame may have
+        // just replaced, as after a spring load; a resting pointer must not
+        // keep the target it found before.
+        if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
+            cx.defer_in(window, |view, window, cx| {
+                view.retarget_after_frame(window, cx);
+            });
+        }
         self.sync_tab_scrollbars();
         let strip = self.tab_strip(window);
         let vertical = strip.vertical;
@@ -11688,11 +11709,14 @@ impl WorkspaceView {
         contexts: &[KeyContext],
         cx: &App,
     ) -> Option<MenuModel> {
-        let index = self.tabs.iter().position(|record| record.id == tab)?;
-        let directory_known = tab_directory_path(
-            &self.tabs[index].focused_view().read(cx).metadata,
-        )
-        .is_some();
+        let (index, view) = self
+            .tabs
+            .iter()
+            .enumerate()
+            .find(|(_, record)| record.id == tab)?;
+        let directory_known =
+            tab_directory_path(&view.focused_view().read(cx).metadata)
+                .is_some();
         let input = TabMenuInput {
             platform: Platform::current(),
             index,

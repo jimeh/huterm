@@ -245,7 +245,7 @@ fn identity_replacement_and_duplicate_labels_keep_scoped_ids() {
         window_only: false,
         moving_tab: None,
     };
-    let mut editor = SlotEditor::new(rename, &[], &domain, false);
+    let mut editor = SlotEditor::new(rename, &[], &domain, false).unwrap();
     editor.set_text("chosen");
     editor.next_slot(None).unwrap();
     assert_eq!(editor.active().spec.name, "workspace");
@@ -290,7 +290,7 @@ fn rename_targets_prefill_from_the_projected_session_and_workspace() {
         ),
     ] {
         let spec = huterm_protocol::lookup(command.as_str()).unwrap();
-        let editor = SlotEditor::new(spec, &[], &domain, false);
+        let editor = SlotEditor::new(spec, &[], &domain, false).unwrap();
         let slot = editor
             .slots()
             .iter()
@@ -329,7 +329,7 @@ fn palette_invocation_renames_exact_tab_and_stale_target_changes_nothing() {
         window_only: false,
         moving_tab: None,
     };
-    let mut editor = SlotEditor::new(rename, &[], &domain, false);
+    let mut editor = SlotEditor::new(rename, &[], &domain, false).unwrap();
     editor.set_text("chosen");
     let Commit::Run(invocation) = editor.commit(None).unwrap() else {
         panic!("one Enter runs the rename with the prefilled tab");
@@ -373,13 +373,13 @@ fn quake_profiles_form_a_strict_domain_with_a_default() {
     };
     let toggle = huterm_protocol::lookup(ids::TOGGLE_QUAKE.as_str()).unwrap();
     assert!(slots::runs_without_prompt(toggle, &domain));
-    let editor = SlotEditor::new(toggle, &[], &domain, false);
+    let editor = SlotEditor::new(toggle, &[], &domain, false).unwrap();
     assert_eq!(editor.slots()[0].state, SlotState::Prefilled);
     assert_eq!(
         editor.invocation().unwrap().text("profile"),
         Some("default")
     );
-    let mut picking = SlotEditor::new(toggle, &[], &domain, false);
+    let mut picking = SlotEditor::new(toggle, &[], &domain, false).unwrap();
     picking.edit(0);
     let Commit::Run(invocation) = picking
         .commit(Some(CommandValue::Text("logs".into())))
@@ -820,7 +820,7 @@ fn pane_and_side_pickers_build_the_explicit_move_invocation() {
     );
     let spec =
         huterm_protocol::lookup(ids::MOVE_PANE_TO_PANE.as_str()).unwrap();
-    let mut editor = SlotEditor::new(spec, &[], &domain, false);
+    let mut editor = SlotEditor::new(spec, &[], &domain, false).unwrap();
     assert_eq!(editor.active().spec.name, "pane");
     assert!(matches!(
         editor.commit(Some(CommandValue::Pane(other.id))),

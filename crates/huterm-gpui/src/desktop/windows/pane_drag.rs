@@ -3,6 +3,9 @@
 //! on each motion, draws the result it would have, and on release commits
 //! one Mux operation through the same path as the pane move commands.
 
+// User input picks positions here, so a stale index must not panic.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use gpui::Hsla;
 use huterm_core::{Beside, MoveDestination, PaneRef};
 
@@ -273,6 +276,27 @@ impl WorkspaceView {
             drag.spring.rearm(spring, now);
         } else {
             drag.spring.hover(spring, now);
+        }
+    }
+
+    /// Resolves the drag's target again against the panes a frame just
+    /// drew, redrawing only when it changed.
+    pub(super) fn retarget_after_frame(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(before) = self
+            .pane_drag
+            .as_ref()
+            .filter(|drag| drag.dragging)
+            .map(|drag| drag.target)
+        else {
+            return;
+        };
+        self.retarget_pane_drag(Instant::now(), false, window, cx);
+        if self.pane_drag.as_ref().map(|drag| drag.target) != Some(before) {
+            cx.notify();
         }
     }
 

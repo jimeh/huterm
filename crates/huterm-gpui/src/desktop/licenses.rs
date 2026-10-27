@@ -6,6 +6,9 @@
 //! takes the `Palette` key context so the palette's list and text bindings
 //! apply.
 
+// User input picks positions here, so a stale index must not panic.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -301,9 +304,14 @@ impl LicensesView {
         let next = if forward {
             index + 1
         } else {
-            index + order.len() - 1
+            index + order.len().saturating_sub(1)
         };
-        self.focus = order[next % order.len()];
+        if let Some(focus) = next
+            .checked_rem(order.len())
+            .and_then(|next| order.get(next))
+        {
+            self.focus = *focus;
+        }
         cx.notify();
     }
 
@@ -473,7 +481,9 @@ impl LicensesView {
             );
         }
         for (position, index) in self.matches.iter().copied().enumerate() {
-            let component = &catalog.components[index];
+            let Some(component) = catalog.components.get(index) else {
+                continue;
+            };
             let selected = position == self.selected;
             let hovered = self.hover == Some(position);
             let title = match &component.version {

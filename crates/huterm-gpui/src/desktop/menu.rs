@@ -10,6 +10,9 @@
 //! arrives through the same input-handler route as the palette's text field
 //! and drives type-ahead.
 
+// User input picks positions here, so a stale index must not panic.
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+
 use std::ops::Range;
 
 use gpui::{
@@ -268,7 +271,7 @@ impl MenuModel {
         };
         Some(MenuSelection {
             row: current.row,
-            button: Some(enabled[next]),
+            button: Some(*enabled.get(next)?),
         })
     }
 
@@ -310,8 +313,8 @@ impl MenuModel {
         if text.is_empty() {
             return None;
         }
-        let matches = |row: usize| match &self.rows[row] {
-            MenuRow::Item(item) if item.enabled => {
+        let matches = |row: usize| match self.rows.get(row) {
+            Some(MenuRow::Item(item)) if item.enabled => {
                 item.label.to_lowercase().starts_with(&text)
             }
             _ => false,

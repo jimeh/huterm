@@ -692,3 +692,42 @@ fn blur_cancels_a_spring_loaded_pane_drag_and_a_held_tab_nest(
         );
     });
 }
+
+#[gpui::test]
+fn a_still_pointer_finds_its_target_once_the_sprung_tab_draws(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _, _, right, other, lone) = two_tabs(&mut harness);
+    // Where the lone pane will be drawn: the active tab's whole content.
+    let frame = harness.frame(window, right);
+    let content = harness.update_view(window, |view, window, _| {
+        view.terminal_geometry(window).bounds.unwrap()
+    });
+    let grab = harness.grab(window, right);
+    let label = harness.label(window, 1);
+    harness.press_at(window, grab);
+    harness.move_to(window, label);
+    harness.wait_for("the drag to arm the other tab", |cx| {
+        pane_drag(cx, window).is_some_and(|(_, armed)| armed == Some(other))
+    });
+    let (armed, _) = harness.armed(window);
+    // The pointer reaches the pane before the sprung tab has drawn, so the
+    // first resolution finds no drawn pane there; it must not stay stale.
+    let edge = gpui::point(content.right() - px(8.0), frame.center().y);
+    harness.update_view(window, |view, window, cx| {
+        view.advance_animation(armed + SPRING_LOAD_DELAY, false, window, cx);
+        view.update_pane_drag(edge, window, cx);
+    });
+    harness.wait_for("the drawn pane to become the target", |cx| {
+        pane_drag(cx, window).is_some_and(|(target, _)| {
+            target_is(target, lone, Zone::Edge(SplitDirection::Right), false)
+        })
+    });
+    harness.release_at(window, edge);
+    harness.wait_for("the pane to move beside the lone pane", |cx| {
+        no_drag(cx, window)
+            && panes_shown(cx, window, other)
+                .is_some_and(|(panes, _)| panes == [lone, right])
+    });
+}
