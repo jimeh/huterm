@@ -9539,12 +9539,11 @@ fn reload(cx: &mut App) -> CommandOutcome {
 
 /// Rereads the configuration on the background executor and applies it.
 /// The caller has latched `Desktop::reloads`. An automatic reload does not
-/// start while quitting.
+/// start once Quit is committed. One may start while Quit awaits
+/// confirmation, which can still be cancelled; Quit unregisters the global
+/// shortcuts only once approved, and `finish_reload` applies nothing after.
 fn run_reload(cx: &mut App, kind: ReloadKind) {
-    let desktop = cx.global::<Desktop>();
-    if kind == ReloadKind::Automatic
-        && (desktop.quitting || desktop.quit_committed)
-    {
+    if kind == ReloadKind::Automatic && cx.global::<Desktop>().quit_committed {
         follow_up_reload(cx);
         return;
     }

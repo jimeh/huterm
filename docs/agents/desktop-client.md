@@ -542,32 +542,38 @@ joins a thread when dropped, so the GPUI thread only sends `Settings` and
 receives `Report`s. Watch directories non-recursively, never files, and a
 missing directory through its nearest existing ancestor; keep the ancestor
 watched until the descendant's registration succeeds, and keep it when that
-registration fails. Record each registered directory's identity and register
-it again when the identity changes or an event removes or renames the
-directory itself: inotify drops a removed directory's watch and keeps
-following a renamed one, so a directory replaced at the same path is
-otherwise silently unwatched. Match events against each input as given, with
-only its directory canonicalized, and fully resolved: native events name a
+registration fails. The ancestor's non-recursive watch misses edits inside the
+failed directory, so any failed registration still raises the one-time
+`Unavailable` warning and reports watching off. Record each registered
+directory's identity and register it again when the identity changes or an event
+removes or renames the directory itself: inotify drops a removed directory's
+watch and keeps following a renamed one, so a directory replaced at the same
+path is otherwise silently unwatched. Match events against each input as given,
+with only its directory canonicalized, and fully resolved: native events name a
 symlink through its real directory, so resolving the link itself misses a
 retarget when the configured path is not canonical, such as under macOS's
-`/tmp`. Ignore every `Access`
-event: fingerprinting opens the files, so reacting to inotify's open and close
-events loops. Every load and reload records `config::Inputs`, a fingerprint of
-the bytes it consumed plus the theme files it read or probed; reconcile
-compares the current fingerprint with the last *attempted* reload's, not the
-last successful one, so restoring good content after a broken save reloads.
-Each registration change schedules one catch-up reconciliation for changes
-made while no watch covered them, including the stream restart `FSEvents`
-performs on every `watch` call. With no events the worker blocks on its
-channel: no timer, no reads. On the desktop, `config_watch::Reloads` admits
-one reload at a time; a report during a reload marks it dirty even when the
-content matches, and one follow-up runs when it finishes. Every finished
-reload sends the watcher fresh `Settings`, including after a failure, which
-keeps the previous `watch_config`. An automatic reload that finds the file
-missing is skipped silently, since editors remove it while saving. No
-automatic reload starts while quitting. Committing Quit drops the watcher's
-handle, and a reload that finishes afterwards applies nothing, since
-applying would register the global shortcuts Quit just removed.
+`/tmp`. Ignore every `Access` event: fingerprinting opens the files, so reacting
+to inotify's open and close events loops. Every load and reload records
+`config::Inputs`, a fingerprint of the bytes it consumed plus the theme files it
+read or probed; reconcile compares the current fingerprint with the last
+*attempted* reload's, not the last successful one, so restoring good content
+after a broken save reloads. Each registration change schedules one catch-up
+reconciliation for changes made while no watch covered them, including the
+stream restart `FSEvents` performs on every `watch` call. With no events the
+worker blocks on its channel: no timer, no reads. On the desktop,
+`config_watch::Reloads` admits one reload at a time; a report during a reload
+marks it dirty even when the content matches, and one follow-up runs when it
+finishes. Every finished reload sends the watcher fresh `Settings`, including
+after a failure, which keeps the previous `watch_config`. An automatic reload
+that finds the file missing is skipped silently, since editors remove it while
+saving. An editor that truncates the file and writes it more than `QUIET_PERIOD`
+(150 ms) later can briefly apply the empty file, that is the defaults, until the
+write's event reloads the full content; this risk is accepted. An automatic
+reload may start while the Quit confirmation is open, since Cancel would
+otherwise leave a change saved meanwhile unapplied, but none starts once Quit is
+committed. Committing Quit drops the watcher's handle, and a reload that
+finishes afterwards applies nothing, since applying would register the global
+shortcuts Quit just removed.
 
 The `huterm_config::document` patch service edits `config.toml` by splicing
 byte ranges, never by re-serializing, and refuses any splice whose reparsed

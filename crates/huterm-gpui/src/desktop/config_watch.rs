@@ -55,8 +55,8 @@ pub(super) enum Report {
         watching: bool,
         reconciliations: u64,
     },
-    /// The watcher could not start; the configuration will not reload on
-    /// its own.
+    /// The watcher could not start, or could not watch a directory that
+    /// holds an input; changes there will not reload on their own.
     Unavailable(String),
 }
 
@@ -269,12 +269,18 @@ fn identity(_: &Path) -> Option<(u64, u64)> {
 }
 
 /// The worker's state, driven by messages and the clock its caller passes.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "backend running, warning raised, coverage, and pending events are independent facts"
+)]
 pub(super) struct Worker<B> {
     backend: B,
     report: Box<dyn FnMut(Report) + Send>,
     settings: Option<Settings>,
     watching: bool,
     unavailable: bool,
+    /// Whether every directory the topology wants holds a registration.
+    covered: bool,
     /// Each registered directory and its identity when it was registered.
     installed: BTreeMap<PathBuf, Option<(u64, u64)>>,
     watched: Watched,
@@ -297,6 +303,7 @@ impl<B: Backend> Worker<B> {
             settings: None,
             watching: false,
             unavailable: false,
+            covered: false,
             installed: BTreeMap::new(),
             watched: Watched::default(),
             deadline: None,
@@ -305,11 +312,13 @@ impl<B: Backend> Worker<B> {
         }
     }
 
-    /// Reports watching only while a registration holds; with none,
-    /// nothing reloads on its own.
+    /// Reports watching only while every wanted registration holds; an
+    /// ancestor kept in place of a failed descendant misses edits inside it.
     fn status(&mut self) {
         (self.report)(Report::Status {
-            watching: self.watching && !self.installed.is_empty(),
+            watching: self.watching
+                && self.covered
+                && !self.installed.is_empty(),
             reconciliations: self.reconciliations,
         });
     }
@@ -324,6 +333,7 @@ impl<B: Backend> Worker<B> {
                 self.watching = false;
             }
             self.installed.clear();
+            self.covered = false;
             self.watched = Watched::default();
             self.deadline = None;
             self.events_pending = false;
@@ -435,10 +445,12 @@ impl<B: Backend> Worker<B> {
     }
 
     /// Moves the registrations to the current topology. Returns whether any
-    /// registration changed.
+    /// registration changed. Warns once when a wanted registration fails,
+    /// and again only after every wanted registration has held since.
     fn reconfigure(&mut self, settings: &Settings) -> bool {
         let mut changed = false;
         let mut failure = None;
+        let mut covered = false;
         for _ in 0..TOPOLOGY_ATTEMPTS {
             // A directory replaced at the same path, or removed, since it
             // was registered is no longer covered by that registration.
@@ -479,6 +491,9 @@ impl<B: Backend> Worker<B> {
                     }
                 }
             }
+            covered = desired
+                .iter()
+                .all(|directory| self.installed.contains_key(directory));
             if vanished {
                 // Keep every existing watch and resolve again.
                 continue;
@@ -504,12 +519,14 @@ impl<B: Backend> Worker<B> {
             }
             break;
         }
-        if let Some(error) = failure
-            && self.installed.is_empty()
-            && !self.unavailable
-        {
-            self.unavailable = true;
-            (self.report)(Report::Unavailable(error));
+        self.covered = covered;
+        if let Some(error) = failure {
+            if !self.unavailable {
+                self.unavailable = true;
+                (self.report)(Report::Unavailable(error));
+            }
+        } else if covered {
+            self.unavailable = false;
         }
         changed
     }

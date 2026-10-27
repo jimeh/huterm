@@ -2274,20 +2274,74 @@ fn a_confirmed_quit_committing_when_its_windows_session_closes_still_quits(
     assert!(runtime.restore.lock().unwrap().is_some());
 }
 
+/// The report of a configuration change that differs from the last load.
+fn config_changed() -> config_watch::Report {
+    config_watch::Report::Changed {
+        differs: true,
+        fingerprint: config::Fingerprint::default(),
+    }
+}
+
+/// Whether a reload holds the latch.
+fn reloading(cx: &mut App) -> bool {
+    cx.global::<Desktop>().reloads.reloading()
+}
+
 #[gpui::test]
-fn an_automatic_reload_does_not_start_while_quitting(cx: &mut TestAppContext) {
-    let harness = DesktopHarness::new(cx);
+fn an_automatic_reload_starts_while_quit_is_pending_but_not_once_committed(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
     harness.cx.update(|cx| {
         cx.global_mut::<Desktop>().quitting = true;
-        handle_watch_report(
-            cx,
-            config_watch::Report::Changed {
-                differs: true,
-                fingerprint: config::Fingerprint::default(),
-            },
-        );
-        assert!(!cx.global::<Desktop>().reloads.reloading());
+        handle_watch_report(cx, config_changed());
+        assert!(reloading(cx), "a pending Quit held back the reload");
     });
+    harness.wait_for("the reload to finish", |cx| !reloading(cx));
+    harness.cx.update(|cx| {
+        commit_quit(cx);
+        handle_watch_report(cx, config_changed());
+        assert!(!reloading(cx), "a reload started after Quit committed");
+    });
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "the font size parses from an exact literal"
+)]
+#[gpui::test]
+fn a_change_during_a_cancelled_quit_is_applied(cx: &mut TestAppContext) {
+    let directory = std::env::temp_dir().join(format!(
+        "huterm-cancelled-quit-reload-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("config.toml");
+    std::fs::write(&path, "[font]\nsize = 19.0\n").unwrap();
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(RUNS_JOB);
+    let window = harness.attach_showing(&[tab]);
+    harness.wait_text(window, tab, "READY");
+    harness.cx.update(|cx| {
+        assert_ne!(cx.global::<Desktop>().config.font.size, 19.0);
+        cx.global_mut::<Desktop>().config_path = path;
+    });
+    harness.update_view(window, |view, window, cx| {
+        view.request_close(CloseTarget::Application, window, cx);
+    });
+    harness.wait_for("the Quit confirmation", |cx| confirming(cx, window));
+    harness
+        .cx
+        .update(|cx| handle_watch_report(cx, config_changed()));
+    harness.update_view(window, |view, window, cx| {
+        view.cancel_confirmation(window, cx);
+    });
+    harness.wait_for("the changed configuration to apply", |cx| {
+        !quitting(cx)
+            && !reloading(cx)
+            && cx.global::<Desktop>().config.font.size == 19.0
+    });
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[gpui::test]

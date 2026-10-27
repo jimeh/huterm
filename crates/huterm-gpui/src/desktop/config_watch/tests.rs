@@ -333,6 +333,28 @@ fn a_removed_directory_is_watched_again_once_it_returns() {
     assert!(!changes.is_empty() && changes.iter().all(|differs| *differs));
 }
 
+#[test]
+fn a_removal_event_registers_the_directory_again_without_an_identity_change() {
+    let scratch = Scratch::new();
+    let directory = scratch.path("huterm");
+    let config = scratch.path("huterm/config.toml");
+    write(&config, VALID_A);
+    let backend = Fake::default();
+    let (mut worker, _) = fake_worker(backend.clone());
+    let mut now = Instant::now();
+    worker.configure(settings(&config, true), now);
+    settle(&mut worker, &mut now);
+    // A directory removed and recreated can reuse its inode, so only the
+    // removal event shows that inotify dropped the registration.
+    worker.event(
+        &event(EventKind::Remove(RemoveKind::Folder), &directory),
+        now,
+    );
+    backend.invalidate(&directory);
+    settle(&mut worker, &mut now);
+    assert_eq!(backend.watched(), vec![directory]);
+}
+
 #[cfg(unix)]
 #[test]
 fn a_directory_replaced_under_its_watch_is_registered_again() {
@@ -355,17 +377,41 @@ fn a_directory_replaced_under_its_watch_is_registered_again() {
     assert_eq!(backend.watched(), vec![directory]);
 }
 
+/// How many `Unavailable` warnings `reports` holds.
+fn warnings(reports: &Reports) -> usize {
+    reports
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|report| matches!(report, Report::Unavailable(_)))
+        .count()
+}
+
+/// The last reported `watching` state.
+fn watching(reports: &Reports) -> Option<bool> {
+    reports
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|report| match report {
+            Report::Status { watching, .. } => Some(*watching),
+            _ => None,
+        })
+}
+
 #[test]
-fn a_failed_descendant_registration_keeps_the_ancestor() {
+fn a_failed_descendant_registration_keeps_the_ancestor_and_warns_once() {
     let scratch = Scratch::new();
     let directory = scratch.path("huterm");
     let config = scratch.path("huterm/config.toml");
     let backend = Fake::default();
-    let (mut worker, _) = fake_worker(backend.clone());
+    let (mut worker, reports) = fake_worker(backend.clone());
     let mut now = Instant::now();
     worker.configure(settings(&config, true), now);
     settle(&mut worker, &mut now);
     assert_eq!(backend.watched(), vec![scratch.0.clone()]);
+    assert_eq!(watching(&reports), Some(true));
     backend.refused.lock().unwrap().insert(directory.clone());
     fs::create_dir(&directory).unwrap();
     worker.event(
@@ -375,6 +421,14 @@ fn a_failed_descendant_registration_keeps_the_ancestor() {
     settle(&mut worker, &mut now);
     assert_eq!(backend.watched(), vec![scratch.0.clone()]);
     assert_eq!(worker.probe().installed, vec![scratch.0.clone()]);
+    // The ancestor misses edits inside the directory it could not watch.
+    assert_eq!(warnings(&reports), 1, "{:?}", reports.lock().unwrap());
+    assert_eq!(watching(&reports), Some(false));
+    // Reconciling again while the failure lasts does not warn again.
+    worker.event(&modified(&directory), now);
+    settle(&mut worker, &mut now);
+    assert_eq!(warnings(&reports), 1, "{:?}", reports.lock().unwrap());
+    assert_eq!(watching(&reports), Some(false));
 }
 
 #[test]
@@ -960,16 +1014,20 @@ fn native_a_replaced_directory_is_watched_again() {
     let config = scratch.path("huterm/config.toml");
     write(&config, VALID_A);
     let native = Native::start(settings(&config, true));
+    let before = native.handle.probe().unwrap().reconciliations;
     // Replace the watched directory with a new one, as a dotfiles tool
     // that swaps a whole directory into place does.
     let staged = scratch.path("huterm.new");
     write(&staged.join("config.toml"), VALID_A);
     fs::rename(&directory, scratch.path("huterm.old")).unwrap();
     fs::rename(&staged, &directory).unwrap();
-    native.wait_probe("the replacement to settle", |probe| {
-        probe.installed == vec![directory.clone()] && !probe.timer_armed
+    // Only the replacement's own events may reconcile; configuring again
+    // would register the directory whether or not they did.
+    native.wait_probe("the replacement to reconcile", |probe| {
+        probe.reconciliations > before
+            && probe.installed == vec![directory.clone()]
+            && !probe.timer_armed
     });
-    native.configure(settings(&config, true));
     write(&config, "[font]\nsize = 18.0\n");
     native.wait_changed("an edit inside the new directory");
 }
