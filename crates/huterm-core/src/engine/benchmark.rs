@@ -378,16 +378,18 @@ fn peak_rss_kib() -> i64 {
 /// 6973P-C hosts, and 29.6 ms once on a host the job did not identify. CPU
 /// model set most of the spread: running after the other CI benchmarks
 /// matched standalone runs on the same host. The slowest of 20 resizes
-/// reached 36.1 ms, so the gate ignores it. Apple silicon measures 6.7 ms.
+/// reached 36.1 ms, so the gate ignores it. Apple silicon measures 6.6 ms.
 /// 45 ms leaves 50% headroom over the slowest median and fails a doubling on
 /// hosts above 22.5 ms.
 const RESIZE_HISTORY_P50_BUDGET_US: u128 = 45_000;
 
 /// Budget for the benchmark process's peak resident size after
-/// `resize-history` at the configurable maximum. CI's Ubuntu runners measured
-/// 109,716 to 110,124 KiB across 38 runs and four CPU models, and Apple
-/// silicon about 111,000 KiB. 140 MiB leaves 30% headroom for allocator and
-/// platform differences.
+/// `resize-history` at the configurable maximum. The peak includes earlier
+/// tests in the process; `bench:engine`'s other fixtures run first by name and
+/// hold at most the default 10,000 rows of history. CI's Ubuntu runners
+/// measured 109,716 to 110,124 KiB across 38 runs and four CPU models, and
+/// Apple silicon about 111,000 KiB. 140 MiB leaves 30% headroom for allocator
+/// and platform differences.
 const RESIZE_HISTORY_PEAK_RSS_BUDGET_KIB: i64 = 140 * 1024;
 
 #[test]
@@ -397,8 +399,8 @@ fn engine_benchmark_resize_history() {
         width: 8,
         height: 16,
     };
-    // The process peak only grows, so ascending sizes attribute each peak to
-    // the largest history so far.
+    // The process peak only grows, so ascending sizes keep a larger history
+    // from inflating a smaller one's peak.
     let mut sizes = history_sizes();
     sizes.sort_unstable();
     for rows in sizes {
@@ -449,6 +451,12 @@ fn engine_benchmark_resize_history() {
             "engine=ghostty fixture=resize-history iterations=20 columns=100/120 rows=40 limit_rows={rows} history_rows_before={before} history_rows_after={after} gated={gated} resize_us_p50={} resize_us_max={} snapshot_us_p50={} snapshot_us_max={} peak_rss_kib={peak_rss}",
             resizing[10], resizing[19], snapshots[10], snapshots[19]
         );
+        // The budgets hold only for saturated history that reflow keeps.
+        assert!(
+            before >= rows as usize / 10 * 9 && after == before,
+            "resize-history held {before} rows before reflow and {after} after, \
+             not a saturated {rows}-row history"
+        );
         assert!(
             !gated || resizing[10] <= RESIZE_HISTORY_P50_BUDGET_US,
             "resize-history p50 exceeded {RESIZE_HISTORY_P50_BUDGET_US} us \
@@ -457,7 +465,7 @@ fn engine_benchmark_resize_history() {
         );
         assert!(
             !gated || peak_rss <= RESIZE_HISTORY_PEAK_RSS_BUDGET_KIB,
-            "resize-history peak RSS exceeded \
+            "process peak RSS after resize-history exceeded \
              {RESIZE_HISTORY_PEAK_RSS_BUDGET_KIB} KiB at {rows} rows: \
              {peak_rss} KiB"
         );
