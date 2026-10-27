@@ -764,6 +764,7 @@ impl Scrollbars {
     /// Distance from the edge to the inner end of the pointer target on
     /// `axis`: the size across the axis of an element that covers the
     /// target and the edge inset, so `layers` inside it line up with `hit`.
+    #[must_use]
     pub fn strip_extent(&self, axis: Axis) -> f32 {
         self.slot(axis).map_or(0.0, AxisScrollbar::extent)
     }
