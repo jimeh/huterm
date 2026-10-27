@@ -234,7 +234,7 @@ pub(super) struct TerminalEngine {
     size: GridSize,
     cell: CellSize,
     presentation: TerminalPresentation,
-    scrollback: ScrollbackLimit,
+    scrollback: HistoryLimit,
     generation: u64,
     modes: StdCell<Option<(u64, TerminalModes)>>,
     hint: EscapeHint,
@@ -276,7 +276,8 @@ impl TerminalEngine {
         };
         let mut terminal =
             ghostty::Terminal::new(options, EngineHost::default())?;
-        apply_scrollback(&mut terminal, ScrollbackLimit::DEFAULT, size.rows)?;
+        let scrollback = HistoryLimit::from(ScrollbackLimit::DEFAULT);
+        apply_scrollback(&mut terminal, scrollback, size.rows)?;
         terminal.disable_apc_protocols()?;
         // A larger Kitty write could never fit the terminal's host-effect
         // budget, so Ghostty answers it with EFBIG before asking the host.
@@ -290,7 +291,7 @@ impl TerminalEngine {
             size,
             cell,
             presentation,
-            scrollback: ScrollbackLimit::DEFAULT,
+            scrollback,
             generation: 0,
             modes: StdCell::new(None),
             hint: EscapeHint::Ground,
@@ -450,6 +451,23 @@ impl TerminalEngine {
     pub(super) fn set_scrollback(
         &mut self,
         limit: ScrollbackLimit,
+    ) -> Result<bool, RuntimeError> {
+        self.set_history(limit.into())
+    }
+
+    /// Applies a row limit above [`ScrollbackLimit::MAX`], with the derived
+    /// byte allowance, so benchmarks can measure larger histories.
+    #[cfg(test)]
+    pub(super) fn set_history_rows(
+        &mut self,
+        rows: u32,
+    ) -> Result<bool, RuntimeError> {
+        self.set_history(HistoryLimit { rows, bytes: None })
+    }
+
+    fn set_history(
+        &mut self,
+        limit: HistoryLimit,
     ) -> Result<bool, RuntimeError> {
         if limit == self.scrollback {
             return Ok(false);
@@ -722,13 +740,31 @@ impl TerminalEngine {
     }
 }
 
+/// The row and byte limits the engine applies. A validated
+/// [`ScrollbackLimit`] supplies them, except in benchmarks, which measure
+/// histories above its maximum.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HistoryLimit {
+    rows: u32,
+    bytes: Option<u64>,
+}
+
+impl From<ScrollbackLimit> for HistoryLimit {
+    fn from(limit: ScrollbackLimit) -> Self {
+        Self {
+            rows: limit.rows(),
+            bytes: limit.bytes(),
+        }
+    }
+}
+
 /// Maps a history limit onto Ghostty's line and byte limits, which apply
 /// together: whichever is reached first prunes. Ghostty keeps at least one
 /// page of rows under any line limit, so only a zero byte limit keeps no
 /// history.
 fn apply_scrollback(
     terminal: &mut ghostty::Terminal<EngineHost>,
-    limit: ScrollbackLimit,
+    limit: HistoryLimit,
     screen_rows: u16,
 ) -> Result<(), RuntimeError> {
     let bytes = scrollback_bytes(limit, screen_rows);
@@ -737,7 +773,7 @@ fn apply_scrollback(
         terminal.set_scrollback_lines(None)?;
     } else {
         terminal.set_scrollback_lines(Some(
-            usize::try_from(limit.rows()).unwrap_or(usize::MAX),
+            usize::try_from(limit.rows).unwrap_or(usize::MAX),
         ))?;
         terminal.set_scrollback_bytes(Some(bytes))?;
     }
@@ -747,12 +783,12 @@ fn apply_scrollback(
 /// The byte allowance for `limit` on a screen of `screen_rows`: zero when
 /// either limit keeps no history, the explicit byte limit when one is set,
 /// and otherwise an allowance derived from the rows.
-fn scrollback_bytes(limit: ScrollbackLimit, screen_rows: u16) -> usize {
-    let rows = usize::try_from(limit.rows()).unwrap_or(usize::MAX);
+fn scrollback_bytes(limit: HistoryLimit, screen_rows: u16) -> usize {
+    let rows = usize::try_from(limit.rows).unwrap_or(usize::MAX);
     if rows == 0 {
         return 0;
     }
-    limit.bytes().map_or_else(
+    limit.bytes.map_or_else(
         || {
             rows.saturating_add(usize::from(screen_rows))
                 .saturating_mul(SCROLLBACK_BYTES_PER_ROW)

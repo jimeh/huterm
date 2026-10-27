@@ -2,18 +2,14 @@ use super::*;
 use huterm_protocol::{LinkLookup, MousePosition};
 use std::time::Instant;
 
-// Enough output lines to saturate the largest scrollback limit, which
-// gives above-viewport reads their longest walk from the top of history.
-const FULL_HISTORY_LINES: usize = 60_000;
-
 struct Fixture {
     name: &'static str,
     output: String,
     destination: Option<String>,
     scroll: ScrollCommand,
     point: MousePosition,
-    /// Filler lines written before the fixture output, one run each.
-    history: &'static [usize],
+    /// Runs again after saturating history at each benchmark history size.
+    saturate: bool,
 }
 
 impl Fixture {
@@ -26,7 +22,7 @@ impl Fixture {
                 .then(|| destination.to_owned()),
             scroll: ScrollCommand::Absolute(usize::MAX),
             point: MousePosition { row: 0, column: 3 },
-            history: &[0],
+            saturate: false,
         }
     }
 }
@@ -81,7 +77,7 @@ fn fixtures() -> Vec<Fixture> {
             destination: Some(url_rows(20)),
             scroll: ScrollCommand::Live,
             point: MousePosition { row: 39, column: 3 },
-            history: &[0, FULL_HISTORY_LINES],
+            saturate: true,
         },
         Fixture {
             name: "prefix-above-viewport",
@@ -89,7 +85,7 @@ fn fixtures() -> Vec<Fixture> {
             destination: Some(url_rows(60)),
             scroll: ScrollCommand::Live,
             point: MousePosition { row: 0, column: 3 },
-            history: &[0, FULL_HISTORY_LINES],
+            saturate: true,
         },
         Fixture {
             name: "long-line-short-url",
@@ -101,7 +97,7 @@ fn fixtures() -> Vec<Fixture> {
             destination: Some("https://example.test/path".to_owned()),
             scroll: ScrollCommand::Live,
             point: MousePosition { row: 39, column: 3 },
-            history: &[0, FULL_HISTORY_LINES],
+            saturate: true,
         },
         Fixture {
             name: "top-row-url",
@@ -113,7 +109,7 @@ fn fixtures() -> Vec<Fixture> {
             destination: Some("https://example.test/path".to_owned()),
             scroll: ScrollCommand::Live,
             point: MousePosition { row: 0, column: 3 },
-            history: &[0, FULL_HISTORY_LINES],
+            saturate: true,
         },
         Fixture {
             name: "scan-limit-above-viewport",
@@ -122,7 +118,7 @@ fn fixtures() -> Vec<Fixture> {
             destination: None,
             scroll: ScrollCommand::Live,
             point: MousePosition { row: 0, column: 3 },
-            history: &[0, FULL_HISTORY_LINES],
+            saturate: true,
         },
         Fixture {
             name: "scrolled-history",
@@ -134,7 +130,7 @@ fn fixtures() -> Vec<Fixture> {
             destination: Some(url_rows(20)),
             scroll: ScrollCommand::Absolute(2000),
             point: MousePosition { row: 39, column: 3 },
-            history: &[0, FULL_HISTORY_LINES],
+            saturate: true,
         },
     ]
 }
@@ -142,8 +138,16 @@ fn fixtures() -> Vec<Fixture> {
 #[test]
 #[ignore = "release benchmark; use mise run bench:links"]
 fn bounded_link_lookup_elapsed_time() {
+    let sizes = benchmark::history_sizes();
     for fixture in fixtures() {
-        for &history in fixture.history {
+        // Empty history first, then history saturated at each size.
+        let runs = std::iter::once((ScrollbackLimit::MAX.rows(), 0)).chain(
+            sizes
+                .iter()
+                .filter(|_| fixture.saturate)
+                .map(|&rows| (rows, benchmark::saturating_lines(rows))),
+        );
+        for (limit, lines) in runs {
             let name = fixture.name;
             let mut engine = TerminalEngine::new(
                 TerminalId::new(1),
@@ -155,10 +159,8 @@ fn bounded_link_lookup_elapsed_time() {
                 TerminalPresentation::default(),
             )
             .unwrap();
-            engine.set_scrollback(ScrollbackLimit::MAX).unwrap();
-            engine
-                .process("line\r\n".repeat(history).as_bytes())
-                .unwrap();
+            engine.set_history_rows(limit).unwrap();
+            engine.process("line\r\n".repeat(lines).as_bytes()).unwrap();
             engine.process(fixture.output.as_bytes()).unwrap();
             engine.scroll(fixture.scroll).unwrap();
             let snapshot = engine.snapshot().unwrap();
@@ -177,13 +179,15 @@ fn bounded_link_lookup_elapsed_time() {
                 }
             }
             samples.sort_unstable();
+            // Sizes above the configurable maximum are measured, not gated.
+            let gated = limit <= ScrollbackLimit::MAX.rows();
             assert!(
-                samples[95] <= 5000,
+                !gated || samples[95] <= 5000,
                 "{name} p95 exceeded 5 ms: {} us",
                 samples[95]
             );
             println!(
-                "link-benchmark engine=ghostty fixture={name} history_rows={} samples=100 p50_us={} p95_us={} max_us={}",
+                "link-benchmark engine=ghostty fixture={name} history_rows={} gated={gated} samples=100 p50_us={} p95_us={} max_us={}",
                 snapshot.history_size, samples[50], samples[95], samples[99]
             );
         }
