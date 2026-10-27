@@ -691,6 +691,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         self.section = section;
+        self.quake.deleting = false;
         self.search.update(cx, |search, cx| search.set_text("", cx));
         self.scroll.set_offset(point(px(0.0), px(0.0)));
         cx.notify();
@@ -848,13 +849,13 @@ impl SettingsView {
         cx.subscribe_in(&menu, window, move |view, _, event, window, cx| {
             if let MenuEvent::Picked(value) = event {
                 match view.menu.as_ref().map(|(_, target, _)| target) {
+                    // Picking the value the control shows writes nothing.
                     Some(MenuFor::Setting(setting)) => {
                         let setting = *setting;
-                        view.write(
-                            setting,
-                            Some(Value::String((*value).to_owned())),
-                            cx,
-                        );
+                        let picked = Value::String((*value).to_owned());
+                        if view.value(setting).as_ref() != Some(&picked) {
+                            view.write(setting, Some(picked), cx);
+                        }
                     }
                     Some(MenuFor::Argument { row, name, kind }) => {
                         let (row, name, kind) = (row.clone(), *name, *kind);

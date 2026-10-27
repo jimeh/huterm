@@ -305,3 +305,162 @@ fn a_profile_whose_name_needs_quoting_stays_in_the_file(
         assert!(view.profile_field("logs", "height").is_some());
     });
 }
+
+#[gpui::test]
+fn a_refused_profile_write_settles_and_keeps_the_name(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-refused", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    // Another editor adds the same profile before Settings rereads.
+    let theirs = format!("{LOGS}\n[quake.profiles.build]\nheight = 0.2\n");
+    std::fs::write(file.path(), &theirs).unwrap();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_profile_name("build", window, cx);
+        view.press("qcreate", window, cx);
+    });
+    harness.wait_for("the refused create", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.quake_message().is_some())
+                    .unwrap_or(false)
+            })
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), theirs);
+    with_window(&mut harness, |view, window, cx| {
+        assert_eq!(view.quake_prompts(), (true, false));
+        assert_eq!(view.profile_name_text(cx), "build");
+        assert!(!view.conflicted("quake.profiles.build"));
+        assert_eq!(view.profile_names(), ["default", "build", "logs"]);
+        // Nothing unresolved keeps the window open.
+        view.command(ids::CLOSE_WINDOW, window, cx).unwrap();
+    });
+    harness.wait_for("the window to close", |cx| settings(cx).is_none());
+}
+
+#[gpui::test]
+fn deleting_a_profile_reads_the_file_afresh(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-delete-fresh", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    // Another editor changes the profile before Settings rereads.
+    std::fs::write(file.path(), LOGS.replace("0.3", "0.4")).unwrap();
+    with_view(&mut harness, |view, _| view.pick_profile("logs"));
+    press(&mut harness, "qdel");
+    press(&mut harness, "qdelyes");
+    saved(&mut harness, &file, |text| !text.contains("logs"));
+    assert_eq!(file.text(), "# Mine.\n");
+}
+
+#[gpui::test]
+fn escape_closes_the_delete_prompt_only_from_its_buttons(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("quake-escape", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_view(&mut harness, |view, _| view.pick_profile("logs"));
+    press(&mut harness, "qdel");
+    let height = "quake.profiles.logs.height";
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field(height, window, cx);
+        view.type_into(height, "0.9", window, cx);
+    });
+    harness.cx.run_until_parked();
+    // Escape in the field puts its value back and leaves the prompt.
+    keystrokes(&mut harness, "escape");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, _, cx| {
+        assert_eq!(view.field_value(height, cx), "0.3");
+        assert_eq!(view.quake_prompts(), (false, true));
+    });
+    assert_eq!(file.text(), LOGS);
+}
+
+#[gpui::test]
+fn a_global_key_needs_a_modifier(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-bare-key", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    press(&mut harness, "gadd");
+    keystrokes(&mut harness, "a");
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert!(view.global_error("gadd").is_some());
+    });
+    harness.wait_for("any save", settled);
+    assert_eq!(file.text(), LOGS);
+}
+
+#[gpui::test]
+fn a_create_on_an_invalid_file_keeps_the_name(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-locked", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        view.type_profile_name("build", window, cx);
+    });
+    // The file turns invalid while the name is being typed.
+    std::fs::write(file.path(), format!("{LOGS}[window\n")).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the invalid reread", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.read_only())
+                    .unwrap_or(false)
+            })
+    });
+    with_window(&mut harness, |view, window, cx| {
+        view.press("qcreate", window, cx);
+        assert_eq!(view.quake_prompts(), (true, false));
+        assert_eq!(view.profile_name_text(cx), "build");
+        assert!(view.quake_message().is_some());
+    });
+}
+
+#[gpui::test]
+fn another_editors_change_closes_an_open_global_menu(cx: &mut TestAppContext) {
+    let one = "[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+               command = \"toggle_quake\"\n";
+    let file = ScratchConfig::new("quake-menu-identity", one);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    press(&mut harness, "gcmd:0");
+    with_view(&mut harness, |view, _| assert!(view.global_menu_open()));
+    // Another shortcut now sits where the menu's was.
+    let two = format!(
+        "[[global_keybinding]]\nkey = \"ctrl-alt-shift-u\"\n\
+         command = \"hide_quake\"\n\n{one}"
+    );
+    std::fs::write(file.path(), &two).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the reread", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| !view.global_menu_open())
+                    .unwrap_or(false)
+            })
+    });
+    assert_eq!(file.text(), two);
+}
+
+#[gpui::test]
+fn picking_a_display_identifier_again_writes_nothing(cx: &mut TestAppContext) {
+    let original = "[quake.profiles.default]\ndisplay = \"id:ABC-123\"\n";
+    let file = ScratchConfig::new("quake-display-id", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    let display = "quake.profiles.default.display";
+    with_window(&mut harness, |view, window, cx| {
+        view.open_select_for(display, window, cx);
+        view.command(ids::MENU_CONFIRM, window, cx).unwrap();
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.setting_error(display), None);
+    });
+    assert_eq!(file.text(), original);
+}

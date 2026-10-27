@@ -63,6 +63,12 @@ pub(super) fn bare(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// Whether `path` names a whole profile, `quake.profiles.<name>`, as its
+/// creation and deletion write.
+pub(super) fn is_profile_table(path: &str) -> bool {
+    path.strip_prefix(PREFIX).is_some_and(bare)
+}
+
 /// The setting at `path` within a profile: `quake.profiles.<name>` for the
 /// profile's table, or `quake.profiles.<name>.<field>` for one of its
 /// settings, made from the model's template on first use. Controls hold
@@ -219,6 +225,16 @@ impl SettingsView {
         globals: Vec<huterm_config::document::EntryLocator>,
     ) {
         if self.keys.globals != globals {
+            // An open editor names its shortcut by position, which may now
+            // be another shortcut's.
+            if self.keys.recording.as_ref().is_some_and(|recording| {
+                matches!(recording.target, Target::Global(_))
+            }) {
+                self.keys.recording = None;
+            }
+            if matches!(self.menu, Some((_, MenuFor::Global { .. }, _))) {
+                self.menu = None;
+            }
             self.keys.errors.retain(|row, _| {
                 row != "gadd"
                     && row
@@ -262,6 +278,7 @@ impl SettingsView {
             "qnew" => self.start_naming(window, cx),
             "qcreate" => self.create_profile(window, cx),
             "qcancel" => self.stop_naming(window, cx),
+            "qdel" if self.locked() => {}
             "qdel" => {
                 self.quake.deleting = true;
                 self.quake.delete_error = None;
@@ -354,7 +371,11 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
+        let on_prompt = self
+            .focused_action(window)
+            .is_some_and(|key| key == "qdelyes" || key == "qdelno");
         if !self.quake.deleting
+            || !on_prompt
             || keystroke.key != "escape"
             || keystroke.modifiers.modified()
         {
@@ -362,6 +383,34 @@ impl SettingsView {
         }
         self.act("qdelno", window, cx);
         true
+    }
+
+    /// Shows why a profile's creation or deletion was refused. A refused
+    /// creation reopens the name field with its name.
+    pub(super) fn profile_failed(
+        &mut self,
+        path: &str,
+        created: bool,
+        message: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(name) = path.strip_prefix(PREFIX) else {
+            return;
+        };
+        if created {
+            let swatch = Self::swatch(cx);
+            let field = cx.new(|cx| {
+                let mut field = TextField::new("Profile name", swatch.fg, cx);
+                field.set_text(name, cx);
+                field
+            });
+            self.quake.naming = Some(field);
+            self.quake.name_error = Some(message);
+        } else {
+            self.pick_profile(name);
+            self.quake.delete_error = Some(message);
+        }
+        cx.notify();
     }
 
     /// Shows the profile picked from the dropdown.
@@ -386,6 +435,7 @@ impl SettingsView {
         let handle = field.read(cx).focus_handle(cx).tab_stop(true);
         handle.focus(window, cx);
         self.quake.name_error = None;
+        self.quake.deleting = false;
     }
 
     fn stop_naming(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -404,7 +454,9 @@ impl SettingsView {
             return;
         };
         let name = field.read(cx).text().trim().to_owned();
-        let error = if name.is_empty() {
+        let error = if self.locked() {
+            Some("config.toml has an error. Not saved.".to_owned())
+        } else if name.is_empty() {
             Some("Type a name for the profile.".to_owned())
         } else if !bare(&name) {
             Some(
@@ -450,7 +502,7 @@ impl SettingsView {
     ) {
         let name = self.shown_profile();
         self.quake.deleting = false;
-        if name == DEFAULT {
+        if name == DEFAULT || self.locked() {
             return;
         }
         // The validator refuses a global shortcut for a missing profile.
@@ -472,6 +524,9 @@ impl SettingsView {
         else {
             return;
         };
+        // The user confirmed deleting the profile as it is now, so the write
+        // reads the file afresh rather than conflicting with an edit to it.
+        self.fresh = Some(setting.path.as_str());
         self.submit(
             setting,
             huterm_config::document::Patch::Remove {
@@ -572,6 +627,24 @@ impl SettingsView {
         key: String,
         cx: &mut Context<'_, Self>,
     ) {
+        // A global shortcut works in every application, so a key without
+        // a modifier would stop reaching them.
+        if !global_key_allowed(&key) {
+            let row = target
+                .map_or_else(|| "gadd".to_owned(), |entry| format!("g{entry}"));
+            self.keys.errors.insert(
+                row,
+                if cfg!(target_os = "macos") {
+                    "A global shortcut needs Control, Option, or Command, or a \
+                     function key, since it works in every app. Not saved."
+                } else {
+                    "A global shortcut needs Ctrl, Alt, or Super, or a function \
+                     key, since it works in every app. Not saved."
+                }
+                .to_owned(),
+            );
+            return;
+        }
         let Some(entry) = target else {
             let profile = self.shown_profile();
             self.submit_keys(
@@ -740,7 +813,7 @@ impl SettingsView {
                 )),
             );
         }
-        if profile != DEFAULT {
+        if profile != DEFAULT && bare(&profile) {
             body = body.child(self.render_delete(&profile, swatch, cx));
         }
         group_block(&title, body, swatch)
@@ -1049,6 +1122,42 @@ impl SettingsView {
         (self.quake.naming.is_some(), self.quake.deleting)
     }
 
+    /// The New profile field's text.
+    pub(in crate::desktop::windows) fn profile_name_text(
+        &self,
+        cx: &App,
+    ) -> String {
+        self.quake
+            .naming
+            .as_ref()
+            .map(|field| field.read(cx).text().to_owned())
+            .unwrap_or_default()
+    }
+
+    /// Whether a global shortcut's menu is open.
+    pub(in crate::desktop::windows) fn global_menu_open(&self) -> bool {
+        matches!(self.menu, Some((_, MenuFor::Global { .. }, _)))
+    }
+
+    /// Opens a select's menu, as Space on it does.
+    pub(in crate::desktop::windows) fn open_select_for(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let setting = self.setting_at(path).expect("a known setting");
+        self.open_select(setting, window, cx);
+    }
+
+    /// The message under a setting's row.
+    pub(in crate::desktop::windows) fn setting_error(
+        &self,
+        path: &str,
+    ) -> Option<String> {
+        self.errors.get(path).cloned()
+    }
+
     /// The message under a global shortcut row, `g<n>`, or Add.
     pub(in crate::desktop::windows) fn global_error(
         &self,
@@ -1056,4 +1165,20 @@ impl SettingsView {
     ) -> Option<String> {
         self.keys.errors.get(row).cloned()
     }
+}
+
+/// Whether a recorded key may be a global shortcut: one with Ctrl, Alt, or
+/// Cmd, or a function key.
+fn global_key_allowed(key: &str) -> bool {
+    let Ok(stroke) = gpui::Keystroke::parse(key) else {
+        return false;
+    };
+    let modifiers = stroke.modifiers;
+    modifiers.control
+        || modifiers.alt
+        || modifiers.platform
+        || stroke
+            .key
+            .strip_prefix('f')
+            .is_some_and(|number| number.parse::<u8>().is_ok())
 }

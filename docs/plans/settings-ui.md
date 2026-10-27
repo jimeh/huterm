@@ -1081,6 +1081,17 @@ Saving, conflicts, invalid files, and read-only behavior follow PR 3. The
 sidebar count for Quake windows is the number of profile values the file
 sets plus the number of global shortcuts. No new commands or bindings.
 
+Creating and deleting a profile have no row to hold a conflict, so a refused
+one settles at once: the profile bar shows the message, a refused creation
+reopens the name field with its name, and the file is read again. Delete
+reads the file afresh, since the user confirmed deleting the profile as it
+is. A global shortcut needs Ctrl, Alt, or Cmd (Super on Linux), or a
+function key, because it reaches every application; Settings refuses
+others, while the file still accepts them. An open global shortcut menu or
+recorder closes when the list of shortcuts changes, because it names its
+shortcut by position. Picking the value a select already shows writes
+nothing.
+
 ### PR 5 files
 
 - `crates/huterm-config/src/quake.rs` and `settings.rs`: profile metadata

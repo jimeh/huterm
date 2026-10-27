@@ -24,7 +24,7 @@ use super::super::super::settings::values::{
 };
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
-use super::{SettingsView, current, field_text, size_value, themes};
+use super::{SettingsView, current, field_text, quake, size_value, themes};
 use crate::keymap::{Inventory, Platform, inventory};
 
 /// A change the file changed under, kept until the user picks theirs or
@@ -660,6 +660,43 @@ impl SettingsView {
         .detach();
     }
 
+    /// Settles a refused creation or deletion of a profile at once: it has
+    /// no row to hold a conflict or an error, so the profile bar says why,
+    /// and the file is read again to show what it holds. `false` for any
+    /// other write.
+    fn profile_write_refused(
+        &mut self,
+        change: &Pending,
+        error: &ApplyError,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let key = change.setting.path.as_str();
+        if !quake::is_profile_table(key)
+            || matches!(error, ApplyError::WrittenNotDurable(_))
+        {
+            return false;
+        }
+        if self.pending.get(key) == Some(&change.value) {
+            self.pending.remove(key);
+        }
+        let message = match error {
+            ApplyError::Conflict(changes) => {
+                format!("config.toml changed: {}", changes.join("; "))
+            }
+            error => error.to_string(),
+        };
+        if let ApplyError::InvalidFile(invalid) = error {
+            self.drop_queue_for_invalid_file();
+            self.pending.clear();
+            self.status.invalid_file(invalid.clone());
+        } else {
+            self.status.failed(message.clone());
+            self.load(cx);
+        }
+        self.profile_failed(key, change.value.is_some(), message, cx);
+        true
+    }
+
     fn written(
         &mut self,
         change: Pending,
@@ -682,6 +719,12 @@ impl SettingsView {
                 view.pending.remove(key);
             }
         };
+        if let Err(error) = &result
+            && self.profile_write_refused(&change, error, cx)
+        {
+            self.next_write(true, cx);
+            return;
+        }
         let mut failed = false;
         match result {
             Ok(written) => {
