@@ -412,8 +412,13 @@ impl SlotEditor {
         self.text = self.reopen_text();
     }
 
+    /// The draft text for the active slot: its scalar value, or nothing for
+    /// an identity. A command whose arguments are all unprompted, such as
+    /// `resize_pane_left`, has no slot at all.
     fn reopen_text(&self) -> String {
-        let slot = &self.slots[self.active];
+        let Some(slot) = self.slots.get(self.active) else {
+            return String::new();
+        };
         if is_identity(slot.spec.kind) {
             return String::new();
         }
@@ -618,6 +623,35 @@ mod tests {
             SlotEditor::new(spec(ids::SELECT_TAB), &[], &domain, false);
         assert_eq!(editor.slots()[0].state, SlotState::Sole);
         assert!(editor.complete());
+    }
+
+    #[test]
+    fn a_command_whose_arguments_are_all_unprompted_runs_with_no_slots() {
+        let domain = with_tabs(&[1, 2]);
+        for id in [ids::RESIZE_PANE_LEFT, ids::CLOSE_TAB] {
+            assert!(runs_without_prompt(spec(id), &domain));
+            let editor = SlotEditor::new(spec(id), &[], &domain, false);
+            assert!(editor.slots().is_empty());
+            assert_eq!(editor.text(), "");
+            assert_eq!(
+                editor.invocation(),
+                Ok(CommandInvocation::new(id, vec![]))
+            );
+        }
+    }
+
+    #[test]
+    fn every_catalog_command_builds_an_editor_without_arguments() {
+        for domain in [with_tabs(&[]), with_tabs(&[1]), with_tabs(&[1, 2])] {
+            for spec in catalog() {
+                let editor = SlotEditor::new(spec, &[], &domain, false);
+                let _ = editor.invocation();
+                let _ = runs_without_prompt(spec, &domain);
+                if !editor.slots().is_empty() {
+                    let _ = editor.active();
+                }
+            }
+        }
     }
 
     #[test]

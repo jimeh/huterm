@@ -3854,6 +3854,78 @@ fn a_divider_drag_previews_reflows_and_commits_once(cx: &mut TestAppContext) {
     });
 }
 
+/// The palette's smoke state in `window`, or `None` while it is closed.
+fn palette_state(cx: &mut App, window: AnyWindowHandle) -> Option<String> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            let palette = view.read(cx).palette.clone()?;
+            Some(palette.read(cx).smoke_state(cx))
+        })
+        .ok()
+        .flatten()
+}
+
+#[gpui::test]
+fn the_palette_runs_commands_whose_arguments_are_all_unprompted(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let other = harness.open_tab(ECHO);
+    let (window, _, _) = harness.split_window(tab);
+    let open = |harness: &mut DesktopHarness, query: &str| {
+        harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+        harness.wait_for("the palette to open", |cx| {
+            palette_state(cx, window).is_some()
+        });
+        for key in query.chars() {
+            let key = if key == ' ' {
+                "space".to_owned()
+            } else {
+                key.to_string()
+            };
+            harness
+                .cx
+                .dispatch_keystroke(window, Keystroke::parse(&key).unwrap());
+        }
+    };
+    // Tab on a command with no prompted argument leaves the search open.
+    open(&mut harness, "resize pane left");
+    harness
+        .cx
+        .dispatch_keystroke(window, Keystroke::parse("tab").unwrap());
+    harness.wait_for("the search to stay open", |cx| {
+        palette_state(cx, window)
+            .is_some_and(|state| state.contains("commands"))
+    });
+    harness
+        .cx
+        .dispatch_keystroke(window, Keystroke::parse("escape").unwrap());
+    harness.wait_for("the palette to close", |cx| {
+        palette_state(cx, window).is_none()
+    });
+    // Enter runs it with its default amount, moving the focused first
+    // pane's right edge.
+    open(&mut harness, "resize pane right");
+    harness
+        .cx
+        .dispatch_keystroke(window, Keystroke::parse("enter").unwrap());
+    harness.wait_for("the resize to commit", |cx| {
+        palette_state(cx, window).is_none()
+            && root_weights(cx, tab).is_some_and(|weights| weights[0] > 500_000)
+    });
+    // So does a tab command, whose `tab` defaults to the active tab.
+    harness.update_view(window, |view, window, cx| {
+        view.select(other, window, cx);
+    });
+    open(&mut harness, "close tab");
+    harness
+        .cx
+        .dispatch_keystroke(window, Keystroke::parse("enter").unwrap());
+    harness.wait_for("the active tab to close", |cx| !projected(cx, other));
+}
+
 #[gpui::test]
 fn escape_or_losing_the_split_cancels_a_divider_drag(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
