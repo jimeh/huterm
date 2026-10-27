@@ -563,8 +563,9 @@ For `arrange_panes`, a cycle step, or balancing, the window:
    `arrange_panes` clears the shared zoom in its own event, so the
    operation stays one event and the recorded `before` keeps the zoom for
    undo. The window remembers the zoom it cleared: when the runtime refuses
-   the arrangement (step 8), it zooms that pane again, unless the pane left
-   the tab or the view zoomed another pane meanwhile;
+   the arrangement, or returns an empty change because another window's
+   resize made it a no-op (step 8), it zooms that pane again, unless the
+   pane left the tab or the view zoomed another pane meanwhile;
 7. queues the commit on the window's ordered commit queue, after any resize
    commits already queued, so a balance pressed after a resize lands after
    it. The queue becomes a layout commit queue carrying either a resize or
@@ -616,8 +617,8 @@ indicator, as after a divider drag.
   layout change or balance is invisible behind a zoom. tmux's `select-layout`
   also unzooms. In view mode it clears its own zoom locally; in shared mode
   the runtime clears it (step 6 above). Focus stays on the pane that was
-  zoomed. A no-op leaves the zoom alone, and a refused arrangement gives the
-  view its zoom back.
+  zoomed. A no-op leaves the zoom alone, and an arrangement the runtime
+  refuses or finds empty gives the view its zoom back.
 - **Shared zoom** (`[panes] zoom = "shared"`): `arrange_panes` clears the
   tab's shared zoom, as `split_pane` and within-tab moves do, so every
   window in shared mode shows the new layout. The cleared zoom travels in
