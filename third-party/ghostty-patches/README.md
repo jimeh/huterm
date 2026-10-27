@@ -93,3 +93,43 @@ fail without it too.
 
 The fix has not been reported upstream yet, so the manifest has no upstream
 link. Drop the patch once the pin includes an equivalent upstream fix.
+
+## page-list-pin-nearest
+
+Makes `ghostty_terminal_grid_ref` cost independent of history length for
+rows near the active area. `PageList.pin` resolves a screen or history point
+as the first page's top-left moved down `y` rows
+([PageList.zig](https://github.com/ghostty-org/ghostty/blob/cec8b92f1ecd176a20a56aa405021e7ae991b996/src/terminal/PageList.zig#L5696-L5708)),
+which walks one page node at a time from the oldest history. Huterm's link
+lookup resolves rows above the viewport through screen points, so each such
+row cost a walk over every page of history above it.
+
+The patch adds `PageList.pinNearest`, which returns the same pin as `pin` but
+starts from the last page and moves up when that end is nearer. It uses the
+cached `total_rows`, keeps `pin`'s column bound and narrow-page check, and in
+slow-safety builds asserts that its result equals `pin`'s. Only the C API's
+`grid_ref` entry point uses it. `total_rows` is stale inside some `PageList`
+operations, such as reflow, `trimTrailingBlankRows`, and `erasePage`, and
+`pin` has hundreds of internal callers, so they keep using `pin`. Between C
+API calls no operation is in progress, and `PageList`'s integrity check
+asserts that the cached count matches the pages.
+
+`PageList.zig` tests compare `pinNearest` with `pin` for every row, one row
+past the end, and four columns, for both tags: on one page, on five pages,
+after erasing history from the front, after a reflow, and with pages
+narrower than the list, as an incomplete reflow can leave them. Removing the
+narrow-page check or moving the start by one row makes them fail. Huterm's
+`grid_ref_tests` check screen points against viewport points at every
+scroll position and after pruning.
+
+With a million rows of history, on an Apple silicon development machine,
+`mise run bench:links` measured `scan-limit-above-viewport`'s p95 at 60 ms
+without the patch and 0.21 ms with it. Its rows are near the bottom of
+history. `scan-limit-mid-history` reads rows in the middle, far from both
+ends: 30 ms without the patch and 27 ms with it. Huterm's row references,
+which resolve each row once, bring that to 0.48 ms.
+
+The fix has not been reported upstream, so the manifest has no upstream
+link. Drop the patch once the pin resolves screen points from the nearer end,
+or once Huterm steps references between rows through an upstream API such as
+a `ghostty_grid_ref_up`, which would remove its screen-point walks.
