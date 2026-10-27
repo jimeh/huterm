@@ -1,5 +1,5 @@
 use crate::{
-    AnyWindowHandle, Bounds, DevicePixels, DispatchEventResult, DisplayId, GpuSpecs, HeadlessAtlas,
+    A11yCallbacks, AnyWindowHandle, Bounds, DevicePixels, DispatchEventResult, DisplayId, GpuSpecs, HeadlessAtlas,
     Pixels, PlatformAtlas, PlatformDisplay, PlatformHeadlessRenderer, PlatformInput,
     PlatformInputHandler, PlatformWindow, Point, PromptButton, RequestFrameOptions, Scene, Size,
     TestDisplay, TestPlatform, TextInputConfiguration, TextInputStateChange, WindowAppearance,
@@ -323,6 +323,13 @@ impl PlatformWindow for TestWindow {
 
     fn on_insets_changed(&self, callback: Box<dyn FnMut(WindowInsets)>) {
         self.0.lock().insets_callback = Some(callback);
+    }
+
+    /// Activates accessibility at once, as if an assistive technology had
+    /// connected, so tests can read the tree and send actions through
+    /// `Window::simulate_a11y_action`.
+    fn a11y_init(&self, callbacks: A11yCallbacks) {
+        let _ = (callbacks.activation)();
     }
 
     fn show_soft_keyboard(&self) {

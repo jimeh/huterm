@@ -7039,6 +7039,14 @@ impl Window {
             .push((action, Box::new(listener)));
     }
 
+    /// Handles `request` as if an assistive technology had sent it. Test
+    /// windows activate accessibility when they open, so a test can find a
+    /// node in [`Window::debug_a11y_tree_json`] and act on it.
+    #[cfg(all(not(target_family = "wasm"), any(test, feature = "test-support")))]
+    pub fn simulate_a11y_action(&mut self, request: accesskit::ActionRequest, cx: &mut App) {
+        self.handle_a11y_action(request, cx);
+    }
+
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn handle_a11y_action(&mut self, request: accesskit::ActionRequest, cx: &mut App) {
         // Take listeners out temporarily so the closures can borrow Window
