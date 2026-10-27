@@ -1624,7 +1624,7 @@ impl RawTerminal {
     pub fn scrollback(&self) -> Result<ScrollbackLimit, ConfigError> {
         let rows = ScrollbackLimit::new(self.scrollback_rows).ok_or(
             ConfigError::Invalid(
-                "terminal.scrollback_rows must be between 0 and 50000",
+                "terminal.scrollback_rows must be between 0 and 100000",
             ),
         )?;
         match self.scrollback_bytes {
@@ -2218,10 +2218,10 @@ mod tests {
     }
 
     #[test]
-    fn scrollback_rows_default_to_10000_and_accept_0_through_50000() {
+    fn scrollback_rows_default_to_10000_and_accept_0_through_100000() {
         let defaults: RawConfig = toml::from_str("").unwrap();
         assert_eq!(defaults.terminal.scrollback_rows, 10_000);
-        for rows in [0, 1, 50_000] {
+        for rows in [0, 1, 100_000] {
             let raw: RawConfig = toml::from_str(&format!(
                 "[terminal]\nscrollback_rows = {rows}"
             ))
@@ -2231,10 +2231,10 @@ mod tests {
         }
 
         let above: RawConfig =
-            toml::from_str("[terminal]\nscrollback_rows = 50001").unwrap();
+            toml::from_str("[terminal]\nscrollback_rows = 100001").unwrap();
         assert_eq!(
             above.validate_values().unwrap_err().to_string(),
-            "terminal.scrollback_rows must be between 0 and 50000"
+            "terminal.scrollback_rows must be between 0 and 100000"
         );
         for invalid in ["-1", "1.5", "'many'", "4294967296"] {
             assert!(

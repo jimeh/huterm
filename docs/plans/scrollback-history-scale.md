@@ -1,9 +1,9 @@
 # Scrollback history scale
 
-Status: in progress.
+Status: implemented.
 
-`ScrollbackLimit::MAX` is 50,000 rows because link lookup above the viewport
-slows as history grows. Ghostty resolves each `Point::Screen` grid reference by
+`ScrollbackLimit::MAX` was 50,000 rows because link lookup above the viewport
+slowed as history grew. Ghostty resolves each `Point::Screen` grid reference by
 walking page nodes from the first page of history, and the link scanner
 resolved one reference per cell. This plan removes both costs, measures larger
 histories, and raises the maximum to what the measurements support.
@@ -33,6 +33,15 @@ histories, and raises the maximum to what the measurements support.
 4. **Raise the maximum** to the largest value at which every gated benchmark
    keeps clear headroom, sized to whichever cost binds first, including reflow
    and the derived 4 KiB-per-row byte allowance.
+
+## Decision
+
+The maximum is 100,000 rows. With both steps, link lookup stays under 0.5 ms
+p95 at a million rows, so it no longer bounds the maximum. Reflow does: a
+width change rewraps all history at about 65 ns per row, 6.6 ms p50 at 100,000
+rows and 68 ms at a million on the development machine, and saturated plain
+history at 120 columns takes about 1 KB per row. Jim chose 100,000 over
+200,000 and a million, keeping a reflow under half a 60 Hz frame there.
 
 Out of scope: an upstream Ghostty API to step a grid reference between rows.
 It would replace step 1's column adjustment.

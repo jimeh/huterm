@@ -3401,7 +3401,7 @@ fn send_queued(viewer: &TerminalViewer, queued: Queued) -> Result<(), Refused> {
 /// with `displayed_offset` counted from the bottom.
 #[expect(
     clippy::cast_precision_loss,
-    reason = "scrollback holds at most ScrollbackLimit::MAX (50,000) rows, \
+    reason = "scrollback holds at most ScrollbackLimit::MAX (100,000) rows, \
               which f32 represents exactly"
 )]
 fn terminal_scrollbar_geometry(
@@ -3468,7 +3468,7 @@ fn terminal_track_margins(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "a bounded scrollbar ratio maps to at most \
-              ScrollbackLimit::MAX (50,000) rows"
+              ScrollbackLimit::MAX (100,000) rows"
 )]
 fn rows_for_offset(offset: f32) -> usize {
     offset.round() as usize

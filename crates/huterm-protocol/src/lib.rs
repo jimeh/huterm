@@ -536,8 +536,8 @@ impl ScrollbackLimit {
     pub const NONE: Self = Self::rows_only(0);
     /// The default limit, 10,000 rows.
     pub const DEFAULT: Self = Self::rows_only(10_000);
-    /// The largest row limit, 50,000 rows.
-    pub const MAX: Self = Self::rows_only(50_000);
+    /// The largest row limit, 100,000 rows.
+    pub const MAX: Self = Self::rows_only(100_000);
     /// The largest byte limit, 16 GiB.
     pub const MAX_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
@@ -928,8 +928,8 @@ mod tests {
     #[test]
     fn scrollback_limits_accept_zero_through_the_maximum() {
         assert_eq!(ScrollbackLimit::new(0), Some(ScrollbackLimit::NONE));
-        assert_eq!(ScrollbackLimit::new(50_000), Some(ScrollbackLimit::MAX));
-        assert_eq!(ScrollbackLimit::new(50_001), None);
+        assert_eq!(ScrollbackLimit::new(100_000), Some(ScrollbackLimit::MAX));
+        assert_eq!(ScrollbackLimit::new(100_001), None);
         assert_eq!(ScrollbackLimit::default().rows(), 10_000);
         assert_eq!(ScrollbackLimit::default().bytes(), None);
     }

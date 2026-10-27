@@ -28,7 +28,7 @@ term = "auto"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.
 close_on_exit = true
-# Live history per terminal in screen rows, 0 to 50000; 0 keeps none.
+# Live history per terminal in screen rows, 0 to 100000; 0 keeps none.
 # Reload applies it to open tabs; shrinking it discards the oldest rows.
 scrollback_rows = 10000
 # Optionally also limit history by size, such as "64MiB" or "50MB", up to
