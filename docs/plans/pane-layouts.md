@@ -1,0 +1,911 @@
+# Pane layouts
+
+Status: proposed. Reviewed on 2026-10-27 in three Codex and three Claude
+rounds; awaiting Jim's decisions on the open questions. Plans
+[issue #30][issue-30] within [epic #12][issue-12].
+Builds on [the split panes plan](split-panes.md) (#28) and
+[the pane moves plan](pane-moves.md) (#29), both implemented. Layout undo,
+[#256][issue-256], is related with no ordering dependency; this plan assumes
+[its plan](layout-undo.md) lands first, with all seven of its
+recommendations approved, and records presets and balancing through it.
+
+A user can rearrange a tab's existing panes into a named preset (equal
+columns, equal rows, main left, main top, or tiled), step through those
+presets with next and previous commands, or balance the current split tree
+without changing its shape. None of this creates, closes, or restarts a
+terminal, and no pane changes identity: only the tab's split tree and its
+weights change.
+
+## Current state
+
+Observed on `main` at `f0b0174c`:
+
+- `PaneLayout` (`crates/huterm-protocol/src/pane_layout.rs`) is an n-ary
+  tree whose splits hold integer weights summing to `SPLIT_TOTAL`
+  (1,000,000, `:18`), with at most `MAX_SPLIT_CHILDREN` (256, `:23`)
+  children and no child split on its parent's axis. It validates on
+  construction (`:216`). `panes()` returns traversal order, depth first
+  with children in order (`:228`); `cycle` (`:475`) and `step_target`
+  (`:501`) use it. `same_shape` (`:386`) compares splits, axes, child
+  counts, and pane placement, ignoring split IDs and weights.
+  `with_weights` (`:422`) changes one split. Nothing builds a whole new
+  tree from existing panes.
+- `Mux::resize_split` (`crates/huterm-core/src/mux.rs:627`) sets one
+  split's weights, refuses changed children, emits `PaneLayoutChanged`
+  through `emit_layout` (`:723`), treats equal weights as a no-op, and
+  leaves `Mux::revision` alone (`:166-168`). `allocate` advances the
+  revision before it bumps `next_id` (`:232-237`). `split_pane` clears the
+  shared zoom (`:580`).
+- `Mux::swap_panes` and the within-tab moves (`mux/moves.rs:62`, `:175`)
+  return a `LayoutChange` of one tab, emit `PaneLayoutChanged`, and refuse
+  through an allocation preflight (`:421`) before any change. Within-tab
+  moves clear the shared zoom (`:205`); swaps keep it. `snapshot` (`:474`)
+  reads a tab's `TabRecord`.
+- `LayoutChange`, `TabSnapshot`, and `TabRecord` live in
+  `crates/huterm-protocol/src/hierarchy.rs:180-220`. The reducer applies
+  `PaneLayoutChanged` through `replace_layout` (`:990`), which validates
+  the layout and cross-tab uniqueness, and marks the tab in
+  `Touched::layouts` (`:446`).
+- `desktop/windows/pane_geometry.rs` lays out a tab in one pure function,
+  `layout_panes` (`:72`). Each split's last child ends at the far edge and
+  the others snap to physical pixels (`place`, `:214-262`); a split tab
+  gives every pane a 24-point title bar (`:264-290`).
+- The minimum pane is 4 columns by 2 rows (`windows.rs:81-82`).
+  `pane_grids` (`:6486`) computes each pane's grid with `TerminalLayout`,
+  and `fits_minimum` (`:153`) checks it. A split preflights its candidate
+  layout with these (`pane_moves.rs:173` builds candidates with a
+  placeholder split ID). `clamp_resize` (`:4577`) bisects a boundary
+  against `keeps_minimum` (`:91`).
+- Resize commands and divider drags commit through one ordered per-window
+  queue (`commit_resize`, `windows.rs:4754-4798`) without holding `busy`.
+  The window shows committed weights (`committed_layout`, `:5370`) until
+  the projection holds them. Move commands commit on a worker with `busy`
+  set (`pane_moves.rs:49-75`). `resize_pane` cancels a divider drag and
+  unzooms first (`:4811`, `:4839`).
+- A layout change reaches each pane view through `sync_tab_layout`
+  (`windows.rs:5508`), which pushes `TerminalGeometry` and calls
+  `resize_to_layout` (`desktop.rs:2502`) when it changed. That reports a
+  new grid only when the grid or cell size changed (`:2528-2546`). The
+  renderer paints rows at the bounds' origin each frame
+  (`renderer.rs:339-420`), and `GridGeometry` maps the pointer onto the
+  displayed snapshot (`desktop.rs:2467`). The Ghostty engine rebuilds every
+  row when the row or column count changed (`engine/ghostty.rs:600-605`).
+- Pane commands are separate per direction. Navigation, resize, and zoom
+  are unavailable on a tab with one pane (`windows.rs:7346-7365`). Default
+  pane bindings live in `keymap.rs:751-822`. No default binding uses
+  `cmd-ctrl-=` or `ctrl-super-=`.
+- Menus: the macOS menu bar (`desktop.rs:164-221`) lists pane focus items
+  and Move Pane to New Tab in its Window menu. The in-window window menu
+  (`window_menu.rs:165-176`) and terminal context menu
+  (`terminal_menu.rs:124-129`) list split and pane items. In-window menus
+  have no submenus (`menu.rs:104`).
+
+## Scope
+
+In scope:
+
+- Five presets, each a named command.
+- Next and previous preset cycling.
+- Balancing the active tab's whole split tree.
+- One runtime operation that rearranges one tab's existing panes, shared by
+  all three.
+- Small-window fallbacks, focus and zoom rules, menus, one default binding
+  pair, and undo entries through #256.
+
+Non-goals:
+
+- Custom or user-defined layouts, and saving layouts (#42 persists whatever
+  layout a tab holds).
+- Balancing only the focused pane's split, as tmux's `select-layout -E`
+  does.
+- Mirrored main presets (main right, main bottom). They are cheap to add as
+  more presets later.
+- A preset that applies to every tab of a window.
+- Animating the transition.
+
+## Principles
+
+The split panes and pane moves principles hold: one layout function,
+structure shared and presentation local, moves conserve terminals, and one
+event per operation. This plan adds:
+
+- **Shape is pure, fitting is local.** Presets and balancing are pure
+  functions of the layout in `huterm-protocol`, so the runtime, every
+  client, and tests share them. Only the initiating view knows pixels, so
+  it fits the result to its minimum pane sizes, as it already does for
+  splits and resizes.
+- **Presets keep traversal order.** No preset reorders panes, so cycling
+  never shuffles them. Swaps and moves remain the way to reorder.
+- **Cycling is derived, not remembered.** Where a cycle continues from is
+  read from the shared layout, so every window steps the same way and no
+  new state exists.
+
+## Decisions
+
+### Pane order and the main pane
+
+Presets fill their slots in **traversal order**: depth first, children in
+order, the order `focus_next_pane` and `move_pane_next` already use. For
+`[(A over B) | C]` that order is A, B, C.
+
+The **main pane is the first pane in traversal order** (open question 1).
+That is tmux's rule: `layout_set_main_v` takes the window's first tiled
+pane as main ([layout-set.c][tmux-layout-set] on tmux `master` at
+`523ac696`, read on 2026-10-27). A user makes another pane main by swapping
+it first.
+
+Every preset fills slots so that the result's traversal order equals the
+input's:
+
+| Preset | Slots, in order |
+| --- | --- |
+| Columns | left to right |
+| Rows | top to bottom |
+| Main left | main, then the stack top to bottom |
+| Main top | main, then the stack left to right |
+| Tiled | row by row, left to right within a row |
+
+Applying any sequence of presets therefore leaves the panes in the order
+they started in.
+
+### Presets
+
+Let `n` be the tab's pane count and `p1 … pn` its panes in traversal
+order. Every preset of one pane is that pane alone, so `n = 1` is always a
+no-op. **Equal weights** divide `SPLIT_TOTAL` by the child count and give
+the remainder, one unit each, to the first children: three children get
+333,334, 333,333, and 333,333.
+
+- **Columns:** one `Columns` split of `p1 … pn`, equal weights.
+- **Rows:** one `Rows` split of `p1 … pn`, equal weights.
+- **Main left:** for `n = 2`, `Columns[p1, p2]`; for `n ≥ 3`,
+  `Columns[p1, Rows[p2 … pn]]` with the stack at equal weights. The main
+  pane's weight is `MAIN_SHARE`, 600,000 (60 %), and the other child takes
+  400,000 (open question 2).
+- **Main top:** the same with the axes exchanged: `Rows[p1, Columns[p2 …
+  pn]]`, main at 60 %.
+- **Tiled:** `columns = ceil(sqrt(n))` and `rows = ceil(n / columns)`.
+  Panes fill rows in order, `columns` per row; the last row holds the rest.
+  A `Rows` split of the rows at equal weights holds each row as a
+  `Columns` split of its panes at equal weights, or as the pane itself when
+  the row has one. With one row, tiled is the columns tree. The last row's
+  panes share its full width equally, where tmux stretches the last pane.
+
+| n | Tiled grid (panes per row) |
+| --- | --- |
+| 2 | 2 (same as columns) |
+| 3 | 2, 1 |
+| 4 | 2, 2 |
+| 5 | 3, 2 |
+| 6 | 3, 3 |
+| 7 | 3, 3, 1 |
+| 9 | 3, 3, 3 |
+| 10 | 4, 4, 2 |
+
+tmux grows rows first (`rows++` before `columns++` in `layout_set_tiled`),
+so 2 panes stack and 5 panes make 3 rows of 2. Huterm grows columns first
+because terminal windows are usually wider than tall and cells are about
+twice as tall as wide.
+
+A preset whose split would exceed `MAX_SPLIT_CHILDREN` (columns or rows of
+more than 256 panes, or a main stack of more than 256) is refused with
+`LayoutError::TooManyChildren`. Such a preset is unavailable: a named
+command refuses it with a notice, and matching and cycling skip it, so
+cycling 257 panes visits main left, main top, and tiled. The minimum pane
+size refuses such counts long before this in any real window.
+
+These are protocol functions beside the existing transforms:
+
+```text
+LayoutPreset = Columns | Rows | MainLeft | MainTop | Tiled    cycle order
+Arrangement  = Pane(PaneId)
+             | Split { axis, children: Vec<(weight, Arrangement)> }
+
+PaneLayout::preset(&self, LayoutPreset) -> Result<Arrangement, LayoutError>
+PaneLayout::balanced(&self) -> Arrangement
+PaneLayout::arranged(&self, &Arrangement, fresh: impl FnMut() -> SplitId)
+    -> Result<PaneLayout, LayoutError>
+PaneLayout::matching_preset(&self) -> Option<LayoutPreset>
+PaneLayout::step_preset(&self, forward: bool,
+    fit: impl FnMut(LayoutPreset, Arrangement) -> Option<Arrangement>)
+    -> Option<(LayoutPreset, Arrangement)>
+```
+
+`step_preset` holds the whole cycling rule (see "Cycling"), so a future
+text client steps exactly as the desktop does and supplies only its own
+`fit`.
+
+An `Arrangement` is a split tree of pane IDs without split IDs or
+terminal data. `arranged` builds the layout: each pane ID must name a pane
+of `self` exactly once, and every pane of `self` must appear, so no pane or
+terminal can appear or vanish. It takes each `PaneInfo` from `self`, so a
+caller cannot change a pane's terminal or fallback name. When the
+arrangement has the same shape as `self`, `arranged` keeps `self`'s split
+IDs in place and only the weights change. Otherwise every split takes a
+fresh ID from `fresh`, in traversal order. The result validates as every
+layout does.
+
+### Balancing
+
+Balancing keeps the tree and gives every split's children equal weights,
+recursively, down the whole tab. Topology, split IDs, and pane order are
+unchanged. This is Ghostty's `equalize_splits`, whose weight counts leaves
+through same-direction splits and counts a perpendicular split as one
+([split_tree.zig][ghostty-split-tree] on Ghostty `main` at `919dca5c`, read
+on 2026-10-27). Huterm flattens same-axis splits, so equal sibling weights
+are the same rule.
+
+The result depends only on the tree, never on the current weights, so
+balancing twice gives the same layout, and the second commit is a no-op.
+Fitting to the minimum sizes (below) depends only on the tree and the
+view's size, so it keeps that property within one view.
+
+### Fitting to the minimum pane size
+
+The runtime knows weights, not pixels. As for splits and resizes, the
+initiating view fits the ideal arrangement before it commits. A pure
+function in `pane_geometry` does this:
+
+```text
+fit(arrangement, content bounds, scale, cell size, padding) -> Fit
+Fit = Fits(Arrangement) | Short(Arrangement)
+```
+
+It works top down. For each split it measures the space along the split's
+axis, after dividers, and each child's minimum extent along that axis:
+
+- for a pane, the smallest frame whose `TerminalLayout` grid holds the
+  minimum cells on that axis, with the title bar and padding, exactly, with
+  no safety margin;
+- for a child split on the same axis (only at the child limit), the sum of
+  its children's minimums and its dividers;
+- for a child split across the axis, the largest of its children's
+  minimums.
+
+When the minimums fit, children whose ideal share is below their minimum
+get their minimum, and the others divide the rest in proportion to their
+ideal weights, repeated until no child is short. Each round fixes at least
+one more child, so it ends within the child count. Pixels convert to
+weights by largest remainder, each at least 1 and summing to
+`SPLIT_TOTAL`. The function then descends into each child with the bounds
+`layout_panes` would give it.
+
+The oracle is the real geometry: the result's `pane_grids` must pass
+`fits_minimum`, the check a split preflight uses, so a layout the existing
+preflight accepts is never `Short`. When boundary snapping leaves a pane
+one physical pixel under its minimum, the fit moves that boundary one
+physical pixel toward the sibling with the most room above its minimum and
+checks again, at most once per boundary. A result that still fails is
+`Short`.
+
+When the minimums do not fit, the split's children get space in proportion
+to their minimums and the result is `Short`. That matches the layout
+function's rule for space another view imposes: every pane shrinks
+together.
+
+The placeholder layouts `fit` checks need distinct split IDs, because
+`PaneLayout::new` rejects repeats. `fit` passes `arranged` a counter of
+probe IDs in a runtime no Mux uses, extending the single `probe_split`
+(`pane_moves.rs:173`).
+
+In a window large enough for every minimum, which is the usual case, the
+fitted arrangement equals the ideal one, so presets and balancing give the
+same weights in every window.
+
+### Small windows
+
+- **A named preset** that is `Short` in this view is refused with a notice,
+  "Window too small for the main left layout", and changes nothing, as a
+  split that would leave a pane under the minimum is refused.
+- **Cycling** skips presets that are `Short` and takes the next one that
+  fits. With none, it shows "No other pane layout fits this window".
+- **Balancing** never refuses (open question 6). When the minimums fit, it
+  commits the fitted weights. When the window is already too small for the
+  tab's tree, no weights can satisfy every minimum, and balancing commits
+  the proportional fallback above. That is still idempotent in this view.
+
+Other windows showing the tab apply the layout function's existing
+shrinking rule; nothing is refused there.
+
+### Cycling
+
+Cycle order is the preset order above: columns, rows, main left, main top,
+tiled, then columns again. Next moves forward and previous moves back,
+wrapping.
+
+**Where a cycle starts.** `matching_preset` compares the current layout
+with each available preset's ideal result for the same panes, ignoring
+split IDs. It uses ideal results, not fitted ones, so every window finds
+the same match:
+
+1. among presets whose result has the same shape, ignoring weights, the one
+   whose ideal weights are nearest the current weights: the smallest sum of
+   absolute weight differences over the splits in traversal order;
+2. ties, including an exact match shared by two presets, go to the first in
+   cycle order;
+3. with no preset of the same shape, there is no match.
+
+Shapes differ between presets except with two panes, where main left and
+columns share one shape, main top and rows share another, and tiled equals
+columns exactly. Nearest weights tell them apart: a main left layout
+resized from 60/40 to 65/35 still matches main left, and a 55/45 layout,
+equally near both, matches columns.
+
+Next steps forward from the match, and previous steps back. With no match,
+next starts at columns and previous at tiled, as tmux starts at its first
+or last layout when it has none recorded (`layout_set_next` and
+`layout_set_previous`).
+
+**Each step** (`step_preset`) tries at most five presets in cycle order,
+starting after the match (or at columns or tiled with no match) and
+wrapping, so the matched preset itself comes last. It takes the first that
+is available, that `fit`
+does not report `Short` in this view, and whose fitted result differs from
+the current layout, weights included. It compares the fitted result, which
+is what would be committed, so a step never commits a no-op while another
+preset could change the layout. With none, it does nothing and shows "No
+other pane layout fits this window".
+
+A full cycle from a matched layout visits every available preset and
+returns to the starting layout's canonical form: five distinct layouts for
+3 to 256 panes, four for two panes, because tiled equals columns (the step
+after main top applies tiled, which then matches columns), and three for
+257, where columns and rows are unavailable. From 258 panes the main
+stack would exceed `MAX_SPLIT_CHILDREN` too, so tiled is the only preset:
+next or previous from an unmatched layout applies it, and from tiled shows
+the notice. From an
+unmatched layout, the first step enters the cycle and the rest follow it.
+
+**After a manual resize** the shape still matches and the nearest weights
+usually still pick the same preset, so the cycle continues from it.
+Reapplying a named preset restores its ideal weights. **After a split,
+close, move, or swap** the shape usually matches no preset, and the cycle
+starts over. A split along the axis of a columns or rows layout keeps that
+shape, so the cycle continues. Every window computes the same match from
+the shared layout; only the `Short` skip depends on the view.
+
+### Runtime operation
+
+```text
+Mux::arrange_panes(workspace, tab, expected: &PaneLayout,
+                   arrangement: &Arrangement) -> Result<LayoutChange>
+```
+
+One operation serves presets, cycling, and balancing:
+
+- It validates the workspace and tab as `resize_split` does, and refuses a
+  tab whose layout no longer has `expected`'s structure: the same shape,
+  split IDs, pane IDs, and terminal IDs, with weights ignored. That is the
+  same predicate #256's restore guard uses (see "Undo"). A refusal returns
+  `InvalidLayout(LayoutError::ChildrenChanged)`, the error a stale divider
+  commit gets.
+- It builds the result with `arranged`. An arrangement equal to the
+  current layout, weights included, is a no-op: it emits nothing,
+  allocates nothing, leaves the shared zoom as it is, and returns an empty
+  `LayoutChange`. This covers one pane, reapplying the current preset, and
+  balancing a balanced tab. The desktop never sends such an arrangement
+  (see "Desktop flow"); the rule is for other clients and races.
+- A result of a different shape needs one fresh split ID per split. It
+  checks with `next_id.checked_add(count)` that they exist before any
+  change, as the move preflight does, and refuses with `IdExhausted`
+  otherwise.
+- It clears the tab's shared zoom (see "Focus and zoom"), commits, emits
+  one `PaneLayoutChanged { tab, layout, zoomed }`, and returns the
+  `LayoutChange` of that tab, before and after. A weights-only balance
+  clears the shared zoom too, as tmux's `select-layout` unzooms for any
+  layout.
+- It leaves `Mux::revision` alone. No terminal changes tabs, so no close
+  ticket's scope changes, and a preset in one window must not bounce
+  another window's pending close confirmation, the reason `resize_split`
+  and swaps leave it alone. The fresh split IDs therefore come from a new
+  `reserve_ids(count)` that advances `next_id` without `changed()`; split
+  IDs never appear in a close ticket. `allocate` keeps its behavior for
+  every other caller, and the revision's doc comment gains arrangements.
+
+It starts and stops no runtime, so it holds the Mux lock briefly, as
+`resize_split` does. The reducer needs no change: `PaneLayoutChanged`
+already validates the layout and its cross-tab uniqueness, and the digest
+describes state, so it is unchanged. Terminal content generations do not
+move: a layout change is a hierarchy event, not terminal output.
+
+Why one operation that takes an arrangement, rather than a preset name in
+the runtime: the minimum-size fit needs pixels, which only a client has,
+and a future text client will fit to its own cells. The runtime still owns
+validity: conservation, the structure guard, identity allocation, and the
+invariants.
+
+### Desktop flow
+
+For a preset, a cycle step, or balancing, the window:
+
+1. requires the active tab to hold at least two panes, the window not to be
+   busy, no close confirmation, and no arrangement of this window in
+   flight;
+2. reads the tab's committed layout (`committed_layout`, which includes
+   this window's queued resizes);
+3. computes the ideal arrangement and fits it in this view's tab content
+   bounds, unzoomed, with title bars and dividers, as a split preflight
+   does;
+4. refuses or skips a `Short` or unavailable preset as above;
+5. does nothing more when the fitted arrangement equals the committed
+   layout: no commit, no unzoom, no notice, and no undo entry, so a second
+   balance is a true no-op;
+6. cancels this window's divider drag on the tab and clears this view's
+   own zoom of the tab locally, then calls `sync_zoom`, as a move does
+   (`pane_moves.rs:441-464`). It sends no `set_pane_zoom`: in shared mode
+   `arrange_panes` clears the shared zoom in its own event, so the
+   operation stays one event and the recorded `before` keeps the zoom for
+   undo;
+7. queues the commit on the window's ordered commit queue, after any resize
+   commits already queued, so a balance pressed after a resize lands after
+   it. The queue becomes a layout commit queue carrying either a resize or
+   an arrangement;
+8. on completion, once the projection reaches the commit's sequence,
+   records a non-empty change as a #256 undo entry, or shows a notice for a
+   refusal: "The panes changed; try again" for a structure change, or the
+   error for anything else.
+
+An arrangement does not hold `busy`. `busy` drops terminal keystrokes
+(`input_blocked`, `windows.rs:1823-1841`) and makes reconcile defer
+adoptions and removals until the holder's completion reconciles
+(`projection.rs:727-756`), which a move needs because it changes
+membership. An arrangement changes no membership, so reconcile has nothing
+to defer, and typing right after the balance key reaches the shell.
+Instead, a per-window count of arrangements in flight makes
+`check_available` (`windows.rs:7504-7518`) refuse, as `busy` does, and
+refuses a new divider press. Everything `busy` gates is unavailable until
+the completion: every structural command, including resize, split, move,
+swap, zoom, undo, and redo, and also focus navigation, tab switching, new
+tabs, the palette, and menus, so none computes from a layout the arrangement is
+about to replace. Without that, a resize command pressed right after
+Balance would build its `ResizePreview` from the pre-balance weights
+(`resize_pane`, `windows.rs:4851-4862`) and write them back behind the
+balance. Terminal input (`input_blocked`, `windows.rs:1823`) and reconcile
+ignore the count. The commit takes one Mux lock in process, so the window
+is rarely unavailable for longer than a frame.
+
+Routes that do not pass `check_available`, such as a pane drag that
+started before the arrangement was queued, can still commit and complete
+out of order with it. A completion can resume after the projection already
+holds a later commit, because waiting for an applied sequence returns at
+once (`wait_for`, `projection.rs:257-265`). History therefore records each
+entry with its commit's hierarchy sequence and ignores a completion whose
+sequence is older than its newest entry's, so a late arrangement completion
+never replaces the undo entry of a swap that committed after it.
+
+There is no preview. The layout changes on the next projection, as it does
+after a move command. Each pane whose size changes shows the resize
+indicator, as after a divider drag.
+
+### Focus and zoom
+
+- **Focus** is view-local and stays on the same pane in every window:
+  panes keep their IDs, and each `TabView` keeps its focused pane and
+  focus history. Reconcile keeps every pane view, and the pane order sort
+  from #29 finds nothing to reorder, because presets keep traversal order.
+- **The initiating view** unzooms when it commits a change, because a
+  preset or balance is invisible behind a zoom. tmux's `select-layout`
+  also unzooms. In view mode it clears its own zoom locally; in shared mode
+  the runtime clears it (step 6 above). Focus stays on the pane that was
+  zoomed. A no-op leaves the zoom alone.
+- **Shared zoom** (`[panes] zoom = "shared"`): `arrange_panes` clears the
+  tab's shared zoom, as `split_pane` and within-tab moves do, so every
+  window in shared mode shows the new layout. The cleared zoom travels in
+  the same `PaneLayoutChanged`, and no separate `PaneZoomChanged` is
+  emitted.
+- **Other windows in view mode** keep their own zoom. Its pane is still in
+  the tab, so it is still valid and stays on the same pane. Their divider
+  drags follow the existing rule: a drag whose split vanished or whose
+  children changed cancels, so a preset of another shape cancels it, and a
+  balance lets it continue from the new weights.
+
+### Repainting and reflow
+
+`PaneLayoutChanged` marks the tab in `Touched::layouts`, and reconcile
+notifies every window showing the tab (#28 PR 4 deviation). Then, per pane
+view, through the existing path:
+
+- `sync_tab_layout` pushes the new `TerminalGeometry` and notifies each
+  view whose geometry or placement changed, even when its grid is
+  unchanged. Dividers and title bars repaint from the same `TabPanes`
+  output, and hit tests use the last drawn frame.
+- A pane whose grid is unchanged, because it only moved or changed size by
+  less than a cell, requests nothing. It repaints its retained rows at the
+  new origin, because the renderer places rows from the bounds each frame
+  and `GridGeometry` maps the pointer from the same origin. It advances no
+  content generation and requests no snapshot.
+- A pane whose grid changed reports it through its viewer. Until the
+  runtime's snapshot at the new geometry revision arrives, the view clips
+  the old snapshot to its new bounds, and `GridGeometry` maps the pointer
+  and selection onto the displayed grid. It never repositions cached rows
+  for the new bounds. A controlling view's PTY resizes and reflows, and the
+  engine extracts every row again because the row or column count changed
+  (`ghostty.rs:600-605`). That extraction may still share an immutable row
+  value it found identical, but it never trusts a row's position or content
+  from before the change. Nothing in this work may skip that full
+  extraction or reuse rows by their old positions.
+- A preset can change every pane at once, including panes another window
+  shows in an inactive tab. Hidden views resize through the layout sync,
+  as they do for a window resize.
+
+Layout invalidation never compares content generations, as the desktop
+client guide requires.
+
+### Commands, bindings, and menus
+
+Separate commands per preset, following #28's per-direction commands, so
+each preset is one palette row and one binding (open question 5):
+
+| Command | Palette title | macOS | Linux |
+| --- | --- | --- | --- |
+| `arrange_panes_columns` | Arrange Panes in Columns | none | none |
+| `arrange_panes_rows` | Arrange Panes in Rows | none | none |
+| `arrange_panes_main_left` | Arrange Panes with Main Left | none | none |
+| `arrange_panes_main_top` | Arrange Panes with Main Top | none | none |
+| `arrange_panes_tiled` | Arrange Panes Tiled | none | none |
+| `next_pane_layout` | Next Pane Layout | none | none |
+| `previous_pane_layout` | Previous Pane Layout | none | none |
+| `balance_panes` | Balance Panes | `cmd-ctrl-=` | `ctrl-super-=` |
+
+All are Window scope with no arguments, and unavailable on a tab of one
+pane, while busy, during a close confirmation, or while this window has an
+arrangement in flight.
+
+Default bindings (open question 4): only `balance_panes`. `cmd-ctrl-=` is
+Ghostty's macOS `equalize_splits` default ([Config.zig][ghostty-config] at
+`919dca5c`); Ghostty binds nothing on Linux. `ctrl-super-=` follows the
+`ctrl-super` family of Huterm's Linux pane keys. KWin binds `meta-=` to
+zoom in, which the extra `ctrl` avoids. Neither key is a Huterm default
+today, and neither collides with #256's `cmd-z`, `cmd-shift-z`,
+`ctrl-shift-z`, or `ctrl-shift-y`, with `cmd-ctrl-<arrow>` resize, or with
+`cmd-shift-enter` zoom. Presets and cycling stay unbound, as #29's move
+and swap commands are, because the obvious keys collide: tmux's `space`
+for next layout would need a modifier, and `cmd-ctrl-space` opens the
+macOS character viewer.
+
+Menus:
+
+- macOS Window menu: Balance Panes, Next Pane Layout, and Previous Pane
+  Layout, after Move Pane to New Tab.
+- In-window window menu (Linux, and macOS without the menu bar) and the
+  terminal context menu in split tabs: Balance Panes, after Close Pane.
+  Named presets stay in the palette, since in-window menus have no
+  submenus.
+
+Notices name the preset in prose rather than by its palette title: "Window
+too small for the tiled layout".
+
+### Undo (#256)
+
+Assuming #256 lands first with single-entry stacks:
+
+- `arrange_panes` returns the `LayoutChange` #256 records, with `placed`
+  empty, because it places no tab.
+- The window's completion (step 8 above) pushes one `HistoryEntry`: the
+  command's palette title as `label`, the initiating view's focused pane as
+  `focus`, and the change. A new entry clears the redo stack, as for moves.
+  A no-op records nothing.
+- Undo runs `restore_tabs` on that one tab. Its guard compares shape, split
+  IDs, pane IDs, and terminal IDs and ignores weights, so:
+  - a preset's undo restores the old tree and its old split IDs, which are
+    at or below `next_id` and in no other tab, because the preset retired
+    them;
+  - a balance's before and after share a shape, so its entry stays
+    undoable across later divider drags, and undo restores the weights from
+    before the balance, discarding those drags, which is #256's rule for
+    every entry;
+  - a split, close, move, or another window's preset in that tab changes
+    the shape and prunes the entry.
+- The restore emits `PanesRearranged` with one `Layout` change and leaves
+  the revision alone, because no terminal changes tabs.
+- A preset cleared the shared zoom in its own event, so the recorded
+  `before` still names the zoomed pane, and #256's zoom rule restores it
+  when the current zoom is still none. View-local zoom is not recorded.
+- `undo` and `redo` are unavailable while the window has an arrangement in
+  flight, through the same `check_available` refusal as `busy`, so an undo
+  cannot overtake the entry it should undo.
+
+What #256 needs to expose, which the orchestrator should pass on now:
+
+1. **A recording entry point any layout completion can call, ordered by
+   commit.** #256's plan records in the shared move completion. #30 commits
+   on the layout commit queue instead, so history needs a window method
+   such as `record_layout_change(label, focus, change, seq)` that both
+   call. It keeps the hierarchy sequence of its newest entry and ignores a
+   completion with an older one, because a move's and an arrangement's
+   completions can finish out of commit order (see "Desktop flow"). After
+   it pushes, it prunes against the projection, as #256's completion does
+   (`layout-undo.md:257-260`), because without `busy` another batch can
+   land between the arrangement's event and its completion.
+2. **The structure guard as a `PaneLayout` method**, for example
+   `same_structure(&self, other) -> bool` (shape, split IDs, pane IDs, and
+   terminal IDs; weights ignored), so `restore_tabs` and `arrange_panes`
+   share one predicate.
+3. **A weights-only change is a real entry.** A balance's `before` and
+   `after` differ only in weights. `restore_tabs` must apply it and must not
+   treat it as a no-op because the shapes match.
+
+None of these changes #256's design. If #30 lands first instead, it ships
+without undo, and #256's client PR records `arrange_panes` with the same
+three points.
+
+## Races
+
+| Race | Handling | Evidence |
+| --- | --- | --- |
+| Another window splits, closes, moves, or rearranges the tab between this window's fit and commit | The structure guard refuses; nothing changes; one notice | Core; tier 2 (structure guard refusal) |
+| Another window resizes a divider in the tab between fit and commit | The guard ignores weights; the arrangement applies, last writer wins as for divider commits | Core (weights-only change passes the guard) |
+| This window's resize commits are queued when a balance is pressed | The layout commit queue applies them in order | Tier 2 |
+| Another window shows a close confirmation for the tab | The revision is unchanged, so its commit stays valid | Core lifecycle test |
+| Another window drags a divider of the tab | A preset of another shape cancels the drag; a balance lets it continue from the new weights | Tier 2 |
+| Another window zooms a pane in view mode | Its zoom stays on the same pane | Tier 2 (convergence) |
+| A pane exits while the commit is queued | With `close_on_exit = false` the pane stays and the guard passes; an exit-close changes the shape, the guard refuses, and the close proceeds, because no `busy` hold defers it | Tier 2 |
+| A structural command (undo, a cycle step, resize, split) or a divider press in this window while an arrangement is in flight | Unavailable or refused until the completion; keystrokes still reach the shell | Tier 2 |
+| This window's divider drag is in progress when a layout command runs | Step 6 cancels it before the commit is queued | Tier 2 |
+| A pane drag that started earlier drops while an arrangement is in flight, and the two complete out of commit order | History keeps the entry with the newer commit sequence | Tier 2 (completion order) |
+| The layout event and the tab's terminal output interleave | Terminal events route by pane, and the geometry rules above order the repaint | Existing rule |
+
+## Testing and verification
+
+Mapped to #30's acceptance criteria. Apply the global testing rules: each
+new test fails at its assertion before its fix, or under one targeted
+perturbation for a test over existing behavior, and the runner output names
+it. Layout comparisons use #29's canonical form: panes by index in the
+fixture's traversal order, split IDs erased, axes, child order, and weights
+kept. Tier 2 tests control arrangements with two new stages in
+`worker_hooks::Stage` (`worker_hooks.rs:11-19`): `Layout`, entered at the
+start of each layout queue job before its runtime call, and
+`LayoutCommitted`, entered after the runtime call returns and before the
+completion waits for the projection and records history. Tests order
+other changes against those gates, never with sleeps.
+
+### Presets, cycling, balance, and minimum sizes (criterion 2)
+
+- Protocol unit tests (PR 1):
+  - each preset for `n = 1` through 10 and for 257 and 258 panes, with
+    exact trees and weights, including the tiled table and the 60 % main
+    share; at 257 panes, columns and rows return `TooManyChildren`, and at
+    258 the main presets do too;
+  - a nested, uneven input (`[(A over (B | C)) | D]` with uneven weights)
+    gives the same trees as a flat input with the same traversal order;
+  - every preset keeps traversal order;
+  - `balanced` on a nested tree gives equal weights at every split and
+    keeps split IDs and shape, and `balanced` of `balanced` is equal;
+  - `arranged` refuses a missing, repeated, or unknown pane, keeps split
+    IDs for a same-shape arrangement, and takes fresh IDs in traversal
+    order otherwise;
+  - `matching_preset`: an exact match; a shape match after a weight change;
+    two panes at 60/40, 65/35, 55/45, and 50/50, which match main left,
+    main left, columns, and columns; no match; and 257 panes, where columns
+    and rows are skipped;
+  - `step_preset` with an identity `fit`, from each preset and from an
+    unmatched layout, for `n = 2` through 6 and 257: the expected sequence
+    in both directions, never the current layout, and per full cycle from
+    a match five distinct layouts for `n = 3` through 6, four for `n = 2`,
+    and three (main left, main top, tiled) for 257; at 258, a step from an
+    unmatched layout gives tiled and a step from tiled gives nothing;
+  - `step_preset` with a `fit` that reports one preset `Short`, and one
+    whose fitted result equals the current layout while a later preset
+    differs: both are skipped, and the step takes the later preset; with
+    every candidate skipped, it returns nothing.
+- `pane_geometry` unit tests (PR 2), with real cell metrics and padding,
+  asserting through `pane_grids` and `fits_minimum`, never through the
+  fitter's own minimum:
+  - `fit` equals the ideal arrangement in a large window;
+  - a main share that would leave the stack under its minimum shrinks main
+    just enough;
+  - the exact boundary: the smallest content bounds where the existing
+    split preflight accepts two equal columns also `Fits`, and one physical
+    pixel less is `Short`, at scale factors 1 and 2, with zero and nonzero
+    padding;
+  - a tree that cannot fit is `Short`, with weights proportional to the
+    minimums;
+  - balance fitted twice at one size gives identical weights.
+- Core tests (PR 1):
+  - `arrange_panes` applies each preset and a balance, and the differential
+    reducer test checks the projection after each;
+  - a no-op, a one-pane tab, a refused guard, a conservation failure, and
+    exhausted identities each emit nothing and keep the layout, shared
+    zoom, sequence, and revision;
+  - a same-shape arrangement keeps split IDs and allocates nothing;
+  - another writer's weights-only change between `expected` and the commit
+    passes the guard, and the arrangement applies;
+  - the shared zoom clears with the change, in the same and only event;
+  - foreign workspace or tab IDs fail with `ForeignRuntime`.
+- Core lifecycle test (PR 1): an arrangement between a close assessment and
+  its commit leaves the commit valid.
+- Tier 2 (PR 2):
+  - each named command, next, previous, and balance on a three-pane nested
+    tab gives the expected canonical layout;
+  - a named preset refused for a short window shows one notice and leaves
+    the hierarchy sequence unchanged;
+  - cycling skips a short preset;
+  - balance pressed after queued resize commands lands after them;
+  - balance, then, after its completion, balance again: the second press
+    is accepted, sends no commit, records no undo entry, and leaves the
+    hierarchy sequence unchanged;
+  - the structure guard: another window's split forced between this
+    window's fit and commit refuses the arrangement with one notice and
+    changes nothing;
+  - with `close_on_exit = true`, a pane exits while an arrangement is
+    queued, and its exit-close is forced to commit first; the arrangement
+    is refused with one notice and the pane's close completes;
+  - while an arrangement is held at the `Layout` stage, `undo`,
+    `next_pane_layout`, `resize_pane_right`, and `split_right` are
+    unavailable, a divider press starts no drag, and a typed key reaches
+    the shell;
+  - a divider drag in progress when Balance runs is cancelled first;
+  - completion order, with #256: the arrangement is held at
+    `LayoutCommitted`, after its commit; a pane drag that started earlier
+    drops and completes, recording its entry; the arrangement is then
+    released, and the undo entry is still the drop's.
+
+### Viewers converge, focus and zoom stay (criterion 3)
+
+- Tier 2 (PR 2), two windows on one session showing one tab:
+  - window A applies a preset; window B's projection holds the same
+    layout, B keeps every pane view entity, its focused pane, its focus
+    history, and its view-local zoom;
+  - window A was zoomed in view mode: it unzooms and keeps focus on that
+    pane;
+  - shared mode: one `PaneLayoutChanged` and no `PaneZoomChanged` reach
+    the projection, the shared zoom clears in both windows, and, with #256,
+    undo restores the shared zoom;
+  - window B's in-progress divider drag cancels under a preset and
+    continues under a balance;
+  - #256 recording (when it has landed): undo of a preset and of a balance
+    restores the canonical layout, split IDs, and weights; a later split
+    prunes the entry.
+
+### PTY survival and sizes (criteria 1 and 3)
+
+- Core PTY test (PR 1): a three-pane tab of real shells cycles through every
+  preset and a balance. After each, every shell answers a unique ACK, `$$`
+  is unchanged, `kill(pid, 0)` succeeds, pane and terminal IDs are
+  unchanged, and a line printed before the first change is still in the
+  snapshot. Synchronize on ACKs, never sleeps.
+
+### Repaint and reflow without stale rows (criterion 1)
+
+- Tier 1 (`view_tests.rs`, PR 2): a geometry push that moves a view's
+  origin without changing its grid repaints the same `Arc<TerminalRow>`
+  values at the new origin, requests no snapshot, and maps a pointer
+  position to the cell at the new origin.
+- Tier 2 (PR 2), with real shells: one shell prints a line longer than its
+  pane's narrower width after a preset, and others stay idle. A preset
+  then leaves one pane's grid unchanged and shrinks the printing pane's
+  width:
+  - the unchanged pane requests no resize and keeps its rows;
+  - the shrunk pane reports one new grid and paints the old snapshot
+    clipped until the new geometry revision arrives;
+  - once it arrives, the displayed snapshot has the new size and shows the
+    line wrapped at the new width, read from the snapshot's rows, so a
+    client that kept old row positions fails;
+  - a second preset that widens the pane again shows the line unwrapped.
+
+  The existing clipping test,
+  `a_larger_canonical_grid_is_clipped_and_owned_gestures_survive_it`,
+  covers the clipping rule itself, and the engine's existing resize tests
+  cover full extraction after a size change.
+
+### Native alignment of painting and mouse coordinates (criterion 4)
+
+- `check-overlays.ts` (PR 2), which both palette smokes run with AppKit or
+  XTest input: split into three columns, apply main left and then tiled
+  through catalog commands, and after each wait for smoke state to report
+  the new layout. Then:
+  - each pane's `stty size` matches its entry in `w<i>.pane_grids=`;
+  - for a pane whose origin moves while its grid stays the same: arrange
+    three balanced columns and record their grids; move both dividers
+    right by the same number of cells with `resize_pane_right` on the left
+    pane, then on the middle pane; record the middle pane's entry in
+    `w<i>.pane_rects=`; balance; then require that the middle pane's grid
+    in `w<i>.pane_grids=` is unchanged and its rect moved left, failing
+    loudly if the grid changed. With application mouse tracking on in that
+    pane, a native click at a known cell reports that cell's coordinates;
+  - a native click in another pane focuses it and its shell ACKs a probe;
+  - the `balance_panes` default key reaches no shell, checked with the
+    ordered ACK probe;
+  - after a native window resize, each pane's `stty size` and the clicked
+    cell's reported coordinates match again.
+- `smoke:macos-menus` (PR 2): the Window menu's Balance Panes shows
+  `⌃⌘=`.
+- Run the host macOS smokes and `mise run linux:smoke` in Docker, checking
+  `df -h` first and cleaning volumes and images after. Never run
+  `vm:macos:smoke`.
+
+### Commands
+
+`mise run check` while iterating; focused `cargo test -p huterm-protocol`,
+`cargo test -p huterm-core mux::`, and `cargo test -p huterm-gpui --features
+test-support`; `mise run test:ghostty-releasesafe` for PR 1, which adds a
+core PTY test; `mise run verify` before each PR leaves draft.
+
+## Delivery
+
+Two PRs, each leaving `main` consistent and shippable:
+
+1. **PR 1, runtime arrangements.** `LayoutPreset`, `Arrangement`, `preset`,
+   `balanced`, `arranged`, `matching_preset`, and `step_preset` in the
+   protocol;
+   `Mux::arrange_panes` and `reserve_ids` in core; the revision doc; and
+   the protocol, core, lifecycle, and PTY tests. No command calls it yet.
+   About 600 to 900 lines, most of them tests.
+2. **PR 2, commands.** `fit` in `pane_geometry`, the layout commit queue
+   and its `Layout` and `LayoutCommitted` worker hook stages, the
+   in-flight gate, the eight commands, cycling, the balance binding,
+   menus, notices, undo recording through #256, and the tier 1, tier 2,
+   menu, and native tests. Docs: `docs/keybindings.md`, `CONTEXT.md`, and the guides.
+
+PR 2's undo recording needs #256's client PR on `main`. If #256 is late,
+PR 2 ships without recording and #256 adds it, as its plan already allows.
+
+## Documentation
+
+- `CONTEXT.md`: **Pane layout preset** (a named arrangement of a tab's
+  panes: columns, rows, main left, main top, or tiled) and **Balance**
+  (equal weights at every split of a tab, keeping its shape).
+- `docs/agents/core-runtime.md` (PR 1): `arrange_panes` conserves panes,
+  guards structure, and leaves the revision alone, with `reserve_ids` as
+  the one allocation that does not advance it.
+- `docs/agents/desktop-client.md` (PR 2): the layout commit queue, the
+  fit-before-commit rule, and why arrangements gate on their own in-flight
+  count rather than `busy`.
+- `docs/keybindings.md` (PR 2): the commands and the balance bindings.
+- This plan's `Status:` in each PR.
+
+## Open questions
+
+1. **Which pane is main.** Recommend the first pane in traversal order.
+   - For: every window computes the same result; cycling is stateless and
+     never reorders panes; it matches tmux. A user picks main by swapping
+     it into first place.
+   - Against: the usual intent is "make this pane main", which then takes a
+     swap first, and #29 has no "swap with first" command. The alternative,
+     the focused pane, does that in one step, but it reorders panes, makes
+     the result depend on which window ran it, and makes cycling between
+     main presets move main when focus moves.
+2. **The main pane's share.** Recommend a 60 % constant, `MAIN_SHARE`.
+   - For: with two panes, main left differs visibly from columns; it is
+     close to dwm's 55 % and tiling defaults; a constant is the smallest
+     change, and a `[panes] main_share` setting is cheap later.
+   - Against: tmux sizes main in cells (80 columns by default), which keeps
+     a usable editor width in any window. A cell count would make the
+     result depend on the view.
+3. **Tiled grid orientation.** Recommend columns first,
+   `ceil(sqrt(n))` columns.
+   - For: suits wide windows and tall cells; two panes tile as columns.
+   - Against: differs from tmux, which grows rows first. An
+     aspect-ratio rule would suit portrait windows too, but makes the
+     result depend on the view, and two windows could tile one tab
+     differently.
+4. **Default bindings.** Recommend binding only `balance_panes`, to
+   `cmd-ctrl-=` and `ctrl-super-=`.
+   - For: balance is the frequent operation and has a Ghostty precedent;
+     presets are reachable from the palette and the macOS menu; #29 set the
+     precedent of leaving rearrangement commands unbound.
+   - Against: cycling is the tmux muscle-memory key (`prefix space`). A
+     binding such as `cmd-ctrl-]` and `cmd-ctrl-[` would be free today, but
+     it reads like tab or pane navigation.
+5. **One command per preset, or one command with an argument.** Recommend
+   one command per preset.
+   - For: each preset is a top-level palette row found by typing "tiled";
+     it follows #28's per-direction commands.
+   - Against: eight commands where three would do: `arrange_panes` with a
+     `layout` argument (a text enum like #29's `side`, with a picker), plus
+     next, previous, and balance. That keeps the catalog smaller and lets a
+     binding name the preset as an argument.
+6. **Balancing in a window too small for the tab's tree.** Recommend the
+   proportional fallback, which never refuses.
+   - For: balance is the "fix my layout" command, and it still gives the
+     most even result possible; it remains idempotent in that view.
+   - Against: it can commit weights under which some panes are below the
+     minimum in this window, which presets and splits refuse. Refusing with
+     a notice would be one rule for all three.
+
+[issue-12]: https://github.com/jimeh/huterm/issues/12
+[issue-30]: https://github.com/jimeh/huterm/issues/30
+[issue-256]: https://github.com/jimeh/huterm/issues/256
+[tmux-layout-set]: https://github.com/tmux/tmux/blob/523ac69601e1ea51a8ba718d32df6a00e4d0f6d4/layout-set.c
+[ghostty-split-tree]: https://github.com/ghostty-org/ghostty/blob/919dca5c848d43a489a4cb2e1feade016f0fa2db/src/datastruct/split_tree.zig
+[ghostty-config]: https://github.com/ghostty-org/ghostty/blob/919dca5c848d43a489a4cb2e1feade016f0fa2db/src/config/Config.zig
