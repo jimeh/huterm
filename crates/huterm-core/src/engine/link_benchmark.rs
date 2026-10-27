@@ -8,8 +8,21 @@ struct Fixture {
     destination: Option<String>,
     scroll: ScrollCommand,
     point: MousePosition,
-    /// Runs again after saturating history at each benchmark history size.
-    saturate: bool,
+    history: History,
+}
+
+/// Where a fixture's output sits in history saturated at each benchmark
+/// history size, in runs after the one with empty history.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum History {
+    /// Only the empty-history run.
+    Empty,
+    /// Filler history precedes the output.
+    Before,
+    /// Half the filler follows the output, so it sits in the middle of
+    /// history, and the viewport scrolls back until the output's last row
+    /// is its top row. Screen points there are far from both ends.
+    Around,
 }
 
 impl Fixture {
@@ -22,7 +35,7 @@ impl Fixture {
                 .then(|| destination.to_owned()),
             scroll: ScrollCommand::Absolute(usize::MAX),
             point: MousePosition { row: 0, column: 3 },
-            saturate: false,
+            history: History::Empty,
         }
     }
 }
@@ -31,12 +44,7 @@ fn fixtures() -> Vec<Fixture> {
     let long_url = format!("https://example.test/{}", "http".repeat(3000));
     let punctuation = format!("https://example.test/{}", ")".repeat(12000));
     let explicit = format!("https://example.test/{}", "a".repeat(1900));
-    // Fills `rows` complete 120-column rows.
-    let url_rows = |rows: usize| {
-        format!("https://example.test/{}", "a".repeat(rows * 120 - 21))
-    };
-    let bottom = |output: String| format!("{}{output}", "\r\n".repeat(39));
-    vec![
+    let mut fixtures = vec![
         Fixture::top(
             "short",
             "https://example.test/path".to_owned(),
@@ -69,15 +77,27 @@ fn fixtures() -> Vec<Fixture> {
             format!("https://example.test/{}", "x".repeat(20000)),
             "",
         ),
-        // The rest start on the bottom row, whatever the history, and run
-        // with empty and full scrollback so their costs can be compared.
+    ];
+    fixtures.extend(history_fixtures());
+    fixtures
+}
+
+/// Fixtures that run with empty and with saturated history, so their costs
+/// can be compared. Most start on the bottom row, whatever the history.
+fn history_fixtures() -> Vec<Fixture> {
+    // Fills `rows` complete 120-column rows.
+    let url_rows = |rows: usize| {
+        format!("https://example.test/{}", "a".repeat(rows * 120 - 21))
+    };
+    let bottom = |output: String| format!("{}{output}", "\r\n".repeat(39));
+    vec![
         Fixture {
             name: "viewport-url",
             output: bottom(url_rows(20)),
             destination: Some(url_rows(20)),
             scroll: ScrollCommand::Live,
             point: MousePosition { row: 39, column: 3 },
-            saturate: true,
+            history: History::Before,
         },
         Fixture {
             name: "prefix-above-viewport",
@@ -85,7 +105,7 @@ fn fixtures() -> Vec<Fixture> {
             destination: Some(url_rows(60)),
             scroll: ScrollCommand::Live,
             point: MousePosition { row: 0, column: 3 },
-            saturate: true,
+            history: History::Before,
         },
         Fixture {
             name: "long-line-short-url",
@@ -97,7 +117,7 @@ fn fixtures() -> Vec<Fixture> {
             destination: Some("https://example.test/path".to_owned()),
             scroll: ScrollCommand::Live,
             point: MousePosition { row: 39, column: 3 },
-            saturate: true,
+            history: History::Before,
         },
         Fixture {
             name: "top-row-url",
@@ -109,7 +129,7 @@ fn fixtures() -> Vec<Fixture> {
             destination: Some("https://example.test/path".to_owned()),
             scroll: ScrollCommand::Live,
             point: MousePosition { row: 0, column: 3 },
-            saturate: true,
+            history: History::Before,
         },
         Fixture {
             name: "scan-limit-above-viewport",
@@ -118,7 +138,16 @@ fn fixtures() -> Vec<Fixture> {
             destination: None,
             scroll: ScrollCommand::Live,
             point: MousePosition { row: 0, column: 3 },
-            saturate: true,
+            history: History::Before,
+        },
+        Fixture {
+            name: "scan-limit-mid-history",
+            // 200 rows without a delimiter, ending on the viewport's top row.
+            output: "x".repeat(200 * 120),
+            destination: None,
+            scroll: ScrollCommand::Live,
+            point: MousePosition { row: 0, column: 3 },
+            history: History::Around,
         },
         Fixture {
             name: "scrolled-history",
@@ -130,9 +159,43 @@ fn fixtures() -> Vec<Fixture> {
             destination: Some(url_rows(20)),
             scroll: ScrollCommand::Absolute(2000),
             point: MousePosition { row: 39, column: 3 },
-            saturate: true,
+            history: History::Before,
         },
     ]
+}
+
+/// An engine limited to `limit` history rows holding the fixture's output,
+/// with `lines` of filler history placed as the fixture asks.
+fn prepare(fixture: &Fixture, limit: u32, lines: usize) -> TerminalEngine {
+    let mut engine = TerminalEngine::new(
+        TerminalId::new(1),
+        GridSize::clamped(120, 40),
+        CellSize {
+            width: 8,
+            height: 16,
+        },
+        TerminalPresentation::default(),
+    )
+    .unwrap();
+    engine.set_history_rows(limit).unwrap();
+    let (before, after, scroll) = if fixture.history == History::Around {
+        // At least a screen of rows below the output's last row.
+        let after = (lines / 2).max(39);
+        (
+            lines.saturating_sub(after),
+            after,
+            ScrollCommand::Absolute(after - 39),
+        )
+    } else {
+        (lines, 0, fixture.scroll)
+    };
+    engine
+        .process("line\r\n".repeat(before).as_bytes())
+        .unwrap();
+    engine.process(fixture.output.as_bytes()).unwrap();
+    engine.process("\r\nline".repeat(after).as_bytes()).unwrap();
+    engine.scroll(scroll).unwrap();
+    engine
 }
 
 #[test]
@@ -144,25 +207,12 @@ fn bounded_link_lookup_elapsed_time() {
         let runs = std::iter::once((ScrollbackLimit::MAX.rows(), 0)).chain(
             sizes
                 .iter()
-                .filter(|_| fixture.saturate)
+                .filter(|_| fixture.history != History::Empty)
                 .map(|&rows| (rows, benchmark::saturating_lines(rows))),
         );
         for (limit, lines) in runs {
             let name = fixture.name;
-            let mut engine = TerminalEngine::new(
-                TerminalId::new(1),
-                GridSize::clamped(120, 40),
-                CellSize {
-                    width: 8,
-                    height: 16,
-                },
-                TerminalPresentation::default(),
-            )
-            .unwrap();
-            engine.set_history_rows(limit).unwrap();
-            engine.process("line\r\n".repeat(lines).as_bytes()).unwrap();
-            engine.process(fixture.output.as_bytes()).unwrap();
-            engine.scroll(fixture.scroll).unwrap();
+            let mut engine = prepare(&fixture, limit, lines);
             let snapshot = engine.snapshot().unwrap();
             let mut samples = Vec::new();
             for _ in 0..100 {
