@@ -415,6 +415,10 @@ impl SettingsView {
             });
             if typing {
                 self.quake.name_error = Some(format!("{name}: {message}"));
+            } else if let Some(field) = &self.quake.naming {
+                // An open field keeps its focus and takes the name back.
+                field.update(cx, |field, cx| field.set_text(name, cx));
+                self.quake.name_error = Some(message);
             } else {
                 let swatch = Self::swatch(cx);
                 let field = cx.new(|cx| {

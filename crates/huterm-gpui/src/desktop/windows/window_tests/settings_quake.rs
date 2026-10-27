@@ -475,11 +475,13 @@ fn a_refused_create_keeps_a_newer_name_and_drops_its_queued_edits(
     // Another editor adds an empty `build` before Settings rereads.
     let theirs = format!("{LOGS}\n[quake.profiles.build]\n");
     std::fs::write(file.path(), &theirs).unwrap();
+    let height = "quake.profiles.build.height";
     with_window(&mut harness, |view, window, cx| {
         view.type_profile_name("build", window, cx);
         view.press("qcreate", window, cx);
         // Queued behind the creation, and a newer name in the field.
-        view.set("quake.profiles.build.height", Some(Value::Float(0.4)), cx);
+        view.type_into(height, "0.4", window, cx);
+        view.enter(height, cx);
         view.type_profile_name("other", window, cx);
     });
     harness.wait_for("the refused create", |cx| {
@@ -495,7 +497,12 @@ fn a_refused_create_keeps_a_newer_name_and_drops_its_queued_edits(
     with_window(&mut harness, |view, _, cx| {
         assert_eq!(view.profile_name_text(cx), "other");
         assert!(view.quake_message().unwrap().starts_with("build: "));
+        // Leaving the field does not submit the dropped edit again.
+        view.blur(height, cx);
     });
+    harness.wait_for("any save", settled);
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), theirs);
 }
 
 #[gpui::test]

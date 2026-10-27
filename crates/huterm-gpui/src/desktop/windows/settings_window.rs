@@ -850,11 +850,15 @@ impl SettingsView {
         cx.subscribe_in(&menu, window, move |view, _, event, window, cx| {
             if let MenuEvent::Picked(value) = event {
                 match view.menu.as_ref().map(|(_, target, _)| target) {
-                    // Picking the value the control shows writes nothing.
+                    // Picking a value the file already holds, or will once
+                    // its pending change lands, writes nothing; an unset
+                    // default still writes.
                     Some(MenuFor::Setting(setting)) => {
                         let setting = *setting;
                         let picked = Value::String((*value).to_owned());
-                        if !view.holds(setting, &picked) {
+                        if view.holds(setting, &picked) {
+                            view.errors.remove(setting.path.as_str());
+                        } else {
                             view.write(setting, Some(picked), cx);
                         }
                     }

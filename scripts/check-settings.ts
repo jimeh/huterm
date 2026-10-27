@@ -136,7 +136,8 @@ position = "top"
   /** Presses Tab until `name` has focus, waiting for each press to move it. */
   async function tabTo(name: string): Promise<void> {
     for (let step = 0; step < 12; step++) {
-      const focus = field(await current(), "focus");
+      let focus: string | undefined;
+      await waitFor(async () => (focus = field(await current(), "focus")) !== undefined, "a readable focus");
       if (focus === name) return;
       await key("tab");
       await waitFor(async () => {

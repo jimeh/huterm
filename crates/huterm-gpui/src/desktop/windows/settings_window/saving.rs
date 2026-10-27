@@ -704,22 +704,33 @@ impl SettingsView {
         };
         if change.value.is_some() {
             // Edits to the new profile's settings would create it, or write
-            // into a profile another editor made.
+            // into a profile another editor made, so they go, and their
+            // fields drop the text that would submit them again.
             let prefix = format!("{key}.");
             self.queued.retain(|queued| {
                 !matches!(queued, Queued::Setting(queued) if queued.path.starts_with(&prefix))
             });
             self.pending.retain(|path, _| !path.starts_with(&prefix));
+            let fields: Vec<&'static str> = self
+                .fields
+                .keys()
+                .copied()
+                .filter(|path| path.starts_with(&prefix))
+                .collect();
+            for path in fields {
+                self.sync_field(path, true, cx);
+            }
         }
+        // This change's name comes back before any queued creation's.
+        self.profile_failed(key, change.value.is_some(), message.clone(), cx);
         if let ApplyError::InvalidFile(invalid) = error {
             self.drop_queue_for_invalid_file(cx);
             self.pending.clear();
             self.status.invalid_file(invalid.clone());
         } else {
-            self.status.failed(message.clone());
+            self.status.failed(message);
             self.load(cx);
         }
-        self.profile_failed(key, change.value.is_some(), message, cx);
         true
     }
 

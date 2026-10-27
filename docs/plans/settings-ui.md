@@ -1092,8 +1092,8 @@ recorder closes when its own shortcut changes, because it names the
 shortcut by position. Picking the value the file already holds, or will
 hold once a pending change lands, writes nothing. A refused creation keeps
 a name typed since for another profile, and drops edits queued for the
-refused profile; a creation still queued when the file turns invalid gives
-its name back.
+refused profile with their field drafts; a creation still queued when the
+file turns invalid gives its name back.
 
 ### PR 5 files
 
