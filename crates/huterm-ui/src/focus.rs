@@ -97,13 +97,10 @@ pub fn ring<E: Styled>(
     if !visible(handle, window, cx) {
         return element;
     }
+    // Only a tracked window keeps a record; creating one here would change
+    // `visible` for a window without a tracker in test builds alone.
     #[cfg(feature = "test-support")]
-    cx.default_global::<Records>()
-        .windows
-        .entry(window_id(window))
-        .or_default()
-        .pending
-        .push(handle.downgrade());
+    with_record(window, cx, |record| record.pending.push(handle.downgrade()));
     element.shadow(tokens.focus_ring())
 }
 
@@ -267,6 +264,21 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(drawn(&handle, cx));
+    }
+
+    #[gpui::test]
+    fn a_key_press_after_pointer_focus_shows_no_ring(cx: &mut TestAppContext) {
+        let (handle, cx) = control(cx);
+        cx.simulate_click(point(px(10.0), px(10.0)), Modifiers::none());
+        cx.run_until_parked();
+        // The key moves no focus, so the pointer press still decides. A key
+        // that changes nothing draws no frame, so force one: any later
+        // redraw would otherwise show the wrong ring.
+        cx.simulate_keystrokes("a");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| handle.is_focused(window)));
+        assert!(!drawn(&handle, cx));
     }
 
     #[gpui::test]
