@@ -1,7 +1,8 @@
 # Scrollback compression
 
-Status: approved (2026-10-27). Jim accepted every recommendation in
-[Open questions](#open-questions).
+Status: in progress. Approved on 2026-10-27, when Jim accepted every
+recommendation in [Open questions](#open-questions). PR 1 adds the bindings,
+safe API, tests and benchmarks; PR 2 adds the scheduler and setting.
 
 Ghostty 1.4.0 can compress scrollback that is off screen. It encodes each cold
 history page with LZ4, keeps the page's virtual mapping, and returns its

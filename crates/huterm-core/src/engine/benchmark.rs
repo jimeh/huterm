@@ -352,7 +352,7 @@ pub(super) const fn saturating_lines(rows: u32) -> usize {
 
 /// The benchmark process's peak resident set size, in KiB.
 #[cfg(target_os = "linux")]
-fn peak_rss_kib() -> i64 {
+pub(super) fn peak_rss_kib() -> i64 {
     // `getrusage` keeps the peak of the image that ran before `execve`, the
     // forked `cargo`, which doubled the first run after a build in CI. The
     // memory map's own high-water mark starts at `execve`.
@@ -366,7 +366,7 @@ fn peak_rss_kib() -> i64 {
 
 /// The benchmark process's peak resident set size, in KiB.
 #[cfg(target_os = "macos")]
-fn peak_rss_kib() -> i64 {
+pub(super) fn peak_rss_kib() -> i64 {
     use nix::sys::resource::{UsageWho, getrusage};
     // macOS reports bytes.
     getrusage(UsageWho::RUSAGE_SELF).unwrap().max_rss() / 1024
@@ -386,10 +386,12 @@ const RESIZE_HISTORY_P50_BUDGET_US: u128 = 45_000;
 /// Budget for the benchmark process's peak resident size after
 /// `resize-history` at the configurable maximum. The peak includes earlier
 /// tests in the process; `bench:engine`'s other fixtures run first by name and
-/// hold at most the default 10,000 rows of history. CI's Ubuntu runners
-/// measured 109,716 to 110,124 KiB across 38 runs and four CPU models, and
-/// Apple silicon about 111,000 KiB. 140 MiB leaves 30% headroom for allocator
-/// and platform differences.
+/// hold at most the default 10,000 rows of history. The compression
+/// benchmarks hold up to 400 MiB, so `bench:compression` runs each in its own
+/// process and their names do not match `engine_benchmark`. CI's Ubuntu
+/// runners measured 109,716 to 110,124 KiB across 38 runs and four CPU
+/// models, and Apple silicon about 111,000 KiB. 140 MiB leaves 30% headroom
+/// for allocator and platform differences.
 const RESIZE_HISTORY_PEAK_RSS_BUDGET_KIB: i64 = 140 * 1024;
 
 #[test]
