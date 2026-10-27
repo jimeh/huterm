@@ -426,23 +426,7 @@ impl SettingsView {
                 self.file = file;
                 self.base = Some(written.snapshot);
                 self.status.saved();
-                if let Some(setting) = self.model.setting(key) {
-                    let text =
-                        field_text(shown(setting, &self.file, &self.defaults));
-                    // The field shows the saved value in its display form,
-                    // such as `15` for a typed `15.0`; text typed since
-                    // stays as a draft.
-                    let typed_here =
-                        change.typed.as_ref().is_some_and(|typed| {
-                            self.fields.get(key).is_some_and(|field| {
-                                field.read(cx).text() == typed
-                            })
-                        });
-                    self.synced.insert(key, text);
-                    if typed_here {
-                        self.sync_field(key, true, cx);
-                    }
-                }
+                self.adopt_saved_field(key, change.typed.as_deref(), cx);
                 self.sync_fields(cx);
                 reload(cx);
             }
@@ -503,6 +487,32 @@ impl SettingsView {
             });
         }
         cx.notify();
+    }
+
+    /// Brings `key`'s field up to a save of it. A field still showing the
+    /// typed text shows the saved value in its display form, such as `15`
+    /// for a typed `15.0`. A field typed into since keeps that draft
+    /// without a conflict against this window's own save. An untouched
+    /// field, such as after Reset, follows the file.
+    fn adopt_saved_field(
+        &mut self,
+        key: &'static str,
+        typed: Option<&str>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let (Some(field), Some(setting)) =
+            (self.fields.get(key), self.model.setting(key))
+        else {
+            return;
+        };
+        let current = field.read(cx).text().to_owned();
+        let saved = field_text(shown(setting, &self.file, &self.defaults));
+        if typed == Some(current.as_str()) {
+            self.synced.insert(key, saved);
+            self.sync_field(key, true, cx);
+        } else if self.synced.get(key) != Some(&current) {
+            self.synced.insert(key, saved);
+        }
     }
 
     /// Whether writes are in flight or queued.

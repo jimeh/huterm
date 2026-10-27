@@ -674,3 +674,34 @@ fn the_font_menu_gives_focus_back_to_its_button(cx: &mut TestAppContext) {
         assert_eq!(view.focus_name(window, cx), "action:fonts:font.family");
     });
 }
+
+#[gpui::test]
+fn reset_and_menu_saves_update_an_untouched_field(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new(
+        "untouched",
+        "[font]\nfamily = \"Menlo\"\nsize = 13.0\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        // Rendering the rows creates their fields with the file's values.
+        view.type_into("font.size", "13", window, cx);
+        view.type_into("font.family", "Menlo", window, cx);
+        view.set("font.size", None, cx);
+        view.set(
+            "font.family",
+            Some(toml::Value::String("Monaco".into())),
+            cx,
+        );
+    });
+    harness.wait_for("both saves", settled);
+    with_window(&mut harness, |view, _, cx| {
+        assert_eq!(view.field_value("font.size", cx), "14");
+        assert_eq!(view.field_value("font.family", cx), "Monaco");
+        // Leaving the fields saves nothing back.
+        view.blur("font.size", cx);
+        view.blur("font.family", cx);
+    });
+    harness.wait_for("Settings to settle", settled);
+    assert_eq!(file.text(), "[font]\nfamily = \"Monaco\"\n");
+}
