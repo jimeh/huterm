@@ -215,16 +215,20 @@ fn quantile(sorted: &[u128], q: f64) -> u128 {
 }
 
 /// Budget for the build-log saving: the fraction of Ghostty's resident page
-/// memory a pass releases. Apple silicon and Linux arm64 both measured 89%.
+/// memory a pass releases. Every CI run, Apple silicon, and Linux arm64
+/// measured 90%; the floor catches a pin bump that stops compressing.
 const BUILD_LOG_SAVING_FLOOR_PERCENT: u64 = 70;
 
-/// Budget for the 95th-percentile step on build-log history. Apple silicon
-/// measured 214 µs.
-const BUILD_LOG_STEP_P95_BUDGET_US: u128 = 2_000;
+/// Budget for the 95th-percentile step on build-log history. CI's Ubuntu
+/// runners measured 286 to 292 µs across three runs on AMD EPYC 7763 and
+/// Intel Xeon 8573C hosts, and Apple silicon 202 to 214 µs. 600 µs fails a
+/// doubling of the codec's cost.
+const BUILD_LOG_STEP_P95_BUDGET_US: u128 = 600;
 
 /// Budget for the 95th-percentile step on styles-per-cell history, whose
-/// pages grow to about 2.3 MiB. Apple silicon measured 4.0 ms.
-const STYLES_STEP_P95_BUDGET_US: u128 = 25_000;
+/// pages grow to about 2.3 MiB. CI measured 5.35 to 5.78 ms on the same
+/// hosts, and Apple silicon 4.65 ms. 12 ms fails a doubling.
+const STYLES_STEP_P95_BUDGET_US: u128 = 12_000;
 
 #[test]
 #[ignore = "release benchmark; run through mise run bench:compression"]
@@ -309,13 +313,18 @@ fn reset_peak_rss() {
 const fn reset_peak_rss() {}
 
 /// Budget for the median resize of build-log history at the maximum, with a
-/// pass drained before each. Apple silicon measured 31.9 ms.
-const RESIZE_COMPRESSED_P50_BUDGET_US: u128 = 250_000;
+/// pass drained before each. CI measured 98.5 and 100.9 ms on AMD EPYC 7763
+/// and 84.6 ms on Intel Xeon 8573C, where `resize-history` took 21 ms
+/// uncompressed; Apple silicon measured 31 ms. `resize-history` has run up to
+/// 1.4 times slower on other CI hosts, so 180 ms leaves room for them and
+/// still fails a doubling on the hosts measured.
+const RESIZE_COMPRESSED_P50_BUDGET_US: u128 = 180_000;
 
 /// Budget for the peak resident size during the first resize, measured on
 /// Linux from a `VmHWM` reset just before it, so the fill does not count.
-/// Linux arm64 measured 89.8 MiB for plain history.
-const RESIZE_COMPRESSED_PEAK_RSS_BUDGET_KIB: i64 = 200 * 1024;
+/// CI measured 102,468 to 102,652 KiB across three runs. 130 MiB leaves
+/// about 30% headroom, as `resize-history`'s budget does.
+const RESIZE_COMPRESSED_PEAK_RSS_BUDGET_KIB: i64 = 130 * 1024;
 
 /// The pages a pass left compressed, asserting that it compressed most of
 /// history.

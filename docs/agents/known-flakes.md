@@ -354,6 +354,22 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** rerun the file alone. If it recurs, record whether the
   descendant started, for example by having it write a marker file.
 
+## `idle-sample.test.ts` native sampler compile timeout
+
+- **Label:** `native idle sampler rejects missing windows in either
+  visibility state` in `scripts/idle-sample.test.ts`, timing out after
+  5000ms with `exitCode` null where the test expects 0 (line 30).
+- **Occurrences:** once in the hosted `Checks (macOS arm64)` job on
+  2026-10-27, for PR #283, which changes no script or idle code; the
+  rerun passed.
+- **Evidence:** the test compiles an Objective-C program with `xcrun clang`
+  inside Bun's default 5,000ms test timeout. A null exit code means the
+  compiler was killed, consistent with the timeout ending a slow first
+  `xcrun` or SDK lookup on a cold runner. That is an inference; the log
+  shows no compiler output.
+- **Triage:** rerun the job. If it recurs, time the compile step in the
+  test or give it a longer timeout.
+
 ## Release stapler CloudKit ticket lookup
 
 - **Label:** `Build signed macOS package`, step "Build, sign, notarize, and
