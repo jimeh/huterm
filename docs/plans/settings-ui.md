@@ -832,14 +832,18 @@ same key, command, and condition; such an entry duplicates that binding, so
 the effect is the same.
 
 Keybinding changes join the window's write queue behind any other write.
-Each edit's patches are built when it is made, from the snapshot the list
-came from, with locators that find entries by content: a change made
-elsewhere to an entry an edit addresses makes it conflict instead of
-editing another shortcut. When the window's own write lands, queued patches
-for the entries it changed move to their new content, and those for
-entries it removed go, so successive edits to one entry build on each
-other. The validator compiles the keymap, so a binding the compiler refuses
-is never written. A field whose write fails, including against a file that
+Each edit's patches are built when it is made, from locators the
+background read made for the snapshot the list came from; a locator finds
+its entry by position and content, so a change made elsewhere to that
+entry makes the edit conflict instead of editing another shortcut. When
+the window's own write lands, queued locators for the entries it changed,
+matched by position and content, take their new content, those for entries
+it removed go, and later positions move up, so successive edits to one
+entry build on each other. A read that finishes while the window's writes
+are pending is dropped, so queued edits and the list never mix snapshots,
+and the file is read again once the queue drains. The
+validator compiles the keymap, so a binding the compiler refuses is never
+written. A field whose write fails, including against a file that
 turned invalid, keeps the entered text with the error to retry.
 
 Fields follow their shortcut across reads: when another editor shifts the

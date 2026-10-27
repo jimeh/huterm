@@ -209,6 +209,9 @@ pub(super) struct SettingsView {
     scans: u64,
     /// Reads still running.
     loading: u32,
+    /// A read finished while writes were pending and was dropped; the file
+    /// is read again when the queue drains.
+    reread: bool,
     /// A setting whose next change reads the file afresh, after Use mine.
     fresh: Option<&'static str>,
     /// The last reload's error when the file itself validates, so the
@@ -300,6 +303,7 @@ impl SettingsView {
             reads: 0,
             scans: 0,
             loading: 0,
+            reread: false,
             fresh: None,
             reload_error: None,
             closing: false,

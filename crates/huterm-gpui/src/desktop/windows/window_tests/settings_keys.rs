@@ -946,3 +946,29 @@ fn a_draft_behind_a_setting_write_refused_by_an_invalid_file_waits_for_the_fix(
         text.contains("when = \"Terminal\"")
     });
 }
+
+#[gpui::test]
+fn a_read_dropped_behind_a_failed_write_is_read_again(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    let file = ScratchConfig::new("keys-reread", THREE);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let added = format!(
+        "{THREE}\n[[keybinding]]\nkey = \"ctrl-alt-d\"\ncommand = \"new_tab\"\n"
+    );
+    let permissions = |mode| std::fs::Permissions::from_mode(mode);
+    // The removal cannot replace the file in a read-only directory, and
+    // another editor adds a shortcut while it runs.
+    std::fs::set_permissions(&file.0, permissions(0o555)).unwrap();
+    with_window(&mut harness, |view, window, cx| {
+        view.press("kdel:u0", window, cx);
+        std::fs::write(file.path(), &added).unwrap();
+        view.follow_reload(cx);
+    });
+    harness.wait_for("the failed removal", settled);
+    harness.cx.run_until_parked();
+    std::fs::set_permissions(&file.0, permissions(0o755)).unwrap();
+    with_view(&mut harness, |view, _| {
+        assert!(view.key_row(ids::NEW_TAB, "ctrl-alt-d").is_some());
+    });
+}

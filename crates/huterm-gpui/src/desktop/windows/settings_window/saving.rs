@@ -59,10 +59,11 @@ pub(super) struct Pending {
 pub(super) struct KeyChange {
     pub(super) edit: Edit,
     pub(super) row: Option<String>,
-    /// Built when the edit was made, against the snapshot the user saw.
-    /// Their locators find entries by content, so a change made elsewhere
-    /// to an entry they address conflicts instead of editing another one;
-    /// this window's own writes rebase them (`rebase_queued_keys`).
+    /// Built when the edit was made, from the locators of the snapshot the
+    /// user saw. A locator finds its entry by position and content, so a
+    /// change made elsewhere to that entry conflicts instead of editing
+    /// another one; this window's own writes rebase them
+    /// (`rebase_queued_keys`).
     patches: Vec<Patch>,
     /// The field that made the edit and the text it last saved, put back
     /// when the write fails so the entered text stays a draft to retry.
@@ -171,8 +172,15 @@ impl SettingsView {
             let loaded = task.await;
             let _ = view.update(cx, |view, cx| {
                 view.loading -= 1;
+                // A read that finishes while this window's writes are
+                // pending would mix its list with theirs, so the file is
+                // read again when the queue drains.
                 if view.epoch == epoch && view.reads == read {
-                    view.loaded(loaded, cx);
+                    if view.busy() {
+                        view.reread = true;
+                    } else {
+                        view.loaded(loaded, cx);
+                    }
                 }
                 cx.notify();
             });
@@ -877,6 +885,7 @@ impl SettingsView {
                         .update(cx, |_, window, _| window.remove_window());
                 });
             }
+            None if std::mem::take(&mut self.reread) => self.load(cx),
             None => {}
         }
         cx.notify();

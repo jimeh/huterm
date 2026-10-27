@@ -482,8 +482,8 @@ pub(crate) enum Field {
 }
 
 /// One change the editor makes, naming user entries by index in the list it
-/// was made from; [`Edit::patches`] turns those into locators that find the
-/// entries by content.
+/// was made from; [`Edit::patches`] turns those into that list's locators,
+/// which find the entries by position and content.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Edit {
     /// Turn off an active default with an entry that matches only it.
@@ -523,9 +523,13 @@ impl Edit {
         entries: &[EntryLocator],
     ) -> Result<Vec<Patch>, String> {
         let locate = |index: usize| -> Result<EntryLocator, String> {
-            entries.get(index).cloned().ok_or_else(|| {
-                format!("keybinding entry {} is gone", index + 1)
-            })
+            entries
+                .iter()
+                .find(|entry| entry.index() == index)
+                .cloned()
+                .ok_or_else(|| {
+                    format!("keybinding entry {} is gone", index + 1)
+                })
         };
         let append = |entry| Patch::AppendEntry {
             list: List::Keybinding,
