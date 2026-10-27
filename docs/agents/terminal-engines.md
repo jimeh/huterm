@@ -188,10 +188,11 @@ The scroll and link gates keep their existing thresholds and queue limits.
 The link benchmark runs its viewport, above-viewport, mid-history, long-line,
 and scrolled fixtures with empty scrollback and with scrollback saturated at
 the largest limit, so their elapsed times can be compared. Set
-`HUTERM_BENCH_HISTORY_ROWS` to a comma-separated list of row counts to saturate
-at those sizes instead, in both `bench:links` and the engine benchmark's
-`resize-history` fixture. A test-only engine hook applies sizes above
-`ScrollbackLimit::MAX`; the link gate applies only to sizes within it.
+`HUTERM_BENCH_HISTORY_ROWS` to a comma-separated list of row counts, each at
+least 10,000, to saturate at those sizes instead, in both `bench:links` and the
+engine benchmark's `resize-history` fixture. A test-only engine hook applies
+sizes above `ScrollbackLimit::MAX`; the link gate applies only to sizes within
+it.
 Elapsed time includes scheduler preemption; Xvfb snapshot evidence does not
 prove continuous presentation.
 

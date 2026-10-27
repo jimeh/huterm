@@ -319,6 +319,11 @@ fn engine_benchmark_resize() {
     );
 }
 
+/// The smallest benchmark history size. Smaller limits evict the output of
+/// fixtures that place thousands of rows after it, such as the link
+/// benchmark's `scrolled-history` and `scan-limit-mid-history`.
+const MIN_HISTORY_ROWS: u32 = 10_000;
+
 /// History sizes, in rows, at which benchmarks saturate scrollback: the
 /// comma-separated `HUTERM_BENCH_HISTORY_ROWS`, or the configurable maximum.
 pub(super) fn history_sizes() -> Vec<u32> {
@@ -327,12 +332,12 @@ pub(super) fn history_sizes() -> Vec<u32> {
         |sizes| {
             sizes
                 .split(',')
-                .map(|size| {
-                    size.trim().parse().unwrap_or_else(|_| {
-                        panic!(
-                            "invalid HUTERM_BENCH_HISTORY_ROWS entry {size:?}"
-                        )
-                    })
+                .map(|size| match size.trim().parse() {
+                    Ok(rows) if rows >= MIN_HISTORY_ROWS => rows,
+                    _ => panic!(
+                        "HUTERM_BENCH_HISTORY_ROWS entry {size:?} must be a \
+                         row count of at least {MIN_HISTORY_ROWS}"
+                    ),
                 })
                 .collect()
         },
