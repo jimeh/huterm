@@ -831,6 +831,9 @@ struct Desktop {
     #[cfg(target_os = "macos")]
     watch_status: WatchStatus,
     quitting: bool,
+    /// Set once Quit is approved. A reload that finishes later applies
+    /// nothing, so it cannot register global shortcuts again.
+    quit_committed: bool,
     pending_spawns: usize,
     quit_pending: bool,
     external_drag_window: Option<gpui::WindowId>,
@@ -1280,7 +1283,10 @@ fn failed_reload_diagnostics(
             Severity::Error,
             NoticeSource::Config,
             "Configuration reload failed",
-            format!("Config reload failed: {error}"),
+            format!(
+                "Config reload failed: {}\nPrevious settings are still active.",
+                error.trim_end()
+            ),
         )
         .action("Open Settings", bare(ids::OPEN_SETTINGS))
         .action("Reload", bare(ids::RELOAD_CONFIG)),
@@ -1338,6 +1344,7 @@ pub(super) fn run_with_startup(
         install_native_quit(cx);
         quake_windows::install(cx);
         cx.on_app_quit(move |cx| {
+            commit_quit(cx);
             quake_windows::shutdown(cx);
             // AppKit terminate: does not return from Application::run. GPUI
             // allows only 100 ms for quit futures, so this terminal hook must
@@ -1403,6 +1410,7 @@ fn install_desktop(
         #[cfg(target_os = "macos")]
         watch_status: WatchStatus::default(),
         quitting: false,
+        quit_committed: false,
         pending_spawns: 0,
         quit_pending: false,
         external_drag_window: None,
@@ -1878,7 +1886,17 @@ fn maybe_exit(cx: &mut App) {
     .detach();
 }
 
+/// Marks Quit committed and stops the configuration watcher. Dropping the
+/// handle only sends the worker a message; the worker's own thread drops
+/// the platform watcher.
+fn commit_quit(cx: &mut App) {
+    let desktop = cx.global_mut::<Desktop>();
+    desktop.quit_committed = true;
+    desktop.watch = None;
+}
+
 fn approved_quit(cx: &mut App) {
+    commit_quit(cx);
     cx.spawn(async move |cx| {
         let mut quake_presentations = Vec::new();
         #[cfg(target_os = "macos")]
@@ -9447,7 +9465,7 @@ fn configure_watch(cx: &App, inputs: config::Inputs) {
 
 fn handle_watch_report(cx: &mut App, report: config_watch::Report) {
     match report {
-        config_watch::Report::Changed { differs } => {
+        config_watch::Report::Changed { differs, .. } => {
             if cx.global_mut::<Desktop>().reloads.changed(differs) {
                 run_reload(cx, ReloadKind::Automatic);
             }
@@ -9520,8 +9538,16 @@ fn reload(cx: &mut App) -> CommandOutcome {
 }
 
 /// Rereads the configuration on the background executor and applies it.
-/// The caller has latched `Desktop::reloads`.
+/// The caller has latched `Desktop::reloads`. An automatic reload does not
+/// start while quitting.
 fn run_reload(cx: &mut App, kind: ReloadKind) {
+    let desktop = cx.global::<Desktop>();
+    if kind == ReloadKind::Automatic
+        && (desktop.quitting || desktop.quit_committed)
+    {
+        follow_up_reload(cx);
+        return;
+    }
     let path = cx.global::<Desktop>().config_path.clone();
     let reload_path = path.clone();
     let task = cx
@@ -9540,6 +9566,11 @@ fn finish_reload(
     path: &Path,
     reloaded: config::Reloaded,
 ) {
+    // Quit already unregistered the global shortcuts and is closing the
+    // windows; applying now would register the shortcuts again.
+    if cx.global::<Desktop>().quit_committed {
+        return;
+    }
     let config::Reloaded {
         config: result,
         inputs,

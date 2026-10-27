@@ -293,13 +293,14 @@ fn is_blank(line: &str) -> bool {
 }
 
 /// The start of the contiguous comment lines directly above `start` that
-/// begin after `floor`.
+/// begin after `floor`. A `#:` directive, such as `#:schema`, belongs to
+/// the file rather than the item below it, so it ends the block.
 fn leading_block(source: &str, start: usize, floor: usize) -> usize {
     let mut lead = start;
     while lead > floor {
         let previous = line_start(source, lead - 1);
-        if previous < floor
-            || !source[previous..lead].trim_start().starts_with('#')
+        let line = source[previous..lead].trim_start();
+        if previous < floor || !line.starts_with('#') || line.starts_with("#:")
         {
             break;
         }
@@ -818,6 +819,14 @@ fn remove(layout: &Layout<'_>, path: &[Seg]) -> Result<Edits, ApplyError> {
         edit_inline(layout, index, path, None, &mut edits)?;
         return Ok(edits);
     }
+    // A field of an entry written as its own sections, such as
+    // `[keybinding.args]`, goes as the entry's subtables do when it goes.
+    if path.iter().any(|seg| matches!(seg, Seg::Index(_))) {
+        let ranges = owned_ranges(layout, path);
+        if !ranges.is_empty() {
+            return Ok(remove_ranges(layout, ranges));
+        }
+    }
     if lookup(&layout.tree, path).is_some() {
         return Err(unsupported(format!(
             "{} is a table section, not a value",
@@ -851,19 +860,15 @@ fn remove_statement(layout: &Layout<'_>, index: usize, edits: &mut Edits) {
                 remove_at(&mut tree, table);
                 continue;
             }
+            // Only the key through the value changes, so the statement's
+            // indentation and trailing comment stay.
             let keys = render_keys(&item.path[section_len..end])
                 .expect("statement keys hold no indices");
-            let ending = if item.lines.end == layout.source.len()
-                && !layout.source.ends_with('\n')
-            {
-                ""
-            } else {
-                layout.line_ending
+            let Kind::Statement { value, .. } = &item.kind else {
+                unreachable!("remove_statement takes statements");
             };
-            edits.replace(
-                item.lines.clone(),
-                format!("{}{keys} = {{}}{ending}", layout.indent(index)),
-            );
+            let start = item.lines.start + layout.indent(index).len();
+            edits.replace(start..value.end, format!("{keys} = {{}}"));
             return;
         }
         // The section's header defines the table; it goes only when this
@@ -891,6 +896,20 @@ fn remove_statement(layout: &Layout<'_>, index: usize, edits: &mut Edits) {
         remove_at(&mut tree, table);
         removal.start = header_item.lead;
         header_dropped = true;
+        // The header also defined its implicit parents, such as `terminal`
+        // for `[terminal.bell]`; those left empty go with it.
+        for end in (1..table.len()).rev() {
+            let parent = &table[..end];
+            let empty = matches!(lookup(&tree, parent), Some(Value::Table(parent)) if parent.is_empty());
+            if !is_grouping(parent)
+                || !empty
+                || layout.items.iter().any(|item| item.path == parent)
+            {
+                break;
+            }
+            edits.dropped.push(parent.to_vec());
+            remove_at(&mut tree, parent);
+        }
         break;
     }
     if header_dropped {
@@ -1036,15 +1055,9 @@ fn remove_entry(
     list: List,
     index: usize,
 ) -> Result<Edits, ApplyError> {
-    let prefix = [Seg::Key(list.key().into()), Seg::Index(index)];
-    let mut ranges: Vec<Range<usize>> = list_items(layout, list)?
-        .into_iter()
-        .filter(|&item| {
-            layout.items[item].is_header()
-                && layout.items[item].path.starts_with(&prefix)
-        })
-        .map(|header| layout.items[header].lead..layout.section_end(header))
-        .collect();
+    list_items(layout, list)?;
+    let ranges =
+        owned_ranges(layout, &[Seg::Key(list.key().into()), Seg::Index(index)]);
     if ranges.is_empty() {
         return Err(ApplyError::Conflict(vec![format!(
             "{} has no entry {}",
@@ -1052,6 +1065,32 @@ fn remove_entry(
             index + 1
         )]));
     }
+    Ok(remove_ranges(layout, ranges))
+}
+
+/// The source ranges that define `path` and everything below it: each
+/// section whose header is at or below `path`, through the next header's
+/// leading comment block, and each statement elsewhere that writes below
+/// it, each with its leading comments.
+fn owned_ranges(layout: &Layout<'_>, path: &[Seg]) -> Vec<Range<usize>> {
+    layout
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.path.starts_with(path))
+        .map(|(index, item)| {
+            if item.is_header() {
+                item.lead..layout.section_end(index)
+            } else {
+                item.lead..item.lines.end
+            }
+        })
+        .collect()
+}
+
+/// Removes `ranges`, merged where they overlap, each with at most one
+/// adjacent blank separator line.
+fn remove_ranges(layout: &Layout<'_>, mut ranges: Vec<Range<usize>>) -> Edits {
     ranges.sort_by_key(|range| range.start);
     let mut merged: Vec<Range<usize>> = Vec::new();
     for range in ranges {
@@ -1080,7 +1119,7 @@ fn remove_entry(
         }
         edits.remove(range);
     }
-    Ok(edits)
+    edits
 }
 
 /// The value tree `op` should produce from `tree`, with the grouping tables

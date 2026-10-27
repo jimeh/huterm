@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::AtomicUsize;
 
 use super::*;
@@ -604,6 +604,288 @@ args = { index = 2 }
 }
 
 #[test]
+fn field_edits_in_one_call_address_the_entry_located_at_the_start() {
+    let second = locator(BINDINGS, 1);
+    let output = rendered(
+        BINDINGS,
+        &[
+            Patch::SetEntryField {
+                locator: second.clone(),
+                field: "key".into(),
+                value: "alt-2".into(),
+            },
+            Patch::SetEntryField {
+                locator: second,
+                field: "args".into(),
+                value: Value::Table(table("index = 2")),
+            },
+        ],
+    );
+    assert_eq!(
+        output,
+        BINDINGS
+            .replace("\"alt-1\"", "\"alt-2\"")
+            .replace("index = 1", "index = 2")
+    );
+}
+
+const TWINS: &str = "\
+[[keybinding]]
+key = \"alt-x\"
+command = \"copy\"
+
+[[keybinding]]
+key = \"alt-1\"
+command = \"select_tab\"
+
+[[keybinding]]
+key = \"alt-1\"
+command = \"select_tab\"
+";
+
+#[test]
+fn edits_to_one_of_identical_entries_stay_on_that_entry() {
+    let first = locator(TWINS, 1);
+    let output = rendered(
+        TWINS,
+        &[
+            Patch::SetEntryField {
+                locator: first.clone(),
+                field: "key".into(),
+                value: "alt-2".into(),
+            },
+            Patch::SetEntryField {
+                locator: first,
+                field: "disabled".into(),
+                value: Value::Boolean(true),
+            },
+        ],
+    );
+    assert_eq!(
+        output,
+        "\
+[[keybinding]]
+key = \"alt-x\"
+command = \"copy\"
+
+[[keybinding]]
+key = \"alt-2\"
+command = \"select_tab\"
+disabled = true
+
+[[keybinding]]
+key = \"alt-1\"
+command = \"select_tab\"
+"
+    );
+}
+
+#[test]
+fn a_remove_and_an_edit_in_one_call_keep_their_entries() {
+    // The removal shifts the edited entry; its identical twin stays put.
+    let output = rendered(
+        TWINS,
+        &[
+            Patch::RemoveEntry {
+                locator: locator(TWINS, 0),
+            },
+            Patch::SetEntryField {
+                locator: locator(TWINS, 1),
+                field: "disabled".into(),
+                value: Value::Boolean(true),
+            },
+        ],
+    );
+    assert_eq!(
+        output,
+        "\
+[[keybinding]]
+key = \"alt-1\"
+command = \"select_tab\"
+disabled = true
+
+[[keybinding]]
+key = \"alt-1\"
+command = \"select_tab\"
+"
+    );
+    // An entry edited earlier in the call can still be removed.
+    let output = rendered(
+        BINDINGS,
+        &[
+            Patch::SetEntryField {
+                locator: locator(BINDINGS, 0),
+                field: "key".into(),
+                value: "alt-v".into(),
+            },
+            Patch::RemoveEntry {
+                locator: locator(BINDINGS, 0),
+            },
+        ],
+    );
+    assert!(
+        output.starts_with("[font]\nsize = 14.0\n\n# Second"),
+        "{output}"
+    );
+    // An entry removed earlier in the call is gone.
+    assert!(matches!(
+        render(
+            BINDINGS,
+            &[
+                Patch::RemoveEntry {
+                    locator: locator(BINDINGS, 0),
+                },
+                Patch::ClearEntryField {
+                    locator: locator(BINDINGS, 0),
+                    field: "key".into(),
+                },
+            ]
+        ),
+        Err(ApplyError::Conflict(_))
+    ));
+}
+
+#[test]
+fn clearing_args_written_as_a_subtable_removes_its_section() {
+    let source = "\
+[[keybinding]]
+key = \"alt-1\"
+command = \"select_tab\"
+
+# Its arguments
+[keybinding.args]
+index = 1
+
+[[keybinding]]
+key = \"alt-c\"
+command = \"copy\"
+";
+    let cleared = "\
+[[keybinding]]
+key = \"alt-1\"
+command = \"select_tab\"
+
+[[keybinding]]
+key = \"alt-c\"
+command = \"copy\"
+";
+    assert_eq!(
+        rendered(
+            source,
+            &[Patch::ClearEntryField {
+                locator: locator(source, 0),
+                field: "args".into(),
+            }]
+        ),
+        cleared
+    );
+    // An update that drops `args` does the same.
+    assert_eq!(
+        rendered(
+            source,
+            &[Patch::UpdateEntry {
+                locator: locator(source, 0),
+                entry: table("key = 'alt-1'\ncommand = 'select_tab'"),
+            }]
+        ),
+        cleared
+    );
+}
+
+#[test]
+fn clearing_subtable_args_keeps_an_unrelated_section_in_between() {
+    let source = "\
+[[keybinding]]
+key = \"alt-1\"
+command = \"select_tab\"
+
+# Unrelated
+[font]
+size = 13.0 # small
+
+# Its arguments
+[keybinding.args]
+index = 1
+
+[[keybinding]]
+key = \"alt-c\"
+command = \"copy\"
+";
+    assert_eq!(
+        rendered(
+            source,
+            &[Patch::ClearEntryField {
+                locator: locator(source, 0),
+                field: "args".into(),
+            }]
+        ),
+        "\
+[[keybinding]]
+key = \"alt-1\"
+command = \"select_tab\"
+
+# Unrelated
+[font]
+size = 13.0 # small
+
+[[keybinding]]
+key = \"alt-c\"
+command = \"copy\"
+"
+    );
+}
+
+#[test]
+fn resetting_the_last_key_drops_an_implicit_grouping_parent() {
+    assert_eq!(
+        rendered(
+            "[terminal.bell]\nvisual = false\n",
+            &[remove("terminal.bell.visual")]
+        ),
+        ""
+    );
+    assert_eq!(
+        rendered(
+            "[font]\nsize = 14.0\n\n[terminal.bell]\nvisual = false\n",
+            &[remove("terminal.bell.visual")]
+        ),
+        "[font]\nsize = 14.0\n"
+    );
+}
+
+#[test]
+fn resetting_a_dotted_profile_key_keeps_its_trailing_comment() {
+    assert_eq!(
+        rendered(
+            "[quake]\nprofiles.logs.height = 10 # tall\n",
+            &[remove("quake.profiles.logs.height")]
+        ),
+        "[quake]\nprofiles.logs = {} # tall\n"
+    );
+}
+
+#[test]
+fn removing_the_item_under_a_directive_keeps_the_directive() {
+    let source = "#:schema ./huterm.json\n[[keybinding]]\nkey = \"cmd-h\"\ncommand = \"hide\"\n";
+    assert_eq!(
+        rendered(
+            source,
+            &[Patch::RemoveEntry {
+                locator: locator(source, 0)
+            }]
+        ),
+        "#:schema ./huterm.json\n"
+    );
+    assert_eq!(
+        rendered(
+            "#:schema ./huterm.json\nfoo = 1\nbar = 2\n",
+            &[remove("foo")]
+        ),
+        "#:schema ./huterm.json\nbar = 2\n"
+    );
+}
+
+#[test]
 fn guards_refuse_splices_that_change_anything_else() {
     let source = "# keep\n[font]\nsize = 14.0\nfamily = \"Menlo\"\n";
     let layout = Layout::parse(source).unwrap();
@@ -836,15 +1118,18 @@ fn permissions_survive_and_symlinks_are_written_through() {
     assert!(!target.exists());
 }
 
-/// Fails at one stage, or runs `at_recheck` at each recheck.
+/// Fails at one stage, or runs `at_recheck` at each recheck, and records
+/// every stage it reaches.
 struct TestHooks<'a> {
     fail: Option<Stage>,
     at_recheck: &'a dyn Fn(usize),
     rechecks: Cell<usize>,
+    reached: RefCell<Vec<Stage>>,
 }
 
 impl Hooks for TestHooks<'_> {
     fn before(&self, stage: Stage) -> io::Result<()> {
+        self.reached.borrow_mut().push(stage);
         if stage == Stage::Recheck {
             let count = self.rechecks.get();
             self.rechecks.set(count + 1);
@@ -862,6 +1147,7 @@ fn hooks(fail: Option<Stage>, at_recheck: &dyn Fn(usize)) -> TestHooks<'_> {
         fail,
         at_recheck,
         rechecks: Cell::new(0),
+        reached: RefCell::default(),
     }
 }
 
@@ -991,6 +1277,94 @@ fn a_symlink_retargeted_before_the_rename_restarts_then_conflicts() {
         3,
         "no temporary left"
     );
+}
+
+#[test]
+fn a_restart_still_syncs_the_parents_it_created() {
+    let scratch = Scratch::new();
+    let path = scratch.path("new/config.toml");
+    let file = ConfigFile::new(&path);
+    let base = file.load().unwrap();
+    // Another writer creates the file first, so the attempt restarts and
+    // rebases onto it after the directory already exists.
+    let create = |count: usize| {
+        if count == 0 {
+            fs::write(&path, "[tabs]\nstyle = \"strip\"\n").unwrap();
+        }
+    };
+    let recorded = hooks(None, &create);
+    file.apply_with(
+        &base,
+        &[set("font.size", Value::Float(12.0))],
+        &accept,
+        &recorded,
+    )
+    .unwrap();
+    assert_eq!(recorded.rechecks.get(), 2, "the attempt restarted");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "[tabs]\nstyle = \"strip\"\n\n[font]\nsize = 12.0\n"
+    );
+    let parent_syncs = recorded
+        .reached
+        .borrow()
+        .iter()
+        .filter(|stage| **stage == Stage::ParentSync)
+        .count();
+    assert_eq!(parent_syncs, 1, "{:?}", recorded.reached.borrow());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_left_dangling_at_the_recheck_restarts() {
+    use std::os::unix::fs::symlink;
+    let scratch = Scratch::new();
+    let target = scratch.path("dotfiles.toml");
+    fs::write(&target, "[font]\nsize = 14.0\n").unwrap();
+    let link = scratch.path("config.toml");
+    symlink(&target, &link).unwrap();
+    let file = ConfigFile::new(&link);
+    let base = file.load().unwrap();
+    // The restarted attempt finds the dangling link, as any first attempt
+    // would.
+    let unlink = |count: usize| {
+        if count == 0 {
+            fs::remove_file(&target).unwrap();
+        }
+    };
+    let error = file
+        .apply_with(
+            &base,
+            &[set("font.size", Value::Float(12.0))],
+            &accept,
+            &hooks(None, &unlink),
+        )
+        .unwrap_err();
+    assert!(matches!(error, ApplyError::DanglingSymlink(_)), "{error}");
+    assert!(!target.exists());
+    assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 1);
+    // Dangling during the restarted attempt is a second change.
+    fs::write(&target, "[font]\nsize = 14.0\n").unwrap();
+    let base = file.load().unwrap();
+    let change_then_unlink = |count: usize| {
+        if count == 0 {
+            fs::write(&target, "[font]\nsize = 14.0\nfamily = \"F\"\n")
+                .unwrap();
+        } else {
+            fs::remove_file(&target).unwrap();
+        }
+    };
+    let error = file
+        .apply_with(
+            &base,
+            &[set("font.size", Value::Float(12.0))],
+            &accept,
+            &hooks(None, &change_then_unlink),
+        )
+        .unwrap_err();
+    assert!(matches!(error, ApplyError::Conflict(_)), "{error}");
+    assert!(!target.exists());
+    assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 1);
 }
 
 #[test]

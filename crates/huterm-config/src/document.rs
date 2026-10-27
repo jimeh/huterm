@@ -119,6 +119,20 @@ pub enum Patch {
     RemoveEntry { locator: EntryLocator },
 }
 
+impl Patch {
+    fn locator(&self) -> Option<&EntryLocator> {
+        match self {
+            Self::Set { .. }
+            | Self::Remove { .. }
+            | Self::AppendEntry { .. } => None,
+            Self::UpdateEntry { locator, .. }
+            | Self::SetEntryField { locator, .. }
+            | Self::ClearEntryField { locator, .. }
+            | Self::RemoveEntry { locator } => Some(locator),
+        }
+    }
+}
+
 /// What a snapshot read: the file's content hash, the target it resolved
 /// to, and that target's identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -336,6 +350,9 @@ impl ConfigFile {
         hooks: &dyn Hooks,
     ) -> Result<Snapshot, ApplyError> {
         let mut restarted = false;
+        // A restarted attempt finds the directories the first one created
+        // already there, but they still need their entries made durable.
+        let mut created = Vec::new();
         loop {
             let target = self.resolve()?;
             let current = snapshot(&target)?;
@@ -354,7 +371,13 @@ impl ConfigFile {
             let candidate =
                 render(current.text.as_deref().unwrap_or(""), patches)?;
             validate(&candidate).map_err(ApplyError::Rejected)?;
-            match write(&self.logical, &target, &candidate, hooks)? {
+            match write(
+                &self.logical,
+                &target,
+                &candidate,
+                &mut created,
+                hooks,
+            )? {
                 Written::Replaced(snapshot) => return Ok(snapshot),
                 Written::Changed if restarted => {
                     return Err(ApplyError::Conflict(vec![format!(
@@ -501,16 +524,66 @@ fn keys(path: &[String]) -> Vec<Seg> {
 }
 
 /// Applies `patches` to `source` in order, verifying every step.
+///
+/// Every locator resolves once, against `source`, so an entry keeps its
+/// identity through the earlier patches' edits and removals.
 fn render(source: &str, patches: &[Patch]) -> Result<String, ApplyError> {
+    let tree = Layout::parse(source)?.tree;
+    let mut conflicts = Vec::new();
+    let located: Vec<Option<(List, usize)>> = patches
+        .iter()
+        .map(|patch| {
+            let locator = patch.locator()?;
+            match locator.resolve(&tree) {
+                Ok(index) => Some((locator.list, index)),
+                Err(conflict) => {
+                    conflicts.push(conflict);
+                    None
+                }
+            }
+        })
+        .collect();
+    if !conflicts.is_empty() {
+        return Err(ApplyError::Conflict(conflicts));
+    }
+    let mut removed: Vec<(List, usize)> = Vec::new();
     let mut text = source.to_owned();
-    for patch in patches {
+    for (patch, located) in patches.iter().zip(located) {
+        let index = located
+            .map(|(list, index)| current_index(&removed, list, index))
+            .transpose()?;
         let layout = Layout::parse(&text)?;
-        let ops = expand(&layout.tree, patch)?;
+        let ops = expand(&layout.tree, patch, index);
         for op in ops {
             text = apply_op(&text, &op)?;
         }
+        if let (Patch::RemoveEntry { .. }, Some(located)) = (patch, located) {
+            removed.push(located);
+        }
     }
     Ok(text)
+}
+
+/// Where entry `index` of `list` in the source is after the entries in
+/// `removed`, all source indices, are gone. Appended entries come after
+/// every source entry, so they never move one.
+fn current_index(
+    removed: &[(List, usize)],
+    list: List,
+    index: usize,
+) -> Result<usize, ApplyError> {
+    if removed.contains(&(list, index)) {
+        return Err(ApplyError::Conflict(vec![format!(
+            "{} entry {} was removed by an earlier change",
+            list.key(),
+            index + 1
+        )]));
+    }
+    let before = removed
+        .iter()
+        .filter(|&&(other, at)| other == list && at < index)
+        .count();
+    Ok(index - before)
 }
 
 fn apply_op(text: &str, op: &Op) -> Result<String, ApplyError> {
@@ -521,8 +594,10 @@ fn apply_op(text: &str, op: &Op) -> Result<String, ApplyError> {
     Ok(output)
 }
 
-/// Turns a patch into primitive operations against `tree`.
-fn expand(tree: &Table, patch: &Patch) -> Result<Vec<Op>, ApplyError> {
+/// Turns a patch into primitive operations against `tree`. An entry patch
+/// addresses entry `index`, its located entry's position in `tree`.
+fn expand(tree: &Table, patch: &Patch, index: Option<usize>) -> Vec<Op> {
+    let located = || index.expect("entry patches arrive located");
     let mut ops = Vec::new();
     match patch {
         Patch::Set { path, value } => {
@@ -533,7 +608,7 @@ fn expand(tree: &Table, patch: &Patch) -> Result<Vec<Op>, ApplyError> {
             ops.push(Op::AppendEntry(*list, entry.clone()));
         }
         Patch::UpdateEntry { locator, entry } => {
-            let index = locate(locator, tree)?;
+            let index = located();
             let base = entry_path(locator.list, index);
             let current = match splice::lookup(tree, &base) {
                 Some(Value::Table(current)) => current.clone(),
@@ -555,29 +630,23 @@ fn expand(tree: &Table, patch: &Patch) -> Result<Vec<Op>, ApplyError> {
             field,
             value,
         } => {
-            let index = locate(locator, tree)?;
+            let index = located();
             let field = field_path(&entry_path(locator.list, index), field);
             set_ops(tree, field, value, &mut ops);
         }
         Patch::ClearEntryField { locator, field } => {
-            let index = locate(locator, tree)?;
+            let index = located();
             ops.push(Op::Remove(field_path(
                 &entry_path(locator.list, index),
                 field,
             )));
         }
         Patch::RemoveEntry { locator } => {
-            let index = locate(locator, tree)?;
+            let index = located();
             ops.push(Op::RemoveEntry(locator.list, index));
         }
     }
-    Ok(ops)
-}
-
-fn locate(locator: &EntryLocator, tree: &Table) -> Result<usize, ApplyError> {
-    locator
-        .resolve(tree)
-        .map_err(|conflict| ApplyError::Conflict(vec![conflict]))
+    ops
 }
 
 fn entry_path(list: List, index: usize) -> Vec<Seg> {
@@ -628,10 +697,12 @@ static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Steps 5 to 7: write a temporary file beside the target, recheck that the
 /// logical path still reaches the same unchanged file, and rename over it.
+/// `created` collects the directories this and earlier attempts created.
 fn write(
     logical: &Path,
     target: &Target,
     candidate: &str,
+    created: &mut Vec<PathBuf>,
     hooks: &dyn Hooks,
 ) -> Result<Written, ApplyError> {
     let directory = target
@@ -644,7 +715,7 @@ fn write(
             ))
         })?
         .to_owned();
-    let created = create_directories(&directory).map_err(ApplyError::Io)?;
+    created.extend(create_directories(&directory).map_err(ApplyError::Io)?);
     let name = target
         .path
         .file_name()
@@ -661,11 +732,14 @@ fn write(
     let result = (|| {
         write_temporary(&temporary, target, candidate.as_bytes(), hooks)?;
         hooks.before(Stage::Recheck)?;
-        let again = resolve(logical).map_err(|error| match error {
-            ApplyError::Io(error) => error,
-            other => io::Error::other(other.to_string()),
-        })?;
-        if again != *target {
+        let again = match resolve(logical) {
+            Ok(again) => Some(again),
+            // The link now leads nowhere: a change like any other.
+            Err(ApplyError::DanglingSymlink(_)) => None,
+            Err(ApplyError::Io(error)) => return Err(error),
+            Err(other) => return Err(io::Error::other(other.to_string())),
+        };
+        if again.as_ref() != Some(target) {
             return Ok(false);
         }
         hooks.before(Stage::Rename)?;
@@ -683,7 +757,7 @@ fn write(
             return Err(ApplyError::Io(error));
         }
     }
-    sync_directories(&directory, &created, hooks)
+    sync_directories(&directory, created, hooks)
         .map_err(ApplyError::WrittenNotDurable)?;
     let metadata =
         fs::metadata(&target.path).map_err(ApplyError::WrittenNotDurable)?;

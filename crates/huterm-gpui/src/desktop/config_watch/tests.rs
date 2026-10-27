@@ -1,5 +1,5 @@
 use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use notify::event::{AccessKind, CreateKind, Flag, ModifyKind, RemoveKind};
@@ -139,7 +139,22 @@ fn the_reload_latch_runs_one_follow_up_after_changes_during_a_reload() {
 #[derive(Clone, Default)]
 struct Fake {
     fail_start: bool,
+    /// Directories whose registration fails, as a permission or watch
+    /// limit failure would.
+    refused: Arc<Mutex<BTreeSet<PathBuf>>>,
     watched: Arc<Mutex<BTreeSet<PathBuf>>>,
+}
+
+impl Fake {
+    /// Drops the registration of `directory` as inotify does when the
+    /// directory is removed.
+    fn invalidate(&self, directory: &Path) {
+        self.watched.lock().unwrap().remove(directory);
+    }
+
+    fn watched(&self) -> Vec<PathBuf> {
+        self.watched.lock().unwrap().iter().cloned().collect()
+    }
 }
 
 impl Backend for Fake {
@@ -156,6 +171,9 @@ impl Backend for Fake {
     }
 
     fn watch(&mut self, directory: &Path) -> Result<(), WatchError> {
+        if self.refused.lock().unwrap().contains(directory) {
+            return Err(WatchError::Other("permission denied".into()));
+        }
         self.watched.lock().unwrap().insert(directory.to_owned());
         Ok(())
     }
@@ -181,7 +199,7 @@ fn changes(reports: &Reports) -> Vec<bool> {
         .unwrap()
         .drain(..)
         .filter_map(|report| match report {
-            Report::Changed { differs } => Some(differs),
+            Report::Changed { differs, .. } => Some(differs),
             _ => None,
         })
         .collect()
@@ -285,6 +303,105 @@ fn a_backend_that_cannot_start_warns_once() {
             ..
         })
     ));
+}
+
+#[test]
+fn a_removed_directory_is_watched_again_once_it_returns() {
+    let scratch = Scratch::new();
+    let directory = scratch.path("huterm");
+    let config = scratch.path("huterm/config.toml");
+    write(&config, VALID_A);
+    let backend = Fake::default();
+    let (mut worker, reports) = fake_worker(backend.clone());
+    let mut now = Instant::now();
+    worker.configure(settings(&config, true), now);
+    settle(&mut worker, &mut now);
+    assert_eq!(backend.watched(), vec![directory.clone()]);
+    // The directory goes, taking its registration, and a new one takes
+    // its place before the quiet period ends.
+    fs::remove_dir_all(&directory).unwrap();
+    backend.invalidate(&directory);
+    worker.event(
+        &event(EventKind::Remove(RemoveKind::Folder), &directory),
+        now,
+    );
+    write(&config, "[font]\nsize = 18.0\n");
+    settle(&mut worker, &mut now);
+    assert_eq!(backend.watched(), vec![directory.clone()]);
+    // Nothing reloaded, so the catch-up reports the change again.
+    let changes = changes(&reports);
+    assert!(!changes.is_empty() && changes.iter().all(|differs| *differs));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_directory_replaced_under_its_watch_is_registered_again() {
+    let scratch = Scratch::new();
+    let directory = scratch.path("huterm");
+    let config = scratch.path("huterm/config.toml");
+    write(&config, VALID_A);
+    let backend = Fake::default();
+    let (mut worker, _) = fake_worker(backend.clone());
+    let mut now = Instant::now();
+    worker.configure(settings(&config, true), now);
+    settle(&mut worker, &mut now);
+    // inotify keeps following a renamed directory, so no event names the
+    // replacement; only its identity shows the change.
+    fs::rename(&directory, scratch.path("huterm.old")).unwrap();
+    write(&config, VALID_A);
+    backend.invalidate(&directory);
+    worker.event(&modified(&config), now);
+    settle(&mut worker, &mut now);
+    assert_eq!(backend.watched(), vec![directory]);
+}
+
+#[test]
+fn a_failed_descendant_registration_keeps_the_ancestor() {
+    let scratch = Scratch::new();
+    let directory = scratch.path("huterm");
+    let config = scratch.path("huterm/config.toml");
+    let backend = Fake::default();
+    let (mut worker, _) = fake_worker(backend.clone());
+    let mut now = Instant::now();
+    worker.configure(settings(&config, true), now);
+    settle(&mut worker, &mut now);
+    assert_eq!(backend.watched(), vec![scratch.0.clone()]);
+    backend.refused.lock().unwrap().insert(directory.clone());
+    fs::create_dir(&directory).unwrap();
+    worker.event(
+        &event(EventKind::Create(CreateKind::Folder), &directory),
+        now,
+    );
+    settle(&mut worker, &mut now);
+    assert_eq!(backend.watched(), vec![scratch.0.clone()]);
+    assert_eq!(worker.probe().installed, vec![scratch.0.clone()]);
+}
+
+#[test]
+fn no_registration_at_all_reports_watching_off() {
+    let scratch = Scratch::new();
+    let config = scratch.path("config.toml");
+    let backend = Fake::default();
+    backend.refused.lock().unwrap().insert(scratch.0.clone());
+    let (mut worker, reports) = fake_worker(backend);
+    worker.configure(settings(&config, true), Instant::now());
+    let reports = reports.lock().unwrap();
+    assert!(
+        reports
+            .iter()
+            .any(|report| matches!(report, Report::Unavailable(_))),
+        "{reports:?}"
+    );
+    assert!(
+        matches!(
+            reports.last(),
+            Some(Report::Status {
+                watching: false,
+                ..
+            })
+        ),
+        "{reports:?}"
+    );
 }
 
 /// The desktop's side of reloading, driven step by step: a started reload
@@ -433,40 +550,81 @@ fn a_change_during_a_reload_is_loaded_by_the_follow_up() {
 struct Native {
     handle: Handle,
     reports: mpsc::Receiver<Report>,
+    /// What the worker was last configured with.
+    settings: Mutex<Settings>,
 }
 
 /// Generous: hosted CI runners can deliver native events late.
 const NATIVE_DEADLINE: Duration = Duration::from_secs(20);
 
+type WatchHook = Box<dyn FnMut(&Path) + Send>;
+type ReportHook = Box<dyn FnMut(&Report) + Send>;
+
+/// Test seams around the platform watcher, all run on the worker thread.
+#[derive(Default)]
+struct NativeHooks {
+    /// Runs before each registration.
+    before_watch: Option<WatchHook>,
+    /// Runs as the worker reports, before the test sees the report.
+    on_report: Option<ReportHook>,
+    /// While set, native events are lost, as they are while `FSEvents`
+    /// restarts its stream.
+    muted: Arc<AtomicBool>,
+}
+
 impl Native {
     fn start(settings: Settings) -> Self {
-        Self::start_with(settings, |_| {})
+        Self::start_with(settings, NativeHooks::default())
     }
 
-    /// Starts the worker with `before_watch` run before each registration.
-    fn start_with(
-        settings: Settings,
-        before_watch: impl FnMut(&Path) + Send + 'static,
-    ) -> Self {
+    /// Starts the worker with `hooks` around the platform watcher, and
+    /// waits for its first registration to settle.
+    fn start_with(settings: Settings, hooks: NativeHooks) -> Self {
+        let NativeHooks {
+            before_watch,
+            on_report,
+            muted,
+        } = hooks;
         let (sender, reports) = mpsc::channel();
+        let mut on_report = on_report.unwrap_or_else(|| Box::new(|_| {}));
         let handle = spawn_with(
             move |events| Hooked {
                 inner: NotifyBackend {
-                    events,
+                    events: muffled(events, muted),
                     watcher: None,
                 },
-                before_watch: Box::new(before_watch),
+                before_watch: before_watch.unwrap_or_else(|| Box::new(|_| {})),
             },
             move |report| {
+                on_report(&report);
                 let _ = sender.send(report);
             },
         );
-        handle.configure(settings);
-        let native = Self { handle, reports };
+        handle.configure(settings.clone());
+        let native = Self {
+            handle,
+            reports,
+            settings: Mutex::new(settings),
+        };
         native.wait("registration", |report| {
             matches!(report, Report::Status { watching: true, .. })
         });
+        native.settle();
         native
+    }
+
+    /// Configures the worker as a reload would, then waits for that and
+    /// any earlier work to finish and discards what it reported, so the
+    /// next step only sees its own reports.
+    fn configure(&self, settings: Settings) {
+        *self.settings.lock().unwrap() = settings.clone();
+        self.handle.configure(settings);
+        self.settle();
+    }
+
+    fn settle(&self) {
+        self.wait_probe("earlier work to settle", |probe| !probe.timer_armed);
+        while self.reports.try_recv().is_ok() {}
     }
 
     /// Waits for a report matching `predicate`, reporting what arrived on
@@ -490,8 +648,24 @@ impl Native {
         }
     }
 
+    /// Waits for a change report carrying the inputs' content as it is when
+    /// the report arrives, so a report about an earlier step's write does
+    /// not count.
     fn wait_changed(&self, label: &str) {
-        self.wait(label, |report| *report == Report::Changed { differs: true });
+        let current = || {
+            let settings = self.settings.lock().unwrap();
+            crate::config::fingerprint(
+                &settings.config,
+                &settings.inputs.themes,
+            )
+        };
+        self.wait(label, |report| match report {
+            Report::Changed {
+                differs: true,
+                fingerprint,
+            } => current() == Some(*fingerprint),
+            _ => false,
+        });
     }
 
     /// Polls the worker until `predicate` holds for its probe.
@@ -517,9 +691,25 @@ impl Native {
     }
 }
 
+/// Forwards native events to the worker unless `muted` is set.
+fn muffled(
+    worker: mpsc::Sender<Request>,
+    muted: Arc<AtomicBool>,
+) -> mpsc::Sender<Request> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        for request in receiver {
+            if !muted.load(Ordering::SeqCst) && worker.send(request).is_err() {
+                return;
+            }
+        }
+    });
+    sender
+}
+
 struct Hooked {
     inner: NotifyBackend,
-    before_watch: Box<dyn FnMut(&Path) + Send>,
+    before_watch: WatchHook,
 }
 
 impl Backend for Hooked {
@@ -557,8 +747,7 @@ fn native_events_reload_external_symlink_target_and_theme_writes() {
     let config = scratch.path("huterm/config.toml");
     std::os::unix::fs::symlink(&dotfiles, &config).unwrap();
     let native = Native::start(settings(&config, true));
-    let reload =
-        |native: &Native| native.handle.configure(settings(&config, true));
+    let reload = |native: &Native| native.configure(settings(&config, true));
     // An edit to the symlink's target.
     write(
         &dotfiles,
@@ -617,27 +806,46 @@ fn native_registration_catches_a_new_dependency_changed_while_registering() {
     write(&config, "[theme]\nname = \"mine\"\n");
     let themes = scratch.path("huterm/themes");
     let theme = scratch.path("huterm/themes/mine.toml");
+    let muted = Arc::new(AtomicBool::new(false));
+    let registered = Arc::new(AtomicBool::new(false));
     let hook_themes = themes.clone();
+    let hook_registered = Arc::clone(&registered);
+    let watch_registered = Arc::clone(&registered);
+    let hook_muted = Arc::clone(&muted);
     let hook_theme = theme.clone();
-    let native =
-        Native::start_with(settings(&config, true), move |directory| {
-            // The theme appears between resolving the new topology and the new
-            // watch taking effect, so no event may report it.
+    let hooks = NativeHooks {
+        before_watch: Some(Box::new(move |directory| {
             if directory == hook_themes {
+                watch_registered.store(true, Ordering::SeqCst);
+            }
+        })),
+        on_report: Some(Box::new(move |report| {
+            // The reconciliation that registered the themes directory has
+            // already fingerprinted the inputs. The theme appears now, and
+            // its events are lost, as they are while `FSEvents` restarts
+            // its stream, so only the catch-up reconciliation can see it.
+            if matches!(report, Report::Status { .. })
+                && hook_registered.swap(false, Ordering::SeqCst)
+            {
+                hook_muted.store(true, Ordering::SeqCst);
                 write(&hook_theme, "[theme]\nbackground = \"#222222\"\n");
             }
-        });
+        })),
+        muted: Arc::clone(&muted),
+    };
+    let native = Native::start_with(settings(&config, true), hooks);
     assert_eq!(
         native.handle.probe().unwrap().installed,
         vec![scratch.path("huterm")]
     );
     fs::create_dir(&themes).unwrap();
-    native.wait_changed("the theme written during registration");
+    native.wait_changed("the theme written after registration");
+    muted.store(false, Ordering::SeqCst);
     native.wait_probe("the themes directory watch", |probe| {
         probe.installed.contains(&themes) && !probe.timer_armed
     });
     // The new watch reports later edits.
-    native.handle.configure(settings(&config, true));
+    native.configure(settings(&config, true));
     write(&theme, "[theme]\nbackground = \"#333333\"\n");
     native.wait_changed("a later theme edit");
 }
@@ -671,15 +879,19 @@ fn native_descendant_removed_before_registration_recovers_and_goes_idle() {
     let removed = Arc::new(AtomicUsize::new(0));
     let hook_removed = Arc::clone(&removed);
     let hook_directory = directory.clone();
-    let native = Native::start_with(settings(&config, true), move |watched| {
-        // The first time the new directory is about to be watched, it
-        // vanishes.
-        if watched == hook_directory
-            && hook_removed.fetch_add(1, Ordering::SeqCst) == 0
-        {
-            fs::remove_dir_all(&hook_directory).unwrap();
-        }
-    });
+    let hooks = NativeHooks {
+        before_watch: Some(Box::new(move |watched| {
+            // The first time the new directory is about to be watched, it
+            // vanishes.
+            if watched == hook_directory
+                && hook_removed.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                fs::remove_dir_all(&hook_directory).unwrap();
+            }
+        })),
+        ..NativeHooks::default()
+    };
+    let native = Native::start_with(settings(&config, true), hooks);
     fs::create_dir(&directory).unwrap();
     native.wait_probe("the vanished registration", |probe| {
         removed.load(Ordering::SeqCst) == 1 && !probe.timer_armed
@@ -699,4 +911,65 @@ fn native_descendant_removed_before_registration_recovers_and_goes_idle() {
     let again = native.handle.probe().unwrap();
     assert_eq!(again.reconciliations, idle.reconciliations);
     assert!(!again.timer_armed);
+}
+
+/// Re-points the symlink at `link` to `target` as `ln -sf` does: removes
+/// the link, then creates a new one.
+fn repoint(link: &Path, target: &Path) {
+    fs::remove_file(link).unwrap();
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn native_retargeting_the_config_link_moves_the_watch_and_reloads() {
+    let scratch = Scratch::new();
+    let original = scratch.path("dotfiles/config.toml");
+    let identical = scratch.path("spare/config.toml");
+    let alternate = scratch.path("dotfiles/alternate.toml");
+    write(&original, VALID_A);
+    write(&identical, VALID_A);
+    write(&alternate, "[font]\nsize = 18.0\n");
+    let link = scratch.path("linked/config.toml");
+    fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&original, &link).unwrap();
+    // The configured path runs through a symlinked directory, as macOS's
+    // `/tmp` and `/var` do, so native events name the link by another path.
+    let alias = scratch.path("alias");
+    std::os::unix::fs::symlink(&scratch.0, &alias).unwrap();
+    let config = alias.join("linked/config.toml");
+    let native = Native::start(settings(&config, true));
+    // Identical content moves the watch without a reload.
+    repoint(&link, &identical);
+    let probe = native.wait_probe("the watch to follow the link", |probe| {
+        probe.installed.contains(&scratch.path("spare")) && !probe.timer_armed
+    });
+    assert!(
+        !probe.installed.contains(&scratch.path("dotfiles")),
+        "{probe:?}"
+    );
+    native.configure(settings(&config, true));
+    // Different content reloads.
+    repoint(&link, &alternate);
+    native.wait_changed("the link retargeted to other content");
+}
+
+#[test]
+fn native_a_replaced_directory_is_watched_again() {
+    let scratch = Scratch::new();
+    let directory = scratch.path("huterm");
+    let config = scratch.path("huterm/config.toml");
+    write(&config, VALID_A);
+    let native = Native::start(settings(&config, true));
+    // Replace the watched directory with a new one, as a dotfiles tool
+    // that swaps a whole directory into place does.
+    let staged = scratch.path("huterm.new");
+    write(&staged.join("config.toml"), VALID_A);
+    fs::rename(&directory, scratch.path("huterm.old")).unwrap();
+    fs::rename(&staged, &directory).unwrap();
+    native.wait_probe("the replacement to settle", |probe| {
+        probe.installed == vec![directory.clone()] && !probe.timer_armed
+    });
+    native.configure(settings(&config, true));
+    write(&config, "[font]\nsize = 18.0\n");
+    native.wait_changed("an edit inside the new directory");
 }

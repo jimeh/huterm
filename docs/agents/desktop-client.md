@@ -541,7 +541,16 @@ which starts, reconfigures, and drops it: `FSEvents` blocks while starting and
 joins a thread when dropped, so the GPUI thread only sends `Settings` and
 receives `Report`s. Watch directories non-recursively, never files, and a
 missing directory through its nearest existing ancestor; keep the ancestor
-watched until the descendant's registration succeeds. Ignore every `Access`
+watched until the descendant's registration succeeds, and keep it when that
+registration fails. Record each registered directory's identity and register
+it again when the identity changes or an event removes or renames the
+directory itself: inotify drops a removed directory's watch and keeps
+following a renamed one, so a directory replaced at the same path is
+otherwise silently unwatched. Match events against each input as given, with
+only its directory canonicalized, and fully resolved: native events name a
+symlink through its real directory, so resolving the link itself misses a
+retarget when the configured path is not canonical, such as under macOS's
+`/tmp`. Ignore every `Access`
 event: fingerprinting opens the files, so reacting to inotify's open and close
 events loops. Every load and reload records `config::Inputs`, a fingerprint of
 the bytes it consumed plus the theme files it read or probed; reconcile
@@ -555,11 +564,18 @@ one reload at a time; a report during a reload marks it dirty even when the
 content matches, and one follow-up runs when it finishes. Every finished
 reload sends the watcher fresh `Settings`, including after a failure, which
 keeps the previous `watch_config`. An automatic reload that finds the file
-missing is skipped silently, since editors remove it while saving.
+missing is skipped silently, since editors remove it while saving. No
+automatic reload starts while quitting. Committing Quit drops the watcher's
+handle, and a reload that finishes afterwards applies nothing, since
+applying would register the global shortcuts Quit just removed.
 
 The `huterm_config::document` patch service edits `config.toml` by splicing
 byte ranges, never by re-serializing, and refuses any splice whose reparsed
-value tree or comments differ from what the operation asked for. Its desktop
+value tree or comments differ from what the operation asked for. `apply`
+resolves every entry locator once, against the file as it is when the call
+starts, and keeps each entry's identity through the call's own edits and
+removals; resolving again after an earlier patch can land on an identical
+twin. Its desktop
 validator, `config::validator`, must stay free of side effects: it compiles the
 keymap and global shortcuts but registers nothing.
 

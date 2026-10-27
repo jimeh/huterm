@@ -361,7 +361,7 @@ fn a_failed_reload_keeps_the_active_configs_own_diagnostics() {
             .map(|content| content.message.as_str())
             .collect::<Vec<_>>(),
         [
-            "Config reload failed: bad toml",
+            "Config reload failed: bad toml\nPrevious settings are still active.",
             "binding conflict",
             config::LEGACY_ALACRITTY_WARNING
         ]
@@ -377,7 +377,7 @@ fn a_failed_reload_keeps_the_active_configs_own_diagnostics() {
     assert_eq!(
         messages(&stack),
         [
-            "Config reload failed: bad toml",
+            "Config reload failed: bad toml\nPrevious settings are still active.",
             "binding conflict",
             config::LEGACY_ALACRITTY_WARNING,
         ],

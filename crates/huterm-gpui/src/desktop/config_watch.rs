@@ -12,15 +12,16 @@
 //! after a broken save reloads too. With no events it arms no timer and
 //! reads nothing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use notify::event::ModifyKind;
 use notify::{Event, EventKind, RecursiveMode, Watcher as _};
 
-use crate::config::{self, Inputs};
+use crate::config::{self, Fingerprint, Inputs};
 
 /// How long events must stop before the worker reconciles.
 pub(super) const QUIET_PERIOD: Duration = Duration::from_millis(150);
@@ -44,8 +45,11 @@ pub(super) struct Settings {
 pub(super) enum Report {
     /// Events touched a watched input. `differs` says whether the content
     /// now differs from the last attempted reload; an event during a reload
-    /// matters either way.
-    Changed { differs: bool },
+    /// matters either way. `fingerprint` is the inputs' current one.
+    Changed {
+        differs: bool,
+        fingerprint: Fingerprint,
+    },
     /// Acknowledges every configuration and reconciliation.
     Status {
         watching: bool,
@@ -175,8 +179,9 @@ fn relevant(event: &notify::Result<Event>, watched: &Watched) -> bool {
 }
 
 /// `path` with its nearest existing ancestor canonicalized, so it compares
-/// equal to the real paths native events report.
-fn normalize(path: &Path) -> PathBuf {
+/// equal to the real paths native events report. A symlink that exists
+/// resolves to its target.
+fn resolve(path: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut ancestor = path;
     loop {
@@ -193,6 +198,15 @@ fn normalize(path: &Path) -> PathBuf {
         };
         rest.push(name.to_owned());
         ancestor = parent;
+    }
+}
+
+/// `path` with its directory resolved but its own name kept, so a symlink
+/// compares equal to the path native events report for the link itself.
+fn normalize(path: &Path) -> PathBuf {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => resolve(parent).join(name),
+        _ => path.to_owned(),
     }
 }
 
@@ -226,7 +240,7 @@ fn topology(settings: &Settings) -> (BTreeSet<PathBuf>, Watched) {
     files.extend(settings.inputs.themes.iter().cloned());
     let mut desired = BTreeSet::new();
     for file in files {
-        for path in [file.clone(), normalize(&file)] {
+        for path in [file.clone(), normalize(&file), resolve(&file)] {
             if let Some(parent) = path.parent() {
                 watched.directories.insert(parent.to_owned());
                 if let Some(directory) = nearest_existing(parent) {
@@ -239,6 +253,21 @@ fn topology(settings: &Settings) -> (BTreeSet<PathBuf>, Watched) {
     (desired, watched)
 }
 
+/// A directory's identity: device and inode on Unix, so a directory
+/// replaced at the same path differs. `None` when it is missing, and
+/// always elsewhere.
+#[cfg(unix)]
+fn identity(directory: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = directory.metadata().ok()?;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn identity(_: &Path) -> Option<(u64, u64)> {
+    None
+}
+
 /// The worker's state, driven by messages and the clock its caller passes.
 pub(super) struct Worker<B> {
     backend: B,
@@ -246,7 +275,8 @@ pub(super) struct Worker<B> {
     settings: Option<Settings>,
     watching: bool,
     unavailable: bool,
-    installed: BTreeSet<PathBuf>,
+    /// Each registered directory and its identity when it was registered.
+    installed: BTreeMap<PathBuf, Option<(u64, u64)>>,
     watched: Watched,
     /// When the next reconciliation runs; `None` while idle.
     deadline: Option<Instant>,
@@ -267,7 +297,7 @@ impl<B: Backend> Worker<B> {
             settings: None,
             watching: false,
             unavailable: false,
-            installed: BTreeSet::new(),
+            installed: BTreeMap::new(),
             watched: Watched::default(),
             deadline: None,
             events_pending: false,
@@ -275,9 +305,11 @@ impl<B: Backend> Worker<B> {
         }
     }
 
+    /// Reports watching only while a registration holds; with none,
+    /// nothing reloads on its own.
     fn status(&mut self) {
         (self.report)(Report::Status {
-            watching: self.watching,
+            watching: self.watching && !self.installed.is_empty(),
             reconciliations: self.reconciliations,
         });
     }
@@ -321,10 +353,42 @@ impl<B: Backend> Worker<B> {
         event: &notify::Result<Event>,
         now: Instant,
     ) {
-        if self.watching && relevant(event, &self.watched) {
+        if !self.watching {
+            return;
+        }
+        let dropped = self.drop_lost_registrations(event);
+        if dropped || relevant(event, &self.watched) {
             self.deadline = Some(now + QUIET_PERIOD);
             self.events_pending = true;
         }
+    }
+
+    /// Forgets registrations whose directory `event` removed or renamed:
+    /// inotify drops a removed directory's watch and keeps following a
+    /// renamed one, so neither covers whatever appears at the path next.
+    /// The next reconciliation registers the path again. Returns whether
+    /// any registration went.
+    fn drop_lost_registrations(
+        &mut self,
+        event: &notify::Result<Event>,
+    ) -> bool {
+        let Ok(event) = event else {
+            return false;
+        };
+        if !matches!(
+            event.kind,
+            EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+        ) {
+            return false;
+        }
+        let mut dropped = false;
+        for path in &event.paths {
+            if self.installed.remove(path).is_some() {
+                self.backend.unwatch(path);
+                dropped = true;
+            }
+        }
+        dropped
     }
 
     /// How long until the next reconciliation; `None` while idle.
@@ -361,7 +425,10 @@ impl<B: Backend> Worker<B> {
         {
             let differs = current != settings.inputs.fingerprint;
             if events || differs {
-                (self.report)(Report::Changed { differs });
+                (self.report)(Report::Changed {
+                    differs,
+                    fingerprint: current,
+                });
             }
         }
         self.status();
@@ -373,31 +440,61 @@ impl<B: Backend> Worker<B> {
         let mut changed = false;
         let mut failure = None;
         for _ in 0..TOPOLOGY_ATTEMPTS {
+            // A directory replaced at the same path, or removed, since it
+            // was registered is no longer covered by that registration.
+            let replaced: Vec<PathBuf> = self
+                .installed
+                .iter()
+                .filter(|(directory, registered)| {
+                    identity(directory) != **registered
+                })
+                .map(|(directory, _)| directory.clone())
+                .collect();
+            for directory in replaced {
+                self.backend.unwatch(&directory);
+                self.installed.remove(&directory);
+            }
             let (desired, watched) = topology(settings);
             self.watched = watched;
             let mut vanished = false;
+            let mut failed = Vec::new();
             for directory in desired
-                .difference(&self.installed)
+                .iter()
+                .filter(|directory| !self.installed.contains_key(*directory))
                 .cloned()
                 .collect::<Vec<_>>()
             {
+                // Read before registering, so a replacement in between
+                // shows as a changed identity next time.
+                let registered = identity(&directory);
                 match self.backend.watch(&directory) {
                     Ok(()) => {
-                        self.installed.insert(directory);
+                        self.installed.insert(directory, registered);
                         changed = true;
                     }
                     Err(WatchError::NotFound) => vanished = true,
-                    Err(WatchError::Other(error)) => failure = Some(error),
+                    Err(WatchError::Other(error)) => {
+                        failure = Some(error);
+                        failed.push(directory);
+                    }
                 }
             }
             if vanished {
                 // Keep every existing watch and resolve again.
                 continue;
             }
-            // Ancestors stay until their descendants' watches succeed.
+            // A registration stays until every watch that replaces its
+            // coverage succeeds, so an ancestor outlives a failed
+            // descendant.
             for directory in self
                 .installed
-                .difference(&desired)
+                .keys()
+                .filter(|directory| {
+                    !desired.contains(*directory)
+                        && !failed
+                            .iter()
+                            .any(|failed| failed.starts_with(directory))
+                })
                 .cloned()
                 .collect::<Vec<_>>()
             {
@@ -427,7 +524,7 @@ impl<B: Backend> Worker<B> {
     #[cfg(test)]
     fn probe(&self) -> Probe {
         Probe {
-            installed: self.installed.iter().cloned().collect(),
+            installed: self.installed.keys().cloned().collect(),
             timer_armed: self.deadline.is_some(),
             reconciliations: self.reconciliations,
         }

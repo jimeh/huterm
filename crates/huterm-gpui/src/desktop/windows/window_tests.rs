@@ -2275,6 +2275,49 @@ fn a_confirmed_quit_committing_when_its_windows_session_closes_still_quits(
 }
 
 #[gpui::test]
+fn an_automatic_reload_does_not_start_while_quitting(cx: &mut TestAppContext) {
+    let harness = DesktopHarness::new(cx);
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().quitting = true;
+        handle_watch_report(
+            cx,
+            config_watch::Report::Changed {
+                differs: true,
+                fingerprint: config::Fingerprint::default(),
+            },
+        );
+        assert!(!cx.global::<Desktop>().reloads.reloading());
+    });
+}
+
+#[gpui::test]
+fn a_reload_finishing_after_quit_commits_applies_nothing(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    harness.wait_text(window, tab, "READY");
+    harness.cx.update(|cx| {
+        let size = cx.global::<Desktop>().config.font.size;
+        let mut changed = cx.global::<Desktop>().config.clone();
+        changed.font.size = size + 4.0;
+        commit_quit(cx);
+        finish_reload(
+            cx,
+            ReloadKind::Manual,
+            Path::new("huterm-test.toml"),
+            config::Reloaded {
+                config: Ok(changed),
+                inputs: config::Inputs::default(),
+                missing: false,
+            },
+        );
+        assert_eq!(cx.global::<Desktop>().config.font.size, size);
+    });
+}
+
+#[gpui::test]
 fn a_failed_emptied_close_assessment_raises_one_notice_and_is_not_retried(
     cx: &mut TestAppContext,
 ) {
