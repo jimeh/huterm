@@ -238,6 +238,15 @@ impl TerminalEngine {
     ) -> Result<bool, RuntimeError> {
         self.inner.set_scrollback(limit)
     }
+
+    /// Applies a row limit above [`ScrollbackLimit::MAX`] for benchmarks.
+    #[cfg(test)]
+    pub(crate) fn set_history_rows(
+        &mut self,
+        rows: u32,
+    ) -> Result<bool, RuntimeError> {
+        self.inner.set_history_rows(rows)
+    }
     pub(crate) fn lookup_link(
         &self,
         snapshot: &TerminalSnapshot,

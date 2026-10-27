@@ -67,12 +67,12 @@ fn scrollback_rows_and_bytes_reach_the_terminal_limit() {
     let defaults = parse("").unwrap().terminal.scrollback;
     assert_eq!((defaults.rows(), defaults.bytes()), (10_000, None));
     let both = parse(
-        "[terminal]\nscrollback_rows = 50000\nscrollback_bytes = '64MiB'",
+        "[terminal]\nscrollback_rows = 100000\nscrollback_bytes = '64MiB'",
     )
     .unwrap()
     .terminal
     .scrollback;
-    assert_eq!((both.rows(), both.bytes()), (50_000, Some(64 << 20)));
+    assert_eq!((both.rows(), both.bytes()), (100_000, Some(64 << 20)));
 }
 
 #[test]

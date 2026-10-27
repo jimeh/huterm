@@ -1,0 +1,180 @@
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+index 04ff24a..c5578d0 100644
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -1475,6 +1475,11 @@ fn resizeCols(
+     self.pages.first = first_rewritten_node;
+     self.pages.last = first_rewritten_node;
+ 
++    // The reflow sets `total_rows` only after every row is reflowed. A
++    // failure before then leaves the rows reflowed so far as the list, so
++    // count them: `pinNearest` resolves from the cached count.
++    errdefer self.total_rows = self.totalRows();
++
+     // Reflow all our rows.
+     {
+         var reflow_cursor: ReflowCursor = .init(first_rewritten_node);
+@@ -5708,6 +5713,46 @@ pub fn pin(self: *const PageList, pt: point.Point) ?Pin {
+     return p;
+ }
+ 
++/// Returns the same pin as `pin`, but resolves a screen or history point
++/// from whichever end of the list is nearer, using the cached `total_rows`.
++/// `pin` walks from the first page, so its cost grows with history even for
++/// rows near the active area.
++///
++/// The cached count is stale inside operations such as reflow and page
++/// erasure, so only callers outside any PageList operation may use this,
++/// such as the C API. Internal callers keep using `pin`.
++pub fn pinNearest(self: *const PageList, pt: point.Point) ?Pin {
++    const result = self.pinNearestUnchecked(pt);
++    if (comptime build_options.slow_runtime_safety) {
++        if (self.pin(pt)) |expected| {
++            assert(result != null and result.?.eql(expected));
++        } else {
++            assert(result == null);
++        }
++    }
++    return result;
++}
++
++fn pinNearestUnchecked(self: *const PageList, pt: point.Point) ?Pin {
++    // Screen and history points share the first page as their origin.
++    const coord = switch (pt) {
++        .screen, .history => |v| v,
++        .active, .viewport => return self.pin(pt),
++    };
++    if (coord.x >= self.cols) return null;
++    if (coord.y >= self.total_rows) return null;
++    const from_bottom = self.total_rows - 1 - coord.y;
++    if (coord.y <= from_bottom) return self.pin(pt);
++
++    const last = self.pages.last.?;
++    const bottom: Pin = .{ .node = last, .y = last.rows() - 1 };
++    var p = bottom.up(from_bottom) orelse return null;
++    // The same narrow-page check as `pin`.
++    if (coord.x >= p.node.cols()) return null;
++    p.x = coord.x;
++    return p;
++}
++
+ /// Convert the given pin to a tracked pin. A tracked pin will always be
+ /// automatically updated as the pagelist is modified. If the point the
+ /// pin points to is removed completely, the tracked pin will be updated
+@@ -11152,6 +11197,101 @@ test "PageList grow fit in capacity" {
+     }
+ }
+ 
++/// Checks that `pinNearest` returns `pin`'s result for every row of the
++/// list, one row past it, and columns at, inside, and past the width.
++fn testPinNearestMatchesPin(s: *const PageList) !void {
++    const testing = std.testing;
++    const cols: size.CellCountInt = s.cols;
++    for (0..s.total_rows + 2) |y_usize| {
++        const y: u32 = @intCast(y_usize);
++        for ([_]size.CellCountInt{ 0, cols / 2, cols - 1, cols }) |x| {
++            for ([_]point.Point{
++                .{ .screen = .{ .x = x, .y = y } },
++                .{ .history = .{ .x = x, .y = y } },
++            }) |pt| {
++                const expected = s.pin(pt);
++                const actual = s.pinNearestUnchecked(pt);
++                if (expected) |e| {
++                    try testing.expect(actual != null);
++                    try testing.expect(actual.?.eql(e));
++                } else {
++                    try testing.expect(actual == null);
++                }
++            }
++        }
++    }
++}
++
++test "PageList pinNearest matches pin across pages" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var s = try init(alloc, .{ .cols = 80, .rows = 24 });
++    defer s.deinit();
++    try testPinNearestMatchesPin(&s);
++
++    // Several full pages and a partly filled last page.
++    const page_rows = s.pages.first.?.page().capacity.rows;
++    for (0..page_rows * 4 + 7) |_| _ = try s.grow();
++    try testing.expect(s.totalPages() >= 5);
++    try testPinNearestMatchesPin(&s);
++
++    // Pruning history from the front shifts every screen row.
++    s.eraseRows(.{ .history = .{} }, .{ .history = .{ .y = page_rows + 3 } });
++    try testPinNearestMatchesPin(&s);
++
++    // A reflow rebuilds every page and the cached row count.
++    try s.resize(.{ .cols = 50, .reflow = true });
++    try testPinNearestMatchesPin(&s);
++}
++
++test "PageList pinNearest matches pin after a failed reflow" {
++    const testing = std.testing;
++
++    // Fail each allocation of a widening reflow in turn, until the reflow
++    // completes. Every failure must leave the cached row count correct.
++    var failures: usize = 0;
++    for (0..256) |n| {
++        var failing = testing.FailingAllocator.init(testing.allocator, .{});
++        var s = try init(failing.allocator(), .{ .cols = 80, .rows = 24 });
++        defer s.deinit();
++        const page_rows = s.pages.first.?.page().capacity.rows;
++        for (0..page_rows * 4) |_| _ = try s.grow();
++        for (0..s.total_rows) |y| {
++            const row = s.pin(.{ .screen = .{ .y = @intCast(y) } }).?;
++            row.rowAndCell().cell.* = .init('x');
++        }
++
++        failing.fail_index = failing.alloc_index + n;
++        s.resize(.{ .cols = 200, .reflow = true }) catch {
++            failures += 1;
++            try testing.expectEqual(s.totalRows(), s.total_rows);
++            try testPinNearestMatchesPin(&s);
++            continue;
++        };
++        break;
++    } else return error.ReflowNeverCompleted;
++    try testing.expect(failures > 0);
++}
++
++test "PageList pinNearest keeps the narrow page check" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var s = try init(alloc, .{ .cols = 80, .rows = 24 });
++    defer s.deinit();
++    const page_rows = s.pages.first.?.page().capacity.rows;
++    for (0..page_rows * 3) |_| _ = try s.grow();
++
++    // Pages narrower than the list, as an incomplete reflow can leave them.
++    s.cols = 100;
++    defer s.cols = 80;
++    const bottom: u32 = @intCast(s.total_rows - 1);
++    try testing.expect(s.pinNearestUnchecked(.{ .screen = .{ .x = 79, .y = bottom } }) != null);
++    try testing.expect(s.pinNearestUnchecked(.{ .screen = .{ .x = 80, .y = bottom } }) == null);
++    try testPinNearestMatchesPin(&s);
++}
++
+ test "PageList grow allocate" {
+     const testing = std.testing;
+     const alloc = testing.allocator;
+diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+index 5f047f4..741dfb1 100644
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -2176,7 +2176,9 @@ pub fn grid_ref(
+ ) callconv(lib.calling_conv) Result {
+     const t: *ZigTerminal = (terminal_ orelse return .invalid_value).terminal;
+     const zig_pt: point.Point = .fromC(pt);
+-    const p = t.screens.active.pages.pin(zig_pt) orelse
++    // Between API calls the cached row count is current, so screen points
++    // can resolve from the nearer end of the scrollback.
++    const p = t.screens.active.pages.pinNearest(zig_pt) orelse
+         return .invalid_value;
+     if (out_ref) |out| out.* = grid_ref_c.CGridRef.fromPin(p);
+     return .success;

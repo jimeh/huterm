@@ -49,6 +49,12 @@
       "file": "third-party/ghostty-patches/ref-counted-set-dead-id-reuse.patch",
       "sha256": "a92f1123c27dc294416d645af4b49b047a4d6a20b60bb338e9049edccb723e84",
       "description": "Reuse a dead ID in place when a full RefCountedSet has enough dead IDs, instead of returning NeedsRehash, so rewriting a row's OSC 8 linked text no longer clones the page and forces a full RenderState redraw."
+    },
+    {
+      "name": "page-list-pin-nearest",
+      "file": "third-party/ghostty-patches/page-list-pin-nearest.patch",
+      "sha256": "d6ffc91428bd881b6e187025743dea448286270da8bbeedf50d63a12ff727d0f",
+      "description": "Resolve the C API's screen and history grid references from whichever end of the page list is nearer, using the cached row count, so a reference near the active area no longer walks all of history. It returns the same pin as PageList.pin, and a failed reflow now recounts the cached rows."
     }
   ]
 }

@@ -32,6 +32,8 @@ mod abi_tests;
 #[cfg(test)]
 mod contract_tests;
 #[cfg(test)]
+mod grid_ref_tests;
+#[cfg(test)]
 mod key_tests;
 #[cfg(test)]
 mod test_alloc;
@@ -44,7 +46,7 @@ pub use mouse::{MouseProbe, ProbedFormat, ProbedTracking};
 pub use native::NativeBytes;
 pub use overrides::ColorOverrides;
 pub use render::{RenderCells, RenderRow, RenderState, Rows};
-pub use terminal::{GridRef, Options, Terminal};
+pub use terminal::{GridRef, Options, RowRef, Terminal};
 pub use types::{
     Cell, CellContent, CellWidth, ClipboardContent, ClipboardLocation,
     ClipboardWrite, ClipboardWriteResult, ColorScheme, Cursor, CursorStyle,

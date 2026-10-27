@@ -318,3 +318,89 @@ fn engine_benchmark_resize() {
         resizing[100], resizing[190], snapshots[100], snapshots[190]
     );
 }
+
+/// The smallest benchmark history size. Smaller limits evict the output of
+/// fixtures that place thousands of rows after it, such as the link
+/// benchmark's `scrolled-history` and `scan-limit-mid-history`.
+const MIN_HISTORY_ROWS: u32 = 10_000;
+
+/// History sizes, in rows, at which benchmarks saturate scrollback: the
+/// comma-separated `HUTERM_BENCH_HISTORY_ROWS`, or the configurable maximum.
+pub(super) fn history_sizes() -> Vec<u32> {
+    std::env::var("HUTERM_BENCH_HISTORY_ROWS").map_or_else(
+        |_| vec![ScrollbackLimit::MAX.rows()],
+        |sizes| {
+            sizes
+                .split(',')
+                .map(|size| match size.trim().parse() {
+                    Ok(rows) if rows >= MIN_HISTORY_ROWS => rows,
+                    _ => panic!(
+                        "HUTERM_BENCH_HISTORY_ROWS entry {size:?} must be a \
+                         row count of at least {MIN_HISTORY_ROWS}"
+                    ),
+                })
+                .collect()
+        },
+    )
+}
+
+/// Rows of output that saturate a history limit of `rows`. Ghostty prunes
+/// whole pages, so history settles less than a page below the limit.
+pub(super) const fn saturating_lines(rows: u32) -> usize {
+    rows as usize / 5 * 6 + 1000
+}
+
+#[test]
+#[ignore = "release benchmark; run through mise run bench:engine"]
+fn engine_benchmark_resize_history() {
+    let cell = CellSize {
+        width: 8,
+        height: 16,
+    };
+    for rows in history_sizes() {
+        let mut engine = TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(120, 40),
+            cell,
+            TerminalPresentation::default(),
+        )
+        .unwrap();
+        engine.set_history_rows(rows).unwrap();
+        // 149-column lines fill two rows at both widths, so every reflow
+        // rewraps them without changing the row count.
+        let lines = saturating_lines(rows).div_ceil(2);
+        let mut batch = String::new();
+        for line in 0..lines {
+            let _ = write!(batch, "{line:08} {}\r\n", "x".repeat(140));
+            if line % 10_000 == 9_999 || line + 1 == lines {
+                engine.process(batch.as_bytes()).unwrap();
+                batch.clear();
+            }
+        }
+        let before = engine.snapshot().unwrap().history_size;
+        let mut resizing = Vec::new();
+        let mut snapshots = Vec::new();
+        let mut after = 0;
+        for iteration in 0..20 {
+            let size = GridSize::clamped(
+                if iteration % 2 == 0 { 100 } else { 120 },
+                40,
+            );
+            let started = Instant::now();
+            engine.resize(size, cell).unwrap();
+            resizing.push(started.elapsed().as_micros());
+            let started = Instant::now();
+            let snapshot = engine.snapshot().unwrap();
+            snapshots.push(started.elapsed().as_micros());
+            assert_eq!(snapshot.size, size);
+            after = snapshot.history_size;
+            black_box(snapshot);
+        }
+        resizing.sort_unstable();
+        snapshots.sort_unstable();
+        println!(
+            "engine=ghostty fixture=resize-history iterations=20 columns=100/120 rows=40 limit_rows={rows} history_rows_before={before} history_rows_after={after} resize_us_p50={} resize_us_max={} snapshot_us_p50={} snapshot_us_max={}",
+            resizing[10], resizing[19], snapshots[10], snapshots[19]
+        );
+    }
+}

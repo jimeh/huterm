@@ -234,7 +234,7 @@ pub(super) struct TerminalEngine {
     size: GridSize,
     cell: CellSize,
     presentation: TerminalPresentation,
-    scrollback: ScrollbackLimit,
+    scrollback: HistoryLimit,
     generation: u64,
     modes: StdCell<Option<(u64, TerminalModes)>>,
     hint: EscapeHint,
@@ -276,7 +276,8 @@ impl TerminalEngine {
         };
         let mut terminal =
             ghostty::Terminal::new(options, EngineHost::default())?;
-        apply_scrollback(&mut terminal, ScrollbackLimit::DEFAULT, size.rows)?;
+        let scrollback = HistoryLimit::from(ScrollbackLimit::DEFAULT);
+        apply_scrollback(&mut terminal, scrollback, size.rows)?;
         terminal.disable_apc_protocols()?;
         // A larger Kitty write could never fit the terminal's host-effect
         // budget, so Ghostty answers it with EFBIG before asking the host.
@@ -290,7 +291,7 @@ impl TerminalEngine {
             size,
             cell,
             presentation,
-            scrollback: ScrollbackLimit::DEFAULT,
+            scrollback,
             generation: 0,
             modes: StdCell::new(None),
             hint: EscapeHint::Ground,
@@ -450,6 +451,23 @@ impl TerminalEngine {
     pub(super) fn set_scrollback(
         &mut self,
         limit: ScrollbackLimit,
+    ) -> Result<bool, RuntimeError> {
+        self.set_history(limit.into())
+    }
+
+    /// Applies a row limit above [`ScrollbackLimit::MAX`], with the derived
+    /// byte allowance, so benchmarks can measure larger histories.
+    #[cfg(test)]
+    pub(super) fn set_history_rows(
+        &mut self,
+        rows: u32,
+    ) -> Result<bool, RuntimeError> {
+        self.set_history(HistoryLimit { rows, bytes: None })
+    }
+
+    fn set_history(
+        &mut self,
+        limit: HistoryLimit,
     ) -> Result<bool, RuntimeError> {
         if limit == self.scrollback {
             return Ok(false);
@@ -689,6 +707,8 @@ impl TerminalEngine {
             terminal: &self.terminal,
             total,
             top,
+            last_column: self.size.columns.saturating_sub(1),
+            rows: StdCell::new([None; 2]),
             codepoints: [0; LINK_GRAPHEME_CODEPOINTS],
         })
     }
@@ -722,13 +742,31 @@ impl TerminalEngine {
     }
 }
 
+/// The row and byte limits the engine applies. A validated
+/// [`ScrollbackLimit`] supplies them, except in benchmarks, which measure
+/// histories above its maximum.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HistoryLimit {
+    rows: u32,
+    bytes: Option<u64>,
+}
+
+impl From<ScrollbackLimit> for HistoryLimit {
+    fn from(limit: ScrollbackLimit) -> Self {
+        Self {
+            rows: limit.rows(),
+            bytes: limit.bytes(),
+        }
+    }
+}
+
 /// Maps a history limit onto Ghostty's line and byte limits, which apply
 /// together: whichever is reached first prunes. Ghostty keeps at least one
 /// page of rows under any line limit, so only a zero byte limit keeps no
 /// history.
 fn apply_scrollback(
     terminal: &mut ghostty::Terminal<EngineHost>,
-    limit: ScrollbackLimit,
+    limit: HistoryLimit,
     screen_rows: u16,
 ) -> Result<(), RuntimeError> {
     let bytes = scrollback_bytes(limit, screen_rows);
@@ -737,7 +775,7 @@ fn apply_scrollback(
         terminal.set_scrollback_lines(None)?;
     } else {
         terminal.set_scrollback_lines(Some(
-            usize::try_from(limit.rows()).unwrap_or(usize::MAX),
+            usize::try_from(limit.rows).unwrap_or(usize::MAX),
         ))?;
         terminal.set_scrollback_bytes(Some(bytes))?;
     }
@@ -747,12 +785,12 @@ fn apply_scrollback(
 /// The byte allowance for `limit` on a screen of `screen_rows`: zero when
 /// either limit keeps no history, the explicit byte limit when one is set,
 /// and otherwise an allowance derived from the rows.
-fn scrollback_bytes(limit: ScrollbackLimit, screen_rows: u16) -> usize {
-    let rows = usize::try_from(limit.rows()).unwrap_or(usize::MAX);
+fn scrollback_bytes(limit: HistoryLimit, screen_rows: u16) -> usize {
+    let rows = usize::try_from(limit.rows).unwrap_or(usize::MAX);
     if rows == 0 {
         return 0;
     }
-    limit.bytes().map_or_else(
+    limit.bytes.map_or_else(
         || {
             rows.saturating_add(usize::from(screen_rows))
                 .saturating_mul(SCROLLBACK_BYTES_PER_ROW)
@@ -928,35 +966,60 @@ fn extract_row(
 
 /// Reads the grid for link resolution. Rows at or below the viewport top
 /// use viewport points; Ghostty resolves screen points by walking history
-/// from its first page, so only rows above the viewport pay that cost.
+/// pages, so only rows above the viewport pay that cost. Each row resolves
+/// once, at the last column, and its cells and wrap flag are read through
+/// that one reference.
 pub(super) struct GhosttyLinks<'a> {
     terminal: &'a ghostty::Terminal<EngineHost>,
     total: usize,
     top: usize,
+    last_column: u16,
+    /// The lookup's first row and the row it read last. A scan reads
+    /// outward from its first row in each direction, so these two hold
+    /// every row it returns to.
+    rows: StdCell<[Option<(usize, ghostty::RowRef<'a>)>; 2]>,
     /// Grapheme scratch shared by every cell a lookup visits.
     codepoints: [u32; LINK_GRAPHEME_CODEPOINTS],
 }
 
 impl<'a> GhosttyLinks<'a> {
-    fn grid_ref(
-        &self,
-        row: usize,
-        column: u16,
-    ) -> Result<ghostty::GridRef<'a>, LinkLookup> {
+    fn row_ref(&self, row: usize) -> Result<ghostty::RowRef<'a>, LinkLookup> {
+        let [first, last] = self.rows.get();
+        if let Some((_, cached)) = [first, last]
+            .into_iter()
+            .flatten()
+            .find(|cached| cached.0 == row)
+        {
+            return Ok(cached);
+        }
         let point = if row >= self.top {
             Point::viewport(
-                column,
+                self.last_column,
                 u32::try_from(row - self.top)
                     .map_err(|_| LinkLookup::Unavailable)?,
             )
         } else {
             Point::screen(
-                column,
+                self.last_column,
                 u32::try_from(row).map_err(|_| LinkLookup::Unavailable)?,
             )
         };
-        self.terminal
-            .grid_ref(point)
+        let resolved = self
+            .terminal
+            .row_ref(point)
+            .map_err(|_| LinkLookup::Unavailable)?;
+        self.rows
+            .set([first.or(Some((row, resolved))), Some((row, resolved))]);
+        Ok(resolved)
+    }
+
+    fn grid_ref(
+        &self,
+        row: usize,
+        column: u16,
+    ) -> Result<ghostty::GridRef<'a>, LinkLookup> {
+        self.row_ref(row)?
+            .cell(column)
             .map_err(|_| LinkLookup::Unavailable)
     }
 }
@@ -971,7 +1034,7 @@ impl LinkBuffer for GhosttyLinks<'_> {
     }
 
     fn wrapped(&self, row: usize) -> Result<bool, LinkLookup> {
-        self.grid_ref(row, 0)?
+        self.row_ref(row)?
             .row()
             .and_then(ghostty::Row::wrapped)
             .map_err(unavailable)

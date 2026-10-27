@@ -103,21 +103,31 @@ defaults, restores the defaults before rendering, and compares effective colors
 before consuming damage. This keeps explicit overrides and cached row colors
 coherent without forcing unrelated rows to rebuild.
 
-Ghostty resolves a `Point::Screen` grid reference by walking page nodes from
-the top of history, but a `Point::Viewport` reference from the viewport's own
-position. Link lookup therefore reads rows at or below the current viewport
-top, scrolled or not, through viewport points and keeps screen points for rows
-above it. Plain-text lookup reads only the token under the pointer, up to the
-nearest delimiters, and applies the scan limits to that token; the bounding
-delimiters do not count. Reads above the viewport still cost one walk each as
-history grows, because there is no native API to step a reference between rows.
-They occur for every cell of a token that extends above the viewport, and once
-when a token reaches the viewport's top-left cell and the row above must be
-checked for a soft wrap. That check reads the row above's own wrap flag: the
-next row's continuation flag can disagree with it after line insertion or
-deletion. The walks are why `ScrollbackLimit::MAX` is 50,000 rows: the
-`scan-limit-above-viewport` fixture's p95 was 1.9 ms locally with 50,000 rows
-of history and 4.7 ms with 100,000, against the benchmark's 5 ms gate.
+Ghostty resolves a `Point::Viewport` grid reference from the viewport's own
+position, and with the `page-list-pin-nearest` patch a `Point::Screen`
+reference by walking page nodes from the nearer end of history. Link lookup
+reads rows at or below the current viewport top, scrolled or not, through
+viewport points and keeps screen points for rows above it. Plain-text lookup
+reads only the token under the pointer, up to the nearest delimiters, and
+applies the scan limits to that token; the bounding delimiters do not count.
+There is no native API to step a reference between rows, so `GhosttyLinks`
+resolves each row once through `RowRef`, at the last column, and reads its
+cells and wrap flag through that reference. `RowRef` changes only the column
+of a reference Ghostty resolved, which is in bounds because Ghostty validated
+the last column against the row's own page; incomplete reflow can leave a page
+narrower than the terminal. A row above the viewport still costs one walk,
+longest in the middle of history: `scan-limit-mid-history` reads 128 such
+rows, the scan's row limit, in 0.5 ms locally with a million rows of history.
+A token that reaches the viewport's top-left cell reads the row above's own
+wrap flag: the next row's continuation flag can disagree with it after line
+insertion or deletion.
+
+Reflow, not link lookup, bounds `ScrollbackLimit::MAX` at 100,000 rows. A width
+change rewraps all history on the runtime thread at about 65 ns per row in the
+`resize-history` fixture of `bench:engine`: 6.6 ms p50 at 100,000 rows and
+68 ms at a million locally. Saturated plain history at 120 columns takes about
+1 KB per row. Link lookup stays under 0.5 ms p95 at a million rows. Raising the
+maximum again needs cheaper reflow first.
 
 Core seeds foreground, background, cursor, palette, grid, and physical cell size
 before spawning the child. It answers native OSC 4,
@@ -175,10 +185,14 @@ mise run bench:links
 The engine benchmark reports the fixed Ghostty revision, p50/p95 elapsed
 processing and snapshot times, row reuse, throughput, and retained history.
 The scroll and link gates keep their existing thresholds and queue limits.
-The link benchmark runs its viewport, above-viewport, long-line, and scrolled
-fixtures with empty scrollback and with scrollback saturated at the largest
-limit, so their elapsed times can be compared. Raising that limit lengthens the
-above-viewport fixtures' walks.
+The link benchmark runs its viewport, above-viewport, mid-history, long-line,
+and scrolled fixtures with empty scrollback and with scrollback saturated at
+the largest limit, so their elapsed times can be compared. Set
+`HUTERM_BENCH_HISTORY_ROWS` to a comma-separated list of row counts, each at
+least 10,000, to saturate at those sizes instead, in both `bench:links` and the
+engine benchmark's `resize-history` fixture. A test-only engine hook applies
+sizes above `ScrollbackLimit::MAX`; the link gate applies only to sizes within
+it.
 Elapsed time includes scheduler preemption; Xvfb snapshot evidence does not
 prove continuous presentation.
 

@@ -553,6 +553,19 @@ impl<H> Terminal<H> {
         Ok(GridRef(self.native()?.as_ref().grid_ref(point)?))
     }
 
+    /// Resolves the row of `point` once, for reading any of its cells up to
+    /// column `point.x`. Resolving a [`PointSpace::Screen`] point walks the
+    /// scrollback, so a reader of several cells in one row should resolve
+    /// the row once and read each cell through [`RowRef::cell`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidValue`] for a point outside its coordinate space,
+    /// including a column beyond the width of the row's storage.
+    pub fn row_ref(&self, point: Point) -> Result<RowRef<'_>> {
+        Ok(RowRef(self.native()?.as_ref().row_ref(point)?))
+    }
+
     /// Formats the inclusive, linear selection between two screen points as
     /// plain text with soft wraps joined and trailing whitespace trimmed.
     ///
@@ -592,6 +605,12 @@ fn optional<T>(value: Result<T>) -> Result<Option<T>> {
 pub struct GridRef<'a>(crate::native::GridRef<'a>);
 
 impl GridRef<'_> {
+    /// The page node and in-page position this reference addresses.
+    #[cfg(test)]
+    pub(crate) const fn position(&self) -> (*mut core::ffi::c_void, u16, u16) {
+        self.0.position()
+    }
+
     /// The cell value.
     ///
     /// # Errors
@@ -626,6 +645,37 @@ impl GridRef<'_> {
     /// Fails if the reference is invalid.
     pub fn hyperlink_uri(&self, buffer: &mut [u8]) -> Result<Fill> {
         self.0.hyperlink_uri(buffer)
+    }
+}
+
+/// A resolved row, valid while its terminal is borrowed.
+#[derive(Clone, Copy, Debug)]
+pub struct RowRef<'a>(crate::native::RowRef<'a>);
+
+impl<'a> RowRef<'a> {
+    /// The rightmost column [`Self::cell`] accepts: the column the row was
+    /// resolved at.
+    #[must_use]
+    pub const fn last_column(&self) -> u16 {
+        self.0.last_column()
+    }
+
+    /// The row's cell at `column`, without resolving the row again.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidValue`] for a column beyond [`Self::last_column`].
+    pub fn cell(&self, column: u16) -> Result<GridRef<'a>> {
+        self.0.cell(column).map(GridRef).ok_or(Error::InvalidValue)
+    }
+
+    /// The row value, including its soft-wrap flag.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the reference is invalid.
+    pub fn row(&self) -> Result<Row> {
+        self.0.row()
     }
 }
 

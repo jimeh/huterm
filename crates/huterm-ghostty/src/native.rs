@@ -340,6 +340,14 @@ impl<'a> TerminalRef<'a> {
         })
     }
 
+    /// Resolves `point`'s row for reading its cells up to column `point.x`.
+    pub(crate) fn row_ref(self, point: Point) -> Result<RowRef<'a>> {
+        Ok(RowRef {
+            last: self.grid_ref(point)?,
+            last_column: point.x,
+        })
+    }
+
     /// Formats an inclusive, linear selection as unwrapped, trimmed text.
     pub(crate) fn format_plain(
         self,
@@ -390,6 +398,12 @@ pub(crate) struct GridRef<'a> {
 }
 
 impl GridRef<'_> {
+    /// The page node and in-page position this reference addresses.
+    #[cfg(test)]
+    pub(crate) const fn position(&self) -> (*mut c_void, u16, u16) {
+        (self.raw.node, self.raw.x, self.raw.y)
+    }
+
     pub(crate) fn cell(&self) -> Result<Cell> {
         let mut cell: ffi::GhosttyCell = 0;
         // SAFETY: grid_ref.h `ghostty_grid_ref_cell` reads a current ref
@@ -442,6 +456,39 @@ impl GridRef<'_> {
             )
         };
         fill(code, len)
+    }
+}
+
+/// One row, resolved once at the rightmost column a reader needs.
+///
+/// A grid ref is a page node, column, and in-page row, and the grid ref
+/// readers address the cell at that column without checking it.
+/// `ghostty_terminal_grid_ref` checked `last_column` against the row's own
+/// page, which incomplete reflow can leave narrower than the terminal, so
+/// every column up to it is in bounds for the same node and row. Columns
+/// beyond it are refused rather than resolved.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RowRef<'a> {
+    last: GridRef<'a>,
+    last_column: u16,
+}
+
+impl<'a> RowRef<'a> {
+    pub(crate) const fn last_column(&self) -> u16 {
+        self.last_column
+    }
+
+    /// The row's cell at `column`, or `None` beyond the validated column.
+    pub(crate) fn cell(&self, column: u16) -> Option<GridRef<'a>> {
+        (column <= self.last_column).then(|| {
+            let mut cell = self.last;
+            cell.raw.x = column;
+            cell
+        })
+    }
+
+    pub(crate) fn row(&self) -> Result<Row> {
+        self.last.row()
     }
 }
 

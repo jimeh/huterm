@@ -61,13 +61,13 @@
   },
   {
     "name": "scrollback rows maximum",
-    "toml": "[terminal]\nscrollback_rows = 50000",
+    "toml": "[terminal]\nscrollback_rows = 100000",
     "valid": true,
     "theme": false
   },
   {
     "name": "scrollback rows above maximum",
-    "toml": "[terminal]\nscrollback_rows = 50001",
+    "toml": "[terminal]\nscrollback_rows = 100001",
     "valid": false,
     "theme": false
   },

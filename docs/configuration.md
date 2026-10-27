@@ -479,7 +479,7 @@ applies.
 
 ```toml
 [terminal]
-scrollback_rows = 10000    # 0 through 50000; 0 keeps no history
+scrollback_rows = 10000    # 0 through 100000; 0 keeps no history
 scrollback_bytes = "64MiB" # optional; up to "16GiB"; 0 keeps no history
 ```
 
@@ -516,9 +516,11 @@ with many distinct styles or combining characters, can reach it first and keep
 fewer rows than the limit. Setting `scrollback_bytes` replaces this allowance,
 and the configured size stays fixed as the window resizes.
 
-The 50,000-row maximum holds even under a large `scrollback_bytes`. It keeps
-link detection quick: finding a link that starts above the visible rows reads
-history from its oldest row.
+The 100,000-row maximum holds even under a large `scrollback_bytes`. It keeps
+resizing quick: a change in width rewraps every row of history, which pauses
+that terminal for about 7 ms at the maximum on an Apple silicon Mac. Plain
+history at 120 columns takes about 1 KB per row, so a full 100,000 rows uses
+about 110 MB per terminal, and wider rows use more.
 
 Reload applies new limits to every open terminal, including tabs in the
 background and tabs whose shell has exited. Lowering either limit discards the
