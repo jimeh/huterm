@@ -74,6 +74,29 @@ pub(super) fn written_path(setting: &'static Setting) -> &'static str {
 impl SettingsView {
     /// Rereads and validates the file on the background executor. Only the
     /// latest read applies, and only when no write finished since it began.
+    /// Creates the file from the default template, as Open Config File
+    /// does, then reads it. A file that cannot be created reads as absent.
+    pub(super) fn create_and_load(&mut self, cx: &mut Context<'_, Self>) {
+        let path = self.path.clone();
+        self.loading += 1;
+        let task = cx.background_spawn(async move {
+            crate::config::create_default(&path).map_err(|error| {
+                format!("Cannot create {}: {error}", path.display())
+            })
+        });
+        cx.spawn(async move |view, cx| {
+            let created = task.await;
+            let _ = view.update(cx, |view, cx| {
+                view.loading -= 1;
+                if let Err(message) = created {
+                    view.status.file_error(message);
+                }
+                view.load(cx);
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn load(&mut self, cx: &mut Context<'_, Self>) {
         let file = ConfigFile::new(self.path.clone());
         let validate = crate::config::validator(self.path.clone());
@@ -661,6 +684,18 @@ impl SettingsView {
             return;
         };
         let text = field.read(cx).text().to_owned();
+        // A field still showing what it last synced has nothing to save,
+        // even when the file spells the value differently, such as the
+        // integer `13` for a number setting.
+        if !self.conflicts.contains_key(path)
+            && !self.pending.contains_key(path)
+            && self.synced.get(path) == Some(&text)
+        {
+            if self.errors.remove(path).is_some() {
+                cx.notify();
+            }
+            return;
+        }
         // A field showing a pending change, such as the default during a
         // reset, has nothing new to save.
         if !self.conflicts.contains_key(path)

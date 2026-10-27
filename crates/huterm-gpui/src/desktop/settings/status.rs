@@ -35,6 +35,8 @@ enum Event {
     /// A reload failed for a reason outside the file, such as a global
     /// shortcut another application holds.
     NotApplied(String),
+    /// Creating or opening the file failed.
+    FileError(String),
 }
 
 /// The footer's status line.
@@ -108,6 +110,14 @@ impl FileStatus {
         self.latest = Some(Event::Invalid(message.into()));
     }
 
+    /// Creating or opening the file failed. An invalid file keeps its
+    /// report, which also keeps the controls read-only.
+    pub(crate) fn file_error(&mut self, message: impl Into<String>) {
+        if !self.invalid() {
+            self.latest = Some(Event::FileError(message.into()));
+        }
+    }
+
     pub(crate) fn failed(&mut self, message: impl Into<String>) {
         self.latest = Some(Event::Failed(message.into()));
     }
@@ -154,6 +164,11 @@ impl FileStatus {
             Some(Event::Failed(message)) => Line {
                 tone: Tone::Error,
                 text: format!("Not saved: {message}"),
+                action: None,
+            },
+            Some(Event::FileError(message)) => Line {
+                tone: Tone::Error,
+                text: message.clone(),
                 action: None,
             },
             Some(Event::SavedUnsure(message)) => Line {

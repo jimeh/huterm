@@ -950,6 +950,9 @@ fn show_failure_in(
 /// Raises `message` as a command failure in the active window. Returns
 /// whether a window showed it.
 fn show_active_window_failure(cx: &mut App, message: &str) -> bool {
+    if settings_window::show_failure(cx, message) {
+        return true;
+    }
     let Some(window) = cx.active_window() else {
         return false;
     };

@@ -335,7 +335,7 @@ fn read_config(path: &Path, consumed: &mut Consumed) -> io::Result<String> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-pub(super) fn create_default(path: &Path) -> Result<(), ConfigFileError> {
+pub(crate) fn create_default(path: &Path) -> Result<(), ConfigFileError> {
     if path.exists() {
         return Ok(());
     }

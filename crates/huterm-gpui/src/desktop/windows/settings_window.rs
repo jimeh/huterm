@@ -113,6 +113,24 @@ pub(super) fn reloaded(cx: &mut App, outcome: Result<(), String>) {
     });
 }
 
+/// Shows a failure in the Settings window's footer when it is the active
+/// window, as a terminal window shows a command failure. Returns whether
+/// it did.
+pub(super) fn show_failure(cx: &mut App, message: &str) -> bool {
+    let Some(handle) = cx.global::<Desktop>().settings else {
+        return false;
+    };
+    if cx.active_window() != Some(handle.into()) {
+        return false;
+    }
+    handle
+        .update(cx, |view, _, cx| {
+            view.status.file_error(message);
+            cx.notify();
+        })
+        .is_ok()
+}
+
 /// Closes the Settings window, as Quit does.
 pub(super) fn close(cx: &mut App) {
     if let Some(handle) = cx.global_mut::<Desktop>().settings.take() {
@@ -234,7 +252,7 @@ impl SettingsView {
             menu: None,
             scroll: ScrollHandle::new(),
         };
-        view.load(cx);
+        view.create_and_load(cx);
         view.load_themes(cx);
         // Closing waits for pending writes, so none is lost.
         let weak = cx.entity().downgrade();

@@ -341,6 +341,65 @@ fn a_conflict_waits_while_the_file_is_invalid(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn opening_settings_creates_the_file_from_the_template(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("template", "");
+    std::fs::remove_file(file.path()).unwrap();
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    assert!(file.text().starts_with("#:schema "), "{}", file.text());
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn settings_reports_a_file_it_cannot_create_or_open(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    let file = ScratchConfig::new("uncreatable", "");
+    std::fs::remove_file(file.path()).unwrap();
+    let mode = |bits| std::fs::Permissions::from_mode(bits);
+    std::fs::set_permissions(&file.0, mode(0o500)).unwrap();
+    if std::fs::write(file.0.join("probe"), "").is_ok() {
+        // Permissions do not bind this user, such as root.
+        std::fs::set_permissions(&file.0, mode(0o700)).unwrap();
+        return;
+    }
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let status = |harness: &mut DesktopHarness| {
+        with_view(harness, |view, _| view.status_text())
+    };
+    assert!(status(&mut harness).starts_with("Cannot create "));
+    // Open config.toml in the footer reports its failure here too.
+    harness.cx.update(|cx| {
+        settings(cx)
+            .unwrap()
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+        super::super::open_config_file(cx);
+    });
+    let text = status(&mut harness);
+    assert!(text.starts_with("Cannot open "), "{text}");
+    std::fs::set_permissions(&file.0, mode(0o700)).unwrap();
+}
+
+#[gpui::test]
+fn leaving_an_untouched_field_keeps_the_file(cx: &mut TestAppContext) {
+    let original = "[font]\nsize = 13\n";
+    let file = ScratchConfig::new("untouched-blur", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        // The field shows "13" for the file's integer; leave it unchanged.
+        view.type_into("font.size", "13", window, cx);
+        view.blur("font.size", cx);
+    });
+    harness.cx.run_until_parked();
+    assert!(harness.cx.update(settled));
+    assert_eq!(file.text(), original);
+}
+
+#[gpui::test]
 fn the_size_limit_accepts_a_size_and_a_byte_count(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("size", "");
     let mut harness = DesktopHarness::new(cx);

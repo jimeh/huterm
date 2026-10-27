@@ -157,11 +157,14 @@ pub(super) fn names(directory: Option<&Path>) -> Vec<String> {
         .map(str::to_owned)
         .collect();
     if let Some(entries) = directory.and_then(|path| fs::read_dir(path).ok()) {
+        // Only stems that are valid theme names can be selected.
         names.extend(entries.filter_map(|entry| {
             let path = entry.ok()?.path();
-            (path.extension()? == "toml")
-                .then(|| path.file_stem()?.to_str().map(str::to_owned))
-                .flatten()
+            if path.extension()? != "toml" {
+                return None;
+            }
+            let stem = path.file_stem()?.to_str()?;
+            validate_name(stem).is_ok().then(|| stem.to_owned())
         }));
     }
     names.sort();
@@ -264,6 +267,25 @@ mod tests {
             .iter()
             .all(Option::is_some),
             "huterm-dark must set every UI color"
+        );
+    }
+
+    #[test]
+    fn names_list_only_theme_files_that_can_be_selected() {
+        let directory = std::env::temp_dir()
+            .join(format!("huterm-theme-names-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        for file in ["mine.toml", "my theme.toml", "notes.txt"] {
+            fs::write(directory.join(file), "").unwrap();
+        }
+        let names = names(Some(&directory));
+        fs::remove_dir_all(&directory).unwrap();
+        assert!(names.iter().any(|name| name == "mine"));
+        assert!(
+            !names
+                .iter()
+                .any(|name| name == "my theme" || name == "notes")
         );
     }
 }
