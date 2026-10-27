@@ -4637,3 +4637,4 @@ fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
 mod pane_drags;
 mod pane_moves;
 mod settings;
+mod settings_keys;

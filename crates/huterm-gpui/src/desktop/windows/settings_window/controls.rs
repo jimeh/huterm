@@ -254,11 +254,15 @@ impl SettingsView {
     }
 
     /// `control` with the select menu open beneath it when it is `path`'s.
-    fn with_menu(&self, path: &str, control: AnyElement) -> AnyElement {
+    pub(super) fn with_menu(
+        &self,
+        path: &str,
+        control: AnyElement,
+    ) -> AnyElement {
         let menu = self
             .menu
             .as_ref()
-            .filter(|(_, open, _)| open.path == path)
+            .filter(|(_, open, _)| open.key() == path)
             .map(|(menu, _, _)| menu.clone());
         div()
             .relative()

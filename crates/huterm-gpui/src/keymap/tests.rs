@@ -1117,3 +1117,78 @@ fn a_disabled_default_no_longer_dispatches_while_its_neighbours_do() {
         vec![ids::HIDE_OTHERS]
     );
 }
+
+#[test]
+fn the_inventory_records_what_became_of_each_binding() {
+    let mut when = entry("ctrl-x", "copy");
+    when.when = Some("selection".into());
+    let user = [
+        disabled(entry("cmd-h", "hide")),
+        disabled(entry("cmd-h", "hide")),
+        entry("cmd-t", "new_window"),
+        entry("cmd-n", UNBIND),
+        disabled(entry("alt-z", "new_tab")),
+        when,
+    ];
+    let inventory = inventory(Platform::MacOs, &user).unwrap();
+    let state = |key: &str, command: CommandId, origin: Origin| {
+        let listed = inventory
+            .bindings
+            .iter()
+            .filter(|listed| {
+                listed.binding.key == key
+                    && listed.binding.command == command
+                    && listed.binding.origin == origin
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(listed.len(), 1, "{key} {command:?} {origin:?}");
+        (listed[0].entry, listed[0].state.clone())
+    };
+    assert_eq!(
+        state("cmd-h", ids::HIDE, Origin::Default),
+        (None, BindingState::Disabled(vec![0, 1]))
+    );
+    assert_eq!(
+        state("cmd-t", ids::NEW_TAB, Origin::Default),
+        (None, BindingState::Replaced(2))
+    );
+    assert_eq!(
+        state("cmd-t", ids::NEW_WINDOW, Origin::User),
+        (Some(2), BindingState::Active)
+    );
+    assert_eq!(
+        state("cmd-n", ids::NEW_WINDOW, Origin::Default),
+        (None, BindingState::Unbound(3))
+    );
+    assert_eq!(
+        state("alt-z", ids::NEW_TAB, Origin::User),
+        (Some(4), BindingState::SwitchedOff)
+    );
+    assert_eq!(
+        state("ctrl-x", ids::COPY, Origin::User),
+        (Some(5), BindingState::Active)
+    );
+    // Entries that turned a binding off show only through its state.
+    assert!(
+        !inventory
+            .bindings
+            .iter()
+            .any(|listed| listed.binding.key == "cmd-h"
+                && listed.binding.origin == Origin::User)
+    );
+    assert_eq!(inventory.unbinds, vec![(3, "cmd-n".to_owned())]);
+    // The compiled keymap keeps exactly the active bindings.
+    let active = inventory
+        .bindings
+        .iter()
+        .filter(|listed| listed.state == BindingState::Active)
+        .map(|listed| listed.binding.clone())
+        .collect::<Vec<_>>();
+    let compiled = compile(Platform::MacOs, &user)
+        .unwrap()
+        .effective
+        .into_iter()
+        .map(Bound::from)
+        .collect::<Vec<_>>();
+    assert_eq!(compiled, active);
+}

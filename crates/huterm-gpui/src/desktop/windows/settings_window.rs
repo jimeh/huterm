@@ -22,7 +22,7 @@ use huterm_config::settings::{
     Apply, Choice, Platform as SettingPlatform, SectionId, Setting,
     SettingKind, SettingsModel,
 };
-use huterm_protocol::{CommandError, CommandInvocation, ids};
+use huterm_protocol::{ArgumentKind, CommandError, CommandInvocation, ids};
 use toml::Value;
 
 use super::super::menu::{
@@ -139,10 +139,35 @@ pub(super) fn close(cx: &mut App) {
 }
 
 mod controls;
+mod keybindings;
 mod render;
 mod saving;
 
-use saving::{Conflict, Pending};
+#[cfg(all(test, feature = "test-support"))]
+pub(super) use keybindings::CHORD_TIMEOUT;
+use keybindings::Keys;
+use saving::{Conflict, Queued};
+
+/// What an open select's menu sets: a setting, or one argument of a
+/// shortcut row.
+pub(super) enum MenuFor {
+    Setting(&'static Setting),
+    Argument {
+        row: String,
+        name: &'static str,
+        kind: ArgumentKind,
+    },
+}
+
+impl MenuFor {
+    /// The key of the control the menu opens under.
+    fn key(&self) -> String {
+        match self {
+            Self::Setting(setting) => setting.path.clone(),
+            Self::Argument { row, name, .. } => format!("karg:{row}:{name}"),
+        }
+    }
+}
 
 pub(super) struct SettingsView {
     focus: FocusHandle,
@@ -172,7 +197,7 @@ pub(super) struct SettingsView {
     conflicts: HashMap<&'static str, Conflict>,
     /// The setting whose write is in flight.
     writing: Option<&'static str>,
-    queued: VecDeque<Pending>,
+    queued: VecDeque<Queued>,
     /// The latest value requested for each setting whose write has not
     /// settled; controls show it, and steps build on it.
     pending: HashMap<&'static str, Option<Value>>,
@@ -192,9 +217,13 @@ pub(super) struct SettingsView {
     /// Close was asked for while writes were pending.
     closing: bool,
     handle: gpui::AnyWindowHandle,
-    /// An open select's menu, the setting it edits, and the control that
-    /// opened it, which takes focus back.
-    menu: Option<(Entity<MenuView>, &'static Setting, FocusHandle)>,
+    /// An open select's menu, what it sets, and the control that opened
+    /// it, which takes focus back.
+    menu: Option<(Entity<MenuView>, MenuFor, FocusHandle)>,
+    /// The Keybindings section.
+    keys: Keys,
+    /// Takes key-downs while a shortcut records.
+    _recorder: gpui::Subscription,
     scroll: ScrollHandle,
     /// Every selectable theme with its colors, read when the window opens.
     themes: Vec<(String, Option<Theme>)>,
@@ -219,8 +248,26 @@ impl SettingsView {
             },
         )
         .detach();
+        let keys = Keys::new(swatch, cx);
+        // While a shortcut records, its keys reach no binding, menu, or
+        // field: the interceptor runs before GPUI matches the keymap.
+        let weak = cx.entity().downgrade();
+        let handle = window.window_handle();
+        let recorder = cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle() != handle {
+                return;
+            }
+            let Some(view) = weak.upgrade() else {
+                return;
+            };
+            if view.update(cx, |view, cx| view.record(&event.keystroke, cx)) {
+                cx.stop_propagation();
+            }
+        });
         let mut view = Self {
             focus: cx.focus_handle(),
+            keys,
+            _recorder: recorder,
             model,
             themes: Vec::new(),
             path,
@@ -265,6 +312,8 @@ impl SettingsView {
         cx.observe_window_activation(window, |view, window, cx| {
             if window.is_window_active() {
                 view.check_disk(cx);
+            } else {
+                view.cancel_recording(cx);
             }
         })
         .detach();
@@ -408,6 +457,10 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         let (kind, argument) = key.split_once(':').unwrap_or((key, ""));
+        if self.act_keys(kind, argument, window, cx) {
+            cx.notify();
+            return;
+        }
         let model = self.model;
         match kind {
             "theme" => {
@@ -697,7 +750,13 @@ impl SettingsView {
             })
             .collect();
         let opener = self.stop(setting.path.as_str(), cx);
-        self.show_menu(setting, MenuModel::new(rows), opener, window, cx);
+        self.show_menu(
+            MenuFor::Setting(setting),
+            MenuModel::new(rows),
+            opener,
+            window,
+            cx,
+        );
     }
 
     /// Opens a menu of the installed font families for `setting`.
@@ -712,12 +771,18 @@ impl SettingsView {
             .map(|name| MenuRow::Item(MenuItem::new(name, *name)))
             .collect();
         let opener = self.action_stop(format!("fonts:{}", setting.path), cx);
-        self.show_menu(setting, MenuModel::new(rows), opener, window, cx);
+        self.show_menu(
+            MenuFor::Setting(setting),
+            MenuModel::new(rows),
+            opener,
+            window,
+            cx,
+        );
     }
 
     fn show_menu(
         &mut self,
-        setting: &'static Setting,
+        target: MenuFor,
         model: MenuModel,
         opener: FocusHandle,
         window: &mut Window,
@@ -727,17 +792,27 @@ impl SettingsView {
         let menu = cx.new(|cx| MenuView::new(model, swatch, true, cx));
         cx.subscribe_in(&menu, window, move |view, _, event, window, cx| {
             if let MenuEvent::Picked(value) = event {
-                view.write(
-                    setting,
-                    Some(Value::String((*value).to_owned())),
-                    cx,
-                );
+                match view.menu.as_ref().map(|(_, target, _)| target) {
+                    Some(MenuFor::Setting(setting)) => {
+                        let setting = *setting;
+                        view.write(
+                            setting,
+                            Some(Value::String((*value).to_owned())),
+                            cx,
+                        );
+                    }
+                    Some(MenuFor::Argument { row, name, kind }) => {
+                        let (row, name, kind) = (row.clone(), *name, *kind);
+                        view.pick_argument(&row, name, kind, value, cx);
+                    }
+                    None => {}
+                }
             }
             view.close_menu(window, cx);
         })
         .detach();
         menu.read(cx).focus_handle(cx).focus(window, cx);
-        self.menu = Some((menu, setting, opener));
+        self.menu = Some((menu, target, opener));
         cx.notify();
     }
 
@@ -796,7 +871,14 @@ impl SettingsView {
             ids::SETTINGS_INCREASE => self.step(true, window, cx),
             ids::SETTINGS_DECREASE => self.step(false, window, cx),
             ids::SETTINGS_RESET => {
-                if let Some(setting) = self.focused_setting(window, cx) {
+                if let Some(command) = self
+                    .focused_action(window)
+                    .as_deref()
+                    .and_then(|key| key.strip_prefix("kcmd:"))
+                    .and_then(huterm_protocol::lookup)
+                {
+                    self.restore_defaults(command.id, cx);
+                } else if let Some(setting) = self.focused_setting(window, cx) {
                     self.reset(setting, cx);
                 }
             }
@@ -828,6 +910,11 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if let Some((key, field)) = self.focused_key_field(window, cx) {
+            self.run_key_field(&key, &field, invocation, window, cx);
+            cx.notify();
+            return;
+        }
         let search = self.search.clone();
         let focused = self
             .fields
@@ -885,6 +972,57 @@ impl SettingsView {
 }
 
 impl SettingsView {
+    /// Text editing in a keybinding field: completion takes Up, Down,
+    /// Enter, Tab, and Escape while its list is open; otherwise Enter saves
+    /// and Escape puts the saved text back.
+    fn run_key_field(
+        &mut self,
+        key: &str,
+        field: &Entity<TextField>,
+        invocation: &CommandInvocation,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let completing = self
+            .keys
+            .completion
+            .as_ref()
+            .is_some_and(|(open, _)| open == key);
+        match invocation.id {
+            ids::PALETTE_SELECT_NEXT | ids::PALETTE_SELECT_PREVIOUS
+                if completing =>
+            {
+                self.step_completion(
+                    key,
+                    invocation.id == ids::PALETTE_SELECT_NEXT,
+                    cx,
+                );
+            }
+            ids::PALETTE_CONFIRM | ids::PALETTE_EXPAND
+                if completing && self.accept_completion(key, None, cx) => {}
+            ids::PALETTE_CONFIRM => {
+                if key != "search" {
+                    self.commit_key_field(key, cx);
+                }
+            }
+            ids::PALETTE_EXPAND => window.focus_next(cx),
+            ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
+            ids::PALETTE_BACK if completing => self.keys.completion = None,
+            ids::PALETTE_BACK => {
+                if key == "search" {
+                    field.update(cx, |field, cx| field.set_text("", cx));
+                } else {
+                    self.cancel_key_field(key, cx);
+                }
+                self.focus.focus(window, cx);
+            }
+            _ => {
+                let _ = field
+                    .update(cx, |field, cx| field.run(invocation, window, cx));
+            }
+        }
+    }
+
     /// Moves focus from the search field to the first matching control.
     fn focus_first_match(
         &mut self,
@@ -895,19 +1033,30 @@ impl SettingsView {
         if query.is_empty() {
             return;
         }
-        let first = self
-            .visible_sections()
-            .into_iter()
-            .flat_map(|section| &self.model.sections()[section as usize].groups)
-            .flat_map(|group| &group.settings)
-            .find(|setting| {
-                self.shows(setting, true) && Self::matches(setting, &query)
-            });
-        let Some(setting) = first else {
-            return;
-        };
-        if let Some(target) = self.focus_target(setting, cx) {
-            target.focus(window, cx);
+        // Results follow section order; Keybindings lists commands.
+        for section in self.visible_sections() {
+            let target = if section == SectionId::Keybindings {
+                self.matching_commands(&query).first().map(|spec| {
+                    self.action_stop(format!("kgo:{}", spec.id.as_str()), cx)
+                })
+            } else {
+                let first = self.model.sections()[section as usize]
+                    .groups
+                    .iter()
+                    .flat_map(|group| &group.settings)
+                    .find(|setting| {
+                        self.shows(setting, true)
+                            && Self::matches(setting, &query)
+                    });
+                match first {
+                    Some(setting) => self.focus_target(setting, cx),
+                    None => continue,
+                }
+            };
+            if let Some(target) = target {
+                target.focus(window, cx);
+                return;
+            }
         }
     }
 
@@ -1340,6 +1489,43 @@ impl SettingsView {
     /// Looks for an edit made elsewhere, as coming forward does.
     pub(super) fn look_at_disk(&mut self, cx: &mut Context<'_, Self>) {
         self.check_disk(cx);
+    }
+
+    /// The row showing `command`'s binding on `key`.
+    pub(super) fn key_row(
+        &self,
+        command: huterm_protocol::CommandId,
+        key: &str,
+    ) -> Option<String> {
+        self.keys.row_named(command, key)
+    }
+
+    /// Types into a keybinding field, creating it as its row would.
+    pub(super) fn type_key(
+        &mut self,
+        key: &str,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let field = self.key_field_for(key, window, cx);
+        field.update(cx, |field, cx| field.set_text(text, cx));
+    }
+
+    pub(super) fn enter_key(&mut self, key: &str, cx: &mut Context<'_, Self>) {
+        self.commit_key_field(key, cx);
+    }
+
+    pub(super) fn key_error(&self, row: &str) -> Option<String> {
+        self.keys.errors.get(row).cloned()
+    }
+
+    /// The strokes recorded so far, while recording.
+    pub(super) fn recording(&self) -> Option<Vec<String>> {
+        self.keys
+            .recording
+            .as_ref()
+            .map(|recording| recording.strokes.clone())
     }
 
     pub(super) fn use_mine(&mut self, path: &str, cx: &mut Context<'_, Self>) {

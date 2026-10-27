@@ -492,7 +492,10 @@ fn parse_engine(name: &str) -> Result<Option<String>, ConfigError> {
     }
 }
 
-fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
+pub(crate) fn parse_at(
+    source: &str,
+    path: &Path,
+) -> Result<Config, ConfigError> {
     parse_consumed(source, path, &mut Consumed::new())
 }
 

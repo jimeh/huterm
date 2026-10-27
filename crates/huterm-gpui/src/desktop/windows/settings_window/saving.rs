@@ -7,6 +7,8 @@
 //! elsewhere. It moves to a newer snapshot only when that snapshot still
 //! holds the value the edit expected at its path.
 
+use std::path::Path;
+
 use gpui::{AppContext as _, Context, Window};
 use huterm_config::document::{ApplyError, ConfigFile, Patch, Snapshot};
 use huterm_config::settings::{
@@ -14,12 +16,14 @@ use huterm_config::settings::{
 };
 use toml::Value;
 
+use super::super::super::settings::keybindings::Edit;
 use super::super::super::settings::values::{
     self, FileValues, parse_number, patch_at, shown,
 };
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
 use super::{SettingsView, current, field_text, size_value, themes};
+use crate::keymap::{Inventory, Platform, inventory};
 
 /// A change the file changed under, kept until the user picks theirs or
 /// the file's. `patch` is the refused write; a field draft that a reload
@@ -48,17 +52,40 @@ pub(super) struct Pending {
     typed: Option<String>,
 }
 
+/// A keybinding edit waiting to be written, and the shortcut row that
+/// shows its errors.
+pub(super) struct KeyChange {
+    pub(super) edit: Edit,
+    pub(super) row: Option<String>,
+}
+
+/// A write waiting behind the one in flight.
+pub(super) enum Queued {
+    Setting(Pending),
+    Keys(KeyChange),
+}
+
 /// What a background read found.
 struct Loaded {
     snapshot: Snapshot,
     file: Result<FileValues, String>,
     valid: Result<(), String>,
+    keys: Option<Inventory>,
 }
 
 /// What a background write produced.
 struct Written {
     snapshot: Snapshot,
     file: Result<FileValues, String>,
+    keys: Option<Inventory>,
+}
+
+/// The file's bindings with what became of each, or `None` when they do
+/// not compile.
+fn listed(text: Option<&str>, path: &Path) -> Option<Inventory> {
+    let config =
+        crate::config::parse_at(text.unwrap_or_default(), path).ok()?;
+    inventory(Platform::current(), &config.keybindings).ok()
 }
 
 /// The path a setting's changes write: the theme row edits the theme's
@@ -100,6 +127,7 @@ impl SettingsView {
     pub(super) fn load(&mut self, cx: &mut Context<'_, Self>) {
         let file = ConfigFile::new(self.path.clone());
         let validate = crate::config::validator(self.path.clone());
+        let path = self.path.clone();
         let epoch = self.epoch;
         self.reads += 1;
         self.loading += 1;
@@ -110,6 +138,7 @@ impl SettingsView {
             Ok::<_, ApplyError>(Loaded {
                 file: FileValues::parse(text),
                 valid: text.map_or(Ok(()), &validate),
+                keys: listed(text, &path),
                 snapshot,
             })
         });
@@ -136,7 +165,9 @@ impl SettingsView {
                 snapshot,
                 file,
                 valid,
+                keys,
             }) => {
+                self.keys.inventory = keys;
                 match (file, valid) {
                     (Ok(file), Ok(())) => {
                         self.file = file;
@@ -154,6 +185,7 @@ impl SettingsView {
                 }
                 self.base = Some(snapshot);
                 self.sync_fields(cx);
+                self.sync_key_fields(cx);
             }
             Err(error) => self.status.failed(error.to_string()),
         }
@@ -368,10 +400,13 @@ impl SettingsView {
         } else {
             self.base.clone()
         };
-        if let Some(queued) = self
-            .queued
-            .iter_mut()
-            .find(|queued| queued.setting.path == key)
+        if let Some(queued) =
+            self.queued.iter_mut().find_map(|queued| match queued {
+                Queued::Setting(queued) if queued.setting.path == key => {
+                    Some(queued)
+                }
+                _ => None,
+            })
         {
             queued.patch = patch;
             queued.value = value;
@@ -389,11 +424,126 @@ impl SettingsView {
             typed,
         };
         if self.writing.is_some() {
-            self.queued.push_back(change);
+            self.queued.push_back(Queued::Setting(change));
         } else {
             self.start(change, cx);
         }
         cx.notify();
+    }
+
+    /// Queues a keybinding edit after any write in flight. Its patches are
+    /// built when its turn comes, against the snapshot the previous write
+    /// left, so successive edits apply in order.
+    pub(super) fn submit_keys(
+        &mut self,
+        edit: Edit,
+        row: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.locked() {
+            return;
+        }
+        if let Some(row) = &row {
+            self.keys.errors.remove(row);
+        }
+        let change = KeyChange { edit, row };
+        if self.writing.is_some() {
+            self.queued.push_back(Queued::Keys(change));
+        } else {
+            self.start_keys(change, cx);
+        }
+        cx.notify();
+    }
+
+    fn start_keys(&mut self, change: KeyChange, cx: &mut Context<'_, Self>) {
+        self.writing = Some("keybinding");
+        self.status.saving();
+        let file = ConfigFile::new(self.path.clone());
+        let validate = crate::config::validator(self.path.clone());
+        let path = self.path.clone();
+        let base = self.base.clone();
+        let edit = change.edit.clone();
+        let task = cx.background_spawn(async move {
+            let base = match base {
+                Some(base) => base,
+                None => file.load()?,
+            };
+            let patches = edit
+                .patches(&base)
+                .map_err(|message| ApplyError::Conflict(vec![message]))?;
+            let snapshot = file.apply(&base, &patches, &validate)?;
+            Ok::<_, ApplyError>(Written {
+                file: FileValues::parse(snapshot.text()),
+                keys: listed(snapshot.text(), &path),
+                snapshot,
+            })
+        });
+        cx.spawn(async move |view, cx| {
+            let result = task.await;
+            let _ = view
+                .update(cx, |view, cx| view.written_keys(&change, result, cx));
+        })
+        .detach();
+    }
+
+    fn written_keys(
+        &mut self,
+        change: &KeyChange,
+        result: Result<Written, ApplyError>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.writing = None;
+        self.epoch += 1;
+        let report = |view: &mut Self, message: String| {
+            if let Some(row) = &change.row {
+                view.keys.errors.insert(row.clone(), message.clone());
+            }
+            view.status.failed(message);
+        };
+        let failed = match result {
+            Ok(written) => {
+                if let Ok(file) = written.file {
+                    self.file = file;
+                }
+                self.keys.inventory = written.keys;
+                self.base = Some(written.snapshot);
+                self.status.saved();
+                self.sync_key_fields(cx);
+                cx.defer(|cx| {
+                    let _ = super::super::reload(cx);
+                });
+                false
+            }
+            // An entry another editor changed: show the file as it is.
+            Err(ApplyError::Conflict(changes)) => {
+                report(
+                    self,
+                    format!("config.toml changed: {}", changes.join("; ")),
+                );
+                self.load(cx);
+                true
+            }
+            Err(ApplyError::InvalidFile(message)) => {
+                self.queued.clear();
+                self.pending.clear();
+                self.status.invalid_file(message);
+                self.sync_fields(cx);
+                true
+            }
+            Err(ApplyError::WrittenNotDurable(error)) => {
+                self.status.saved_with_warning(error.to_string());
+                self.load(cx);
+                cx.defer(|cx| {
+                    let _ = super::super::reload(cx);
+                });
+                true
+            }
+            Err(error) => {
+                report(self, error.to_string());
+                true
+            }
+        };
+        self.next_write(failed, cx);
     }
 
     fn start(&mut self, change: Pending, cx: &mut Context<'_, Self>) {
@@ -401,6 +551,7 @@ impl SettingsView {
         self.status.saving();
         let file = ConfigFile::new(self.path.clone());
         let validate = crate::config::validator(self.path.clone());
+        let config_path = self.path.clone();
         let base = change.base.clone();
         let patch = change.patch.clone();
         let task = cx.background_spawn(async move {
@@ -411,6 +562,7 @@ impl SettingsView {
             let snapshot = file.apply(&base, &[patch], &validate)?;
             Ok::<_, ApplyError>(Written {
                 file: FileValues::parse(snapshot.text()),
+                keys: listed(snapshot.text(), &config_path),
                 snapshot,
             })
         });
@@ -454,12 +606,15 @@ impl SettingsView {
                 // can build on this write: nothing else touched it.
                 if let Ok(file) = written.file {
                     for queued in &mut self.queued {
-                        if file.get(queued.path) == queued.expected.as_ref() {
+                        if let Queued::Setting(queued) = queued
+                            && file.get(queued.path) == queued.expected.as_ref()
+                        {
                             queued.base = Some(written.snapshot.clone());
                         }
                     }
                     self.file = file;
                 }
+                self.keys.inventory = written.keys;
                 self.base = Some(written.snapshot);
                 self.status.saved();
                 let saved = field_text(shown(
@@ -503,7 +658,9 @@ impl SettingsView {
                 // the file afresh, and a closing window stays to show it.
                 settle(self);
                 for queued in &mut self.queued {
-                    if queued.path == change.path {
+                    if let Queued::Setting(queued) = queued
+                        && queued.path == change.path
+                    {
                         queued.base = None;
                     }
                 }
@@ -523,19 +680,27 @@ impl SettingsView {
                 self.sync_fields(cx);
             }
         }
-        // A write that failed while closing keeps the window open, so the
-        // user sees it and can recover the entered value.
+        self.next_write(failed, cx);
+    }
+
+    /// Starts the next queued write, or closes a window waiting for its
+    /// writes. A write that failed while closing keeps the window open, so
+    /// the user sees it and can recover the entered value.
+    fn next_write(&mut self, failed: bool, cx: &mut Context<'_, Self>) {
         if failed {
             self.closing = false;
         }
-        if let Some(next) = self.queued.pop_front() {
-            self.start(next, cx);
-        } else if self.closing {
-            let handle = self.handle;
-            cx.defer(move |cx| {
-                let _ =
-                    handle.update(cx, |_, window, _| window.remove_window());
-            });
+        match self.queued.pop_front() {
+            Some(Queued::Setting(next)) => self.start(next, cx),
+            Some(Queued::Keys(next)) => self.start_keys(next, cx),
+            None if self.closing => {
+                let handle = self.handle;
+                cx.defer(move |cx| {
+                    let _ = handle
+                        .update(cx, |_, window, _| window.remove_window());
+                });
+            }
+            None => {}
         }
         cx.notify();
     }

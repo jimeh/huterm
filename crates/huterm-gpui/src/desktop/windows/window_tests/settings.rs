@@ -8,10 +8,10 @@ use super::*;
 
 /// A configuration file in its own temporary directory, removed on drop
 /// even when an assertion fails first.
-struct ScratchConfig(PathBuf);
+pub(super) struct ScratchConfig(pub(super) PathBuf);
 
 impl ScratchConfig {
-    fn new(name: &str, text: &str) -> Self {
+    pub(super) fn new(name: &str, text: &str) -> Self {
         let directory = std::env::temp_dir()
             .join(format!("huterm-settings-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
@@ -20,11 +20,11 @@ impl ScratchConfig {
         Self(directory)
     }
 
-    fn path(&self) -> PathBuf {
+    pub(super) fn path(&self) -> PathBuf {
         self.0.join("config.toml")
     }
 
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         std::fs::read_to_string(self.path()).unwrap()
     }
 }
@@ -35,13 +35,13 @@ impl Drop for ScratchConfig {
     }
 }
 
-fn settings(cx: &App) -> Option<gpui::WindowHandle<SettingsView>> {
+pub(super) fn settings(cx: &App) -> Option<gpui::WindowHandle<SettingsView>> {
     cx.global::<Desktop>().settings
 }
 
 /// Points the desktop at `path`, opens Settings as its shortcut does, and
 /// waits for its read.
-fn open_settings(harness: &mut DesktopHarness, path: &Path) {
+pub(super) fn open_settings(harness: &mut DesktopHarness, path: &Path) {
     let path = path.to_owned();
     harness.cx.update(|cx| {
         cx.global_mut::<Desktop>().config_path = path;
@@ -51,7 +51,7 @@ fn open_settings(harness: &mut DesktopHarness, path: &Path) {
     harness.wait_for("Settings to read the file", settled);
 }
 
-fn settled(cx: &mut App) -> bool {
+pub(super) fn settled(cx: &mut App) -> bool {
     settings(cx).is_some_and(|handle| {
         handle
             .read_with(cx, |view, _| view.settled())
@@ -59,7 +59,7 @@ fn settled(cx: &mut App) -> bool {
     })
 }
 
-fn with_view<R>(
+pub(super) fn with_view<R>(
     harness: &mut DesktopHarness,
     update: impl FnOnce(
         &mut SettingsView,
@@ -227,7 +227,7 @@ fn an_invalid_file_makes_settings_read_only(cx: &mut TestAppContext) {
 }
 
 /// Runs `update` on the open Settings view with its window.
-fn with_window<R>(
+pub(super) fn with_window<R>(
     harness: &mut DesktopHarness,
     update: impl FnOnce(
         &mut SettingsView,
@@ -243,7 +243,7 @@ fn with_window<R>(
     })
 }
 
-fn conflicted(cx: &mut App, path: &str) -> bool {
+pub(super) fn conflicted(cx: &mut App, path: &str) -> bool {
     settings(cx).is_some_and(|handle| {
         handle
             .read_with(cx, |view, _| view.conflicted(path))

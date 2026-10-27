@@ -88,12 +88,17 @@ impl SettingsView {
         let mut nav = div().flex().flex_col().gap(px(1.0)).px(px(8.0));
         for section in self.visible_sections() {
             let handle = self.section_stop(section, cx);
-            let count = self.model.sections()[section as usize]
+            // A list counts its entries, as each is something the file sets.
+            let count: usize = self.model.sections()[section as usize]
                 .groups
                 .iter()
                 .flat_map(|group| &group.settings)
-                .filter(|setting| self.file.is_set(&setting.path))
-                .count();
+                .map(|setting| match self.file.get(&setting.path) {
+                    Some(toml::Value::Array(entries)) => entries.len(),
+                    Some(_) => 1,
+                    None => 0,
+                })
+                .sum();
             let on = section == self.section && !searching;
             nav = nav.child(
                 div()
@@ -480,8 +485,14 @@ impl SettingsView {
         if searching {
             let mut matched = false;
             for section in self.visible_sections() {
-                let groups =
-                    self.render_groups(section, query, swatch, window, cx);
+                // Keybindings lists its matching commands instead.
+                let groups = if section == SectionId::Keybindings {
+                    self.render_key_results(query, swatch, cx)
+                        .into_iter()
+                        .collect()
+                } else {
+                    self.render_groups(section, query, swatch, window, cx)
+                };
                 if groups.is_empty() {
                     continue;
                 }
@@ -517,9 +528,15 @@ impl SettingsView {
                 .children(
                     (section == SectionId::General)
                         .then(|| self.render_file_card(swatch, cx)),
+                );
+            body = if section == SectionId::Keybindings {
+                body.children(self.render_keybindings(swatch, window, cx))
+            } else {
+                body.children(
+                    self.render_groups(section, "", swatch, window, cx),
                 )
-                .children(self.render_groups(section, "", swatch, window, cx))
-                .children(self.render_advanced(section, swatch, cx));
+                .children(self.render_advanced(section, swatch, cx))
+            };
         }
         div()
             .id("settings-main")

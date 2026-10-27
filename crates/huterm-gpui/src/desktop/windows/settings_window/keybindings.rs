@@ -1,0 +1,1945 @@
+//! The Keybindings section: command rows that expand to their shortcuts,
+//! each with a key recorder, a `when` field, argument controls, and an
+//! enable switch. Every change becomes a keybinding [`Edit`] on the
+//! window's write queue.
+//!
+//! Rows are named by where their binding comes from: `d<n>` for the nth
+//! platform default and `u<n>` for user entry `n`, so a row keeps its name
+//! across reads while the file keeps its entries.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+use gpui::{
+    AnyElement, Context, ElementId, Entity, FocusHandle, Focusable, Keystroke,
+    Subscription, Window, div, prelude::*, px,
+};
+use huterm_protocol::{
+    ArgumentKind, ArgumentSpec, CommandId, CommandSpec, Requirement, SIDES,
+    catalog, lookup,
+};
+use toml::Value;
+
+use super::super::super::key_hint::KeyHint;
+use super::super::super::menu::{MenuItem, MenuModel, MenuRow};
+use super::super::super::overlay::{Swatch, mono_font_family};
+use super::super::super::settings::keybindings::{
+    Binding, Edit, Field, GROUPS, OVERLAYS, check_condition, completions,
+};
+use super::super::Desktop;
+use super::{MenuFor, SettingsView, button, link};
+use crate::assets::Icon;
+use crate::keymap::{BindingState, Inventory, ListedBinding, Origin, Platform};
+use crate::ui::text_field::{Changed, TextField};
+
+/// How long the recorder waits for a chord's second stroke: GPUI's own
+/// chord timeout.
+pub(crate) const CHORD_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The menu item that leaves an argument unset.
+const UNSET: &str = "\u{0}unset";
+
+fn id(name: String) -> ElementId {
+    ElementId::Name(name.into())
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Filter {
+    #[default]
+    All,
+    Customized,
+    Conditional,
+    Disabled,
+}
+
+impl Filter {
+    const ALL: [(Self, &'static str, &'static str); 4] = [
+        (Self::All, "all", "All"),
+        (Self::Customized, "custom", "Customized"),
+        (Self::Conditional, "when", "Conditional"),
+        (Self::Disabled, "off", "Disabled"),
+    ];
+}
+
+/// What a recording sets: a row's key, or a new binding for a command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Target {
+    Row(String),
+    Add(CommandId),
+}
+
+pub(super) struct Recording {
+    pub(super) target: Target,
+    pub(super) strokes: Vec<String>,
+    /// Bumped by each stroke, so only the latest stroke's timer finishes.
+    generation: u64,
+    _blur: Subscription,
+}
+
+/// The section's state, held by the view.
+pub(super) struct Keys {
+    /// The file's bindings and what became of each; `None` until a read
+    /// finds bindings that compile.
+    pub(super) inventory: Option<Inventory>,
+    pub(super) open: HashSet<CommandId>,
+    pub(super) filter: Filter,
+    pub(super) search: Entity<TextField>,
+    /// `when` and argument fields, keyed `when:<row>` or
+    /// `arg:<row>:<name>`.
+    pub(super) fields: HashMap<String, Entity<TextField>>,
+    /// Each field's text from the file; a focused field that differs
+    /// holds a draft.
+    pub(super) synced: HashMap<String, String>,
+    /// Errors by row.
+    pub(super) errors: HashMap<String, String>,
+    pub(super) recording: Option<Recording>,
+    /// The completion list under a `when` field: the field's key and the
+    /// selected suggestion.
+    pub(super) completion: Option<(String, usize)>,
+}
+
+impl Keys {
+    /// The row showing `command`'s binding on `key`.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) fn row_named(
+        &self,
+        command: CommandId,
+        key: &str,
+    ) -> Option<String> {
+        rows(self.inventory.as_ref()?)
+            .into_iter()
+            .find(|(_, listed)| {
+                listed.binding.command == command && listed.binding.key == key
+            })
+            .map(|(name, _)| name)
+    }
+
+    pub(super) fn new(
+        swatch: Swatch,
+        cx: &mut Context<'_, SettingsView>,
+    ) -> Self {
+        let search = cx.new(|cx| {
+            TextField::new(
+                "Search commands, shortcuts, or conditions",
+                swatch.fg,
+                cx,
+            )
+        });
+        let _ = search.read(cx).focus_handle(cx).tab_stop(true);
+        cx.subscribe(&search, |_, _, _: &Changed, cx| cx.notify())
+            .detach();
+        Self {
+            inventory: None,
+            open: HashSet::new(),
+            filter: Filter::All,
+            search,
+            fields: HashMap::new(),
+            synced: HashMap::new(),
+            errors: HashMap::new(),
+            recording: None,
+            completion: None,
+        }
+    }
+}
+
+/// Every listed binding with its row name.
+fn rows(inventory: &Inventory) -> Vec<(String, &ListedBinding)> {
+    let mut defaults = 0;
+    inventory
+        .bindings
+        .iter()
+        .map(|listed| {
+            let name = if let Some(entry) = listed.entry {
+                format!("u{entry}")
+            } else {
+                defaults += 1;
+                format!("d{}", defaults - 1)
+            };
+            (name, listed)
+        })
+        .collect()
+}
+
+fn row<'a>(inventory: &'a Inventory, name: &str) -> Option<&'a ListedBinding> {
+    rows(inventory)
+        .into_iter()
+        .find(|(row, _)| row == name)
+        .map(|(_, listed)| listed)
+}
+
+/// The commands of each group, in display order.
+fn grouped() -> Vec<(&'static str, Vec<&'static CommandSpec>)> {
+    GROUPS
+        .iter()
+        .map(|(group, commands)| {
+            (
+                *group,
+                commands
+                    .iter()
+                    .filter_map(|command| lookup(command.as_str()))
+                    .collect(),
+            )
+        })
+        .chain(std::iter::once((
+            OVERLAYS,
+            catalog()
+                .iter()
+                .filter(|spec| spec.context.is_some())
+                .collect(),
+        )))
+        .collect()
+}
+
+/// The arguments a binding can carry in the file.
+fn configurable(
+    spec: &CommandSpec,
+) -> impl Iterator<Item = &'static ArgumentSpec> {
+    spec.args.iter().filter(|argument| {
+        matches!(
+            argument.kind,
+            ArgumentKind::Bool
+                | ArgumentKind::Integer { .. }
+                | ArgumentKind::Text
+                | ArgumentKind::QuakeProfile
+                | ArgumentKind::Side
+        )
+    })
+}
+
+/// What an unset argument does: the command's default, or a prompt.
+fn unset_label(argument: &ArgumentSpec) -> &'static str {
+    match argument.required {
+        Requirement::Optional => "Default",
+        Requirement::Always | Requirement::OneOf(_) => "Ask",
+    }
+}
+
+/// An argument's value as a control shows it.
+fn argument_text(listed: &ListedBinding, name: &str) -> Option<String> {
+    use huterm_protocol::CommandValue;
+    listed
+        .binding
+        .args
+        .iter()
+        .find(|argument| argument.name == name)
+        .map(|argument| match &argument.value {
+            CommandValue::Bool(true) => "On".to_owned(),
+            CommandValue::Bool(false) => "Off".to_owned(),
+            CommandValue::Integer(value) => value.to_string(),
+            CommandValue::Text(value) => value.clone(),
+            _ => String::new(),
+        })
+}
+
+fn binding_of(listed: &ListedBinding) -> Binding {
+    Binding::new(
+        &listed.binding.key,
+        listed.binding.command,
+        listed.binding.when.as_deref(),
+        &listed.binding.args,
+    )
+}
+
+/// A static menu id for a quake profile name. Each distinct name leaks
+/// once; profiles are few and come from the user's file.
+fn interned(name: &str) -> &'static str {
+    static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let mut names = NAMES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(name) = names.get(name) {
+        return name;
+    }
+    let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    names.insert(leaked);
+    leaked
+}
+
+impl SettingsView {
+    fn keys_read_only(&self) -> bool {
+        self.locked() || self.keys.inventory.is_none()
+    }
+
+    /// Whether a command has a user entry or a default that is not active.
+    fn customized(inventory: &Inventory, command: CommandId) -> bool {
+        inventory.bindings.iter().any(|listed| {
+            listed.binding.command == command
+                && (listed.binding.origin == Origin::User
+                    || listed.state != BindingState::Active)
+        })
+    }
+
+    fn command_matches(
+        inventory: &Inventory,
+        spec: &CommandSpec,
+        filter: Filter,
+        query: &str,
+    ) -> bool {
+        let listed: Vec<&ListedBinding> = inventory
+            .bindings
+            .iter()
+            .filter(|listed| listed.binding.command == spec.id)
+            .collect();
+        let passes = match filter {
+            Filter::All => true,
+            Filter::Customized => Self::customized(inventory, spec.id),
+            Filter::Conditional => listed.iter().any(|listed| {
+                listed.state == BindingState::Active
+                    && listed.binding.when.is_some()
+            }),
+            Filter::Disabled => listed.iter().any(|listed| {
+                matches!(
+                    listed.state,
+                    BindingState::Disabled(_) | BindingState::SwitchedOff
+                )
+            }),
+        };
+        passes
+            && (query.is_empty()
+                || spec.title.to_lowercase().contains(query)
+                || spec.id.as_str().contains(query)
+                || listed.iter().any(|listed| {
+                    listed.binding.key.contains(query)
+                        || listed.binding.when.as_deref().is_some_and(|when| {
+                            when.to_lowercase().contains(query)
+                        })
+                }))
+    }
+
+    /// Commands matching the sidebar search, for its results.
+    pub(super) fn matching_commands(
+        &self,
+        query: &str,
+    ) -> Vec<&'static CommandSpec> {
+        let Some(inventory) = &self.keys.inventory else {
+            return Vec::new();
+        };
+        grouped()
+            .into_iter()
+            .flat_map(|(_, commands)| commands)
+            .filter(|spec| {
+                Self::command_matches(inventory, spec, Filter::All, query)
+            })
+            .collect()
+    }
+
+    /// Runs a keybinding action key; `false` when `kind` is not one.
+    pub(super) fn act_keys(
+        &mut self,
+        kind: &str,
+        argument: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        match kind {
+            "kcmd" => {
+                if let Some(spec) = lookup(argument)
+                    && !self.keys.open.remove(&spec.id)
+                {
+                    self.keys.open.insert(spec.id);
+                }
+            }
+            "kfilter" => {
+                if let Some((filter, ..)) =
+                    Filter::ALL.iter().find(|(_, name, _)| *name == argument)
+                {
+                    self.keys.filter = *filter;
+                }
+            }
+            "kgo" => {
+                if let Some(spec) = lookup(argument) {
+                    self.select_section(
+                        huterm_config::settings::SectionId::Keybindings,
+                        cx,
+                    );
+                    // The section lists just this command, so it shows
+                    // without scrolling; clearing the search lists all.
+                    self.keys.search.update(cx, |search, cx| {
+                        search.set_text(spec.title.to_lowercase(), cx);
+                    });
+                    self.keys.open.insert(spec.id);
+                    let handle =
+                        self.action_stop(format!("kcmd:{argument}"), cx);
+                    handle.focus(window, cx);
+                }
+            }
+            "krec" => {
+                let handle = self.action_stop(format!("krec:{argument}"), cx);
+                self.start_recording(
+                    Target::Row(argument.to_owned()),
+                    &handle,
+                    window,
+                    cx,
+                );
+            }
+            "kadd" => {
+                if let Some(spec) = lookup(argument) {
+                    let handle =
+                        self.action_stop(format!("kadd:{argument}"), cx);
+                    self.start_recording(
+                        Target::Add(spec.id),
+                        &handle,
+                        window,
+                        cx,
+                    );
+                }
+            }
+            "kon" => self.switch_row(argument, cx),
+            "kdel" => {
+                if let Some(entry) = self
+                    .keys
+                    .inventory
+                    .as_ref()
+                    .and_then(|inventory| row(inventory, argument))
+                    .and_then(|listed| listed.entry)
+                {
+                    self.submit_keys(Edit::Remove(vec![entry]), None, cx);
+                }
+            }
+            "kreset" => {
+                if let Some(spec) = lookup(argument) {
+                    self.restore_defaults(spec.id, cx);
+                }
+            }
+            "kunbind" => {
+                if let Ok(entry) = argument.parse() {
+                    self.submit_keys(Edit::Remove(vec![entry]), None, cx);
+                }
+            }
+            "karg" => {
+                if let Some((row, name)) = argument.split_once(':') {
+                    self.open_argument_menu(row, name, window, cx);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Switches a row's binding on or off.
+    fn switch_row(&mut self, name: &str, cx: &mut Context<'_, Self>) {
+        let Some(listed) = self
+            .keys
+            .inventory
+            .as_ref()
+            .and_then(|inventory| row(inventory, name))
+        else {
+            return;
+        };
+        let edit = match (&listed.state, listed.binding.origin, listed.entry) {
+            (BindingState::Disabled(by), ..) => {
+                Edit::SwitchOnDefault(by.clone())
+            }
+            (BindingState::Active, Origin::Default, _) => {
+                Edit::SwitchOffDefault(binding_of(listed))
+            }
+            (BindingState::Active, Origin::User, Some(entry)) => {
+                Edit::SwitchUser { entry, on: false }
+            }
+            (BindingState::SwitchedOff, _, Some(entry)) => {
+                Edit::SwitchUser { entry, on: true }
+            }
+            _ => return,
+        };
+        self.submit_keys(edit, Some(name.to_owned()), cx);
+    }
+
+    /// Removes every user entry for `command`, including those that turn
+    /// its defaults off. `unbind` entries stay.
+    pub(super) fn restore_defaults(
+        &mut self,
+        command: CommandId,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(inventory) = &self.keys.inventory else {
+            return;
+        };
+        let mut entries: Vec<usize> = inventory
+            .bindings
+            .iter()
+            .filter(|listed| listed.binding.command == command)
+            .flat_map(|listed| {
+                let by = match &listed.state {
+                    BindingState::Disabled(by) => by.clone(),
+                    _ => Vec::new(),
+                };
+                listed.entry.into_iter().chain(by)
+            })
+            .collect();
+        entries.sort_unstable();
+        entries.dedup();
+        if !entries.is_empty() {
+            self.submit_keys(Edit::Remove(entries), None, cx);
+        }
+    }
+
+    /// Changes one field of a row's binding: in place for a user entry,
+    /// or as a disabled default plus a replacement.
+    fn edit_row(
+        &mut self,
+        name: &str,
+        field: Field,
+        value: Option<Value>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(listed) = self
+            .keys
+            .inventory
+            .as_ref()
+            .and_then(|inventory| row(inventory, name))
+        else {
+            return;
+        };
+        let edit = match (listed.binding.origin, listed.entry) {
+            (Origin::User, Some(entry)) => Edit::ChangeUser {
+                entry,
+                field,
+                value,
+            },
+            _ => Edit::ChangeDefault {
+                default: binding_of(listed),
+                disabled: matches!(listed.state, BindingState::Disabled(_)),
+                field,
+                value,
+            },
+        };
+        self.submit_keys(edit, Some(name.to_owned()), cx);
+    }
+
+    fn start_recording(
+        &mut self,
+        target: Target,
+        focus: &FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.keys_read_only() {
+            return;
+        }
+        focus.focus(window, cx);
+        let blur = cx.on_blur(focus, window, |view, _, cx| {
+            view.cancel_recording(cx);
+        });
+        self.keys.recording = Some(Recording {
+            target,
+            strokes: Vec::new(),
+            generation: 0,
+            _blur: blur,
+        });
+        cx.notify();
+    }
+
+    pub(super) fn cancel_recording(&mut self, cx: &mut Context<'_, Self>) {
+        if self.keys.recording.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Takes a key-down while recording, before any binding or menu sees
+    /// it. Returns whether it was taken.
+    pub(super) fn record(
+        &mut self,
+        keystroke: &Keystroke,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let Some(recording) = &mut self.keys.recording else {
+            return false;
+        };
+        let plain = !keystroke.modifiers.modified();
+        match keystroke.key.as_str() {
+            "escape" if plain && recording.strokes.is_empty() => {
+                self.cancel_recording(cx);
+                return true;
+            }
+            "enter" if plain && !recording.strokes.is_empty() => {
+                self.finish_recording(cx);
+                return true;
+            }
+            "shift" | "control" | "alt" | "platform" | "function" => {
+                return true;
+            }
+            _ => {}
+        }
+        recording.strokes.push(keystroke.unparse());
+        recording.generation += 1;
+        if recording.strokes.len() >= 2 {
+            self.finish_recording(cx);
+            return true;
+        }
+        let generation = recording.generation;
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(CHORD_TIMEOUT).await;
+            let _ =
+                view.update(cx, |view, cx| {
+                    if view.keys.recording.as_ref().is_some_and(|recording| {
+                        recording.generation == generation
+                    }) {
+                        view.finish_recording(cx);
+                    }
+                });
+        })
+        .detach();
+        cx.notify();
+        true
+    }
+
+    fn finish_recording(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(recording) = self.keys.recording.take() else {
+            return;
+        };
+        let key = recording.strokes.join(" ");
+        if key.is_empty() {
+            cx.notify();
+            return;
+        }
+        match recording.target {
+            Target::Row(name) => {
+                let current = self
+                    .keys
+                    .inventory
+                    .as_ref()
+                    .and_then(|inventory| row(inventory, &name))
+                    .map(|listed| listed.binding.key.clone());
+                if current.as_deref() != Some(key.as_str()) {
+                    self.edit_row(
+                        &name,
+                        Field::Key,
+                        Some(Value::String(key)),
+                        cx,
+                    );
+                }
+            }
+            Target::Add(command) => {
+                self.keys.open.insert(command);
+                self.submit_keys(Edit::Add { key, command }, None, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// A `when` or argument field for a row, created on first use.
+    fn key_field(
+        &mut self,
+        key: String,
+        text: String,
+        placeholder: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Entity<TextField> {
+        if let Some(field) = self.keys.fields.get(&key) {
+            return field.clone();
+        }
+        let swatch = Self::swatch(cx);
+        let field = cx.new(|cx| {
+            let mut field = TextField::new(placeholder, swatch.fg, cx);
+            field.set_text(text.clone(), cx);
+            field
+        });
+        let handle = field.read(cx).focus_handle(cx).tab_stop(true);
+        let blurred = key.clone();
+        cx.on_blur(&handle, window, move |view, _, cx| {
+            view.keys.completion = None;
+            view.commit_key_field(&blurred, cx);
+        })
+        .detach();
+        if key.starts_with("when:") {
+            let changed = key.clone();
+            cx.subscribe(&field, move |view, field, _: &Changed, cx| {
+                let field = field.read(cx);
+                let (_, matches) = completions(field.text(), field.cursor());
+                view.keys.completion =
+                    (!matches.is_empty()).then(|| (changed.clone(), 0));
+                cx.notify();
+            })
+            .detach();
+        }
+        self.keys.fields.insert(key.clone(), field.clone());
+        self.keys.synced.insert(key, text);
+        field
+    }
+
+    /// A field by key, created with the file's text as its row would.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) fn key_field_for(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Entity<TextField> {
+        let text = self.key_field_text(key).unwrap_or_default();
+        self.key_field(key.to_owned(), text, "", window, cx)
+    }
+
+    /// The file's text for a field key, or `None` when its row is gone.
+    fn key_field_text(&self, key: &str) -> Option<String> {
+        let inventory = self.keys.inventory.as_ref()?;
+        if let Some(name) = key.strip_prefix("when:") {
+            return row(inventory, name)
+                .map(|listed| listed.binding.when.clone().unwrap_or_default());
+        }
+        let (name, argument) = key.strip_prefix("arg:")?.split_once(':')?;
+        row(inventory, name)
+            .map(|listed| argument_text(listed, argument).unwrap_or_default())
+    }
+
+    /// Brings every keybinding field up to the file. A focused field that
+    /// holds a draft keeps it; fields whose rows are gone go.
+    pub(super) fn sync_key_fields(&mut self, cx: &mut Context<'_, Self>) {
+        let keys: Vec<String> = self.keys.fields.keys().cloned().collect();
+        for key in keys {
+            let Some(text) = self.key_field_text(&key) else {
+                self.keys.fields.remove(&key);
+                self.keys.synced.remove(&key);
+                continue;
+            };
+            let Some(field) = self.keys.fields.get(&key).cloned() else {
+                continue;
+            };
+            let current = field.read(cx).text().to_owned();
+            let draft = self.keys.synced.get(&key) != Some(&current);
+            if !draft || current == text {
+                field.update(cx, |field, cx| field.set_text(text.clone(), cx));
+            }
+            self.keys.synced.insert(key, text);
+        }
+        cx.notify();
+    }
+
+    /// Saves a `when` or argument field: checked first, written only when
+    /// it changed.
+    pub(super) fn commit_key_field(
+        &mut self,
+        key: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(field) = self.keys.fields.get(key) else {
+            return;
+        };
+        let text = field.read(cx).text().trim().to_owned();
+        let (name, field_kind) = if let Some(name) = key.strip_prefix("when:") {
+            (name.to_owned(), None)
+        } else if let Some((name, argument)) = key
+            .strip_prefix("arg:")
+            .and_then(|rest| rest.split_once(':'))
+        {
+            (name.to_owned(), Some(argument.to_owned()))
+        } else {
+            return;
+        };
+        if self.keys.synced.get(key).map(|synced| synced.trim())
+            == Some(text.as_str())
+        {
+            if self.keys.errors.remove(&name).is_some() {
+                cx.notify();
+            }
+            return;
+        }
+        let value = match &field_kind {
+            None => match check_condition(&text) {
+                Err(message) => {
+                    self.keys
+                        .errors
+                        .insert(name, format!("{message}. Not saved."));
+                    cx.notify();
+                    return;
+                }
+                Ok(_) => {
+                    (!text.is_empty()).then(|| Value::String(text.clone()))
+                }
+            },
+            Some(argument) => {
+                let Some(spec) = self
+                    .keys
+                    .inventory
+                    .as_ref()
+                    .and_then(|inventory| row(inventory, &name))
+                    .and_then(|listed| lookup(listed.binding.command.as_str()))
+                    .and_then(|spec| spec.argument(argument))
+                else {
+                    return;
+                };
+                match parse_argument(spec, &text) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        self.keys.errors.insert(name, message);
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+        };
+        let field = match field_kind {
+            None => Field::When,
+            Some(argument) => Field::Argument(argument),
+        };
+        self.edit_row(&name, field, value, cx);
+    }
+
+    /// Puts a field back to its saved text.
+    pub(super) fn cancel_key_field(
+        &mut self,
+        key: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.keys.completion = None;
+        if let (Some(field), Some(text)) = (
+            self.keys.fields.get(key).cloned(),
+            self.keys.synced.get(key).cloned(),
+        ) {
+            field.update(cx, |field, cx| field.set_text(text, cx));
+        }
+        if let Some(name) = key.strip_prefix("when:").or_else(|| {
+            key.strip_prefix("arg:")
+                .and_then(|rest| rest.split(':').next())
+        }) {
+            self.keys.errors.remove(name);
+        }
+        cx.notify();
+    }
+
+    /// The keybinding field with focus, by key.
+    pub(super) fn focused_key_field(
+        &self,
+        window: &Window,
+        cx: &gpui::App,
+    ) -> Option<(String, Entity<TextField>)> {
+        if self
+            .keys
+            .search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            return Some(("search".to_owned(), self.keys.search.clone()));
+        }
+        self.keys
+            .fields
+            .iter()
+            .find(|(_, field)| {
+                field.read(cx).focus_handle(cx).is_focused(window)
+            })
+            .map(|(key, field)| (key.clone(), field.clone()))
+    }
+
+    /// Moves the completion selection; `false` when no list is open for
+    /// `key`.
+    pub(super) fn step_completion(
+        &mut self,
+        key: &str,
+        forward: bool,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let Some(field) = self.keys.fields.get(key) else {
+            return false;
+        };
+        let field = field.read(cx);
+        let count = completions(field.text(), field.cursor()).1.len();
+        let Some((open, selected)) = &mut self.keys.completion else {
+            return false;
+        };
+        if open != key || count == 0 {
+            return false;
+        }
+        *selected = if forward {
+            (*selected + 1) % count
+        } else {
+            (*selected + count - 1) % count
+        };
+        cx.notify();
+        true
+    }
+
+    /// Accepts the selected completion; `false` when no list is open for
+    /// `key`.
+    pub(super) fn accept_completion(
+        &mut self,
+        key: &str,
+        index: Option<usize>,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let Some((open, selected)) = self.keys.completion.clone() else {
+            return false;
+        };
+        if open != key {
+            return false;
+        }
+        let Some(field) = self.keys.fields.get(key).cloned() else {
+            return false;
+        };
+        let (start, cursor, matches) = {
+            let field = field.read(cx);
+            let (start, matches) = completions(field.text(), field.cursor());
+            (start, field.cursor(), matches)
+        };
+        let Some(context) = matches.get(index.unwrap_or(selected)) else {
+            return false;
+        };
+        field.update(cx, |field, cx| {
+            field.replace(start..cursor, context.name, cx);
+        });
+        self.keys.completion = None;
+        cx.notify();
+        true
+    }
+
+    /// Opens the menu of values for a select argument.
+    fn open_argument_menu(
+        &mut self,
+        name: &str,
+        argument: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.keys_read_only() {
+            return;
+        }
+        let Some(spec) = self
+            .keys
+            .inventory
+            .as_ref()
+            .and_then(|inventory| row(inventory, name))
+            .and_then(|listed| lookup(listed.binding.command.as_str()))
+            .and_then(|spec| spec.argument(argument))
+        else {
+            return;
+        };
+        let mut rows =
+            vec![MenuRow::Item(MenuItem::new(UNSET, unset_label(spec)))];
+        match spec.kind {
+            ArgumentKind::Bool => {
+                rows.push(MenuRow::Item(MenuItem::new("true", "On")));
+                rows.push(MenuRow::Item(MenuItem::new("false", "Off")));
+            }
+            ArgumentKind::Side => {
+                rows.extend(
+                    SIDES
+                        .iter()
+                        .map(|side| MenuRow::Item(MenuItem::new(side, *side))),
+                );
+            }
+            ArgumentKind::QuakeProfile => {
+                let profiles: Vec<String> = cx
+                    .global::<Desktop>()
+                    .config
+                    .quake
+                    .profiles
+                    .keys()
+                    .cloned()
+                    .collect();
+                rows.extend(profiles.iter().map(|profile| {
+                    let profile = interned(profile);
+                    MenuRow::Item(MenuItem::new(profile, profile))
+                }));
+            }
+            _ => return,
+        }
+        let opener = self.action_stop(format!("karg:{name}:{argument}"), cx);
+        self.show_menu(
+            MenuFor::Argument {
+                row: name.to_owned(),
+                name: spec.name,
+                kind: spec.kind,
+            },
+            MenuModel::new(rows),
+            opener,
+            window,
+            cx,
+        );
+    }
+
+    /// Writes a value picked from an argument's menu.
+    pub(super) fn pick_argument(
+        &mut self,
+        name: &str,
+        argument: &'static str,
+        kind: ArgumentKind,
+        picked: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let value = match (picked, kind) {
+            (UNSET, _) => None,
+            (picked, ArgumentKind::Bool) => {
+                Some(Value::Boolean(picked == "true"))
+            }
+            (picked, _) => Some(Value::String(picked.to_owned())),
+        };
+        self.edit_row(name, Field::Argument(argument.to_owned()), value, cx);
+    }
+}
+
+/// Parses an argument field's text; empty leaves the argument unset.
+fn parse_argument(
+    spec: &ArgumentSpec,
+    text: &str,
+) -> Result<Option<Value>, String> {
+    if text.is_empty() {
+        return Ok(None);
+    }
+    match spec.kind {
+        ArgumentKind::Integer { min, max } => text
+            .parse::<i64>()
+            .ok()
+            .filter(|value| (min..=max).contains(value))
+            .map(|value| Some(Value::Integer(value)))
+            .ok_or_else(|| {
+                format!("Enter a whole number from {min} to {max}.")
+            }),
+        _ => Ok(Some(Value::String(text.to_owned()))),
+    }
+}
+
+/// Rendering.
+impl SettingsView {
+    /// The Keybindings section's body.
+    pub(super) fn render_keybindings(
+        &mut self,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Vec<AnyElement> {
+        let mut body = vec![self.render_key_tools(swatch, cx)];
+        let Some(inventory) = self.keys.inventory.clone() else {
+            body.push(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(swatch.muted)
+                    .child("Shortcuts show once config.toml has no errors.")
+                    .into_any_element(),
+            );
+            return body;
+        };
+        let query = self.keys.search.read(cx).text().trim().to_lowercase();
+        let filter = self.keys.filter;
+        let mut any = false;
+        for (group, commands) in grouped() {
+            let commands: Vec<&CommandSpec> = commands
+                .into_iter()
+                .filter(|spec| {
+                    Self::command_matches(&inventory, spec, filter, &query)
+                })
+                .collect();
+            if commands.is_empty() {
+                continue;
+            }
+            any = true;
+            let mut card = card(swatch);
+            for (index, spec) in commands.into_iter().enumerate() {
+                let command =
+                    self.render_command(&inventory, spec, swatch, window, cx);
+                card = card.child(
+                    div()
+                        .when(index > 0, |row| {
+                            row.border_t_1().border_color(swatch.line)
+                        })
+                        .child(command),
+                );
+            }
+            body.push(group_block(group, card, swatch));
+        }
+        if !any {
+            body.push(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(swatch.muted)
+                    .child("No commands match.")
+                    .into_any_element(),
+            );
+        }
+        if query.is_empty() && filter != Filter::Conditional {
+            body.extend(self.render_unbinds(&inventory, swatch, cx));
+        }
+        body.push(
+            div()
+                .text_size(px(12.0))
+                .text_color(swatch.muted)
+                .child(
+                    "A condition limits where a shortcut works, such as \
+                     \"Terminal && selection\". Shortcuts on one key with \
+                     different conditions coexist; the one matching closest \
+                     to focus wins. Switching off a default writes a \
+                     disabled = true entry for just that shortcut.",
+                )
+                .into_any_element(),
+        );
+        body
+    }
+
+    /// The `unbind` entries, each with a button that removes it.
+    fn render_unbinds(
+        &mut self,
+        inventory: &Inventory,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        if inventory.unbinds.is_empty() {
+            return None;
+        }
+        let mut card = card(swatch);
+        for (index, (entry, key)) in inventory.unbinds.iter().enumerate() {
+            let remove = self.actionable(
+                link(format!("settings-kunbind-{entry}"), swatch)
+                    .child("Remove"),
+                format!("kunbind:{entry}"),
+                swatch,
+                cx,
+            );
+            card = card.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.0))
+                    .px(px(14.0))
+                    .py(px(10.0))
+                    .when(index > 0, |row| {
+                        row.border_t_1().border_color(swatch.line)
+                    })
+                    .child(
+                        KeyHint::parse(key, Platform::current())
+                            .element(px(12.0), swatch.fg),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.0))
+                            .text_color(swatch.muted)
+                            .child("Unbound; programs receive this key."),
+                    )
+                    .child(remove),
+            );
+        }
+        Some(group_block("Passed through to programs", card, swatch))
+    }
+
+    /// The section's search field and filter.
+    fn render_key_tools(
+        &mut self,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let search = self.keys.search.clone();
+        let mut segments = div()
+            .flex()
+            .flex_none()
+            .p(px(2.0))
+            .gap(px(2.0))
+            .rounded(px(6.0))
+            .bg(swatch.chip);
+        for (filter, name, label) in Filter::ALL {
+            let on = self.keys.filter == filter;
+            let segment = div()
+                .id(id(format!("settings-kfilter-{name}")))
+                .px(px(8.0))
+                .h(px(22.0))
+                .flex()
+                .items_center()
+                .rounded(px(4.0))
+                .text_size(px(12.0))
+                .text_color(if on { swatch.fg } else { swatch.muted })
+                .when(on, |segment| segment.bg(swatch.selection))
+                .child(label);
+            segments = segments.child(self.actionable(
+                segment,
+                format!("kfilter:{name}"),
+                swatch,
+                cx,
+            ));
+        }
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .mb(px(12.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(26.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(swatch.line_strong)
+                    .bg(swatch.bg)
+                    .text_size(px(12.5))
+                    .key_context("Palette")
+                    .child(search),
+            )
+            .child(segments)
+            .into_any_element()
+    }
+
+    /// One command: its header, and its shortcuts when expanded.
+    fn render_command(
+        &mut self,
+        inventory: &Inventory,
+        spec: &'static CommandSpec,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let open = self.keys.open.contains(&spec.id);
+        let listed: Vec<(String, &ListedBinding)> = rows(inventory)
+            .into_iter()
+            .filter(|(_, listed)| listed.binding.command == spec.id)
+            .collect();
+        let active: Vec<&ListedBinding> = listed
+            .iter()
+            .map(|(_, listed)| *listed)
+            .filter(|listed| listed.state == BindingState::Active)
+            .collect();
+        let summary = summary(&active, swatch);
+        let customized = Self::customized(inventory, spec.id);
+        let head = div()
+            .id(id(format!("settings-kcmd-{}", spec.id.as_str())))
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(14.0))
+            .py(px(9.0))
+            .hover(|style| style.bg(swatch.hover))
+            .child(
+                gpui::svg()
+                    .path(Icon::ChevronRight.asset_path())
+                    .flex_none()
+                    .size(px(12.0))
+                    .text_color(swatch.muted)
+                    .when(open, |chevron| {
+                        chevron.with_transformation(
+                            gpui::Transformation::rotate(gpui::percentage(
+                                0.25,
+                            )),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .text_size(px(13.0))
+                            .text_color(swatch.fg)
+                            .when(customized, |line| {
+                                line.child(
+                                    div()
+                                        .flex_none()
+                                        .size(px(6.0))
+                                        .rounded_full()
+                                        .bg(swatch.accent),
+                                )
+                            })
+                            .child(spec.title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(swatch.muted)
+                            .truncate()
+                            .child(spec.description),
+                    ),
+            )
+            .child(summary);
+        let head = self.actionable(
+            head,
+            format!("kcmd:{}", spec.id.as_str()),
+            swatch,
+            cx,
+        );
+        let mut command = div().flex().flex_col().child(head);
+        if open {
+            command = command.child(
+                self.render_shortcuts(spec, &listed, swatch, window, cx),
+            );
+        }
+        command.into_any_element()
+    }
+
+    /// An expanded command's shortcut rows and its buttons.
+    fn render_shortcuts(
+        &mut self,
+        spec: &'static CommandSpec,
+        listed: &[(String, &ListedBinding)],
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let mut block = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .px(px(14.0))
+            .pb(px(12.0))
+            .pl(px(36.0));
+        for (name, binding) in listed {
+            block = block.child(
+                self.render_shortcut(spec, name, binding, swatch, window, cx),
+            );
+        }
+        let recording_add =
+            self.keys.recording.as_ref().is_some_and(|recording| {
+                recording.target == Target::Add(spec.id)
+            });
+        let read_only = self.keys_read_only();
+        let add = {
+            let label = if recording_add {
+                self.recording_text()
+            } else {
+                "Add shortcut".to_owned()
+            };
+            let element =
+                button(format!("settings-kadd-{}", spec.id.as_str()), swatch)
+                    .when(recording_add, |button| {
+                        button.border_color(swatch.accent)
+                    })
+                    .when(read_only, |button| button.opacity(0.5))
+                    .child(label);
+            self.actionable(
+                element,
+                format!("kadd:{}", spec.id.as_str()),
+                swatch,
+                cx,
+            )
+        };
+        let mut buttons = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .pt(px(4.0))
+            .child(add);
+        if self
+            .keys
+            .inventory
+            .as_ref()
+            .is_some_and(|inventory| Self::customized(inventory, spec.id))
+        {
+            let element =
+                button(format!("settings-kreset-{}", spec.id.as_str()), swatch)
+                    .when(read_only, |button| button.opacity(0.5))
+                    .child("Restore defaults");
+            buttons = buttons.child(self.actionable(
+                element,
+                format!("kreset:{}", spec.id.as_str()),
+                swatch,
+                cx,
+            ));
+        }
+        block.child(buttons).into_any_element()
+    }
+
+    fn recording_text(&self) -> String {
+        match &self.keys.recording {
+            Some(recording) if !recording.strokes.is_empty() => {
+                format!("{} …", recording.strokes.join(" "))
+            }
+            _ => "Press a shortcut…".to_owned(),
+        }
+    }
+
+    /// One shortcut: key, condition, arguments, tag, switch, and remove,
+    /// with its messages below.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one row lays out every control a shortcut has"
+    )]
+    fn render_shortcut(
+        &mut self,
+        spec: &'static CommandSpec,
+        name: &str,
+        listed: &ListedBinding,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let read_only = self.keys_read_only();
+        let active = listed.state == BindingState::Active;
+        let editable = active && !read_only;
+        let user = listed.binding.origin == Origin::User;
+        let recording = self.keys.recording.as_ref().is_some_and(|recording| {
+            recording.target == Target::Row(name.to_owned())
+        });
+        // The key cap records a new key.
+        let key = {
+            let content = if recording {
+                small(self.recording_text(), swatch.accent).into_any_element()
+            } else {
+                KeyHint::parse(&listed.binding.key, Platform::current())
+                    .element(
+                        px(12.0),
+                        if active { swatch.fg } else { swatch.dim },
+                    )
+                    .into_any_element()
+            };
+            let element = div()
+                .id(id(format!("settings-krec-{name}")))
+                .flex()
+                .flex_none()
+                .items_center()
+                .min_w(px(64.0))
+                .h(px(24.0))
+                .px(px(8.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(if recording {
+                    swatch.accent
+                } else if user {
+                    swatch.accent.opacity(0.5)
+                } else {
+                    swatch.line_strong
+                })
+                .when(!editable, |cap| cap.opacity(0.6))
+                .child(content);
+            let element =
+                self.actionable(element, format!("krec:{name}"), swatch, cx);
+            let _ = self
+                .action_stop(format!("krec:{name}"), cx)
+                .tab_stop(editable);
+            element
+        };
+        // The condition, with completion while typing.
+        let when_key = format!("when:{name}");
+        let placeholder = spec.context.unwrap_or("Anywhere");
+        let when = self.key_field(
+            when_key.clone(),
+            listed.binding.when.clone().unwrap_or_default(),
+            placeholder,
+            window,
+            cx,
+        );
+        let _ = when.read(cx).focus_handle(cx).tab_stop(editable);
+        let invalid = self.keys.errors.contains_key(name);
+        let completion =
+            self.render_completion(&when_key, &when, swatch, window, cx);
+        let when_box = div()
+            .flex_1()
+            .min_w(px(90.0))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .h(px(24.0))
+                    .px(px(6.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(if invalid {
+                        swatch.danger
+                    } else {
+                        swatch.line_strong
+                    })
+                    .bg(swatch.bg)
+                    .text_size(px(12.0))
+                    .font_family(mono_font_family())
+                    .key_context("Palette")
+                    .when(!editable, |field| field.opacity(0.6))
+                    .child(when),
+            )
+            .children(completion);
+        // Arguments the file can carry.
+        let mut arguments =
+            div().flex().flex_none().items_center().gap(px(6.0));
+        for argument in configurable(spec) {
+            arguments = arguments.child(self.render_argument(
+                name, listed, argument, editable, swatch, window, cx,
+            ));
+        }
+        let tag = {
+            let (label, color) = match (&listed.state, user) {
+                (BindingState::Active, true) => ("Custom", swatch.accent),
+                (BindingState::Active, false) => ("Default", swatch.muted),
+                (BindingState::Replaced(_), _) => ("Replaced", swatch.dim),
+                (BindingState::Unbound(_), _) => ("Unbound", swatch.dim),
+                (
+                    BindingState::Disabled(_) | BindingState::SwitchedOff,
+                    true,
+                ) => ("Custom", swatch.dim),
+                (
+                    BindingState::Disabled(_) | BindingState::SwitchedOff,
+                    false,
+                ) => ("Default", swatch.dim),
+            };
+            div()
+                .flex_none()
+                .px(px(6.0))
+                .rounded(px(4.0))
+                .bg(swatch.chip)
+                .text_size(px(10.5))
+                .text_color(color)
+                .child(label)
+        };
+        let switchable = matches!(
+            listed.state,
+            BindingState::Active
+                | BindingState::Disabled(_)
+                | BindingState::SwitchedOff
+        );
+        let toggle = switchable.then(|| {
+            let on = active;
+            let element = div()
+                .id(id(format!("settings-kon-{name}")))
+                .flex_none()
+                .w(px(30.0))
+                .h(px(18.0))
+                .p(px(2.0))
+                .rounded_full()
+                .bg(if on {
+                    swatch.accent
+                } else {
+                    swatch.line_strong
+                })
+                .when(read_only, |control| control.opacity(0.5))
+                .child(
+                    div()
+                        .size(px(14.0))
+                        .rounded_full()
+                        .bg(swatch.bg)
+                        .when(on, |knob| knob.ml(px(12.0))),
+                );
+            let element =
+                self.actionable(element, format!("kon:{name}"), swatch, cx);
+            let _ = self
+                .action_stop(format!("kon:{name}"), cx)
+                .tab_stop(!read_only);
+            element
+        });
+        let remove = (user && listed.entry.is_some()).then(|| {
+            let element = link(format!("settings-kdel-{name}"), swatch)
+                .text_color(swatch.muted)
+                .child("Remove");
+            let element =
+                self.actionable(element, format!("kdel:{name}"), swatch, cx);
+            let _ = self
+                .action_stop(format!("kdel:{name}"), cx)
+                .tab_stop(!read_only);
+            element
+        });
+        let messages = self.shortcut_messages(name, listed, swatch, cx);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(8.0))
+                    .child(key)
+                    .child(when_box)
+                    .child(arguments)
+                    .child(div().h(px(24.0)).flex().items_center().child(tag))
+                    .children(toggle.map(|toggle| {
+                        div().h(px(24.0)).flex().items_center().child(toggle)
+                    }))
+                    .children(remove.map(|remove| {
+                        div().h(px(24.0)).flex().items_center().child(remove)
+                    })),
+            )
+            .children(messages)
+            .into_any_element()
+    }
+
+    /// The completion list under a focused `when` field.
+    fn render_completion(
+        &mut self,
+        key: &str,
+        field: &Entity<TextField>,
+        swatch: Swatch,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let (open, selected) = self.keys.completion.clone()?;
+        if open != key || !field.read(cx).focus_handle(cx).is_focused(window) {
+            return None;
+        }
+        let (_, matches) = {
+            let field = field.read(cx);
+            completions(field.text(), field.cursor())
+        };
+        if matches.is_empty() {
+            return None;
+        }
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .mt(px(2.0))
+            .p(px(2.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(swatch.line_strong)
+            .bg(swatch.surface);
+        for (index, context) in matches.into_iter().take(8).enumerate() {
+            let key = key.to_owned();
+            list = list.child(
+                div()
+                    .id(id(format!("settings-kwhen-{index}")))
+                    .flex()
+                    .flex_col()
+                    .px(px(6.0))
+                    .py(px(3.0))
+                    .rounded(px(4.0))
+                    .when(index == selected, |item| item.bg(swatch.selection))
+                    .hover(|item| item.bg(swatch.hover))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |view, _, _, cx| {
+                            view.accept_completion(&key, Some(index), cx);
+                        }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(swatch.fg)
+                            .font_family(mono_font_family())
+                            .child(context.name),
+                    )
+                    .child(small(context.description.to_owned(), swatch.muted)),
+            );
+        }
+        Some(list.into_any_element())
+    }
+
+    /// One argument's control: a number or text field, or a select.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a control needs its row, binding, argument, and state"
+    )]
+    fn render_argument(
+        &mut self,
+        name: &str,
+        listed: &ListedBinding,
+        argument: &'static ArgumentSpec,
+        editable: bool,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let value = argument_text(listed, argument.name);
+        match argument.kind {
+            ArgumentKind::Integer { .. } | ArgumentKind::Text => {
+                let field = self.key_field(
+                    format!("arg:{name}:{}", argument.name),
+                    value.unwrap_or_default(),
+                    unset_label(argument),
+                    window,
+                    cx,
+                );
+                let _ = field.read(cx).focus_handle(cx).tab_stop(editable);
+                let width = if matches!(argument.kind, ArgumentKind::Text) {
+                    100.0
+                } else {
+                    48.0
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .w(px(width))
+                            .h(px(24.0))
+                            .px(px(6.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(swatch.line_strong)
+                            .bg(swatch.bg)
+                            .text_size(px(12.0))
+                            .key_context("Palette")
+                            .when(!editable, |field| field.opacity(0.6))
+                            .child(field),
+                    )
+                    .child(small(argument.name.to_owned(), swatch.muted))
+                    .into_any_element()
+            }
+            _ => {
+                let label =
+                    value.unwrap_or_else(|| unset_label(argument).to_owned());
+                let element = button(
+                    format!("settings-karg-{name}-{}", argument.name),
+                    swatch,
+                )
+                .gap(px(4.0))
+                .when(!editable, |button| button.opacity(0.6))
+                .child(small(format!("{}:", argument.name), swatch.muted))
+                .child(label);
+                let element = self.actionable(
+                    element,
+                    format!("karg:{name}:{}", argument.name),
+                    swatch,
+                    cx,
+                );
+                let _ = self
+                    .action_stop(format!("karg:{name}:{}", argument.name), cx)
+                    .tab_stop(editable);
+                self.with_menu(
+                    &format!("karg:{name}:{}", argument.name),
+                    element.into_any_element(),
+                )
+            }
+        }
+    }
+
+    /// The notes under a shortcut: errors first, then what became of it
+    /// and other bindings on its key.
+    fn shortcut_messages(
+        &self,
+        name: &str,
+        listed: &ListedBinding,
+        swatch: Swatch,
+        cx: &gpui::App,
+    ) -> Vec<AnyElement> {
+        let mut messages: Vec<(String, gpui::Hsla)> = Vec::new();
+        if let Some(error) = self.keys.errors.get(name) {
+            messages.push((error.clone(), swatch.danger));
+        } else if let Some(field) =
+            self.keys.fields.get(&format!("when:{name}"))
+            && let Ok(unknown) = check_condition(field.read(cx).text())
+            && !unknown.is_empty()
+        {
+            {
+                let names = unknown
+                    .iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                messages.push((
+                    format!("Unknown context {names}, so this never matches."),
+                    swatch.warning,
+                ));
+            }
+        }
+        let title = |command: CommandId| {
+            lookup(command.as_str()).map_or_else(
+                || command.as_str().to_owned(),
+                |spec| spec.title.to_owned(),
+            )
+        };
+        match &listed.state {
+            BindingState::Unbound(_) => messages.push((
+                format!(
+                    "Removed by an unbind entry for {}.",
+                    listed.binding.key
+                ),
+                swatch.muted,
+            )),
+            BindingState::Disabled(_)
+                if listed.binding.origin == Origin::Default =>
+            {
+                messages.push((
+                    "Disabled by a disabled = true entry in config.toml."
+                        .to_owned(),
+                    swatch.muted,
+                ));
+            }
+            BindingState::Disabled(_) => messages.push((
+                "Disabled by a later disabled = true entry in config.toml."
+                    .to_owned(),
+                swatch.muted,
+            )),
+            BindingState::SwitchedOff => messages.push((
+                "Switched off; kept in config.toml.".to_owned(),
+                swatch.muted,
+            )),
+            BindingState::Replaced(_) => messages.push((
+                "Replaced by a later binding with the same key and condition."
+                    .to_owned(),
+                swatch.muted,
+            )),
+            BindingState::Active => {
+                if let Some(inventory) = &self.keys.inventory {
+                    for other in &inventory.bindings {
+                        if std::ptr::eq(other, listed)
+                            || other.state != BindingState::Active
+                            || other.binding.key != listed.binding.key
+                            || other.binding.command == listed.binding.command
+                        {
+                            continue;
+                        }
+                        if other.binding.when == listed.binding.when
+                            && other.binding.context == listed.binding.context
+                        {
+                            messages.push((
+                                format!(
+                                    "Same key and condition as {}. The later entry in config.toml wins.",
+                                    title(other.binding.command)
+                                ),
+                                swatch.warning,
+                            ));
+                        } else {
+                            messages.push((
+                                format!(
+                                    "This key also runs {} {}; the match closest to focus wins.",
+                                    title(other.binding.command),
+                                    other.binding.when.as_deref().map_or_else(
+                                        || "with no condition".to_owned(),
+                                        |when| format!("when {when}"),
+                                    )
+                                ),
+                                swatch.muted,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        messages
+            .into_iter()
+            .map(|(text, color)| small(text, color).into_any_element())
+            .collect()
+    }
+
+    /// Commands matching the sidebar search, as links into the section.
+    pub(super) fn render_key_results(
+        &mut self,
+        query: &str,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let commands = self.matching_commands(query);
+        if commands.is_empty() {
+            return None;
+        }
+        let mut card = card(swatch);
+        for (index, spec) in commands.into_iter().take(20).enumerate() {
+            let caps: Vec<String> = self
+                .keys
+                .inventory
+                .as_ref()
+                .map(|inventory| {
+                    inventory
+                        .bindings
+                        .iter()
+                        .filter(|listed| {
+                            listed.binding.command == spec.id
+                                && listed.state == BindingState::Active
+                        })
+                        .take(2)
+                        .map(|listed| listed.binding.key.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut keys = div().flex().flex_none().gap(px(6.0));
+            for key in &caps {
+                keys = keys.child(cap(key, Origin::Default, swatch));
+            }
+            let element = div()
+                .id(id(format!("settings-kgo-{}", spec.id.as_str())))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .px(px(14.0))
+                .py(px(8.0))
+                .when(index > 0, |row| {
+                    row.border_t_1().border_color(swatch.line)
+                })
+                .hover(|style| style.bg(swatch.hover))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(13.0))
+                        .text_color(swatch.fg)
+                        .child(spec.title),
+                )
+                .child(keys);
+            card = card.child(self.actionable(
+                element,
+                format!("kgo:{}", spec.id.as_str()),
+                swatch,
+                cx,
+            ));
+        }
+        Some(group_block("Commands", card, swatch))
+    }
+}
+
+/// A collapsed command's shortcuts: up to two active keys, a count of the
+/// rest, a "when" chip when one has a condition, or "No shortcut".
+fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
+    let mut summary = div().flex().flex_none().items_center().gap(px(6.0));
+    for listed in active.iter().take(2) {
+        summary = summary.child(cap(
+            &listed.binding.key,
+            listed.binding.origin,
+            swatch,
+        ));
+    }
+    if active.len() > 2 {
+        summary = summary
+            .child(small(format!("+{}", active.len() - 2), swatch.muted));
+    }
+    if active.iter().any(|listed| listed.binding.when.is_some()) {
+        summary = summary.child(
+            div()
+                .px(px(6.0))
+                .rounded(px(8.0))
+                .bg(swatch.chip)
+                .text_size(px(11.0))
+                .text_color(swatch.accent)
+                .child("when"),
+        );
+    }
+    if active.is_empty() {
+        summary = summary.child(small("No shortcut".to_owned(), swatch.muted));
+    }
+    summary
+}
+
+fn card(swatch: Swatch) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(swatch.line)
+        .bg(swatch.surface)
+}
+
+fn group_block(title: &str, card: gpui::Div, swatch: Swatch) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .mb(px(12.0))
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(swatch.muted)
+                .child(title.to_uppercase()),
+        )
+        .child(card)
+        .into_any_element()
+}
+
+fn small(text: String, color: gpui::Hsla) -> gpui::Div {
+    div().text_size(px(11.5)).text_color(color).child(text)
+}
+
+/// A shortcut drawn as a key cap; a user binding gets an accent border.
+fn cap(key: &str, origin: Origin, swatch: Swatch) -> gpui::Div {
+    div()
+        .flex_none()
+        .px(px(5.0))
+        .h(px(20.0))
+        .flex()
+        .items_center()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(if origin == Origin::User {
+            swatch.accent
+        } else {
+            swatch.line_strong
+        })
+        .child(
+            KeyHint::parse(key, Platform::current())
+                .element(px(11.0), swatch.fg),
+        )
+}
