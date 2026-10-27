@@ -1,10 +1,10 @@
 # Settings UI and safe config writes
 
-Status: in progress. Approved on 2026-10-26 after four Codex review rounds.
-PR 1 (the foundation) shipped in #263, and PR 2 (the settings model)
-in #266, PR 3 (the window and controls) in #269, and PR 4 (the
-keybinding editor) in #274. PR 5 (quake profiles and global shortcuts) is
-in progress. Plans
+Status: implemented. Approved on 2026-10-26 after four Codex review rounds.
+PR 1 (the foundation) shipped in #263, PR 2 (the settings model) in #266,
+PR 3 (the window and controls) in #269, and PR 4 (the keybinding editor)
+in #274; PR 5 (quake profiles and global shortcuts) completed the series.
+Plans
 [issue #35][issue-35] and [issue #34][issue-34] within
 [epic #14][issue-14]. The UI decisions come from two rounds of HTML mockups
 ([round two][mockups], [the chosen layout][mockup-a1]).
@@ -1064,6 +1064,12 @@ PR of the series; it closes #35.
   shortcut.
 
 ### PR 5 keyboard access and status
+
+Every Settings menu opens on the value its control shows, and only a moving
+pointer selects a row, so Return right after opening keeps the value. The
+New profile field takes the `Palette` context like other Settings fields,
+and Escape closes the delete confirmation through the window's keystroke
+interceptor, so no binding is added.
 
 The dropdown, New profile, the name field and its buttons, the fields,
 Delete profile, and every global shortcut control are tab stops in that

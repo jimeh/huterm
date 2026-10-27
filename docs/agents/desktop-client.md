@@ -424,6 +424,12 @@ A repeated close shortcut while `confirming` must not confirm. Menus and
 dialogs return focus to the terminal when they close; the menu button never
 keeps it, or terminal bindings stop matching until the user clicks back in.
 
+GPUI's `on_hover` also fires when a layout change puts an element under a
+resting pointer, so a menu that opens beneath the pointer would select the
+row there. Menu rows select on `on_mouse_move`, which needs real motion, and
+a select's menu opens on the value its control shows (`Menu::select_item`).
+A GPUI test needs a second frame (`window.refresh()`) before hover settles.
+
 Each open menu carries a `MenuKind` and pointer anchor; derive button state
 and pick targets from them, not from whether any menu is open. A terminal
 right-click's link rides on the next snapshot request and opens the menu when
