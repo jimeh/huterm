@@ -575,6 +575,10 @@ impl SettingsView {
         path: &'static str,
         cx: &mut Context<'_, Self>,
     ) {
+        // An invalid file refuses the write; the conflict waits for a fix.
+        if self.status.invalid() {
+            return;
+        }
         let Some(conflict) = self.conflicts.remove(path) else {
             return;
         };
@@ -596,6 +600,9 @@ impl SettingsView {
         path: &'static str,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.status.invalid() {
+            return;
+        }
         self.conflicts.remove(path);
         self.errors.remove(path);
         self.pending.remove(path);

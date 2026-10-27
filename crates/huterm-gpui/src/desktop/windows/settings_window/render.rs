@@ -410,8 +410,10 @@ impl SettingsView {
                     .items_center()
                     .gap(px(8.0))
                     .child(small(text, swatch.warning))
-                    .child(mine)
-                    .child(file),
+                    // An invalid file cannot take either choice yet.
+                    .when(!self.status.invalid(), |row| {
+                        row.child(mine).child(file)
+                    }),
             )
         } else {
             self.errors

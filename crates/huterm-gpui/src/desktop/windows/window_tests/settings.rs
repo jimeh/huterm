@@ -290,6 +290,57 @@ fn a_reload_keeps_a_draft_and_reports_the_file_change(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_conflict_waits_while_the_file_is_invalid(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("invalid-conflict", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into("font.size", "21", window, cx);
+    });
+    std::fs::write(file.path(), "[font]\nsize = 22.0\n").unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the draft's conflict", |cx| {
+        settled(cx) && conflicted(cx, "font.size")
+    });
+    let broken = "[font]\nsize = 22.0\n[window\n";
+    std::fs::write(file.path(), broken).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the invalid file", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.read_only())
+                    .unwrap_or(false)
+            })
+    });
+    // Neither choice, nor leaving the field, can save while the file is
+    // invalid, so the conflict and the draft stay.
+    with_view(&mut harness, |view, cx| {
+        view.use_mine("font.size", cx);
+        view.use_file("font.size", cx);
+        view.blur("font.size", cx);
+    });
+    harness.cx.run_until_parked();
+    assert!(harness.cx.update(|cx| conflicted(cx, "font.size")));
+    assert_eq!(file.text(), broken);
+    std::fs::write(file.path(), "[font]\nsize = 22.0\n").unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the fixed file", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| !view.read_only())
+                    .unwrap_or(false)
+            })
+    });
+    with_view(&mut harness, |view, cx| view.use_mine("font.size", cx));
+    harness.wait_for("the draft to save", |cx| {
+        settled(cx) && !conflicted(cx, "font.size")
+    });
+    assert_eq!(file.text(), "[font]\nsize = 21.0\n");
+}
+
+#[gpui::test]
 fn the_size_limit_accepts_a_size_and_a_byte_count(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("size", "");
     let mut harness = DesktopHarness::new(cx);
