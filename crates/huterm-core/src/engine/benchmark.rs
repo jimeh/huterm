@@ -373,14 +373,14 @@ fn peak_rss_kib() -> i64 {
 }
 
 /// Budget for the median resize of `resize-history` at the configurable
-/// maximum. Across 76 runs on CI's Ubuntu runners, the median measured 15.9
+/// maximum. Across 77 runs on CI's Ubuntu runners, the median measured 15.9
 /// to 24.9 ms on AMD EPYC 7763, 9V45, and 9V74 and Intel Xeon 8573C and
-/// 6973P-C hosts, and 29.6 ms once on a host the job did not identify. CPU
-/// model set most of the spread: running after the other CI benchmarks
-/// matched standalone runs on the same host. The slowest of 20 resizes
-/// reached 36.1 ms, so the gate ignores it. Apple silicon measures 6.6 ms.
-/// 45 ms leaves 50% headroom over the slowest median and fails a doubling on
-/// hosts above 22.5 ms.
+/// 6973P-C hosts, and 11.8 and 29.6 ms once each on hosts the benchmark job
+/// did not identify. CPU model set most of the spread: running after the
+/// other CI benchmarks matched standalone runs on the same host. The slowest
+/// of 20 resizes reached 36.1 ms, so the gate ignores it. Apple silicon
+/// measures 6.6 ms. 45 ms leaves 50% headroom over the slowest median and
+/// fails a doubling on hosts above 22.5 ms.
 const RESIZE_HISTORY_P50_BUDGET_US: u128 = 45_000;
 
 /// Budget for the benchmark process's peak resident size after

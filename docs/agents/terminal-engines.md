@@ -125,7 +125,7 @@ insertion or deletion.
 Reflow, not link lookup, bounds `ScrollbackLimit::MAX` at 100,000 rows. A width
 change rewraps all history on the runtime thread at about 65 ns per row in the
 `resize-history` fixture of `bench:engine`: 6.6 ms p50 at 100,000 rows and
-68 ms at a million locally, and 16 to 30 ms at 100,000 rows on CI's Linux
+68 ms at a million locally, and 12 to 30 ms at 100,000 rows on CI's Linux
 runners. Saturated plain history at 120 columns takes about 1 KB per row.
 `ci:benchmarks` gates that fixture's median resize and peak RSS at the
 maximum, so a Ghostty pin bump or native patch that slows reflow or grows
