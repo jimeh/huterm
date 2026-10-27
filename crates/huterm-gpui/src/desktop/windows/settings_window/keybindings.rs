@@ -112,6 +112,9 @@ pub(super) struct Keys {
     /// Each row's binding at the last sync, to follow a field's shortcut
     /// when another editor shifts or edits the entries.
     pub(super) identities: HashMap<String, Identity>,
+    /// A locator for each `[[keybinding]]` entry of the snapshot the list
+    /// came from, parsed off the GPUI thread with it.
+    pub(super) entries: Vec<huterm_config::document::EntryLocator>,
     /// Strokes recorded across every recording; a chord timer finishes its
     /// recording only while no later stroke has arrived.
     pub(super) strokes: u64,
@@ -181,6 +184,7 @@ impl Keys {
             follow: None,
             stranded: false,
             identities: HashMap::new(),
+            entries: Vec::new(),
             strokes: 0,
             timed_out_at: None,
         }

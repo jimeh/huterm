@@ -2,7 +2,7 @@
 //! condition can name, condition checks, and the patches each edit writes.
 
 use gpui::KeyBindingContextPredicate;
-use huterm_config::document::{EntryLocator, List, Patch, Snapshot};
+use huterm_config::document::{EntryLocator, List, Patch};
 use huterm_protocol::{CommandArgument, CommandId, CommandValue, ids, lookup};
 
 use super::super::key_hint::KeyHint;
@@ -513,16 +513,17 @@ pub(crate) enum Edit {
 }
 
 impl Edit {
-    /// The patches this edit writes against `snapshot`.
+    /// The patches this edit writes, from `entries`, a locator for each
+    /// `[[keybinding]]` entry of the snapshot the list came from.
     ///
     /// # Errors
-    /// When an entry it addresses is not in the snapshot.
+    /// When an entry it addresses is not among them.
     pub(crate) fn patches(
         &self,
-        snapshot: &Snapshot,
+        entries: &[EntryLocator],
     ) -> Result<Vec<Patch>, String> {
         let locate = |index: usize| -> Result<EntryLocator, String> {
-            snapshot.entry(List::Keybinding, index).ok_or_else(|| {
+            entries.get(index).cloned().ok_or_else(|| {
                 format!("keybinding entry {} is gone", index + 1)
             })
         };

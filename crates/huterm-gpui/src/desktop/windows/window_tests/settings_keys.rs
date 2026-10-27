@@ -886,3 +886,63 @@ fn a_focused_draft_survives_a_reread_that_finds_the_file_invalid(
     });
     saved(&mut harness, &file, |text| text.contains("split"));
 }
+
+#[gpui::test]
+fn a_queued_removal_keeps_its_own_entry_among_identical_twins(
+    cx: &mut TestAppContext,
+) {
+    let entry = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_tab\"\n";
+    let original = format!("{entry}\n{entry}");
+    let file = ScratchConfig::new("keys-identical", &original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // The second twin's condition saves first; removing the first waits.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u1", "Terminal", window, cx);
+        view.enter_key("when:u1", cx);
+        view.press("kdel:u0", window, cx);
+    });
+    harness.wait_for("both writes", settled);
+    harness.cx.run_until_parked();
+    assert_eq!(
+        file.text(),
+        "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_tab\"\nwhen = \"Terminal\"\n"
+    );
+}
+
+#[gpui::test]
+fn a_draft_behind_a_setting_write_refused_by_an_invalid_file_waits_for_the_fix(
+    cx: &mut TestAppContext,
+) {
+    let original =
+        "[[keybinding]]\nkey = \"ctrl-alt-l\"\ncommand = \"new_tab\"\n";
+    let file = ScratchConfig::new("keys-behind-setting", original);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.general.watch_config = false;
+    });
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+        view.type_key("when:u0", "Terminal", window, cx);
+        view.enter_key("when:u0", cx);
+        std::fs::write(file.path(), format!("{original}[window\n")).unwrap();
+    });
+    harness.wait_for("the refusal", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.key_error("u0").is_some())
+                    .unwrap_or(false)
+            })
+    });
+    std::fs::write(file.path(), original).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the reread", settled);
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal");
+        view.enter_key("when:u0", cx);
+    });
+    saved(&mut harness, &file, |text| {
+        text.contains("when = \"Terminal\"")
+    });
+}

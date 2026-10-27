@@ -10,7 +10,9 @@
 use std::path::Path;
 
 use gpui::{AppContext as _, Context, Window};
-use huterm_config::document::{ApplyError, ConfigFile, Patch, Snapshot};
+use huterm_config::document::{
+    ApplyError, ConfigFile, EntryLocator, List, Patch, Snapshot,
+};
 use huterm_config::settings::{
     Platform as SettingPlatform, Setting, SettingKind,
 };
@@ -78,22 +80,37 @@ struct Loaded {
     snapshot: Snapshot,
     file: Result<FileValues, String>,
     valid: Result<(), String>,
-    keys: Option<Inventory>,
+    keys: Listed,
 }
 
 /// What a background write produced.
 struct Written {
     snapshot: Snapshot,
     file: Result<FileValues, String>,
-    keys: Option<Inventory>,
+    keys: Listed,
 }
 
-/// The file's bindings with what became of each, or `None` when they do
-/// not compile.
-fn listed(text: Option<&str>, path: &Path) -> Option<Inventory> {
-    let config =
-        crate::config::parse_at(text.unwrap_or_default(), path).ok()?;
-    inventory(Platform::current(), &config.keybindings).ok()
+/// What a read or write found about the file's keybindings.
+struct Listed {
+    /// The bindings with what became of each, or `None` when they do not
+    /// compile.
+    inventory: Option<Inventory>,
+    /// A locator for each `[[keybinding]]` entry, for edits to address.
+    entries: Vec<EntryLocator>,
+}
+
+/// Parses the file's keybindings, off the GPUI thread.
+fn listed(snapshot: &Snapshot, path: &Path) -> Listed {
+    let inventory =
+        crate::config::parse_at(snapshot.text().unwrap_or_default(), path)
+            .ok()
+            .and_then(|config| {
+                inventory(Platform::current(), &config.keybindings).ok()
+            });
+    Listed {
+        inventory,
+        entries: snapshot.entries(List::Keybinding),
+    }
 }
 
 /// The path a setting's changes write: the theme row edits the theme's
@@ -146,7 +163,7 @@ impl SettingsView {
             Ok::<_, ApplyError>(Loaded {
                 file: FileValues::parse(text),
                 valid: text.map_or(Ok(()), &validate),
-                keys: listed(text, &path),
+                keys: listed(&snapshot, &path),
                 snapshot,
             })
         });
@@ -175,7 +192,8 @@ impl SettingsView {
                 valid,
                 keys,
             }) => {
-                self.keys.inventory = keys;
+                self.keys.inventory = keys.inventory;
+                self.keys.entries = keys.entries;
                 match (file, valid) {
                     (Ok(file), Ok(())) => {
                         self.file = file;
@@ -454,13 +472,13 @@ impl SettingsView {
         if self.locked() {
             return false;
         }
-        let Some(base) = &self.base else {
+        if self.base.is_none() {
             return false;
-        };
+        }
         if let Some(row) = &row {
             self.keys.errors.remove(row);
         }
-        let patches = match edit.patches(base) {
+        let patches = match edit.patches(&self.keys.entries) {
             Ok(patches) => patches,
             Err(message) => {
                 self.status.failed(message);
@@ -499,7 +517,7 @@ impl SettingsView {
             let snapshot = file.apply(&base, &patches, &validate)?;
             Ok::<_, ApplyError>(Written {
                 file: FileValues::parse(snapshot.text()),
-                keys: listed(snapshot.text(), &path),
+                keys: listed(&snapshot, &path),
                 snapshot,
             })
         });
@@ -546,7 +564,8 @@ impl SettingsView {
                 if let Ok(file) = written.file {
                     self.file = file;
                 }
-                self.keys.inventory = written.keys;
+                self.keys.inventory = written.keys.inventory;
+                self.keys.entries = written.keys.entries;
                 self.base = Some(written.snapshot);
                 self.rebase_queued_keys(&change.patches);
                 self.status.saved();
@@ -573,26 +592,7 @@ impl SettingsView {
                 // The field keeps its text as a draft for after the fix, as
                 // do fields whose queued edits go unwritten.
                 report(self, "config.toml has an error. Not saved.".to_owned());
-                for queued in std::mem::take(&mut self.queued) {
-                    if let Queued::Keys(KeyChange {
-                        field: Some((key, saved)),
-                        ..
-                    }) = queued
-                    {
-                        self.keys.errors.insert(
-                            key.clone(),
-                            "config.toml has an error. Not saved.".to_owned(),
-                        );
-                        match saved {
-                            Some(saved) => {
-                                self.keys.synced.insert(key, saved);
-                            }
-                            None => {
-                                self.keys.synced.remove(&key);
-                            }
-                        }
-                    }
-                }
+                self.drop_queue_for_invalid_file();
                 self.pending.clear();
                 self.status.invalid_file(message);
                 self.sync_fields(cx);
@@ -632,7 +632,7 @@ impl SettingsView {
             let snapshot = file.apply(&base, &[patch], &validate)?;
             Ok::<_, ApplyError>(Written {
                 file: FileValues::parse(snapshot.text()),
-                keys: listed(snapshot.text(), &config_path),
+                keys: listed(&snapshot, &config_path),
                 snapshot,
             })
         });
@@ -684,7 +684,8 @@ impl SettingsView {
                     }
                     self.file = file;
                 }
-                self.keys.inventory = written.keys;
+                self.keys.inventory = written.keys.inventory;
+                self.keys.entries = written.keys.entries;
                 self.base = Some(written.snapshot);
                 self.status.saved();
                 let saved = field_text(shown(
@@ -717,7 +718,7 @@ impl SettingsView {
                 failed = true;
                 // Nothing can be written to an invalid file, so every
                 // pending change settles unsaved.
-                self.queued.clear();
+                self.drop_queue_for_invalid_file();
                 self.pending.clear();
                 self.status.invalid_file(message);
                 self.sync_fields(cx);
@@ -753,12 +754,40 @@ impl SettingsView {
         self.next_write(failed, cx);
     }
 
-    /// Carries queued keybinding edits past a write this window just made:
-    /// a queued patch for an entry that write changed now finds it by its
-    /// new content, and one for an entry it removed goes, with its edit
-    /// when nothing of that is left.
+    /// Drops every queued write after the file turned out invalid. A
+    /// keybinding field whose edit goes unwritten keeps its text as a draft,
+    /// marked, for after the fix.
+    fn drop_queue_for_invalid_file(&mut self) {
+        for queued in std::mem::take(&mut self.queued) {
+            let Queued::Keys(KeyChange {
+                field: Some((key, saved)),
+                ..
+            }) = queued
+            else {
+                continue;
+            };
+            self.keys.errors.insert(
+                key.clone(),
+                "config.toml has an error. Not saved.".to_owned(),
+            );
+            match saved {
+                Some(saved) => {
+                    self.keys.synced.insert(key, saved);
+                }
+                None => {
+                    self.keys.synced.remove(&key);
+                }
+            }
+        }
+    }
+
+    /// Carries queued keybinding edits past a write this window just made.
+    /// A queued patch for an entry that write changed, matched by position
+    /// and content, now finds it by its new content; one for an entry it
+    /// removed goes, with its edit when nothing of that is left; and entries
+    /// after a removed one move up.
     fn rebase_queued_keys(&mut self, landed: &[Patch]) {
-        let mut changed: Vec<(Table, Option<Table>)> = Vec::new();
+        let mut changed: Vec<(usize, Table, Option<Table>)> = Vec::new();
         for patch in landed {
             match patch {
                 Patch::SetEntryField {
@@ -768,15 +797,27 @@ impl SettingsView {
                 } => {
                     let mut after = locator.content().clone();
                     after.insert(field.clone(), value.clone());
-                    changed.push((locator.content().clone(), Some(after)));
+                    changed.push((
+                        locator.index(),
+                        locator.content().clone(),
+                        Some(after),
+                    ));
                 }
                 Patch::ClearEntryField { locator, field } => {
                     let mut after = locator.content().clone();
                     after.remove(field);
-                    changed.push((locator.content().clone(), Some(after)));
+                    changed.push((
+                        locator.index(),
+                        locator.content().clone(),
+                        Some(after),
+                    ));
                 }
                 Patch::RemoveEntry { locator } => {
-                    changed.push((locator.content().clone(), None));
+                    changed.push((
+                        locator.index(),
+                        locator.content().clone(),
+                        None,
+                    ));
                 }
                 _ => {}
             }
@@ -784,6 +825,11 @@ impl SettingsView {
         if changed.is_empty() {
             return;
         }
+        let removed: Vec<usize> = changed
+            .iter()
+            .filter(|(_, _, after)| after.is_none())
+            .map(|(index, _, _)| *index)
+            .collect();
         self.queued.retain_mut(|queued| {
             let Queued::Keys(change) = queued else {
                 return true;
@@ -797,17 +843,18 @@ impl SettingsView {
                 else {
                     return true;
                 };
-                match changed
-                    .iter()
-                    .find(|(before, _)| before == locator.content())
-                {
-                    Some((_, Some(after))) => {
-                        *locator = locator.with_content(after.clone());
-                        true
-                    }
-                    Some((_, None)) => false,
-                    None => true,
-                }
+                let index = locator.index();
+                let content = match changed.iter().find(|(at, before, _)| {
+                    *at == index && before == locator.content()
+                }) {
+                    Some((_, _, None)) => return false,
+                    Some((_, _, Some(after))) => after.clone(),
+                    None => locator.content().clone(),
+                };
+                let moved = index
+                    - removed.iter().filter(|gone| **gone < index).count();
+                *locator = locator.rebased(moved, content);
+                true
             });
             had == 0 || !change.patches.is_empty()
         });

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use huterm_config::document::ConfigFile;
+use huterm_config::document::{ConfigFile, List};
 use huterm_protocol::catalog;
 
 use super::*;
@@ -96,7 +96,7 @@ impl Scratch {
     fn apply(&self, edit: &Edit) -> String {
         let file = ConfigFile::new(self.path());
         let base = file.load().unwrap();
-        let patches = edit.patches(&base).unwrap();
+        let patches = edit.patches(&base.entries(List::Keybinding)).unwrap();
         file.apply(&base, &patches, &crate::config::validator(self.path()))
             .unwrap();
         std::fs::read_to_string(self.path()).unwrap()
