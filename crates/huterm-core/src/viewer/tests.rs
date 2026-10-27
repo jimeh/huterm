@@ -52,6 +52,7 @@ fn spawn_with(
             cell_size: cell(),
             presentation: TerminalPresentation::default(),
             scrollback,
+            scrollback_compression: false,
         },
     )
     .unwrap()

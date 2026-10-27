@@ -74,6 +74,7 @@ pub struct TerminalConfig {
     pub macos_option_as_alt: MacosOptionAsAlt,
     pub right_click: RightClickAction,
     pub scrollback: ScrollbackLimit,
+    pub scrollback_compression: bool,
 }
 
 impl Default for TerminalConfig {
@@ -90,6 +91,7 @@ impl Default for TerminalConfig {
             macos_option_as_alt: MacosOptionAsAlt::Off,
             right_click: RightClickAction::Menu,
             scrollback: ScrollbackLimit::DEFAULT,
+            scrollback_compression: true,
         }
     }
 }
@@ -1594,6 +1596,20 @@ pub struct RawTerminal {
         "x-huterm-advanced" = true,
     )))]
     pub scrollback_bytes: Option<ScrollbackSize>,
+    /// Compress each terminal's history once it has been idle for a quarter
+    /// of a second. Text-heavy history shrinks to about a tenth of its memory
+    /// and reads back exactly as before. The first width change after
+    /// compression takes two to three times longer, because it restores all
+    /// history. Reload applies it to open terminals; turning it off leaves
+    /// history already compressed until something reads it.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "scrollback",
+        "x-huterm-group" = "Memory",
+        "x-huterm-label" = "Compress idle history",
+        "x-huterm-order" = 30,
+        "x-huterm-apply" = "live",
+    )))]
+    pub scrollback_compression: bool,
 }
 impl Default for RawTerminal {
     fn default() -> Self {
@@ -1611,6 +1627,7 @@ impl Default for RawTerminal {
             right_click: RightClickAction::Menu,
             scrollback_rows: ScrollbackLimit::DEFAULT.rows(),
             scrollback_bytes: None,
+            scrollback_compression: true,
         }
     }
 }

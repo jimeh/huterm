@@ -83,11 +83,40 @@ version data. In a repository with several checkouts, preparation reuses a
 matching archive from another one instead of downloading; see
 [linked worktrees](development.md#linked-worktrees).
 The adapter disables Kitty graphics, the Glyph protocol, and APC buffering,
-does not yet schedule scrollback compression, uses the portable CPU baseline,
-and limits history by the configured rows and optional size, as
-[the huterm-ghostty crate](#the-huterm-ghostty-crate) describes.
+uses the portable CPU baseline, and limits history by the configured rows and
+optional size, as [the huterm-ghostty crate](#the-huterm-ghostty-crate)
+describes. The runtime compresses idle history, as
+[scrollback compression](#scrollback-compression) describes.
 
 ## Runtime behavior
+
+### Scrollback compression
+
+`[terminal] scrollback_compression`, on by default, lets each terminal's
+runtime thread compress cold history with Ghostty's incremental API.
+`compression::CompressionSchedule` in `huterm-core` decides when, from
+explicit instants:
+
+- A pass starts 250 ms after the last change in Ghostty's activity token, or
+  after a selection extraction or link lookup, which restore pages without
+  changing it. The token covers only primary-screen history, so redraws,
+  title changes, and full-screen programs never start a pass.
+- Client input postpones a pending pass and never starts one, so typing at a
+  prompt costs nothing.
+- The runtime steps only from the branch where every queue is empty, in
+  batches of up to 1 ms that end early when the runtime's `Wake` has a
+  pending notification, with 1 ms between batches. A step compresses one
+  whole page and cannot be interrupted; per-cell truecolor pages take about
+  4 ms on Apple silicon.
+- A completed pass leaves no deadline, so an idle terminal adds no wakeups.
+  Enabling the setting forgets the last token and arms a pass; disabling it
+  leaves compressed pages until something reads them.
+
+Any read of a compressed page restores it until the next pass: rendering a
+scrolled viewport, selection, link lookup, and every width change, which
+restores all history first. `bench:compression` gates the cost of each.
+`TerminalViewer::compression_stats` publishes step counts and the input handled
+mid-pass through atomics, for benchmarks; reading it never wakes the runtime.
 
 Ghostty publishes complete owned snapshots with shared immutable rows. Huterm
 retains its existing behavior for dynamic palette overrides, fragmented OSC
@@ -206,6 +235,16 @@ resident size from a `VmHWM` reset just before the first resize, so the fill
 does not count. Each benchmark holds up to 400 MiB, so the task runs each in
 its own process, and their names must never match the `engine_benchmark`
 filter, or they would inflate `resize-history`'s peak.
+`bench:output-latency -- compression` times keys typed while a pass is
+running, over saturated build-log history, or per-cell truecolor history with
+`HUTERM_BENCH_HISTORY=styles`. Each cycle changes the grid by one column,
+waits until the runtime steps, then types one key; only keys the runtime
+handled while a pass was unfinished count, and the run stops when the driver
+prints that it is done. `HUTERM_BENCH_COMPRESSION=off` measures the
+uncompressed baseline, typing at a fixed delay after each resize. The other
+latency modes, `bench:scroll`, and `bench:renderer` pin compression off.
+Smokes keep the default, so they exercise compression as users run it; their
+histories are a few pages, so a pass costs them microseconds.
 The scroll and link gates keep their existing thresholds and queue limits.
 The link benchmark runs its viewport, above-viewport, mid-history, long-line,
 and scrolled fixtures with empty scrollback and with scrollback saturated at

@@ -250,11 +250,18 @@ impl TerminalRenderer {
         if let Some(sent) =
             stats.pending_key.take_if(|sent| invalidated_at >= *sent)
         {
-            stats.key_applied.push(sent.elapsed());
+            let applied = sent.elapsed();
+            stats.key_applied.push(applied);
+            stats.last_key_applied = Some(applied);
             if shown {
                 stats.pending_echo = Some(sent);
             }
         }
+    }
+
+    /// Takes the latest key's delay to its echo snapshot, once it is known.
+    pub(super) fn take_last_key_applied(&mut self) -> Option<Duration> {
+        self.stats.as_mut()?.last_key_applied.take()
     }
 
     /// Starts a keystroke-to-echo sample for the key benchmark.
@@ -1257,6 +1264,9 @@ struct RendererStats {
     key_painted: Vec<Duration>,
     pending_key: Option<Instant>,
     pending_echo: Option<Instant>,
+    /// The latest key's delay to its echo snapshot, until the driver takes
+    /// it.
+    last_key_applied: Option<Duration>,
     continuous_frames: bool,
 }
 
@@ -1283,6 +1293,7 @@ impl RendererStats {
             key_painted: Vec::new(),
             pending_key: None,
             pending_echo: None,
+            last_key_applied: None,
         }
     }
 

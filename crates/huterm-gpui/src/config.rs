@@ -34,6 +34,9 @@ scrollback_rows = 10000
 # Optionally also limit history by size, such as "64MiB" or "50MB", up to
 # "16GiB". Whichever limit is reached first applies.
 # scrollback_bytes = "64MiB"
+# Compress history while the terminal is idle, which keeps about a tenth of
+# its memory for text. The first width change afterwards takes longer.
+scrollback_compression = true
 # Snapshot pacing: display follows frame delivery; unlimited removes that cap.
 refresh = "display"
 # Open new tabs in a usable local directory reported by the active terminal.
@@ -547,6 +550,7 @@ fn parse_consumed(
             macos_option_as_alt: raw.terminal.macos_option_as_alt,
             right_click: raw.terminal.right_click,
             scrollback: raw.terminal.scrollback()?,
+            scrollback_compression: raw.terminal.scrollback_compression,
         },
         font: FontConfig {
             family: raw.font.family,

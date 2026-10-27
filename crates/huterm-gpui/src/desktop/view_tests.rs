@@ -88,6 +88,7 @@ impl ViewHarness {
                 cell_size: CELL,
                 presentation: TerminalPresentation::default(),
                 scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+                scrollback_compression: false,
             },
         )
         .unwrap();

@@ -92,6 +92,7 @@ fn command(script: &str) -> TerminalCommand {
         },
         presentation: TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        scrollback_compression: false,
     }
 }
 

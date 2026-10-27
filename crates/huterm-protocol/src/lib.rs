@@ -519,6 +519,10 @@ pub struct TerminalCommand {
     pub presentation: TerminalPresentation,
     /// History limit applied before the child process starts.
     pub scrollback: ScrollbackLimit,
+    /// Whether the runtime compresses history while the terminal is idle,
+    /// which releases most of its memory. Compressed history reads exactly
+    /// like uncompressed history.
+    pub scrollback_compression: bool,
 }
 
 /// How much live history a terminal keeps above its screen: a row limit,

@@ -42,6 +42,7 @@ fn fixture(script: &str) -> TerminalCommand {
         },
         presentation: TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        scrollback_compression: false,
     }
 }
 
@@ -1707,6 +1708,38 @@ fn a_reload_shrinks_the_history_of_a_hidden_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_reload_that_only_turns_compression_on_starts_a_pass(
+    cx: &mut TestAppContext,
+) {
+    // The terminal starts without compression, and so does the view's
+    // configuration, so no pass can run until the reload.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.terminal.scrollback_compression = false;
+    });
+    let tab = harness.open_tab(PRINTS_HISTORY);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    let reloaded = config::TerminalConfig::default();
+    assert!(reloaded.scrollback_compression);
+    harness.cx.update(|cx| {
+        terminal(cx, window, tab).unwrap().update(cx, |view, cx| {
+            assert!(!view.scrollback_compression);
+            assert_eq!(view.viewer.compression_stats().steps, 0);
+            assert_eq!(
+                view.scrollback, reloaded.scrollback,
+                "only compression changes"
+            );
+            view.reload_terminal_config(reloaded, cx);
+        });
+    });
+    harness.wait_for("a compression pass after the reload", |cx| {
+        let view = terminal(cx, window, tab).unwrap();
+        view.read(cx).viewer.compression_stats().steps > 0
+    });
+}
+
+#[gpui::test]
 fn a_replacement_started_before_a_scrollback_change_takes_the_current_limit(
     cx: &mut TestAppContext,
 ) {
@@ -1742,7 +1775,10 @@ fn a_replacement_started_before_a_scrollback_change_takes_the_current_limit(
 fn a_limit_refused_before_a_replacement_starts_reaches_the_replacement(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
+    // Compression starts off, so only the refused setting can start a pass.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.terminal.scrollback_compression = false;
+    });
     let tab = harness.open_tab(PRINTS_HISTORY);
     let window = harness.attach_window();
     harness.activate(window, tab);
@@ -1750,16 +1786,22 @@ fn a_limit_refused_before_a_replacement_starts_reaches_the_replacement(
     harness.hold_replacements(window, true);
     harness.revoke(window);
     // A reload reaches the revoked viewer before its replacement starts,
-    // so the replacement starts with the new limit already in the view.
+    // so the replacement starts with the new settings already in the view.
     harness.cx.update(|cx| {
         terminal(cx, window, tab).unwrap().update(cx, |view, _| {
+            assert_eq!(view.viewer.compression_stats().steps, 0);
             view.scrollback = scrollback(1000);
+            view.scrollback_compression = true;
             view.publish_scrollback();
         });
     });
     harness.hold_replacements(window, false);
     harness.wait_for("the replacement", |cx| {
         replaced(cx, window, tab, 1).is_some()
+    });
+    harness.wait_for("a compression pass from the refused setting", |cx| {
+        let view = terminal(cx, window, tab).unwrap();
+        view.read(cx).viewer.compression_stats().steps > 0
     });
     harness.wait_canonical(tab, "the refused limit", |snapshot| {
         snapshot.history_size <= 1000

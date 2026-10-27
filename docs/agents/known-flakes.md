@@ -351,6 +351,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   instead of signalling the group. EPERM there suggests the group's leader
   had already exited and its ID belonged to a group the user cannot signal.
   The file passed alone right after.
+- **Third signature:** a local `mise run check` on macOS, 2026-10-28, run
+  right after `cargo clean` while Clippy compiled the workspace in
+  parallel, timed out `smoke process drains both pipes and records the real
+  exit` at Bun's 5,000ms test timeout. That fixture only prints and exits.
+  The file passed three times alone, and the next `mise run check` passed.
 - **Triage:** rerun the file alone. If it recurs, record whether the
   descendant started, for example by having it write a marker file.
 

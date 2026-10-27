@@ -733,6 +733,14 @@ mod tests {
             model.setting("terminal.bell.visual").unwrap().kind,
             SettingKind::Bool
         );
+        let compression =
+            model.setting("terminal.scrollback_compression").unwrap();
+        assert_eq!(compression.kind, SettingKind::Bool);
+        assert_eq!(compression.section, SectionId::Scrollback);
+        assert_eq!(compression.label, "Compress idle history");
+        assert_eq!(compression.default, Some(toml::Value::Boolean(true)));
+        assert_eq!(compression.apply, Apply::Live);
+        assert!(!compression.advanced);
         let rows = model.setting("terminal.scrollback_rows").unwrap();
         assert_eq!(
             rows.kind,

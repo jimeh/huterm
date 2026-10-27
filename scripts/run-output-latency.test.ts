@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkAppliedBudget, checkSnapshotsPerKeyBudget, format, formatKeys, parseIntervals, parseKeyIntervals, summarize, summarizeKeys } from "./run-output-latency.ts";
+import { checkAppliedBudget, checkSnapshotsPerKeyBudget, format, formatCycles, formatKeys, parseCycles, parseIntervals, parseKeyIntervals, summarize, summarizeCycles, summarizeKeys } from "./run-output-latency.ts";
 
 const line = (snapshots: number, applied: number, painted: number, elapsed = 1_000_000) =>
   `huterm-render output elapsed_us=${elapsed} snapshots=${snapshots} applied_us_median=${applied} applied_us_max=${applied * 2} paints=${snapshots} painted_us_median=${painted} painted_us_max=${painted * 2}`;
@@ -47,4 +47,20 @@ test("the snapshots-per-key budget fails when every key also takes a pre-echo sn
 test("rejects key runs whose keys never produced an echo", () => {
   expect(() => summarizeKeys(parseKeyIntervals([keyLine(1, 1, 1, 1, 1), keyLine(10, 0, 0, 0, 0)].join("\n")))).toThrow("none of 10 keys produced an echo snapshot");
   expect(() => summarizeKeys(parseKeyIntervals(line(3, 1, 1)))).toThrow("no key latency intervals");
+});
+
+const cycle = (index: number, tagged: boolean, applied: number, stepMean = 200) =>
+  `HUTERM_BENCH compression cycle=${index} tagged=${tagged} applied_us=${applied} steps=12 step_us_mean=${stepMean}`;
+
+test("summarizes only keys typed during a pass when compression is on", () => {
+  const log = [cycle(0, true, 900), "HUTERM_BENCH compression cycle=1 skipped=no-pass", cycle(2, false, 50_000), cycle(3, true, 1_100, 400), cycle(4, true, 1_000, 300)].join("\n");
+  expect(formatCycles(summarizeCycles(parseCycles(log), true, 3))).toBe("compression-latency cycles=4 tagged=3 applied_us_median=1000 applied_us_max=1100 step_us_mean_median=300");
+  // The uncompressed baseline counts every cycle.
+  expect(summarizeCycles(parseCycles(log), false, 40).appliedMaxUs).toBe(50_000);
+});
+
+test("rejects compressed runs whose keys rarely met a pass", () => {
+  const log = [cycle(0, true, 900), cycle(1, false, 800), cycle(2, false, 850)].join("\n");
+  expect(() => summarizeCycles(parseCycles(log), true, 2)).toThrow("only 1 of 3 keys reached the runtime during a pass");
+  expect(() => summarizeCycles(parseCycles(""), false, 40)).toThrow("no compression cycles");
 });

@@ -154,8 +154,10 @@ fn the_activity_token_follows_history_changes_and_ignores_reads() {
         return;
     }
     let mut terminal = paged_terminal();
-    drain(&mut terminal);
     let token = terminal.compression_activity().unwrap();
+    // A pass leaves it alone, so a finished terminal schedules nothing.
+    drain(&mut terminal);
+    assert_eq!(terminal.compression_activity().unwrap(), token);
 
     // Reads, including ones that restore a page, leave it alone.
     let mut render = RenderState::new().unwrap();

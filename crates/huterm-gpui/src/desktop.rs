@@ -384,7 +384,11 @@ struct TerminalView {
     /// The configured history limit, which every viewer of the terminal
     /// sends; the runtime ignores a limit it already applies.
     scrollback: ScrollbackLimit,
-    /// `scrollback` still waits for room in the runtime's queue.
+    /// Whether the runtime compresses idle history, sent with `scrollback`.
+    scrollback_compression: bool,
+    /// `scrollback` or `scrollback_compression` still waits for room in the
+    /// runtime's queue. Both are resent together; the runtime ignores values
+    /// it already applies.
     pending_scrollback: bool,
     title: String,
     metadata: TerminalMetadata,
@@ -620,8 +624,9 @@ impl TerminalView {
             };
         // The terminal may have started under an older configuration.
         let scrollback = config.terminal.scrollback;
+        let scrollback_compression = config.terminal.scrollback_compression;
         let (pending_scrollback, scrollback_failure) =
-            match viewer.set_scrollback(scrollback) {
+            match send_history(&viewer, scrollback, scrollback_compression) {
                 Ok(()) => (false, None),
                 Err(RuntimeError::Busy) => (true, None),
                 Err(error) => (false, Some(error)),
@@ -709,6 +714,7 @@ impl TerminalView {
             viewer,
             pending_presentation,
             scrollback,
+            scrollback_compression,
             pending_scrollback,
             input_queue: InputQueue::default(),
             pending_work,
@@ -814,8 +820,15 @@ impl TerminalView {
             || std::env::var_os("HUTERM_ENGINE_DIAGNOSTIC").is_some()
         {
             eprintln!(
-                "huterm-engine engine=ghostty revision={} snapshot=shared-rows native_optimize=ReleaseFast compression=disabled",
-                self.viewer.engine_revision()
+                "huterm-engine engine=ghostty revision={} snapshot=shared-rows native_optimize=ReleaseFast compression={}",
+                self.viewer.engine_revision(),
+                if !huterm_core::SCROLLBACK_COMPRESSION_SUPPORTED {
+                    "unsupported"
+                } else if self.scrollback_compression {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
             );
         }
         self.scroll.invalidate();
@@ -1271,6 +1284,7 @@ impl TerminalView {
         }
         self.refresh_mode = terminal.refresh;
         self.scrollback = terminal.scrollback;
+        self.scrollback_compression = terminal.scrollback_compression;
         self.publish_scrollback();
         self.start_snapshot_if_needed(cx);
         self.links.disable();
@@ -1288,7 +1302,11 @@ impl TerminalView {
     }
 
     fn publish_scrollback(&mut self) {
-        match self.viewer.set_scrollback(self.scrollback) {
+        match send_history(
+            &self.viewer,
+            self.scrollback,
+            self.scrollback_compression,
+        ) {
             Ok(()) => self.pending_scrollback = false,
             Err(RuntimeError::Busy) => self.pending_scrollback = true,
             Err(error) => {
@@ -2692,7 +2710,11 @@ impl TerminalView {
             }
         }
         if self.pending_scrollback {
-            match self.viewer.set_scrollback(self.scrollback) {
+            match send_history(
+                &self.viewer,
+                self.scrollback,
+                self.scrollback_compression,
+            ) {
                 Ok(()) => self.pending_scrollback = false,
                 Err(RuntimeError::Busy) => {}
                 Err(error) => {
@@ -3571,7 +3593,18 @@ fn shell_command(
         },
         presentation: terminal_presentation(theme),
         scrollback: terminal.scrollback,
+        scrollback_compression: terminal.scrollback_compression,
     })
+}
+
+/// Sends the history limit, then whether to compress history.
+fn send_history(
+    viewer: &TerminalViewer,
+    scrollback: ScrollbackLimit,
+    compression: bool,
+) -> Result<(), RuntimeError> {
+    viewer.set_scrollback(scrollback)?;
+    viewer.set_scrollback_compression(compression)
 }
 
 fn terminal_presentation(theme: &Theme) -> TerminalPresentation {
