@@ -340,6 +340,17 @@ bindings, menus, and interactive requests; only executors run the full
 them. Keep the keybinding schema aligned: only unprompted `Always` arguments
 are schema-required.
 
+A command whose arguments are all unprompted, such as `resize_pane_left` or
+`close_tab`, has no palette slot. `SlotEditor::new` returns `None` for it, and
+the palette runs it through `unprompted_invocation`; an editor always holds a
+slot. Indexing the first slot of an empty editor once aborted the app from the
+palette. The palette, menus, tab strip, pane geometry, pane drags and moves,
+and the Licenses view deny `clippy::indexing_slicing` outside tests, because
+user input picks positions there: look positions up with `get`, and keep an
+`#[expect]` with its reason only where a constructor proves the bound. The
+slot unit tests build every catalog command, so a new command of either shape
+is covered.
+
 GPUI's native menu matcher uses a fixed Workspace/Pane/Editor context. Menu
 ordering fixtures need a predicate true there, such as `!confirming`; `Terminal`
 never participates and cannot detect conditional bindings moving ahead of defaults.
