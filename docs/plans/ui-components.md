@@ -1,10 +1,13 @@
 # UI components
 
-Status: proposed. Follows [the settings plan](settings-ui.md), whose PR 3
-built a control kit inside the Settings window, and folds in the open
-Settings follow-ups [#276][issue-276] and [#277][issue-277]. Codex and
-Claude reviewed it against the source in four rounds; the last found no
-significant issues. The running-app checks are still owed (see Defects).
+Status: approved. Approved on 2026-10-27 after four Codex and Claude review
+rounds, then revised for a separate crate, the terminal window's adoption,
+and normalization against shadcn/ui, which three more review rounds
+checked. Follows
+[the settings plan](settings-ui.md), whose PR 3 built a control kit inside
+the Settings window, and folds in the open Settings follow-ups
+[#276][issue-276] and [#277][issue-277]. The running-app checks are still
+owed (see Defects).
 
 The Settings series (#269, #274, #275) built its controls one at a time,
 inside the window that uses them. Each works on its happy path, but the kit
@@ -13,12 +16,13 @@ accessibility, and the same pattern is implemented twice with different
 behavior. The visible result: a Settings dropdown closes only when one of its
 items is clicked.
 
-This plan proposes a small in-house component layer for Huterm's GPUI client,
-in the spirit of shadcn/ui: a dozen components, one per file, each with a
-written behavior contract and GPUI tests for that contract. Settings, and
-later the terminal window's overlays, are built from them. Each component
-can then be perfected on its own against the native controls on macOS and
-GNOME and against Radix and the WAI-ARIA Authoring Practices.
+This plan proposes an in-house component library for Huterm's GPUI client,
+in a crate of its own and in the spirit of shadcn/ui: components named and
+scoped after shadcn's catalog where a standard one fits, one per file, each
+with a written behavior contract and GPUI tests for that contract. Settings,
+and then every generic surface of the terminal window, are built from them.
+Each component can then be perfected on its own against the native controls
+on macOS and GNOME and against Radix and the WAI-ARIA Authoring Practices.
 
 ## Current state
 
@@ -32,10 +36,10 @@ interactive element below has no accessibility role or label: no file in
 a background change unless the row says otherwise; scrolling applies only to
 the menu, list, and Settings pane rows.
 
-The tab strip, title-row buttons, pane dividers and drags, palette, toasts,
-Licenses view, and scroll pill have contracts of their own that this plan
-does not migrate; they adopt tokens, `Button`, and `Popover` only where that
-removes duplication.
+The tab strip, pane dividers and drags, the scroll pill, the palette's
+argument workflow, and the notice stack have contracts of their own that
+stay app-specific; they adopt the components they are built from (see
+App-specific surfaces). Everything else in the table migrates.
 
 | Kind | Where | Shared | Keyboard | Pointer | Focus ring | Dismissal | Disabled or read-only |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -89,8 +93,9 @@ locked during this investigation (`CGSSessionScreenIsLocked=Yes`), which stops
 frames, so the Settings smoke timed out at startup twice and the running-app
 review could not run. [The smokes guide](../agents/desktop-smokes.md)
 documents this failure mode. Items marked "runtime check pending" are inferred
-from code and need the running-app review in PR 1. The 139 existing Settings
-and menu GPUI tests pass; none sends a pointer event to a Settings menu.
+from code and need the running-app review before step 2a lands. The 139
+existing Settings and menu GPUI tests pass; none sends a pointer event to a
+Settings menu.
 
 | # | Defect | Evidence | Severity |
 | --- | --- | --- | --- |
@@ -120,10 +125,10 @@ records a repeat and recording drops a shortcut's drafts (key recorder). The
 "Reloaded" footer after removing an `unbind` is Settings status logic, not a
 component.
 
-From [#277][issue-277]: renaming a profile needs an inline rename (inline
-edit with confirm), and the delete prompt becomes the inline confirm
-component. Quoted profile names, keybindings that name a deleted profile, and
-the global shortcut check are not component work.
+From [#277][issue-277]: renaming a profile, like the New profile name
+field, is a `Field` and `InputGroup` composition, and the delete prompt
+becomes an `AlertDialog`. Quoted profile names, keybindings that name a
+deleted profile, and the global shortcut check are not component work.
 
 Linux uses the same code paths. Its evidence here is code reading and the
 `linux-settings` CI smoke, which covers keyboard paths only.
@@ -154,10 +159,10 @@ these except Escape.
 
 ### (a) In-house component layer
 
-A `crates/huterm-gpui/src/ui/components/` module: one component per file,
-each opening with its behavior contract; a shared popover primitive for
-anchoring, layering, dismissal, and focus return; theme tokens and a focus
-ring; and GPUI tests for each contract.
+A component layer of Huterm's own, as a module or a crate: one component
+per file, each opening with its behavior contract; a shared popover
+primitive for anchoring, layering, dismissal, and focus return; theme tokens
+and a focus ring; and GPUI tests for each contract.
 
 - For: it keeps Huterm's rules intact. Every key stays a catalog command the
   user can rebind; colors derive from the terminal theme; the GPUI hazards
@@ -215,53 +220,157 @@ may inform behavior, never code.
 
 ## Recommendation
 
-Choose (c): build an in-house component layer and treat `gpui-component` as a
-reference that Huterm may adapt with attribution, never a dependency. The
-deciding facts are the binding model and upgrade lockstep in (b). Either one
-alone would cost more than writing the dozen components Huterm needs, most of
+Choose (c): build an in-house component library and treat `gpui-component`
+as a reference that Huterm may adapt with attribution, never a dependency.
+The deciding facts are the binding model and upgrade lockstep in (b). Either
+one alone would cost more than writing the components Huterm needs, most of
 which already exist and need a contract, a shared popover, and tests.
 
-Keep the layer as a module in `huterm-gpui`, not a new crate. The text client
-will not use GPUI, so a crate boundary buys nothing today. A
-`mise run architecture` check that `ui/` never imports `crate::desktop` keeps
-the boundary honest at the cost of one `rg` rule. It lands in PR 5, when
-`Menu` and `MenuModel` move into `ui/`. PR 1 moves the pieces `Popover` and
-tokens need into `ui/`: `place_menu` becomes `ui::components::popover`'s
-placement, and `Swatch` and `OverlayColors` move to `ui/theme.rs`, with
-`desktop::overlay` re-exporting them so callers do not change.
-`OverlayColors::from_theme` calls `desktop::scrollbar_colors`
-(`desktop.rs:3517`), so that moves too, as `ScrollbarColors::from_theme` in
-`ui/scrollbar.rs`. Until PR 5,
-only `ui/components/select.rs` may use `desktop::menu`; that rule is review
-discipline, not a check.
+### A separate crate
+
+The components live in a new workspace crate, `huterm-ui`, from the first
+PR. A crate is cheapest to start while it holds little, and once it exists
+Cargo, not review, keeps Huterm specifics out of it, so the components stay
+generic and reusable. Its rules:
+
+- **Dependencies.** GPUI and small general crates only (such as
+  `unicode-segmentation` for `TextField`); no `huterm-*` crate.
+  `mise run architecture` checks that allowlist with `cargo tree`, as it
+  already checks `huterm-protocol` and `huterm-config`.
+- **No catalog commands inside.** Components declare key context names and
+  expose methods (`select_next`, `confirm`, `step`, `toggle`). An adapter in
+  `huterm-gpui` maps Huterm's catalog commands to those methods, so every
+  key stays a rebindable command. `TextField::run`, which reads
+  `huterm_protocol` command ids today, moves into that adapter.
+- **Own inputs.** Tokens are built from the crate's own color input,
+  `OverlayColors`, which moves into the crate and holds a `ScrollbarColors`.
+  The
+  conversion from Huterm's `Theme` stays in `huterm-gpui` as free functions
+  (`scrollbar_colors`, which exists, and `overlay_colors` and `tokens`
+  functions replacing `OverlayColors::from_theme` and `Swatch::from_theme`),
+  because the orphan rule forbids `huterm-gpui` adding inherent constructors
+  to the crate's types. `Kbd` takes the glyphs or icon paths to draw;
+  `huterm-gpui`'s `KeyHint` decides them per platform. Huterm traits such as
+  `refresh::Animated` are implemented in `huterm-gpui` over the crate types'
+  public methods.
+- **Test support.** The crate gets its own `test-support` feature that
+  enables GPUI's, and `huterm-gpui`'s `test-support` enables it, so the
+  `lint`, `typecheck`, and `test` tasks, which already pass
+  `--features huterm-gpui/test-support`, compile the crate's test-gated code
+  through feature unification. The dependencies guide records the
+  arrangement.
+- **No dead-code expectations.** `pub` items of a library crate are always
+  live, so the `#[expect(dead_code)]` convention for code that lands before
+  its consumer does not apply in `huterm-ui`; an expectation there would
+  never be met and fail Clippy. Each component's first consumer is its
+  gallery entry. One file per component, under the crate's `components/`
+  directory and apart from its primitives, makes coverage checkable: a
+  script test compares those files with the gallery's entries and
+  fails when a component has none.
+
+## Normalization against shadcn/ui
+
+shadcn/ui's catalog ([components][shadcn]) is the result of a lot of work on
+which primitives complex UIs need. Each Huterm control is mapped to its
+shadcn counterpart. Where a Huterm control is odd, Settings changes to the
+standard one; where Huterm's need has no good standard, the custom control
+stays. The behavior reference stays as above: Radix and WAI-ARIA for
+keyboard and focus, AppKit and GNOME for platform feel.
+
+| Huterm today | shadcn | Decision |
+| --- | --- | --- |
+| Settings buttons, links, dialog buttons, title-row icon buttons | Button (variants default, secondary, outline, ghost, destructive, and link; an icon size) | Adopt |
+| Switch | Switch | Adopt |
+| Segmented control, tri-state Default/On/Off | Toggle Group, single | Adopt one `ToggleGroup`; exposed to accessibility as a radio group. One tab stop; arrows move the selection and write, as a radio group does, which keeps today's stepping |
+| Modifier chips | Toggle Group, multiple | Adopt the same `ToggleGroup`. **Changes** the chips from one tab stop each to one roving tab stop, as Radix and Base UI toggle groups have: Left and Right move between chips, Space toggles one. The group keeps the `SettingsControl` context and its commands: on a multiple group, `settings_increase` and `settings_decrease` (Up, Right, Down, and Left) move focus between chips, wrapping at the ends as Radix's roving focus does, instead of stepping, and `settings_toggle` toggles the focused chip, so no context or command is added. Each chip keeps its own focus handle, and only the focused one is a tab stop |
+| Theme cards | Radio Group | Adopt `RadioGroup` with a card variant; the color preview stays custom |
+| Select | Select | Adopt |
+| Window menu, tab and terminal context menus | Dropdown Menu, Context Menu | Adopt one `Menu` with both triggers |
+| Text field | Input | Adopt (`Input`, the hardened `TextField`) |
+| Search field, number field unit, size field | Input Group (prefix and suffix addons) | Adopt for the search icon and clear button and for units |
+| Font family field plus a separate "Installed" menu | Combobox | **Change:** one combobox that filters the installed families as you type and still accepts any name. Two controls for one value is the odd one out. Like shadcn's current Combobox, the field itself is the search input, following WAI-ARIA's editable combobox. It keeps the field's save behavior: any name saves on Enter or blur, and Escape puts back the value. No suggestion is highlighted until the user moves to one, so Enter saves the typed name; pressing a row prevents the field's blur and writes once. |
+| Condition completion | Combobox | Adopt the same `Combobox`; its suggestions are context names. `Combobox` takes an opt-in `auto_highlight`, as shadcn's `autoHighlight` does: the condition field turns it on, so the first match is highlighted and Return completes it, as today; the font field leaves it off |
+| Number field with steps | none (shadcn uses a plain input) | **Keep custom** `NumberField`, after React Aria's and Base UI's number fields: steppers, clamping, PageUp, PageDown, Home, End |
+| Quake `width` and `height` number fields (fractions, greater than 0 through 1) | Slider | **Change:** a percent slider from 5% to 100% in 5% steps with a value readout; the settings plan's PR 5 mockup already drew sliders. The schema's minimum is exclusive, so the slider's minimum is one step, and Home, a drag past the left edge, and stepping down all stop there, never writing 0. A file value off the grid shows as is, and the first step moves it to the next grid value in that direction; a value below 5%, such as 0.02, steps to 5% in either direction, since the floor is the nearest valid grid value. Settings picks the slider from schema metadata (`x-huterm-control = "slider"` with `x-huterm-step`), which the `Profile` fields carry, so the per-profile copies get it too. |
+| Key recorder | none | **Keep custom** `KeyRecorder`; its key caps use `Kbd` |
+| Key caps, shortcut hints | Kbd | Adopt `Kbd` |
+| Settings sidebar | Tabs, vertical (shadcn's Sidebar is an app shell) | **Change:** vertical `Tabs`, so Up and Down move between sections as Radix Tabs do (#276) |
+| Keybinding command rows that expand | Collapsible, inside an Item | Adopt |
+| Setting rows (label, description, control, error) | Field | Adopt |
+| Keybinding, global shortcut, and profile rows | Item | Adopt |
+| Groups of rows | Card | Adopt |
+| Default and Custom tags, sidebar counts, menu badges | Badge | Adopt |
+| Invalid-file banner, conflict notes | Alert | Adopt |
+| "No global shortcuts" card | Empty | Adopt |
+| Hairlines, menu separators | Separator | Adopt |
+| Delete-profile inline confirmation | Alert Dialog | **Change:** a modal alert dialog with focus on Cancel, as AppKit's alert sheet and libadwaita's `AdwAlertDialog` do. It fixes D17 by construction: Escape and Tab are the dialog's catalog commands, and keeping Tab inside a modal is correct. |
+| Close confirmation, About, Licenses | Dialog, Alert Dialog | Adopt the shell (scrim, focus containment, Escape, focus return); their contents stay app-specific |
+| Tooltip | Tooltip | Adopt, with keyboard-focus display |
+| Menu and Settings popovers | Popover | Adopt |
+| Settings pane, lists | Scroll Area | Adopt, with both existing scrollbars |
+| Command palette, Licenses search and list | Command | Adopt `Command` (a search field over a listbox) as a primitive; the palette's argument workflow stays app-specific |
+| Toasts | Toast | **Keep app-specific**: the notice stack's deadlines, actions, and focus belong to the terminal window. It adopts tokens and `Button`. |
+| Pane dividers | Resizable | **Keep app-specific**: Huterm's split tree is domain logic |
+| Terminal tab strip | Tabs | **Keep app-specific**: drag reorder, spring-loading for pane drops, and the configurable tab styles. It adopts tokens, `Button`, `Tooltip`, and `Menu`, and its accessible tab list is deferred to a later plan. |
+| Scroll pill | none | Keep app-specific |
+
+Not adopted, because nothing in Huterm needs them yet: Accordion
+(Collapsible covers the keybinding rows), Aspect Ratio, Avatar, Breadcrumb,
+Button Group, Calendar, Carousel, Chart, Checkbox (settings use switches, as
+macOS System Settings and libadwaita rows do), Data Table, Date Picker,
+Direction, Drawer, Hover Card, Input OTP, Label (folded into Field), Menubar
+(the native menu bar stays), Native Select, Navigation Menu, Pagination,
+Progress, Sheet, Sidebar, Skeleton, Spinner, Table, Textarea, Toggle
+(`ToggleGroup` covers it), Typography, and the AI and chat components
+(Attachment, Bubble, Code Block, Marker, Message, Message Scroller,
+Questionnaire, Trace). Each can join later through the same contract
+process.
 
 ## Component set
 
+Primitives, which every component builds on: tokens, focus visibility, the
+accessibility helper, a raised `Surface` (today's `raised_panel`),
+`Popover`, `Listbox` (model, selection, type-ahead, scroll), and
+`ScrollArea` with the terminal and list scrollbars. The stateless display
+components `Tooltip`, `Kbd`, `Badge`, and `Separator` land with the
+foundation too, because `Menu`, `Select`, and every disabled reason need
+them.
+
 | Component | Built from | Replaces |
 | --- | --- | --- |
-| Tokens, focus ring | `Swatch` | Per-call styling |
-| `Popover` (with dismissal and focus return) | `place_menu`, `deferred`, `on_mouse_down_out` | Both menu hosts, `with_menu` |
-| `Listbox` (model, selection, type-ahead, scroll) | `MenuModel`, `ListScrollbar` | `Menu` internals, completion list |
-| `Menu` | `Listbox` in a `Popover` | `desktop/menu.rs` view |
-| `Select` | Trigger plus `Menu` | `render_select`, Quake and argument selects, font picker |
-| `Combobox` | `TextField` plus `Listbox` in a non-modal `Popover` | Condition completion |
-| `Button` (default, accent, danger, ghost, link, icon) | | `button`, `link`, `actionable`; later dialog buttons |
+| `Button` | | `button`, `link`, `actionable`, dialog and title-row buttons |
 | `Switch` | | `render_switch` |
-| `ToggleChip` | | Modifier chips |
-| `SegmentedControl` (radio group) | | Segments, tri-state |
-| `RadioCards` | | Theme cards |
-| `TextField` | Existing | Hardened in place |
-| `NumberField` | `TextField` | `render_field` number path, `stepped` |
-| `KeyRecorder` | Keystroke interceptor | Recorder in `keybindings.rs` |
-| `NavList` | | Settings sidebar |
-| `InlineConfirm`, `InlineEdit` | `Button`, `TextField` | Quake delete prompt, New profile, later rename |
-| `ScrollArea` | `ListScrollbar` | Settings pane scrolling, focus-into-view |
+| `ToggleGroup` (single, multiple) | | Segments, tri-state, modifier chips |
+| `RadioGroup` (with a card variant) | | Theme cards |
+| `Select` | Trigger plus `Menu` | `render_select`, Quake and argument selects |
+| `Menu` | `Listbox` in a `Popover` | `desktop/menu.rs` view, both menu hosts |
+| `Combobox` | `Input` plus `Listbox` in a non-modal `Popover` | Condition completion, font picker |
+| `Command` | `Input` plus `Listbox` | Licenses list; palette lists |
+| `Input`, `InputGroup` | `TextField` | Text, size, and search fields |
+| `NumberField` (custom) | `InputGroup` | `render_field` number path, `stepped` |
+| `Slider` | | Quake width and height |
+| `KeyRecorder` (custom) | Keystroke interceptor, `Kbd` | Recorder in `keybindings.rs` |
+| `Kbd` | `KeyHint` content | `key_cap`, menu shortcut hints |
+| `Tabs` | | Settings sidebar |
+| `Field`, `Item`, `Card`, `Collapsible` | | `render_row`, keybinding and shortcut rows, `card`, `group_block` |
+| `Badge`, `Alert`, `Empty`, `Separator` | | Tags and counts, banners, empty cards, hairlines |
+| `Dialog`, `AlertDialog` | `Popover`'s focus and dismissal model, the scrim | Close dialog, About, Licenses shells, the delete-profile prompt |
 | `Tooltip` | `TextTooltip` on GPUI's tooltip layer, not `Popover` | Tooltip calls |
-| `FormRow`, `Card` | | `render_row`, `card`, `group_block` |
+
+### App-specific surfaces
+
+These stay in `huterm-gpui`, built from the crate's tokens and components:
+the terminal tab strip, pane dividers and drags, the scroll pill, the
+palette's command and argument workflow, the notice stack, and the terminal
+grid. The terminal window adopts the full component set for everything else:
+menus, buttons, tooltips, dialogs, scrollbars, and the palette and Licenses
+lists.
 
 ## Component API conventions
 
-- **One file per component** under `ui/components/`, opening with its
+- **One file per component** under `crates/huterm-ui/src/components/`,
+  with primitives such as tokens and focus visibility beside it, opening
+  with its
   contract: purpose, anatomy, keyboard table, pointer behavior, focus,
   dismissal where it applies, disabled and read-only states, accessibility
   role and properties, and the reference it follows. Tests live after the
@@ -277,7 +386,7 @@ discipline, not a check.
   accessibility node identity and element state from it, so it must survive
   re-renders and be unique within the window.
 - **A label is required.** Constructors take an accessible name even when
-  the visible label sits in a `FormRow`, so no control ships unnamed.
+  the visible label sits in a `Field`, so no control ships unnamed.
 - **States are explicit.** `disabled(Option<SharedString>)` takes the
   reason, shows it as a tooltip, keeps the focus handle tracked but drops the
   tab stop, calls `prevent_default` on mouse-down so a press does not focus
@@ -291,10 +400,13 @@ discipline, not a check.
   `invalid(message)` marks the control and shows its message under the row.
 - **Owner-supplied focus.** Components accept a `FocusHandle` from their
   owner, so the Settings window's focus recovery and tab order keep working.
+  A group with roving focus takes one handle per item and makes only the
+  focused item a tab stop.
 - **Keys stay catalog commands.** A component declares its key context and
   exposes methods (`select_next`, `confirm`, `step`, `toggle`); the owner's
-  command handler routes catalog invocations to the focused component, as
-  `Menu` and `TextField` already do. Components bind no keys, and their
+  command handler, through the `huterm-gpui` adapter, routes catalog
+  invocations to the focused component, as `Menu` and `TextField` already
+  do. Components bind no keys, and their
   click handlers ignore `ClickEvent::Keyboard`, GPUI's implicit Enter and
   Space click (D16), so removing a binding really removes the key. Pointer
   clicks and accessibility Click actions still act. Existing contexts and
@@ -429,25 +541,28 @@ live regions, and no public way to name another element's node, so relations
 such as "controls" or "error message" cannot be expressed. The convention:
 set disabled, read-only, and invalid on the element's own node through
 `a11y_synthetic_children` with `A11ySubtreeBuilder::parent_node`, one shared
-helper in `ui/components/a11y.rs`. Every row below also exposes disabled.
+helper in `huterm-ui`'s `a11y.rs`. Every row below also exposes disabled.
 
 | Component | Role | Properties | Actions |
 | --- | --- | --- | --- |
 | Button, link | `Button`, `Link` | label, description (disabled reason) | Click |
 | Switch | `Switch` | label, `aria_toggled` | Click |
-| ToggleChip | `Button` (AccessKit has no toggle-button role) | label, `aria_toggled` | Click |
-| SegmentedControl, RadioCards | `RadioGroup` with `RadioButton` items | `aria_toggled` per item (AccessKit's macOS and Linux adapters read radio state from `toggled`, not `selected`), position and size in set | Click per item |
+| ToggleGroup, multiple | `Button` items (AccessKit has no toggle-button role) | label, `aria_toggled` per item | Click per item |
+| ToggleGroup, single; RadioGroup | `RadioGroup` with `RadioButton` items | `aria_toggled` per item (AccessKit's macOS and Linux adapters read radio state from `toggled`, not `selected`), position and size in set | Click per item |
 | Select trigger | `ComboBox` (select-only) | value label, `aria_expanded` | Click |
-| Listbox, menu | `ListBox` and `ListBoxOption`; `Menu` and `MenuItem` | `aria_selected`, `aria_active_descendant`, size in set | Click per row |
+| Listbox, Menu, Command list | `ListBox` and `ListBoxOption`; `Menu` and `MenuItem` | `aria_selected`, `aria_active_descendant`, size in set | Click per row |
 | Combobox | `TextInput` on the field | value, `aria_expanded`; the highlighted suggestion as the field's description | Focus |
-| TextField | `TextInput` | value, placeholder, read-only and invalid through the helper | Focus |
+| Input | `TextInput` | value, placeholder, read-only and invalid through the helper | Focus |
 | NumberField | `SpinButton` | numeric value, min, max, step | Increment, Decrement through `on_a11y_action` |
+| Slider | `Slider` | numeric value, min, max, step, the readout as its value text | Increment, Decrement through `on_a11y_action` |
 | KeyRecorder | `Button` | value (the shortcut), description while recording | Click |
-| NavList | `TabList` and `Tab` | `aria_selected` (tabs read `selected` on macOS) | Click |
-| InlineConfirm | `AlertDialog` group | label, description | Buttons |
+| Tabs | `TabList` and `Tab` | `aria_selected` (tabs read `selected` on macOS), vertical orientation | Click |
+| Collapsible trigger | `Button` | `aria_expanded` | Click |
+| Dialog, AlertDialog | `Dialog`, `AlertDialog` | label, description, modal through the helper | Buttons |
+| Badge, Alert, Empty | text (Alert as a status group) | label | |
 | Tooltip | none | becomes the target's description | |
 
-Open risks, to settle in PR 1:
+Open risks, to settle in the foundation PR:
 
 - GPUI honors an active descendant only under the focused node, and a
   combobox's list renders deferred, outside the field. VoiceOver may not
@@ -462,10 +577,10 @@ The terminal grid itself is not part of this plan.
 
 ## Theming tokens
 
-`Swatch` becomes `ui::theme::Tokens`, still derived from the terminal theme on
-every reload and still passed by value. It has 13 `Hsla` fields plus
-`ScrollbarColors` (two more), 240 of Clippy's 256 bytes, so it has room for
-one more field at most:
+`Swatch` becomes `huterm_ui::Tokens`, built by `huterm-gpui` from the
+terminal theme on every reload and still passed by value. It has 13 `Hsla`
+fields plus `ScrollbarColors` (two more), 240 of Clippy's 256 bytes, so it
+has room for one more field at most:
 
 - **Fields:** `fg`, `bg`, `surface`, `muted`, `dim`, `line`, `line_strong`,
   `hover`, `selection`, `accent`, `danger`, `warning`, `chip`, and
@@ -489,12 +604,14 @@ one more field at most:
 - **Pure models.** Placement, listbox navigation, type-ahead, number stepping
   and clamping, and the dismissal table are functions with unit tests, as
   `MenuModel` and `place_menu` already are.
-- **One GPUI test per contract row.** Each component mounts in a small host
-  view under `TestAppContext` and is driven by real events: simulated clicks,
-  mouse moves, keystrokes routed through the catalog keymap,
-  `deactivate_window`, and `Window::dispatch_event` for the stale-frame
-  contract. Each test asserts an observable outcome, including what must not
-  happen:
+- **One GPUI test per contract row.** In `huterm-ui`, each component mounts
+  in a small host view under `TestAppContext` and is driven by real events:
+  simulated clicks, mouse moves, keystrokes bound to its methods by a test
+  keymap, `deactivate_window`, and `Window::dispatch_event` for the
+  stale-frame contract. The crate has no catalog, so tests of the catalog
+  routing, the Settings window, and the terminal window live in
+  `huterm-gpui`. Each test asserts an observable outcome, including what
+  must not happen:
   - an outside press on a switch closes the menu and writes and queues
     nothing;
   - a keyboard click from a removed Enter or Space binding does nothing,
@@ -506,9 +623,10 @@ one more field at most:
     closes the list, then reaches the field, without saving early;
   - Tab, then a mouse move, keeps the focus ring; a click on that same
     control removes it. The control's click must not move focus, or the test
-    passes over a focus-change-only record: PR 1 uses a focusable element in
-    the test host that draws the ring from the window's record, since a
-    select trigger's click moves focus into its listbox; PR 3 adds a switch;
+    passes over a focus-change-only record: the foundation PR uses a
+    focusable element in the test host that draws the ring from the
+    window's record, since a select trigger's click moves focus into its
+    listbox; step 3 adds a switch;
   - Shift-Tab from an open menu closes it with focus on the trigger, and
     deactivation returns focus to the trigger;
   - the stale-frame guard: open a popover without drawing, dispatch a
@@ -517,6 +635,25 @@ one more field at most:
     queued, or sent to the terminal; the terminal variant enables mouse
     reporting first and also asserts that no selection started; then draw,
     dispatch the mouse-up, and assert no delayed activation;
+  - the delete-profile alert dialog in Settings opens with focus on Cancel;
+    Tab, Shift-Tab, Left, and Right stay inside it; a rebound `dialog_cancel`
+    cancels; Delete deletes once; focus returns to Delete profile after a
+    cancel and to the profile select after a delete;
+  - the slider writes only valid fractions from pointer, keyboard, and
+    accessibility input: Home and a drag past the left edge write 0.05,
+    never 0, End writes 1, an off-grid file value steps to the next grid
+    value, and a value below 5% steps to 5% in both directions (the bounds
+    and snapping are also a pure-model test);
+  - the font combobox saves a typed name that is not installed on Enter and
+    on blur, Escape puts back the value, Enter saves the typed name while no
+    suggestion is highlighted, and picking a row writes once with no blur
+    commit before it;
+  - `Tabs` moves between Settings sections with Up and Down; a multiple
+    `ToggleGroup` moves focus with the arrow keys, wrapping, without writing,
+    toggles with Space, and refuses to turn off the last modifier, all
+    through the existing `SettingsControl` commands;
+  - Return in a condition field completes the highlighted context, while
+    the font field, with `auto_highlight` off, saves the typed name;
   - a disabled or read-only control refuses pointer, keyboard, and
     accessibility activation, including a control disabled while it has
     focus and then sent its catalog keys; the test first asserts that the
@@ -524,7 +661,8 @@ one more field at most:
     it;
   - a focus-ring test asserts what the control draws, through a test-visible
     flag set where the ring is painted, not the window's keyboard record, so
-    a control still styled with `.focus()` fails it. A lint in PR 1 rejects
+    a control still styled with `.focus()` fails it. A lint in the
+    foundation PR rejects
     `Swatch::focus_ring()` outside the flag-gated ring painter (a plain
     `.focus(` search would also match `FocusHandle::focus` calls), and each
     migration PR extends it to the callers it moves, so a leftover
@@ -532,7 +670,7 @@ one more field at most:
 - **Accessibility tests need a GPUI patch.** GPUI's test window never
   activates accessibility: `TestWindow` keeps the platform's no-op
   `a11y_init`, so the tree is never built and `debug_a11y_tree_json` returns
-  `None`. PR 1 adds a vendored `gpui-pre` patch, following
+  `None`. The foundation PR adds a vendored `gpui-pre` patch, following
   [the dependencies guide](../agents/dependencies.md), that activates
   accessibility in test windows and lets a test send an AccessKit action.
   A canary test asserts that the tree exists and holds a known role, and
@@ -541,15 +679,17 @@ one more field at most:
   effects (an accessibility Click on a switch writes), not only that a
   property appears.
 - **Regression tests first.** D1, D2, D3, D4, D5, D15, and D16 get Settings
-  window tests that fail on `main` before PR 1 fixes them; D9 gets the focus
-  ring test above. D7 gets its test in PR 4.
+  window tests that fail on `main` before step 2's Settings migration fixes
+  them; D9 gets the focus-ring test above; D7 gets its test in step 4 and
+  D17 in step 7.
 - **Smokes.** `scripts/check-settings.ts` gains a pointer step on macOS
   (through `hid-pointer`) and X11 (through `xdotool`): open a select by
   click, close it by an outside click and by a second trigger click, and
   check focus. Smoke state reports the focused control and `settings.menu`
   as separate fields, plus the menu's drawn rect, so a stale open menu can
   no longer read as focus.
-- **Visual check.** A `component_gallery` example binary renders every
+- **Visual check.** A `component_gallery` example binary in `huterm-gpui`,
+  so it can use the bundled themes, renders every
   component in every static state (default, focused, selected, disabled,
   read-only, invalid, open) in the bundled light and dark themes. It gives
   `ux-review` and screenshots one place per component, and needs no product
@@ -562,97 +702,116 @@ one more field at most:
 
 ## Migration order
 
-Each step perfects one component against its references, then moves its
-callers to it.
+Foundation first, then one component group at a time. Each group lands as a
+component PR (the crate code, its contract, its tests, and its gallery
+entry, which is the component's first consumer) followed at once by its
+migration PRs. Reviewers judge each component on its own, then its
+integration, and integration problems surface while the component's API can
+still change. Siblings that share a shape land together.
 
-1. **Popover and Select in Settings.** Tokens, focus visibility, the GPUI
-   accessibility test patch, the shared accessibility helper, `Popover` with
-   the dismissal model, and `Select` on the existing `Menu`. This fixes D1
-   to D5, D9, D15, and D16 for every Settings select, including Quake,
-   keybinding arguments, and the font picker. PR 1's D16 test uses a select
-   trigger; switches, buttons, links, and segments keep D16 until step 3.
-2. **Terminal window menus** move to `Popover`, removing the second host
-   (D13), with terminal focus as their return target.
-3. **Buttons and toggles:** `Button`, `Switch`, `ToggleChip`,
-   `SegmentedControl`, with roles, disabled reasons, the arrow-key decision,
-   and keyboard-click filtering on every one (D8, D10, D16).
-4. **TextField and NumberField:** read-only state, horizontal scrolling, Cut,
-   and an accessible value (D12); `NumberField` with `x-huterm-step` schema
-   metadata, clamping, PageUp, PageDown, Home, and End (D7). Field Undo stays
-   out until it has a command id distinct from #256's window `undo`.
-5. **Listbox and Combobox:** one listbox for menus and completion, moved into
-   `ui/` with the architecture check, and the condition completion as a
-   non-modal popover (D6).
-6. **Navigation and scrolling:** `NavList` with arrow keys, `ScrollArea`
-   reveal on focus, and `RadioCards` with a visible focus ring (#276).
-7. **KeyRecorder:** repeat detection and draft preservation (#276).
-8. **InlineConfirm and InlineEdit:** the delete prompt, with its Escape as a
-   catalog command under a context of its own (D17), and, with #277, profile
-   rename. Not `confirming`: it also binds Tab and Shift-Tab to
-   `dialog_focus_*`, which would trap focus between the prompt's two buttons
-   or do nothing in Settings. A D17 test checks that the rebound Escape
-   cancels and that Tab still leaves the prompt.
+1. **Foundation.** Create `huterm-ui` with its dependency allowlist and
+   `test-support` feature. Move the animation schedule and both scrollbars
+   into it, with `ScrollArea`. Add tokens, focus visibility, the
+   accessibility helper, `Surface`, `Tooltip`, `Kbd`, `Badge`, and
+   `Separator`, the GPUI test-window accessibility patch with its canary,
+   the focus-ring lint, and the gallery with its coverage test.
+   `huterm-gpui` keeps the theme conversion as free functions; the
+   `Swatch::from_theme` and `OverlayColors::from_theme` call sites switch to
+   the `tokens` and `overlay_colors` functions, and other callers change
+   only their import paths.
+2. **Overlays and lists:** `Popover`, `Listbox`, `Menu`, and `Select`. The
+   crate's `Menu` is ported from `desktop/menu.rs`, which stays in place for
+   the terminal window until 2b deletes it, so this step does not edit the
+   menu-building code #256 changes. Migration 2a: every Settings select,
+   which fixes D1 to D5, D15, and D16 for selects, and adds the `shift-tab`
+   `menu_close` binding, the smoke pointer step, and separate focus and menu
+   smoke state. Its D16 test uses a select trigger. Migration 2b: the
+   terminal window's menus, as dropdown and context menus on `Popover` with
+   terminal focus as their return target (D13), after #256 merges.
+3. **Buttons and toggles:** `Button`, `Switch`, and `ToggleGroup`.
+   Migration 3a: Settings buttons, links, switches, segments, tri-states,
+   modifier chips, tags, and counts (D8, D10, D16 for each). `SettingsView::run`
+   checks for a focused multiple group before calling `step`, which finds
+   only settings and would drop the chip commands, and
+   `docs/keybindings.md` says the arrows move between chips. Migration 3b:
+   the terminal window's dialog, title-row, tab-bar, and notice buttons and
+   tooltips.
+4. **Text entry:** `Input` (the moved `TextField`, hardened with a
+   read-only state, horizontal scrolling, Cut, and an accessible value),
+   `InputGroup`, `NumberField`, and `Slider`. `ui/text.rs` moves with
+   `TextField`, and `desktop/composition.rs` imports it from the crate;
+   `TextField::run` and its `huterm_protocol` imports move to the adapter.
+   Migration 4a: Settings fields, the search field, units, the
+   `x-huterm-step` and `x-huterm-control` schema metadata (D7, D12), and the
+   Quake `width` and `height` sliders. Field Undo stays out until it has a
+   command id distinct from #256's window `undo`.
+5. **Search and suggestions:** `Combobox` and `Command`. Migration 5a: the
+   condition completion (D6) and the font family field with its "Installed"
+   menu folded in. Migration 5b: the Licenses list and the palette's lists.
+6. **Layout:** `Tabs`, `ScrollArea` reveal, `RadioGroup` with its card
+   variant, `Field`, `Item`, `Card`, `Collapsible`, `Alert`, and `Empty`.
+   Migration 6a: the Settings sidebar with arrow keys, Tab scrolling the
+   focused control into view, theme cards with a visible focus ring (#276),
+   setting and keybinding rows, banners, and empty states.
+7. **Dialogs:** `Dialog` and `AlertDialog`. Migration 7a: the delete-profile
+   prompt becomes an alert dialog, which fixes D17. The Settings window
+   gains `run` arms for the `dialog_*` commands under `confirming`, and the
+   dialog's buttons carry no `SettingsControl` context, which would
+   otherwise win for Enter, Space, Left, and Right. Migration 7b: the close
+   confirmation, About, and Licenses shells. Migration 7c: the New profile
+   name field and profile rename (#277) as `Field` and `InputGroup`
+   compositions.
+8. **KeyRecorder:** repeat detection and draft preservation (#276).
 
 ## PR split
 
-| PR | Contents | Depends on |
-| --- | --- | --- |
-| 1 | `ui/components/` skeleton, tokens, focus visibility, `Popover`, `Select`; the shared accessibility helper; GPUI test-window accessibility patch and canary; Settings selects migrated; regression tests for D1 to D5, D9, D15, D16; the `shift-tab` `menu_close` binding; smoke pointer step and separate focus and menu state; gallery example | Rebased on #256 if merged; its `keymap.rs` change is one line in `menu_defaults` |
-| 2 | Terminal window menus on `Popover` | PR 1, #256 merged |
-| 3 | `Button`, `Switch`, `ToggleChip`, `SegmentedControl`; D16 regression tests for each | PR 1 |
-| 4 | `TextField` hardening, `NumberField`, `x-huterm-step` | PR 1 |
-| 5 | `Listbox` and `Menu` moved into `ui/`, `Combobox`, architecture check | PR 2 |
-| 6 | `NavList`, `ScrollArea` reveal, `RadioCards` | PR 3 |
-| 7 | `KeyRecorder` | PR 3 |
-| 8 | `InlineConfirm`, `InlineEdit`, profile rename | PR 3, #277 scope |
+| Step | Component PR | Migration PRs | Depends on |
+| --- | --- | --- | --- |
+| 1 | Foundation, including `Tooltip`, `Kbd`, `Badge`, `Separator`, `Surface`, `ScrollArea` | none | |
+| 2 | `Popover`, `Listbox`, `Menu`, `Select` | 2a Settings selects; 2b terminal menus | 1; 2b also #256 merged |
+| 3 | `Button`, `Switch`, `ToggleGroup` | 3a Settings; 3b terminal window buttons and tooltips | 1 |
+| 4 | `Input`, `InputGroup`, `NumberField`, `Slider` | 4a Settings fields and Quake sliders | 3 (the clear button and steppers are `Button`s) |
+| 5 | `Combobox`, `Command` | 5a condition and font fields; 5b Licenses and palette lists | 2, 4 |
+| 6 | `Tabs`, `ScrollArea` reveal, `RadioGroup`, `Field`, `Item`, `Card`, `Collapsible`, `Alert`, `Empty` | 6a Settings layout | 3 |
+| 7 | `Dialog`, `AlertDialog` | 7a delete prompt; 7b close dialog, About, Licenses; 7c New profile and rename | 2, 3; 7c also 4 and 6 |
+| 8 | `KeyRecorder` | 8a keybinding and global shortcut recorders | 3 |
 
-PRs 3 and 4 can run in parallel after PR 1, and PR 5 after PR 2. Each PR
-updates its components' contracts, the gallery, and the relevant agent guide,
-and closes the #276 or #277 items it covers.
+Steps 2 and 3 can run in parallel after step 1, and so can steps 4 and 6
+after step 3. Step 2a's `keymap.rs` change is one line in `menu_defaults`;
+it rebases on #256 if #256 has merged. Each PR updates its components'
+contracts, the gallery, and the relevant agent guide, and closes the items
+from #276 or #277 that it covers.
 
 ## Non-goals
 
-Terminal grid accessibility; submenus; a slider, date picker, or virtualized
-list; rewriting the palette, toasts, close dialog, tab strip, or pane
-gestures; theme color editing; and any dependency on `gpui-component` or
-Zed's GPL-covered `ui` crate.
+Terminal grid accessibility; submenus; the shadcn components listed as not
+adopted; rewriting the tab strip, pane gestures, scroll pill, palette
+workflow, or notice stack; theme color editing; and any dependency on
+`gpui-component` or Zed's GPL-covered `ui` crate.
+
+## Decisions
+
+Settled with the user on 2026-10-27:
+
+1. A press that closes a modal popover is consumed everywhere, through the
+   backdrop, including in the terminal window.
+2. Down and Up on a closed select open it; segmented controls and number
+   fields keep arrow stepping.
+3. Switches drop their arrow keys; Space and Return toggle.
+4. Vendored GPUI gets a test-only patch so accessibility can be tested.
+5. The components live in a separate crate, `huterm-ui`, rather than a
+   module, to keep them generic and free of Huterm specifics.
+6. The gallery is an example binary.
+7. `gpui-component` code may be adapted per component with attribution;
+   Huterm's own code is the default.
+8. Components follow shadcn's catalog where a standard control fits and stay
+   custom where Huterm's need has none (the normalization table above).
+9. Foundation first, then each component group as a component PR followed
+   by its migration PRs.
 
 ## Open questions
 
-1. **Should an outside press that closes a menu also act?** Recommendation:
-   consume it everywhere, through the backdrop. For: AppKit, GTK autohide
-   popovers, and Radix modal menus all consume it; a dismissing click cannot
-   toggle a switch or, in a terminal, start a selection or send a mouse
-   report to a TUI. Against: the terminal window lets it proceed today, so
-   clicking a tab to dismiss a menu would take two clicks.
-2. **Should Down and Up on a closed select open it, or step its value?**
-   Recommendation: open it, and keep arrow stepping for segmented controls
-   and number fields. For: Radix, AppKit, and GTK open the list, and stepping
-   saves on every press. Against: stepping in place is faster for short
-   lists and matches Windows and HTML `<select>`, and the settings plan's
-   PR 3 contract documents arrow stepping on selects.
-3. **Should switches keep arrow keys?** Recommendation: drop them; Space and
-   Return toggle, as WAI-ARIA, Radix, and AppKit define. For: an arrow press
-   while moving through a form should not write. Against: it removes a
-   working shortcut that the PR 3 contract documents.
-4. **Patch vendored GPUI for accessibility tests, or verify accessibility by
-   hand?** Recommendation: patch. For: without it, every accessibility claim
-   in the contracts is untested and regresses silently; the patch is small
-   and test-only. Against: each GPUI upgrade must carry the patch until
-   upstream adds an equivalent.
-5. **Module or crate?** Recommendation: a module in `huterm-gpui` with an
-   architecture check. For: no second consumer exists, and the text client
-   will not use GPUI. Against: a crate enforces the boundary through Cargo
-   and makes compile-time isolation possible later.
-6. **Gallery: example binary, debug Settings section, or none?**
-   Recommendation: an example binary. For: it shows every state in both
-   themes without a product surface or keymap entry. Against: it is one more
-   target to build in CI and to keep in step with the components.
-7. **Adapt `gpui-component` code?** Recommendation: allow it per component
-   with attribution, but default to writing Huterm's own. For: Apache-2.0
-   permits it, and its anchoring and list code are mature. Against: adapted
-   code carries its assumptions (global theme, `Root`, hardcoded keys) and a
-   notice to maintain.
+None.
 
 [issue-276]: https://github.com/jimeh/huterm/issues/276
 [issue-277]: https://github.com/jimeh/huterm/issues/277
@@ -661,3 +820,4 @@ Zed's GPL-covered `ui` crate.
 [hig]: https://developer.apple.com/design/human-interface-guidelines/pop-up-buttons
 [gnome-hig]: https://developer.gnome.org/hig/
 [gpui-component]: https://github.com/longbridge/gpui-component
+[shadcn]: https://ui.shadcn.com/docs/components
