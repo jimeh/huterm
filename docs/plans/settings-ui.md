@@ -1,11 +1,11 @@
 # Settings UI and safe config writes
 
 Status: in progress. Approved on 2026-10-26 after four Codex review rounds.
-PR 1 (the foundation) shipped in #263; PR 2 (the settings model) is in
-progress. Plans [issue #35][issue-35] and
-[issue #34][issue-34] within [epic #14][issue-14]. The UI decisions come from
-two rounds of HTML mockups ([round two][mockups], [the chosen
-layout][mockup-a1]).
+PR 1 (the foundation) shipped in #263, and PR 2 (the settings model)
+in #266. PR 3 (the window and controls) is in progress. Plans
+[issue #35][issue-35] and [issue #34][issue-34] within
+[epic #14][issue-14]. The UI decisions come from two rounds of HTML mockups
+([round two][mockups], [the chosen layout][mockup-a1]).
 
 Huterm gets a Settings window that edits `config.toml` in place. The file stays
 the source of truth: Settings changes only the lines a setting owns, keeps
@@ -588,6 +588,168 @@ No UX review: nothing a user sees or touches changes.
 The Settings window, controls, writes, and inner metadata for themes,
 keybindings, and quake profiles.
 
+## PR 3: window and controls
+
+### What PR 3 delivers
+
+`open_settings` opens a Settings window that edits the scalar settings the
+settings model lists, saving each change through the patch service. The
+window follows the A1 layout: a sidebar with search, the sections, and the
+file status in its footer, and a main pane of grouped cards. Keybindings and
+Quake windows get their editors in PRs 4 and 5; until then their sections
+say so and open the file.
+
+### Window
+
+- A new window kind, `SettingsView`, with no session, workspace, or terminal.
+  It is not in `WindowModel`, which tracks terminal windows only.
+  `Desktop::settings` holds its handle. `open_settings` focuses it when open
+  and opens it otherwise; the file is created from the default template
+  first, as today.
+- Native decorations on both platforms, titled "Settings", 860 by 620 points
+  centred on the active display, at least 640 by 420. Colors derive from the
+  active theme through `Swatch`, and a reload repaints them.
+- Close Window and the close button close it without confirmation. Closing
+  it runs `maybe_exit`, so Huterm exits when it was the last window, as with
+  any other window.
+- Quit never hosts its confirmation in Settings: `quit_host` already reads
+  `WindowModel`, which has no Settings record. Committing Quit closes the
+  Settings window with the others. While Settings is the only window, Quit
+  exits once the usual assessment finds no sessions.
+- `open_settings` becomes an Application command so it works from any
+  window, Settings included. Window-scope commands that need a terminal
+  window, such as New Tab, are refused in Settings. Close Window, Close Tab,
+  and Close Pane close it, and Next Tab and Previous Tab move between its
+  sections.
+- A new Application command, `open_config_file`, opens `config.toml` in the
+  system editor; the footer, the General section, and the configuration
+  error notices use it. The existing menu items keep `open_settings`, which
+  now opens the window.
+
+### Layout
+
+- Sidebar: a search field, the sections in model order, and the footer. A
+  section shows when it has a setting for this platform. Each section shows
+  the number of its settings set in the file.
+- Main pane: the section title, a banner when needed, then each group as a
+  card of rows, in model order. Settings flagged advanced appear only after
+  the section's "Show advanced settings" switch is on; search always shows
+  them.
+- A row shows its label, a dot when the file sets it, its description, an
+  apply note when it is not live ("Applies to new terminals"), and an inline
+  error. Its control sits on the right with a reset button when the file
+  sets it; reset removes the key.
+- A setting whose visible-when condition does not hold is hidden. A setting
+  for another platform is hidden, unless the file sets it, in which case it
+  shows read-only with "macOS only. Set in config.toml and ignored here."
+- Search filters every section by label, description, and path, groups the
+  results by section, and offers the matching section as a link when nothing
+  in its cards matches, such as "keybindings".
+- General adds a card with the file's path and Open and Show in Finder (or
+  Folder) buttons above `watch_config`. Keybindings and Quake windows show
+  their rows with an Open config.toml button.
+
+### Controls
+
+Built on `TextField`, `Menu`, `Swatch`, `KeyHint`, and the scrollbars:
+
+| Kind | Control |
+| --- | --- |
+| `Bool` | Switch |
+| `Choice` with up to three short options | Segmented control |
+| Other `Choice` | Select, opening a `Menu` of the option labels |
+| `Integer`, `Number` | Number field with unit and range, stepper buttons, and arrow-key steps |
+| `Text` | Text field, saved on Enter or blur |
+| Optional `Bool` (no default) | Select: "Default", "On", "Off" |
+| Optional `Integer` | Number field with a "Default" placeholder; clearing it resets |
+
+Special controls from the override table:
+
+- `font.family`: a text field beside a menu of the installed families.
+- `theme`: cards for the bundled and adjacent themes, with a note listing
+  any `[theme]` color overrides, which apply on top of every theme.
+- `terminal.link_modifiers`: modifier chips; macOS offers no Ctrl.
+- `terminal.scrollback_bytes`: a text field accepting a size such as
+  `64MiB`, empty for no size limit.
+- `keybinding`, `global_keybinding`, `quake`: the placeholder cards.
+
+Inputs are checked against the setting's kind before anything is written: a
+number outside its range, or text that does not match its pattern, shows the
+error under the row and writes nothing. `tabs.min_width` above
+`tabs.max_width` is the one cross-setting rule, checked through the patch
+service's validator like everything else.
+
+Selects reuse `Menu`: the settings model and the installed font list are
+static for the process, so their strings serve as menu item identifiers.
+
+### Saving and status
+
+- The window keeps a base `Snapshot`, loaded when it opens and after every
+  save and reload. A change becomes one `Patch::Set` or `Patch::Remove` and
+  runs `ConfigFile::apply` with `config::validator` on the background
+  executor. Writes are serialized: a change made while one is in flight
+  queues behind it.
+- After a successful write the window asks for a manual reload, so the
+  change applies whether or not watching is on, and shows "Saved".
+- The footer shows one status: "Watching config.toml", "Not watching
+  config.toml", "Saved", "Reloaded", "config.toml changed on disk" with
+  Reload, or an error with its action. While watching is off, the window
+  checks the file when it comes forward.
+- An invalid file, from a reload or from `ApplyError::InvalidFile`, puts a
+  banner over the controls with the parser's message and an Open
+  config.toml button, and makes every control read-only until the file
+  parses. The running settings stay as they were.
+- `ApplyError::Conflict` keeps the entered value in its control, marks the
+  row, and shows the conflict with "Use mine", which reapplies the value on
+  a freshly loaded base, and "Use file", which discards it. Other write
+  errors show the message in the footer and under the row, and the control
+  returns to the file's value.
+- A reload refreshes the base and every control. A row whose value changed
+  on disk flashes once.
+
+### Keyboard
+
+Every action is a catalog command with Window scope, following the overlay
+grammar. `settings_search`, `settings_focus_next`, and
+`settings_focus_previous` bind under `Settings`. `settings_toggle`,
+`settings_increase`, `settings_decrease`, and `settings_reset` bind under
+`SettingsControl`, which only switches, selects, segmented controls, and
+section rows carry, so Space and the arrows reach text fields. Text fields
+take the `Palette` context for editing, as the Licenses view does: Enter
+saves a field or moves from the search to the first match, Up and Down step
+a number, and Escape clears the search. Tab and Shift-Tab move through GPUI
+tab stops.
+
+### PR 3 files
+
+- `crates/huterm-gpui/src/desktop/settings.rs` and a `settings/` directory:
+  `window.rs` (the view), `controls.rs`, `values.rs` (pure value lookup,
+  defaults, input checks, and patch building), and `status.rs` (the footer
+  state).
+- `windows.rs`: opening and focusing the window, reload notifications, and
+  Quit.
+- `huterm-protocol` and `keymap.rs`: the new commands and their bindings.
+- `docs/configuration.md`, `docs/keybindings.md`, `README.md`, and
+  `docs/agents/desktop-client.md`.
+
+### PR 3 verification
+
+| Behavior | Evidence |
+| --- | --- |
+| Value lookup, defaults, input checks, and patch building for every generic kind | `values.rs` unit tests |
+| Footer status transitions: save, reload, external change with watching off, invalid file, conflict | `status.rs` unit tests |
+| Opening focuses an existing window; closing exits when it was the last; Quit closes it | GPUI tests through the desktop harness |
+| A switch, select, number field, and reset each write only their key, preserving comments | GPUI tests writing a fixture file and reading it back |
+| A change applies with watching off | GPUI test |
+| An invalid file makes controls read-only; a conflict keeps the entered value | GPUI tests |
+| Keyboard: open Settings, search, move between controls, toggle, step, reset, and return to a terminal | A `settings` step in `smoke:macos-palette` and `smoke:linux-palette` (`HUTERM_PALETTE_SMOKE_ONLY=settings` runs it alone) |
+| The window in the running app | `ux-review` |
+
+### Non-goals for PR 3
+
+The keybinding editor, the quake profile editor, global shortcuts, editing
+theme colors, and themes defined in `[themes]`.
+
 ## Later PRs
 
 Each later PR gets its own contract when it starts, built on this section.
@@ -602,7 +764,8 @@ Each later PR gets its own contract when it starts, built on this section.
    from the committed schema drives the UI. A test fails when a schema leaf
    has neither a generic control, an override, nor a place on an explicit
    file-only list.
-2. **Window and controls.** The Settings window kind and its Close and Quit
+2. **Window and controls.** Its contract is PR 3 above. The Settings
+   window kind and its Close and Quit
    handling, the A1 shell, and the sidebar footer status. A control kit built
    on existing pieces (`ui/text_field.rs`, `MenuModel`, `Swatch`, `KeyHint`,
    and scrollbars): switch, segmented control, select, number field with unit
