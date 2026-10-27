@@ -48,6 +48,12 @@ type OverlayInput = {
   dragTo(x: number, y: number): Promise<void>;
   /** Releases the held left button at a point. */
   release(x: number, y: number): Promise<void>;
+  /**
+   * A key pressed while the left button is held. xdotool's
+   * `--clearmodifiers` would release the button around the key and press it
+   * again, a click the drag never made.
+   */
+  keyHeld(name: OverlayKey): Promise<void>;
   /** Wheel steps up at the pointer; absent where no synthetic wheel exists. */
   wheelUp?: () => Promise<void>;
   windowName(): Promise<string>;
@@ -92,6 +98,7 @@ function x11Input(windowId: string, scale: number): OverlayInput {
       await moveTo(x, y);
       run(["xdotool", "mouseup", "1"]);
     },
+    keyHeld: async (name) => { run(["xdotool", "key", x11Keys[name]]); },
     wheelUp: async () => { run(["xdotool", "click", "--repeat", "3", "4"]); },
     windowName: async () => run(["xdotool", "getwindowname", windowId]),
   };
@@ -123,11 +130,12 @@ export function appKitInput(command: (value: string) => Promise<string>): Overla
     if (x < 1) throw new Error(`pointer x ${x} is inside the fractional range`);
     await post(["mouse", 5, x, y]);
   };
+  const key = async (name: OverlayKey) => {
+    const [code, flags, text] = macKeys[name];
+    await post([code, flags, text, text]);
+  };
   return {
-    key: async (name) => {
-      const [code, flags, text] = macKeys[name];
-      await post([code, flags, text, text]);
-    },
+    key,
     typeText: async (text) => {
       for (const event of macKeyEvents(text)) await post([event.code, event.flags, event.text, event.plain]);
     },
@@ -151,6 +159,7 @@ export function appKitInput(command: (value: string) => Promise<string>): Overla
     },
     dragTo: async (x, y) => { await post(["mouse", 6, x, y]); },
     release: async (x, y) => { await post(["mouse", 2, x, y]); },
+    keyHeld: key,
     windowName: () => command("native-title"),
   };
 }
@@ -730,7 +739,7 @@ label = "title"
     dragged = await current();
     const kept = rectCentre(field(dragged, "pane_rects").split(";")[1]!);
     await dragPane(grabOf(dragged, 0), kept, "pane:1:centre");
-    await key("escape");
+    await native().keyHeld("escape");
     await state("w0.drop=none");
     await native().release(kept.x, kept.y);
     await state("w0.busy=false", "w0.panes=2", "w0.pane_focus=0", "w0.terminal_focused=true");
@@ -754,7 +763,7 @@ label = "title"
       return label;
     };
     const sprungFrom = await spring();
-    await key("escape");
+    await native().keyHeld("escape");
     await native().release(sprungFrom.x, sprungFrom.y);
     await state(`w0.active_index=${origin}`, "w0.drop=none", "w0.panes=2", "w0.pane_focus=1", "w0.terminal_focused=true");
     await ack("ackspringback");
