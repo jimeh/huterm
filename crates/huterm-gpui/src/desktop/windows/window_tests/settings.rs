@@ -157,6 +157,27 @@ fn a_change_and_a_reset_write_only_their_key_and_apply(
 }
 
 #[gpui::test]
+fn the_windows_own_save_is_not_an_edit_made_elsewhere(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("own-save", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.general.watch_config = false;
+    });
+    open_settings(&mut harness, &file.path());
+    // Coming forward while a save is in flight reads the file the save
+    // writes; that is not a change made elsewhere.
+    with_view(&mut harness, |view, cx| {
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+        view.look_at_disk(cx);
+    });
+    harness
+        .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.status_text(), "Saved");
+    });
+}
+
+#[gpui::test]
 fn a_conflict_keeps_the_entered_value_until_the_user_picks(
     cx: &mut TestAppContext,
 ) {

@@ -1337,6 +1337,11 @@ impl SettingsView {
         self.reloaded(Ok(()), cx);
     }
 
+    /// Looks for an edit made elsewhere, as coming forward does.
+    pub(super) fn look_at_disk(&mut self, cx: &mut Context<'_, Self>) {
+        self.check_disk(cx);
+    }
+
     pub(super) fn use_mine(&mut self, path: &str, cx: &mut Context<'_, Self>) {
         let setting = self.model.setting(path).expect("a known setting");
         self.keep_mine(setting.path.as_str(), cx);

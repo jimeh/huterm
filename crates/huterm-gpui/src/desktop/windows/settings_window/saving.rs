@@ -185,20 +185,31 @@ impl SettingsView {
         if cx.global::<Desktop>().config.general.watch_config {
             return;
         }
-        let Some(base) = self.base.clone() else {
+        if self.base.is_none() {
             return;
-        };
+        }
+        let epoch = self.epoch;
         let file = ConfigFile::new(self.path.clone());
         let task = cx.background_spawn(async move { file.load() });
         cx.spawn(async move |view, cx| {
-            if let Ok(current) = task.await
-                && current.revision() != base.revision()
-            {
-                let _ = view.update(cx, |view, cx| {
-                    view.status.changed_on_disk();
-                    cx.notify();
+            let Ok(current) = task.await else {
+                return;
+            };
+            let _ =
+                view.update(cx, |view, cx| {
+                    // The window's own writes change the file too: one that
+                    // finished or is pending since the read began is not an
+                    // edit made elsewhere, and its save reloads anyway.
+                    if view.epoch != epoch || view.busy() {
+                        return;
+                    }
+                    if view.base.as_ref().is_some_and(|base| {
+                        base.revision() != current.revision()
+                    }) {
+                        view.status.changed_on_disk();
+                        cx.notify();
+                    }
                 });
-            }
         })
         .detach();
     }
