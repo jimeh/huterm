@@ -362,11 +362,13 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Occurrences:** once in the hosted `Checks (macOS arm64)` job on
   2026-10-27, for PR #283, which changes no script or idle code; the
   rerun passed.
-- **Evidence:** the test compiles an Objective-C program with `xcrun clang`
-  inside Bun's default 5,000ms test timeout. A null exit code means the
-  compiler was killed, consistent with the timeout ending a slow first
-  `xcrun` or SDK lookup on a cold runner. That is an inference; the log
-  shows no compiler output.
+- **Evidence:** the test runs `xcrun clang` through `Bun.spawnSync` with no
+  timeout option, and neither `bunfig.toml` nor the test overrides Bun's
+  default 5,000ms test timeout. The null exit code at line 30 is the
+  compiler's, so it ended by a signal. The synchronous spawn blocks the
+  event loop, so the test timer cannot have interrupted it, and the signal's
+  source is unknown; the log shows no compiler output. A slow first `xcrun`
+  or SDK lookup on a cold runner is a hypothesis, not a confirmed cause.
 - **Triage:** rerun the job. If it recurs, time the compile step in the
   test or give it a longer timeout.
 

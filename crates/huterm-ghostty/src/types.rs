@@ -83,7 +83,9 @@ pub const COMPRESSION_SUPPORTED: bool = cfg!(target_pointer_width = "64");
 pub enum Compression {
     /// Cold history remains; take another step while the terminal is idle.
     Pending,
-    /// The pass finished. Nothing remains until the activity token changes.
+    /// The pass finished. Another pass is worthwhile once the activity token
+    /// changes, or after reads restored compressed pages, which leaves the
+    /// token unchanged.
     Complete,
     /// This target cannot release compressed memory.
     Unsupported,
