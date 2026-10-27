@@ -124,11 +124,12 @@ position = "top"
     }
     return text;
   }
+  /** Focuses this app's visible X11 window whose name matches `name`. */
   async function focusX11(name: string): Promise<void> {
     if (!wm) return;
     let id = "";
     await waitFor(async () => {
-      const probe = Bun.spawnSync(["xdotool", "search", "--onlyvisible", "--pid", String(app.pid), "--name", name], { stdout: "pipe" });
+      const probe = Bun.spawnSync(["xdotool", "search", "--all", "--onlyvisible", "--pid", String(app.pid), "--name", name], { stdout: "pipe" });
       id = probe.stdout.toString().trim().split(/\s+/)[0] ?? "";
       return /^\d+$/.test(id);
     }, `X11 window ${name}`);
