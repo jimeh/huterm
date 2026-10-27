@@ -1,20 +1,24 @@
 # Pane layouts
 
 Status: proposed. Reviewed on 2026-10-27 in three Codex and three Claude
-rounds; awaiting Jim's decisions on the open questions. Plans
+rounds. Jim settled the open questions the same day (see "Settled
+decisions"), adding default cycle bindings and user-defined layouts. The
+template language and PR 3 were then added and reviewed in a fourth round
+by both reviewers, and a fifth round checked the corrections. Plans
 [issue #30][issue-30] within [epic #12][issue-12].
 Builds on [the split panes plan](split-panes.md) (#28) and
 [the pane moves plan](pane-moves.md) (#29), both implemented. Layout undo,
 [#256][issue-256], is related with no ordering dependency; this plan assumes
 [its plan](layout-undo.md) lands first, with all seven of its
-recommendations approved, and records presets and balancing through it.
+recommendations approved, and records layouts and balancing through it.
 
-A user can rearrange a tab's existing panes into a named preset (equal
-columns, equal rows, main left, main top, or tiled), step through those
-presets with next and previous commands, or balance the current split tree
-without changing its shape. None of this creates, closes, or restarts a
-terminal, and no pane changes identity: only the tab's split tree and its
-weights change.
+A user can rearrange a tab's existing panes into a named layout, either one
+of five built-ins (equal columns, equal rows, main left, main top, and
+tiled) or one they define in the config file or the Settings window, step
+through a list of layouts with next and previous commands, or balance the
+current split tree without changing its shape. None of this creates,
+closes, or restarts a terminal, and no pane changes identity: only the
+tab's split tree and its weights change.
 
 ## Current state
 
@@ -79,28 +83,38 @@ Observed on `main` at `f0b0174c`:
   (`window_menu.rs:165-176`) and terminal context menu
   (`terminal_menu.rs:124-129`) list split and pane items. In-window menus
   have no submenus (`menu.rs:104`).
+- `PanesConfig` (`crates/huterm-config/src/lib.rs:793`) holds only `zoom`
+  and derives `Copy`; `huterm-config` already depends on
+  `huterm-protocol`. The Settings window edits compound settings through
+  `Special` editors, such as the named quake profiles
+  (`settings_window/quake.rs`), and `SettingKind` has no list kind.
 
 ## Scope
 
 In scope:
 
-- Five presets, each a named command.
-- Next and previous preset cycling.
+- A small template language for pane layouts, in which the five built-in
+  layouts (equal columns, equal rows, main left, main top, and tiled) are
+  defined.
+- Arranging a tab into any named layout through one command with a
+  `layout` argument.
+- Next and previous layout cycling through a configurable list, with
+  default bindings.
 - Balancing the active tab's whole split tree.
 - One runtime operation that rearranges one tab's existing panes, shared by
-  all three.
-- Small-window fallbacks, focus and zoom rules, menus, one default binding
-  pair, and undo entries through #256.
+  all of the above.
+- User-defined layouts in the config file and the Settings window (PR 3).
+- Small-window fallbacks, focus and zoom rules, menus, default bindings,
+  and undo entries through #256.
 
 Non-goals:
 
-- Custom or user-defined layouts, and saving layouts (#42 persists whatever
-  layout a tab holds).
+- Saving the current tab's layout as a named layout ("Save Layout As…").
+  It fits the template language later but needs its own design.
+- A visual layout editor or a layout preview in Settings (open question 3).
 - Balancing only the focused pane's split, as tmux's `select-layout -E`
   does.
-- Mirrored main presets (main right, main bottom). They are cheap to add as
-  more presets later.
-- A preset that applies to every tab of a window.
+- A layout that applies to every tab of a window.
 - Animating the transition.
 
 ## Principles
@@ -109,13 +123,15 @@ The split panes and pane moves principles hold: one layout function,
 structure shared and presentation local, moves conserve terminals, and one
 event per operation. This plan adds:
 
-- **Shape is pure, fitting is local.** Presets and balancing are pure
-  functions of the layout in `huterm-protocol`, so the runtime, every
-  client, and tests share them. Only the initiating view knows pixels, so
-  it fits the result to its minimum pane sizes, as it already does for
-  splits and resizes.
-- **Presets keep traversal order.** No preset reorders panes, so cycling
+- **Shape is pure, fitting is local.** Templates, their expansion, and
+  balancing are pure functions in `huterm-protocol`, so the runtime, every
+  client, the config validator, and tests share them. Only the initiating
+  view knows pixels, so it fits the result to its minimum pane sizes, as
+  it already does for splits and resizes.
+- **Layouts keep traversal order.** No template reorders panes, so cycling
   never shuffles them. Swaps and moves remain the way to reorder.
+- **Built-ins are templates.** The five built-in layouts are template
+  strings in the language users write, so one implementation serves both.
 - **Cycling is derived, not remembered.** Where a cycle continues from is
   read from the shared layout, so every window steps the same way and no
   new state exists.
@@ -124,52 +140,138 @@ event per operation. This plan adds:
 
 ### Pane order and the main pane
 
-Presets fill their slots in **traversal order**: depth first, children in
+Layouts fill their slots in **traversal order**: depth first, children in
 order, the order `focus_next_pane` and `move_pane_next` already use. For
 `[(A over B) | C]` that order is A, B, C.
 
-The **main pane is the first pane in traversal order** (open question 1).
-That is tmux's rule: `layout_set_main_v` takes the window's first tiled
+The **main pane is the first pane in traversal order** (settled decision
+1). That is tmux's rule: `layout_set_main_v` takes the window's first tiled
 pane as main ([layout-set.c][tmux-layout-set] on tmux `master` at
 `523ac696`, read on 2026-10-27). A user makes another pane main by swapping
 it first.
 
-Every preset fills slots so that the result's traversal order equals the
-input's:
+Template expansion hands panes to slots in the template's own traversal
+order, so the result's traversal order always equals the input's. Applying
+any sequence of layouts leaves the panes in the order they started in.
 
-| Preset | Slots, in order |
-| --- | --- |
-| Columns | left to right |
-| Rows | top to bottom |
-| Main left | main, then the stack top to bottom |
-| Main top | main, then the stack left to right |
-| Tiled | row by row, left to right within a row |
+### Layout templates
 
-Applying any sequence of presets therefore leaves the panes in the order
-they started in.
+A template describes a layout for any number of panes:
 
-### Presets
+```text
+template := split
+split    := axis "(" child ("," child)* ")"
+          | "grid" "(" "*" ")"
+axis     := "columns" | "rows"
+child    := node [share]
+node     := split | "pane" | "*"
+share    := integer "%"                        1 to 99
+```
+
+Whitespace may appear between tokens and is skipped there; it cannot
+split a keyword or a number. `columns` places its children left to right, `rows`
+top to bottom, and `grid(*)` tiles the panes its `*` receives (see
+"Built-in layouts"). The root is a split or a grid. A split needs at least
+two children unless one of them is a `*`. A template is at most 1 KiB and
+16 levels deep, and a config holds at most 64 user layouts, which bounds
+the cost of a hostile config file. A share too large to parse is an
+error, never a panic.
+
+**Slots.** `pane` takes one pane. `*` takes a share of the panes left once
+every `pane` slot is counted. With `n` panes, `f` pane slots, and `k`
+stars, the `r = n − f` remaining panes are divided as evenly as possible:
+each star takes `floor(r / k)`, and the first `r mod k` stars, in template
+order, take one more (settled decision 7). Slots then take their panes in
+template order. For `columns(*, pane 20%, *)` and six panes, `r = 5`, so
+the stars take 3 and 2: the first star takes p1 to p3, the `pane` takes
+p4, and the second star takes p5 and p6.
+
+**Fewer panes than slots.** When `n < f`, the first `n` pane slots, in
+template order, take the panes; the rest stay empty and every star takes
+none. A template with no `*` and more panes than pane slots has nowhere to
+put them and is unavailable for that count (open question 2).
+
+**Building the tree.** In a `columns` or `rows` split, a star with `m`
+panes becomes `m` siblings in that split, sharing the star's share equally.
+In a `grid`, they tile. Then, bottom up:
+
+- an empty slot, and a split left with no children, drop out, and their
+  siblings' shares scale up proportionally to fill the split;
+- a split left with one child is replaced by that child, which takes the
+  split's share;
+- a child split on its parent's axis flattens into the parent, each of
+  its children's fractions multiplied by its own. As in `normalize_child`
+  (`pane_layout.rs:914`), a flatten that would pass `MAX_SPLIT_CHILDREN`
+  is skipped and the nested split stays.
+
+**Shares.** A child's `%` is its share of its parent split. Children
+without one divide whatever the explicit shares leave, equally. Shares are
+resolved from the template as written, before any slot drops: a star
+counts as one child however many panes it receives, so in
+`columns(pane, *)` the pane's fraction stays one half at any pane count.
+Its weight is then within a unit of 500,000, because of the rounding
+below: 500,000 with two or three panes, 499,999 with four. Explicit
+shares must total less than 100 when some child has none, so each of those
+children gets a positive share, and exactly 100 when every child has one.
+A `*` or a split may carry a share like any child; a star's share is
+divided among its panes.
+
+**Weights.** Each child's fraction of its split stays unrounded through
+expansion and flattening, as an `f64` computed in one fixed order, so every
+client gets the same result. Each split of the final tree converts its
+children's fractions to weights once: every child first gets 1 unit, and
+the remaining `SPLIT_TOTAL − c` units, for `c` children, are apportioned
+in proportion to the fractions by largest remainder, ties going to the
+earlier child. The weights are therefore at least 1 and sum to exactly
+`SPLIT_TOTAL`, as `validate` requires (`pane_layout.rs:650-656`), even for
+a fraction far below one unit. Equal fractions give **equal weights**:
+333,334, 333,333, and 333,333 for three children, as `SPLIT_TOTAL`
+divided by the count with the remainder going one unit each to the first
+children. Main left's 60 % and 40 % give exactly 600,000 and 400,000.
+
+For `columns(*, pane 20%, *)` each star's share is 40 %. With six panes the
+first star's three panes take 40 % / 3 each, the pane 20 %, and the second
+star's two panes 20 % each, giving 133,334, 133,333, 133,333, 200,000,
+200,000, and 200,000. With two panes the second star is empty, so the
+first star's pane and the `pane` scale from 40 % and 20 % to two thirds
+and one third: 666,666 and 333,334.
+
+**Limits.** An expansion that leaves a split with more than
+`MAX_SPLIT_CHILDREN` (256) children is unavailable for that pane count.
+
+**Names.** A layout name is 1 to 32 characters of lowercase letters,
+digits, and underscores, starting with a letter. The built-in names are
+reserved.
+
+### Built-in layouts
+
+| Name | Title | Template |
+| --- | --- | --- |
+| `columns` | Equal Columns | `columns(*)` |
+| `rows` | Equal Rows | `rows(*)` |
+| `main_left` | Main Left | `columns(pane 60%, rows(*))` |
+| `main_top` | Main Top | `rows(pane 60%, columns(*))` |
+| `tiled` | Tiled | `grid(*)` |
 
 Let `n` be the tab's pane count and `p1 … pn` its panes in traversal
-order. Every preset of one pane is that pane alone, so `n = 1` is always a
-no-op. **Equal weights** divide `SPLIT_TOTAL` by the child count and give
-the remainder, one unit each, to the first children: three children get
-333,334, 333,333, and 333,333.
+order. Every layout of one pane is that pane alone, so `n = 1` is always a
+no-op. The templates give these trees:
 
-- **Columns:** one `Columns` split of `p1 … pn`, equal weights.
-- **Rows:** one `Rows` split of `p1 … pn`, equal weights.
+- **Equal columns:** one `Columns` split of `p1 … pn`, equal weights.
+- **Equal rows:** one `Rows` split of `p1 … pn`, equal weights.
 - **Main left:** for `n = 2`, `Columns[p1, p2]`; for `n ≥ 3`,
   `Columns[p1, Rows[p2 … pn]]` with the stack at equal weights. The main
-  pane's weight is `MAIN_SHARE`, 600,000 (60 %), and the other child takes
-  400,000 (open question 2).
+  pane's weight is 600,000 (60 %, settled decision 2), and the other child
+  takes 400,000.
 - **Main top:** the same with the axes exchanged: `Rows[p1, Columns[p2 …
   pn]]`, main at 60 %.
-- **Tiled:** `columns = ceil(sqrt(n))` and `rows = ceil(n / columns)`.
-  Panes fill rows in order, `columns` per row; the last row holds the rest.
-  A `Rows` split of the rows at equal weights holds each row as a
-  `Columns` split of its panes at equal weights, or as the pane itself when
-  the row has one. With one row, tiled is the columns tree. The last row's
-  panes share its full width equally, where tmux stretches the last pane.
+- **Tiled:** `columns = ceil(sqrt(n))` and `rows = ceil(n / columns)`
+  (settled decision 3). Panes fill rows in order, `columns` per row; the
+  last row holds the rest. A `Rows` split of the rows at equal weights
+  holds each row as a `Columns` split of its panes at equal weights, or as
+  the pane itself when the row has one. With one row, tiled is the columns
+  tree. The last row's panes share its full width equally, where tmux
+  stretches the last pane.
 
 | n | Tiled grid (panes per row) |
 | --- | --- |
@@ -187,31 +289,37 @@ so 2 panes stack and 5 panes make 3 rows of 2. Huterm grows columns first
 because terminal windows are usually wider than tall and cells are about
 twice as tall as wide.
 
-A preset whose split would exceed `MAX_SPLIT_CHILDREN` (columns or rows of
-more than 256 panes, or a main stack of more than 256) is refused with
-`LayoutError::TooManyChildren`. Such a preset is unavailable: a named
-command refuses it with a notice, and matching and cycling skip it, so
-cycling 257 panes visits main left, main top, and tiled. The minimum pane
-size refuses such counts long before this in any real window.
+Columns and rows of more than 256 panes, and a main stack of more than 256,
+exceed `MAX_SPLIT_CHILDREN`, so those layouts are unavailable at those
+counts: `arrange_panes` refuses them with a notice, and matching and
+cycling skip them. Cycling 257 panes visits main left, main top, and tiled.
+The minimum pane size refuses such counts long before this in any real
+window.
 
-These are protocol functions beside the existing transforms:
+### Protocol API
+
+Beside the existing transforms in `huterm-protocol`:
 
 ```text
-LayoutPreset = Columns | Rows | MainLeft | MainTop | Tiled    cycle order
-Arrangement  = Pane(PaneId)
-             | Split { axis, children: Vec<(weight, Arrangement)> }
+LayoutTemplate::parse(&str) -> Result<LayoutTemplate, TemplateError>
+LayoutTemplate::expand(&self, panes: &[PaneId])
+    -> Result<Arrangement, LayoutError>            unavailable: Err
+NamedLayout { name, title, template }              BUILT_IN_LAYOUTS: 5
+Arrangement = Pane(PaneId)
+            | Split { axis, children: Vec<(weight, Arrangement)> }
 
-PaneLayout::preset(&self, LayoutPreset) -> Result<Arrangement, LayoutError>
 PaneLayout::balanced(&self) -> Arrangement
 PaneLayout::arranged(&self, &Arrangement, fresh: impl FnMut() -> SplitId)
     -> Result<PaneLayout, LayoutError>
-PaneLayout::matching_preset(&self) -> Option<LayoutPreset>
-PaneLayout::step_preset(&self, forward: bool,
-    fit: impl FnMut(LayoutPreset, Arrangement) -> Option<Arrangement>)
-    -> Option<(LayoutPreset, Arrangement)>
+PaneLayout::matching_layout(&self, cycle: &[NamedLayout]) -> Option<usize>
+PaneLayout::step_layout(&self, cycle: &[NamedLayout], forward: bool,
+    fit: impl FnMut(&NamedLayout, Arrangement) -> Option<Arrangement>)
+    -> Option<(usize, Arrangement)>
 ```
 
-`step_preset` holds the whole cycling rule (see "Cycling"), so a future
+`TemplateError` names the byte offset and the rule broken, so config
+validation and the Settings window can show "expected `,` or `)` at 18".
+`step_layout` holds the whole cycling rule (see "Cycling"), so a future
 text client steps exactly as the desktop does and supplies only its own
 `fit`.
 
@@ -289,77 +397,93 @@ probe IDs in a runtime no Mux uses, extending the single `probe_split`
 (`pane_moves.rs:173`).
 
 In a window large enough for every minimum, which is the usual case, the
-fitted arrangement equals the ideal one, so presets and balancing give the
+fitted arrangement equals the ideal one, so layouts and balancing give the
 same weights in every window.
 
 ### Small windows
 
-- **A named preset** that is `Short` in this view is refused with a notice,
-  "Window too small for the main left layout", and changes nothing, as a
-  split that would leave a pane under the minimum is refused.
-- **Cycling** skips presets that are `Short` and takes the next one that
-  fits. With none, it shows "No other pane layout fits this window".
-- **Balancing** never refuses (open question 6). When the minimums fit, it
-  commits the fitted weights. When the window is already too small for the
-  tab's tree, no weights can satisfy every minimum, and balancing commits
-  the proportional fallback above. That is still idempotent in this view.
+- **`arrange_panes`** with a layout that is `Short` in this view is refused
+  with a notice, "Window too small for the main left layout", and changes
+  nothing, as a split that would leave a pane under the minimum is refused.
+- **Cycling** skips layouts that are `Short` and takes the next one that
+  fits. With none, it shows a notice (see "Cycling").
+- **An unavailable layout,** one that cannot hold this many panes, is
+  refused by `arrange_panes` with a notice naming the limit: "The pair
+  layout holds at most 2 panes" for a template without `*`, or "The
+  columns layout holds at most 256 panes" at the split limit.
+- **Balancing** never refuses (settled decision 6). When the minimums fit,
+  it commits the fitted weights. When the window is already too small for
+  the tab's tree, no weights can satisfy every minimum, and balancing
+  commits the proportional fallback above. That is still idempotent in this
+  view.
 
 Other windows showing the tab apply the layout function's existing
 shrinking rule; nothing is refused there.
 
 ### Cycling
 
-Cycle order is the preset order above: columns, rows, main left, main top,
-tiled, then columns again. Next moves forward and previous moves back,
+The cycle is the `[panes] layout_cycle` list of layout names, by default
+the five built-ins in table order: columns, rows, main left, main top, and
+tiled. Users add their own layouts to it by name (see "User-defined
+layouts"). Next moves forward through the list and previous moves back,
 wrapping.
 
-**Where a cycle starts.** `matching_preset` compares the current layout
-with each available preset's ideal result for the same panes, ignoring
-split IDs. It uses ideal results, not fitted ones, so every window finds
-the same match:
+**Where a cycle starts.** `matching_layout` compares the current layout
+with the ideal expansion of each available layout in the cycle, for the
+same panes, ignoring split IDs. It uses ideal results, not fitted ones, so
+every window finds the same match:
 
-1. among presets whose result has the same shape, ignoring weights, the one
+1. among layouts whose result has the same shape, ignoring weights, the one
    whose ideal weights are nearest the current weights: the smallest sum of
    absolute weight differences over the splits in traversal order;
-2. ties, including an exact match shared by two presets, go to the first in
+2. ties, including an exact match shared by two layouts, go to the first in
    cycle order;
-3. with no preset of the same shape, there is no match.
+3. with no layout of the same shape, there is no match.
 
-Shapes differ between presets except with two panes, where main left and
+The built-ins' shapes differ except with two panes, where main left and
 columns share one shape, main top and rows share another, and tiled equals
 columns exactly. Nearest weights tell them apart: a main left layout
 resized from 60/40 to 65/35 still matches main left, and a 55/45 layout,
-equally near both, matches columns.
+equally near both, matches columns. A user layout that expands to the same
+tree as another layout in the cycle is resolved the same way.
 
-Next steps forward from the match, and previous steps back. With no match,
-next starts at columns and previous at tiled, as tmux starts at its first
-or last layout when it has none recorded (`layout_set_next` and
-`layout_set_previous`).
+Matching reads only the tree, so a layout applied with `arrange_panes` but
+missing from the cycle matches a cycle layout whose expansion has the same
+shape, and otherwise nothing. With `layout_cycle = ["columns", "rows"]`,
+main left on two panes is a 60/40 columns tree, matches columns, and next
+applies rows; on three panes it matches nothing, and next starts the cycle
+from its beginning. Next steps
+forward from the match, and previous steps back. With no match, next starts
+at the first layout in the cycle and previous at the last, as tmux starts
+at its first or last layout when it has none recorded (`layout_set_next`
+and `layout_set_previous`).
 
-**Each step** (`step_preset`) tries at most five presets in cycle order,
-starting after the match (or at columns or tiled with no match) and
-wrapping, so the matched preset itself comes last. It takes the first that
-is available, that `fit`
-does not report `Short` in this view, and whose fitted result differs from
-the current layout, weights included. It compares the fitted result, which
-is what would be committed, so a step never commits a no-op while another
-preset could change the layout. With none, it does nothing and shows "No
-other pane layout fits this window".
+**Each step** (`step_layout`) tries each layout in the cycle at most once,
+in cycle order, starting after the match (or at the first or last with no
+match) and wrapping, so the matched layout itself comes last. It takes the
+first that is available, that `fit` does not report `Short` in this view,
+and whose fitted result differs from the current layout, weights included.
+It compares the fitted result, which is what would be committed, so a step
+never commits a no-op while another layout could change the tab. With
+none, it does nothing and shows "No other pane layout fits this window"
+when some candidate was `Short`, or "No other pane layout in the cycle
+changes these panes" when every candidate was unavailable or equal to the
+current layout, as with `layout_cycle = ["dev"]`.
 
-A full cycle from a matched layout visits every available preset and
-returns to the starting layout's canonical form: five distinct layouts for
-3 to 256 panes, four for two panes, because tiled equals columns (the step
-after main top applies tiled, which then matches columns), and three for
-257, where columns and rows are unavailable. From 258 panes the main
-stack would exceed `MAX_SPLIT_CHILDREN` too, so tiled is the only preset:
-next or previous from an unmatched layout applies it, and from tiled shows
-the notice. From an
-unmatched layout, the first step enters the cycle and the rest follow it.
+With the default cycle, a full cycle from a matched layout visits every
+available layout and returns to the starting layout's canonical form: five
+distinct layouts for 3 to 256 panes; four for two panes, because tiled
+equals columns (the step after main top applies tiled, which then matches
+columns); and three for 257, where columns and rows are unavailable. From
+258 panes the main stack would exceed `MAX_SPLIT_CHILDREN` too, so tiled is
+the only available built-in: next or previous from an unmatched layout
+applies it, and from tiled shows the notice. From an unmatched layout, the
+first step enters the cycle and the rest follow it.
 
 **After a manual resize** the shape still matches and the nearest weights
-usually still pick the same preset, so the cycle continues from it.
-Reapplying a named preset restores its ideal weights. **After a split,
-close, move, or swap** the shape usually matches no preset, and the cycle
+usually still pick the same layout, so the cycle continues from it.
+Reapplying a named layout restores its ideal weights. **After a split,
+close, move, or swap** the shape usually matches no layout, and the cycle
 starts over. A split along the axis of a columns or rows layout keeps that
 shape, so the cycle continues. Every window computes the same match from
 the shared layout; only the `Short` skip depends on the view.
@@ -371,7 +495,7 @@ Mux::arrange_panes(workspace, tab, expected: &PaneLayout,
                    arrangement: &Arrangement) -> Result<LayoutChange>
 ```
 
-One operation serves presets, cycling, and balancing:
+One operation serves named layouts, cycling, and balancing:
 
 - It validates the workspace and tab as `resize_split` does, and refuses a
   tab whose layout no longer has `expected`'s structure: the same shape,
@@ -382,7 +506,7 @@ One operation serves presets, cycling, and balancing:
 - It builds the result with `arranged`. An arrangement equal to the
   current layout, weights included, is a no-op: it emits nothing,
   allocates nothing, leaves the shared zoom as it is, and returns an empty
-  `LayoutChange`. This covers one pane, reapplying the current preset, and
+  `LayoutChange`. This covers one pane, reapplying the current layout, and
   balancing a balanced tab. The desktop never sends such an arrangement
   (see "Desktop flow"); the rule is for other clients and races.
 - A result of a different shape needs one fresh split ID per split. It
@@ -395,7 +519,7 @@ One operation serves presets, cycling, and balancing:
   clears the shared zoom too, as tmux's `select-layout` unzooms for any
   layout.
 - It leaves `Mux::revision` alone. No terminal changes tabs, so no close
-  ticket's scope changes, and a preset in one window must not bounce
+  ticket's scope changes, and a layout change in one window must not bounce
   another window's pending close confirmation, the reason `resize_split`
   and swaps leave it alone. The fresh split IDs therefore come from a new
   `reserve_ids(count)` that advances `next_id` without `changed()`; split
@@ -408,25 +532,29 @@ already validates the layout and its cross-tab uniqueness, and the digest
 describes state, so it is unchanged. Terminal content generations do not
 move: a layout change is a hierarchy event, not terminal output.
 
-Why one operation that takes an arrangement, rather than a preset name in
-the runtime: the minimum-size fit needs pixels, which only a client has,
-and a future text client will fit to its own cells. The runtime still owns
+Why one operation that takes an arrangement, rather than a layout name in
+the runtime: the minimum-size fit needs pixels, which only a client has, a
+future text client will fit to its own cells, and user layouts live in the
+client's config, not the runtime. The runtime still owns
 validity: conservation, the structure guard, identity allocation, and the
 invariants.
 
 ### Desktop flow
 
-For a preset, a cycle step, or balancing, the window:
+For `arrange_panes`, a cycle step, or balancing, the window:
 
 1. requires the active tab to hold at least two panes, the window not to be
    busy, no close confirmation, and no arrangement of this window in
    flight;
 2. reads the tab's committed layout (`committed_layout`, which includes
    this window's queued resizes);
-3. computes the ideal arrangement and fits it in this view's tab content
-   bounds, unzoomed, with title bars and dividers, as a split preflight
-   does;
-4. refuses or skips a `Short` or unavailable preset as above;
+3. resolves the layout, or each layout in the cycle, by name against the
+   built-ins and the current config, then computes the ideal arrangement
+   and fits it in this view's tab content bounds, unzoomed, with title
+   bars and dividers, as a split preflight does. An unknown name, such as
+   a binding's layout removed from the config, shows "No pane layout named
+   `dev`" and changes nothing;
+4. refuses or skips a `Short` or unavailable layout as above;
 5. does nothing more when the fitted arrangement equals the committed
    layout: no commit, no unzoom, no notice, and no undo entry, so a second
    balance is a true no-op;
@@ -482,9 +610,9 @@ indicator, as after a divider drag.
 - **Focus** is view-local and stays on the same pane in every window:
   panes keep their IDs, and each `TabView` keeps its focused pane and
   focus history. Reconcile keeps every pane view, and the pane order sort
-  from #29 finds nothing to reorder, because presets keep traversal order.
+  from #29 finds nothing to reorder, because layouts keep traversal order.
 - **The initiating view** unzooms when it commits a change, because a
-  preset or balance is invisible behind a zoom. tmux's `select-layout`
+  layout change or balance is invisible behind a zoom. tmux's `select-layout`
   also unzooms. In view mode it clears its own zoom locally; in shared mode
   the runtime clears it (step 6 above). Focus stays on the pane that was
   zoomed. A no-op leaves the zoom alone.
@@ -496,7 +624,7 @@ indicator, as after a divider drag.
 - **Other windows in view mode** keep their own zoom. Its pane is still in
   the tab, so it is still valid and stays on the same pane. Their divider
   drags follow the existing rule: a drag whose split vanished or whose
-  children changed cancels, so a preset of another shape cancels it, and a
+  children changed cancels, so a layout of another shape cancels it, and a
   balance lets it continue from the new weights.
 
 ### Repainting and reflow
@@ -524,7 +652,7 @@ view, through the existing path:
   value it found identical, but it never trusts a row's position or content
   from before the change. Nothing in this work may skip that full
   extraction or reuse rows by their old positions.
-- A preset can change every pane at once, including panes another window
+- A layout change can move every pane at once, including panes another window
   shows in an inactive tab. Hidden views resize through the layout sync,
   as they do for a window resize.
 
@@ -533,47 +661,166 @@ client guide requires.
 
 ### Commands, bindings, and menus
 
-Separate commands per preset, following #28's per-direction commands, so
-each preset is one palette row and one binding (open question 5):
+One command arranges panes into any named layout, so built-in and user
+layouts work the same way in the palette, in bindings, and in menus
+(settled decision 5):
 
-| Command | Palette title | macOS | Linux |
-| --- | --- | --- | --- |
-| `arrange_panes_columns` | Arrange Panes in Columns | none | none |
-| `arrange_panes_rows` | Arrange Panes in Rows | none | none |
-| `arrange_panes_main_left` | Arrange Panes with Main Left | none | none |
-| `arrange_panes_main_top` | Arrange Panes with Main Top | none | none |
-| `arrange_panes_tiled` | Arrange Panes Tiled | none | none |
-| `next_pane_layout` | Next Pane Layout | none | none |
-| `previous_pane_layout` | Previous Pane Layout | none | none |
-| `balance_panes` | Balance Panes | `cmd-ctrl-=` | `ctrl-super-=` |
+| Command | Palette title | Arguments | macOS | Linux |
+| --- | --- | --- | --- | --- |
+| `arrange_panes` | Arrange Panes… | `layout` (Layout, prompted) | none | none |
+| `next_pane_layout` | Next Pane Layout | none | `cmd-ctrl-]` | `ctrl-super-alt-]` |
+| `previous_pane_layout` | Previous Pane Layout | none | `cmd-ctrl-[` | `ctrl-super-alt-[` |
+| `balance_panes` | Balance Panes | none | `cmd-ctrl-=` | `ctrl-super-=` |
 
-All are Window scope with no arguments, and unavailable on a tab of one
-pane, while busy, during a close confirmation, or while this window has an
-arrangement in flight.
+All are Window scope, and unavailable on a tab of one pane, while busy,
+during a close confirmation, or while this window has an arrangement in
+flight.
 
-Default bindings (open question 4): only `balance_panes`. `cmd-ctrl-=` is
-Ghostty's macOS `equalize_splits` default ([Config.zig][ghostty-config] at
-`919dca5c`); Ghostty binds nothing on Linux. `ctrl-super-=` follows the
-`ctrl-super` family of Huterm's Linux pane keys. KWin binds `meta-=` to
-zoom in, which the extra `ctrl` avoids. Neither key is a Huterm default
-today, and neither collides with #256's `cmd-z`, `cmd-shift-z`,
-`ctrl-shift-z`, or `ctrl-shift-y`, with `cmd-ctrl-<arrow>` resize, or with
-`cmd-shift-enter` zoom. Presets and cycling stay unbound, as #29's move
-and swap commands are, because the obvious keys collide: tmux's `space`
-for next layout would need a modifier, and `cmd-ctrl-space` opens the
-macOS character viewer.
+`ArgumentKind::Layout` joins the catalog, modelled on
+`ArgumentKind::QuakeProfile` (`command.rs:64-66`), which is also a name
+the config defines: carried as `CommandValue::Text`, settable in a
+binding, given a plain string schema, resolved when the command runs, and
+prompted in the palette with rows from the config. The catalog validates
+only the name's syntax, and the window resolves the name at run time (step
+3 of "Desktop flow"). PR 2's schema describes the argument as one of the
+built-in names; PR 3 extends the description to `[panes.layouts]` entries.
+The picker lists the built-ins by title, then, from PR 3, user layouts by
+name, each with its template as detail text.
+
+The Settings keybinding editor offers only argument kinds its
+`configurable()` filter lists (`settings_window/keybindings.rs:329-340`),
+and that match is not exhaustive, so a new kind would compile and be
+silently hidden. PR 2 adds `Layout` there with a dropdown of the
+built-ins, as `QuakeProfile` has one of profiles, and PR 3 adds the user
+layouts to it. A binding names a layout directly:
+
+```toml
+[[keybinding]]
+key = "cmd-alt-1"
+command = "arrange_panes"
+args = { layout = "dev" }
+```
+
+Default bindings (settled decision 4):
+
+- **Cycling,** as tmux binds `next-layout` to `prefix Space`:
+  `cmd-ctrl-]` and `cmd-ctrl-[` on macOS, the layout counterparts of the
+  `cmd-]` and `cmd-[` pane focus keys, and `ctrl-super-alt-]` and
+  `ctrl-super-alt-[` on Linux, beside the `ctrl-super-]` focus keys. The
+  shifted Linux form would fold to `}` in GPUI. Space-based keys collide:
+  `cmd-ctrl-space` opens the macOS character viewer, `cmd-alt-space` opens
+  a Finder search window, and GNOME switches input sources on
+  `super-space`.
+- **Balance:** `cmd-ctrl-=` is Ghostty's macOS `equalize_splits` default
+  ([Config.zig][ghostty-config] at `919dca5c`); Ghostty binds nothing on
+  Linux. `ctrl-super-=` follows the `ctrl-super` family of Huterm's Linux
+  pane keys. KWin binds `meta-=` to zoom in, which the extra `ctrl`
+  avoids.
+
+None of the six keys is a Huterm default today (`keymap.rs:751-822`), and
+none collides with #256's `cmd-z`, `cmd-shift-z`, `ctrl-shift-z`, or
+`ctrl-shift-y`, with `cmd-ctrl-<arrow>` resize, or with `cmd-shift-enter`
+zoom. PR 2 checks the Linux keys against GNOME and KDE defaults and lists
+any conflict in `docs/keybindings.md` with the existing ones.
+`arrange_panes` stays unbound: users bind it per layout, as above.
 
 Menus:
 
-- macOS Window menu: Balance Panes, Next Pane Layout, and Previous Pane
-  Layout, after Move Pane to New Tab.
-- In-window window menu (Linux, and macOS without the menu bar) and the
-  terminal context menu in split tabs: Balance Panes, after Close Pane.
-  Named presets stay in the palette, since in-window menus have no
-  submenus.
+- macOS Window menu: Arrange Panes…, Next Pane Layout, Previous Pane
+  Layout, and Balance Panes, after Move Pane to New Tab. Arrange Panes…
+  opens the palette on the command's layout picker.
+- In-window window menu (Linux, and macOS without the menu bar): Arrange
+  Panes… and Balance Panes, after Close Pane.
+- Terminal context menu in split tabs: Balance Panes, after Close Pane.
 
-Notices name the preset in prose rather than by its palette title: "Window
-too small for the tiled layout".
+Notices name a built-in by its title in prose and a user layout by its
+name: "Window too small for the main left layout", "Window too small for
+the dev layout".
+
+### User-defined layouts
+
+PR 3 lets users name their own layouts in the template language and choose
+the cycle (settled decision 8):
+
+```toml
+[panes.layouts]
+dev = "columns(pane 55%, rows(pane 70%, columns(*)))"
+pair = "rows(columns(pane, pane) 70%, columns(*))"
+sides = "columns(rows(*) 25%, pane, rows(*) 25%)"
+
+[panes]
+layout_cycle = ["columns", "rows", "main_left", "main_top", "tiled", "dev"]
+```
+
+`sides` shows two stars sharing the panes around a centre pane: with six
+panes, the left stack takes three, the centre pane one, and the right
+stack two. With one pane it is that pane alone. With two, the right stack
+is empty, so the left pane's 25 % and the centre's 50 % scale to one third
+and two thirds: weights 333,334 and 666,666.
+
+- `PanesConfig` gains `layouts`, a map from name to template string, and
+  `layout_cycle`, a list of names that defaults to the five built-ins
+  (open question 1). `PanesConfig` stops being `Copy`.
+- Config validation parses every template with the protocol's
+  `LayoutTemplate::parse`, which `huterm-config` can call because it
+  already depends on `huterm-protocol`. It rejects a bad template, an
+  invalid or reserved name, and a `layout_cycle` that is empty, repeats a
+  name, or names an unknown layout. Each error carries its key path and
+  the parser's offset, through the same path as every other config error.
+- The published schema describes both keys, with the grammar summarized in
+  the description and the built-in names listed. PR 3 regenerates it.
+- `docs/configuration.md` documents the language with examples,
+  including `columns(pane, *)`, whose pane keeps about half the width, and
+  notes
+  that a `layout_cycle` entry naming a removed layout makes the whole
+  config invalid, as a global shortcut naming a missing quake profile
+  does, while a keybinding naming one fails only when it runs.
+  `docs/keybindings.md` shows bindings with a `layout` argument.
+- A config reload replaces the layouts and the cycle. Nothing is cached
+  per tab, so the next command resolves names against the new config, and
+  a binding whose layout was removed shows the unknown-layout notice.
+
+### Settings window
+
+PR 3 adds a Pane Layouts group to the Panes settings. Adding and removing
+layouts follows the named quake profiles editor (`Special::QuakeProfiles`,
+`create_profile` and `delete_profile` in `settings_window/quake.rs:473`,
+`:523`); renaming is new, because profiles cannot be renamed.
+
+- `Special::PaneLayouts` edits `panes.layouts`. Built-ins show as
+  read-only rows with their templates. Each user layout is a row with a
+  name field and a template field, and the group has add, rename, and
+  remove actions.
+- Name and template fields validate on every keystroke, with the parser's
+  message below the field, such as "expected `,` or `)` at column 18"
+  (offsets index the text as typed, shown as a one-based character
+  column). They save only on commit, Enter or leaving the field, as other
+  Settings text fields do (`settings_window.rs:996`), so a template
+  passing through `5%` on its way to `55%` writes nothing. An invalid
+  template or name is never saved.
+- `Special::LayoutCycle` edits `panes.layout_cycle`, because Settings has
+  no list control (`SettingKind` has no list kind). It shows every layout,
+  built-in and user, as an ordered row with an include checkbox and
+  move up and move down buttons. Unchecking the last included layout is
+  refused, since the cycle cannot be empty.
+- A rename is three patches in one save: remove the old key, set the new
+  one, and rewrite `layout_cycle` when it names the layout. Removal is two:
+  the key and the cycle entry. The settings queue carries one patch per
+  save today (`saving.rs:651`), so PR 3 lets it carry a batch;
+  `ConfigFile::apply` already takes one (`crates/huterm-config/src/
+  document.rs:386-398`) and checks every path for conflicts, so a failed
+  save changes nothing. `Patch` has no rename, and a `Set` on a table
+  merges keys rather than removing one (`document.rs:120-125`), so a
+  renamed entry moves to the end of `[panes.layouts]` and loses comments
+  attached to the old key.
+- Removing a layout that is the cycle's only entry is refused with "Add
+  another layout to the cycle first", as unchecking the last row is.
+- Renaming or removing a layout that a keybinding names is refused with a
+  message naming the binding, as `delete_profile` refuses to delete a
+  quake profile a global shortcut uses (`quake.rs:539-551`) (open question
+  4). Bindings in the file are never rewritten.
+- Saving goes through the existing settings write path, so comments and
+  formatting elsewhere in the file survive, as for every other setting.
 
 ### Undo (#256)
 
@@ -581,24 +828,26 @@ Assuming #256 lands first with single-entry stacks:
 
 - `arrange_panes` returns the `LayoutChange` #256 records, with `placed`
   empty, because it places no tab.
-- The window's completion (step 8 above) pushes one `HistoryEntry`: the
-  command's palette title as `label`, the initiating view's focused pane as
-  `focus`, and the change. A new entry clears the redo stack, as for moves.
+- The window's completion (step 8 above) pushes one `HistoryEntry`: a
+  `label` naming the layout, such as "Arrange Panes: Main Left" or
+  "Arrange Panes: dev", for `arrange_panes` and cycle steps, and "Balance
+  Panes" for balance; the initiating view's focused pane as `focus`; and
+  the change. A new entry clears the redo stack, as for moves.
   A no-op records nothing.
 - Undo runs `restore_tabs` on that one tab. Its guard compares shape, split
   IDs, pane IDs, and terminal IDs and ignores weights, so:
-  - a preset's undo restores the old tree and its old split IDs, which are
-    at or below `next_id` and in no other tab, because the preset retired
+  - a layout's undo restores the old tree and its old split IDs, which are
+    at or below `next_id` and in no other tab, because the layout retired
     them;
   - a balance's before and after share a shape, so its entry stays
     undoable across later divider drags, and undo restores the weights from
     before the balance, discarding those drags, which is #256's rule for
     every entry;
-  - a split, close, move, or another window's preset in that tab changes
+  - a split, close, move, or another window's layout in that tab changes
     the shape and prunes the entry.
 - The restore emits `PanesRearranged` with one `Layout` change and leaves
   the revision alone, because no terminal changes tabs.
-- A preset cleared the shared zoom in its own event, so the recorded
+- A layout change cleared the shared zoom in its own event, so the recorded
   `before` still names the zoomed pane, and #256's zoom rule restores it
   when the current zoom is still none. View-local zoom is not recorded.
 - `undo` and `redo` are unavailable while the window has an arrangement in
@@ -637,7 +886,7 @@ three points.
 | Another window resizes a divider in the tab between fit and commit | The guard ignores weights; the arrangement applies, last writer wins as for divider commits | Core (weights-only change passes the guard) |
 | This window's resize commits are queued when a balance is pressed | The layout commit queue applies them in order | Tier 2 |
 | Another window shows a close confirmation for the tab | The revision is unchanged, so its commit stays valid | Core lifecycle test |
-| Another window drags a divider of the tab | A preset of another shape cancels the drag; a balance lets it continue from the new weights | Tier 2 |
+| Another window drags a divider of the tab | A layout of another shape cancels the drag; a balance lets it continue from the new weights | Tier 2 |
 | Another window zooms a pane in view mode | Its zoom stays on the same pane | Tier 2 (convergence) |
 | A pane exits while the commit is queued | With `close_on_exit = false` the pane stays and the guard passes; an exit-close changes the shape, the guard refuses, and the close proceeds, because no `busy` hold defers it | Tier 2 |
 | A structural command (undo, a cycle step, resize, split) or a divider press in this window while an arrangement is in flight | Unavailable or refused until the completion; keystrokes still reach the shell | Tier 2 |
@@ -659,35 +908,77 @@ start of each layout queue job before its runtime call, and
 completion waits for the projection and records history. Tests order
 other changes against those gates, never with sleeps.
 
-### Presets, cycling, balance, and minimum sizes (criterion 2)
+### Layouts, templates, cycling, balance, and minimum sizes (criterion 2)
 
 - Protocol unit tests (PR 1):
-  - each preset for `n = 1` through 10 and for 257 and 258 panes, with
+  - each built-in for `n = 1` through 10 and for 257 and 258 panes, with
     exact trees and weights, including the tiled table and the 60 % main
-    share; at 257 panes, columns and rows return `TooManyChildren`, and at
-    258 the main presets do too;
+    share; at 257 panes, columns and rows are unavailable, and at 258 the
+    main layouts are too;
+  - template parsing: every grammar form, whitespace, and each error with
+    its offset: bad syntax, a share outside 1 to 99, explicit shares of
+    100 or more beside a child without one, explicit shares not totalling
+    100 when every child has one, `grid` around anything but
+    `*`, a root that is not a split or grid, a one-child split without a
+    `*`, whitespace inside a keyword, a share too large for its integer
+    type, and the length and depth limits; offsets index the original
+    text;
+  - template expansion, each asserting the full canonical tree with
+    weights: `columns(*, pane 20%, *)` for `n = 1` through 6, including
+    the weights given under "Weights"; `sides` from "User-defined layouts"
+    for `n = 1`, 2, and 6; `columns(pane, *)` with weights 500,000 and
+    500,000 for two panes, 500,000, 250,000, and 250,000 for three, and
+    499,999 and three of 166,667 for four; a template
+    without `*` below, at, and above its slot count, unavailable above;
+    dropped slots scaling their siblings' shares; a same-axis child
+    flattening with its proportions; `columns(pane, columns(*))` with 257
+    panes, whose flatten is skipped at the limit, leaving a valid nested
+    layout; a `grid` nested in a split; and an expansion over 256
+    children, unavailable;
+  - a sweep of every built-in and test template for `n = 1` through 12
+    through `expand` and `arranged`: each count where the template is
+    unavailable, such as `columns(pane, pane)` above two panes, must
+    return the unavailable error, and every other count must give a valid
+    layout with unchanged traversal order. This catches mistakes in the
+    order of the drop, collapse, and flatten rules;
+  - weights: three equal children give 333,334, 333,333, and 333,333; main
+    left gives 600,000 and 400,000; and the nested template
+    `columns(columns(columns(columns(pane 1%, pane) 1%, pane) 1%, pane) 1%,
+    pane)`, whose fractions are 0.00000001 to 0.99, gives exactly 1, 2,
+    100, 9,901, and 989,996, every weight positive and the sum exact;
   - a nested, uneven input (`[(A over (B | C)) | D]` with uneven weights)
     gives the same trees as a flat input with the same traversal order;
-  - every preset keeps traversal order;
+  - every built-in and every test template keeps traversal order;
   - `balanced` on a nested tree gives equal weights at every split and
     keeps split IDs and shape, and `balanced` of `balanced` is equal;
   - `arranged` refuses a missing, repeated, or unknown pane, keeps split
     IDs for a same-shape arrangement, and takes fresh IDs in traversal
     order otherwise;
-  - `matching_preset`: an exact match; a shape match after a weight change;
+  - `matching_layout`: an exact match; a shape match after a weight change;
     two panes at 60/40, 65/35, 55/45, and 50/50, which match main left,
     main left, columns, and columns; no match; and 257 panes, where columns
     and rows are skipped;
-  - `step_preset` with an identity `fit`, from each preset and from an
+  - `step_layout` with an identity `fit` over the default cycle, from each
+    built-in and from an
     unmatched layout, for `n = 2` through 6 and 257: the expected sequence
     in both directions, never the current layout, and per full cycle from
     a match five distinct layouts for `n = 3` through 6, four for `n = 2`,
     and three (main left, main top, tiled) for 257; at 258, a step from an
     unmatched layout gives tiled and a step from tiled gives nothing;
-  - `step_preset` with a `fit` that reports one preset `Short`, and one
-    whose fitted result equals the current layout while a later preset
-    differs: both are skipped, and the step takes the later preset; with
-    every candidate skipped, it returns nothing.
+  - `step_layout` with a `fit` that reports one layout `Short`, and one
+    whose fitted result equals the current layout while a later layout
+    differs: both are skipped, and the step takes the later layout; with
+    every candidate skipped, it returns nothing;
+  - `step_layout` over a custom cycle that includes a user template and
+    omits a built-in: the cycle follows the list; with `["columns",
+    "rows"]`, main left on two panes matches columns and steps to rows,
+    and main left on three panes matches nothing and steps to columns;
+  - a cycle holding a user layout that expands to the same tree as a
+    built-in: the match goes to whichever comes first in the cycle, and a
+    step skips the other, because its result equals the current layout;
+  - `layout_cycle = ["dev"]` with the tab already in `dev`: the step
+    returns nothing, for the "no other layout changes these panes"
+    notice;
 - `pane_geometry` unit tests (PR 2), with real cell metrics and padding,
   asserting through `pane_grids` and `fits_minimum`, never through the
   fitter's own minimum:
@@ -702,7 +993,7 @@ other changes against those gates, never with sleeps.
     minimums;
   - balance fitted twice at one size gives identical weights.
 - Core tests (PR 1):
-  - `arrange_panes` applies each preset and a balance, and the differential
+  - `arrange_panes` applies each built-in and a balance, and the differential
     reducer test checks the projection after each;
   - a no-op, a one-pane tab, a refused guard, a conservation failure, and
     exhausted identities each emit nothing and keep the layout, shared
@@ -715,11 +1006,15 @@ other changes against those gates, never with sleeps.
 - Core lifecycle test (PR 1): an arrangement between a close assessment and
   its commit leaves the commit valid.
 - Tier 2 (PR 2):
-  - each named command, next, previous, and balance on a three-pane nested
-    tab gives the expected canonical layout;
-  - a named preset refused for a short window shows one notice and leaves
-    the hierarchy sequence unchanged;
-  - cycling skips a short preset;
+  - `arrange_panes` with each built-in, next, previous, and balance on a
+    three-pane nested tab gives the expected canonical layout, and the
+    palette's layout picker and an explicit `layout` argument give equal
+    layouts;
+  - `arrange_panes` with an unknown layout name shows one notice and
+    changes nothing;
+  - a layout refused for a short window shows one notice and leaves the
+    hierarchy sequence unchanged;
+  - cycling skips a short layout;
   - balance pressed after queued resize commands lands after them;
   - balance, then, after its completion, balance again: the second press
     is accepted, sends no commit, records no undo entry, and leaves the
@@ -743,7 +1038,7 @@ other changes against those gates, never with sleeps.
 ### Viewers converge, focus and zoom stay (criterion 3)
 
 - Tier 2 (PR 2), two windows on one session showing one tab:
-  - window A applies a preset; window B's projection holds the same
+  - window A applies a layout; window B's projection holds the same
     layout, B keeps every pane view entity, its focused pane, its focus
     history, and its view-local zoom;
   - window A was zoomed in view mode: it unzooms and keeps focus on that
@@ -751,16 +1046,16 @@ other changes against those gates, never with sleeps.
   - shared mode: one `PaneLayoutChanged` and no `PaneZoomChanged` reach
     the projection, the shared zoom clears in both windows, and, with #256,
     undo restores the shared zoom;
-  - window B's in-progress divider drag cancels under a preset and
+  - window B's in-progress divider drag cancels under a layout and
     continues under a balance;
-  - #256 recording (when it has landed): undo of a preset and of a balance
+  - #256 recording (when it has landed): undo of a layout and of a balance
     restores the canonical layout, split IDs, and weights; a later split
     prunes the entry.
 
 ### PTY survival and sizes (criteria 1 and 3)
 
 - Core PTY test (PR 1): a three-pane tab of real shells cycles through every
-  preset and a balance. After each, every shell answers a unique ACK, `$$`
+  built-in and a balance. After each, every shell answers a unique ACK, `$$`
   is unchanged, `kill(pid, 0)` succeeds, pane and terminal IDs are
   unchanged, and a line printed before the first change is still in the
   snapshot. Synchronize on ACKs, never sleeps.
@@ -772,8 +1067,8 @@ other changes against those gates, never with sleeps.
   values at the new origin, requests no snapshot, and maps a pointer
   position to the cell at the new origin.
 - Tier 2 (PR 2), with real shells: one shell prints a line longer than its
-  pane's narrower width after a preset, and others stay idle. A preset
-  then leaves one pane's grid unchanged and shrinks the printing pane's
+  pane's narrower width after a layout change, and others stay idle. A
+  layout then leaves one pane's grid unchanged and shrinks the printing pane's
   width:
   - the unchanged pane requests no resize and keeps its rows;
   - the shrunk pane reports one new grid and paints the old snapshot
@@ -781,7 +1076,7 @@ other changes against those gates, never with sleeps.
   - once it arrives, the displayed snapshot has the new size and shows the
     line wrapped at the new width, read from the snapshot's rows, so a
     client that kept old row positions fails;
-  - a second preset that widens the pane again shows the line unwrapped.
+  - a second layout that widens the pane again shows the line unwrapped.
 
   The existing clipping test,
   `a_larger_canonical_grid_is_clipped_and_owned_gestures_survive_it`,
@@ -804,8 +1099,9 @@ other changes against those gates, never with sleeps.
     loudly if the grid changed. With application mouse tracking on in that
     pane, a native click at a known cell reports that cell's coordinates;
   - a native click in another pane focuses it and its shell ACKs a probe;
-  - the `balance_panes` default key reaches no shell, checked with the
-    ordered ACK probe;
+  - the `balance_panes` and `next_pane_layout` default keys reach no
+    shell, checked with the ordered ACK probe, and the cycle key changes
+    the layout;
   - after a native window resize, each pane's `stty size` and the clicked
     cell's reported coordinates match again.
 - `smoke:macos-menus` (PR 2): the Window menu's Balance Panes shows
@@ -813,6 +1109,49 @@ other changes against those gates, never with sleeps.
 - Run the host macOS smokes and `mise run linux:smoke` in Docker, checking
   `df -h` first and cleaning volumes and images after. Never run
   `vm:macos:smoke`.
+
+### User-defined layouts and Settings (PR 3)
+
+- Config tests: `[panes.layouts]` and `layout_cycle` load; each rejection
+  (a bad template with its offset, an invalid or reserved name, more than
+  64 layouts, an empty
+  cycle, a repeated name, an unknown name in the cycle) names its key
+  path; a reload that removes a layout replaces the registry.
+- `mise run schema:check` passes after `schema:generate`, and
+  `smoke:schema-editor` shows completion for the two new keys.
+- Keymap tests: a binding with `args = { layout = "dev" }` compiles, and a
+  name with invalid syntax is a keymap error.
+- Settings keybinding editor, as `window_tests/settings_keys.rs:604` tests
+  profile arguments: an `arrange_panes` binding offers the `layout`
+  argument with a dropdown of the built-ins (PR 2) and user layouts
+  (PR 3), and writes the chosen name.
+- Palette tests: the layout picker lists the built-ins by title, then user
+  layouts by name, with templates as detail text.
+- Tier 2:
+  - a user layout from config, applied by a binding with a `layout`
+    argument, gives the expected canonical layout;
+  - a cycle that includes the user layout and omits a built-in steps in
+    list order;
+  - after a reload removes the layout, its binding shows one notice and
+    changes nothing.
+- Settings tier 2, through the existing settings window tests:
+  - adding a layout with a valid template writes `[panes.layouts]`, and
+    the new layout is usable at once;
+  - an invalid template shows the parser's message and writes nothing;
+  - renaming a layout renames it in `layout_cycle` in the same save, and
+    removing it removes it from the cycle;
+  - a rename whose save fails, for example because the file changed on
+    disk, leaves both `[panes.layouts]` and `layout_cycle` unchanged;
+  - renaming or removing a layout that a keybinding names is refused with
+    the binding named, and writes nothing;
+  - typing a template writes nothing until Enter or blur;
+  - reordering and unchecking cycle rows writes `layout_cycle` in the new
+    order; unchecking the last included row, and removing a layout that is
+    the cycle's only entry, are refused with the message and write
+    nothing;
+  - the new rows and buttons are reachable by Tab and Shift-Tab, and focus
+    moves to a neighbouring row when a row is removed;
+  - comments elsewhere in the file survive a save.
 
 ### Commands
 
@@ -823,85 +1162,117 @@ core PTY test; `mise run verify` before each PR leaves draft.
 
 ## Delivery
 
-Two PRs, each leaving `main` consistent and shippable:
+Three PRs, each leaving `main` consistent and shippable:
 
-1. **PR 1, runtime arrangements.** `LayoutPreset`, `Arrangement`, `preset`,
-   `balanced`, `arranged`, `matching_preset`, and `step_preset` in the
-   protocol;
-   `Mux::arrange_panes` and `reserve_ids` in core; the revision doc; and
-   the protocol, core, lifecycle, and PTY tests. No command calls it yet.
-   About 600 to 900 lines, most of them tests.
-2. **PR 2, commands.** `fit` in `pane_geometry`, the layout commit queue
-   and its `Layout` and `LayoutCommitted` worker hook stages, the
-   in-flight gate, the eight commands, cycling, the balance binding,
-   menus, notices, undo recording through #256, and the tier 1, tier 2,
-   menu, and native tests. Docs: `docs/keybindings.md`, `CONTEXT.md`, and the guides.
+1. **PR 1, runtime arrangements.** In the protocol: the template parser and
+   expansion, the five built-in layouts as templates, `Arrangement`,
+   `balanced`, `arranged`, `matching_layout`, and `step_layout`. In core:
+   `Mux::arrange_panes`, `reserve_ids`, and the revision doc. The
+   protocol, core, lifecycle, and PTY tests. No command calls it yet.
+   About 1,200 to 1,700 lines, most of them tests.
+2. **PR 2, commands.** `fit` in `pane_geometry`; the layout commit queue
+   and its `Layout` and `LayoutCommitted` worker hook stages; the in-flight
+   gate; `arrange_panes` with `ArgumentKind::Layout` over the built-ins,
+   including its dropdown in the Settings keybinding editor;
+   next, previous, and balance with their default bindings; menus;
+   notices; undo recording through #256; and the tier 1, tier 2, menu, and
+   native tests. Docs: `docs/keybindings.md`, `CONTEXT.md`, and the
+   guides.
+3. **PR 3, user-defined layouts.** `[panes.layouts]` and `layout_cycle` in
+   `huterm-config` with validation, the regenerated schema, name
+   resolution and the picker over user layouts, the Settings group, and
+   the config, keymap, palette, tier 2, and Settings tests. Docs:
+   `docs/configuration.md` and `docs/keybindings.md`. About 1,000 to
+   1,500 lines.
 
 PR 2's undo recording needs #256's client PR on `main`. If #256 is late,
 PR 2 ships without recording and #256 adds it, as its plan already allows.
+PR 3 needs only PR 2.
 
 ## Documentation
 
-- `CONTEXT.md`: **Pane layout preset** (a named arrangement of a tab's
-  panes: columns, rows, main left, main top, or tiled) and **Balance**
-  (equal weights at every split of a tab, keeping its shape).
+- `CONTEXT.md`: **Named layout** (a built-in or user-defined layout that
+  arranges a tab's panes), **Layout template** (the text that describes a
+  named layout for any pane count), and **Balance** (equal weights at every
+  split of a tab, keeping its shape).
 - `docs/agents/core-runtime.md` (PR 1): `arrange_panes` conserves panes,
   guards structure, and leaves the revision alone, with `reserve_ids` as
   the one allocation that does not advance it.
 - `docs/agents/desktop-client.md` (PR 2): the layout commit queue, the
   fit-before-commit rule, and why arrangements gate on their own in-flight
   count rather than `busy`.
-- `docs/keybindings.md` (PR 2): the commands and the balance bindings.
+- `docs/keybindings.md` (PR 2, PR 3): the commands, the cycle and balance
+  bindings, and bindings with a `layout` argument.
+- `docs/configuration.md` (PR 3): `[panes.layouts]`, `layout_cycle`, and
+  the template language with examples.
 - This plan's `Status:` in each PR.
+
+## Settled decisions
+
+Jim decided these on 2026-10-27, after the first three review rounds. Each
+item names the alternatives he considered.
+
+1. **Main pane:** the first pane in traversal order, as in tmux. Not
+   chosen: the focused pane.
+2. **Main share:** 60 %, written into the built-in templates. Not chosen:
+   a cell count like tmux's 80 columns, or a setting. User templates set
+   their own shares.
+3. **Tiled grid:** columns first, `ceil(sqrt(n))` columns, with the last
+   row's panes sharing its width. Not chosen: tmux's rows first, or an
+   aspect-ratio rule.
+4. **Default bindings:** a tmux-style cycle key, `cmd-ctrl-]` and
+   `cmd-ctrl-[` on macOS and `ctrl-super-alt-]` and `ctrl-super-alt-[` on
+   Linux, plus balance on `cmd-ctrl-=` and `ctrl-super-=`. Not chosen:
+   balance alone.
+5. **Commands:** one `arrange_panes` command with a `layout` argument,
+   plus next, previous, and balance, so user layouts work like built-ins.
+   Not chosen: one command per built-in.
+6. **Balancing in a window too small for the tab's tree:** the
+   proportional fallback, which never refuses. Not chosen: refusing with a
+   notice.
+7. **Several `*` slots in one template:** allowed. The remaining panes are
+   divided among them as evenly as possible, earlier stars taking the
+   extra pane. Not chosen: at most one `*`.
+8. **User-defined layouts:** in #30, as PR 3, in the config file and the
+   Settings window, written in the template language. Not chosen: a
+   follow-up issue, or nested TOML tables.
 
 ## Open questions
 
-1. **Which pane is main.** Recommend the first pane in traversal order.
-   - For: every window computes the same result; cycling is stateless and
-     never reorders panes; it matches tmux. A user picks main by swapping
-     it into first place.
-   - Against: the usual intent is "make this pane main", which then takes a
-     swap first, and #29 has no "swap with first" command. The alternative,
-     the focused pane, does that in one step, but it reorders panes, makes
-     the result depend on which window ran it, and makes cycling between
-     main presets move main when focus moves.
-2. **The main pane's share.** Recommend a 60 % constant, `MAIN_SHARE`.
-   - For: with two panes, main left differs visibly from columns; it is
-     close to dwm's 55 % and tiling defaults; a constant is the smallest
-     change, and a `[panes] main_share` setting is cheap later.
-   - Against: tmux sizes main in cells (80 columns by default), which keeps
-     a usable editor width in any window. A cell count would make the
-     result depend on the view.
-3. **Tiled grid orientation.** Recommend columns first,
-   `ceil(sqrt(n))` columns.
-   - For: suits wide windows and tall cells; two panes tile as columns.
-   - Against: differs from tmux, which grows rows first. An
-     aspect-ratio rule would suit portrait windows too, but makes the
-     result depend on the view, and two windows could tile one tab
-     differently.
-4. **Default bindings.** Recommend binding only `balance_panes`, to
-   `cmd-ctrl-=` and `ctrl-super-=`.
-   - For: balance is the frequent operation and has a Ghostty precedent;
-     presets are reachable from the palette and the macOS menu; #29 set the
-     precedent of leaving rearrangement commands unbound.
-   - Against: cycling is the tmux muscle-memory key (`prefix space`). A
-     binding such as `cmd-ctrl-]` and `cmd-ctrl-[` would be free today, but
-     it reads like tab or pane navigation.
-5. **One command per preset, or one command with an argument.** Recommend
-   one command per preset.
-   - For: each preset is a top-level palette row found by typing "tiled";
-     it follows #28's per-direction commands.
-   - Against: eight commands where three would do: `arrange_panes` with a
-     `layout` argument (a text enum like #29's `side`, with a picker), plus
-     next, previous, and balance. That keeps the catalog smaller and lets a
-     binding name the preset as an argument.
-6. **Balancing in a window too small for the tab's tree.** Recommend the
-   proportional fallback, which never refuses.
-   - For: balance is the "fix my layout" command, and it still gives the
-     most even result possible; it remains idempotent in that view.
-   - Against: it can commit weights under which some panes are below the
-     minimum in this window, which presets and splits refuse. Refusing with
-     a notice would be one rule for all three.
+These are smaller choices that the template language and PR 3 raise. Each
+has a recommendation the plan already follows.
+
+1. **The default cycle.** Recommend the five built-ins only, so a user adds
+   their own layouts to `layout_cycle` by name.
+   - For: defining a layout never changes what the cycle keys do; the list
+     is explicit and its order is the user's.
+   - Against: a new layout needs a second edit before the cycle key
+     reaches it. The alternative appends every user layout, in name order,
+     whenever `layout_cycle` is unset.
+2. **A template without `*` and more panes than slots.** Recommend treating
+   it as unavailable for that count, as tmux's custom layout strings apply
+   only at their own pane count.
+   - For: the result is always exactly what the template draws; cycling
+     skips it.
+   - Against: a fixed layout silently drops out of the cycle once a pane
+     is added. The alternative appends the extra panes to the template's
+     last split as equal siblings.
+3. **A preview in Settings.** Recommend leaving it out of PR 3.
+   - For: keeps PR 3 to text fields and the cycle list, and the parser's
+     messages catch syntax mistakes.
+   - Against: a template is hard to picture from text. A small drawing of
+     the template expanded for four panes, from `layout_panes`, would catch
+     a misplaced share at a glance, at the cost of a custom element in the
+     Settings window.
+4. **Renaming or removing a layout a keybinding uses.** Recommend refusing
+   it in Settings with a message naming the binding, as the quake profile
+   editor refuses to delete a profile a global shortcut uses.
+   - For: Settings never leaves a binding that silently stops working, and
+     it follows the existing precedent.
+   - Against: the user has to edit or remove the binding first. The
+     alternatives are rewriting the bindings in the same save, which
+     touches the keybinding list, or allowing it and letting the binding
+     show the unknown-layout notice when it runs.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-30]: https://github.com/jimeh/huterm/issues/30
