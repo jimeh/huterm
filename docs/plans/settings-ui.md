@@ -839,12 +839,14 @@ entry makes the edit conflict instead of editing another shortcut. When
 the window's own write lands, queued locators for the entries it changed,
 matched by position and content, take their new content, those for entries
 it removed go, and later positions move up, so successive edits to one
-entry build on each other. A read that finishes while the window's writes
-are pending is dropped, so queued edits and the list never mix snapshots,
-and the file is read again once the queue drains. The
+entry build on each other. A default with a change queued or being
+written takes no other change until it lands, since the list still shows
+it active; focus then follows to the new row. A read that finishes while
+the window's writes are pending is dropped, so queued edits and the list
+never mix snapshots, and the file is read again once the queue drains. The
 validator compiles the keymap, so a binding the compiler refuses is never
-written. A field whose write fails, including against a file that
-turned invalid, keeps the entered text with the error to retry.
+written. A field whose write fails, including against a file that turned
+invalid, keeps the entered text with the error to retry.
 
 Fields follow their shortcut across reads: when another editor shifts the
 entries, a field and its draft move to the row its binding now has; a

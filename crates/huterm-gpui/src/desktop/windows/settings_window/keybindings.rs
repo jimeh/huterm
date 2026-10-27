@@ -29,6 +29,7 @@ use super::super::super::settings::keybindings::{
     check_condition, completions, notes,
 };
 use super::super::Desktop;
+use super::saving::Queued;
 use super::{MenuFor, SettingsView, button};
 use crate::assets::Icon;
 use crate::keymap::{BindingState, Inventory, ListedBinding, Origin, Platform};
@@ -115,6 +116,8 @@ pub(super) struct Keys {
     /// A locator for each `[[keybinding]]` entry of the snapshot the list
     /// came from, parsed off the GPUI thread with it.
     pub(super) entries: Vec<huterm_config::document::EntryLocator>,
+    /// The row whose change is being written.
+    pub(super) writing_row: Option<String>,
     /// Strokes recorded across every recording; a chord timer finishes its
     /// recording only while no later stroke has arrived.
     pub(super) strokes: u64,
@@ -185,6 +188,7 @@ impl Keys {
             stranded: false,
             identities: HashMap::new(),
             entries: Vec::new(),
+            writing_row: None,
             strokes: 0,
             timed_out_at: None,
         }
@@ -571,6 +575,9 @@ impl SettingsView {
         else {
             return;
         };
+        if self.default_change_pending(listed, name) {
+            return;
+        }
         let edit = match (&listed.state, listed.binding.origin, listed.entry) {
             (BindingState::Disabled(by), ..) => {
                 Edit::SwitchOnDefault(by.clone())
@@ -624,6 +631,9 @@ impl SettingsView {
         else {
             return false;
         };
+        if self.default_change_pending(listed, name) {
+            return false;
+        }
         let edit = match (listed.binding.origin, listed.entry) {
             (Origin::User, Some(entry)) => Edit::ChangeUser {
                 entry,
@@ -638,6 +648,25 @@ impl SettingsView {
             },
         };
         self.submit_keys(edit, Some(name.to_owned()), origin, cx)
+    }
+
+    /// Whether `row` shows a default with a change queued or being
+    /// written. The list shows the default as it was until that change
+    /// lands, so another change would append a second disabling entry and
+    /// replacement; once it lands, focus follows to the new row.
+    fn default_change_pending(
+        &self,
+        listed: &ListedBinding,
+        row: &str,
+    ) -> bool {
+        matches!(listed.binding.origin, Origin::Default)
+            && (self.keys.writing_row.as_deref() == Some(row)
+                || self.queued.iter().any(|queued| {
+                    matches!(
+                        queued,
+                        Queued::Keys(change) if change.row.as_deref() == Some(row)
+                    )
+                }))
     }
 
     /// After a changed default lands, the changed binding is the file's

@@ -511,6 +511,7 @@ impl SettingsView {
 
     fn start_keys(&mut self, change: KeyChange, cx: &mut Context<'_, Self>) {
         self.writing = Some("keybinding");
+        self.keys.writing_row.clone_from(&change.row);
         self.status.saving();
         let file = ConfigFile::new(self.path.clone());
         let validate = crate::config::validator(self.path.clone());
@@ -544,6 +545,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         self.writing = None;
+        self.keys.writing_row = None;
         self.epoch += 1;
         // A field's failed edit stays in the field as a draft to retry;
         // any other shows under its row.

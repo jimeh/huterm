@@ -334,6 +334,34 @@ fn changing_a_default_argument_writes_one_replacement(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_default_takes_one_change_until_it_lands(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("keys-default-once", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let next = row(&mut harness, ids::NEXT_TAB, "ctrl-tab");
+    let first = row(&mut harness, ids::SELECT_TAB, SELECT_FIRST);
+    let index = format!("arg:{first}:index");
+    press(&mut harness, "kgo:select_tab");
+    harness.cx.run_until_parked();
+    // A second press and a step reach each default before its first
+    // change lands, while the list still shows it active.
+    with_window(&mut harness, |view, window, cx| {
+        view.press(&format!("kon:{next}"), window, cx);
+        view.press(&format!("kon:{next}"), window, cx);
+        view.focus_key(&index, window, cx);
+        view.type_key(&index, "4", window, cx);
+        view.enter_key(&index, cx);
+        view.step_key(&index, true, cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("index = 4"));
+    harness.cx.run_until_parked();
+    let text = file.text();
+    assert_eq!(text.matches("[[keybinding]]").count(), 3, "{text}");
+    assert_eq!(text.matches("disabled = true").count(), 2, "{text}");
+    assert!(!text.contains("index = 5"), "{text}");
+}
+
+#[gpui::test]
 fn restoring_defaults_moves_focus_to_the_command_and_keys_keep_working(
     cx: &mut TestAppContext,
 ) {
