@@ -31,6 +31,15 @@ each smoke covers and how to run it through Docker or Tart.
   enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint
   elapsed time, reuse, and input latency when the host delivers enough frames.
+- `mise run bench:engine` reports engine processing and snapshot elapsed
+  times. Its `resize-history` fixture alternates the width with history
+  saturated at `ScrollbackLimit::MAX`, and fails when the median resize or the
+  process's peak resident size exceeds its budget. `ci:benchmarks` runs it, and
+  the CI measurements behind both budgets sit beside them in
+  `crates/huterm-core/src/engine/benchmark.rs`. Raise a budget only with new CI
+  measurements. On Linux, peak RSS comes from `VmHWM`: `getrusage` carries the
+  forked `cargo` process's peak across `execve`, which doubled the first run
+  after a build.
 
 Headless Xvfb does not deliver continuous GPUI frames after the initial
 presentation. Keep Linux scroll gates based on completion-time snapshot and

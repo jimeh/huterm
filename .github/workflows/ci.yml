@@ -579,7 +579,7 @@ jobs:
       - name: Check platform prerequisites
         run: mise run doctor
 
-      - name: Verify Ghostty scroll and link budgets
+      - name: Verify Ghostty benchmark budgets
         run: mise run ci:benchmarks
 
       - name: Save prebuilt Ghostty
