@@ -265,6 +265,34 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** keep the failing step, its expected and received bytes, and a
   list of what else was running on the host; record them here, then rerun.
 
+## Linux palette smoke extra core tab
+
+- **Label:** `Smoke Linux command palette` in `Rust smoke (Linux x86_64)`,
+  "ghostty: expected 3 core tabs, got 4" from the `coreState(3)` call just
+  before `delete-target` in `scripts/check-palette.ts`.
+- **Occurrences:** once, 2026-10-27, on PR #269 (run 40515770496, attempt 1,
+  head `ad082c2b`); the rerun of the failed jobs passed on the same head. The
+  PR does not change the palette smoke or the code it drives. No other failed
+  CI run since 2026-10-21 has this signature, and neither does any first
+  attempt since 2026-10-26 that passed on rerun.
+- **Evidence:** the count includes every core workspace's tabs: two in the
+  main window and one in the quake window from step 2. The failure state
+  shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux
+  allocates session, workspace, and tab IDs from one counter, so tab 16
+  existed before `fixture-create` made session 19 and workspace 20, and the
+  check after `open-explicit` still counted 3. The only tab-creating input
+  between them is the `new tab` Enter sent while `busy-on` holds the window.
+- **Inference:** that Enter ran after `busy-off`. On Linux it goes through
+  `xdotool`, which is not ordered with the smoke's file commands, and the
+  check after it (`w0.palette=true`, "structural operation in progress")
+  already held before Enter was sent, so the smoke never observed the
+  refusal. This is unconfirmed: the recorded terminal bytes contain no ESC
+  from the Escape that followed, so where that Escape went is unexplained.
+- **Triage:** if it recurs, check that the extra tab's ID is below the
+  `fixture-session` ID and that it is the active tab, record the run here,
+  then rerun. A fix would need an observable sign that the window refused
+  the Enter before the smoke sends `busy-off`.
+
 ## `smoke-process.test.ts` retained-pipe deadline
 
 - **Label:** `smoke deadline closes pipes retained by a descendant after
