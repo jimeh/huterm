@@ -467,13 +467,34 @@ mod tests {
     }
 
     #[test]
-    fn reducer_follows_every_pane_move() {
-        use crate::mux::{Beside, MoveDestination, PaneRef};
+    #[expect(
+        clippy::too_many_lines,
+        reason = "walk every pane move, its undo, and its redo in one runtime"
+    )]
+    fn reducer_follows_every_pane_move_and_its_undo_and_redo() {
+        use crate::mux::{
+            Beside, MoveDestination, MuxError, PaneRef,
+            RestoreDirection::{Redo, Undo},
+        };
+        use huterm_protocol::LayoutChange;
         let mut mux = Mux::default();
         let (mut state, subscription) = mux.subscribe_hierarchy();
         let step = |mux: &mut Mux, state: &mut HierarchyState| {
             converge(mux, state, &subscription);
         };
+        // Each move, then its undo and redo, as separate events.
+        let moved =
+            |mux: &mut Mux,
+             state: &mut HierarchyState,
+             change: Result<LayoutChange, MuxError>| {
+                let change = change.unwrap();
+                converge(mux, state, &subscription);
+                for direction in [Undo, Redo] {
+                    mux.restore_tabs(&change, direction).unwrap();
+                    converge(mux, state, &subscription);
+                }
+                change
+            };
         let first = mux.create_session(None).unwrap();
         let alpha = mux.create_workspace(first, None).unwrap();
         let beta = mux.create_workspace(first, None).unwrap();
@@ -500,65 +521,60 @@ mod tests {
             })
         };
 
-        mux.swap_panes(alpha, one, a, c).unwrap();
-        step(&mut mux, &mut state);
-        mux.move_pane(at(&mux, c), beside(&mux, b, SplitDirection::Left))
-            .unwrap();
-        step(&mut mux, &mut state);
+        let change = mux.swap_panes(alpha, one, a, c);
+        moved(&mut mux, &mut state, change);
+        let change =
+            mux.move_pane(at(&mux, c), beside(&mux, b, SplitDirection::Left));
+        moved(&mut mux, &mut state, change);
         let lone = mux.tab(two).unwrap().first_pane().id;
-        mux.move_pane(at(&mux, b), beside(&mux, lone, SplitDirection::Right))
-            .unwrap();
-        step(&mut mux, &mut state);
-        assert_eq!(state.pane_tab(b), Some(two));
         let change = mux
-            .move_pane(
-                at(&mux, c),
-                MoveDestination::NewTab {
-                    workspace: alpha,
-                    before: Some(one),
-                },
-            )
-            .unwrap();
-        step(&mut mux, &mut state);
-        let three = change.after[1].tab;
+            .move_pane(at(&mux, b), beside(&mux, lone, SplitDirection::Right));
+        moved(&mut mux, &mut state, change);
+        assert_eq!(state.pane_tab(b), Some(two));
+        let change = mux.move_pane(
+            at(&mux, c),
+            MoveDestination::NewTab {
+                workspace: alpha,
+                before: Some(one),
+            },
+        );
+        let three = moved(&mut mux, &mut state, change).after[1].tab;
         assert_eq!(state.workspace_tabs(alpha).unwrap(), [three, one, two]);
-        mux.move_tab_to_pane(
+        // Undo reopens the dropped tab with its own identity.
+        let change = mux.move_tab_to_pane(
             alpha,
             two,
             Beside {
                 target: at(&mux, a),
                 side: SplitDirection::Down,
             },
-        )
-        .unwrap();
-        step(&mut mux, &mut state);
+        );
+        moved(&mut mux, &mut state, change);
         assert!(state.tab(two).is_none());
         // A lone pane's extraction into another workspace moves its tab.
-        mux.move_pane(
+        let change = mux.move_pane(
             at(&mux, c),
             MoveDestination::NewTab {
                 workspace: beta,
                 before: None,
             },
-        )
-        .unwrap();
-        step(&mut mux, &mut state);
+        );
+        moved(&mut mux, &mut state, change);
         assert_eq!(state.tab_workspace(three), Some(beta));
-        mux.move_pane(at(&mux, lone), beside(&mux, c, SplitDirection::Up))
-            .unwrap();
-        step(&mut mux, &mut state);
+        let change =
+            mux.move_pane(at(&mux, lone), beside(&mux, c, SplitDirection::Up));
+        moved(&mut mux, &mut state, change);
         // Across sessions: pane a opens a tab in gamma, then pane b, tab
         // one's last pane, takes its whole tab there.
         for pane in [a, b] {
-            mux.move_pane(
+            let change = mux.move_pane(
                 at(&mux, pane),
                 MoveDestination::NewTab {
                     workspace: gamma,
                     before: None,
                 },
-            )
-            .unwrap();
-            step(&mut mux, &mut state);
+            );
+            moved(&mut mux, &mut state, change);
         }
         assert_eq!(state.tab_workspace(one), Some(gamma));
         assert_eq!(state.workspace_tabs(gamma).unwrap().len(), 2);

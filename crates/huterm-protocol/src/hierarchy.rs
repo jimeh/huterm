@@ -209,6 +209,11 @@ pub struct LayoutChange {
     pub before: Vec<TabSnapshot>,
     /// The touched tabs after the operation.
     pub after: Vec<TabSnapshot>,
+    /// The existing tabs whose workspace and position the operation set on
+    /// purpose, which its event moved with [`TabChange::Placed`]. A tab
+    /// whose position shifted only because a neighbour opened or was
+    /// removed is not listed.
+    pub placed: Vec<TabId>,
 }
 
 impl LayoutChange {

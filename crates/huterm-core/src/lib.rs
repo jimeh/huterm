@@ -30,7 +30,8 @@ pub use mux::{
     Beside, CloseAssessment, CloseEffect, CloseRequest, CloseTicket,
     DEFAULT_SOCKET_NAME, HierarchyRecvError, HierarchySnapshot,
     HierarchySubscription, MoveDestination, Mux, MuxError, OpenedPane,
-    OpenedTab, PaneRef, SelectionTarget, Session, Tab, Workspace,
+    OpenedTab, PaneRef, RestoreDirection, SelectionTarget, Session, Tab,
+    Workspace,
 };
 pub use terminal::{
     RefusedInput, RuntimeError, SelectionRequest, SnapshotReply,

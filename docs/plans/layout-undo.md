@@ -1,10 +1,13 @@
 # Layout undo
 
-Status: proposed. Plans [issue #256][issue-256] under [epic #12][issue-12],
-related to [#29][issue-29] and [#30][issue-30] with no ordering dependency.
-Issue #29 does not wait for this work, and its drag PR does not depend on
-it. This plan builds on the runtime hooks that
-[the pane moves plan](pane-moves.md) delivers in its first PR.
+Status: in progress. Approved on 2026-10-27, with Jim's answers to its
+seven open questions recorded under "Settled decisions". PR 1 (runtime
+restore) is in review; PR 2 (client history) follows it. Plans
+[issue #256][issue-256] under [epic #12][issue-12], related to
+[#29][issue-29] and [#30][issue-30]. This plan builds on the runtime hooks
+that [the pane moves plan](pane-moves.md) delivered; all three of #29's PRs
+(#257, #262, and #264) are on `main`. #30 lands after this work and records
+its operations through it (see "How #30 plugs in").
 
 A user who drops a multi-pane tab into another tab's pane by mistake gets a
 nested layout. Pulling that subtree back out into its own tab by hand is
@@ -54,24 +57,23 @@ From the pane moves plan's second PR:
   drag PR lands, in either order.
 
 This plan adds two things to those hooks: a `placed` list in
-`LayoutChange`, and the `restore_tabs` operation. The dependency runs one
-way. #29 never waits for this plan. This plan's runtime PR needs #29's
-first PR on `main`, and its client PR needs #29's second.
+`LayoutChange`, and the `restore_tabs` operation. #29's drag PR landed
+first, so drops are recorded from the client PR on.
 
 ## Scope
 
 In scope:
 
-- Per-window undo and redo of #29's swaps, moves, extractions, and tab
-  drops.
-- #30's presets, cycling, and balancing, each as one entry once they land.
-  #30 does not depend on this work; whichever lands second records the
-  other's operations.
+- Per-window undo and redo of the last layout change: #29's swaps,
+  moves, extractions, and tab drops (settled decision 1).
 - One runtime restore operation guarded by the current state.
 - `undo` and `redo` commands, bindings, and menu items.
 
 Non-goals:
 
+- #30's presets, cycling, and balancing. #30 records them as entries when
+  it lands.
+- Multi-level history. It can follow by growing only the client stack.
 - Undoing splits, closes, renames, tab opens, focus, or zoom.
 - Persisting history across restarts, or sharing it between windows.
 - Keeping closed terminals alive so a close can be undone.
@@ -184,9 +186,9 @@ Core rejects a restore that would break any of these rules:
 A refused restore changes nothing and emits nothing. A restore never spawns
 or stops a runtime. It revokes the viewers of every terminal whose session
 it changes, as a cross-session move does. It advances the revision when a
-terminal changes tabs, which changes what a tab close covers, and leaves the
-revision alone when it only rearranges panes within their tabs, as a swap
-does.
+terminal changes tabs or a tab opens, is removed, or changes workspace or
+position, all of which change what a close covers. It leaves the revision
+alone when it only rearranges panes within their tabs, as a swap does.
 
 ### A removed source tab comes back as itself
 
@@ -208,8 +210,8 @@ that moved to another session, refuses the restore.
 | Operation | Recorded |
 | --- | --- |
 | Swaps, moves, extraction, tab into pane (#29) | Yes, one entry each |
-| Presets, cycling, balancing (#30) | Yes, one entry each |
-| Divider drags and resize commands | No (open question 2) |
+| Presets, cycling, balancing (#30) | Yes, one entry each, once #30 lands |
+| Divider drags and resize commands | No (settled decision 2) |
 | Split, pane close, tab open or close | No |
 | Zoom, focus | No: view state, not structure |
 
@@ -284,26 +286,26 @@ client renaming the tab, would otherwise prune that entry wrongly. The mark
 holds from the start of a move, undo, or redo until its completion, as
 described above.
 
-Under open question 1's recommendation, the first version keeps one entry
-per stack. Chaining and dropping older entries then have nothing to act
-on. The pending mark becomes unnecessary too: a pass that drops the old
-entry while the window's own new operation is in flight drops an entry the
+Under settled decision 1, the first version keeps one entry per stack.
+Chaining and dropping older entries then have nothing to act on. The
+pending mark becomes unnecessary too: a pass that drops the old entry
+while the window's own new operation is in flight drops an entry the
 completion replaces anyway, and an undo or redo has already taken the only
 entry off its stack. What remains is a guard check of one entry per
 stack after each batch.
 
 ### Limit
 
-`LAYOUT_HISTORY_DEPTH` entries per window, a constant, not a setting: 50
-for multi-level history, or 1 under open question 1's recommendation. The
-oldest entry is evicted first. Entries are small, and no terminal stays
+One undo entry and one redo entry per window (settled decision 1). When
+multi-level history ships, its depth is `LAYOUT_HISTORY_DEPTH`, a constant
+of 50 rather than a setting, and the oldest entry is evicted first
+(settled decision 5). Entries are small, and no terminal stays
 alive for them, so no time limit is needed. A new recorded operation clears
 the window's redo stack. Closing the window drops its history, and
 retargeting its attachment to another session (#26) clears it. A window
 emptied by its own move, such as a command moving its last pane into
 another session, closes with its history. That is the accepted limit of
-window-owned history; open question 6 offers attachment-owned history as
-the alternative.
+window-owned history (settled decision 6).
 
 ### After an undo or redo
 
@@ -343,7 +345,7 @@ could do the same with a conditional binding, but GPUI's native menu
 matcher never sees a predicate that depends on window state, so the menu
 would lose its shortcut. No terminal program reads `cmd-z` today. Once the
 Kitty keyboard protocol lands (README future work), applications can, and
-this choice should be revisited then (open question 7).
+this choice should be revisited then (settled decision 7).
 
 Menus: the macOS Edit menu gains Undo and Redo at its top; the Linux window
 menu gains them above its Edit buttons. Titles are static ("Undo", "Redo");
@@ -353,7 +355,7 @@ the palette row shows the next entry's label, such as "Undo Move Pane".
 
 | Race | Handling | Evidence |
 | --- | --- | --- |
-| A window's own move, undo, or redo event applies before its completion | The window's history is pending, so pruning skips it until the completion records the result | Tier 2, event forced before completion for all three |
+| A window's own move, undo, or redo event applies before its completion | Single-entry: undo and redo hold their entry off the stacks, and a new operation's completion replaces whatever a pass dropped. Multi-level: the window's history is pending, so pruning skips it until the completion records the result | Client unit test, event forced before completion for all three |
 | Another client's batch arrives after an undo starts and before its restore event | Multi-level: the pending mark skips the window, so the next entry down is not checked against the pre-restore state. Single-entry: the stack is empty while the undo runs | Client unit test |
 | An undo whose tabs changed since the projection last checked | The runtime refuses under its own guard. The entry and the older entries sharing its tabs are dropped, with one notice | Core, tier 2 |
 | Another window renames, reorders, or zooms a tab before this window undoes a move in it | The guard ignores those fields, and the restore keeps their current values | Core |
@@ -396,21 +398,14 @@ ACKs, never on sleeps.
 - Reducer: a tab removed in one `PanesRearranged` and reopened with the
   same ID in a later one applies, and the differential test drives undo and
   redo of every #29 operation.
-- Client history unit tests:
-  - two and three consecutive operations on one tab undo and redo in full
-    (multi-level only);
-  - an external change to a tab cuts only the entries chained through it,
-    and an entry on another tab survives (multi-level only);
-  - depth eviction drops the oldest entry past `LAYOUT_HISTORY_DEPTH`;
-  - a new operation clears the redo stack;
+- Client history unit tests, for the single-entry first version:
+  - a new operation replaces the undo entry and clears the redo entry;
   - pruning reaches a window that does not show the touched tab;
-  - pruning defers while the window's own move, undo, or redo is in
-    flight (multi-level only), including a batch from another client that
-    arrives after an undo starts and before its restore event, which must
-    not prune the next entry down;
-  - with the event forced before the completion, in both modes, an undo
-    lands its entry on the redo stack and a redo lands it back on the undo
-    stack, and a new operation ends with only its own entry on top.
+  - with the event forced before the completion, an undo lands its entry
+    on the redo stack and a redo lands it back on the undo stack, and a
+    new operation ends with only its own entry on top.
+  Multi-level history adds the chain, depth eviction, and pending-mark
+  tests listed in "Invalidation" when it ships.
 - Tier 2:
   - undo of a tab-into-pane drop reopens the tab at its index, with its
     name and `TabId`, focuses the entry's pane, and keeps every view entity
@@ -419,14 +414,12 @@ ACKs, never on sleeps.
   - `cmd-z` with the palette open edits nothing;
   - menu availability follows the stacks after another window invalidates
     the top entry.
-- Native: `smoke:macos-input` and `check-overlays.ts` run a move command
-  that empties a tab, press the platform undo key, and assert the restored
-  layout in smoke state, a shell ACK from every pane, and the same `$$` per
-  pane. `smoke:macos-menus` checks the Edit menu's Undo and Redo
-  shortcuts. Whichever of this plan's client PR and #29's drag PR lands
-  second adds the same native step for a tab dropped into a pane. Its tier
-  2 equivalent, undo of a tab-into-pane drop, runs through
-  `move_tab_to_pane`, which #29's second PR provides.
+- Native: `smoke:macos-input` and the Linux input smoke drop a tab into
+  a pane, press the platform undo key, and assert the restored layout in
+  smoke state, a shell ACK from every pane, and the same `$$` per pane.
+  `smoke:macos-menus` checks the Edit menu's Undo and Redo shortcuts.
+  #29's drag PR landed first, so the client PR adds the tab-drop step
+  directly.
 
 Commands: `mise run check` while iterating; focused `cargo test -p
 huterm-protocol`, `cargo test -p huterm-core mux::`, and `cargo test -p
@@ -436,18 +429,24 @@ draft.
 
 ## Staging
 
-Two PRs:
+Two PRs, stacked. Both prerequisites are on `main`, so the split no
+longer waits on #29; it keeps the runtime contract reviewable on its own,
+with its PTY and ReleaseSafe evidence, before the client builds on it.
 
-1. **Runtime restore**, once #29's first PR is on `main`. `placed` in
-   `LayoutChange`, `restore_tabs`, its guard and refusals, and the
-   protocol, reducer, core, and PTY tests.
-2. **Client history**, once #29's second PR is on `main`. The per-window
-   stacks, pruning, `undo` and `redo` with bindings and menus, recording in
-   the shared move completion, and the client unit, tier 2, and native
-   tests.
+1. **Runtime restore.** `placed` in `LayoutChange`, `restore_tabs`, its
+   guard and refusals, and the protocol, reducer, core, and PTY tests.
+2. **Client history.** The per-window entries, pruning, `undo` and `redo`
+   with bindings and menus, recording in the shared move completion, and
+   the client unit, tier 2, and native tests. It closes #256.
 
-Neither PR blocks any #29 PR. The client PR can land before or after the
-drag PR of #29.
+## How #30 plugs in
+
+The presets, cycling, and balancing of #30 replace one tab's layout. Each
+returns a `LayoutChange` with that tab before and after and an empty
+`placed`, and records it through the same completion as a move. Undo then
+runs `restore_tabs` with no runtime change. Balancing changes only weights,
+which the guard ignores. Its entry therefore stays valid across later
+resizes, and undo restores the weights from before the balance.
 
 ## Documentation
 
@@ -460,40 +459,27 @@ drag PR of #29.
 - `docs/keybindings.md`: `undo` and `redo`, and the Linux binding notes.
 - This plan's `Status:` in each PR.
 
-## Open questions
+## Settled decisions
 
-1. **Undo only the last layout change in the first version?** Recommend
-   yes: one undo entry and one redo entry per window, with the record types
-   and `restore_tabs` unchanged.
-   - For: the motivating case is a single mis-drop. One entry removes the
-     chain, the dropping of older entries, depth eviction, and the pending
-     mark, which together are most of this plan's client complexity and
-     most of the defects its reviews found. Pruning shrinks to one guard
-     check per stack.
-   - Against: two quick mistakes are only half recoverable, and `cmd-z`
-     in most applications walks back further. Users may press it twice and
-     get a notice-free no-op.
-   - Multi-level history can follow later without changing the runtime,
-     the event, or the record types: only the client stack grows.
-2. **Recording divider resizes.** Recommend not recording them (see
-   "What is recorded"). Alternative: record each committed drag and
-   coalesce consecutive resize commands on one split within one second.
-3. **Linux undo keys.** Recommend `ctrl-shift-z` and `ctrl-shift-y`.
-   Alternative: `ctrl-super-z` and `ctrl-super-shift-z`, matching the
-   `ctrl-super` pane focus keys.
-4. **Restored tab identity.** Recommend reusing the removed tab's `TabId`.
-   Alternative: a fresh ID on each undo, which keeps "an ID never returns"
-   as an invariant at the cost of rewriting history entries after each
-   restore.
-5. **Depth when multi-level ships.** Recommend 50, a constant.
-6. **History owner.** Recommend window-owned history, which dies with its
-   window, including a window that a move of its own emptied. Alternative:
-   history owned by the runtime per attachment. It survives an IPC client
-   reconnecting, but it still dies with the attachment, and it needs a way
-   to publish availability for menus.
-7. **`cmd-z` with nothing to undo.** Recommend taking the key always, for
-   now (see "Commands, bindings, menus"). Revisit with Kitty keyboard
-   protocol support, which would let a terminal program read the key.
+Jim accepted every recommendation on 2026-10-27.
+
+1. **The first version undoes only the last layout change**: one undo
+   entry and one redo entry per window. The record types and
+   `restore_tabs` stay as planned, so multi-level history can come later by
+   growing only the client stack. One entry removes the chain, the
+   dropping of older entries, depth eviction, and the pending mark. The
+   cost is that two quick mistakes are only half recoverable.
+2. **Divider drags and resize commands are not recorded** (see "What is
+   recorded").
+3. **Linux keys are `ctrl-shift-z` and `ctrl-shift-y`**; macOS uses
+   `cmd-z` and `cmd-shift-z`.
+4. **A restored tab reuses the removed tab's `TabId`.**
+5. **Multi-level history, when it ships, keeps 50 entries**, as a
+   constant. It is out of scope for the first version.
+6. **History is owned by each window and dies with it**, including a
+   window that a move of its own emptied.
+7. **`cmd-z` with nothing to undo always takes the key** for now. Revisit
+   once Kitty keyboard protocol support exists.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-29]: https://github.com/jimeh/huterm/issues/29
