@@ -658,7 +658,7 @@ Built on `TextField`, `Menu`, `Swatch`, `KeyHint`, and the scrollbars:
 | `Bool` | Switch |
 | `Choice` with up to three short options | Segmented control |
 | Other `Choice` | Select, opening a `Menu` of the option labels |
-| `Integer`, `Number` | Number field with unit and range, stepper buttons, and arrow-key steps |
+| `Integer`, `Number` | Number field with its unit, checked against its range, stepped by the arrow keys |
 | `Text` | Text field, saved on Enter or blur |
 | Optional `Bool` (no default) | Select: "Default", "On", "Off" |
 | Optional `Integer` | Number field with a "Default" placeholder; clearing it resets |
