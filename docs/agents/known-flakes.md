@@ -71,9 +71,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   dump does not show the caller. The other 21 threads, including GPUI's
   workers, four `llvmpipe` threads, and Mesa's `rendere:disk$0` shader-cache
   thread, were idle in futex, epoll, or poll waits.
-- **Second thread dump:** the PR #279 run got further. Its three `prepared`
-  lines came 14 seconds after `application started`, and `window opened`
-  followed at 14.3 seconds, so the deadline fell before the first paint.
+- **Second thread dump:** the PR #279 run got further. By the job log's
+  timestamps, measured from `RENDERER_SMOKE launching`, which the smoke
+  prints as the supervised process starts: `application started` came at
+  0.2 seconds, the three `prepared` lines at 14.3, and `window opened` at
+  14.3. The supervisor's SIGTERM came at 15.03 seconds (`elapsedMs` 15027 in
+  `outcome.json`), before any paint was reported.
   This time the main thread was idle in a futex wait. The thread in state `D`
   in `folio_wait_bit_common`, with syscall `-1`, was an unnamed
   `renderer_smoke` thread started after the GPUI workers and before the
