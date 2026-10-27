@@ -595,7 +595,11 @@ has room for one more field at most:
   test over the bundled themes checks body text and `on_accent` against
   WCAG's 4.5:1, and the focus ring and control borders against 1.4.11's 3:1.
   `line_strong` at 22% opacity is the likely failure. A theme that fails
-  gets an adjusted token, not an exception.
+  gets an adjusted token, not an exception. This lands with step 3, whose
+  controls change appearance anyway; step 1 moves the tokens unchanged. On
+  2026-10-27, `tokyo-night-day` measured 3.11:1 for `on_accent` on the accent
+  fill, 1.31:1 for `line_strong` on the surface, and 1.63:1 for the focus
+  ring on the background.
 
 ## Testing strategy
 
@@ -725,15 +729,15 @@ still change. Siblings that share a shape land together.
    `menu_close` binding, the smoke pointer step, and separate focus and menu
    smoke state. Its D16 test uses a select trigger. Migration 2b: the
    terminal window's menus, as dropdown and context menus on `Popover` with
-   terminal focus as their return target (D13), after #256 merges.
-3. **Buttons and toggles:** `Button`, `Switch`, and `ToggleGroup`.
-   Migration 3a: Settings buttons, links, switches, segments, tri-states,
-   modifier chips, tags, and counts (D8, D10, D16 for each). `SettingsView::run`
-   checks for a focused multiple group before calling `step`, which finds
-   only settings and would drop the chip commands, and
-   `docs/keybindings.md` says the arrows move between chips. Migration 3b:
-   the terminal window's dialog, title-row, tab-bar, and notice buttons and
-   tooltips.
+   terminal focus as their return target (D13); #256 merged in #281.
+3. **Buttons and toggles:** `Button`, `Switch`, and `ToggleGroup`, with the
+   tokens' contrast test and corrections. Migration 3a: Settings buttons,
+   links, switches, segments, tri-states, modifier chips, tags, and counts
+   (D8, D10, D16 for each). `SettingsView::run` checks for a focused multiple
+   group before calling `step`, which finds only settings and would drop the
+   chip commands, and `docs/keybindings.md` says the arrows move between
+   chips. Migration 3b: the terminal window's dialog, title-row, tab-bar, and
+   notice buttons and tooltips.
 4. **Text entry:** `Input` (the moved `TextField`, hardened with a
    read-only state, horizontal scrolling, Cut, and an accessible value),
    `InputGroup`, `NumberField`, and `Slider`. `ui/text.rs` moves with
@@ -766,7 +770,7 @@ still change. Siblings that share a shape land together.
 | Step | Component PR | Migration PRs | Depends on |
 | --- | --- | --- | --- |
 | 1 | Foundation, including `Tooltip`, `Kbd`, `Badge`, `Separator`, `Surface`, `ScrollArea` | none | |
-| 2 | `Popover`, `Listbox`, `Menu`, `Select` | 2a Settings selects; 2b terminal menus | 1; 2b also #256 merged |
+| 2 | `Popover`, `Listbox`, `Menu`, `Select` | 2a Settings selects; 2b terminal menus | 1 |
 | 3 | `Button`, `Switch`, `ToggleGroup` | 3a Settings; 3b terminal window buttons and tooltips | 1 |
 | 4 | `Input`, `InputGroup`, `NumberField`, `Slider` | 4a Settings fields and Quake sliders | 3 (the clear button and steppers are `Button`s) |
 | 5 | `Combobox`, `Command` | 5a condition and font fields; 5b Licenses and palette lists | 2, 4 |

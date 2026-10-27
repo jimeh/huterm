@@ -9,9 +9,9 @@
 //! Behavior: GPUI shows it after its hover delay and hides it when the
 //! pointer leaves. Showing it for keyboard focus is a later step.
 //!
-//! Accessibility: the tooltip view reports a `Tooltip` node named by its
-//! text. The control it explains should also carry the text as its
-//! `aria_description`, because assistive technology does not hover.
+//! Accessibility: the tooltip view reports no node. The control it explains
+//! carries the text as its `aria_description`, because assistive technology
+//! does not hover.
 
 use gpui::{
     AnyView, App, Context, IntoElement, Render, SharedString, Window, div,
@@ -47,9 +47,6 @@ impl Render for Tooltip {
     ) -> impl IntoElement {
         let tokens = self.tokens;
         div()
-            .id("huterm-ui-tooltip")
-            .role(gpui::Role::Tooltip)
-            .aria_label(self.text.clone())
             .px(px(8.0))
             .py(px(4.0))
             .rounded(px(6.0))
@@ -61,25 +58,5 @@ impl Render for Tooltip {
             .text_color(tokens.fg)
             .whitespace_nowrap()
             .child(self.text.clone())
-    }
-}
-
-#[cfg(all(test, feature = "test-support"))]
-mod tests {
-    use gpui::{TestAppContext, prelude::*};
-
-    use super::Tooltip;
-    use crate::testing::{a11y_node, host, tokens};
-
-    #[gpui::test]
-    fn a_tooltip_reads_as_its_text(cx: &mut TestAppContext) {
-        let (_, cx) = host(cx, |_, cx| {
-            Tooltip::view("New tab", tokens(), cx).into_any_element()
-        });
-        cx.update(|window, _| {
-            let aria = &a11y_node(window, "huterm-ui-tooltip")["aria"];
-            assert_eq!(aria["role"], "Tooltip");
-            assert_eq!(aria["label"], "New tab");
-        });
     }
 }

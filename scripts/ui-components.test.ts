@@ -33,17 +33,21 @@ test("every huterm-ui component has a gallery entry, and every entry a component
 
 test("huterm-ui draws focus rings only through focus::ring", () => {
   // `Tokens::focus_ring` defines the shadow and `focus::ring` is the one
-  // painter that gates it on keyboard focus; GPUI's own `.focus(` style
-  // would show the ring after a pointer press too.
+  // painter that gates it on keyboard focus. GPUI's own focus styles
+  // (`.focus(`, `.in_focus(`, `.focus_visible(`) would show a ring after a
+  // pointer press or lose it on a pointer move. Matching runs over the whole
+  // file, so a style split across lines is caught too.
+  const forbidden = [/\.(focus|in_focus|focus_visible)\(\s*(move\s+)?\|/g];
+  const ringOutsidePainter = /\bfocus_ring\b/g;
   const offenders: string[] = [];
   for (const file of rustFiles(crate)) {
     const relative = file.slice(repoRoot.length + 1);
-    const lines = readFileSync(file, "utf8").split("\n");
-    lines.forEach((line, index) => {
-      const location = `${relative}:${index + 1}`;
-      if (/\.focus_ring\(\)/.test(line) && !relative.endsWith("src/focus.rs")) offenders.push(location);
-      if (/\.focus\(\s*(move\s+)?\|/.test(line)) offenders.push(location);
-    });
+    const source = readFileSync(file, "utf8");
+    const lineOf = (offset: number) => source.slice(0, offset).split("\n").length;
+    const patterns = relative.endsWith("src/focus.rs") || relative.endsWith("src/tokens.rs") ? forbidden : [...forbidden, ringOutsidePainter];
+    for (const pattern of patterns) {
+      for (const match of source.matchAll(pattern)) offenders.push(`${relative}:${lineOf(match.index ?? 0)}`);
+    }
   }
   expect(offenders).toEqual([]);
 });

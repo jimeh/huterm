@@ -130,4 +130,34 @@ mod tests {
             assert_eq!(aria["live"], "Polite");
         });
     }
+
+    #[gpui::test]
+    fn only_the_set_states_reach_the_node(cx: &mut TestAppContext) {
+        let (_, cx) = host(cx, |_, _| {
+            div()
+                .child(
+                    States {
+                        disabled: true,
+                        ..States::default()
+                    }
+                    .apply(div().id("disabled").role(gpui::Role::Button)),
+                )
+                .child(
+                    States::default()
+                        .apply(div().id("plain").role(gpui::Role::Button)),
+                )
+                .into_any_element()
+        });
+        cx.update(|window, _| {
+            let aria = &a11y_node(window, "disabled")["aria"];
+            assert_eq!(aria["disabled"], true);
+            for state in ["read_only", "invalid", "modal", "live"] {
+                assert!(aria[state].is_null(), "{state} is unset: {aria}");
+            }
+            let aria = &a11y_node(window, "plain")["aria"];
+            for state in ["disabled", "read_only", "invalid", "modal", "live"] {
+                assert!(aria[state].is_null(), "{state} is unset: {aria}");
+            }
+        });
+    }
 }

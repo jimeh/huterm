@@ -10,9 +10,10 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, FocusHandle, IntoElement, Render,
-    ScrollHandle, Window, WindowBounds, WindowOptions, div, prelude::*, px,
-    size,
+    ScrollHandle, Task, Window, WindowBounds, WindowOptions, div, prelude::*,
+    px, size,
 };
+use huterm_ui::animation::AnimationSchedule;
 use huterm_ui::components::badge::{Tone, badge};
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::components::tooltip::Tooltip;
@@ -60,6 +61,9 @@ struct Column {
 struct Gallery {
     columns: [Column; 2],
     focus: FocusHandle,
+    /// The pending wake for the scrollbars' next deadline, such as the end
+    /// of an indicator's hold, and that deadline.
+    wake: Option<(Instant, Task<()>)>,
 }
 
 impl Gallery {
@@ -82,23 +86,48 @@ impl Gallery {
                 column(LIGHT_THEME, &light),
             ],
             focus: cx.focus_handle(),
+            wake: None,
+        }
+    }
+
+    /// Advances the scrollbars, asking for the next frame or a wake at their
+    /// next deadline, so an indicator fades without further input.
+    fn animate(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let now = Instant::now();
+        let mut schedule = AnimationSchedule::IDLE;
+        for column in &mut self.columns {
+            column.scrollbar.advance(now);
+            schedule = schedule.merge(column.scrollbar.schedule(now));
+        }
+        if schedule.frame {
+            window.request_animation_frame();
+        }
+        match schedule.deadline {
+            Some(deadline)
+                if self.wake.as_ref().map(|(at, _)| *at) != Some(deadline) =>
+            {
+                let timer = cx
+                    .background_executor()
+                    .timer(deadline.saturating_duration_since(now));
+                let task = cx.spawn(async move |gallery, cx| {
+                    timer.await;
+                    let _ = gallery.update(cx, |_, cx| cx.notify());
+                });
+                self.wake = Some((deadline, task));
+            }
+            Some(_) => {}
+            None => self.wake = None,
         }
     }
 
     fn column(
         &mut self,
         index: usize,
-        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let view = cx.entity();
         let column = &mut self.columns[index];
         let swatch = column.tokens;
-        let now = Instant::now();
-        if column.scrollbar.advance(now) || column.scrollbar.schedule(now).frame
-        {
-            window.request_animation_frame();
-        }
         let get: fn(&mut Gallery) -> &mut ListScrollbar = if index == 0 {
             |gallery| &mut gallery.columns[0].scrollbar
         } else {
@@ -275,8 +304,9 @@ impl Render for Gallery {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let dark = self.column(0, window, cx);
-        let light = self.column(1, window, cx);
+        self.animate(window, cx);
+        let dark = self.column(0, cx);
+        let light = self.column(1, cx);
         div()
             .size_full()
             .flex()

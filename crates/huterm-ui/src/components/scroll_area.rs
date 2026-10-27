@@ -41,8 +41,9 @@ impl ScrollArea {
         }
     }
 
-    /// The height beyond which the content scrolls; unset, the area takes
-    /// the height its parent gives it.
+    /// The height beyond which the content scrolls. Unset, the area grows
+    /// with its content, so it scrolls only when the caller limits the
+    /// returned frame's height.
     #[must_use]
     pub fn max_height(mut self, max_height: Option<Pixels>) -> Self {
         self.max_height = max_height;

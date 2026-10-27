@@ -526,13 +526,20 @@ and Clippy fails. A component's first consumer is its entry in
 component_gallery`), and `scripts/ui-components.test.ts` fails when a
 component file has none.
 
-Draw a focus ring through `huterm_ui::focus::ring`, never GPUI's `.focus()`
-or `focus_visible` styles, and mount `focus::tracker()` once in the window's
-root view. `focus_visible` rechecks GPUI's input modality every frame, and any
-pointer move switches it to mouse, so its ring vanished when the pointer was
-nudged after Tab. The tracker records modality when focus moves and clears it
-on a pointer press, because pressing the already-focused control does not
-change focus. The same script test rejects `focus_ring()` outside `focus.rs`.
+Draw a focus ring through `huterm_ui::focus::ring`, which applies the shadow
+to the element, never GPUI's `.focus()`, `.in_focus()`, or `focus_visible`
+styles, and mount `focus::tracker()` once in the window's root view.
+`focus_visible` rechecks GPUI's input modality every frame, and any pointer
+move switches it to mouse, so its ring vanished when the pointer was nudged
+after Tab. The tracker remembers whether the last press was a key or a pointer
+button (pointer motion is not a press) and decides a focus change by it; a
+pointer press hides the ring, because pressing the already-focused control
+does not change focus. Key listeners on an element see only keys dispatched
+along the focus path, so the tracker notes keys with an app-wide keystroke
+interceptor. It records during paint, after lists that render rows while
+prepainting. The same script test rejects those styles and `focus_ring`
+references in `huterm-ui` outside `focus.rs`; `huterm-gpui` keeps its own until
+the migrations replace them.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with
