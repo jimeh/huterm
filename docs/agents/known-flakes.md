@@ -48,8 +48,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Occurrences:** 2026-09-27 (PR #175) and 2026-09-30 (PR #196) on x86_64,
   then on main: 2026-10-25 on x86_64 (run 40211388780) and 2026-10-26 on
   aarch64 (run 40346320545), then 2026-10-27 on x86_64 (PR #270, run
-  40495981661, job 122161417130). Every other Linux smoke in those jobs
-  passed, and reruns passed.
+  40495981661, job 122161417130), and again on x86_64 the same day (PR
+  #279, run 40576556557, job 122444431856). Every other Linux smoke in
+  those jobs passed, and reruns passed.
 - **Evidence:** the smoke prints its first `RENDERER_SMOKE prepared` line
   during the first prepare, and Rust line-buffers stdout even into a pipe,
   so an empty stdout means the process hung before its first prepare. It
@@ -70,6 +71,14 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   dump does not show the caller. The other 21 threads, including GPUI's
   workers, four `llvmpipe` threads, and Mesa's `rendere:disk$0` shader-cache
   thread, were idle in futex, epoll, or poll waits.
+- **Second thread dump:** the PR #279 run got further. Its three `prepared`
+  lines came 14 seconds after `application started`, and `window opened`
+  followed at 14.3 seconds, so the deadline fell before the first paint.
+  This time the main thread was idle in a futex wait. The thread in state `D`
+  in `folio_wait_bit_common`, with syscall `-1`, was an unnamed
+  `renderer_smoke` thread started after the GPUI workers and before the
+  `llvmpipe` threads. Both dumps point at a page-fault stall on page I/O
+  while Mesa starts, not at a deadlock in Huterm code.
 - **Triage:** download the `smoke-evidence-Linux-*` artifact and read
   `renderer-process/stdout.log` for the last marker and
   `renderer-process/events.jsonl` for the `threads` event. Record both here,
