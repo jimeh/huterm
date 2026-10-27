@@ -63,12 +63,13 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   channel, and current syscall.
 - **First thread dump:** the 2026-10-27 run stopped after
   `application started` at 2.7 seconds, so it hung between application
-  startup and the first draw. At the deadline the main thread was in state `D` in
-  `folio_wait_bit_common` with syscall `-1`: blocked in a page fault waiting
-  on page I/O, most likely a file-backed page, rather than on a lock or in a
-  syscall. The other 21 threads, including GPUI's workers, four `llvmpipe`
-  threads, and Mesa's `rendere:disk$0` shader-cache thread, were idle in
-  futex, epoll, or poll waits.
+  startup and the first draw. At the deadline the main thread was in state
+  `D` in `folio_wait_bit_common`, the kernel's wait on a page-cache folio's
+  lock or writeback bit, with syscall `-1`, meaning it was not in a system
+  call. That combination suggests a page fault waiting on page I/O, but the
+  dump does not show the caller. The other 21 threads, including GPUI's
+  workers, four `llvmpipe` threads, and Mesa's `rendere:disk$0` shader-cache
+  thread, were idle in futex, epoll, or poll waits.
 - **Triage:** download the `smoke-evidence-Linux-*` artifact and read
   `renderer-process/stdout.log` for the last marker and
   `renderer-process/events.jsonl` for the `threads` event. Record both here,
