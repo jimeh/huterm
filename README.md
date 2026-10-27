@@ -28,7 +28,9 @@ GPUI for rendering.
 - **Split panes:** a tab splits into panes side by side or stacked, each with
   its own shell and a title bar while the tab is split. Keyboard commands move
   focus between panes in order or by direction, dividers drag or step to
-  resize the panes beside them, and a pane zooms across its tab.
+  resize the panes beside them, and a pane zooms across its tab. Panes swap,
+  move between tabs, and open in tabs of their own by command or by dragging
+  their title bars, and a tab dragged onto a pane joins it as a split.
 - **Commands:** every action is a catalog command with typed arguments. The
   command palette finds commands by fuzzy search and prompts for arguments, and
   keybindings can bind any command with arguments and `when` conditions.
@@ -42,7 +44,7 @@ GPUI for rendering.
 
 These are not available yet:
 
-- Dragging tabs or panes into other panes, and pane layout presets.
+- Pane layout presets, and undoing a layout change.
 - Switching sessions or workspaces in a window, and moving tabs between
   windows. Each window gets a private session.
 - A background server, local IPC, a command-line client, a TUI, or a browser
@@ -232,8 +234,8 @@ the palette and configurable keybindings, fullscreen and quake windows, and
 viewers that let several windows show one terminal with a shared viewport. The
 next stages are:
 
-- **Desktop expansion:** session and workspace switching, dragging tabs and
-  panes into splits, pane layout presets, moving tabs between windows, shell
+- **Desktop expansion:** session and workspace switching, pane layout
+  presets and layout undo, moving tabs between windows, shell
   integration, a settings UI, window transparency, and restoring sessions and
   history after a restart.
 - **Terminal compatibility:** notifications and progress, extended underlines,

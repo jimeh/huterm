@@ -15,6 +15,17 @@ pub(super) enum TabExtents {
     Fit(Vec<Pixels>),
 }
 
+/// What a pane drag over the tab bar points at.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum LabelZone {
+    /// The middle half of inactive tab `index`'s label, which spring-loads
+    /// that tab.
+    Spring(usize),
+    /// The insertion slot before tab `index`, or past the last tab, where a
+    /// dropped pane opens a new tab.
+    Slot(usize),
+}
+
 /// Pixel geometry shared by rendering, wheel scrolling and drag hit testing.
 #[derive(Clone, Debug)]
 pub(super) struct TabStrip {
@@ -145,6 +156,37 @@ impl TabStrip {
             next
         }
     }
+    /// The label zone under `pointer` for a pane drag: the middle half of
+    /// each label belongs to its tab, and the outer quarters, the gaps, and
+    /// the bar past the last tab are insertion slots. The middle of the
+    /// `active` tab's label is no target.
+    pub(super) fn label_zone(
+        &self,
+        pointer: gpui::Point<Pixels>,
+        active: Option<usize>,
+    ) -> Option<LabelZone> {
+        let position =
+            self.axis(pointer).clamp(px(0.0), self.available()) + self.offset;
+        if self.count == 0 || position >= self.start(self.count) {
+            return Some(LabelZone::Slot(self.count));
+        }
+        let index = self
+            .edges
+            .partition_point(|edge| *edge <= position)
+            .saturating_sub(1)
+            .min(self.count - 1);
+        let extent = self.tab_extent(index);
+        let into = position - self.start(index);
+        if into < extent / 4.0 {
+            Some(LabelZone::Slot(index))
+        } else if into >= extent * 3.0 / 4.0 {
+            Some(LabelZone::Slot(index + 1))
+        } else if active == Some(index) {
+            None
+        } else {
+            Some(LabelZone::Spring(index))
+        }
+    }
     pub(super) fn autoscroll(
         &self,
         pointer: gpui::Point<Pixels>,
@@ -186,6 +228,21 @@ impl TabStrip {
             Bounds::new(
                 self.bounds.origin + point(offset, px(0.0)),
                 size(px(2.0), self.bounds.size.height),
+            )
+        }
+    }
+    /// Where tab `index`'s label is drawn, after scrolling.
+    pub(super) fn label(&self, index: usize) -> Bounds<Pixels> {
+        let offset = self.start(index) - self.offset;
+        if self.vertical {
+            Bounds::new(
+                self.bounds.origin + point(px(0.0), offset),
+                size(self.bounds.size.width, self.tab_extent(index)),
+            )
+        } else {
+            Bounds::new(
+                self.bounds.origin + point(offset, px(0.0)),
+                size(self.tab_extent(index), self.bounds.size.height),
             )
         }
     }
@@ -321,6 +378,40 @@ mod tests {
         let overflowing = fit(&[240.0; 4], 0.0);
         assert_eq!(overflowing.available(), px(600.0));
         assert_eq!(overflowing.max_offset(), px(360.0));
+    }
+
+    #[test]
+    fn labels_split_into_a_spring_middle_and_insertion_quarters() {
+        for vertical in [false, true] {
+            let tabs = strip(vertical, 3, 0.0);
+            let extent = f32::from(tabs.tab_extent(0));
+            let at = |along: f32| {
+                let offset = if vertical {
+                    point(px(5.0), px(along))
+                } else {
+                    point(px(along), px(5.0))
+                };
+                tabs.label_zone(tabs.bounds.origin + offset, Some(1))
+            };
+            assert_eq!(at(extent * 0.1), Some(LabelZone::Slot(0)));
+            assert_eq!(at(extent * 0.5), Some(LabelZone::Spring(0)));
+            assert_eq!(at(extent * 0.9), Some(LabelZone::Slot(1)));
+            assert_eq!(at(extent * 1.5), None, "the active tab's middle");
+            assert_eq!(at(extent * 1.8), Some(LabelZone::Slot(2)));
+            assert_eq!(at(extent * 2.5), Some(LabelZone::Spring(2)));
+            assert_eq!(at(extent * 2.9), Some(LabelZone::Slot(3)));
+        }
+        // Past the last fitted tab the bar is the slot after it.
+        let short = fit(&[100.0, 100.0], 0.0);
+        let past = short.bounds.origin + point(px(260.0), px(5.0));
+        assert_eq!(short.label_zone(past, None), Some(LabelZone::Slot(2)));
+        // Scrolling shifts which label is under a still pointer.
+        let scrolled = fit(&[240.0; 4], 120.0);
+        let still = scrolled.bounds.origin + point(px(0.0), px(5.0));
+        assert_eq!(
+            scrolled.label_zone(still, None),
+            Some(LabelZone::Spring(0))
+        );
     }
 
     #[test]

@@ -1,9 +1,11 @@
 # Pane moves
 
-Status: in progress. Approved on 2026-10-26 after a Claude review and four
+Status: implemented. Approved on 2026-10-26 after a Claude review and four
 Codex review rounds, then revised with Jim's settled decisions and two more
-Codex review rounds. PR 1 (runtime moves) merged in #257; PR 2 (commands) is
-in progress. Plans [issue #29][issue-29] within [epic #12][issue-12]. Builds
+Codex review rounds. PR 1 (runtime moves) merged in #257, PR 2 (commands)
+in #262, and PR 3 (drags and spring-loaded tabs) closes the issue. The drag PR
+ships both open questions' recommendations as defaults pending Jim's
+confirmation. Plans [issue #29][issue-29] within [epic #12][issue-12]. Builds
 on [the split panes plan](split-panes.md), which fixed the drop zone
 geometry, the title bar as a drag handle, and its settled decisions 1 to 3
 for this issue, cited here as "split panes decision N". Layout undo is
@@ -1003,8 +1005,9 @@ names the alternatives he considered.
 
 ## Open questions
 
-Both questions concern only the drag PR, and the drag PR implements each
-recommendation as a default pending Jim's confirmation.
+Both questions concern only the drag PR. It ships each recommendation as a
+default, pending Jim's confirmation: a pane in another tab offers no centre
+zone, and `SPRING_LOAD_DELAY` is a 500 ms constant on both platforms.
 
 1. **The centre zone in a spring-loaded tab.** Recommend offering nothing
    on a pane outside the source pane's tab, as for tab drags, so
@@ -1085,6 +1088,40 @@ Recorded with PR 2:
 - Reconcile orders pane views before adoption and removal, and reselects
   the active tab after an adoption, so an adopted view takes its new tab's
   visibility and a removed focused pane falls back in the new order.
+
+Recorded with PR 3:
+
+- The native drag steps live in `scripts/check-overlays.ts`, which both
+  palette smokes run with AppKit or XTest input, rather than in
+  `smoke:macos-input`. They drag a title bar onto a sibling's edge and
+  centre, cancel one with Escape, spring-load another tab and switch back
+  with Escape, then spring-load it again and drop beside its pane, waiting
+  for the drawn target (`w<i>.drop=`) and armed tab (`w<i>.spring=`) before
+  each release. Each step checks the layout through the pane count and
+  focus and an ACK from the focused shell, not `$$`. A tab dragged onto a
+  pane has tier 2 coverage only. Smoke state gains `pane_grab=`, the point a
+  press grabs each title bar at, instead of `pane_tabs=`.
+- Tier 2 covers an edge move and a centre swap, a tab bar slot, Escape and a
+  release on the source pane, a refused zone, a shallow dip that still
+  reorders, pane mode over a centre and a nest on an edge, spring timing at
+  499 and 500 ms with the schedule's single deadline, a drop into the sprung
+  tab with no centre offered there, switching back after Escape and after a
+  release on the label, and a tab switch the drag did not make. The other
+  three tab bar positions rely on the `TabStrip` unit tests, nesting a
+  multi-pane tab and same-axis flattening on the protocol's `with_inserted`
+  tests, and the remaining race rows on the cancellation rule below rather
+  than a test each. Blur, an opening overlay, autoscroll re-arming, and
+  geometry changes under a still pointer have no tier 2 test.
+- The no-byte checks use the views' selection state in tier 2 and the
+  ordered ACK of the focused shell in the smokes.
+- Validity is one rule: the window takes drags, the dragged pane is still in
+  its tab here and in the projection, and the active tab is the one the drag
+  expects. Motion, the spring deadline, and release check it, and a render
+  that finds it broken defers a cancel, so a drag also ends while the
+  pointer rests. `select_tab` drops a pane drag for any switch but its own
+  spring load.
+- `bench:idle` was not rerun. An armed spring load adds one deadline only
+  during a drag, and an idle window holds no drag.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-29]: https://github.com/jimeh/huterm/issues/29

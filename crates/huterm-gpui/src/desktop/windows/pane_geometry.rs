@@ -2,11 +2,13 @@
 //! bounds, and the dividers between panes. One pure function of the layout,
 //! the tab's content bounds, the view's zoom, and the display scale, so
 //! painting, hit testing, and every pane's requested grid read the same
-//! rectangles. Divider drags move one boundary through [`dragged_weights`].
+//! rectangles. Divider drags move one boundary through [`dragged_weights`],
+//! and a pane or tab drag finds where it would land through [`drop_zone`].
 
 use gpui::{Bounds, Pixels, Size, point, px, size};
 use huterm_protocol::{
-    PaneId, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis, SplitId, SplitNode,
+    PaneId, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis, SplitDirection,
+    SplitId, SplitNode,
 };
 
 /// Height of a pane title bar.
@@ -324,6 +326,80 @@ fn fraction(prefix: u32) -> f32 {
 fn units(fraction: f32) -> u32 {
     let total = f64::from(SPLIT_TOTAL);
     (f64::from(fraction) * total).round().clamp(0.0, total) as u32
+}
+
+/// Where a dragged pane or tab lands on a pane frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Zone {
+    /// Beside the target pane, on this side.
+    Edge(SplitDirection),
+    /// In the target pane's place, swapping with it.
+    Centre,
+}
+
+/// The zone of `frame`, title bar included, under `point`. The outer
+/// quarter on each side is that edge's zone. Where two edge zones overlap
+/// near a corner, the edge nearer the pointer as a fraction of the frame's
+/// width or height wins, ties going to the top or bottom edge. The rest is
+/// the centre, and a point outside the frame has no zone.
+pub(super) fn drop_zone(
+    frame: Bounds<Pixels>,
+    point: gpui::Point<Pixels>,
+) -> Option<Zone> {
+    if !frame.contains(&point)
+        || frame.size.width <= px(0.0)
+        || frame.size.height <= px(0.0)
+    {
+        return None;
+    }
+    let across =
+        f32::from(point.x - frame.origin.x) / f32::from(frame.size.width);
+    let down =
+        f32::from(point.y - frame.origin.y) / f32::from(frame.size.height);
+    let edge = |fraction: f32, low: SplitDirection, high: SplitDirection| {
+        if fraction < 0.25 {
+            Some((low, fraction))
+        } else if fraction > 0.75 {
+            Some((high, 1.0 - fraction))
+        } else {
+            None
+        }
+    };
+    let horizontal = edge(across, SplitDirection::Left, SplitDirection::Right);
+    let vertical = edge(down, SplitDirection::Up, SplitDirection::Down);
+    Some(match (horizontal, vertical) {
+        (None, None) => Zone::Centre,
+        (Some((side, near)), Some((_, other))) if near < other => {
+            Zone::Edge(side)
+        }
+        (Some((side, _)), None) | (_, Some((side, _))) => Zone::Edge(side),
+    })
+}
+
+/// The part of `frame` a drop in `zone` previews: the half an edge drop
+/// would take, or the whole frame for a swap.
+pub(super) fn zone_preview(
+    frame: Bounds<Pixels>,
+    zone: Zone,
+) -> Bounds<Pixels> {
+    let half = size(frame.size.width / 2.0, frame.size.height / 2.0);
+    match zone {
+        Zone::Centre => frame,
+        Zone::Edge(SplitDirection::Left) => {
+            Bounds::new(frame.origin, size(half.width, frame.size.height))
+        }
+        Zone::Edge(SplitDirection::Right) => Bounds::new(
+            point(frame.origin.x + half.width, frame.origin.y),
+            size(frame.size.width - half.width, frame.size.height),
+        ),
+        Zone::Edge(SplitDirection::Up) => {
+            Bounds::new(frame.origin, size(frame.size.width, half.height))
+        }
+        Zone::Edge(SplitDirection::Down) => Bounds::new(
+            point(frame.origin.x, frame.origin.y + half.height),
+            size(frame.size.width, frame.size.height - half.height),
+        ),
+    }
 }
 
 /// A small count as a multiplier.
