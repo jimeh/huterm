@@ -68,7 +68,9 @@ Enable GPUI's `test-support` feature only through `huterm-gpui`'s own
 dev-dependencies, and the smoke and benchmark binaries are examples, so a
 dev-dependency would compile GPUI's leak detection into them. The feature adds
 `proptest` to `Cargo.lock` and sets GPUI's `wayland` cfg on Linux; the Linux
-container builds and runs it without extra packages.
+container builds and runs it without extra packages. `huterm-ui` has its own
+`test-support` feature, which `huterm-gpui`'s enables, so the workspace tasks
+compile both crates' test-gated code through feature unification.
 
 Keep direct `nix` on the newest 0.29.x release while `portable-pty`'s
 `MasterPty` exposes only `as_raw_fd()`. Nix 0.30 and newer require `AsFd` for

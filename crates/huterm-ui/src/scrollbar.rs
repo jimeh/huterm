@@ -10,36 +10,43 @@ use std::time::{Duration, Instant};
 
 use gpui::{Bounds, Div, Hsla, Pixels, div, prelude::*, px};
 
-use super::animation::AnimationSchedule;
+use crate::animation::AnimationSchedule;
 
 const MIN_THUMB_SIZE: f32 = 24.0;
 /// How long an indicator stays fully visible after activity before fading.
-pub(crate) const INDICATOR_HOLD: Duration = Duration::from_secs(2);
+pub const INDICATOR_HOLD: Duration = Duration::from_secs(2);
 const INDICATOR_FADE: Duration = Duration::from_millis(400);
 const SCROLLBAR_EXPAND: Duration = Duration::from_millis(180);
 const SCROLLBAR_EXPANDED_HOLD: Duration = Duration::from_secs(4);
 /// Resting thumb thickness of a full-size scrollbar.
 const THUMB_THICKNESS: f32 = 6.0;
 
+/// The direction a scrollbar measures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Axis {
+pub enum Axis {
+    /// Up and down.
     Vertical,
+    /// Left and right.
     Horizontal,
 }
 
 /// The edge of the scrolled area a scrollbar sits on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Edge {
+pub enum Edge {
+    /// The right edge, for a vertical scrollbar.
     Right,
-    #[expect(dead_code, reason = "no view places a scrollbar on its left yet")]
+    /// The left edge, for a vertical scrollbar.
     Left,
+    /// The bottom edge, for a horizontal scrollbar.
     Bottom,
-    #[expect(dead_code, reason = "no view places a scrollbar on its top yet")]
+    /// The top edge, for a horizontal scrollbar.
     Top,
 }
 
 impl Edge {
-    pub(crate) fn axis(self) -> Axis {
+    /// The axis a scrollbar on this edge measures.
+    #[must_use]
+    pub fn axis(self) -> Axis {
         match self {
             Self::Right | Self::Left => Axis::Vertical,
             Self::Bottom | Self::Top => Axis::Horizontal,
@@ -50,14 +57,16 @@ impl Edge {
 /// Where a scroll offset of zero sits: lists count from the start, terminal
 /// history from the end.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Origin {
+pub enum Origin {
+    /// Offset zero shows the start, as in a list.
     Start,
+    /// Offset zero shows the end, as in terminal history.
     End,
 }
 
 /// What a press on the track outside the thumb does.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TrackPress {
+pub enum TrackPress {
     /// Center the thumb under the pointer and start dragging it.
     Jump,
     /// Move one page toward the pointer.
@@ -67,57 +76,65 @@ pub(crate) enum TrackPress {
 /// Empty space before and after a scrollbar track along its axis, plus the
 /// track's own padding around the thumb at either end.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TrackMargins {
-    pub(crate) start: f32,
-    pub(crate) end: f32,
-    pub(crate) padding: f32,
+pub struct TrackMargins {
+    /// Points before the track.
+    pub start: f32,
+    /// Points after the track.
+    pub end: f32,
+    /// Points inside the track at either end of the thumb's travel.
+    pub padding: f32,
 }
 
 impl TrackMargins {
     /// Equal margins for lists inside a panel.
-    pub(crate) const EVEN: Self = Self {
+    pub const EVEN: Self = Self {
         start: 2.0,
         end: 2.0,
         padding: 2.0,
     };
 }
 
+/// How one scrollbar looks and responds.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ScrollbarOptions {
-    pub(crate) edge: Edge,
-    pub(crate) origin: Origin,
+pub struct ScrollbarOptions {
+    /// The edge of the scrolled area the scrollbar sits on.
+    pub edge: Edge,
+    /// Where offset zero sits.
+    pub origin: Origin,
     /// Widen the thumb and show the track while hovered or dragging.
-    pub(crate) expand_on_hover: bool,
-    pub(crate) track_press: TrackPress,
-    pub(crate) margins: TrackMargins,
+    pub expand_on_hover: bool,
+    /// What a press on the track outside the thumb does.
+    pub track_press: TrackPress,
+    /// Space around the track along its axis.
+    pub margins: TrackMargins,
     /// Resting size across the axis; the expanded state always grows back
     /// to full size.
-    pub(crate) thumb: ThumbSize,
+    pub thumb: ThumbSize,
     /// Distance from `edge` to the strip, leaving that band to other
     /// controls such as a resize handle.
-    pub(crate) edge_inset: f32,
+    pub edge_inset: f32,
     /// How far the pointer target reaches beyond the thumb across the axis.
-    pub(crate) hit: HitBand,
+    pub hit: HitBand,
     /// Keep the strip live after the indicator fades so hovering it shows
     /// the scrollbar again.
-    pub(crate) reveal_on_hover: bool,
+    pub reveal_on_hover: bool,
     /// How long the indicator stays visible after activity before fading.
-    pub(crate) hold: Duration,
+    pub hold: Duration,
 }
 
 /// Extra pointer target across the axis, beyond the thumb itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct HitBand {
+pub struct HitBand {
     /// Points beyond the strip's far side toward the edge, so a target can
     /// reach into the edge inset or stop short of another control there.
-    pub(crate) outward: f32,
+    pub outward: f32,
     /// Points beyond the thumb's inner side, away from the edge.
-    pub(crate) inward: f32,
+    pub inward: f32,
 }
 
 impl HitBand {
     /// Only the thumb itself.
-    pub(crate) const THUMB: Self = Self {
+    pub const THUMB: Self = Self {
         outward: 0.0,
         inward: 0.0,
     };
@@ -125,12 +142,8 @@ impl HitBand {
 
 /// How thick a scrollbar rests across its axis.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ThumbSize {
+pub enum ThumbSize {
     /// A 6-point thumb in a 12-point strip.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "every view currently rests slimmer")
-    )]
     Full,
     /// Half of `Full`.
     Slim,
@@ -152,28 +165,36 @@ impl ThumbSize {
 
 /// Thumb and track colors, usually the theme's overlay colors.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ScrollbarColors {
-    pub(crate) thumb: Hsla,
-    pub(crate) track: Hsla,
+pub struct ScrollbarColors {
+    /// The thumb.
+    pub thumb: Hsla,
+    /// The track, shown while the scrollbar is expanded.
+    pub track: Hsla,
 }
 
 /// The result of a press on a scrollbar strip.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Press {
+pub enum Press {
     /// The thumb was grabbed; later pointer moves report through `drag_to`.
     Grabbed,
     /// The thumb jumped so its start is at this position and was grabbed.
     Jump(f32),
     /// Move one page, backward when the press was before the thumb.
-    Page { backward: bool },
+    Page {
+        /// Whether the page moves toward the start.
+        backward: bool,
+    },
 }
 
 /// A thumb and track laid out along one axis, in caller-relative points.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ScrollbarGeometry {
-    pub(crate) thumb_start: f32,
-    pub(crate) thumb_size: f32,
-    pub(crate) track_start: f32,
+pub struct ScrollbarGeometry {
+    /// Where the thumb starts along the axis.
+    pub thumb_start: f32,
+    /// The thumb's length along the axis.
+    pub thumb_size: f32,
+    /// Where the track starts along the axis.
+    pub track_start: f32,
     track_padding: f32,
     travel: f32,
     /// Scrollable range in the caller's units.
@@ -185,7 +206,8 @@ impl ScrollbarGeometry {
     /// Geometry for a track of `length` points showing `viewport` of
     /// `content`, scrolled by `offset` from `origin`, all in the caller's
     /// units. `None` when nothing overflows.
-    pub(crate) fn new(
+    #[must_use]
+    pub fn new(
         length: f32,
         content: f32,
         viewport: f32,
@@ -232,7 +254,8 @@ impl ScrollbarGeometry {
 
     /// The offset, in the caller's units from its origin, that puts the
     /// thumb's start at `position`.
-    pub(crate) fn offset_for_thumb_start(self, position: f32) -> f32 {
+    #[must_use]
+    pub fn offset_for_thumb_start(self, position: f32) -> f32 {
         if self.travel <= 0.0 {
             return 0.0;
         }
@@ -245,16 +268,22 @@ impl ScrollbarGeometry {
         }
     }
 
-    pub(crate) fn contains(self, position: f32) -> bool {
+    /// Whether `position` along the axis is on the thumb.
+    #[must_use]
+    pub fn contains(self, position: f32) -> bool {
         (self.thumb_start..=self.thumb_start + self.thumb_size)
             .contains(&position)
     }
 
-    pub(crate) fn track_size(self) -> f32 {
+    /// The track's length along the axis.
+    #[must_use]
+    pub fn track_size(self) -> f32 {
         self.travel + self.thumb_size + self.track_padding * 2.0
     }
 
-    pub(crate) fn track_contains(self, position: f32) -> bool {
+    /// Whether `position` along the axis is on the track.
+    #[must_use]
+    pub fn track_contains(self, position: f32) -> bool {
         (self.track_start..=self.track_start + self.track_size())
             .contains(&position)
     }
@@ -263,13 +292,17 @@ impl ScrollbarGeometry {
 /// Per-frame geometry for each enabled axis; `None` when that axis has
 /// nothing to scroll.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct ScrollbarGeometries {
-    pub(crate) vertical: Option<ScrollbarGeometry>,
-    pub(crate) horizontal: Option<ScrollbarGeometry>,
+pub struct ScrollbarGeometries {
+    /// The vertical scrollbar's geometry.
+    pub vertical: Option<ScrollbarGeometry>,
+    /// The horizontal scrollbar's geometry.
+    pub horizontal: Option<ScrollbarGeometry>,
 }
 
 impl ScrollbarGeometries {
-    pub(crate) fn vertical(geometry: Option<ScrollbarGeometry>) -> Self {
+    /// Only a vertical scrollbar's geometry.
+    #[must_use]
+    pub fn vertical(geometry: Option<ScrollbarGeometry>) -> Self {
         Self {
             vertical: geometry,
             horizontal: None,
@@ -284,17 +317,20 @@ impl ScrollbarGeometries {
     }
 }
 
+/// The animated widening of a hovered or dragged scrollbar.
 #[derive(Debug, Default)]
-pub(crate) struct ScrollbarExpansion {
+pub struct ScrollbarExpansion {
     started: Option<Instant>,
     collapse_at: Option<Instant>,
     from: f32,
     target: f32,
-    pub(crate) progress: f32,
+    /// How far the scrollbar has widened, from 0 to 1.
+    pub progress: f32,
 }
 
 impl ScrollbarExpansion {
-    pub(crate) fn activate(&mut self, now: Instant) {
+    /// Starts or keeps widening from `now`.
+    pub fn activate(&mut self, now: Instant) {
         self.sample(now);
         if self.target < 1.0 {
             self.from = self.progress;
@@ -309,7 +345,10 @@ impl ScrollbarExpansion {
         self.target > 0.0 || self.progress > 0.0
     }
 
-    pub(crate) fn update(
+    /// Advances the widening to `now`: it grows while `interacting` and
+    /// collapses after a hold once not, or at once when not `visible`. True
+    /// when the progress changed.
+    pub fn update(
         &mut self,
         now: Instant,
         visible: bool,
@@ -364,10 +403,11 @@ impl ScrollbarExpansion {
 
 /// A hold-then-fade for overlay indicators.
 #[derive(Debug)]
-pub(crate) struct IndicatorVisibility {
+pub struct IndicatorVisibility {
     hold: Duration,
     fade_start: Option<Instant>,
-    pub(crate) opacity: f32,
+    /// The indicator's current opacity, from 0 to 1.
+    pub opacity: f32,
 }
 
 impl Default for IndicatorVisibility {
@@ -377,7 +417,9 @@ impl Default for IndicatorVisibility {
 }
 
 impl IndicatorVisibility {
-    pub(crate) fn with_hold(hold: Duration) -> Self {
+    /// An indicator that stays visible for `hold` after activity.
+    #[must_use]
+    pub fn with_hold(hold: Duration) -> Self {
         Self {
             hold,
             fade_start: None,
@@ -385,12 +427,15 @@ impl IndicatorVisibility {
         }
     }
 
-    pub(crate) fn activate(&mut self, now: Instant) {
+    /// Shows the indicator fully from `now` and restarts its hold.
+    pub fn activate(&mut self, now: Instant) {
         self.fade_start = Some(now + self.hold);
         self.opacity = 1.0;
     }
 
-    pub(crate) fn schedule(&self, now: Instant) -> AnimationSchedule {
+    /// When the indicator next needs a frame or a wake.
+    #[must_use]
+    pub fn schedule(&self, now: Instant) -> AnimationSchedule {
         match self.fade_start {
             Some(at) if now < at => AnimationSchedule::at(at),
             Some(_) if self.opacity > 0.0 => AnimationSchedule::FRAME,
@@ -398,7 +443,9 @@ impl IndicatorVisibility {
         }
     }
 
-    pub(crate) fn update(&mut self, now: Instant, interacting: bool) -> bool {
+    /// Advances the fade to `now`, holding it while `interacting`; true
+    /// when the opacity changed.
+    pub fn update(&mut self, now: Instant, interacting: bool) -> bool {
         let previous = self.opacity;
         if interacting {
             self.activate(now);
@@ -602,14 +649,15 @@ fn place(
 
 /// Up to one scrollbar per axis for one scrolled area.
 #[derive(Debug, Default)]
-pub(crate) struct Scrollbars {
+pub struct Scrollbars {
     vertical: Option<AxisScrollbar>,
     horizontal: Option<AxisScrollbar>,
 }
 
 impl Scrollbars {
     /// A controller with only the vertical axis enabled.
-    pub(crate) fn vertical(options: ScrollbarOptions) -> Self {
+    #[must_use]
+    pub fn vertical(options: ScrollbarOptions) -> Self {
         let mut scrollbars = Self::default();
         scrollbars.set_axis(Axis::Vertical, Some(options));
         scrollbars
@@ -617,11 +665,7 @@ impl Scrollbars {
 
     /// Enables `axis` with `options`, or disables it with `None`, ending any
     /// gesture on it.
-    pub(crate) fn set_axis(
-        &mut self,
-        axis: Axis,
-        options: Option<ScrollbarOptions>,
-    ) {
+    pub fn set_axis(&mut self, axis: Axis, options: Option<ScrollbarOptions>) {
         let slot = self.slot_mut(axis);
         match (slot.as_mut(), options) {
             (Some(current), Some(options)) if current.options == options => {}
@@ -668,13 +712,15 @@ impl Scrollbars {
     }
 
     /// Reveals the indicator on `axis`; `advance` fades it later.
-    pub(crate) fn show(&mut self, axis: Axis, now: Instant) {
+    pub fn show(&mut self, axis: Axis, now: Instant) {
         if let Some(scrollbar) = self.slot_mut(axis) {
             scrollbar.visibility.activate(now);
         }
     }
 
-    pub(crate) fn schedule(&self, now: Instant) -> AnimationSchedule {
+    /// When any enabled scrollbar next needs a frame or a wake.
+    #[must_use]
+    pub fn schedule(&self, now: Instant) -> AnimationSchedule {
         self.enabled()
             .fold(AnimationSchedule::IDLE, |next, (_, scrollbar)| {
                 next.merge(scrollbar.schedule(now))
@@ -683,7 +729,7 @@ impl Scrollbars {
 
     /// Advances fades and expansion; true when a redraw
     /// is needed.
-    pub(crate) fn advance(&mut self, now: Instant) -> bool {
+    pub fn advance(&mut self, now: Instant) -> bool {
         let mut changed = false;
         for (_, scrollbar) in self.enabled_mut() {
             changed |= scrollbar.advance(now);
@@ -691,21 +737,26 @@ impl Scrollbars {
         changed
     }
 
-    pub(crate) fn visible(&self, axis: Axis) -> bool {
+    /// Whether `axis`'s indicator shows at all.
+    #[must_use]
+    pub fn visible(&self, axis: Axis) -> bool {
         self.slot(axis)
             .is_some_and(|scrollbar| scrollbar.visibility.opacity > 0.0)
     }
 
     /// Whether the caller should mount the pointer strip on `axis`: while
     /// the indicator shows, or always when hovering may reveal it.
-    pub(crate) fn wants_strip(&self, axis: Axis) -> bool {
+    #[must_use]
+    pub fn wants_strip(&self, axis: Axis) -> bool {
         self.slot(axis).is_some_and(|scrollbar| {
             scrollbar.visibility.opacity > 0.0
                 || scrollbar.options.reveal_on_hover
         })
     }
 
-    pub(crate) fn opacity(&self, axis: Axis) -> f32 {
+    /// `axis`'s indicator opacity, from 0 to 1.
+    #[must_use]
+    pub fn opacity(&self, axis: Axis) -> f32 {
         self.slot(axis)
             .map_or(0.0, |scrollbar| scrollbar.visibility.opacity)
     }
@@ -713,18 +764,21 @@ impl Scrollbars {
     /// Distance from the edge to the inner end of the pointer target on
     /// `axis`: the size across the axis of an element that covers the
     /// target and the edge inset, so `layers` inside it line up with `hit`.
-    pub(crate) fn strip_extent(&self, axis: Axis) -> f32 {
+    pub fn strip_extent(&self, axis: Axis) -> f32 {
         self.slot(axis).map_or(0.0, AxisScrollbar::extent)
     }
 
-    pub(crate) fn dragging(&self) -> bool {
+    /// Whether a thumb drag is in progress.
+    #[must_use]
+    pub fn dragging(&self) -> bool {
         self.enabled()
             .any(|(_, scrollbar)| scrollbar.drag.is_some())
     }
 
     /// The axis whose strip and track contain `position`, with the position
     /// along it. Vertical wins where the strips overlap in a corner.
-    pub(crate) fn hit(
+    #[must_use]
+    pub fn hit(
         &self,
         geometries: &ScrollbarGeometries,
         bounds: Bounds<Pixels>,
@@ -738,7 +792,7 @@ impl Scrollbars {
     }
 
     /// Updates hover from a pointer move; true when the hover state changed.
-    pub(crate) fn pointer_moved(
+    pub fn pointer_moved(
         &mut self,
         geometries: &ScrollbarGeometries,
         bounds: Bounds<Pixels>,
@@ -766,7 +820,7 @@ impl Scrollbars {
     }
 
     /// Clears hover when the pointer leaves the strips; true when it was set.
-    pub(crate) fn pointer_left(&mut self, now: Instant) -> bool {
+    pub fn pointer_left(&mut self, now: Instant) -> bool {
         let mut changed = false;
         for (_, scrollbar) in self.enabled_mut() {
             changed |= scrollbar.hovering;
@@ -783,7 +837,7 @@ impl Scrollbars {
 
     /// Clears interaction and animation state when an axis's strip is unmounted.
     /// Returns whether state changed, preserving the axis's configured options.
-    pub(crate) fn unmount(&mut self, axis: Axis) -> bool {
+    pub fn unmount(&mut self, axis: Axis) -> bool {
         let Some(scrollbar) = self.slot_mut(axis) else {
             return false;
         };
@@ -796,7 +850,7 @@ impl Scrollbars {
 
     /// A press at `position`: grabs the thumb, or applies the axis's track
     /// press behavior. `None` when no strip was hit.
-    pub(crate) fn press(
+    pub fn press(
         &mut self,
         geometries: &ScrollbarGeometries,
         bounds: Bounds<Pixels>,
@@ -827,7 +881,7 @@ impl Scrollbars {
     }
 
     /// The thumb start the dragging axis should move to for `position`.
-    pub(crate) fn drag_to(
+    pub fn drag_to(
         &mut self,
         bounds: Bounds<Pixels>,
         position: gpui::Point<Pixels>,
@@ -846,7 +900,7 @@ impl Scrollbars {
     }
 
     /// Ends any drag; true when one was in progress.
-    pub(crate) fn release(&mut self, now: Instant) -> bool {
+    pub fn release(&mut self, now: Instant) -> bool {
         let mut released = false;
         for (_, scrollbar) in self.enabled_mut() {
             if scrollbar.drag.take().is_some() {
@@ -860,7 +914,7 @@ impl Scrollbars {
 
     /// Track and thumb quads for every visible axis, positioned relative to
     /// the scrolled area.
-    pub(crate) fn layers<'a>(
+    pub fn layers<'a>(
         &'a self,
         geometries: &'a ScrollbarGeometries,
         colors: ScrollbarColors,

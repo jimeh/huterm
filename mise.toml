@@ -120,7 +120,7 @@ description = "Type-check all workspace targets"
 run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --features huterm-gpui/test-support --locked"
 
 [tasks.architecture]
-description = "Check dependency-neutral protocol, process-info, and Ghostty binding boundaries"
+description = "Check dependency-neutral protocol, process-info, UI component, and Ghostty binding boundaries"
 run = '''
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
@@ -136,6 +136,12 @@ fi
 procinfo_dependencies="$(cargo tree --locked -p huterm-procinfo --target all --prefix none --edges normal,build | tail -n +2)"
 if echo "$procinfo_dependencies" | rg '^huterm-'; then
   echo "huterm-procinfo must not depend on other Huterm crates" >&2
+  exit 1
+fi
+# huterm-ui stays generic: GPUI plus an allowlist of small general crates.
+ui_dependencies="$(cargo tree --locked -p huterm-ui --target all --depth 1 --prefix none --edges normal,build | tail -n +2)"
+if echo "$ui_dependencies" | rg -v '^gpui-pre '; then
+  echo "huterm-ui may depend only on gpui-pre; extend this allowlist deliberately" >&2
   exit 1
 fi
 ghostty_dependencies="$(cargo tree --locked -p huterm-ghostty --target all --prefix none --edges normal,build | tail -n +2)"

@@ -60,6 +60,13 @@ pub fn application_with_assets() -> gpui::Application {
     assets::application()
 }
 
+/// Opens the component gallery: every `huterm-ui` component in its static
+/// states, in a dark and a light theme.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn run_component_gallery() {
+    desktop::gallery::run();
+}
+
 /// Starts the Huterm desktop client.
 ///
 /// # Errors

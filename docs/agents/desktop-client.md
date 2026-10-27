@@ -508,6 +508,40 @@ follow. A successful configuration reload clears the failures still latched,
 so a stale hotkey conflict does not outlive the configuration that caused it;
 an unrelated failure waiting there is dropped with it.
 
+## UI components
+
+Generic components live in `crates/huterm-ui`, one file per component under
+`src/components/`, each opening with its contract; primitives (tokens, focus,
+accessibility, scrollbars) sit at the crate root. The plan is
+[UI components](../plans/ui-components.md). The crate may depend only on GPUI,
+so it takes colors as `huterm_ui::tokens::Tokens` and exposes methods rather
+than catalog commands. `desktop/overlay.rs` re-exports `Tokens` as `Swatch`
+and builds it with `tokens(theme)` and `overlay_colors(theme)`; the orphan
+rule rules out `from_theme` constructors on the crate's types.
+
+`pub` items of a library are always live, so `#[expect(dead_code)]` cannot
+mark a component that lands before its caller: the expectation is never met
+and Clippy fails. A component's first consumer is its entry in
+`desktop/gallery.rs` (`cargo run -p huterm-gpui --example
+component_gallery`), and `scripts/ui-components.test.ts` fails when a
+component file has none.
+
+Draw a focus ring through `huterm_ui::focus::ring`, never GPUI's `.focus()`
+or `focus_visible` styles, and mount `focus::tracker()` once in the window's
+root view. `focus_visible` rechecks GPUI's input modality every frame, and any
+pointer move switches it to mouse, so its ring vanished when the pointer was
+nudged after Tab. The tracker records modality when focus moves and clears it
+on a pointer press, because pressing the already-focused control does not
+change focus. The same script test rejects `focus_ring()` outside `focus.rs`.
+
+GPUI reports an accessibility node only for an element with both an `id` and a
+`role`; set disabled, read-only, invalid, modal, and live states with
+`huterm_ui::a11y::States`, since GPUI has no setters for them. The vendored
+GPUI's `test-window-accessibility` patch activates accessibility in test
+windows: tests read `Window::debug_a11y_tree_json`, which spells element ids
+in their `Debug` form (`Name("id")`), and act through
+`Window::simulate_a11y_action`. A missing tree must fail a test, not skip it.
+
 ## Tab bar layout
 
 The README describes the tab bar's options. These are the layout mechanics

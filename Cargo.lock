@@ -2608,6 +2608,7 @@ dependencies = [
  "huterm-config",
  "huterm-core",
  "huterm-protocol",
+ "huterm-ui",
  "nix 0.29.0",
  "notify",
  "nucleo-matcher",
@@ -2631,6 +2632,14 @@ dependencies = [
 [[package]]
 name = "huterm-protocol"
 version = "0.22.0"
+
+[[package]]
+name = "huterm-ui"
+version = "0.22.0"
+dependencies = [
+ "gpui-pre",
+ "serde_json",
+]
 
 [[package]]
 name = "iana-time-zone"

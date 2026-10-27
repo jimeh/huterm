@@ -2,30 +2,40 @@
 
 use std::time::Instant;
 
+/// When an animated component next needs attention.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct AnimationSchedule {
-    pub(crate) frame: bool,
-    pub(crate) deadline: Option<Instant>,
+pub struct AnimationSchedule {
+    /// It needs the next frame, such as during a fade.
+    pub frame: bool,
+    /// It needs a wake at this instant, such as when a hold ends.
+    pub deadline: Option<Instant>,
 }
 
 impl AnimationSchedule {
-    pub(crate) const IDLE: Self = Self {
+    /// Nothing to do until input arrives.
+    pub const IDLE: Self = Self {
         frame: false,
         deadline: None,
     };
-    pub(crate) const FRAME: Self = Self {
+    /// The next frame, and no deadline.
+    pub const FRAME: Self = Self {
         frame: true,
         deadline: None,
     };
 
-    pub(crate) fn at(deadline: Instant) -> Self {
+    /// A wake at `deadline`, and no frame before it.
+    #[must_use]
+    pub fn at(deadline: Instant) -> Self {
         Self {
             frame: false,
             deadline: Some(deadline),
         }
     }
 
-    pub(crate) fn merge(self, other: Self) -> Self {
+    /// Both schedules' needs: a frame if either wants one, and the earlier
+    /// deadline.
+    #[must_use]
+    pub fn merge(self, other: Self) -> Self {
         Self {
             frame: self.frame || other.frame,
             deadline: match (self.deadline, other.deadline) {
