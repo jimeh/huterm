@@ -10,6 +10,8 @@ pub mod quake;
 
 #[cfg(feature = "schema")]
 pub mod schema;
+#[cfg(feature = "settings")]
+pub mod settings;
 
 /// One `[[keybinding]]` entry as written in the configuration file.
 ///
@@ -43,6 +45,13 @@ impl KeybindingEntry {
 pub struct GeneralConfig {
     /// Reload the configuration file automatically when it, or a theme file
     /// it uses, changes on disk.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "general",
+        "x-huterm-group" = "Configuration file",
+        "x-huterm-label" = "Reload when config.toml changes",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "live",
+    )))]
     pub watch_config: bool,
 }
 
@@ -95,12 +104,28 @@ impl Default for TerminalConfig {
 pub enum RightClickAction {
     /// Open the terminal's context menu at the pointer.
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Open the context menu"))
+    )]
     Menu,
     /// Paste the clipboard.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Paste"))
+    )]
     Paste,
     /// Copy and clear the selection, or paste when nothing is selected.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Copy or paste"))
+    )]
     CopyOrPaste,
     /// Do nothing.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Do nothing"))
+    )]
     Ignore,
 }
 
@@ -114,8 +139,16 @@ pub enum RefreshMode {
     /// Admit one snapshot per delivered display frame, plus at most one extra
     /// snapshot for pending viewport changes.
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Display frames"))
+    )]
     Display,
     /// Admit another dirty snapshot as soon as its predecessor completes.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Unlimited"))
+    )]
     Unlimited,
 }
 
@@ -128,8 +161,16 @@ pub enum RefreshMode {
 pub enum NewTabDirectory {
     /// Use a usable local directory reported by the active terminal.
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Focused pane's directory"))
+    )]
     Inherit,
     /// Always use Huterm's platform launch default.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Launch directory"))
+    )]
     Default,
 }
 
@@ -138,6 +179,13 @@ pub enum NewTabDirectory {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct BellConfig {
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Bell and clipboard",
+        "x-huterm-label" = "Visual bell",
+        "x-huterm-order" = 70,
+        "x-huterm-apply" = "live",
+    )))]
     pub visual: bool,
 }
 
@@ -156,12 +204,24 @@ pub enum TerminalIdentity {
     /// Use `xterm-huterm` when its terminfo entry is available.
     #[default]
     #[serde(rename = "auto")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Automatic"))
+    )]
     Auto,
     /// Advertise Huterm's private terminfo entry.
     #[serde(rename = "xterm-huterm")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "xterm-huterm"))
+    )]
     XtermHuterm,
     /// Use the widely installed compatibility entry.
     #[serde(rename = "xterm-256color")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "xterm-256color"))
+    )]
     Xterm256Color,
 }
 
@@ -174,8 +234,16 @@ pub enum TerminalIdentity {
 pub enum ClipboardWritePolicy {
     /// Allow terminal content to replace the system clipboard.
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Allow"))
+    )]
     Allow,
     /// Drop terminal-content clipboard writes.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Deny"))
+    )]
     Deny,
 }
 
@@ -356,7 +424,15 @@ impl LinkModifiers {
 #[serde(rename_all = "lowercase")]
 pub enum MacosOptionAsAlt {
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Off"))
+    )]
     Off,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Both Option keys"))
+    )]
     Both,
 }
 
@@ -364,16 +440,61 @@ pub enum MacosOptionAsAlt {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Window",
+        "x-huterm-label" = "Fullscreen mode",
+        "x-huterm-order" = 30,
+        "x-huterm-apply" = "later_events",
+        "x-huterm-platform" = "macos",
+    )))]
     pub macos_fullscreen_mode: MacosFullscreenMode,
+    #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 256), extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Padding",
+        "x-huterm-label" = "Horizontal padding",
+        "x-huterm-order" = 40,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "pt",
+    )))]
     pub padding_x: f32,
+    #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 256), extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Padding",
+        "x-huterm-label" = "Vertical padding",
+        "x-huterm-order" = 50,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "pt",
+    )))]
     pub padding_y: f32,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Padding",
+        "x-huterm-label" = "Balance horizontal padding",
+        "x-huterm-order" = 60,
+        "x-huterm-apply" = "live",
+    )))]
     pub padding_balance: bool,
     /// Show the window menu button in the title bar, or in the tab bar
     /// when the window has no title bar. Every item stays reachable through
     /// shortcuts or the command palette.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Window",
+        "x-huterm-label" = "Menu button",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "live",
+    )))]
     pub menu_button: bool,
     /// Show key hints on the scroll pill and on dialog and panel buttons.
     /// The command palette and menus always show their shortcuts.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Window",
+        "x-huterm-label" = "Shortcut hints",
+        "x-huterm-order" = 20,
+        "x-huterm-apply" = "live",
+    )))]
     pub shortcut_hints: bool,
 }
 
@@ -381,21 +502,114 @@ pub struct WindowConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct TabsConfig {
+    /// Where tabs sit: top, bottom, left, right, or titlebar. Defaults to
+    /// titlebar on macOS and top on Linux.
+    #[cfg_attr(feature = "schema", schemars(transform = schema::without_default, extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Tab bar",
+        "x-huterm-label" = "Position",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "live",
+    )))]
     pub position: TabPosition,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Visibility",
+        "x-huterm-label" = "Show the tab bar with one tab",
+        "x-huterm-order" = 50,
+        "x-huterm-apply" = "live",
+    )))]
     pub always_show: bool,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Visibility",
+        "x-huterm-label" = "Auto-hide in fullscreen",
+        "x-huterm-order" = 60,
+        "x-huterm-apply" = "live",
+    )))]
     pub auto_hide_in_fullscreen: bool,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Tab bar",
+        "x-huterm-label" = "Style",
+        "x-huterm-order" = 20,
+        "x-huterm-apply" = "live",
+    )))]
     pub style: TabStyle,
     /// Draws the accent bar inside the active pill; ignored by other styles.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Tab bar",
+        "x-huterm-label" = "Accent bar in the active pill",
+        "x-huterm-order" = 30,
+        "x-huterm-apply" = "live",
+        "x-huterm-visible-when" = {"setting": "tabs.style", "equals": "pill"},
+    )))]
     pub pill_accent: bool,
     /// When a tab shows its close button; hovering a tab always shows it.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Tab bar",
+        "x-huterm-label" = "Close buttons",
+        "x-huterm-order" = 40,
+        "x-huterm-apply" = "live",
+    )))]
     pub close_button: TabCloseButton,
     /// Put a top bar beside a display notch in non-native fullscreen.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Visibility",
+        "x-huterm-label" = "Beside the display notch",
+        "x-huterm-order" = 70,
+        "x-huterm-apply" = "live",
+        "x-huterm-platform" = "macos",
+        "x-huterm-advanced" = true,
+    )))]
     pub notch: TabNotch,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Sizing",
+        "x-huterm-label" = "Tab width",
+        "x-huterm-order" = 100,
+        "x-huterm-apply" = "live",
+    )))]
     pub width: TabWidth,
+    #[cfg_attr(feature = "schema", schemars(range(min = 48, max = 600), extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Sizing",
+        "x-huterm-label" = "Minimum width",
+        "x-huterm-order" = 110,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "pt",
+        "x-huterm-visible-when" = {"setting": "tabs.width", "equals": "fit"},
+    )))]
     pub min_width: f32,
+    #[cfg_attr(feature = "schema", schemars(range(min = 48, max = 600), extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Sizing",
+        "x-huterm-label" = "Maximum width",
+        "x-huterm-order" = 120,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "pt",
+        "x-huterm-visible-when" = {"setting": "tabs.width", "equals": "fit"},
+    )))]
     pub max_width: f32,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Labels",
+        "x-huterm-label" = "Tab label",
+        "x-huterm-order" = 80,
+        "x-huterm-apply" = "live",
+    )))]
     pub label: TabLabel,
     /// How labels show a directory.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "tabs",
+        "x-huterm-group" = "Labels",
+        "x-huterm-label" = "Directory format",
+        "x-huterm-order" = 90,
+        "x-huterm-apply" = "live",
+    )))]
     pub directory: TabDirectory,
 }
 
@@ -410,9 +624,29 @@ pub struct TabsConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct UpdateConfig {
-    /// Enables or disables scheduled checks without Sparkle's consent prompt.
+    /// Enable or disable scheduled update checks without Sparkle's consent
+    /// prompt. Omit to preserve Sparkle's stored choice; a fresh macOS
+    /// profile asks on its second launch.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "updates",
+        "x-huterm-group" = "Updates",
+        "x-huterm-label" = "Check automatically",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "live",
+        "x-huterm-platform" = "macos",
+    )))]
     pub automatic_checks: Option<bool>,
-    /// Overrides the scheduled-check interval in whole hours.
+    /// Scheduled update-check interval in whole hours. Omit to preserve
+    /// Sparkle's stored interval; a fresh profile uses 24 hours.
+    #[cfg_attr(feature = "schema", schemars(range(min = 1), extend(
+        "x-huterm-section" = "updates",
+        "x-huterm-group" = "Updates",
+        "x-huterm-label" = "Check interval",
+        "x-huterm-order" = 20,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "h",
+        "x-huterm-platform" = "macos",
+    )))]
     pub check_interval_hours: Option<u32>,
 }
 
@@ -466,14 +700,34 @@ pub enum TabLabel {
     /// A running program's own title, else its name; at an idle shell, the
     /// directory.
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Smart"))
+    )]
     Smart,
     /// The title set by the shell or program.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Title"))
+    )]
     Title,
     /// The foreground program's name.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Process"))
+    )]
     Process,
     /// The current directory.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Directory"))
+    )]
     Directory,
     /// The foreground program's name and the current directory.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Process and directory"))
+    )]
     ProcessAndDirectory,
 }
 
@@ -486,12 +740,24 @@ pub enum TabLabel {
 pub enum TabDirectory {
     /// The last path component, such as `huterm`.
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Name"))
+    )]
     Name,
     /// The full path, relative to home when under it, such as
     /// `~/Projects/huterm`.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Path"))
+    )]
     Path,
     /// The path with parent components shortened to their first character,
     /// such as `~/P/huterm`.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Short"))
+    )]
     Short,
 }
 
@@ -504,9 +770,17 @@ pub enum TabDirectory {
 pub enum PaneZoomScope {
     /// Each window zooms panes on its own.
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Each window"))
+    )]
     View,
     /// The tab owns the zoom: every window set to `shared` shows the same
     /// zoomed pane, and windows set to `view` ignore it.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Shared"))
+    )]
     Shared,
 }
 
@@ -518,6 +792,13 @@ pub enum PaneZoomScope {
 #[serde(default, deny_unknown_fields)]
 pub struct PanesConfig {
     /// Who owns a pane's zoom: `view` or `shared`.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Pane zoom",
+        "x-huterm-order" = 40,
+        "x-huterm-apply" = "live",
+    )))]
     pub zoom: PaneZoomScope,
 }
 
@@ -530,9 +811,17 @@ pub struct PanesConfig {
 pub enum PalettePlacement {
     /// Anchored near the top edge of the window.
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Top"))
+    )]
     Top,
     /// Centred on the window at the palette's full height, so filtering
     /// results never moves the input line.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Center"))
+    )]
     Center,
 }
 
@@ -542,11 +831,34 @@ pub enum PalettePlacement {
 #[serde(default, deny_unknown_fields)]
 pub struct PaletteConfig {
     /// Where the palette sits within the window: `top` or `center`.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "palette",
+        "x-huterm-group" = "Palette",
+        "x-huterm-label" = "Position",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "live",
+    )))]
     pub placement: PalettePlacement,
     /// Keep the search text after the palette is cancelled, so reopening
     /// within `retain_query_seconds` restores it selected.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "palette",
+        "x-huterm-group" = "Palette",
+        "x-huterm-label" = "Keep the search after cancelling",
+        "x-huterm-order" = 20,
+        "x-huterm-apply" = "next_palette_open",
+    )))]
     pub retain_query: bool,
     /// How long a cancelled palette's search text is retained, 0 to 3600.
+    #[cfg_attr(feature = "schema", schemars(range(max = 3600), extend(
+        "x-huterm-section" = "palette",
+        "x-huterm-group" = "Palette",
+        "x-huterm-label" = "Keep it for",
+        "x-huterm-order" = 30,
+        "x-huterm-apply" = "next_palette_open",
+        "x-huterm-unit" = "s",
+        "x-huterm-visible-when" = {"setting": "palette.retain_query", "equals": true},
+    )))]
     pub retain_query_seconds: u32,
 }
 
@@ -566,9 +878,17 @@ impl Default for PaletteConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MacosFullscreenMode {
     #[serde(rename = "native")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Separate Space"))
+    )]
     Native,
     #[default]
     #[serde(rename = "non_native")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Current Space"))
+    )]
     NonNative,
 }
 
@@ -579,13 +899,33 @@ pub enum MacosFullscreenMode {
 #[serde(rename_all = "lowercase")]
 pub enum TabPosition {
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Top"))
+    )]
     Top,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Bottom"))
+    )]
     Bottom,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Left"))
+    )]
     Left,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Right"))
+    )]
     Right,
     /// Tabs share the window's title-bar row. Where no title bar exists
     /// (fullscreen, Quake windows, or a window manager drawing the title
     /// bar) the tabs take a top bar instead.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Title bar"))
+    )]
     Titlebar,
 }
 
@@ -595,8 +935,16 @@ pub enum TabPosition {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TabStyle {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Strip"))
+    )]
     Strip,
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Pill"))
+    )]
     Pill,
 }
 
@@ -606,8 +954,16 @@ pub enum TabStyle {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TabWidth {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Fill the bar"))
+    )]
     Fill,
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Fit titles"))
+    )]
     Fit,
 }
 
@@ -618,11 +974,23 @@ pub enum TabWidth {
 #[serde(rename_all = "lowercase")]
 pub enum TabCloseButton {
     /// Only while the pointer is over the tab.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Hovered tab only"))
+    )]
     Hover,
     /// On the active tab, and on any hovered tab.
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Active and hovered tabs"))
+    )]
     Active,
     /// On every tab.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Every tab"))
+    )]
     Always,
 }
 
@@ -635,9 +1003,21 @@ pub enum TabCloseButton {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TabNotch {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Off"))
+    )]
     Off,
     #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Left"))
+    )]
     Left,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Right"))
+    )]
     Right,
 }
 
@@ -955,14 +1335,50 @@ pub struct RawConfig {
     #[serde(default)]
     pub panes: PanesConfig,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Theme",
+        "x-huterm-label" = "Theme",
+        "x-huterm-order" = 30,
+        "x-huterm-apply" = "live",
+    )))]
     pub theme: ThemeDefinition,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Theme",
+        "x-huterm-label" = "Custom themes",
+        "x-huterm-order" = 35,
+        "x-huterm-apply" = "live",
+        "propertyNames" = {"pattern": "^[A-Za-z0-9_-]+$"},
+    )))]
     pub themes: BTreeMap<String, ThemeDefinition>,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "keybindings",
+        "x-huterm-group" = "Keybindings",
+        "x-huterm-label" = "Keybindings",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "live",
+    )))]
     pub keybinding: Vec<RawKeybinding>,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "quake",
+        "x-huterm-group" = "Profiles",
+        "x-huterm-label" = "Quake profiles",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "later_events",
+    )))]
     pub quake: quake::Config,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "quake",
+        "x-huterm-group" = "Global shortcuts",
+        "x-huterm-label" = "Global shortcuts",
+        "x-huterm-order" = 20,
+        "x-huterm-apply" = "live",
+    )))]
     pub global_keybinding: Vec<RawKeybinding>,
 }
 
@@ -1049,21 +1465,101 @@ impl RawKeybinding {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct RawTerminal {
-    /// Deprecated compatibility setting. Huterm always uses Ghostty.
+    /// Deprecated compatibility setting. Both legacy values use Ghostty;
+    /// remove this field.
+    #[cfg_attr(feature = "schema", schemars(with = "LegacyTerminalEngine", extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Compatibility",
+        "x-huterm-label" = "Engine",
+        "x-huterm-order" = 110,
+        "x-huterm-apply" = "new_terminals",
+        "x-huterm-advanced" = true,
+        "deprecated" = true,
+    )))]
     pub engine: Option<LegacyTerminalEngine>,
     /// Terminal identity for newly spawned shells.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Compatibility",
+        "x-huterm-label" = "TERM",
+        "x-huterm-order" = 90,
+        "x-huterm-apply" = "new_terminals",
+        "x-huterm-advanced" = true,
+    )))]
     pub term: TerminalIdentity,
+    /// Allow or deny system clipboard writes requested by terminal content.
+    /// Reload applies to existing terminals; explicit Copy and Paste commands
+    /// are unaffected.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Bell and clipboard",
+        "x-huterm-label" = "Clipboard writes from programs",
+        "x-huterm-order" = 80,
+        "x-huterm-apply" = "live",
+    )))]
     pub clipboard_write: ClipboardWritePolicy,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Mouse",
+        "x-huterm-label" = "Clickable links",
+        "x-huterm-order" = 50,
+        "x-huterm-apply" = "live",
+    )))]
     pub links: bool,
+    #[cfg_attr(feature = "schema", schemars(transform = schema::without_default, extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Mouse",
+        "x-huterm-label" = "Link modifier",
+        "x-huterm-order" = 60,
+        "x-huterm-apply" = "live",
+        "x-huterm-visible-when" = {"setting": "terminal.links", "equals": true},
+    )))]
     pub link_modifiers: LinkModifiers,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Shell",
+        "x-huterm-label" = "Close a pane when its shell exits",
+        "x-huterm-order" = 20,
+        "x-huterm-apply" = "later_events",
+    )))]
     pub close_on_exit: bool,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Compatibility",
+        "x-huterm-label" = "Snapshot refresh",
+        "x-huterm-order" = 100,
+        "x-huterm-apply" = "live",
+        "x-huterm-advanced" = true,
+    )))]
     pub refresh: RefreshMode,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Shell",
+        "x-huterm-label" = "New tabs and panes start in",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "new_tabs_and_panes",
+    )))]
     pub new_tab_directory: NewTabDirectory,
     pub bell: BellConfig,
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Keyboard",
+        "x-huterm-label" = "Option as Meta",
+        "x-huterm-order" = 30,
+        "x-huterm-apply" = "later_events",
+        "x-huterm-platform" = "macos",
+    )))]
     pub macos_option_as_alt: MacosOptionAsAlt,
     /// What a right-click on the terminal does: open the context menu,
     /// paste, copy the selection or else paste, or nothing. While an
     /// application takes the mouse, Shift+right-click applies it.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Mouse",
+        "x-huterm-label" = "Right-click",
+        "x-huterm-order" = 40,
+        "x-huterm-apply" = "live",
+    )))]
     pub right_click: RightClickAction,
     /// Live history each terminal keeps above its screen, in screen rows: a
     /// line that wraps counts once for each row it fills. 0 keeps none,
@@ -1072,10 +1568,31 @@ pub struct RawTerminal {
     /// a page fewer, and a smaller nonzero limit keeps up to one page. It
     /// counts rows; `scrollback_bytes` limits size. Reload applies it to open
     /// terminals; lowering it discards the oldest rows at once.
+    #[cfg_attr(feature = "schema", schemars(range(max = ScrollbackLimit::MAX.rows()), extend(
+        "x-huterm-section" = "scrollback",
+        "x-huterm-group" = "Limits",
+        "x-huterm-label" = "Scrollback rows",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "rows",
+    )))]
     pub scrollback_rows: u32,
-    /// An optional size limit on each terminal's screen and history, such as
-    /// "64MiB"; whichever of it and `scrollback_rows` is reached first
-    /// applies.
+    /// Optional size limit on each terminal's screen and history: a byte count,
+    /// or digits and a unit such as "64MiB" or "50MB" (B, KB, MB, GB in powers
+    /// of 1000; KiB, MiB, GiB in powers of 1024; units ignore case, so b also
+    /// means bytes), at most 16GiB. 0 keeps no history. Whichever of it and
+    /// `scrollback_rows` is reached first applies. Ghostty frees history a page
+    /// at a time and always allows the visible screen rounded up to whole pages
+    /// plus one more, so a tiny value keeps up to about two pages. Reload
+    /// applies it to open terminals.
+    #[cfg_attr(feature = "schema", schemars(with = "ScrollbackSize", extend(
+        "x-huterm-section" = "scrollback",
+        "x-huterm-group" = "Limits",
+        "x-huterm-label" = "Size limit",
+        "x-huterm-order" = 20,
+        "x-huterm-apply" = "live",
+        "x-huterm-advanced" = true,
+    )))]
     pub scrollback_bytes: Option<ScrollbackSize>,
 }
 impl Default for RawTerminal {
@@ -1123,6 +1640,7 @@ impl RawTerminal {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(inline))]
 #[serde(rename_all = "lowercase")]
 pub enum LegacyTerminalEngine {
     Alacritty,
@@ -1133,7 +1651,23 @@ pub enum LegacyTerminalEngine {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct RawFont {
+    /// Font family. Defaults to Menlo on macOS and monospace on Linux.
+    #[cfg_attr(feature = "schema", schemars(regex(pattern = r"\S"), transform = schema::without_default, extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Font",
+        "x-huterm-label" = "Font family",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "live",
+    )))]
     pub family: String,
+    #[cfg_attr(feature = "schema", schemars(range(min = 6, max = 96), extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Font",
+        "x-huterm-label" = "Font size",
+        "x-huterm-order" = 20,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "pt",
+    )))]
     pub size: f32,
 }
 
@@ -1250,6 +1784,7 @@ impl RawConfig {
 }
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(transform = schema::constrain_theme))]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeDefinition {
     pub name: Option<String>,

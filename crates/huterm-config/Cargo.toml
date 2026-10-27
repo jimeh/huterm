@@ -9,6 +9,7 @@ version = "0.20.0"
 
 [features]
 schema = ["dep:schemars", "dep:serde_json"]
+settings = ["dep:serde_json"]
 
 [dependencies]
 huterm-protocol.workspace = true

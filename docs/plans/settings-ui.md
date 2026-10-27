@@ -1,7 +1,8 @@
 # Settings UI and safe config writes
 
-Status: in progress. Approved on 2026-10-26 after four Codex review rounds;
-PR 1 (the foundation) is in progress. Plans [issue #35][issue-35] and
+Status: in progress. Approved on 2026-10-26 after four Codex review rounds.
+PR 1 (the foundation) shipped in #263; PR 2 (the settings model) is in
+progress. Plans [issue #35][issue-35] and
 [issue #34][issue-34] within [epic #14][issue-14]. The UI decisions come from
 two rounds of HTML mockups ([round two][mockups], [the chosen
 layout][mockup-a1]).
@@ -466,11 +467,133 @@ bounded deadline and report the last state on timeout. No fixed sleeps.
 | Idle cost | `config_watch` test asserting no timer and no reads without events |
 | Repository gates | `mise run check`, `mise run test`, `mise run test:ghostty-releasesafe`, and `mise run license` |
 
+## PR 2: settings model and metadata
+
+### What PR 2 delivers
+
+Settings metadata lives on the config types and reaches the committed schema
+as `x-huterm-*` extensions. A typed `SettingsModel`, parsed from that schema,
+lists every setting the window will show, in order, with what a control needs.
+A coverage test keeps the schema, the model, and the GPUI override table in
+step. Nothing user-visible changes except the published schema's new keys.
+
+### Settings metadata
+
+Every setting carries its metadata on the field that defines it, through
+`#[cfg_attr(feature = "schema", schemars(extend(...)))]`:
+
+| Key | Value | Required |
+| --- | --- | --- |
+| `x-huterm-section` | `general`, `appearance`, `tabs`, `window`, `terminal`, `scrollback`, `palette`, `quake`, `keybindings`, or `updates` | yes |
+| `x-huterm-group` | Card title within the section, such as `"Font"` | yes |
+| `x-huterm-label` | Row label, sentence case | yes |
+| `x-huterm-order` | Integer, unique within its section | yes |
+| `x-huterm-apply` | `live`, `new_tabs_and_panes`, `new_terminals`, `later_events`, or `next_palette_open` | yes |
+| `x-huterm-unit` | Display unit, such as `"pt"`, `"rows"`, `"s"`, `"ms"`, `"h"` | no |
+| `x-huterm-platform` | `macos` or `linux` | no |
+| `x-huterm-advanced` | `true` | no |
+| `x-huterm-visible-when` | `{"setting": "<path>", "equals": <value>}` | no |
+
+Enum variants carry `x-huterm-label` too, so a select shows "Title bar"
+rather than `titlebar`. A variant's doc comment stays its description.
+
+A setting is a schema property that carries `x-huterm-label`. An object
+property without one is a namespace, such as `tabs` or `terminal.bell`, and
+the model recurses into it. Compound settings carry their own label at the
+`RawConfig` field: `theme`, `themes`, `keybinding`, `global_keybinding`, and
+`quake`. Their inner fields get metadata in the PRs that build their editors.
+
+Apply semantics follow the runtime, checked against `docs/configuration.md`
+and the reload path: `terminal.term` applies to new terminals,
+`terminal.new_tab_directory` to new tabs and split panes but not new windows,
+`terminal.close_on_exit`, `terminal.macos_option_as_alt`, and
+`window.macos_fullscreen_mode` to later events, `palette.retain_query` and
+`palette.retain_query_seconds` to the next palette open, and every other
+setting live. `palette.placement` moves an open palette, so it is live,
+unlike the mockup. `quake` applies to later events as a whole: removing a
+profile changes its window at once, but a changed profile reaches its window
+at the next summon.
+
+### Constraints and descriptions move onto the types
+
+Ranges, patterns, and descriptions that `schema.rs` patches by path move onto
+the types as `#[schemars(range(...))]`, `#[schemars(regex(pattern = ...))]`,
+`extend`, doc comments, or a type-level `transform`. `schema.rs` keeps only
+what no single type owns: the catalog-derived keybinding alternatives, the
+selected-theme derivation, null and container-default cleaning, and the
+document `$id` and titles.
+
+The regenerated schemas must equal the committed ones once `x-huterm-*` keys
+are removed and labelled enums are compared as their value sets. A one-off
+comparison script proves it during review; it is not committed.
+
+### Settings model (`huterm_config::settings`)
+
+Behind a new `settings` feature that enables `serde_json`. The model embeds
+`schemas/huterm.schema.json` and parses it once.
+
+- `SettingsModel::load()` returns the cached
+  `Result<&'static SettingsModel, ModelError>`, and
+  `SettingsModel::from_schema(&Value)` builds one from any schema. Missing or
+  malformed metadata, an unknown section, apply, or platform value, a
+  duplicate order, a blank or misspelled option label, or a visible-when
+  naming an unknown setting or a value outside its choices is an error naming
+  the setting path.
+- `sections()` returns the ten sections in sidebar order with their titles,
+  each holding groups ordered by their lowest setting order, each holding
+  settings in order. `setting(path)` finds one setting by dotted path.
+- A `Setting` holds its path, label, description with each paragraph's
+  lines joined, kind, default as a `toml::Value` when the schema has one,
+  unit, apply, platform, advanced, visible-when, and whether it is
+  deprecated.
+- `SettingKind` is `Bool`, `Choice(options)` with each option's value, label,
+  and description, `Integer { min, max }`, `Number { min, max,
+  exclusive_min }`, `Text { pattern }`, or `Compound` for objects, maps,
+  arrays, and type unions. All but `Compound` have a generic control.
+
+### GPUI override table
+
+`huterm-gpui` gains `desktop/settings.rs` with the override table the window
+will read: a special control for a setting path. A separate file-only list
+names settings Settings never edits; a deprecated setting must be on it. Until
+the window lands, the module carries `#[cfg_attr(not(test),
+expect(dead_code))]`. Hiding a setting, or moving one behind Advanced, joins
+the table when the window needs it.
+
+Initial entries:
+
+- special controls: `theme` (theme picker with color overrides), `keybinding`
+  and `global_keybinding` (keybinding editor), `quake` (profile editor),
+  `terminal.link_modifiers` (modifier chips), `terminal.scrollback_bytes`
+  (size field), and `font.family` (font picker);
+- file-only: `themes` and the deprecated `terminal.engine`.
+
+### PR 2 verification
+
+| Behavior | Evidence |
+| --- | --- |
+| The committed schema parses into a model with ten sections and every setting the config defines | `huterm-config` test with the `settings` feature |
+| Every setting has a generic control, an override, or a file-only entry; every entry names a real setting; deprecated settings are file-only | `huterm-gpui` coverage test |
+| Every `Choice` option outside overrides and the file-only list has a label | The same coverage test |
+| Every value a default configuration writes belongs to some setting, so the walk misses no field | `huterm-config` test serializing a default `RawConfig` |
+| Malformed metadata is rejected with the setting path | Focused tests feeding small schemas to `from_schema` |
+| Visible-when references resolve and their values are valid choices | Covered by `load()` plus one rejection test |
+| Moved constraints keep the schema unchanged | `mise run schema:check` on the regenerated files, the one-off comparison, and `smoke:schema-editor` for Taplo |
+
+`mise run check`, `mise run test`, and `mise run schema:check` gate the PR.
+No UX review: nothing a user sees or touches changes.
+
+### Non-goals for PR 2
+
+The Settings window, controls, writes, and inner metadata for themes,
+keybindings, and quake profiles.
+
 ## Later PRs
 
 Each later PR gets its own contract when it starts, built on this section.
 
-1. **Settings model and metadata.** Semantic metadata lives on the config
+1. **Settings model and metadata.** Its contract is PR 2 above. Semantic
+   metadata lives on the config
    types and is emitted as `x-huterm-*` schema extensions through
    `#[schemars(extend(...))]`: label, group, order, unit, apply semantics
    (live, new tabs, new terminals, later events, next palette open),

@@ -25,8 +25,8 @@ impl JsonSchema for ScrollbackSize {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "ScrollbackSize".into()
     }
-    // `constrain_ranges` writes the property itself; a shared definition
-    // would be left unused.
+    // Inline, so `scrollback_bytes` holds the schema itself rather than a
+    // reference to a definition.
     fn inline_schema() -> bool {
         true
     }
@@ -46,7 +46,6 @@ fn scrollback_size_schema() -> Value {
         "minimum": 0,
         "maximum": huterm_protocol::ScrollbackLimit::MAX_BYTES,
         "pattern": "^[0-9]+( ?([bB]|[kKmMgG][iI]?[bB]))?$",
-        "description": "Optional size limit on each terminal's screen and history: a byte count, or digits and a unit such as \"64MiB\" or \"50MB\" (B, KB, MB, GB in powers of 1000; KiB, MiB, GiB in powers of 1024; units ignore case, so b also means bytes), at most 16GiB. 0 keeps no history. Whichever of it and scrollback_rows is reached first applies. Ghostty frees history a page at a time and always allows the visible screen rounded up to whole pages plus one more, so a tiny value keeps up to about two pages. Reload applies it to open terminals."
     })
 }
 
@@ -233,7 +232,6 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
             "https://github.com/jimeh/huterm/releases/latest/download/{asset}"
         ));
         clean(schema);
-        constrain_theme(&mut schema["definitions"]["ThemeDefinition"]);
     }
     let binding_base = config["definitions"]["RawKeybinding"].clone();
     config["definitions"]["RawKeybinding"] = keybindings(&binding_base, false);
@@ -250,58 +248,8 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
         .map(|fields| fields.remove("extends"));
     selected["properties"]["name"] = json!({"type":"string", "pattern":"^[A-Za-z0-9_-]+$", "description":"Bundled, inline, or adjacent theme name. Existence is checked at runtime."});
     config["definitions"]["SelectedTheme"] = selected;
-    config["properties"]["theme"] =
-        json!({"$ref":"#/definitions/SelectedTheme"});
-    config["properties"]["themes"]["propertyNames"] =
-        json!({"pattern":"^[A-Za-z0-9_-]+$"});
-    let definitions = &mut config["definitions"];
-    definitions["Config"]["properties"]["profiles"]["propertyNames"] =
-        json!({"pattern":"\\S"});
-    definitions["Config"]["description"] = json!(
-        "Named quake windows. The built-in default profile remains available when omitted. Profile references and display identifiers are resolved at runtime."
-    );
-    for name in ["width", "height"] {
-        definitions["Profile"]["properties"][name]["exclusiveMinimum"] =
-            json!(0);
-        definitions["Profile"]["properties"][name]["maximum"] = json!(1);
-        definitions["Profile"]["properties"][name]["description"] = json!(
-            "Fraction of the display work area, greater than zero and at most one. Fullscreen uses the full display frame."
-        );
-    }
-    definitions["Profile"]["properties"]["animation_ms"]["maximum"] =
-        json!(1000);
-    definitions["Profile"]["properties"]["animation_ms"]["description"] =
-        json!("Animation duration in milliseconds, from 0 to 1000.");
-    definitions["Profile"]["properties"]["display"]["pattern"] =
-        json!("^(active|pointer|primary|id:.*\\S.*)$");
-    definitions["Profile"]["properties"]["display"]["description"] = json!(
-        "Active, pointer, primary, or id:<platform display identifier>. Display availability is checked at runtime."
-    );
-    definitions["RawFont"]["properties"]["family"]["pattern"] = json!("\\S");
-    describe_platform_defaults(definitions);
-    definitions["RawFont"]["properties"]["size"]["minimum"] = json!(6);
-    definitions["RawFont"]["properties"]["size"]["maximum"] = json!(96);
-    definitions["UpdateConfig"]["properties"]["automatic_checks"]["description"] = json!(
-        "Enable or disable scheduled update checks without Sparkle's consent prompt. Omit to preserve Sparkle's stored choice; a fresh macOS profile asks on its second launch."
-    );
-    definitions["UpdateConfig"]["properties"]["check_interval_hours"]["minimum"] =
-        json!(1);
-    definitions["UpdateConfig"]["properties"]["check_interval_hours"]["description"] = json!(
-        "Scheduled update-check interval in whole hours. Omit to preserve Sparkle's stored interval; a fresh profile uses 24 hours."
-    );
-    constrain_ranges(definitions);
-    definitions["RawTerminal"]["properties"]["engine"] = json!({
-        "type": "string",
-        "enum": ["alacritty", "ghostty"],
-        "description": "Deprecated compatibility setting. Both legacy values use Ghostty; remove this field.",
-        "deprecated": true
-    });
-    definitions
-        .as_object_mut()
-        .map(|definitions| definitions.remove("LegacyTerminalEngine"));
-    definitions["RawTerminal"]["properties"]["clipboard_write"]["description"] = json!(
-        "Allow or deny system clipboard writes requested by terminal content. Reload applies to existing terminals; explicit Copy and Paste commands are unaffected."
-    );
+    config["properties"]["theme"]["allOf"] =
+        json!([{"$ref":"#/definitions/SelectedTheme"}]);
     Ok([
         (
             CONFIG_ASSET,
@@ -321,28 +269,12 @@ fn generate<T: JsonSchema>() -> Result<Value, serde_json::Error> {
             .into_root_schema_for::<T>(),
     )
 }
-fn constrain_ranges(definitions: &mut Value) {
-    // Replace the generated optional wrapper, whose null branch would
-    // otherwise survive cleaning.
-    definitions["RawTerminal"]["properties"]["scrollback_bytes"] =
-        scrollback_size_schema();
-    definitions["RawTerminal"]["properties"]["scrollback_rows"]["maximum"] =
-        json!(huterm_protocol::ScrollbackLimit::MAX.rows());
-    definitions["PaletteConfig"]["properties"]["retain_query_seconds"]["maximum"] =
-        json!(3600);
-    for name in ["padding_x", "padding_y"] {
-        definitions["WindowConfig"]["properties"][name]["minimum"] = json!(0);
-        definitions["WindowConfig"]["properties"][name]["maximum"] = json!(256);
-    }
-    // Runtime bounds are 48 through 600 with min_width <= max_width, so each
-    // key carries both ends for editor validation.
-    for name in ["min_width", "max_width"] {
-        definitions["TabsConfig"]["properties"][name]["minimum"] = json!(48);
-        definitions["TabsConfig"]["properties"][name]["maximum"] = json!(600);
-    }
-}
-fn constrain_theme(schema: &mut Value) {
-    if let Some(fields) = schema["properties"].as_object_mut() {
+/// Restricts theme colors to hex values. The selected theme gets its `name`
+/// back in [`documents`].
+pub(crate) fn constrain_theme(schema: &mut Schema) {
+    if let Some(fields) =
+        schema.get_mut("properties").and_then(Value::as_object_mut)
+    {
         fields.remove("name");
         for (name, value) in fields {
             if name == "extends" {
@@ -363,24 +295,11 @@ fn constrain_theme(schema: &mut Value) {
         }
     }
 }
-/// Replaces defaults that differ by platform with descriptions of both, so
-/// the committed schema does not depend on where it was generated.
-fn describe_platform_defaults(definitions: &mut Value) {
-    definitions["RawFont"]["properties"]["family"]["description"] = json!(
-        "Font family. Defaults to Menlo on macOS and monospace on Linux."
-    );
-    definitions["TabsConfig"]["properties"]["position"]["description"] = json!(
-        "Where tabs sit: top, bottom, left, right, or titlebar. Defaults to titlebar on macOS and top on Linux."
-    );
-    for (definition, field) in [
-        ("RawFont", "family"),
-        ("TabsConfig", "position"),
-        ("RawTerminal", "link_modifiers"),
-    ] {
-        definitions[definition]["properties"][field]
-            .as_object_mut()
-            .map(|field| field.remove("default"));
-    }
+/// Drops a default that differs by platform, so the committed schema does
+/// not depend on where it was generated. The field's description names
+/// both defaults.
+pub(crate) fn without_default(schema: &mut Schema) {
+    schema.remove("default");
 }
 
 // TOML has no null. Container defaults can contain host-specific values.

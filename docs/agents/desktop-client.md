@@ -613,3 +613,13 @@ diagnostics; it does not provide command-specific argument completion.
 the committed schema, and CI's Policy job runs it. Prompted arguments are
 optional in the schema, so its argument checks use constraints such as
 `select_tab.index` bounds rather than required properties.
+
+Constraints, descriptions, and Settings metadata live on the config types:
+`#[schemars(range(...))]`, `regex`, doc comments, and `extend` with the
+`x-huterm-*` keys that `huterm_config::settings` reads. `schema.rs` keeps only
+what no single type owns. Every schema property needs `x-huterm-label` unless
+it is a namespace object, or `SettingsModel::load` fails, and the coverage
+test in `desktop/settings.rs` fails until a new setting has a generic control,
+an override, or a file-only entry. Doc comments become schema descriptions
+with their line breaks; editors render them as soft wraps, and the model joins
+each paragraph's lines.

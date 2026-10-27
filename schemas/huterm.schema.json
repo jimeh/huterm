@@ -26,7 +26,12 @@
       "properties": {
         "visual": {
           "default": true,
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Bell and clipboard",
+          "x-huterm-label": "Visual bell",
+          "x-huterm-order": 70,
+          "x-huterm-section": "terminal"
         }
       },
       "type": "object"
@@ -37,18 +42,20 @@
         {
           "const": "allow",
           "description": "Allow terminal content to replace the system clipboard.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Allow"
         },
         {
           "const": "deny",
           "description": "Drop terminal-content clipboard writes.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Deny"
         }
       ]
     },
     "Config": {
       "additionalProperties": false,
-      "description": "Named quake windows. The built-in default profile remains available when omitted. Profile references and display identifiers are resolved at runtime.",
+      "description": "Named quake windows. The built-in default profile remains available when\nomitted. Profile references and display identifiers are resolved at\nruntime.",
       "properties": {
         "profiles": {
           "additionalProperties": {
@@ -69,7 +76,12 @@
         "watch_config": {
           "default": true,
           "description": "Reload the configuration file automatically when it, or a theme file\nit uses, changes on disk.",
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Configuration file",
+          "x-huterm-label": "Reload when config.toml changes",
+          "x-huterm-order": 10,
+          "x-huterm-section": "general"
         }
       },
       "type": "object"
@@ -324,18 +336,32 @@
       "type": "string"
     },
     "MacosFullscreenMode": {
-      "enum": [
-        "native",
-        "non_native"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "native",
+          "type": "string",
+          "x-huterm-label": "Separate Space"
+        },
+        {
+          "const": "non_native",
+          "type": "string",
+          "x-huterm-label": "Current Space"
+        }
+      ]
     },
     "MacosOptionAsAlt": {
-      "enum": [
-        "off",
-        "both"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "off",
+          "type": "string",
+          "x-huterm-label": "Off"
+        },
+        {
+          "const": "both",
+          "type": "string",
+          "x-huterm-label": "Both Option keys"
+        }
+      ]
     },
     "NewTabDirectory": {
       "description": "Working-directory policy for newly opened tabs.",
@@ -343,12 +369,14 @@
         {
           "const": "inherit",
           "description": "Use a usable local directory reported by the active terminal.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Focused pane's directory"
         },
         {
           "const": "default",
           "description": "Always use Huterm's platform launch default.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Launch directory"
         }
       ]
     },
@@ -363,12 +391,22 @@
             }
           ],
           "default": "top",
-          "description": "Where the palette sits within the window: `top` or `center`."
+          "description": "Where the palette sits within the window: `top` or `center`.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Palette",
+          "x-huterm-label": "Position",
+          "x-huterm-order": 10,
+          "x-huterm-section": "palette"
         },
         "retain_query": {
           "default": true,
           "description": "Keep the search text after the palette is cancelled, so reopening\nwithin `retain_query_seconds` restores it selected.",
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "next_palette_open",
+          "x-huterm-group": "Palette",
+          "x-huterm-label": "Keep the search after cancelling",
+          "x-huterm-order": 20,
+          "x-huterm-section": "palette"
         },
         "retain_query_seconds": {
           "default": 15,
@@ -376,7 +414,17 @@
           "format": "uint32",
           "maximum": 3600,
           "minimum": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-huterm-apply": "next_palette_open",
+          "x-huterm-group": "Palette",
+          "x-huterm-label": "Keep it for",
+          "x-huterm-order": 30,
+          "x-huterm-section": "palette",
+          "x-huterm-unit": "s",
+          "x-huterm-visible-when": {
+            "equals": true,
+            "setting": "palette.retain_query"
+          }
         }
       },
       "type": "object"
@@ -387,12 +435,14 @@
         {
           "const": "top",
           "description": "Anchored near the top edge of the window.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Top"
         },
         {
           "const": "center",
           "description": "Centred on the window at the palette's full height, so filtering\nresults never moves the input line.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Center"
         }
       ]
     },
@@ -402,12 +452,14 @@
         {
           "const": "view",
           "description": "Each window zooms panes on its own.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Each window"
         },
         {
           "const": "shared",
           "description": "The tab owns the zoom: every window set to `shared` shows the same\nzoomed pane, and windows set to `view` ignore it.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Shared"
         }
       ]
     },
@@ -422,7 +474,12 @@
             }
           ],
           "default": "view",
-          "description": "Who owns a pane's zoom: `view` or `shared`."
+          "description": "Who owns a pane's zoom: `view` or `shared`.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Pane zoom",
+          "x-huterm-order": 40,
+          "x-huterm-section": "window"
         }
       },
       "type": "object"
@@ -458,7 +515,7 @@
         },
         "display": {
           "default": "active",
-          "description": "Active, pointer, primary, or id:<platform display identifier>. Display availability is checked at runtime.",
+          "description": "Active, pointer, primary, or `id:<platform display identifier>`.\nDisplay availability is checked at runtime.",
           "pattern": "^(active|pointer|primary|id:.*\\S.*)$",
           "type": "string"
         },
@@ -468,7 +525,7 @@
         },
         "height": {
           "default": 0.5,
-          "description": "Fraction of the display work area, greater than zero and at most one. Fullscreen uses the full display frame.",
+          "description": "Fraction of the display work area, greater than zero and at most\none. Fullscreen uses the full display frame.",
           "exclusiveMinimum": 0,
           "format": "double",
           "maximum": 1,
@@ -488,7 +545,7 @@
         },
         "width": {
           "default": 1.0,
-          "description": "Fraction of the display work area, greater than zero and at most one. Fullscreen uses the full display frame.",
+          "description": "Fraction of the display work area, greater than zero and at most\none. Fullscreen uses the full display frame.",
           "exclusiveMinimum": 0,
           "format": "double",
           "maximum": 1,
@@ -503,14 +560,25 @@
         "family": {
           "description": "Font family. Defaults to Menlo on macOS and monospace on Linux.",
           "pattern": "\\S",
-          "type": "string"
+          "type": "string",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Font",
+          "x-huterm-label": "Font family",
+          "x-huterm-order": 10,
+          "x-huterm-section": "appearance"
         },
         "size": {
           "default": 14.0,
           "format": "float",
           "maximum": 96,
           "minimum": 6,
-          "type": "number"
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Font",
+          "x-huterm-label": "Font size",
+          "x-huterm-order": 20,
+          "x-huterm-section": "appearance",
+          "x-huterm-unit": "pt"
         }
       },
       "type": "object"
@@ -6691,31 +6759,61 @@
             }
           ],
           "default": "allow",
-          "description": "Allow or deny system clipboard writes requested by terminal content. Reload applies to existing terminals; explicit Copy and Paste commands are unaffected."
+          "description": "Allow or deny system clipboard writes requested by terminal content.\nReload applies to existing terminals; explicit Copy and Paste commands\nare unaffected.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Bell and clipboard",
+          "x-huterm-label": "Clipboard writes from programs",
+          "x-huterm-order": 80,
+          "x-huterm-section": "terminal"
         },
         "close_on_exit": {
           "default": true,
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Shell",
+          "x-huterm-label": "Close a pane when its shell exits",
+          "x-huterm-order": 20,
+          "x-huterm-section": "terminal"
         },
         "engine": {
           "deprecated": true,
-          "description": "Deprecated compatibility setting. Both legacy values use Ghostty; remove this field.",
+          "description": "Deprecated compatibility setting. Both legacy values use Ghostty;\nremove this field.",
           "enum": [
             "alacritty",
             "ghostty"
           ],
-          "type": "string"
+          "type": "string",
+          "x-huterm-advanced": true,
+          "x-huterm-apply": "new_terminals",
+          "x-huterm-group": "Compatibility",
+          "x-huterm-label": "Engine",
+          "x-huterm-order": 110,
+          "x-huterm-section": "terminal"
         },
         "link_modifiers": {
           "allOf": [
             {
               "$ref": "#/definitions/LinkModifiers"
             }
-          ]
+          ],
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Mouse",
+          "x-huterm-label": "Link modifier",
+          "x-huterm-order": 60,
+          "x-huterm-section": "terminal",
+          "x-huterm-visible-when": {
+            "equals": true,
+            "setting": "terminal.links"
+          }
         },
         "links": {
           "default": true,
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Mouse",
+          "x-huterm-label": "Clickable links",
+          "x-huterm-order": 50,
+          "x-huterm-section": "terminal"
         },
         "macos_option_as_alt": {
           "allOf": [
@@ -6723,7 +6821,13 @@
               "$ref": "#/definitions/MacosOptionAsAlt"
             }
           ],
-          "default": "off"
+          "default": "off",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Keyboard",
+          "x-huterm-label": "Option as Meta",
+          "x-huterm-order": 30,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "terminal"
         },
         "new_tab_directory": {
           "allOf": [
@@ -6731,7 +6835,12 @@
               "$ref": "#/definitions/NewTabDirectory"
             }
           ],
-          "default": "inherit"
+          "default": "inherit",
+          "x-huterm-apply": "new_tabs_and_panes",
+          "x-huterm-group": "Shell",
+          "x-huterm-label": "New tabs and panes start in",
+          "x-huterm-order": 10,
+          "x-huterm-section": "terminal"
         },
         "refresh": {
           "allOf": [
@@ -6739,7 +6848,13 @@
               "$ref": "#/definitions/RefreshMode"
             }
           ],
-          "default": "display"
+          "default": "display",
+          "x-huterm-advanced": true,
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Compatibility",
+          "x-huterm-label": "Snapshot refresh",
+          "x-huterm-order": 100,
+          "x-huterm-section": "terminal"
         },
         "right_click": {
           "allOf": [
@@ -6748,17 +6863,28 @@
             }
           ],
           "default": "menu",
-          "description": "What a right-click on the terminal does: open the context menu,\npaste, copy the selection or else paste, or nothing. While an\napplication takes the mouse, Shift+right-click applies it."
+          "description": "What a right-click on the terminal does: open the context menu,\npaste, copy the selection or else paste, or nothing. While an\napplication takes the mouse, Shift+right-click applies it.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Mouse",
+          "x-huterm-label": "Right-click",
+          "x-huterm-order": 40,
+          "x-huterm-section": "terminal"
         },
         "scrollback_bytes": {
-          "description": "Optional size limit on each terminal's screen and history: a byte count, or digits and a unit such as \"64MiB\" or \"50MB\" (B, KB, MB, GB in powers of 1000; KiB, MiB, GiB in powers of 1024; units ignore case, so b also means bytes), at most 16GiB. 0 keeps no history. Whichever of it and scrollback_rows is reached first applies. Ghostty frees history a page at a time and always allows the visible screen rounded up to whole pages plus one more, so a tiny value keeps up to about two pages. Reload applies it to open terminals.",
+          "description": "Optional size limit on each terminal's screen and history: a byte count,\nor digits and a unit such as \"64MiB\" or \"50MB\" (B, KB, MB, GB in powers\nof 1000; KiB, MiB, GiB in powers of 1024; units ignore case, so b also\nmeans bytes), at most 16GiB. 0 keeps no history. Whichever of it and\n`scrollback_rows` is reached first applies. Ghostty frees history a page\nat a time and always allows the visible screen rounded up to whole pages\nplus one more, so a tiny value keeps up to about two pages. Reload\napplies it to open terminals.",
           "maximum": 17179869184,
           "minimum": 0,
           "pattern": "^[0-9]+( ?([bB]|[kKmMgG][iI]?[bB]))?$",
           "type": [
             "integer",
             "string"
-          ]
+          ],
+          "x-huterm-advanced": true,
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Limits",
+          "x-huterm-label": "Size limit",
+          "x-huterm-order": 20,
+          "x-huterm-section": "scrollback"
         },
         "scrollback_rows": {
           "default": 10000,
@@ -6766,7 +6892,13 @@
           "format": "uint32",
           "maximum": 50000,
           "minimum": 0,
-          "type": "integer"
+          "type": "integer",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Limits",
+          "x-huterm-label": "Scrollback rows",
+          "x-huterm-order": 10,
+          "x-huterm-section": "scrollback",
+          "x-huterm-unit": "rows"
         },
         "term": {
           "allOf": [
@@ -6775,7 +6907,13 @@
             }
           ],
           "default": "auto",
-          "description": "Terminal identity for newly spawned shells."
+          "description": "Terminal identity for newly spawned shells.",
+          "x-huterm-advanced": true,
+          "x-huterm-apply": "new_terminals",
+          "x-huterm-group": "Compatibility",
+          "x-huterm-label": "TERM",
+          "x-huterm-order": 90,
+          "x-huterm-section": "terminal"
         }
       },
       "type": "object"
@@ -6786,12 +6924,14 @@
         {
           "const": "display",
           "description": "Admit one snapshot per delivered display frame, plus at most one extra\nsnapshot for pending viewport changes.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Display frames"
         },
         {
           "const": "unlimited",
           "description": "Admit another dirty snapshot as soon as its predecessor completes.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Unlimited"
         }
       ]
     },
@@ -6801,22 +6941,26 @@
         {
           "const": "menu",
           "description": "Open the terminal's context menu at the pointer.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Open the context menu"
         },
         {
           "const": "paste",
           "description": "Paste the clipboard.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Paste"
         },
         {
           "const": "copy_or_paste",
           "description": "Copy and clear the selection, or paste when nothing is selected.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Copy or paste"
         },
         {
           "const": "ignore",
           "description": "Do nothing.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Do nothing"
         }
       ]
     },
@@ -6965,17 +7109,20 @@
         {
           "const": "hover",
           "description": "Only while the pointer is over the tab.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Hovered tab only"
         },
         {
           "const": "active",
           "description": "On the active tab, and on any hovered tab.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Active and hovered tabs"
         },
         {
           "const": "always",
           "description": "On every tab.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Every tab"
         }
       ]
     },
@@ -6985,17 +7132,20 @@
         {
           "const": "name",
           "description": "The last path component, such as `huterm`.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Name"
         },
         {
           "const": "path",
           "description": "The full path, relative to home when under it, such as\n`~/Projects/huterm`.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Path"
         },
         {
           "const": "short",
           "description": "The path with parent components shortened to their first character,\nsuch as `~/P/huterm`.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Short"
         }
       ]
     },
@@ -7005,81 +7155,133 @@
         {
           "const": "smart",
           "description": "A running program's own title, else its name; at an idle shell, the\ndirectory.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Smart"
         },
         {
           "const": "title",
           "description": "The title set by the shell or program.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Title"
         },
         {
           "const": "process",
           "description": "The foreground program's name.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Process"
         },
         {
           "const": "directory",
           "description": "The current directory.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Directory"
         },
         {
           "const": "process_and_directory",
           "description": "The foreground program's name and the current directory.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Process and directory"
         }
       ]
     },
     "TabNotch": {
       "description": "Where a top tab bar goes on a notched display in non-native fullscreen:\nbelow the notch across the window, or beside the camera housing on one\nside, giving that height back to the terminal.",
-      "enum": [
-        "off",
-        "left",
-        "right"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "off",
+          "type": "string",
+          "x-huterm-label": "Off"
+        },
+        {
+          "const": "left",
+          "type": "string",
+          "x-huterm-label": "Left"
+        },
+        {
+          "const": "right",
+          "type": "string",
+          "x-huterm-label": "Right"
+        }
+      ]
     },
     "TabPosition": {
       "oneOf": [
         {
-          "enum": [
-            "top",
-            "bottom",
-            "left",
-            "right"
-          ],
-          "type": "string"
+          "const": "top",
+          "type": "string",
+          "x-huterm-label": "Top"
+        },
+        {
+          "const": "bottom",
+          "type": "string",
+          "x-huterm-label": "Bottom"
+        },
+        {
+          "const": "left",
+          "type": "string",
+          "x-huterm-label": "Left"
+        },
+        {
+          "const": "right",
+          "type": "string",
+          "x-huterm-label": "Right"
         },
         {
           "const": "titlebar",
           "description": "Tabs share the window's title-bar row. Where no title bar exists\n(fullscreen, Quake windows, or a window manager drawing the title\nbar) the tabs take a top bar instead.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Title bar"
         }
       ]
     },
     "TabStyle": {
-      "enum": [
-        "strip",
-        "pill"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "strip",
+          "type": "string",
+          "x-huterm-label": "Strip"
+        },
+        {
+          "const": "pill",
+          "type": "string",
+          "x-huterm-label": "Pill"
+        }
+      ]
     },
     "TabWidth": {
-      "enum": [
-        "fill",
-        "fit"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "fill",
+          "type": "string",
+          "x-huterm-label": "Fill the bar"
+        },
+        {
+          "const": "fit",
+          "type": "string",
+          "x-huterm-label": "Fit titles"
+        }
+      ]
     },
     "TabsConfig": {
       "additionalProperties": false,
       "properties": {
         "always_show": {
           "default": false,
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Visibility",
+          "x-huterm-label": "Show the tab bar with one tab",
+          "x-huterm-order": 50,
+          "x-huterm-section": "tabs"
         },
         "auto_hide_in_fullscreen": {
           "default": false,
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Visibility",
+          "x-huterm-label": "Auto-hide in fullscreen",
+          "x-huterm-order": 60,
+          "x-huterm-section": "tabs"
         },
         "close_button": {
           "allOf": [
@@ -7088,7 +7290,12 @@
             }
           ],
           "default": "active",
-          "description": "When a tab shows its close button; hovering a tab always shows it."
+          "description": "When a tab shows its close button; hovering a tab always shows it.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Tab bar",
+          "x-huterm-label": "Close buttons",
+          "x-huterm-order": 40,
+          "x-huterm-section": "tabs"
         },
         "directory": {
           "allOf": [
@@ -7097,7 +7304,12 @@
             }
           ],
           "default": "name",
-          "description": "How labels show a directory."
+          "description": "How labels show a directory.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Labels",
+          "x-huterm-label": "Directory format",
+          "x-huterm-order": 90,
+          "x-huterm-section": "tabs"
         },
         "label": {
           "allOf": [
@@ -7105,21 +7317,46 @@
               "$ref": "#/definitions/TabLabel"
             }
           ],
-          "default": "smart"
+          "default": "smart",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Labels",
+          "x-huterm-label": "Tab label",
+          "x-huterm-order": 80,
+          "x-huterm-section": "tabs"
         },
         "max_width": {
           "default": 240.0,
           "format": "float",
           "maximum": 600,
           "minimum": 48,
-          "type": "number"
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sizing",
+          "x-huterm-label": "Maximum width",
+          "x-huterm-order": 120,
+          "x-huterm-section": "tabs",
+          "x-huterm-unit": "pt",
+          "x-huterm-visible-when": {
+            "equals": "fit",
+            "setting": "tabs.width"
+          }
         },
         "min_width": {
           "default": 96.0,
           "format": "float",
           "maximum": 600,
           "minimum": 48,
-          "type": "number"
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sizing",
+          "x-huterm-label": "Minimum width",
+          "x-huterm-order": 110,
+          "x-huterm-section": "tabs",
+          "x-huterm-unit": "pt",
+          "x-huterm-visible-when": {
+            "equals": "fit",
+            "setting": "tabs.width"
+          }
         },
         "notch": {
           "allOf": [
@@ -7128,12 +7365,28 @@
             }
           ],
           "default": "left",
-          "description": "Put a top bar beside a display notch in non-native fullscreen."
+          "description": "Put a top bar beside a display notch in non-native fullscreen.",
+          "x-huterm-advanced": true,
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Visibility",
+          "x-huterm-label": "Beside the display notch",
+          "x-huterm-order": 70,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "tabs"
         },
         "pill_accent": {
           "default": false,
           "description": "Draws the accent bar inside the active pill; ignored by other styles.",
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Tab bar",
+          "x-huterm-label": "Accent bar in the active pill",
+          "x-huterm-order": 30,
+          "x-huterm-section": "tabs",
+          "x-huterm-visible-when": {
+            "equals": "pill",
+            "setting": "tabs.style"
+          }
         },
         "position": {
           "allOf": [
@@ -7141,7 +7394,12 @@
               "$ref": "#/definitions/TabPosition"
             }
           ],
-          "description": "Where tabs sit: top, bottom, left, right, or titlebar. Defaults to titlebar on macOS and top on Linux."
+          "description": "Where tabs sit: top, bottom, left, right, or titlebar. Defaults to\ntitlebar on macOS and top on Linux.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Tab bar",
+          "x-huterm-label": "Position",
+          "x-huterm-order": 10,
+          "x-huterm-section": "tabs"
         },
         "style": {
           "allOf": [
@@ -7149,7 +7407,12 @@
               "$ref": "#/definitions/TabStyle"
             }
           ],
-          "default": "pill"
+          "default": "pill",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Tab bar",
+          "x-huterm-label": "Style",
+          "x-huterm-order": 20,
+          "x-huterm-section": "tabs"
         },
         "width": {
           "allOf": [
@@ -7157,7 +7420,12 @@
               "$ref": "#/definitions/TabWidth"
             }
           ],
-          "default": "fit"
+          "default": "fit",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sizing",
+          "x-huterm-label": "Tab width",
+          "x-huterm-order": 100,
+          "x-huterm-section": "tabs"
         }
       },
       "type": "object"
@@ -7168,17 +7436,20 @@
         {
           "const": "auto",
           "description": "Use `xterm-huterm` when its terminfo entry is available.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "Automatic"
         },
         {
           "const": "xterm-huterm",
           "description": "Advertise Huterm's private terminfo entry.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "xterm-huterm"
         },
         {
           "const": "xterm-256color",
           "description": "Use the widely installed compatibility entry.",
-          "type": "string"
+          "type": "string",
+          "x-huterm-label": "xterm-256color"
         }
       ]
     },
@@ -7326,14 +7597,27 @@
       "description": "Optional overrides for the platform updater.\n\nLeaving either field unset preserves the updater's stored preference. On a\nfresh macOS profile, Sparkle asks about automatic checks on the second\nlaunch and uses a 24-hour interval.",
       "properties": {
         "automatic_checks": {
-          "description": "Enable or disable scheduled update checks without Sparkle's consent prompt. Omit to preserve Sparkle's stored choice; a fresh macOS profile asks on its second launch.",
-          "type": "boolean"
+          "description": "Enable or disable scheduled update checks without Sparkle's consent\nprompt. Omit to preserve Sparkle's stored choice; a fresh macOS\nprofile asks on its second launch.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Updates",
+          "x-huterm-label": "Check automatically",
+          "x-huterm-order": 10,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "updates"
         },
         "check_interval_hours": {
-          "description": "Scheduled update-check interval in whole hours. Omit to preserve Sparkle's stored interval; a fresh profile uses 24 hours.",
+          "description": "Scheduled update-check interval in whole hours. Omit to preserve\nSparkle's stored interval; a fresh profile uses 24 hours.",
           "format": "uint32",
           "minimum": 1,
-          "type": "integer"
+          "type": "integer",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Updates",
+          "x-huterm-label": "Check interval",
+          "x-huterm-order": 20,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "updates",
+          "x-huterm-unit": "h"
         }
       },
       "type": "object"
@@ -7347,35 +7631,68 @@
               "$ref": "#/definitions/MacosFullscreenMode"
             }
           ],
-          "default": "non_native"
+          "default": "non_native",
+          "x-huterm-apply": "later_events",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Fullscreen mode",
+          "x-huterm-order": 30,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "window"
         },
         "menu_button": {
           "default": true,
           "description": "Show the window menu button in the title bar, or in the tab bar\nwhen the window has no title bar. Every item stays reachable through\nshortcuts or the command palette.",
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Menu button",
+          "x-huterm-order": 10,
+          "x-huterm-section": "window"
         },
         "padding_balance": {
           "default": false,
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Padding",
+          "x-huterm-label": "Balance horizontal padding",
+          "x-huterm-order": 60,
+          "x-huterm-section": "appearance"
         },
         "padding_x": {
           "default": 4.0,
           "format": "float",
           "maximum": 256,
           "minimum": 0,
-          "type": "number"
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Padding",
+          "x-huterm-label": "Horizontal padding",
+          "x-huterm-order": 40,
+          "x-huterm-section": "appearance",
+          "x-huterm-unit": "pt"
         },
         "padding_y": {
           "default": 4.0,
           "format": "float",
           "maximum": 256,
           "minimum": 0,
-          "type": "number"
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Padding",
+          "x-huterm-label": "Vertical padding",
+          "x-huterm-order": 50,
+          "x-huterm-section": "appearance",
+          "x-huterm-unit": "pt"
         },
         "shortcut_hints": {
           "default": false,
           "description": "Show key hints on the scroll pill and on dialog and panel buttons.\nThe command palette and menus always show their shortcuts.",
-          "type": "boolean"
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Shortcut hints",
+          "x-huterm-order": 20,
+          "x-huterm-section": "window"
         }
       },
       "type": "object"
@@ -7401,14 +7718,24 @@
       "items": {
         "$ref": "#/definitions/GlobalKeybinding"
       },
-      "type": "array"
+      "type": "array",
+      "x-huterm-apply": "live",
+      "x-huterm-group": "Global shortcuts",
+      "x-huterm-label": "Global shortcuts",
+      "x-huterm-order": 20,
+      "x-huterm-section": "quake"
     },
     "keybinding": {
       "default": [],
       "items": {
         "$ref": "#/definitions/RawKeybinding"
       },
-      "type": "array"
+      "type": "array",
+      "x-huterm-apply": "live",
+      "x-huterm-group": "Keybindings",
+      "x-huterm-label": "Keybindings",
+      "x-huterm-order": 10,
+      "x-huterm-section": "keybindings"
     },
     "palette": {
       "allOf": [
@@ -7429,7 +7756,12 @@
         {
           "$ref": "#/definitions/Config"
         }
-      ]
+      ],
+      "x-huterm-apply": "later_events",
+      "x-huterm-group": "Profiles",
+      "x-huterm-label": "Quake profiles",
+      "x-huterm-order": 10,
+      "x-huterm-section": "quake"
     },
     "tabs": {
       "allOf": [
@@ -7446,7 +7778,16 @@
       ]
     },
     "theme": {
-      "$ref": "#/definitions/SelectedTheme"
+      "allOf": [
+        {
+          "$ref": "#/definitions/SelectedTheme"
+        }
+      ],
+      "x-huterm-apply": "live",
+      "x-huterm-group": "Theme",
+      "x-huterm-label": "Theme",
+      "x-huterm-order": 30,
+      "x-huterm-section": "appearance"
     },
     "themes": {
       "additionalProperties": {
@@ -7455,7 +7796,12 @@
       "propertyNames": {
         "pattern": "^[A-Za-z0-9_-]+$"
       },
-      "type": "object"
+      "type": "object",
+      "x-huterm-apply": "live",
+      "x-huterm-group": "Theme",
+      "x-huterm-label": "Custom themes",
+      "x-huterm-order": 35,
+      "x-huterm-section": "appearance"
     },
     "updates": {
       "allOf": [

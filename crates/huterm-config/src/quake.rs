@@ -4,10 +4,17 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Named quake windows. The built-in default profile remains available when
+/// omitted. Profile references and display identifiers are resolved at
+/// runtime.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("propertyNames" = {"pattern": "\\S"}))
+    )]
     pub profiles: BTreeMap<String, Profile>,
 }
 
@@ -44,12 +51,32 @@ impl Config {
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
     pub position: Position,
+    /// Active, pointer, primary, or `id:<platform display identifier>`.
+    /// Display availability is checked at runtime.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(regex(pattern = r"^(active|pointer|primary|id:.*\S.*)$"))
+    )]
     pub display: String,
+    /// Fraction of the display work area, greater than zero and at most
+    /// one. Fullscreen uses the full display frame.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(range(max = 1), extend("exclusiveMinimum" = 0))
+    )]
     pub width: f64,
+    /// Fraction of the display work area, greater than zero and at most
+    /// one. Fullscreen uses the full display frame.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(range(max = 1), extend("exclusiveMinimum" = 0))
+    )]
     pub height: f64,
     pub fullscreen: bool,
     pub hide_on_focus_loss: bool,
     pub animation: Animation,
+    /// Animation duration in milliseconds, from 0 to 1000.
+    #[cfg_attr(feature = "schema", schemars(range(max = 1000)))]
     pub animation_ms: u16,
 }
 impl Default for Profile {
