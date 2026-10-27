@@ -43,12 +43,13 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 ## Linux renderer smoke startup hang
 
 - **Label:** `Smoke renderer` in `Rust smoke (Linux x86_64)` or
-  `Rust smoke (Linux aarch64)` times out at 15 seconds with empty stdout and
-  stderr.
+  `Rust smoke (Linux aarch64)` times out at 15 seconds with empty stderr and
+  no `RENDERER_SMOKE prepared` line.
 - **Occurrences:** 2026-09-27 (PR #175) and 2026-09-30 (PR #196) on x86_64,
   then on main: 2026-10-25 on x86_64 (run 40211388780) and 2026-10-26 on
-  aarch64 (run 40346320545). Every other Linux smoke in those jobs passed,
-  and reruns passed.
+  aarch64 (run 40346320545), then 2026-10-27 on x86_64 (PR #270, run
+  40495981661, job 122161417130). Every other Linux smoke in those jobs
+  passed, and reruns passed.
 - **Evidence:** the smoke prints its first `RENDERER_SMOKE prepared` line
   during the first prepare, and Rust line-buffers stdout even into a pipe,
   so an empty stdout means the process hung before its first prepare. It
@@ -60,6 +61,14 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   it returns. At its deadline the smoke supervisor also records a `threads`
   event in `events.jsonl` with each thread's name, state, kernel wait
   channel, and current syscall.
+- **First thread dump:** the 2026-10-27 run stopped after
+  `application started` at 2.7 seconds, so it hung between application
+  startup and the first draw. At the deadline the main thread was in state `D` in
+  `folio_wait_bit_common` with syscall `-1`: blocked in a page fault waiting
+  on page I/O, most likely a file-backed page, rather than on a lock or in a
+  syscall. The other 21 threads, including GPUI's workers, four `llvmpipe`
+  threads, and Mesa's `rendere:disk$0` shader-cache thread, were idle in
+  futex, epoll, or poll waits.
 - **Triage:** download the `smoke-evidence-Linux-*` artifact and read
   `renderer-process/stdout.log` for the last marker and
   `renderer-process/events.jsonl` for the `threads` event. Record both here,
