@@ -1486,6 +1486,30 @@ impl SettingsView {
         );
     }
 
+    /// The menu item an argument's value matches: `true` or `false`, its
+    /// text, or the unset item.
+    pub(super) fn argument_choice(
+        &self,
+        name: &str,
+        argument: &str,
+    ) -> Option<String> {
+        let listed = self
+            .keys
+            .inventory
+            .as_ref()
+            .and_then(|inventory| row(inventory, name))?;
+        let profile = lookup(listed.binding.command.as_str())
+            .and_then(|spec| spec.argument(argument))
+            .is_some_and(|spec| spec.kind == ArgumentKind::QuakeProfile);
+        Some(match binding_of(listed).args.get(argument) {
+            Some(Value::Boolean(on)) => on.to_string(),
+            Some(Value::String(text)) => text.clone(),
+            Some(other) => other.to_string(),
+            None if profile => "default".to_owned(),
+            None => UNSET.to_owned(),
+        })
+    }
+
     /// Writes a value picked from an argument's menu.
     pub(super) fn pick_argument(
         &mut self,

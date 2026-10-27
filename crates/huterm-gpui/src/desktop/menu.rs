@@ -576,6 +576,18 @@ impl Menu {
         cx.notify();
     }
 
+    /// Selects the item `id`, such as the value a select shows, when it is
+    /// enabled.
+    pub(crate) fn select_item(
+        &mut self,
+        id: MenuItemId,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(selection) = self.model.selection_of(id) {
+            self.set_selection(Some(selection), cx);
+        }
+    }
+
     pub(crate) fn select_next(&mut self, cx: &mut Context<'_, Self>) {
         self.set_selection(self.model.next(self.selection), cx);
     }

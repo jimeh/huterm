@@ -205,7 +205,7 @@ impl SettingsView {
             }) => {
                 self.keys.inventory = keys.inventory;
                 self.keys.entries = keys.entries;
-                self.keys.globals = keys.globals;
+                self.set_globals(keys.globals);
                 match (file, valid) {
                     (Ok(file), Ok(())) => {
                         self.file = file;
@@ -581,7 +581,7 @@ impl SettingsView {
                 }
                 self.keys.inventory = written.keys.inventory;
                 self.keys.entries = written.keys.entries;
-                self.keys.globals = written.keys.globals;
+                self.set_globals(written.keys.globals);
                 self.base = Some(written.snapshot);
                 self.rebase_queued_keys(&change.patches);
                 self.status.saved();
@@ -702,7 +702,7 @@ impl SettingsView {
                 }
                 self.keys.inventory = written.keys.inventory;
                 self.keys.entries = written.keys.entries;
-                self.keys.globals = written.keys.globals;
+                self.set_globals(written.keys.globals);
                 self.base = Some(written.snapshot);
                 self.status.saved();
                 let saved = field_text(shown(

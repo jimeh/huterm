@@ -3,6 +3,8 @@
 
 use toml::Value;
 
+use super::super::settings_window::SettingsView;
+
 use super::settings::{
     ScratchConfig, open_settings, settings, settled, with_view, with_window,
 };
@@ -202,6 +204,86 @@ fn a_global_key_an_in_app_binding_starts_with_writes_nothing(
             })
     });
     assert_eq!(file.text(), LOGS);
+    // The message goes once another editor changes the shortcuts.
+    std::fs::write(
+        file.path(),
+        format!(
+            "{LOGS}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+             command = \"toggle_quake\"\n"
+        ),
+    )
+    .unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the reread", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| {
+                        view.global_error("gadd").is_none()
+                    })
+                    .unwrap_or(false)
+            })
+    });
+}
+
+#[gpui::test]
+fn menus_open_on_the_value_their_control_shows(cx: &mut TestAppContext) {
+    let original = format!(
+        "{LOGS}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+         command = \"hide_quake\"\nargs = {{ profile = \"logs\" }}\n"
+    );
+    let file = ScratchConfig::new("quake-menus", &original);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_view(&mut harness, |view, _| view.pick_profile("logs"));
+    // Return in a menu just opened keeps what its control shows.
+    for key in ["qprof", "gcmd:0", "gprofile:0"] {
+        press(&mut harness, key);
+        with_window(&mut harness, |view, window, cx| {
+            view.command(ids::MENU_CONFIRM, window, cx).unwrap();
+        });
+        harness.cx.run_until_parked();
+    }
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.shown_profile_name(), "logs");
+    });
+    harness.wait_for("any save", settled);
+    assert_eq!(file.text(), original);
+}
+
+#[gpui::test]
+fn return_and_escape_reach_the_name_field_and_the_delete_prompt(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("quake-keys", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        view.type_profile_name("scratch", window, cx);
+    });
+    harness.cx.run_until_parked();
+    keystrokes(&mut harness, "escape");
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.quake_prompts(), (false, false));
+    });
+    with_window(&mut harness, |view, window, cx| {
+        view.type_profile_name("build", window, cx);
+    });
+    harness.cx.run_until_parked();
+    keystrokes(&mut harness, "enter");
+    saved(&mut harness, &file, |text| {
+        text.contains("[quake.profiles.build]")
+    });
+    press(&mut harness, "qdel");
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.quake_prompts(), (false, true));
+    });
+    keystrokes(&mut harness, "escape");
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.quake_prompts(), (false, false));
+    });
 }
 
 #[gpui::test]

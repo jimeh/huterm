@@ -194,7 +194,7 @@ impl SettingsView {
 
     /// The profile the card shows: the chosen one while it exists, else
     /// `default`.
-    fn shown_profile(&self) -> String {
+    pub(super) fn shown_profile(&self) -> String {
         let profile = &self.quake.profile;
         if self.profiles().iter().any(|name| name == profile) {
             profile.clone()
@@ -209,6 +209,24 @@ impl SettingsView {
             .iter()
             .map(|locator| Global::of(locator.content()))
             .collect()
+    }
+
+    /// Takes a new list of global shortcuts. Messages under their rows
+    /// describe the list they were made against, so they go once it
+    /// changes, such as after another editor's change.
+    pub(super) fn set_globals(
+        &mut self,
+        globals: Vec<huterm_config::document::EntryLocator>,
+    ) {
+        if self.keys.globals != globals {
+            self.keys.errors.retain(|row, _| {
+                row != "gadd"
+                    && row
+                        .strip_prefix('g')
+                        .is_none_or(|rest| rest.parse::<usize>().is_err())
+            });
+        }
+        self.keys.globals = globals;
     }
 
     /// The number of values the file sets in its profiles, for the
@@ -312,6 +330,38 @@ impl SettingsView {
             window,
             cx,
         );
+    }
+
+    /// The menu item a global shortcut's `command` or `profile` matches.
+    pub(super) fn global_choice(
+        &self,
+        entry: usize,
+        field: &str,
+    ) -> Option<String> {
+        let global = self.globals().into_iter().nth(entry)?;
+        Some(if field == "command" {
+            global.command
+        } else {
+            global.profile.unwrap_or_else(|| DEFAULT.to_owned())
+        })
+    }
+
+    /// Escape closes the delete confirmation, as Cancel does. Returns
+    /// whether it took the key.
+    pub(super) fn escape_delete(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if !self.quake.deleting
+            || keystroke.key != "escape"
+            || keystroke.modifiers.modified()
+        {
+            return false;
+        }
+        self.act("qdelno", window, cx);
+        true
     }
 
     /// Shows the profile picked from the dropdown.
@@ -615,6 +665,7 @@ impl SettingsView {
                         .gap(px(8.0))
                         .child(
                             div()
+                                .key_context("Palette")
                                 .w(px(220.0))
                                 .h(px(24.0))
                                 .px(px(8.0))
@@ -991,6 +1042,11 @@ impl SettingsView {
             .name_error
             .clone()
             .or_else(|| self.quake.delete_error.clone())
+    }
+
+    /// Whether the New profile field or the delete confirmation shows.
+    pub(in crate::desktop::windows) fn quake_prompts(&self) -> (bool, bool) {
+        (self.quake.naming.is_some(), self.quake.deleting)
     }
 
     /// The message under a global shortcut row, `g<n>`, or Add.

@@ -285,7 +285,10 @@ impl SettingsView {
             let Some(view) = weak.upgrade() else {
                 return;
             };
-            if view.update(cx, |view, cx| view.record(&event.keystroke, cx)) {
+            if view.update(cx, |view, cx| {
+                view.record(&event.keystroke, cx)
+                    || view.escape_delete(&event.keystroke, window, cx)
+            }) {
                 cx.stop_propagation();
             }
         });
@@ -837,6 +840,11 @@ impl SettingsView {
     ) {
         let swatch = Self::swatch(cx);
         let menu = cx.new(|cx| MenuView::new(model, swatch, true, cx));
+        // The menu opens on the value its control shows, so Return keeps it.
+        if let Some(current) = self.menu_current(&target) {
+            let current = keybindings::interned(&current);
+            menu.update(cx, |menu, cx| menu.select_item(current, cx));
+        }
         cx.subscribe_in(&menu, window, move |view, _, event, window, cx| {
             if let MenuEvent::Picked(value) = event {
                 match view.menu.as_ref().map(|(_, target, _)| target) {
@@ -866,6 +874,23 @@ impl SettingsView {
         menu.read(cx).focus_handle(cx).focus(window, cx);
         self.menu = Some((menu, target, opener));
         cx.notify();
+    }
+
+    /// The item a menu for `target` opens on: the value its control shows.
+    fn menu_current(&self, target: &MenuFor) -> Option<String> {
+        match target {
+            MenuFor::Setting(setting) => match self.value(setting)? {
+                Value::String(value) => Some(value),
+                _ => None,
+            },
+            MenuFor::Argument { row, name, .. } => {
+                self.argument_choice(row, name)
+            }
+            MenuFor::Profile => Some(self.shown_profile()),
+            MenuFor::Global { entry, field } => {
+                self.global_choice(*entry, field)
+            }
+        }
     }
 
     fn close_menu(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
