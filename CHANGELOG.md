@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.22.0](https://github.com/jimeh/huterm/compare/v0.21.0...v0.22.0) (2026-10-27)
+
+
+### Features
+
+* edit keybindings in Settings ([#274](https://github.com/jimeh/huterm/issues/274)) ([c9c9be1](https://github.com/jimeh/huterm/commit/c9c9be151b31903bb68f2316ede72dcf7e2e3ab2))
+* edit quake profiles and global shortcuts in Settings ([#275](https://github.com/jimeh/huterm/issues/275)) ([f0b0174](https://github.com/jimeh/huterm/commit/f0b0174c5c25033cd5bbddde49aefa2fc11854e8))
+* edit settings in a Settings window ([#269](https://github.com/jimeh/huterm/issues/269)) ([10abd56](https://github.com/jimeh/huterm/commit/10abd56fb5b9e95d7111f3471190fe9ad61218ae))
+* undo and redo pane moves and tab drops ([#281](https://github.com/jimeh/huterm/issues/281)) ([010f12f](https://github.com/jimeh/huterm/commit/010f12ff7ead2a63d18d2007fb20346734e2429d))
+
+
+### Bug Fixes
+
+* update Ghostty to 1.4.0 ([#280](https://github.com/jimeh/huterm/issues/280)) ([5b6699f](https://github.com/jimeh/huterm/commit/5b6699f25854329ad398e014931251bd674399af))
+
 ## [0.21.0](https://github.com/jimeh/huterm/compare/v0.20.0...v0.21.0) (2026-10-27)
 
 
