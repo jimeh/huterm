@@ -55,7 +55,7 @@ fn no_drag(cx: &mut App, window: AnyWindowHandle) -> bool {
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>().is_ok_and(|view| {
                 let view = view.read(cx);
-                view.pane_drag.is_none() && !view.busy
+                view.pane_drag.is_none() && view.reorder.is_none() && !view.busy
             })
         })
         .unwrap_or(false)
@@ -298,7 +298,7 @@ fn a_pane_dropped_on_a_tab_bar_slot_opens_a_tab_there(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn escape_or_a_release_without_a_target_leaves_every_layout_alone(
+fn escape_a_release_without_a_target_or_outside_the_window_change_nothing(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
@@ -325,6 +325,18 @@ fn escape_or_a_release_without_a_target_leaves_every_layout_alone(
     });
     harness.release_at(window, own);
     harness.wait_for("the release to end the drag", |cx| no_drag(cx, window));
+    // Nor does a release outside the window.
+    let outside = gpui::point(px(-40.0), own.y);
+    harness.press_at(window, grab);
+    harness.move_to(window, centre);
+    harness.wait_for("the drag to start again", |cx| {
+        pane_drag(cx, window).is_some()
+    });
+    harness.move_to(window, outside);
+    harness.release_at(window, outside);
+    harness.wait_for("the outside release to end the drag", |cx| {
+        no_drag(cx, window)
+    });
     assert_eq!(harness.seq(), seq);
     harness.cx.update(|cx| {
         assert_eq!(
@@ -396,8 +408,32 @@ fn a_tab_dragged_deep_onto_a_pane_edge_nests_and_a_shallow_dip_reorders(
     harness.release_at(window, frame.center());
     harness.wait_for("the drag to end", |cx| no_drag(cx, window));
     assert_eq!(harness.seq(), seq);
-    // Deep onto its bottom edge, the tab nests below the pane.
+    // A menu opening over pane mode cancels the drag, so the release that
+    // follows nests nothing.
     let edge = gpui::point(frame.center().x, frame.bottom() - px(8.0));
+    harness.press_at(window, label);
+    harness.move_to(window, edge);
+    harness.wait_for("pane mode over the edge", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx)
+                        .reorder
+                        .as_ref()
+                        .is_some_and(|drag| drag.nest.is_some())
+                })
+            })
+            .unwrap_or(false)
+    });
+    harness.invoke(window, ids::OPEN_MENU).unwrap();
+    harness.wait_for("the menu to cancel the drag", |cx| no_drag(cx, window));
+    harness.release_at(window, edge);
+    harness
+        .cx
+        .dispatch_keystroke(window, Keystroke::parse("escape").unwrap());
+    assert_eq!(harness.seq(), seq);
+    assert!(harness.cx.update(|cx| projected(cx, second)));
+    // Deep onto its bottom edge, the tab nests below the pane.
     harness.press_at(window, label);
     harness.move_to(window, edge);
     harness.release_at(window, edge);
@@ -524,10 +560,10 @@ fn a_tab_switch_the_drag_did_not_make_cancels_it_without_switching_back(
         no_drag(cx, window) && active(cx, window) == Some(other)
     });
     harness.release_at(window, centre);
-    harness
-        .cx
-        .update(|cx| assert_eq!(active(cx, window), Some(other)));
-    let _ = tab;
+    harness.cx.update(|cx| {
+        assert_eq!(active(cx, window), Some(other));
+        assert!(projected(cx, tab));
+    });
 }
 
 impl DesktopHarness {

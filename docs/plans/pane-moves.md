@@ -1101,17 +1101,20 @@ Recorded with PR 3:
   focus and an ACK from the focused shell, not `$$`. A tab dragged onto a
   pane has tier 2 coverage only. Smoke state gains `pane_grab=`, the point a
   press grabs each title bar at, instead of `pane_tabs=`.
-- Tier 2 covers an edge move and a centre swap, a tab bar slot, Escape and a
-  release on the source pane, a refused zone, a shallow dip that still
-  reorders, pane mode over a centre and a nest on an edge, spring timing at
+- Tier 2 covers an edge move and a centre swap, a tab bar slot, Escape, a
+  release on the source pane, and a release outside the window, a refused
+  zone, a shallow dip that still reorders, pane mode over a centre, an
+  opening menu that cancels pane mode, and a nest on an edge, spring timing at
   499 and 500 ms with the schedule's single deadline, a drop into the sprung
   tab with no centre offered there, switching back after Escape and after a
   release on the label, and a tab switch the drag did not make. The other
   three tab bar positions rely on the `TabStrip` unit tests, nesting a
   multi-pane tab and same-axis flattening on the protocol's `with_inserted`
   tests, and the remaining race rows on the cancellation rule below rather
-  than a test each. Blur, an opening overlay, autoscroll re-arming, and
-  geometry changes under a still pointer have no tier 2 test.
+  than a test each. Blur, an opening palette, autoscroll re-arming, geometry
+  changes under a still pointer, and a refused commit that switches back,
+  which needs its target to vanish between the last frame and the release,
+  have no tier 2 test.
 - The no-byte checks use the views' selection state in tier 2 and the
   ordered ACK of the focused shell in the smokes.
 - Validity is one rule: the window takes drags, the dragged pane is still in

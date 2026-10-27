@@ -457,9 +457,9 @@ impl WorkspaceView {
 
     /// One pane's title bar in a split tab: its status, its title, a zoom
     /// toggle, and a close button. A press focuses the pane, starts a pane
-    /// drag once it moves, and never reaches the terminal; the focused pane uses the active tab colours,
-    /// and the toggle stays highlighted while the pane is zoomed. Both
-    /// buttons act on release over themselves.
+    /// drag once it moves, and never reaches the terminal; the focused pane
+    /// uses the active tab colours, and the toggle stays highlighted while
+    /// the pane is zoomed. Both buttons act on release over themselves.
     pub(super) fn pane_title_bar(
         bar: PaneTitleBar,
         colors: TabColors,

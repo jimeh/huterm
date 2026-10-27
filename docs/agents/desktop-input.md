@@ -191,9 +191,12 @@ A press on a pane title bar's title, not its buttons, focuses the pane and
 starts a `PaneDrag` once it moves past the tab drag threshold. The window's
 capture listeners own its motion and release, as they do for a reorder, and
 the drag keeps terminal focus, so no application sees a focus report. Each
-motion resolves the target from the last drawn frame (`drawn_panes`): an
-edge or centre zone of a pane from `drop_zone`, a tab bar insertion slot, or
-an inactive label's spring zone from `TabStrip::label_zone`. The centre is
+motion resolves the target from the last drawn frame (`drawn_panes`, only
+while it shows the active tab): an edge or centre zone of a pane from
+`drop_zone`, a tab bar insertion slot, or an inactive label's spring zone
+from `TabStrip::label_zone`. The bar targets cover the strip's bounds, not
+the window buttons or title-row controls beside it. Escape cancels only a
+press that has become a drag; before that it reaches the terminal. The centre is
 offered only on a pane in the dragged pane's own tab, because a swap
 exchanges panes within one tab. A zone whose result would leave a pane under
 the minimum size is drawn refused and takes no drop. A release commits one
@@ -201,10 +204,12 @@ Mux operation through the move commands' `commit_pane_move`.
 
 A reorder enters pane mode only over a pane of the active tab, which is not
 the dragged tab, at least `PANE_DROP_DEPTH` (32 points) past the bar's inner
-edge. Its preview then returns to the tab's slot, dimmed; an edge nests the
-tab with `move_tab_to_pane`, and a centre or refused zone does nothing.
-Everywhere else a reorder projects onto the bar as before, including a
-release outside the window, so a sloppy reorder cannot become a nest.
+edge. Its preview then returns to the tab's slot, dimmed, and the bar does
+not autoscroll; an edge nests the tab with `move_tab_to_pane`, and a centre
+or refused zone does nothing. Everywhere else a reorder projects onto the
+bar as before, including a release outside the window, so a sloppy reorder
+cannot become a nest. Blur and an opening menu cancel a reorder as they
+cancel a pane drag, so a release afterwards nests nothing.
 
 A pane drag resting on an inactive label arms `SpringLoad`, which reports one
 deadline, `SPRING_LOAD_DELAY` (500 ms), through the window's animation

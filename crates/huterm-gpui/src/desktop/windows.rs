@@ -2267,6 +2267,7 @@ fn open_window_with_profile(
                     }
                     if !window.is_window_active() {
                         view.cancel_divider_drag(cx);
+                        view.cancel_reorder(window, cx);
                         view.cancel_pane_drag(window, cx);
                     }
                     view.refresh_tab_visibility(window, cx);
@@ -2389,6 +2390,7 @@ impl refresh::Animated for WorkspaceView {
         if self.scroll_target.is_some()
             || self.reorder.as_ref().is_some_and(|drag| {
                 drag.dragging
+                    && !drag.nesting
                     && drag
                         .strip
                         .autoscroll(drag.pointer, Duration::from_millis(16))
@@ -5924,7 +5926,8 @@ impl WorkspaceView {
         let strip = self.tab_strip(window);
         let next = if let Some(drag) = &mut self.reorder {
             drag.strip = strip;
-            if !drag.dragging {
+            // A tab held over a pane to nest it leaves the bar where it is.
+            if !drag.dragging || drag.nesting {
                 return false;
             }
             drag.strip.autoscroll(drag.pointer, elapsed)
@@ -10177,7 +10180,10 @@ impl Render for WorkspaceView {
                         // GPUI skips raw keystroke observers after propagation
                         // stops, so this Escape cannot also reach the terminal.
                         cx.stop_propagation();
-                    } else if view.pane_drag.is_some()
+                    } else if view
+                        .pane_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.dragging)
                         && event.keystroke.key == "escape"
                     {
                         view.cancel_pane_drag(window, cx);
@@ -11534,7 +11540,8 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        // An opening menu ends a pane drag; the menu then takes focus.
+        // An opening menu ends a tab or pane drag; the menu then takes focus.
+        self.cancel_reorder(window, cx);
         self.cancel_pane_drag(window, cx);
         let swatch = Swatch::from_theme(&self.config.theme);
         let clock = Rc::clone(&self.frame_clock);

@@ -276,13 +276,18 @@ impl WorkspaceView {
         }
     }
 
-    /// Whether `pointer` is over the drawn tab bar.
+    /// Whether `pointer` is over the drawn tab strip: the bar without the
+    /// window buttons or title-row controls at either end.
     fn over_tab_bar(
         &self,
         pointer: gpui::Point<Pixels>,
         window: &Window,
     ) -> bool {
-        self.bar_drawn() && self.chrome_layout(window).tabs.contains(&pointer)
+        self.bar_drawn()
+            && self
+                .chrome_layout(window)
+                .strip_bounds(self.layout_tabs())
+                .contains(&pointer)
     }
 
     /// The target of a pane drag at `pointer`, from the last drawn frame.
@@ -305,7 +310,9 @@ impl WorkspaceView {
             };
         }
         let (tab, rect) = self.drawn_pane_at(pointer)?;
-        if rect.pane == drag.pane {
+        // Until the next frame after a spring load, the drawn panes are the
+        // previous tab's.
+        if rect.pane == drag.pane || self.active_tab(cx) != Some(tab) {
             return None;
         }
         let zone = drop_zone(rect.frame, pointer)?;
