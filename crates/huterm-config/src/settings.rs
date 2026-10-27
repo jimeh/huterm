@@ -721,7 +721,7 @@ mod tests {
             rows.kind,
             SettingKind::Integer {
                 min: Some(0),
-                max: Some(50_000)
+                max: Some(100_000)
             }
         );
         for path in [
