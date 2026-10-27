@@ -116,10 +116,11 @@ cells and wrap flag through that reference. `RowRef` changes only the column
 of a reference Ghostty resolved, which is in bounds because Ghostty validated
 the last column against the row's own page; incomplete reflow can leave a page
 narrower than the terminal. A row above the viewport still costs one walk,
-longest in the middle of history: `scan-limit-mid-history` reads 160 such rows
-in 0.5 ms locally with a million rows of history. A token that reaches the
-viewport's top-left cell reads the row above's own wrap flag: the next row's
-continuation flag can disagree with it after line insertion or deletion.
+longest in the middle of history: `scan-limit-mid-history` reads 128 such
+rows, the scan's row limit, in 0.5 ms locally with a million rows of history.
+A token that reaches the viewport's top-left cell reads the row above's own
+wrap flag: the next row's continuation flag can disagree with it after line
+insertion or deletion.
 
 Reflow, not link lookup, bounds `ScrollbackLimit::MAX` at 100,000 rows. A width
 change rewraps all history on the runtime thread at about 65 ns per row in the
