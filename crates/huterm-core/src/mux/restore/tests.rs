@@ -308,6 +308,28 @@ fn a_later_resize_does_not_block_undo_which_restores_earlier_weights() {
 }
 
 #[test]
+fn a_change_of_weights_alone_undoes_and_redoes() {
+    let (mut mux, alpha) = idle_runtime();
+    let (tab, a) = open(&mut mux, alpha);
+    split(&mut mux, alpha, tab, a);
+    // A change that keeps the shape and moves only the divider, as
+    // balancing a tab does.
+    let before = mux.snapshot(tab);
+    let (root, children) = root_split(&mux, tab);
+    mux.resize_split(alpha, tab, root, &children, &[200_000, 800_000])
+        .unwrap();
+    let change = LayoutChange {
+        before: vec![before],
+        after: vec![mux.snapshot(tab)],
+        placed: Vec::new(),
+    };
+    let revision = mux.revision;
+    round_trip(&mut mux, &change, |_| {});
+    assert_eq!(mux.revision, revision);
+    mux.shutdown().unwrap();
+}
+
+#[test]
 fn restores_of_swaps_keep_the_revision_and_of_moves_advance_it() {
     let (mut mux, alpha) = idle_runtime();
     let (tab, a) = open(&mut mux, alpha);
