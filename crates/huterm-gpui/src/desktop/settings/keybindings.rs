@@ -65,6 +65,8 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
             ids::MOVE_PANE_DOWN,
             ids::MOVE_PANE_TO_PANE,
             ids::MOVE_PANE_TO_NEW_TAB,
+            ids::UNDO,
+            ids::REDO,
         ],
     ),
     (

@@ -260,6 +260,25 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   handling, then rerun. A non-panicking cleanup in the drop would keep one
   failure from aborting the binary.
 
+## `smoke:macos-input` empty state read
+
+- **Label:** `Smoke macOS input` in `Rust smoke (macOS arm64)`, "no
+  pane_rects in" followed by nothing, from `field(panes, "pane_rects")` at
+  `scripts/check-native-input.ts` right after the `pane-keys-consumed`
+  marker.
+- **Occurrences:** once, 2026-10-27, on PR #281 (run 40587040829, job
+  122481163722, head `5e1c3c66`). The PR does not change the input smoke or
+  the code it drives; the same job passed on its earlier head `60c82966`.
+- **Evidence:** `currentState()` returned an empty string, yet the state
+  read for the error message moments later held `pane_rects`. The smoke
+  writes `state` every 10ms with `std::fs::write`
+  (`desktop/input_smoke.rs`), which truncates the file before writing it,
+  so a read that lands in between sees it empty. `currentState()` turns a
+  failed read into an empty string as well.
+- **Triage:** rerun. A fix writes the state to a temporary file and renames
+  it into place, as the smoke's own command files do, or has the script
+  retry an empty read.
+
 ## `smoke:macos-palette` stray DEL at an early step
 
 - **Label:** an early terminal-bytes check in `scripts/check-palette.ts`
@@ -300,6 +319,15 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   already held before Enter was sent, so the smoke never observed the
   refusal. This is unconfirmed: the recorded terminal bytes contain no ESC
   from the Escape that followed, so where that Escape went is unexplained.
+- **Related signature:** on PR #279 (run 40578248073, job 122451107921,
+  head `ad33b662`), the same `busy-on` step timed out instead, waiting for
+  `selected=new_tab` and "structural operation in progress". The state had
+  `w0.busy=true` but `w0.palette=false`: the palette shortcut that
+  `shortcut("palette")` sends through `xdotool` just before `busy-on` never
+  opened the palette, although the `D` typed before it reached the terminal,
+  whose last bytes were `1f 43 44`. The next head passed the same job. Both
+  failures sit in the `busy-on` step, where `xdotool` input and the smoke's
+  file commands are not ordered.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused
@@ -317,6 +345,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   and exits at once. Ending well before the 1,500ms deadline means both
   pipes closed early, as if the descendant never held them; no output from
   the descendant was kept.
+- **Second signature:** a local `mise run test` on macOS, 2026-10-27, while
+  Cargo built in parallel, failed the same test at its 1,500ms deadline:
+  `process.kill(-child.pid, "SIGTERM")` in `smoke-process.ts` threw `EPERM`
+  instead of signalling the group. EPERM there suggests the group's leader
+  had already exited and its ID belonged to a group the user cannot signal.
+  The file passed alone right after.
 - **Triage:** rerun the file alone. If it recurs, record whether the
   descendant started, for example by having it write a marker file.
 

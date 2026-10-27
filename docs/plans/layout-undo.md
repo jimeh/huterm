@@ -1,8 +1,8 @@
 # Layout undo
 
-Status: in progress. Approved on 2026-10-27, with Jim's answers to its
+Status: implemented. Approved on 2026-10-27, with Jim's answers to its
 seven open questions recorded under "Settled decisions". PR 1 (runtime
-restore) is in review; PR 2 (client history) follows it. Plans
+restore) merged in #279, and PR 2 (client history) closes the issue. Plans
 [issue #256][issue-256] under [epic #12][issue-12], related to
 [#29][issue-29] and [#30][issue-30]. This plan builds on the runtime hooks
 that [the pane moves plan](pane-moves.md) delivered; all three of #29's PRs
@@ -292,7 +292,10 @@ pending mark becomes unnecessary too: a pass that drops the old entry
 while the window's own new operation is in flight drops an entry the
 completion replaces anyway, and an undo or redo has already taken the only
 entry off its stack. What remains is a guard check of one entry per
-stack after each batch.
+stack after each batch. The first version checks both entries after every
+non-empty batch, not only entries that name a touched tab: a workspace
+moved into another session touches no tab, yet every tab in it now fails
+the session guard.
 
 ### Limit
 
@@ -332,16 +335,19 @@ control and must reach the shell, so undo takes the shifted form, as copy
 and paste do; `ctrl-shift-z` reaches applications only as plain `ctrl-z` in
 legacy encoding, so binding it hides nothing a shell relies on.
 `ctrl-shift-y` mirrors the `ctrl-y` redo convention. Neither is a current
-default or a known desktop or IBus binding; `docs/keybindings.md` lists them
-with the other Linux conflicts.
+default or a known desktop or IBus binding; `docs/keybindings.md` notes why
+they leave `ctrl-z` to the shell.
 
 The commands are generic `undo` and `redo` rather than layout-specific
 names, so a later undoable action joins the same history. They are
-unavailable while the window is busy or a palette, menu, dialog, or close
-confirmation holds focus, so `cmd-z` in the palette's text field does not
-rearrange panes. With an empty history they do nothing, and the bindings
-still take the key. Ghostty instead passes the key to the terminal. Huterm
-could do the same with a conditional binding, but GPUI's native menu
+unavailable while the window is busy or a palette, dialog, or close
+confirmation is open, so `cmd-z` in the palette's text field does not
+rearrange panes. An open window menu does not block them: as for every
+other command, a shortcut closes the menu and runs, and the menu's own Undo
+and Redo items must stay usable while it is open. With an empty history
+they do nothing, and the bindings still take the key. Ghostty instead
+passes the key to the terminal. Huterm could do the same with a
+conditional binding, but GPUI's native menu
 matcher never sees a predicate that depends on window state, so the menu
 would lose its shortcut. No terminal program reads `cmd-z` today. Once the
 Kitty keyboard protocol lands (README future work), applications can, and
@@ -414,9 +420,11 @@ ACKs, never on sleeps.
   - `cmd-z` with the palette open edits nothing;
   - menu availability follows the stacks after another window invalidates
     the top entry.
-- Native: `smoke:macos-input` and the Linux input smoke drop a tab into
-  a pane, press the platform undo key, and assert the restored layout in
-  smoke state, a shell ACK from every pane, and the same `$$` per pane.
+- Native: the overlay smoke (`check-overlays.ts`, run by
+  `smoke:macos-palette` and the Linux overlays step), where the other pane
+  and tab drags run, drags a tab by its label into a pane, presses the
+  platform undo key, and asserts the restored tab count, active tab, and
+  layout in smoke state, and the same `$$` in each pane.
   `smoke:macos-menus` checks the Edit menu's Undo and Redo shortcuts.
   #29's drag PR landed first, so the client PR adds the tab-drop step
   directly.

@@ -148,8 +148,9 @@ impl WorkspaceView {
     /// tab in this window's workspace: it builds the tab's view, adds a
     /// pane's view, or swaps into a revoked view, and drops the viewers
     /// that no longer apply. A failed replacement removes its pane view.
-    /// Selects a tab only when the window has no active tab, and focuses it
-    /// unless an overlay holds focus.
+    /// Selects a tab only when the window has no active tab, or when an
+    /// undo or redo waits to focus a pane this install covers, and focuses
+    /// it unless an overlay holds focus.
     fn finish_subscribe(
         &mut self,
         targets: &[PaneTarget],
@@ -191,6 +192,12 @@ impl WorkspaceView {
             self.show_pushed_panes(window, cx);
         } else if self.emptied_close_may_retry(cx) {
             self.owe_emptied_close(cx);
+        }
+        if let Some(pane) = self.restore_focus
+            && targets.iter().any(|target| target.pane == pane)
+        {
+            self.restore_focus = None;
+            self.focus_restored_pane(pane, window, cx);
         }
         // A pane split into a tab while its install was in flight was
         // excluded then; installs that failed stay excluded.

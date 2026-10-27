@@ -295,6 +295,10 @@ mod tests {
         let (fresh, _) = mux.subscribe_hierarchy();
         assert_eq!(*state, fresh);
         assert_eq!(state.digest(), fresh.digest());
+        // The projection records each tab as core's layout changes do.
+        for tab in mux.workspaces.values().flat_map(|w| &w.tabs) {
+            assert_eq!(state.tab_snapshot(tab.id), mux.snapshot(tab.id));
+        }
     }
 
     fn open(mux: &mut Mux, workspace: WorkspaceId) -> TabId {

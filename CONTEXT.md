@@ -37,6 +37,11 @@ A view showing one pane of a split tab across the whole tab, without changing
 the shared layout. Zoom is view-local unless a client shares it through the
 runtime.
 
+**Layout history**:
+A window's record of the pane rearrangements it made, which undo and redo
+restore without starting or stopping a terminal. It holds the last change each
+way, belongs to its window, and dies with it.
+
 **Terminal**:
 A PTY, its child process, terminal-emulator state, scrollback, and shared viewport.
 

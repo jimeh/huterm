@@ -113,7 +113,7 @@ impl Mux {
         let current: Vec<TabSnapshot> =
             tabs.iter().map(|tab| self.snapshot(*tab)).collect();
         for (from, now) in from.iter().zip(&current) {
-            if !matches(from, now, placed.contains(&from.tab)) {
+            if !from.still_matches(now, placed.contains(&from.tab)) {
                 return Err(MuxError::LayoutChanged);
             }
         }
@@ -405,21 +405,6 @@ fn pane_homes(
         }
     }
     homes
-}
-
-/// Whether the current snapshot `now` still matches the recorded `from`.
-/// Weights, zoom, position, and name never block a restore; a placed
-/// tab's workspace does.
-fn matches(from: &TabSnapshot, now: &TabSnapshot, placed: bool) -> bool {
-    match (&from.record, &now.record) {
-        (None, None) => true,
-        (Some(from), Some(now)) => {
-            from.session == now.session
-                && from.layout.same_structure(&now.layout)
-                && (!placed || from.workspace == now.workspace)
-        }
-        _ => false,
-    }
 }
 
 /// The zoom a tab that exists before and after a restore ends with: the

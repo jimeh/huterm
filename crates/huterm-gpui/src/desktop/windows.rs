@@ -61,7 +61,8 @@ use huterm_config::{TabStyle, TabWidth, TabsConfig};
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
     HierarchySubscription, HostEffectRecipientOptions, HostEffectViewerOptions,
-    MuxError, OpenedPane, OpenedTab, TerminalViewer, ViewerOptions, ViewerWake,
+    MuxError, OpenedPane, OpenedTab, RestoreDirection, TerminalViewer,
+    ViewerOptions, ViewerWake,
 };
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, HierarchyState, NodeId,
@@ -159,6 +160,8 @@ pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod button_layout;
 mod client_frame;
 mod exit_closes;
+mod layout_history;
+mod layout_undo;
 mod model;
 mod pane_drag;
 mod pane_geometry;
@@ -1624,6 +1627,7 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     desktop
         .exit_closes
         .retain(|pane| state.pane_tab(pane).is_some());
+    let pruned = desktop.windows.prune_layout_histories(state);
     let desktop = cx.global::<Desktop>();
     let terminating = desktop.runtime.terminating.load(Ordering::Acquire);
     let windows = windows_to_visit(&desktop.windows, touched);
@@ -1652,6 +1656,9 @@ fn reconcile(cx: &mut App, touched: &Touched) {
             cx.notify();
         }
     });
+    // A window whose history lost an entry refreshes its open palette and
+    // menu, which may offer the entry.
+    update_windows(cx, &pruned, |_, cx| cx.notify());
     if !activate.is_empty() {
         // Selecting needs the window, which reconcile does not have here;
         // a deferred update runs once no window is on GPUI's update stack.
@@ -2283,6 +2290,7 @@ fn open_window_with_profile(
                 focus: cx.focus_handle(),
                 busy: false,
                 installs: PendingInstalls::default(),
+                restore_focus: None,
                 close: CloseState::default(),
                 notices: NoticeStack::default(),
                 notice_focus: cx.focus_handle(),
@@ -3367,6 +3375,9 @@ struct WorkspaceView {
     busy: bool,
     /// Views this window is installing for tabs it did not spawn.
     installs: PendingInstalls,
+    /// The pane an undo or redo focuses once its view installs, when the
+    /// restore brought it back into this window without one.
+    restore_focus: Option<PaneId>,
     close: CloseState,
     notices: NoticeStack,
     /// Focus for the toast column; `notices` bindings match while it holds
@@ -3463,6 +3474,9 @@ struct PaletteRefreshState {
     confirming: bool,
     reordering: bool,
     quake: Option<(bool, bool)>,
+    /// What undo and redo would restore, which pruning can change while
+    /// the palette is open.
+    restorable: [Option<&'static str>; 2],
 }
 
 impl Drop for WorkspaceView {
@@ -7002,6 +7016,7 @@ impl WorkspaceView {
             target,
             keymap,
             availability,
+            titles: self.palette_titles(cx),
             colors: self.palette_colors(),
             placement: self.config.palette.placement,
             history,
@@ -7215,6 +7230,23 @@ impl WorkspaceView {
             .collect()
     }
 
+    /// Palette titles that name what `undo` and `redo` would restore.
+    fn palette_titles(
+        &self,
+        cx: &App,
+    ) -> std::collections::HashMap<huterm_protocol::CommandId, String> {
+        [
+            (ids::UNDO, RestoreDirection::Undo),
+            (ids::REDO, RestoreDirection::Redo),
+        ]
+        .into_iter()
+        .filter_map(|(id, direction)| {
+            let label = self.layout_restore_label(direction, cx)?;
+            Some((id, format!("{} {label}", window_menu::label(id))))
+        })
+        .collect()
+    }
+
     fn current_palette_refresh_state(&self, cx: &App) -> PaletteRefreshState {
         PaletteRefreshState {
             tabs: self.tabs.len(),
@@ -7226,6 +7258,8 @@ impl WorkspaceView {
                 .quake
                 .as_ref()
                 .map(|state| (state.visible(), state.fullscreen_context())),
+            restorable: [RestoreDirection::Undo, RestoreDirection::Redo]
+                .map(|direction| self.layout_restore_label(direction, cx)),
         }
     }
 
@@ -7242,8 +7276,9 @@ impl WorkspaceView {
         let target = palette.read(cx).target.clone();
         let availability = self.palette_availability(&target, cx);
         let keymap = cx.global::<Desktop>().keymap.clone();
+        let titles = self.palette_titles(cx);
         palette.update(cx, |palette, _| {
-            palette.set_availability(availability);
+            palette.set_availability(availability, titles);
             palette.set_keymap(keymap);
         });
     }
@@ -7387,7 +7422,12 @@ impl WorkspaceView {
                 other if pane_moves::is_pane_move_command(other) => {
                     self.pane_move_availability(other, cx)
                 }
-                other => Err(CommandError::UnknownCommand(other)),
+                other => match layout_undo::restore_direction(other) {
+                    Some(direction) => {
+                        self.layout_restore_availability(direction, cx)
+                    }
+                    None => Err(CommandError::UnknownCommand(other)),
+                },
             },
             CommandScope::Runtime => {
                 self.check_runtime_available(cx)?;
@@ -7900,6 +7940,11 @@ impl WorkspaceView {
         validate(invocation)?;
         if self.palette.is_some() && invocation.id != ids::OPEN_COMMAND_PALETTE
         {
+            // The palette's search field has no undo, so its undo keys do
+            // nothing rather than raise a notice.
+            if layout_undo::restore_direction(invocation.id).is_some() {
+                return Ok(CommandOutcome::Completed);
+            }
             return Err(CommandError::Unavailable(
                 "command palette is open".to_owned(),
             ));
@@ -7954,6 +7999,12 @@ impl WorkspaceView {
             }
             id if pane_moves::is_pane_move_command(id) => {
                 self.run_pane_move(invocation, window, cx)
+            }
+            ids::UNDO => {
+                self.run_layout_restore(RestoreDirection::Undo, window, cx)
+            }
+            ids::REDO => {
+                self.run_layout_restore(RestoreDirection::Redo, window, cx)
             }
             ids::PREVIOUS_TAB => self.navigate(false, window, cx),
             ids::SELECT_TAB => self.select_target(invocation, window, cx),
@@ -11542,7 +11593,17 @@ impl WorkspaceView {
         let selection = self.active_view(cx).is_some_and(|terminal| {
             terminal.read(cx).command_availability(ids::COPY).is_ok()
         });
-        WindowMenuInput::for_build(selection, self.notices.contents().len())
+        let has =
+            |direction| self.layout_restore_label(direction, cx).is_some();
+        let restorable = window_menu::Restorable {
+            undo: has(RestoreDirection::Undo),
+            redo: has(RestoreDirection::Redo),
+        };
+        WindowMenuInput::for_build(
+            selection,
+            self.notices.contents().len(),
+            restorable,
+        )
     }
 
     /// Opens the window menu, or focuses it when it is already open; an

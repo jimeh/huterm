@@ -186,6 +186,9 @@ fn install_menus(cx: &mut App) {
             name: "Edit".into(),
             disabled: false,
             items: vec![
+                item(ids::UNDO),
+                item(ids::REDO),
+                MenuItem::separator(),
                 item(ids::COPY),
                 item(ids::PASTE),
                 item(ids::SELECT_ALL),

@@ -43,6 +43,15 @@ impl PaneMove {
             Self::TabInto { .. } => "Move tab",
         }
     }
+
+    /// The name undo and redo show for the change.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Swap { .. } => "Swap Panes",
+            Self::Move { .. } => "Move Pane",
+            Self::TabInto { .. } => "Move Tab into Pane",
+        }
+    }
 }
 
 impl DesktopRuntime {
@@ -487,6 +496,15 @@ impl WorkspaceView {
                     );
                 }
                 view.reconcile_own(window, cx);
+                if let Ok(made) = &result {
+                    view.record_layout_change(
+                        change.label(),
+                        focus,
+                        made.clone(),
+                        seq,
+                        cx,
+                    );
+                }
                 if result.is_err()
                     && let Some(back) = back
                 {

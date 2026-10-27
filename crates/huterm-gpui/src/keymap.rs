@@ -853,6 +853,8 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             default("cmd-m", ids::MINIMIZE, "Minimize the window"),
             default("cmd-h", ids::HIDE, "Hide Huterm"),
             default("cmd-alt-h", ids::HIDE_OTHERS, "Hide other applications"),
+            default("cmd-z", ids::UNDO, "Undo the last layout change"),
+            default("cmd-shift-z", ids::REDO, "Redo the undone layout change"),
         ]),
         Platform::Linux => entries.extend([
             default(
@@ -870,6 +872,9 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             ),
             default("ctrl-,", ids::OPEN_SETTINGS, "Open Settings"),
             default("ctrl-<", ids::RELOAD_CONFIG, "Reload the configuration"),
+            // Plain Ctrl+Z is job control and stays with the shell.
+            default("ctrl-shift-z", ids::UNDO, "Undo the last layout change"),
+            default("ctrl-shift-y", ids::REDO, "Redo the undone layout change"),
         ]),
     }
     let (modifier, close_window) = match platform {

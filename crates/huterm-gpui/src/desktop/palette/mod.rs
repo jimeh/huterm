@@ -166,6 +166,10 @@ pub(super) struct PaletteOpen<'a> {
     pub(super) target: PaletteTarget,
     pub(super) keymap: InstalledKeymap,
     pub(super) availability: HashMap<CommandId, String>,
+    /// Row titles that extend a command's title, such as "Undo Move Pane"
+    /// for `undo`. Each starts with the command's own title, so search
+    /// highlights still land on it.
+    pub(super) titles: HashMap<CommandId, String>,
     pub(super) colors: OverlayColors,
     pub(super) placement: PalettePlacement,
     pub(super) history: OwnedHistory,
@@ -656,7 +660,11 @@ pub(super) struct CommandPalette {
     /// The projection sequence `hierarchy` reflects.
     hierarchy_seq: u64,
     profiles: Vec<IdentityRow>,
-    availability: HashMap<CommandId, String>,
+    /// Why each unavailable command is unavailable.
+    pub(super) availability: HashMap<CommandId, String>,
+    /// Row titles that extend a command's own, as [`PaletteOpen`] gives
+    /// them.
+    pub(super) titles: HashMap<CommandId, String>,
     keymap: InstalledKeymap,
     colors: OverlayColors,
     placement: PalettePlacement,
@@ -687,6 +695,7 @@ impl CommandPalette {
             target,
             keymap,
             availability,
+            titles,
             colors,
             placement,
             history,
@@ -733,6 +742,7 @@ impl CommandPalette {
             hierarchy_seq,
             profiles: profile_rows(profiles),
             availability,
+            titles,
             keymap,
             colors,
             placement,
@@ -791,8 +801,10 @@ impl CommandPalette {
     pub(super) fn set_availability(
         &mut self,
         availability: HashMap<CommandId, String>,
+        titles: HashMap<CommandId, String>,
     ) {
         self.availability = availability;
+        self.titles = titles;
     }
 
     /// Applies reloaded theme colours, placement, and profiles to an open
@@ -1844,7 +1856,9 @@ impl CommandPalette {
                         .min_w_0()
                         .overflow_hidden()
                         .child(highlighted_title(
-                            spec.title,
+                            self.titles
+                                .get(&spec.id)
+                                .map_or(spec.title, String::as_str),
                             &matched.title_indices,
                             swatch,
                             window,

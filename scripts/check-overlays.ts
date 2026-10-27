@@ -31,7 +31,7 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
 type OverlayKey =
   | "enter" | "escape" | "tab" | "shift-tab" | "left" | "right" | "up" | "down" | "end" | "page-up"
   | "new-tab" | "close-tab" | "select-1" | "select-2" | "select-3"
-  | "split-right" | "focus-next-pane" | "focus-pane-left";
+  | "split-right" | "focus-next-pane" | "focus-pane-left" | "undo";
 type PointerButton = "left" | "middle" | "right";
 
 /** Native input for one platform, positioned in the window's logical points. */
@@ -66,6 +66,7 @@ const x11Keys: Record<OverlayKey, string> = {
   // Openbox grabs Ctrl+Alt+arrows for desktop switching, so the X11 run
   // invokes focus_pane_left instead of sending this key.
   "split-right": "ctrl+shift+o", "focus-next-pane": "ctrl+super+bracketright", "focus-pane-left": "ctrl+alt+Left",
+  undo: "ctrl+shift+z",
 };
 
 /** xdotool input; X11 positions are physical pixels. */
@@ -114,6 +115,7 @@ const macKeys: Record<OverlayKey, [number, number, string]> = {
   "select-1": [18, commandFlag, "1"], "select-2": [19, commandFlag, "2"], "select-3": [20, commandFlag, "3"],
   "split-right": [2, commandFlag, "d"], "focus-next-pane": [30, commandFlag, "]"],
   "focus-pane-left": [123, commandFlag | optionFlag, "\uF702"],
+  undo: [6, commandFlag, "z"],
 };
 
 /**
@@ -214,6 +216,7 @@ while IFS= read -r line; do
     fill) i=0; while [ "$i" -lt 300 ]; do echo "line $i"; i=$((i+1)); done; printf 'FILLED\\n';;
     link) printf '\\033[2J\\033[Hhttps://example.test/huterm\\nLINKED\\n';;
     ack*) printf 'ACK:%s\\n' "$line";;
+    pid*) printf 'PID:%s:%s\\n' "\${line#pid }" "$$";;
     mouse) stty raw -echo; printf '\\033[?1000h\\033[?1006hMOUSE-ON\\r\\n'
       report=$(dd bs=1 count=18 2>/dev/null); stty sane
       printf '\\033[?1000l\\033[?1006lMOUSE:%s\\n' "$(printf %s "$report" | tr -d '\\033')";;
@@ -791,6 +794,39 @@ label = "title"
     await click(closeX!, closeY!);
     await state("w0.panes=1", "w0.pane_focus=0", "w0.confirming=false");
     await ack("ackpaneclosed");
+    // Undo through the platform key: the origin tab, dragged by its label
+    // into the active tab's pane, nests there, and the undo key brings it
+    // back as itself, with the same shell in each pane.
+    const shellPid = async (token: string) => {
+      await typeText(`pid ${token}`);
+      await key("enter");
+      const text = await stateWhere((value) => value.includes(`PID:${token}:`), `PID of ${token}`);
+      return new RegExp(`PID:${token}:(\\d+)`).exec(text)![1]!;
+    };
+    const tabLabel = async (index: number) => rectCentre(field(await current(), "tabs_rects").split(";")[index]!);
+    const nestTabs = Number(field(await current(), "tabs"));
+    const hostPid = await shellPid("host");
+    const guestLabel = await tabLabel(origin);
+    await click(guestLabel.x, guestLabel.y);
+    await state(`w0.active_index=${origin}`, "w0.panes=1");
+    const guestPid = await shellPid("guest");
+    const hostLabel = await tabLabel(tabsBefore);
+    await click(hostLabel.x, hostLabel.y);
+    await state(`w0.active_index=${tabsBefore}`, "w0.panes=1");
+    const host = paneOf(await current(), 0);
+    const hostEdge = { x: host.x + host.w - 8, y: host.y + host.h / 2 };
+    await native().press(guestLabel.x, guestLabel.y);
+    await native().dragTo(guestLabel.x, (guestLabel.y + hostEdge.y) / 2);
+    await native().dragTo(hostEdge.x, hostEdge.y);
+    await state("w0.drop=pane:0:right");
+    await native().release(hostEdge.x, hostEdge.y);
+    await state(`w0.tabs=${nestTabs - 1}`, "w0.drop=none", "w0.busy=false", "w0.panes=2");
+    await key("undo");
+    await state(`w0.tabs=${nestTabs}`, `w0.active_index=${origin}`, "w0.busy=false", "w0.panes=1", "w0.terminal_focused=true");
+    if (await shellPid("guestback") !== guestPid) throw new Error(`${engine}: undo restarted the nested tab's shell`);
+    await click(hostLabel.x, hostLabel.y);
+    await state(`w0.active_index=${tabsBefore}`, "w0.panes=1");
+    if (await shellPid("hostback") !== hostPid) throw new Error(`${engine}: undo restarted the receiving tab's shell`);
 
     // 10. Quit's confirmation names a sibling window's busy tab by the title
     // the window model published. Window 0 hosts the dialog, so the title can
@@ -857,7 +893,7 @@ label = "title"
     }
     await reloadedTitles(configDocument);
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard pane-drags=edge-centre-escape-spring-back-drop`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard pane-drags=edge-centre-escape-spring-back-drop undo=tab-drop`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

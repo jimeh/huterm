@@ -17,10 +17,11 @@
 //! Not yet covered, for later extension: panel placement (#27) and durable
 //! layout records (#42).
 
+use super::layout_history::LayoutHistory;
 use crate::config::TabPosition;
 use gpui::{Pixels, WindowBounds, WindowId};
 use huterm_protocol::{
-    AttachmentId, SessionId, TabId, TerminalId, WorkspaceId,
+    AttachmentId, HierarchyState, SessionId, TabId, TerminalId, WorkspaceId,
 };
 
 /// One pane of a tab as its window shows it.
@@ -71,6 +72,8 @@ pub(super) struct WindowRecord {
     pub(super) history: Vec<TabId>,
     pub(super) quake: Option<QuakeRecord>,
     pub(super) layout: WindowLayout,
+    /// The window's own layout changes that undo and redo restore.
+    pub(super) layout_history: LayoutHistory,
     /// The window is being removed. Its own view can still read the record,
     /// but profile rows, Quit dialog titles, and Quit capture skip it.
     pub(super) closing: bool,
@@ -144,6 +147,7 @@ impl WindowModel {
             history: Vec::new(),
             quake,
             layout,
+            layout_history: LayoutHistory::default(),
             closing: false,
         });
     }
@@ -321,6 +325,29 @@ impl WindowModel {
     /// Forgets a window GPUI has removed.
     pub(super) fn remove(&mut self, id: WindowId) {
         self.records.retain(|record| record.id != id);
+    }
+
+    /// A window's layout history.
+    pub(super) fn layout_history_mut(
+        &mut self,
+        id: WindowId,
+    ) -> Option<&mut LayoutHistory> {
+        self.record_mut(id).map(|record| &mut record.layout_history)
+    }
+
+    /// Drops the history entries the projection no longer lets restore,
+    /// in every window, including windows that do not show their tabs, and
+    /// returns the windows that lost one.
+    pub(super) fn prune_layout_histories(
+        &mut self,
+        state: &HierarchyState,
+    ) -> Vec<WindowId> {
+        self.records
+            .iter_mut()
+            .filter_map(|record| {
+                record.layout_history.prune(state).then_some(record.id)
+            })
+            .collect()
     }
 
     pub(super) fn record(&self, id: WindowId) -> Option<&WindowRecord> {

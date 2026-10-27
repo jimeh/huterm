@@ -127,6 +127,7 @@ fn the_window_menu_lists_the_plan_items_with_platform_shortcuts() {
         updater: false,
         selection: false,
         notices: 0,
+        restorable: Restorable::default(),
     };
     let model =
         window_menu_model(&input, &keymap(Platform::MacOs, &[]), &contexts());
@@ -143,6 +144,8 @@ fn the_window_menu_lists_the_plan_items_with_platform_shortcuts() {
             ("close_pane", Some("⌘W".to_owned())),
             ("close_tab", None),
             ("close_window", Some("⇧⌘W".to_owned())),
+            ("undo", Some("⌘Z".to_owned())),
+            ("redo", Some("⇧⌘Z".to_owned())),
             ("toggle_fullscreen", Some("⌘↩".to_owned())),
             ("open_settings", Some("⌘,".to_owned())),
             ("reload_config", Some("⌘<".to_owned())),
@@ -161,8 +164,9 @@ fn the_window_menu_lists_the_plan_items_with_platform_shortcuts() {
     assert_eq!(labels[0], "Command Palette…");
     assert_eq!(labels[5], "Move Pane to New Tab");
     assert_eq!(labels[6], "Rename Tab…");
-    assert_eq!(labels[13], "About Huterm");
-    assert_eq!(labels[14], "Quit Huterm");
+    assert_eq!(labels[10], "Undo");
+    assert_eq!(labels[15], "About Huterm");
+    assert_eq!(labels[16], "Quit Huterm");
     let separators = model
         .rows
         .iter()
@@ -188,15 +192,17 @@ fn the_window_menu_lists_the_plan_items_with_platform_shortcuts() {
         linux_items[7],
         ("close_pane", Some("Ctrl+Shift+W".to_owned()))
     );
+    assert_eq!(linux_items[10], ("undo", Some("Ctrl+Shift+Z".to_owned())));
+    assert_eq!(linux_items[11], ("redo", Some("Ctrl+Shift+Y".to_owned())));
     assert_eq!(
-        linux_items[10],
+        linux_items[12],
         ("toggle_fullscreen", Some("F11".to_owned()))
     );
     assert_eq!(
-        linux_items[11],
+        linux_items[13],
         ("open_settings", Some("Ctrl+,".to_owned()))
     );
-    assert_eq!(linux_items[14], ("quit", None), "Linux has no quit binding");
+    assert_eq!(linux_items[16], ("quit", None), "Linux has no quit binding");
 }
 
 #[test]
@@ -206,6 +212,7 @@ fn updater_notices_and_selection_change_the_rows() {
         updater: true,
         selection: true,
         notices: 3,
+        restorable: Restorable::default(),
     };
     let model =
         window_menu_model(&base, &keymap(Platform::MacOs, &[]), &contexts());
@@ -264,6 +271,48 @@ fn updater_notices_and_selection_change_the_rows() {
 }
 
 #[test]
+fn undo_and_redo_rows_are_enabled_only_with_an_entry() {
+    let state = |undo: bool, redo: bool| {
+        let input = WindowMenuInput {
+            platform: Platform::Linux,
+            updater: false,
+            selection: false,
+            notices: 0,
+            restorable: Restorable { undo, redo },
+        };
+        let model = window_menu_model(
+            &input,
+            &keymap(Platform::Linux, &[]),
+            &contexts(),
+        );
+        ["undo", "redo"].map(|id| {
+            model
+                .rows
+                .iter()
+                .find_map(|row| match row {
+                    MenuRow::Item(item) if item.id == id => {
+                        Some((item.enabled, item.disabled_hint.clone()))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        })
+    };
+    assert_eq!(
+        state(false, false),
+        [
+            (false, Some("Nothing to undo".to_owned())),
+            (false, Some("Nothing to redo".to_owned())),
+        ]
+    );
+    assert_eq!(
+        state(true, false),
+        [(true, None), (false, Some("Nothing to redo".to_owned()))]
+    );
+    assert_eq!(state(false, true)[1], (true, None));
+}
+
+#[test]
 fn user_bindings_replace_default_shortcut_text() {
     let user = [
         KeybindingEntry {
@@ -288,6 +337,7 @@ fn user_bindings_replace_default_shortcut_text() {
         updater: false,
         selection: false,
         notices: 0,
+        restorable: Restorable::default(),
     };
     let model =
         window_menu_model(&input, &keymap(Platform::MacOs, &user), &contexts());

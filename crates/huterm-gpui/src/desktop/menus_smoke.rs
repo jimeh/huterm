@@ -7,6 +7,7 @@ use crate::config::KeybindingEntry;
 use crate::native_quit::{MenuShortcut, menu_shortcut};
 
 const COMMAND_MODIFIER: usize = 1 << 20;
+const SHIFT_MODIFIER: usize = 1 << 17;
 
 pub(crate) fn run() {
     crate::assets::application().run(|cx| {
@@ -22,6 +23,9 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     bind_keymap(cx, keymap::compile(Platform::MacOs, &[])?);
     shortcut("Toggle Fullscreen", "\r")?;
     marker("default-fullscreen-shortcut");
+    shortcut("Undo", "z")?;
+    shortcut_with("Redo", "z", COMMAND_MODIFIER | SHIFT_MODIFIER)?;
+    marker("default-undo-shortcuts");
     let mut config = Config {
         keybindings: vec![
             KeybindingEntry {
@@ -116,10 +120,18 @@ fn binding(key: &str, command: &str) -> KeybindingEntry {
 }
 
 fn shortcut(title: &str, key: &str) -> anyhow::Result<()> {
+    shortcut_with(title, key, COMMAND_MODIFIER)
+}
+
+fn shortcut_with(
+    title: &str,
+    key: &str,
+    modifiers: usize,
+) -> anyhow::Result<()> {
     let actual = menu_shortcut(title)?;
     let expected = MenuShortcut {
         key: key.into(),
-        modifiers: COMMAND_MODIFIER,
+        modifiers,
     };
     anyhow::ensure!(
         actual == expected,
