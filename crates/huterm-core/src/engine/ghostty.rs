@@ -707,6 +707,8 @@ impl TerminalEngine {
             terminal: &self.terminal,
             total,
             top,
+            last_column: self.size.columns.saturating_sub(1),
+            rows: StdCell::new([None; 2]),
             codepoints: [0; LINK_GRAPHEME_CODEPOINTS],
         })
     }
@@ -964,35 +966,60 @@ fn extract_row(
 
 /// Reads the grid for link resolution. Rows at or below the viewport top
 /// use viewport points; Ghostty resolves screen points by walking history
-/// from its first page, so only rows above the viewport pay that cost.
+/// pages, so only rows above the viewport pay that cost. Each row resolves
+/// once, at the last column, and its cells and wrap flag are read through
+/// that one reference.
 pub(super) struct GhosttyLinks<'a> {
     terminal: &'a ghostty::Terminal<EngineHost>,
     total: usize,
     top: usize,
+    last_column: u16,
+    /// The lookup's first row and the row it read last. A scan reads
+    /// outward from its first row in each direction, so these two hold
+    /// every row it returns to.
+    rows: StdCell<[Option<(usize, ghostty::RowRef<'a>)>; 2]>,
     /// Grapheme scratch shared by every cell a lookup visits.
     codepoints: [u32; LINK_GRAPHEME_CODEPOINTS],
 }
 
 impl<'a> GhosttyLinks<'a> {
-    fn grid_ref(
-        &self,
-        row: usize,
-        column: u16,
-    ) -> Result<ghostty::GridRef<'a>, LinkLookup> {
+    fn row_ref(&self, row: usize) -> Result<ghostty::RowRef<'a>, LinkLookup> {
+        let [first, last] = self.rows.get();
+        if let Some((_, cached)) = [first, last]
+            .into_iter()
+            .flatten()
+            .find(|cached| cached.0 == row)
+        {
+            return Ok(cached);
+        }
         let point = if row >= self.top {
             Point::viewport(
-                column,
+                self.last_column,
                 u32::try_from(row - self.top)
                     .map_err(|_| LinkLookup::Unavailable)?,
             )
         } else {
             Point::screen(
-                column,
+                self.last_column,
                 u32::try_from(row).map_err(|_| LinkLookup::Unavailable)?,
             )
         };
-        self.terminal
-            .grid_ref(point)
+        let resolved = self
+            .terminal
+            .row_ref(point)
+            .map_err(|_| LinkLookup::Unavailable)?;
+        self.rows
+            .set([first.or(Some((row, resolved))), Some((row, resolved))]);
+        Ok(resolved)
+    }
+
+    fn grid_ref(
+        &self,
+        row: usize,
+        column: u16,
+    ) -> Result<ghostty::GridRef<'a>, LinkLookup> {
+        self.row_ref(row)?
+            .cell(column)
             .map_err(|_| LinkLookup::Unavailable)
     }
 }
@@ -1007,7 +1034,7 @@ impl LinkBuffer for GhosttyLinks<'_> {
     }
 
     fn wrapped(&self, row: usize) -> Result<bool, LinkLookup> {
-        self.grid_ref(row, 0)?
+        self.row_ref(row)?
             .row()
             .and_then(ghostty::Row::wrapped)
             .map_err(unavailable)
