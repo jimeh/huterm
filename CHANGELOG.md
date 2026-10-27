@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.21.0](https://github.com/jimeh/huterm/compare/v0.20.0...v0.21.0) (2026-10-27)
+
+
+### Features
+
+* add commands to swap, move, and extract panes ([#262](https://github.com/jimeh/huterm/issues/262)) ([3212fb4](https://github.com/jimeh/huterm/commit/3212fb4c8d4c038ba42f6370452103b0fbd433bf))
+* add pane layout contexts for keybindings ([#255](https://github.com/jimeh/huterm/issues/255)) ([42104c0](https://github.com/jimeh/huterm/commit/42104c051cfd702234d239299a82213118a3f525))
+* allow up to 100,000 rows of scrollback ([#268](https://github.com/jimeh/huterm/issues/268)) ([8449bf9](https://github.com/jimeh/huterm/commit/8449bf90543c27fc7852c45662c8a5546b3d01d2))
+* drag panes and tabs into splits, with spring-loaded tabs ([#264](https://github.com/jimeh/huterm/issues/264)) ([3ba4ac0](https://github.com/jimeh/huterm/commit/3ba4ac0751b40a0723e8494f37744680e8bdf81a))
+* reload the configuration when it changes on disk ([#263](https://github.com/jimeh/huterm/issues/263)) ([c67aeb0](https://github.com/jimeh/huterm/commit/c67aeb0f2bb3599b45f860eb4c4b751435067a63))
+* show open source licenses from the About panel ([#259](https://github.com/jimeh/huterm/issues/259)) ([19c2c1a](https://github.com/jimeh/huterm/commit/19c2c1aebf26b34a3ec5318b50f4451803dcb3b0))
+
+
+### Bug Fixes
+
+* stop the command palette crashing on Resize Pane and Close Tab ([#265](https://github.com/jimeh/huterm/issues/265)) ([20213b9](https://github.com/jimeh/huterm/commit/20213b9de58c518858163340fe9cadaabcfb5e7e))
+
 ## [0.20.0](https://github.com/jimeh/huterm/compare/v0.19.1...v0.20.0) (2026-10-26)
 
 
