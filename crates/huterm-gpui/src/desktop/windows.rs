@@ -10706,6 +10706,14 @@ impl Render for WorkspaceView {
             window,
             cx,
         ));
+        // A drag resolves against the drawn panes, which this frame may have
+        // just replaced, as after a spring load; a resting pointer must not
+        // keep the target it found before.
+        if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
+            cx.defer_in(window, |view, window, cx| {
+                view.retarget_after_frame(window, cx);
+            });
+        }
         self.sync_tab_scrollbars();
         let strip = self.tab_strip(window);
         let vertical = strip.vertical;
