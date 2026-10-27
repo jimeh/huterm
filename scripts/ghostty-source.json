@@ -53,8 +53,8 @@
     {
       "name": "page-list-pin-nearest",
       "file": "third-party/ghostty-patches/page-list-pin-nearest.patch",
-      "sha256": "0f67d33bf57a2489cb91f4122c11d36019e238f64955bfb3cd5de9aee46f3be6",
-      "description": "Resolve the C API's screen and history grid references from whichever end of the page list is nearer, using the cached row count, so a reference near the active area no longer walks all of history. It returns the same pin as PageList.pin."
+      "sha256": "d6ffc91428bd881b6e187025743dea448286270da8bbeedf50d63a12ff727d0f",
+      "description": "Resolve the C API's screen and history grid references from whichever end of the page list is nearer, using the cached row count, so a reference near the active area no longer walks all of history. It returns the same pin as PageList.pin, and a failed reflow now recounts the cached rows."
     }
   ]
 }

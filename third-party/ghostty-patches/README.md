@@ -112,13 +112,21 @@ slow-safety builds asserts that its result equals `pin`'s. Only the C API's
 operations, such as reflow, `trimTrailingBlankRows`, and `erasePage`, and
 `pin` has hundreds of internal callers, so they keep using `pin`. Between C
 API calls no operation is in progress, and `PageList`'s integrity check
-asserts that the cached count matches the pages.
+asserts that the cached count matches the pages after each one, except after
+a failed reflow: `resizeCols` set `total_rows` only once every row was
+reflowed, so an allocation failure returned with the old count while the
+list held only the rows reflowed so far. `pinNearest` then resolved some
+screen rows to the wrong row where `pin` refused them. The patch makes
+`resizeCols` recount the list when it fails. Huterm closes a terminal whose
+resize fails, but the C API stays usable after one.
 
 `PageList.zig` tests compare `pinNearest` with `pin` for every row, one row
 past the end, and four columns, for both tags: on one page, on five pages,
 after erasing history from the front, after a reflow, and with pages
-narrower than the list, as an incomplete reflow can leave them. Removing the
-narrow-page check or moving the start by one row makes them fail. Huterm's
+narrower than the list, as an incomplete reflow can leave them, and after a
+widening reflow that fails at each of its allocations in turn. Removing the
+narrow-page check, moving the start by one row, or removing the recount makes
+them fail. Huterm's
 `grid_ref_tests` check screen points against viewport points at every
 scroll position and after pruning.
 
