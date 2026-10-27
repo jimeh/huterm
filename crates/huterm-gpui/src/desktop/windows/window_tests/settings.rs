@@ -259,6 +259,10 @@ fn use_file_keeps_the_file_even_when_focus_leaves_the_field(
             })
     });
     assert_eq!(file.text(), "[font]\nsize = 20.0\n");
+    // Settling the conflict clears its "Not saved" report.
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.status_text(), "Watching config.toml");
+    });
 }
 
 #[gpui::test]

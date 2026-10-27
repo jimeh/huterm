@@ -88,6 +88,14 @@ impl FileStatus {
         self.latest = Some(Event::Failed(message.into()));
     }
 
+    /// Drops a failed write's report once the user settles it by keeping
+    /// the file, so the footer shows the watch status again.
+    pub(crate) fn settled(&mut self) {
+        if matches!(self.latest, Some(Event::Failed(_))) {
+            self.latest = None;
+        }
+    }
+
     /// Whether the file failed to parse or validate, which makes every
     /// control read-only.
     pub(crate) fn invalid(&self) -> bool {
@@ -167,6 +175,12 @@ mod tests {
         );
         status.reloaded();
         assert_eq!(text(&status), (Tone::Ok, "Reloaded".into(), None));
+        status.failed("config.toml changed on disk");
+        status.settled();
+        assert_eq!(
+            text(&status),
+            (Tone::Ok, "Watching config.toml".into(), None)
+        );
 
         let mut status = FileStatus::new(false);
         assert_eq!(

@@ -490,6 +490,9 @@ impl SettingsView {
     fn keep_file(&mut self, path: &'static str, cx: &mut Context<'_, Self>) {
         self.conflicts.remove(path);
         self.errors.remove(path);
+        if self.conflicts.is_empty() {
+            self.status.settled();
+        }
         self.sync_field(path, true, cx);
         cx.notify();
     }
