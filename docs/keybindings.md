@@ -167,7 +167,7 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `palette` | The window owns an open command palette. |
 | `Palette` | The command palette or the About panel's Licenses view is open and has focus, or a Settings text field has focus. |
 | `Settings` | The Settings window has focus. |
-| `SettingsControl` | A Settings switch, select, segmented control, or section has focus. |
+| `SettingsControl` | A Settings switch, select, segmented control, modifier chip, button, or section has focus. |
 
 Most contexts are bare words for the state of the view or window, such as
 `selection` and `pane_zoomed`. The `has_` prefix marks a context that says
@@ -306,9 +306,9 @@ imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 | `settings_search` | Window | Bound only while `Settings`. |
 | `settings_focus_next` | Window | Bound only while `Settings`. |
 | `settings_focus_previous` | Window | Bound only while `Settings`. |
-| `settings_toggle` | Window | Bound only while `SettingsControl`. Toggles a switch, opens a select, or shows the focused section. |
-| `settings_increase` | Window | Bound only while `SettingsControl`. |
-| `settings_decrease` | Window | Bound only while `SettingsControl`. |
+| `settings_toggle` | Window | Bound only while `SettingsControl`. Toggles a switch or modifier chip, opens a select, presses a button, or shows the focused section. |
+| `settings_increase` | Window | Bound only while `SettingsControl`. Steps the focused control, or moves to the next modifier chip; a switch ignores it. |
+| `settings_decrease` | Window | Bound only while `SettingsControl`. Steps the focused control back, or moves to the previous modifier chip; a switch ignores it. |
 | `settings_reset` | Window | Bound only while `SettingsControl`. |
 | `palette_select_next` | Palette | |
 | `palette_select_previous` | Palette | |
@@ -507,11 +507,18 @@ the terminal.
 
 ### Settings
 
-These bind only in the Settings window. Its text fields take the `Palette`
-context, so the palette bindings edit them: `palette_confirm` saves a field,
-or from the search field moves to the first match; `palette_expand` and
-`palette_previous_slot` move focus on and back; `palette_select_previous` and
-`palette_select_next` step a number; and `palette_back` clears the search. In a
+These bind only in the Settings window. `settings_toggle` turns a switch on or
+off; `settings_increase` and `settings_decrease` step a segmented control and
+leave a switch alone. The link modifier chips are one tab stop: the two step
+commands move between the chips, wrapping at the ends, and `settings_toggle`
+turns the focused one on or off. Enter and Space reach a control only through
+these bindings, so removing a binding removes its key.
+
+The window's text fields take the `Palette` context, so the palette bindings
+edit them: `palette_confirm` saves a field, or from the search field moves to
+the first match; `palette_expand` and `palette_previous_slot` move focus on and
+back; `palette_select_previous` and `palette_select_next` step a number; and
+`palette_back` clears the search. In a
 shortcut's `when` field, `palette_select_next` and `palette_select_previous`
 move through the context suggestions and `palette_confirm` takes one; in an
 argument's number field they step it. In Keybindings, `settings_search`

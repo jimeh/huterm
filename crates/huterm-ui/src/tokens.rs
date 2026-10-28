@@ -392,6 +392,24 @@ impl Tokens {
             .unwrap_or_else(|| self.on_all(&steady))
     }
 
+    /// Borders and tracks that alone show a control's state, such as a
+    /// switch's off track or an unselected chip's border: the foreground at
+    /// the lightest opacity that reaches 3:1 against the background and the
+    /// surface. Outlines that a control's own text labels use `line_strong`.
+    #[must_use]
+    pub fn state_line(&self) -> Hsla {
+        let unders = [self.bg, self.surface];
+        [0.22, 0.3, 0.38, 0.46, 0.54, 0.62, 0.7, 0.78, 0.86, 0.94]
+            .into_iter()
+            .map(|alpha| self.fg.opacity(alpha))
+            .find(|line| {
+                unders.iter().all(|under| {
+                    contrast(over(*line, *under), *under) >= NON_TEXT_CONTRAST
+                })
+            })
+            .unwrap_or(self.fg)
+    }
+
     /// The focus ring's color: the accent, moved toward the foreground in
     /// steps until it reaches 3:1 against both the background and the
     /// surface, else black or white.

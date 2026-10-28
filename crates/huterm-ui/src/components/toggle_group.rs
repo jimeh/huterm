@@ -297,10 +297,11 @@ fn render_item(
             element
                 .rounded(px(5.0))
                 .border_1()
+                // A chip's border alone shows its state, so it keeps 3:1.
                 .border_color(if item.on {
-                    tokens.accent
+                    tokens.ring()
                 } else {
-                    tokens.line_strong
+                    tokens.state_line()
                 })
         })
         .when(item.on, |element| element.bg(tokens.selection))

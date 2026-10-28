@@ -263,6 +263,15 @@ mod contrast {
         for under in plain {
             pairs.push(("focus ring", ring, under, NON_TEXT_CONTRAST));
         }
+        // A switch's off track and a chip's border alone show their state.
+        for under in plain {
+            pairs.push((
+                "state line",
+                t.state_line(),
+                under,
+                NON_TEXT_CONTRAST,
+            ));
+        }
         // A switch's knob marks its state on the accent track.
         pairs.push(("switch knob", t.on_accent(), t.accent, NON_TEXT_CONTRAST));
         pairs

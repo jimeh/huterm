@@ -52,6 +52,29 @@ test("huterm-ui draws focus rings only through focus::ring", () => {
   expect(offenders).toEqual([]);
 });
 
+test("Settings draws focus rings through huterm-ui, except where a later migration moves them", () => {
+  // Migration 3a moved Settings' buttons, links, switches, toggle groups,
+  // and chips onto `huterm-ui`, whose rings follow `focus::ring`. These GPUI
+  // focus styles remain, each owned by a later migration of
+  // `docs/plans/ui-components.md`: the theme cards and the sidebar rows
+  // (6a), and `actionable` for the key recorders (8), the delete prompt
+  // (7a), and the keybinding rows (6a). Lower a count as its migration
+  // lands; a new GPUI focus style fails here.
+  const remaining: Record<string, number> = {
+    "crates/huterm-gpui/src/desktop/windows/settings_window/controls.rs": 1,
+    "crates/huterm-gpui/src/desktop/windows/settings_window/render.rs": 2,
+  };
+  const style = /\.(focus|in_focus|focus_visible)\(\s*(move\s+)?\|/g;
+  const window = join(repoRoot, "crates/huterm-gpui/src/desktop/windows");
+  const files = [join(window, "settings_window.rs"), ...rustFiles(join(window, "settings_window"))];
+  const counts: Record<string, number> = {};
+  for (const file of files) {
+    const count = [...readFileSync(file, "utf8").matchAll(style)].length;
+    if (count > 0) counts[file.slice(repoRoot.length + 1)] = count;
+  }
+  expect(counts).toEqual(remaining);
+});
+
 test("text draws with corrected tokens, never raw theme colors", () => {
   // `Tokens` corrects arbitrary themes so enabled text reads on its fill:
   // `accent_text()`, `warning_text()`, `danger_text()`, `on(fill)`, and
