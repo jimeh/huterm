@@ -11,6 +11,14 @@ test("macOS palette text uses one correctly keyed event per character", () => {
   ]);
 });
 
+test("macOS palette text shifts the punctuation a layout template needs", () => {
+  expect(macKeyEvents("(*)")).toEqual([
+    { code: 25, flags: 1 << 17, text: "(", plain: "9" },
+    { code: 28, flags: 1 << 17, text: "*", plain: "8" },
+    { code: 29, flags: 1 << 17, text: ")", plain: "0" },
+  ]);
+});
+
 test("quake picker rows come from the named window's palette", () => {
   const state = [
     'w0.palette=false w0.text="x"',

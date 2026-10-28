@@ -54,9 +54,19 @@ const macKeyCodes: Record<string, number> = {
   "9": 25,
 };
 
+// Punctuation typed with Shift on a US layout, by the key's unshifted
+// character.
+const shiftedPunctuation: Record<string, string> = {
+  "(": "9",
+  ")": "0",
+  "*": "8",
+  _: "-",
+};
+
 export function macKeyEvents(text: string): MacKeyEvent[] {
   return [...text].map((character) => {
-    const plain = character.toLowerCase();
+    const shifted = shiftedPunctuation[character];
+    const plain = shifted ?? character.toLowerCase();
     const code = macKeyCodes[plain];
     if (code === undefined) {
       throw new Error(

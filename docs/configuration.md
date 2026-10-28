@@ -218,8 +218,27 @@ shortcut uses is. A keybinding naming a missing layout fails only when it
 runs, with a notice. A reload replaces the layouts and the cycle.
 
 The palette's layout picker and the Settings keybinding editor list your
-layouts after the built-ins. Settings does not edit `[panes.layouts]` or
-`layout_cycle` yet; change them in the file.
+layouts after the built-ins.
+
+The Pane layouts card in the Window and panes section of Settings lists the
+built-ins with their templates, and edits your layouts and the cycle. New
+layout asks for a name and writes the layout as `columns(*)`, which you then
+type over; it does not add the layout to the cycle. A template field checks
+the template as you type and shows where it goes wrong, saves on Enter or
+when you leave the field, never saves a template that does not parse, and
+Escape puts back the file's template. Rename writes one save: the layout
+under its new name, the old name removed, every `[[keybinding]]` whose
+`arrange_panes` `layout` argument named it, including one another editor
+added since Settings read the file, and `layout_cycle` with the new name in
+the old one's place. The renamed layout moves to the end of
+`[panes.layouts]`, and comments on its old line are removed. When the save
+cannot be written, such as for a binding in an inline `keybinding = [...]`
+array, which Settings cannot edit in place, or for a layout another editor
+changed meanwhile, Settings writes nothing and says why. Deleting a layout
+that a keybinding or the cycle uses is refused, naming each; change those
+first. The cycle lists every layout, the cycle's own first and in order:
+turn a layout on or off with its switch, and move it with Move up and Move
+down. The cycle keeps at least one layout.
 
 ## Tab bar
 

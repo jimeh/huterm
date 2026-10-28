@@ -49,6 +49,18 @@ pub(super) enum Prompt {
     RenameProfile(String),
     /// Why the Quake profile was not renamed.
     RenameRefused { profile: String, message: String },
+    /// The name of a new pane layout, typed into the dialog's field.
+    NewLayout,
+    /// The pane layout's new name, typed into the dialog's field.
+    RenameLayout(String),
+    /// Why the pane layout was not renamed.
+    LayoutRenameRefused { layout: String, message: String },
+    /// Whether to delete the pane layout.
+    DeleteLayout(String),
+    /// Why the pane layout cannot be deleted.
+    LayoutDeleteRefused { layout: String, message: String },
+    /// Why the layout cycle cannot lose the pane layout, its last member.
+    CycleRefused(String),
 }
 
 impl Prompt {
@@ -59,6 +71,14 @@ impl Prompt {
             Self::DeleteProfile(_) | Self::DeleteRefused { .. } => "qdelno",
             Self::NewProfile => "qcancel",
             Self::RenameProfile(_) | Self::RenameRefused { .. } => "qrenno",
+            Self::NewLayout => "lcancel",
+            Self::RenameLayout(_) | Self::LayoutRenameRefused { .. } => {
+                "lrenno"
+            }
+            Self::DeleteLayout(_) | Self::LayoutDeleteRefused { .. } => {
+                "ldelno"
+            }
+            Self::CycleRefused(_) => "lcycno",
         }
     }
 
@@ -68,9 +88,15 @@ impl Prompt {
         match self {
             Self::NewProfile => Some("qcreate"),
             Self::RenameProfile(_) => Some("qrename"),
+            Self::NewLayout => Some("lcreate"),
+            Self::RenameLayout(_) => Some("lrename"),
             Self::DeleteProfile(_)
             | Self::DeleteRefused { .. }
-            | Self::RenameRefused { .. } => None,
+            | Self::RenameRefused { .. }
+            | Self::LayoutRenameRefused { .. }
+            | Self::DeleteLayout(_)
+            | Self::LayoutDeleteRefused { .. }
+            | Self::CycleRefused(_) => None,
         }
     }
 
@@ -82,6 +108,12 @@ impl Prompt {
             Self::NewProfile => "new-profile",
             Self::RenameProfile(_) => "rename",
             Self::RenameRefused { .. } => "rename-refused",
+            Self::NewLayout => "new-layout",
+            Self::RenameLayout(_) => "rename-layout",
+            Self::LayoutRenameRefused { .. } => "rename-layout-refused",
+            Self::DeleteLayout(_) => "delete-layout",
+            Self::LayoutDeleteRefused { .. } => "delete-layout-refused",
+            Self::CycleRefused(_) => "cycle-refused",
         }
     }
 }
@@ -329,6 +361,15 @@ impl SettingsView {
             }
             Prompt::RenameRefused { profile, message } => {
                 Some(self.render_rename_refusal(&profile, message, swatch, cx))
+            }
+            Prompt::NewLayout | Prompt::RenameLayout(_) => {
+                self.render_layout_name_dialog(&prompt, swatch, window, cx)
+            }
+            Prompt::LayoutRenameRefused { .. }
+            | Prompt::DeleteLayout(_)
+            | Prompt::LayoutDeleteRefused { .. }
+            | Prompt::CycleRefused(_) => {
+                self.render_layout_alert(&prompt, swatch, window, cx)
             }
         }
     }

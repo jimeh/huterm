@@ -1165,7 +1165,13 @@ impl SettingsView {
             }
             Prompt::NewProfile
             | Prompt::RenameProfile(_)
-            | Prompt::RenameRefused { .. } => return None,
+            | Prompt::RenameRefused { .. }
+            | Prompt::NewLayout
+            | Prompt::RenameLayout(_)
+            | Prompt::LayoutRenameRefused { .. }
+            | Prompt::DeleteLayout(_)
+            | Prompt::LayoutDeleteRefused { .. }
+            | Prompt::CycleRefused(_) => return None,
         };
         Some(alert.into_any_element())
     }

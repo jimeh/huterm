@@ -156,6 +156,7 @@ pub(super) fn close(cx: &mut App) {
 mod controls;
 mod dialog;
 mod keybindings;
+mod layouts;
 mod quake;
 mod render;
 mod saving;
@@ -268,6 +269,10 @@ pub(super) struct SettingsView {
     /// Every select trigger's painted bounds, by menu key, so a menu opened
     /// from the keyboard anchors to its trigger.
     triggers: Rc<RefCell<HashMap<String, gpui::Bounds<gpui::Pixels>>>>,
+    /// The focused control and the painted bounds of the group around it
+    /// that a keyboard reveal shows with it, such as a user layout's row
+    /// with its name, recorded by `reveal_group`.
+    focus_group: Rc<RefCell<Option<FocusGroup>>>,
     /// Wakes the window for the open menu's scroll indicator.
     menu_wake: Wake,
     /// The window size the open menu was placed for.
@@ -276,10 +281,13 @@ pub(super) struct SettingsView {
     keys: Keys,
     /// The Quake windows section.
     quake: quake::Quake,
+    /// The pane layouts editor.
+    layouts: layouts::Layouts,
     /// The open dialog, if any.
     dialog: dialog::SettingsDialog,
-    /// The action and keybinding field keys the last frame drew, so focus
-    /// left on a control that went away can move on.
+    /// The action keys, keybinding field keys, and pane layout template
+    /// paths the last frame drew, so focus left on a control that went away
+    /// can move on.
     drawn: HashSet<String>,
     /// What had focus at the last render, to tell a control that left the
     /// tree from one that just took focus and has yet to draw.
@@ -330,6 +338,7 @@ impl SettingsView {
             focus: cx.focus_handle(),
             keys,
             quake: quake::Quake::new(),
+            layouts: layouts::Layouts::default(),
             dialog: dialog::SettingsDialog::default(),
             drawn: HashSet::new(),
             last_focus: None,
@@ -370,6 +379,7 @@ impl SettingsView {
             menu: None,
             popover: Popover::new(),
             triggers: Rc::default(),
+            focus_group: Rc::default(),
             menu_wake: Wake::default(),
             menu_viewport: None,
             scroll: ScrollHandle::new(),
@@ -461,26 +471,45 @@ impl SettingsView {
             return field.clone();
         }
         let swatch = Self::swatch(cx);
-        let placeholder =
-            if setting.default.is_none() && self.defaults.get(path).is_none() {
-                "Default"
-            } else {
-                ""
-            };
+        let template = layouts::is_template(path);
+        let placeholder = if template {
+            "Template"
+        } else if setting.default.is_none() && self.defaults.get(path).is_none()
+        {
+            "Default"
+        } else {
+            ""
+        };
         let field = match values::steps(setting) {
             Some(steps) => {
                 let number = self.number_field(setting, steps, window, cx);
                 number.read(cx).input().clone()
             }
             None => cx.new(|cx| {
-                Input::new(
+                let input = Input::new(
                     SharedString::from(format!("settings-field-{path}")),
                     setting.label.clone(),
                     swatch,
                     cx,
-                )
+                );
+                // A template field sits in an input group.
+                if template {
+                    input.with_chrome(Chrome::Grouped)
+                } else {
+                    input
+                }
             }),
         };
+        if template {
+            // A message under the field describes the text it was made
+            // for; typing checks the new text instead.
+            cx.subscribe(&field, move |view, _, _: &Changed, cx| {
+                if view.errors.remove(path).is_some() {
+                    cx.notify();
+                }
+            })
+            .detach();
+        }
         field.update(cx, |field, _| field.set_placeholder(placeholder));
         let handle = field.read(cx).focus_handle(cx).tab_stop(true);
         cx.on_blur(&handle, window, move |view, _, cx| {
@@ -608,11 +637,13 @@ impl SettingsView {
         self.setting_at(path)
     }
 
-    /// The setting at `path`: one of the model's, or a quake profile's.
+    /// The setting at `path`: one of the model's, a quake profile's, or a
+    /// user pane layout's template.
     fn setting_at(&self, path: &str) -> Option<&'static Setting> {
         self.model
             .setting(path)
             .or_else(|| quake::profile_setting(self.model, path))
+            .or_else(|| layouts::template_setting(self.model, path))
     }
 
     /// The setting whose number or text field has focus.
@@ -664,6 +695,7 @@ impl SettingsView {
         let (kind, argument) = key.split_once(':').unwrap_or((key, ""));
         if self.act_keys(kind, argument, window, cx)
             || self.act_quake(kind, argument, window, cx)
+            || self.act_layouts(kind, argument, window, cx)
         {
             cx.notify();
             return;
@@ -779,6 +811,10 @@ impl SettingsView {
             Some(Special::Keybindings) => format!("open:{path}"),
             Some(Special::GlobalShortcuts | Special::QuakeProfiles) => {
                 "qgo".to_owned()
+            }
+            Some(Special::PaneLayouts) => "lnew".to_owned(),
+            Some(Special::LayoutCycle) => {
+                format!("lcyc:{}", self.cycle_rows().first()?)
             }
             // Fields exist once their row renders.
             Some(Special::FontPicker | Special::Size) => return None,
@@ -934,9 +970,10 @@ impl SettingsView {
     }
 
     /// Moves within the focused roving group, the sidebar's sections, the
-    /// theme cards, or the modifier chips, as `settings_next` and
-    /// `settings_previous` do, wrapping: a section focus reaches shows, and
-    /// a theme card it reaches is chosen. False when no group has focus.
+    /// theme cards, the modifier chips, or the layout cycle's rows, as
+    /// `settings_next` and `settings_previous` do, wrapping: a section focus
+    /// reaches shows, and a theme card it reaches is chosen. False when no
+    /// group has focus.
     fn move_group(
         &mut self,
         forward: bool,
@@ -947,6 +984,7 @@ impl SettingsView {
         self.move_sections(step, window, cx)
             || self.move_themes(step, window, cx)
             || self.move_chips(forward, window, cx)
+            || self.move_cycle(forward, window, cx)
     }
 
     /// Moves between the sidebar's sections by `step` when one has focus,
@@ -1023,9 +1061,10 @@ impl SettingsView {
     }
 
     /// Scrolls the pane the least that shows the control the keyboard just
-    /// moved focus to, with its ring, once the frame that drew the ring has
-    /// painted. A pointer press, a control outside the pane, such as the
-    /// sidebar's, and a dialog or menu over the pane scroll nothing.
+    /// moved focus to, with its ring and any group `reveal_group` drew
+    /// around it, once the frame that drew the ring has painted. A pointer
+    /// press, a control outside the pane, such as the sidebar's, and a
+    /// dialog or menu over the pane scroll nothing.
     fn reveal_focused(
         &mut self,
         window: &mut Window,
@@ -1050,6 +1089,10 @@ impl SettingsView {
         {
             return;
         }
+        let painted = match &*self.focus_group.borrow() {
+            Some((handle, group)) if *handle == focused => painted.union(group),
+            _ => painted,
+        };
         // The pane has not scrolled since the ring painted.
         let target = ContentBounds::record(&self.scroll, painted);
         if ScrollArea::reveal(&self.scroll, target) {
@@ -1788,6 +1831,9 @@ fn tri_stepped(current: Option<bool>, forward: bool) -> Option<bool> {
     TRI_STATES.get(next).map_or(current, |(_, state)| *state)
 }
 
+/// A focused control and the painted bounds of the group it belongs to.
+type FocusGroup = (gpui::WeakFocusHandle, gpui::Bounds<gpui::Pixels>);
+
 /// How a Settings command moves a number or slider. A tri-state or a
 /// choice moves only by `Step`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1970,6 +2016,7 @@ impl Render for SettingsView {
         // Triggers record their bounds as they paint, so the map holds only
         // this frame's by the time an event reads it.
         self.triggers.borrow_mut().clear();
+        self.focus_group.borrow_mut().take();
         let sidebar = self.render_sidebar(swatch, searching, cx);
         let main = self.render_main(swatch, &query, window, cx);
         // A followed control, or focus stranded on a control this frame did
@@ -1990,15 +2037,26 @@ impl Render for SettingsView {
         let stranded = self
             .focused_action(window)
             .or_else(|| self.focused_key_field(window, cx).map(|(key, _)| key))
+            .or_else(|| {
+                self.focused_field(window, cx)
+                    .map(|setting| setting.path.as_str())
+                    .filter(|path| layouts::is_template(path))
+                    .map(str::to_owned)
+            })
             .is_some_and(|key| !self.drawn.contains(&key))
             || std::mem::take(&mut self.keys.stranded)
             || orphaned;
+        // A pane layout's row that went away hands focus to a neighbour.
+        let neighbour = stranded
+            .then(|| self.layout_neighbour(window, cx))
+            .flatten();
         if self.keys.follow.is_some() || stranded {
             cx.defer_in(window, move |view, window, cx| {
                 if view.keys.follow.is_some() {
                     view.focus_follow(window, cx);
-                } else if stranded {
-                    view.focus.focus(window, cx);
+                } else if stranded && view.dialog.prompt().is_none() {
+                    // An open dialog takes focus on its first frame.
+                    neighbour.as_ref().unwrap_or(&view.focus).focus(window, cx);
                 }
                 cx.notify();
             });

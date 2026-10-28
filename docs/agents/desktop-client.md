@@ -396,9 +396,10 @@ calls the handler directly still passes. Settings binds Space and the arrows
 under `SettingsControl`, which only its controls and section rows carry: a
 binding under `Settings` matched inside a focused text field too, because the
 field's `Palette` context binds no Space, and ate the space. The roving
-groups (the sidebar's sections, the theme cards, and the modifier chips)
-give each item a `SettingsGroup` context nested inside a `SettingsControl`
-wrapper around the group, and the catalog puts `settings_next` and
+groups (the sidebar's sections, the theme cards, the modifier chips, and
+the layout cycle's switches) give each item a `SettingsGroup` context nested
+inside a `SettingsControl` wrapper around the group, or around each cycle
+row, and the catalog puts `settings_next` and
 `settings_previous` under `SettingsGroup`, where the arrows bind to them.
 GPUI ranks a binding by the depth its predicate matches, then by later
 index, so the group bindings win over any `SettingsControl` binding on the
@@ -454,9 +455,16 @@ Focus listeners (`on_focus`, `on_blur`) run inside a draw, where a
 whose result must show, such as validating a field on blur, goes through
 `cx.defer_in`. Keys match only along the focus path of the drawn tree, so a
 focus left on a control that went away leaves every binding dead. The
-Settings window records each control it draws (`action_stop` marks it) and
-moves focus to the window when the focused control was not drawn, or when
-focus stays across a frame outside the view's tree.
+Settings window records each control it draws (`action_stop` marks it, and
+a pane layout's template field marks its path) and moves focus to the window
+when the focused control was not drawn, or when focus stays across a frame
+outside the view's tree. A pane layout or cycle row that went away hands
+focus to the same control of a neighbouring row instead (`layout_neighbour`,
+from the rows the last two frames drew): a user layout's to the next row,
+else New layout; a cycle row's to the next row, else the previous one. No
+recovery runs while a dialog is open: a dialog opening over a control that
+just went away takes focus on its first frame, after the recovery was
+scheduled, and the recovery would take it back out of the dialog.
 
 GPUI dispatches input against the last drawn frame. A press that lands before
 the frame showing a dialog's scrim still reaches the covered terminal, whose
@@ -818,8 +826,11 @@ the title); the invalid-file banner is a danger `Alert`; and an empty global
 shortcut list is an `Empty`. `render` notes a focus that moved since the last
 frame and defers `reveal_focused`, which scrolls the pane only when the ring
 shows (`focus::visible`, so a pointer press scrolls nothing), the ring
-painted inside the pane's columns, and no dialog or menu is open. Smoke state
-reports `settings.scroll` and `settings.in_view` for it.
+painted inside the pane's columns, and no dialog or menu is open. A row whose
+label sits apart from its controls, such as a user layout's name above its
+template, Rename, and Delete, draws `reveal_group` over itself with their
+handles, and the reveal shows the row with the ring. Smoke state reports
+`settings.scroll` and `settings.in_view` for it.
 
 The terminal window has one dialog slot too, `WorkspaceView::dialog`. The
 top dialog draws in it: the close confirmation, else Licenses, else About.
@@ -909,7 +920,29 @@ landed, dropped when it wrote nothing. Each reload takes
 `quake_renames_noted` before it reads, and `reconcile_quake` moves a window
 along the running and noted renames to the first name the file it read has,
 dropping the noted renames that read already shows. Another rename adds a
-`Batch` variant.
+`Batch` variant, as `RenameLayout` (`layouts.rs`) does for pane layouts;
+nothing outside the window follows a layout, so its `batch_started` records
+nothing. A layout's deletion is a batch too (`DeleteLayout`): its
+`current_patches` refuses it, writing nothing, when an active keybinding or
+the cycle in the file as it is then names the layout, since one added
+elsewhere or pointed there by a rename queued ahead of it would otherwise
+name a missing layout; `Batch::fresh` applies it to that read. Because it
+reads afresh, a deletion queued behind a write that would have made the
+layout, a rename to its name or a creation, goes when that write does not
+land (`drop_queued_deletes`); otherwise it would delete a layout of that name
+another editor made. Whether a failed write was a creation comes from the
+change (`expected` was empty), not from the window's read, which an earlier
+save in the queue can have updated. Every conflict and error must sit on a
+drawn row, since `request_close` refuses while any conflict exists and
+nothing else shows it: a rename clears the old name's, and
+`forget_gone_layouts` drops those of a layout a load or save shows gone,
+with its field's draft. A user pane layout's template is an ordinary
+Settings text field
+over a setting `layouts::template_setting` makes for its path, as a quake
+profile's fields are, so commits, Escape, conflicts, and a rename's
+baselines work unchanged. `commit_field` refuses a template that does not
+parse before any write, so the message under the field is the parser's,
+not the validator's.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with

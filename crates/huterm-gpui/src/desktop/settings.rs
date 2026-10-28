@@ -23,6 +23,10 @@ pub(super) enum Special {
     GlobalShortcuts,
     /// The quake profile editor.
     QuakeProfiles,
+    /// The built-in and user pane layouts, with the user layouts' editor.
+    PaneLayouts,
+    /// The layouts the layout cycle steps through, in order.
+    LayoutCycle,
 }
 
 const OVERRIDES: &[(&str, Special)] = &[
@@ -33,15 +37,12 @@ const OVERRIDES: &[(&str, Special)] = &[
     ("keybinding", Special::Keybindings),
     ("global_keybinding", Special::GlobalShortcuts),
     ("quake", Special::QuakeProfiles),
+    ("panes.layouts", Special::PaneLayouts),
+    ("panes.layout_cycle", Special::LayoutCycle),
 ];
 
 /// Settings that Settings never edits, leaving them to `config.toml`.
-const FILE_ONLY: &[&str] = &[
-    "themes",
-    "terminal.engine",
-    "panes.layouts",
-    "panes.layout_cycle",
-];
+const FILE_ONLY: &[&str] = &["themes", "terminal.engine"];
 
 /// The special control for `path`, if any.
 pub(super) fn special(path: &str) -> Option<Special> {

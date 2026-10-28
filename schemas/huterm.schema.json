@@ -531,7 +531,7 @@
           "type": "array",
           "uniqueItems": true,
           "x-huterm-apply": "live",
-          "x-huterm-group": "Panes",
+          "x-huterm-group": "Pane layouts",
           "x-huterm-label": "Layout cycle",
           "x-huterm-order": 60,
           "x-huterm-section": "window"
@@ -560,7 +560,7 @@
           },
           "type": "object",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Panes",
+          "x-huterm-group": "Pane layouts",
           "x-huterm-label": "Pane layouts",
           "x-huterm-order": 50,
           "x-huterm-section": "window"

@@ -185,8 +185,14 @@ impl SettingsView {
                 .flat_map(|group| &group.settings)
                 .map(|setting| match self.file.get(&setting.path) {
                     Some(toml::Value::Array(entries)) => entries.len(),
-                    // Profiles count the values they set.
+                    // Profiles count the values they set, and layouts
+                    // count each layout.
                     Some(_) if setting.path == "quake" => self.profile_values(),
+                    Some(toml::Value::Table(layouts))
+                        if setting.path == "panes.layouts" =>
+                    {
+                        layouts.len()
+                    }
                     Some(_) => 1,
                     None => 0,
                 })
@@ -452,7 +458,7 @@ impl SettingsView {
     /// The warning under a row whose value changed in the file while an
     /// edit to it was waiting, with Use mine and Use file, which an invalid
     /// file cannot take yet.
-    fn render_conflict(
+    pub(super) fn render_conflict(
         &mut self,
         setting: &'static Setting,
         swatch: Swatch,
@@ -674,9 +680,19 @@ impl SettingsView {
             if settings.is_empty() {
                 continue;
             }
+            // The pane layouts and the layout cycle draw a row for each
+            // layout.
             let rows: Vec<AnyElement> = settings
                 .into_iter()
-                .map(|setting| self.render_row(setting, swatch, window, cx))
+                .flat_map(|setting| match special(&setting.path) {
+                    Some(Special::PaneLayouts) => {
+                        self.render_pane_layouts(swatch, window, cx)
+                    }
+                    Some(Special::LayoutCycle) => {
+                        self.render_layout_cycle(setting, swatch, cx)
+                    }
+                    _ => vec![self.render_row(setting, swatch, window, cx)],
+                })
                 .collect();
             cards.push(group_card(
                 id(format!("settings-group-{}-{}", section.id(), group.title)),
