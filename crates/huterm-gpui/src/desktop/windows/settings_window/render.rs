@@ -125,7 +125,11 @@ impl SettingsView {
                         row.child(
                             div()
                                 .text_size(px(11.0))
-                                .text_color(swatch.muted)
+                                .text_color(if on {
+                                    swatch.muted_on(swatch.selection)
+                                } else {
+                                    swatch.muted
+                                })
                                 .child(count.to_string()),
                         )
                     }),
@@ -416,14 +420,14 @@ impl SettingsView {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(small(text, swatch.warning))
+                    .child(small(text, swatch.warning_text()))
                     // An invalid file cannot take either choice yet.
                     .when(!self.locked(), |row| row.child(mine).child(file)),
             )
         } else {
             self.errors
                 .get(path)
-                .map(|error| small(error.clone(), swatch.danger))
+                .map(|error| small(error.clone(), swatch.danger_text()))
         };
         div()
             .flex()
@@ -436,7 +440,7 @@ impl SettingsView {
             .children(
                 apply_note(setting.apply)
                     .filter(|_| !foreign)
-                    .map(|note| small(note.to_owned(), swatch.dim)),
+                    .map(|note| small(note.to_owned(), swatch.muted)),
             )
             .children(message)
     }

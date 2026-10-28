@@ -548,6 +548,20 @@ than catalog commands. `desktop/overlay.rs` re-exports `Tokens` as `Swatch`
 and builds it with `tokens(theme)` and `overlay_colors(theme)`; the orphan
 rule rules out `from_theme` constructors on the crate's types.
 
+`Tokens` corrects arbitrary themes toward WCAG's minimums, and the `contrast`
+test in `desktop/overlay.rs` checks a table of the (text, fill) pairs Huterm
+draws in every bundled theme; add a pair there when a new one appears.
+`scripts/ui-components.test.ts` rejects raw `accent`, `warning`, `danger`,
+`bg`, or `dim` used directly as a text color; a color chosen in a branch
+still needs a reviewer. Draw
+text on a solid fill with `on(fill)` or `on_accent()`, never `bg`, and shade
+its hover and pressed fills with `shade`; draw secondary text on a selected
+row with `muted_on(selection)`, colored text with `accent_text()` and its
+siblings, and focus rings through `focus_ring()`. Draw key caps and tags on a
+row or button, which hovers and presses, outlined with `cap_on` rather than
+filled, so no chip fill stacks on those fills. `dim` is for disabled text
+only; placeholders use `muted`.
+
 `pub` items of a library are always live, so `#[expect(dead_code)]` cannot
 mark a component that lands before its caller: the expectation is never met
 and Clippy fails. A component's first consumer is its entry in

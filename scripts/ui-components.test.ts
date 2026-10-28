@@ -51,3 +51,32 @@ test("huterm-ui draws focus rings only through focus::ring", () => {
   }
   expect(offenders).toEqual([]);
 });
+
+test("text draws with corrected tokens, never raw theme colors", () => {
+  // `Tokens` corrects arbitrary themes so enabled text reads on its fill:
+  // `accent_text()`, `warning_text()`, `danger_text()`, `on(fill)`, and
+  // `muted`. Raw `accent`, `warning`, `danger`, or `bg` as a text color
+  // skips that, and `dim` is for disabled text only, chosen in a branch.
+  // This catches direct uses; a color picked inside an `if` still needs a
+  // reviewer, and the pair table in `desktop/overlay.rs` checks the tokens.
+  const raw = "(?:accent|warning|danger|bg|dim)";
+  const owner = "(?:swatch|tokens|t)";
+  const forbidden = [
+    new RegExp(`text_color\\(\\s*${owner}\\.${raw}\\s*,?\\s*\\)`, "g"),
+    new RegExp(`small\\([^;]*?,\\s*swatch\\.${raw}\\s*,?\\s*\\)`, "g"),
+    new RegExp(`color:\\s*Some\\(\\s*${owner}\\.${raw}\\s*,?\\s*\\)`, "g"),
+    new RegExp(`\\.element\\(\\s*px\\([^)]*\\),\\s*${owner}\\.${raw}\\s*,?\\s*\\)`, "g"),
+  ];
+  const offenders: string[] = [];
+  for (const directory of ["crates/huterm-gpui/src", "crates/huterm-ui/src"]) {
+    for (const file of rustFiles(join(repoRoot, directory))) {
+      const relative = file.slice(repoRoot.length + 1);
+      const source = readFileSync(file, "utf8");
+      const lineOf = (offset: number) => source.slice(0, offset).split("\n").length;
+      for (const pattern of forbidden) {
+        for (const match of source.matchAll(pattern)) offenders.push(`${relative}:${lineOf(match.index ?? 0)}`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
+});

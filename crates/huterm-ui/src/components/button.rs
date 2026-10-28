@@ -202,11 +202,8 @@ fn look(variant: Variant, tokens: Tokens) -> Look {
             fill: Some(tokens.chip),
             text: tokens.fg,
             border: None,
-            hover: tokens.pressed(),
-            pressed: Hsla {
-                a: (tokens.pressed().a * 1.5).min(1.0),
-                ..tokens.pressed()
-            },
+            hover: tokens.chip_hover(),
+            pressed: tokens.pressed(),
         },
         Variant::Ghost => Look {
             fill: None,
@@ -219,20 +216,21 @@ fn look(variant: Variant, tokens: Tokens) -> Look {
             fill: Some(tokens.accent),
             text: tokens.on_accent(),
             border: None,
-            hover: crate::tokens::mix(tokens.accent, tokens.bg, 0.12),
+            hover: tokens.shade(tokens.accent, 0.1),
             pressed: tokens.accent_pressed(),
         },
         Variant::Destructive => Look {
             fill: Some(tokens.danger),
-            text: tokens.bg,
+            text: tokens.on(tokens.danger),
             border: None,
-            hover: crate::tokens::mix(tokens.danger, tokens.bg, 0.15),
-            pressed: crate::tokens::mix(tokens.danger, tokens.bg, 0.22),
+            // Shades move away from the text, so it reads in every state.
+            hover: tokens.shade(tokens.danger, 0.1),
+            pressed: tokens.shade(tokens.danger, 0.2),
         },
         // A link underlines on hover instead of filling.
         Variant::Link => Look {
             fill: None,
-            text: tokens.accent,
+            text: tokens.accent_text(),
             border: None,
             hover: tokens.hover,
             pressed: tokens.pressed(),
@@ -276,20 +274,15 @@ impl RenderOnce for Button {
             .clone()
             .filter(|reason| !reason.is_empty())
             .or(self.tooltip.clone());
-        let filled =
-            matches!(self.variant, Variant::Primary | Variant::Destructive);
         debug_assert!(
             !self.icon_only
                 || (self.icon.is_some() && self.variant != Variant::Link),
             "an icon-only button needs an icon and is not a link"
         );
-        let cap = (!self.shortcut.is_empty() && !self.icon_only).then(|| {
-            if filled {
-                kbd::cap_on(&self.shortcut, look.text)
-            } else {
-                kbd::cap(&self.shortcut, tokens)
-            }
-        });
+        // The cap draws outlined in the label's color, so it reads on
+        // every fill the button takes.
+        let cap = (!self.shortcut.is_empty() && !self.icon_only)
+            .then(|| kbd::cap_on(&self.shortcut, look.text));
         let keyshortcuts =
             (!self.shortcut.is_empty()).then(|| kbd::text(&self.shortcut));
         // An icon-only button names itself in its tooltip; the label is

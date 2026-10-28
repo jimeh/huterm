@@ -175,6 +175,7 @@ impl Keys {
             TextField::new(
                 "Search commands, shortcuts, or conditions",
                 swatch.fg,
+                swatch.muted,
                 cx,
             )
         });
@@ -914,7 +915,8 @@ impl SettingsView {
         }
         let swatch = Self::swatch(cx);
         let field = cx.new(|cx| {
-            let mut field = TextField::new(placeholder, swatch.fg, cx);
+            let mut field =
+                TextField::new(placeholder, swatch.fg, swatch.muted, cx);
             field.set_text(text.clone(), cx);
             field
         });
@@ -1744,13 +1746,16 @@ impl SettingsView {
     ) -> AnyElement {
         let search = self.keys.search.clone();
         self.drawn.insert("search".to_owned());
+        // Outlined rather than filled, so the selected segment's selection
+        // and the others' hover sit on the plain pane, where they read.
         let mut segments = div()
             .flex()
             .flex_none()
             .p(px(2.0))
             .gap(px(2.0))
             .rounded(px(6.0))
-            .bg(swatch.chip);
+            .border_1()
+            .border_color(swatch.line_strong);
         for (filter, name, label) in Filter::ALL {
             let on = self.keys.filter == filter;
             let segment = div()
@@ -2002,13 +2007,12 @@ impl SettingsView {
                         &recording.strokes.join(" "),
                         Platform::current(),
                     )
-                    .element(px(12.0), swatch.accent),
+                    .element(px(12.0), swatch.accent_text()),
                 )
-                .child(small("…".to_owned(), swatch.accent))
+                .child(small("…".to_owned(), swatch.accent_text()))
                 .into_any_element(),
-            _ => {
-                small("Press keys".to_owned(), swatch.accent).into_any_element()
-            }
+            _ => small("Press keys".to_owned(), swatch.accent_text())
+                .into_any_element(),
         }
     }
 
@@ -2027,7 +2031,7 @@ impl SettingsView {
             } else {
                 "Press the new shortcut. Esc cancels.".to_owned()
             },
-            swatch.accent,
+            swatch.accent_text(),
         )
     }
 
@@ -2061,7 +2065,7 @@ impl SettingsView {
                 KeyHint::parse(&listed.binding.key, Platform::current())
                     .element(
                         px(12.0),
-                        if active { swatch.fg } else { swatch.dim },
+                        if active { swatch.fg } else { swatch.muted },
                     )
                     .into_any_element()
             };
@@ -2142,18 +2146,21 @@ impl SettingsView {
         }
         let tag = {
             let (label, color) = match (&listed.state, user) {
-                (BindingState::Active, true) => ("Custom", swatch.accent),
-                (BindingState::Active, false) => ("Default", swatch.muted),
-                (BindingState::Replaced(_), _) => ("Replaced", swatch.dim),
-                (BindingState::Unbound(_), _) => ("Unbound", swatch.dim),
+                (BindingState::Active, true) => {
+                    ("Custom", swatch.accent_text())
+                }
+                (BindingState::Replaced(_), _) => ("Replaced", swatch.muted),
+                (BindingState::Unbound(_), _) => ("Unbound", swatch.muted),
                 (
                     BindingState::Disabled(_) | BindingState::SwitchedOff,
                     true,
-                ) => ("Custom", swatch.dim),
+                ) => ("Custom", swatch.muted),
                 (
-                    BindingState::Disabled(_) | BindingState::SwitchedOff,
+                    BindingState::Active
+                    | BindingState::Disabled(_)
+                    | BindingState::SwitchedOff,
                     false,
-                ) => ("Default", swatch.dim),
+                ) => ("Default", swatch.muted),
             };
             div()
                 .flex_none()
@@ -2417,7 +2424,7 @@ impl SettingsView {
             key.as_str() == name || field_row(key) == Some(name)
         });
         let error = errors.map(|(_, error)| {
-            small(error.clone(), swatch.danger).into_any_element()
+            small(error.clone(), swatch.danger_text()).into_any_element()
         });
         let notes = self
             .keys
@@ -2430,7 +2437,7 @@ impl SettingsView {
                 small(
                     note.text,
                     if note.warning {
-                        swatch.warning
+                        swatch.warning_text()
                     } else {
                         swatch.muted
                     },
@@ -2505,7 +2512,8 @@ impl SettingsView {
 }
 
 /// A collapsed command's shortcuts: up to two active keys, a count of the
-/// rest, a "when" chip when one has a condition, or "No shortcut".
+/// rest, a "when" tag when one has a condition, or "No shortcut". The tag
+/// draws outlined, since the rows it sits in hover.
 fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
     let mut summary = div().flex().flex_none().items_center().gap(px(6.0));
     for listed in active.iter().take(2) {
@@ -2524,9 +2532,10 @@ fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
             div()
                 .px(px(6.0))
                 .rounded(px(8.0))
-                .bg(swatch.chip)
+                .border_1()
+                .border_color(swatch.accent_text().opacity(0.35))
                 .text_size(px(11.0))
-                .text_color(swatch.accent)
+                .text_color(swatch.accent_text())
                 .child("when"),
         );
     }

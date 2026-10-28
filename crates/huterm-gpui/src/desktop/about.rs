@@ -333,7 +333,7 @@ fn footer(
         .py(px(10.0))
         .border_t_1()
         .border_color(swatch.line)
-        .bg(swatch.fg.opacity(0.03))
+        .bg(swatch.footer())
         .child(ring(
             footer_button("about-licenses", swatch, false, false)
                 .on_click(actions.licenses)
@@ -354,7 +354,7 @@ fn footer(
                 .when(hints, |button| {
                     button.child(key_cap_on(
                         &KeyHint::keys(&["enter"], Platform::current()),
-                        swatch.bg,
+                        swatch.on_accent(),
                     ))
                 }),
             AboutFocus::Close,
@@ -385,7 +385,7 @@ pub(super) fn footer_button(
             button
                 .bg(swatch.accent)
                 .border_color(gpui::transparent_black())
-                .text_color(swatch.bg)
+                .text_color(swatch.on_accent())
                 .active(|style| style.bg(swatch.accent_pressed()))
         })
         .when(!primary, |button| {

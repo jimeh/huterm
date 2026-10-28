@@ -3,7 +3,7 @@
 //! raised panels, and the scrim.
 
 use gpui::{Div, Hsla, Pixels, SharedString, div, prelude::*, px};
-pub(crate) use huterm_ui::tokens::{OverlayColors, Tokens as Swatch, mix};
+pub(crate) use huterm_ui::tokens::{OverlayColors, Tokens as Swatch};
 
 use super::key_hint::KeyHint;
 use super::scrollbar_colors;
@@ -54,13 +54,12 @@ pub(crate) fn accent_bar(color: Hsla, left: Pixels, inset: Pixels) -> Div {
         .bg(color)
 }
 
-/// A keystroke chip, as the palette shows shortcuts and footer hints.
+/// A keystroke chip on a static surface, as footer hints show them.
 pub(crate) fn key_cap(hint: &KeyHint, swatch: Swatch) -> Div {
     huterm_ui::components::kbd::cap(&hint.glyphs(), swatch)
 }
 
-/// A keystroke chip on a filled button, drawn in the button's text colour
-/// `on`.
+/// A keystroke chip on a row or button, outlined in its text colour `on`.
 pub(crate) fn key_cap_on(hint: &KeyHint, on: Hsla) -> Div {
     huterm_ui::components::kbd::cap_on(&hint.glyphs(), on)
 }
@@ -78,7 +77,7 @@ pub(crate) fn footer_hints(
         .py(px(6.0))
         .border_t_1()
         .border_color(swatch.line)
-        .bg(swatch.fg.opacity(0.03))
+        .bg(swatch.footer())
         .text_size(px(11.5))
         .text_color(swatch.muted);
     for (key, label) in hints {
@@ -125,7 +124,7 @@ pub(crate) fn severity_mark(glyph: &str, fill: Hsla, swatch: Swatch) -> Div {
         .justify_center()
         .text_size(px(11.0))
         .font_weight(gpui::FontWeight::BOLD)
-        .text_color(swatch.bg)
+        .text_color(swatch.on(fill))
         .child(glyph.to_owned())
 }
 
@@ -154,5 +153,145 @@ mod tests {
         assert!(light.is_light());
         assert!(light.surface.l < light.bg.l, "light themes lower it");
         assert!((light.surface.a - 1.0).abs() < f32::EPSILON);
+    }
+}
+
+#[cfg(test)]
+mod contrast {
+    use gpui::Hsla;
+    use huterm_ui::tokens::{NON_TEXT_CONTRAST, TEXT_CONTRAST, contrast, over};
+
+    use super::Swatch;
+
+    use super::tokens;
+    use crate::config::Theme;
+
+    /// Every bundled theme, and the built-in default.
+    fn bundled() -> Vec<(String, Theme)> {
+        let directory = std::path::Path::new("");
+        crate::themes::names(None)
+            .into_iter()
+            .map(|name| {
+                let theme = if name == "huterm-dark" {
+                    Theme::huterm_dark()
+                } else {
+                    crate::themes::preview(&name, directory)
+                        .unwrap_or_else(|| panic!("{name} resolves"))
+                };
+                (name, theme)
+            })
+            .collect()
+    }
+
+    /// Every enabled text color with each fill it is drawn on, and the
+    /// focus ring with the surfaces it is drawn against, for one theme.
+    fn drawn_pairs(t: &Swatch) -> Vec<(&'static str, Hsla, Hsla, f32)> {
+        let plain = [t.bg, t.surface];
+        let over_each = |fill: Hsla, unders: &[Hsla]| -> Vec<Hsla> {
+            unders.iter().map(|under| over(fill, *under)).collect()
+        };
+        let selection = over_each(t.selection, &plain);
+        let footers = over_each(t.footer(), &plain);
+        let chips = over_each(t.chip, &plain);
+        // Key caps sit on chips over footers too; on a selected row they
+        // draw outlined, on the selection itself.
+        let nested_chips: Vec<Hsla> =
+            footers.iter().map(|under| over(t.chip, *under)).collect();
+        // Interactive controls also sit on footers.
+        let interactive: Vec<Hsla> =
+            plain.iter().chain(&footers).copied().collect();
+        let hovered = over_each(t.hover, &interactive);
+        let pressed = over_each(t.pressed(), &interactive);
+        // A Secondary button rests on the chip, hovers on `chip_hover`, and
+        // presses on `pressed`.
+        let chip_hovered = over_each(t.chip_hover(), &interactive);
+        // Key caps and tags on rows and buttons draw outlined, so no chip
+        // stacks on a hover or pressed fill.
+
+        let selection_pressed = over_each(t.selection_pressed(), &plain);
+        let primary = [t.accent, t.shade(t.accent, 0.1), t.accent_pressed()];
+        let destructive =
+            [t.danger, t.shade(t.danger, 0.1), t.shade(t.danger, 0.2)];
+        let danger = [t.danger_fill(), t.danger_hover(), t.danger_pressed()];
+        let close = t.on(t.danger_fill());
+        let bands = over_each(t.accent.opacity(0.05), &plain);
+        let muted_selected = t.muted_on(t.selection);
+        let mut pairs = Vec::new();
+        let mut text = |name, color: Hsla, unders: &[Hsla]| {
+            for under in unders {
+                pairs.push((name, color, *under, TEXT_CONTRAST));
+            }
+        };
+        text("fg", t.fg, &plain);
+        text("fg on selection", t.fg, &selection);
+        text("fg on chips", t.fg, &chips);
+        text("fg on nested chips", t.fg, &nested_chips);
+        text("fg hovered", t.fg, &hovered);
+        text("muted hovered", t.muted, &hovered);
+        text("fg on chip hover", t.fg, &chip_hovered);
+        text("fg pressed", t.fg, &pressed);
+        text("muted pressed", t.muted, &pressed);
+        text("fg on selection pressed", t.fg, &selection_pressed);
+        text("muted", t.muted, &plain);
+        text("muted on chips", t.muted, &chips);
+        text("muted on footers", t.muted, &footers);
+        text("muted on selection", muted_selected, &selection);
+        text(
+            "muted on selection pressed",
+            muted_selected,
+            &selection_pressed,
+        );
+        text("on_accent", t.on_accent(), &primary);
+        text("on warning", t.on(t.warning), &[t.warning]);
+        text("on danger", t.on(t.danger), &[t.danger]);
+        text("close button", close, &danger);
+        text("destructive button", t.on(t.danger), &destructive);
+        for (name, color) in [
+            ("accent text", t.accent_text()),
+            ("warning text", t.warning_text()),
+            ("danger text", t.danger_text()),
+        ] {
+            text(name, color, &plain);
+            text(name, color, &chips);
+            text(name, color, &selection);
+            text(name, color, &hovered);
+            text(name, color, &pressed);
+        }
+        text("highlight held", t.accent_text(), &selection_pressed);
+        text("error band", t.accent_text(), &bands);
+        let ring = t.focus_ring()[0].color;
+        for under in plain {
+            pairs.push(("focus ring", ring, under, NON_TEXT_CONTRAST));
+        }
+        // A switch's knob marks its state on the accent track.
+        pairs.push(("switch knob", t.on_accent(), t.accent, NON_TEXT_CONTRAST));
+        pairs
+    }
+
+    #[test]
+    fn bundled_themes_meet_the_contrast_minimums() {
+        let themes = bundled();
+        assert!(themes.len() > 10, "{} themes", themes.len());
+        let mut failures = Vec::new();
+        for (name, theme) in themes {
+            let t = tokens(&theme);
+            for (pair, color, under, minimum) in drawn_pairs(&t) {
+                // Translucent text shows composited over what it sits on.
+                let ratio = contrast(over(color, under), under);
+                if ratio < minimum {
+                    failures.push(format!("{name} {pair}: {ratio:.2}:1"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn bundled_themes_press_harder_than_they_hover() {
+        for (name, theme) in bundled() {
+            let t = tokens(&theme);
+            assert!(t.hover.a > 0.0, "{name} hovers");
+            assert!(t.pressed().a > t.hover.a, "{name} shows a press");
+        }
     }
 }

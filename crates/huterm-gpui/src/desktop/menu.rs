@@ -645,14 +645,18 @@ impl Menu {
         let selected =
             self.selection == Some(MenuSelection { row, button: None });
         let text = if selected {
-            swatch.bg
+            swatch.on_accent()
         } else if item.enabled {
             swatch.fg
         } else {
             swatch.dim
         };
+        // Shortcuts stay opaque on the accent: any fade there falls below
+        // 4.5:1. An enabled item's shortcut is secondary text.
         let side_text = if selected {
-            swatch.bg.opacity(0.72)
+            swatch.on_accent()
+        } else if item.enabled {
+            swatch.muted
         } else {
             swatch.dim
         };
@@ -666,7 +670,7 @@ impl Menu {
                     .bg(swatch.warning)
                     .text_size(px(10.5))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(swatch.bg)
+                    .text_color(swatch.on(swatch.warning))
                     .text_center()
                     .child(count.to_string()),
             )
@@ -766,7 +770,7 @@ impl Menu {
                     .text_size(px(12.0))
                     .line_height(px(22.0))
                     .text_color(if selected {
-                        swatch.bg
+                        swatch.on_accent()
                     } else if enabled {
                         swatch.fg
                     } else {
@@ -777,7 +781,7 @@ impl Menu {
                         button.active(|style| {
                             style
                                 .bg(swatch.accent_pressed())
-                                .text_color(swatch.bg)
+                                .text_color(swatch.on_accent())
                         })
                     })
                     .on_mouse_move(cx.listener(

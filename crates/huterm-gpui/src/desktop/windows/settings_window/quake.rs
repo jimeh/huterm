@@ -424,8 +424,12 @@ impl SettingsView {
             } else {
                 let swatch = Self::swatch(cx);
                 let field = cx.new(|cx| {
-                    let mut field =
-                        TextField::new("Profile name", swatch.fg, cx);
+                    let mut field = TextField::new(
+                        "Profile name",
+                        swatch.fg,
+                        swatch.muted,
+                        cx,
+                    );
                     field.set_text(name, cx);
                     field
                 });
@@ -457,7 +461,9 @@ impl SettingsView {
         }
         let swatch = Self::swatch(cx);
         let field = self.quake.naming.get_or_insert_with(|| {
-            cx.new(|cx| TextField::new("Profile name", swatch.fg, cx))
+            cx.new(|cx| {
+                TextField::new("Profile name", swatch.fg, swatch.muted, cx)
+            })
         });
         let handle = field.read(cx).focus_handle(cx).tab_stop(true);
         handle.focus(window, cx);
@@ -805,7 +811,7 @@ impl SettingsView {
                     self.quake
                         .name_error
                         .clone()
-                        .map(|error| small(error, swatch.danger)),
+                        .map(|error| small(error, swatch.danger_text())),
                 );
         }
         let _ = window;
@@ -877,7 +883,7 @@ impl SettingsView {
             .border_color(swatch.line);
         if self.quake.deleting {
             let yes = button("settings-qdelyes", swatch)
-                .text_color(swatch.danger)
+                .text_color(swatch.danger_text())
                 .child("Delete");
             let yes = self.actionable(yes, "qdelyes".to_owned(), swatch, cx);
             let no = button("settings-qdelno", swatch).child("Cancel");
@@ -909,7 +915,7 @@ impl SettingsView {
             self.quake
                 .delete_error
                 .clone()
-                .map(|error| small(error, swatch.danger)),
+                .map(|error| small(error, swatch.danger_text())),
         )
         .into_any_element()
     }
@@ -975,7 +981,7 @@ impl SettingsView {
                         .errors
                         .get("gadd")
                         .cloned()
-                        .map(|error| small(error, swatch.danger)),
+                        .map(|error| small(error, swatch.danger_text())),
                 )
                 .when(wayland(), |block| {
                     block.child(small(
@@ -1076,7 +1082,7 @@ impl SettingsView {
                     .when(!read_only, |row| row.child(remove)),
             )
             .when(recording, |row| row.child(self.recording_hint(swatch)))
-            .children(error.map(|error| small(error, swatch.danger)))
+            .children(error.map(|error| small(error, swatch.danger_text())))
             .into_any_element()
     }
 

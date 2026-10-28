@@ -27,7 +27,7 @@ use crate::a11y::States;
 use crate::click::from_keyboard;
 use crate::components::tooltip::Tooltip;
 use crate::focus;
-use crate::tokens::{Tokens, mix};
+use crate::tokens::Tokens;
 
 type Toggle = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
@@ -117,7 +117,7 @@ impl RenderOnce for Switch {
         let (track, hover, pressed) = if on {
             (
                 tokens.accent,
-                mix(tokens.accent, tokens.bg, 0.12),
+                tokens.shade(tokens.accent, 0.1),
                 tokens.accent_pressed(),
             )
         } else {
@@ -169,7 +169,9 @@ impl RenderOnce for Switch {
                 div()
                     .size(px(16.0))
                     .rounded_full()
-                    .bg(tokens.bg)
+                    // On the accent, the knob takes the accent's text color
+                    // so it stands out; off, the background.
+                    .bg(if on { tokens.on_accent() } else { tokens.bg })
                     .when(on, |knob| knob.ml(px(14.0))),
             );
         let switch = focus::ring(switch, &focus, tokens, window, cx);

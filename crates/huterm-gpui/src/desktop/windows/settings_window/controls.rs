@@ -558,7 +558,7 @@ impl SettingsView {
                 block.child(
                     div()
                         .text_size(px(11.5))
-                        .text_color(swatch.warning)
+                        .text_color(swatch.warning_text())
                         .child(format!(
                             "Your [theme] sets {}, which applies on top of any theme.",
                             overrides.join(", ")

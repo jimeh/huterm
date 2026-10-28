@@ -146,6 +146,8 @@ pub(crate) struct TextField {
     placeholder: String,
     buffer: TextBuffer,
     foreground: Hsla,
+    /// The placeholder's color: secondary text, which reads on the field.
+    placeholder_color: Hsla,
     /// The field's last painted bounds and shaped text, for pointer
     /// hit-testing.
     layout: Option<(Bounds<Pixels>, ShapedLine)>,
@@ -154,9 +156,12 @@ pub(crate) struct TextField {
 }
 
 impl TextField {
+    /// A field drawing its text in `foreground` and its placeholder in
+    /// `placeholder_color`.
     pub(crate) fn new(
         placeholder: impl Into<String>,
         foreground: Hsla,
+        placeholder_color: Hsla,
         cx: &mut Context<'_, Self>,
     ) -> Self {
         Self {
@@ -164,6 +169,7 @@ impl TextField {
             placeholder: placeholder.into(),
             buffer: TextBuffer::default(),
             foreground,
+            placeholder_color,
             layout: None,
             dragging: false,
         }
@@ -245,12 +251,27 @@ impl TextField {
         self.placeholder = placeholder.into();
     }
 
-    pub(crate) fn set_foreground(
+    /// The text and placeholder colors the field draws with.
+    #[cfg(test)]
+    pub(crate) fn colors(&self) -> (Hsla, Hsla) {
+        (self.foreground, self.placeholder_color)
+    }
+
+    /// Recolors the field, as after a theme change; unchanged colors are
+    /// ignored, so an owner may call this on every render.
+    pub(crate) fn set_colors(
         &mut self,
         foreground: Hsla,
+        placeholder_color: Hsla,
         cx: &mut Context<'_, Self>,
     ) {
+        if (self.foreground, self.placeholder_color)
+            == (foreground, placeholder_color)
+        {
+            return;
+        }
         self.foreground = foreground;
+        self.placeholder_color = placeholder_color;
         cx.notify();
     }
 
@@ -559,8 +580,11 @@ impl Render for TextField {
         let empty = self.buffer.content.is_empty();
         let mut contents = div().flex().items_center().w_full();
         if empty {
-            contents = contents
-                .child(div().opacity(0.62).child(self.placeholder.clone()));
+            contents = contents.child(
+                div()
+                    .text_color(self.placeholder_color)
+                    .child(self.placeholder.clone()),
+            );
         } else {
             contents = contents.child(self.buffer.content.clone());
         }

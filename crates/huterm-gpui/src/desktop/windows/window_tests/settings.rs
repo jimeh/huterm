@@ -942,3 +942,22 @@ fn escape_during_a_pending_reset_shows_the_default(cx: &mut TestAppContext) {
     // The reset removes the only key, and the empty table with it.
     assert_eq!(file.text(), "");
 }
+
+#[gpui::test]
+fn a_live_theme_change_recolors_open_fields(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("live-theme", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let light = crate::themes::preview("tokyo-night-day", Path::new(""))
+        .expect("a bundled theme");
+    let expected = crate::desktop::overlay::tokens(&light);
+    // The theme changes while Settings is open, as a reload applies it.
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().config.theme = light;
+    });
+    with_window(&mut harness, |_, window, _| window.refresh());
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.search_colors(cx), (expected.fg, expected.muted));
+    });
+}

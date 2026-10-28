@@ -56,7 +56,7 @@ use huterm_protocol::{
 };
 use key_hint::KeyHint;
 use notices::Severity;
-use overlay::{key_cap, mono_font_family, raised_panel, tokens};
+use overlay::{key_cap_on, mono_font_family, raised_panel, tokens};
 
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
@@ -3059,12 +3059,13 @@ impl TerminalView {
                             .text_color(swatch.muted)
                             .child("Jump to live")
                             .when(hints, |jump| {
-                                jump.child(key_cap(
+                                // Outlined, it reads on the control's hover.
+                                jump.child(key_cap_on(
                                     &KeyHint::parse(
                                         &self.scroll_to_bottom_key,
                                         keymap::Platform::current(),
                                     ),
-                                    swatch,
+                                    swatch.fg,
                                 ))
                             }),
                     ),
@@ -3139,7 +3140,7 @@ impl TerminalView {
                                 div()
                                     .mx(px(6.0))
                                     .font_weight(gpui::FontWeight::NORMAL)
-                                    .text_color(swatch.dim)
+                                    .text_color(swatch.muted)
                                     .child("×"),
                             )
                             .child(grid.rows.to_string()),

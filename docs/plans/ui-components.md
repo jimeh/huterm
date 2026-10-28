@@ -588,22 +588,35 @@ has room for one more field at most:
   `hover`, `selection`, `accent`, `danger`, `warning`, `chip`, and
   `scrollbar`, as today.
 - **Methods:** `pressed`, `selection_pressed`, `accent_pressed`, `on_accent`
-  (the text color on an accent fill, `bg` today), `scrim`, `focus_ring`, and
+  (the text color on an accent fill), `scrim`, `focus_ring`, and
   the shadows. Derived shades stay methods, as the guide requires, and a
   contrast correction is applied inside a method, not stored.
 - **Sizes:** control height (24), menu row (28), radii (6 for controls, 9
   for raised panels), the focus ring (2-point spread), and the type scale
   (11.5, 12, 12.5). These are constants in one place, not literals in every
   builder.
-- **Contrast:** the colors are computed from arbitrary user themes, so a
-  test over the bundled themes checks body text and `on_accent` against
-  WCAG's 4.5:1, and the focus ring and control borders against 1.4.11's 3:1.
-  `line_strong` at 22% opacity is the likely failure. A theme that fails
-  gets an adjusted token, not an exception. This lands with step 3, whose
-  controls change appearance anyway; step 1 moves the tokens unchanged. On
-  2026-10-27, `tokyo-night-day` measured 3.11:1 for `on_accent` on the accent
-  fill, 1.31:1 for `line_strong` on the surface, and 1.63:1 for the focus
-  ring on the background.
+- **Contrast:** the colors are computed from arbitrary user themes, so the
+  derivation corrects them, and a test over the bundled themes checks a table
+  of every enabled (text, fill) pair Huterm draws. Body text, secondary text
+  (`muted` on plain fills, `muted_on` on a selected row), text on solid fills
+  (`on` and `on_accent`, whose hover and pressed shades move away from the
+  text), and colored text (`accent_text`, `warning_text`, `danger_text`)
+  reach WCAG's 4.5:1, and the focus ring reaches 1.4.11's 3:1 against the
+  background and the surface, falling back to black or white. The surface,
+  selection, chip, and footer fills step down until body text passes on them,
+  and a foreground with too little headroom moves away from the background:
+  `tokyo-night-day`'s body text goes from `#3760bf` to `#3256ac`, and its
+  selection fill from 35% to 12%. On 2026-10-27, before the corrections, its
+  text on the accent fill measured 3.11:1, and the 45%-opacity focus ring
+  1.5:1 to 2.7:1 across all bundled themes. Borders of controls whose text
+  labels identify them are exempt, as WCAG's understanding of 1.4.11 exempts
+  them; raising `line_strong` (1.3:1 to 2:1) to 3:1 would make every outline
+  heavy. `line_strong` also draws a switch's off track and the modifier chips'
+  borders, which are state indicators rather than labelled outlines; step 3's
+  migrations owe them 3:1. Disabled text (`dim`) is exempt as well;
+  placeholders are enabled text and use `muted`. A script test rejects raw
+  theme colors used directly as text, and the pair table checks the tokens;
+  a color chosen in a branch still needs a reviewer.
 
 ## Testing strategy
 
@@ -735,8 +748,9 @@ still change. Siblings that share a shape land together.
    smoke state. Its D16 test uses a select trigger. Migration 2b: the
    terminal window's menus, as dropdown and context menus on `Popover` with
    terminal focus as their return target (D13); #256 merged in #281.
-3. **Buttons and toggles:** `Button`, `Switch`, and `ToggleGroup`, with the
-   tokens' contrast test and corrections. Migration 3a: Settings buttons,
+3. **Buttons and toggles:** `Button`, `Switch`, and `ToggleGroup`. The
+   tokens' contrast corrections land first in a PR of their own, because they
+   change what users see everywhere. Migration 3a: Settings buttons,
    links, switches, segments, tri-states, modifier chips, tags, and counts
    (D8, D10, D16 for each). `SettingsView::run` checks for a focused multiple
    group before calling `step`, which finds only settings and would drop the

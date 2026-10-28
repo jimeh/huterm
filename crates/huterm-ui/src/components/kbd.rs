@@ -4,8 +4,8 @@
 //! Anatomy: a row of [`Glyph`]s, either text or an icon with the text it
 //! stands for, inside a compact chip. The owner decides the glyphs: the
 //! crate has no notion of platforms or key names. [`cap`] draws the chip on
-//! a plain surface; [`cap_on`] draws it on a filled button in that button's
-//! text color.
+//! a static surface; [`cap_on`] draws it outlined in the text color of a
+//! button or row, whose fill changes as it hovers and presses.
 //!
 //! Behavior: none; a key cap never takes focus or input.
 //!
@@ -66,7 +66,7 @@ pub fn text(glyphs: &[Glyph]) -> String {
         .collect()
 }
 
-/// A key cap on a plain surface.
+/// A key cap on a static surface, such as a footer.
 #[must_use]
 pub fn cap(glyphs: &[Glyph], tokens: Tokens) -> Div {
     chip(glyphs, tokens.fg)
@@ -75,13 +75,12 @@ pub fn cap(glyphs: &[Glyph], tokens: Tokens) -> Div {
         .border_color(tokens.line)
 }
 
-/// A key cap on a filled button, drawn in the button's text color `on`.
+/// A key cap on a button or row, drawn in its text color `on`. It outlines
+/// the keys without a fill of its own, so they keep the contrast `on` was
+/// chosen for against each fill the button or row takes.
 #[must_use]
 pub fn cap_on(glyphs: &[Glyph], on: Hsla) -> Div {
-    chip(glyphs, on)
-        .bg(on.opacity(0.18))
-        .border_1()
-        .border_color(on.opacity(0.35))
+    chip(glyphs, on).border_1().border_color(on.opacity(0.35))
 }
 
 /// The chip's own line height keeps it compact inside taller buttons.

@@ -118,8 +118,10 @@ impl LicensesView {
         load: impl FnOnce() -> Result<Catalog, LoadError> + Send + 'static,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        let input = cx
-            .new(|cx| TextField::new("Search licenses", colors.foreground, cx));
+        let input = cx.new(|cx| {
+            let swatch = Swatch::new(colors);
+            TextField::new("Search licenses", swatch.fg, swatch.muted, cx)
+        });
         let subscription =
             cx.subscribe(&input, |view, input, _: &Changed, cx| {
                 let query = input.read(cx).text().trim().to_lowercase();
@@ -183,7 +185,8 @@ impl LicensesView {
         self.colors = colors;
         self.hints = hints;
         self.input.update(cx, |input, cx| {
-            input.set_foreground(colors.foreground, cx);
+            let swatch = Swatch::new(colors);
+            input.set_colors(swatch.fg, swatch.muted, cx);
         });
         cx.notify();
     }
@@ -529,7 +532,11 @@ impl LicensesView {
                         div()
                             .truncate()
                             .text_size(px(11.0))
-                            .text_color(swatch.muted)
+                            .text_color(if selected {
+                                swatch.muted_on(swatch.selection)
+                            } else {
+                                swatch.muted
+                            })
                             .child(component.license.clone()),
                     ),
             );
@@ -781,7 +788,7 @@ impl LicensesView {
             .py(px(10.0))
             .border_t_1()
             .border_color(swatch.line)
-            .bg(swatch.fg.opacity(0.03))
+            .bg(swatch.footer())
             .child(hints)
             .child(
                 self.ring(
@@ -794,7 +801,7 @@ impl LicensesView {
                 .when(self.hints, |button| {
                     button.child(key_cap_on(
                         &KeyHint::keys(&["escape"], platform),
-                        swatch.bg,
+                        swatch.on_accent(),
                     ))
                 }),
             )

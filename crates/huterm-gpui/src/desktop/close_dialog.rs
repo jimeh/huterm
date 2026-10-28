@@ -10,8 +10,8 @@ use gpui::{App, ClickEvent, Div, Pixels, Size, Window, div, prelude::*, px};
 
 use super::key_hint::KeyHint;
 use super::overlay::{
-    Swatch, accent_bar, key_cap, key_cap_on, mix, mono_font_family,
-    raised_panel, scrim, severity_mark,
+    Swatch, accent_bar, key_cap_on, mono_font_family, raised_panel, scrim,
+    severity_mark,
 };
 use crate::keymap::Platform;
 
@@ -390,7 +390,7 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
                     .border_1()
                     .border_color(swatch.warning.opacity(0.45))
                     .text_size(px(10.5))
-                    .text_color(swatch.warning)
+                    .text_color(swatch.warning_text())
                     .child("unknown"),
             ),
         DialogRow::More(count) => base
@@ -428,8 +428,12 @@ fn dialog_footer(
     on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_confirm: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
-    let danger = mix(swatch.danger, swatch.bg, 0.16);
-    let danger_pressed = mix(swatch.danger, swatch.bg, 0.32);
+    let danger = swatch.danger_fill();
+    let danger_hover = swatch.danger_hover();
+    let danger_pressed = swatch.danger_pressed();
+    // Its hover and pressed shades move away from this text, so it reads on
+    // every fill the button shows.
+    let on_danger = swatch.on(danger);
     div()
         .flex()
         .flex_none()
@@ -441,7 +445,7 @@ fn dialog_footer(
         .py(px(8.0))
         .border_t_1()
         .border_color(swatch.line)
-        .bg(swatch.fg.opacity(0.03))
+        .bg(swatch.footer())
         .child(
             button(swatch, focus == DialogFocus::Cancel, hints)
                 .id("cancel-close")
@@ -453,9 +457,11 @@ fn dialog_footer(
                 .on_click(on_cancel)
                 .child("Cancel")
                 .when(hints, |button| {
-                    button.child(key_cap(
+                    // A cap on a button draws outlined, so it reads on the
+                    // button's hover and pressed fills too.
+                    button.child(key_cap_on(
                         &KeyHint::keys(&["escape"], Platform::current()),
-                        swatch,
+                        swatch.fg,
                     ))
                 }),
         )
@@ -464,15 +470,15 @@ fn dialog_footer(
                 .id("confirm-close")
                 .debug_selector(|| "confirm-close".to_owned())
                 .bg(danger)
-                .text_color(swatch.bg)
-                .hover(move |button| button.bg(swatch.danger))
+                .text_color(on_danger)
+                .hover(move |button| button.bg(danger_hover))
                 .active(move |button| button.bg(danger_pressed))
                 .on_click(on_confirm)
                 .child(model.primary_label.clone())
                 .when(hints, |button| {
                     button.child(key_cap_on(
                         &KeyHint::keys(&["enter"], Platform::current()),
-                        swatch.bg,
+                        on_danger,
                     ))
                 }),
         )

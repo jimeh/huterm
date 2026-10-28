@@ -38,8 +38,8 @@ impl Tone {
         match self {
             Self::Neutral => (tokens.chip, tokens.fg),
             Self::Accent => (tokens.accent, tokens.on_accent()),
-            Self::Warning => (tokens.warning, tokens.bg),
-            Self::Danger => (tokens.danger, tokens.bg),
+            Self::Warning => (tokens.warning, tokens.on(tokens.warning)),
+            Self::Danger => (tokens.danger, tokens.on(tokens.danger)),
         }
     }
 }

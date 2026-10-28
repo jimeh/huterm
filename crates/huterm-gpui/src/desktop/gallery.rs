@@ -678,7 +678,7 @@ fn entry(
                 .child(div().text_color(swatch.fg).child(title))
                 .child(
                     div()
-                        .text_color(swatch.dim)
+                        .text_color(swatch.muted)
                         .child(format!("components/{component}.rs")),
                 ),
         )
