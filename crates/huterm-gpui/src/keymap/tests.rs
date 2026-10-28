@@ -642,8 +642,17 @@ fn menu_defaults_match_only_while_a_menu_has_focus() {
     for platform in [Platform::MacOs, Platform::Linux] {
         let compiled = compile(platform, &[]).unwrap();
         for key in [
-            "down", "up", "home", "end", "right", "left", "enter", "space",
-            "escape", "tab",
+            "down",
+            "up",
+            "home",
+            "end",
+            "right",
+            "left",
+            "enter",
+            "space",
+            "escape",
+            "tab",
+            "shift-tab",
         ] {
             assert!(
                 !compiled.reserved.is_reserved(&keystroke(key)),
@@ -685,6 +694,7 @@ fn menu_defaults_match_only_while_a_menu_has_focus() {
             ("space", ids::MENU_CONFIRM),
             ("escape", ids::MENU_CLOSE),
             ("tab", ids::MENU_CLOSE),
+            ("shift-tab", ids::MENU_CLOSE),
         ] {
             assert_eq!(
                 matched(key, &menu),

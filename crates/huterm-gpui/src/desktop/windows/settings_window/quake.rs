@@ -14,16 +14,18 @@ use huterm_protocol::{ids, lookup};
 use toml::{Table, Value};
 
 use super::super::super::key_hint::KeyHint;
-use super::super::super::menu::{MenuItem, MenuModel, MenuRow};
 use super::super::super::overlay::Swatch;
 use super::super::super::settings::keybindings::Edit;
-use super::controls::{caret, select_trigger};
+use super::controls::Opener;
 use super::keybindings::{
     CAP_WIDTH, Target, card, group_block, remove_button, small,
 };
 use super::{MenuFor, SettingsView, button};
 use crate::keymap::Platform;
 use crate::ui::text_field::TextField;
+use huterm_ui::listbox::{
+    Item as MenuItem, Model as MenuModel, Row as MenuRow,
+};
 
 const PREFIX: &str = "quake.profiles.";
 const DEFAULT: &str = "default";
@@ -242,7 +244,7 @@ impl SettingsView {
                 && moved(*entry)
             {
                 // Focus held by the menu goes to the window.
-                self.menu = None;
+                let _ = self.drop_menu();
                 self.keys.stranded = true;
             }
             self.keys.errors.retain(|row, _| {
@@ -729,11 +731,19 @@ impl SettingsView {
     ) -> AnyElement {
         let read_only = self.locked();
         let profile = self.shown_profile();
-        let trigger = select_trigger("settings-qprof".to_owned(), swatch)
-            .child(div().flex_1().child(profile))
-            .child(caret(swatch));
-        let trigger = self.actionable(trigger, "qprof".to_owned(), swatch, cx);
-        let dropdown = self.with_menu("qprof", trigger.into_any_element());
+        // Choosing which profile to show writes nothing, so it stays
+        // available while the file is read-only.
+        let dropdown = self.select(
+            "settings-qprof".to_owned(),
+            "qprof",
+            "Profile".to_owned(),
+            profile,
+            Opener::Action("qprof".to_owned()),
+            false,
+            px(150.0),
+            swatch,
+            cx,
+        );
         let mut bar = div().flex().flex_col().gap(px(6.0)).mb(px(12.0)).child(
             div()
                 .flex()
@@ -1078,13 +1088,22 @@ impl SettingsView {
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let trigger = select_trigger(format!("settings-{key}"), swatch)
-            .when(read_only, |control| control.opacity(0.5))
-            .child(div().flex_1().child(label))
-            .child(caret(swatch));
-        let trigger = self.actionable(trigger, key.to_owned(), swatch, cx);
-        let _ = self.action_stop(key.to_owned(), cx).tab_stop(!read_only);
-        self.with_menu(key, trigger.into_any_element())
+        let name = if key.starts_with("gcmd:") {
+            "Command"
+        } else {
+            "Profile"
+        };
+        self.select(
+            format!("settings-{key}"),
+            key,
+            name.to_owned(),
+            label,
+            Opener::Action(key.to_owned()),
+            read_only,
+            px(150.0),
+            swatch,
+            cx,
+        )
     }
 
     /// The name field, when it has focus.

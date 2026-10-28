@@ -22,18 +22,21 @@ use huterm_protocol::{
 use toml::Value;
 
 use super::super::super::key_hint::KeyHint;
-use super::super::super::menu::{MenuItem, MenuModel, MenuRow};
 use super::super::super::overlay::{Swatch, mono_font_family};
 use super::super::super::settings::keybindings::{
     Binding, Context as WhenContext, Edit, Field, GROUPS, OVERLAYS,
     check_condition, completions, notes,
 };
 use super::super::Desktop;
+use super::controls::Opener;
 use super::saving::Queued;
 use super::{MenuFor, SettingsView, button};
 use crate::assets::Icon;
 use crate::keymap::{BindingState, Inventory, ListedBinding, Origin, Platform};
 use crate::ui::text_field::{Changed, TextField};
+use huterm_ui::listbox::{
+    Item as MenuItem, Model as MenuModel, Row as MenuRow,
+};
 
 /// How long the recorder waits for a chord's second stroke: GPUI's own
 /// chord timeout.
@@ -1454,7 +1457,7 @@ impl SettingsView {
                 rows.extend(
                     SIDES
                         .iter()
-                        .map(|side| MenuRow::Item(MenuItem::new(side, *side))),
+                        .map(|side| MenuRow::Item(MenuItem::new(*side, *side))),
                 );
             }
             ArgumentKind::Layout => {
@@ -2377,31 +2380,24 @@ impl SettingsView {
                     Some(value) => value,
                     None => unset_label(argument).to_owned(),
                 };
-                let element = button(
+                let key = format!("karg:{name}:{}", argument.name);
+                let select = self.select(
                     format!("settings-karg-{name}-{}", argument.name),
-                    swatch,
-                )
-                .gap(px(4.0))
-                .when(!editable, |button| button.opacity(0.6))
-                .child(label);
-                let element = self.actionable(
-                    element,
-                    format!("karg:{name}:{}", argument.name),
+                    &key,
+                    argument.name.to_owned(),
+                    label,
+                    Opener::Action(key.clone()),
+                    !editable,
+                    px(0.0),
                     swatch,
                     cx,
                 );
-                let _ = self
-                    .action_stop(format!("karg:{name}:{}", argument.name), cx)
-                    .tab_stop(editable);
                 div()
                     .flex()
                     .items_center()
                     .gap(px(6.0))
                     .child(small(argument.name.to_owned(), swatch.muted))
-                    .child(self.with_menu(
-                        &format!("karg:{name}:{}", argument.name),
-                        element.into_any_element(),
-                    ))
+                    .child(select)
                     .into_any_element()
             }
         }

@@ -8,9 +8,12 @@
 //! the background executor one at a time; a change made during one waits
 //! behind it.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, Hsla, KeyContext, Render,
@@ -25,9 +28,6 @@ use huterm_config::settings::{
 use huterm_protocol::{ArgumentKind, CommandError, CommandInvocation, ids};
 use toml::Value;
 
-use super::super::menu::{
-    Menu as MenuView, MenuEvent, MenuItem, MenuModel, MenuRow,
-};
 use super::super::overlay::{Swatch, tokens};
 use super::super::settings::status::{FileStatus, Tone};
 use super::super::settings::values::{
@@ -39,6 +39,14 @@ use crate::APP_ID;
 use crate::commands::{InvokePalette, InvokeWindow};
 use crate::config::Theme;
 use crate::ui::text_field::TextField;
+use huterm_ui::animation::{AnimationSchedule, Wake};
+use huterm_ui::components::menu::{
+    MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole,
+};
+use huterm_ui::components::popover::{Anchor, Popover, place};
+use huterm_ui::listbox::{
+    Item as MenuItem, Model as MenuModel, Row as MenuRow,
+};
 
 const SIDEBAR_WIDTH: f32 = 200.0;
 const WINDOW_SIZE: (f32, f32) = (860.0, 620.0);
@@ -238,6 +246,16 @@ pub(super) struct SettingsView {
     /// An open select's menu, what it sets, and the control that opened
     /// it, which takes focus back.
     menu: Option<(Entity<MenuView>, MenuFor, FocusHandle)>,
+    /// Where the open menu draws, and the guard that closes it on a press
+    /// outside it or on its trigger.
+    popover: Popover,
+    /// Every select trigger's painted bounds, by menu key, so a menu opened
+    /// from the keyboard anchors to its trigger.
+    triggers: Rc<RefCell<HashMap<String, gpui::Bounds<gpui::Pixels>>>>,
+    /// Wakes the window for the open menu's scroll indicator.
+    menu_wake: Wake,
+    /// The window size the open menu was placed for.
+    menu_viewport: Option<gpui::Size<gpui::Pixels>>,
     /// The Keybindings section.
     keys: Keys,
     /// The Quake windows section.
@@ -330,6 +348,10 @@ impl SettingsView {
             closing: false,
             handle: window.window_handle(),
             menu: None,
+            popover: Popover::new(),
+            triggers: Rc::default(),
+            menu_wake: Wake::default(),
+            menu_viewport: None,
             scroll: ScrollHandle::new(),
         };
         view.create_and_load(cx);
@@ -347,6 +369,10 @@ impl SettingsView {
                 view.check_disk(cx);
             } else {
                 view.cancel_recording(cx);
+                // An open menu closes, as AppKit menus and GTK popovers do,
+                // and focus returns to its trigger for when the window
+                // comes back.
+                view.close_menu(window, cx);
             }
         })
         .detach();
@@ -691,6 +717,10 @@ impl SettingsView {
         section: SectionId,
         cx: &mut Context<'_, Self>,
     ) {
+        // The open menu's control may not be in the new section.
+        if self.drop_menu() {
+            self.keys.stranded = true;
+        }
         self.section = section;
         self.quake.deleting = false;
         self.search.update(cx, |search, cx| search.set_text("", cx));
@@ -820,7 +850,7 @@ impl SettingsView {
     ) {
         let rows = installed_fonts(cx)
             .iter()
-            .map(|name| MenuRow::Item(MenuItem::new(name, *name)))
+            .map(|name| MenuRow::Item(MenuItem::new(*name, *name)))
             .collect();
         let opener = self.action_stop(format!("fonts:{}", setting.path), cx);
         self.show_menu(
@@ -841,11 +871,14 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         let swatch = Self::swatch(cx);
-        let menu = cx.new(|cx| MenuView::new(model, swatch, true, cx));
+        let label = Self::menu_label(&target);
+        let menu = cx.new(|cx| {
+            MenuView::new(label, model, swatch, true, cx)
+                .with_role(MenuRole::ListBox)
+        });
         // The menu opens on the value its control shows, so Return keeps it.
         if let Some(current) = self.menu_current(&target) {
-            let current = keybindings::interned(&current);
-            menu.update(cx, |menu, cx| menu.select_item(current, cx));
+            menu.update(cx, |menu, cx| menu.select_item(&current, cx));
         }
         cx.subscribe_in(&menu, window, move |view, _, event, window, cx| {
             if let MenuEvent::Picked(value) = event {
@@ -855,7 +888,7 @@ impl SettingsView {
                     // default still writes.
                     Some(MenuFor::Setting(setting)) => {
                         let setting = *setting;
-                        let picked = Value::String((*value).to_owned());
+                        let picked = Value::String(value.to_string());
                         if view.holds(setting, &picked) {
                             view.errors.remove(setting.path.as_str());
                         } else {
@@ -877,9 +910,83 @@ impl SettingsView {
             view.close_menu(window, cx);
         })
         .detach();
-        menu.read(cx).focus_handle(cx).focus(window, cx);
+        // Focus leaving the menu, as search's shortcut moves it, closes the
+        // menu where focus went. The closes above move focus after the menu
+        // is gone, so this finds nothing to close then.
+        let menu_id = menu.entity_id();
+        let menu_focus = menu.read(cx).focus_handle(cx);
+        // Blur runs in the draw's focus phase, which drops a notify, so the
+        // close waits for the draw to end.
+        cx.on_blur(&menu_focus, window, move |_, window, cx| {
+            cx.defer_in(window, move |view, _, cx| {
+                let current =
+                    view.menu.as_ref().map(|(menu, _, _)| menu.entity_id());
+                if current == Some(menu_id) && view.drop_menu() {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        menu_focus.focus(window, cx);
+        // A trigger draws before it can be used, so its bounds are known;
+        // the window's top left is only a fallback.
+        let anchor =
+            self.triggers.borrow().get(&target.key()).copied().map_or(
+                Anchor::Pointer(point(px(0.0), px(0.0))),
+                Anchor::Trigger,
+            );
+        self.popover.open(anchor, true);
+        self.menu_viewport = Some(window.viewport_size());
         self.menu = Some((menu, target, opener));
         cx.notify();
+    }
+
+    /// The accessible name of the menu for `target`.
+    fn menu_label(target: &MenuFor) -> String {
+        match target {
+            MenuFor::Setting(setting) => setting.label.clone(),
+            MenuFor::Argument { name, .. } => (*name).to_owned(),
+            MenuFor::Global {
+                field: "command", ..
+            } => "Command".to_owned(),
+            MenuFor::Profile | MenuFor::Global { .. } => "Profile".to_owned(),
+        }
+    }
+
+    /// The open menu, placed against its trigger with room to scroll, at
+    /// least as wide as the trigger.
+    fn render_popover(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<gpui::AnyElement> {
+        let menu = self.menu.as_ref().map(|(menu, _, _)| menu.clone());
+        let (Some(menu), Some(anchor)) = (menu, self.popover.anchor()) else {
+            self.menu_wake.arm(AnimationSchedule::IDLE, window, cx);
+            return None;
+        };
+        // The menu was placed for the window it opened in; a resize would
+        // leave it anchored where its trigger was and sized for room it no
+        // longer has, so it closes, as a menu does when its window changes.
+        let viewport = window.viewport_size();
+        if self.menu_viewport != Some(viewport) {
+            cx.defer_in(window, Self::close_menu);
+        }
+        let width = match anchor {
+            Anchor::Trigger(bounds) => bounds.size.width.max(MIN_WIDTH),
+            Anchor::Pointer(_) => MIN_WIDTH,
+        };
+        let height = MenuView::content_height(menu.read(cx).model());
+        let placement = place(anchor, size(width, height), viewport);
+        let now = Instant::now();
+        menu.update(cx, |menu, cx| {
+            menu.set_max_height(Some(placement.max_height), cx);
+            menu.advance(now, cx);
+        });
+        let schedule = menu.read(cx).schedule(now);
+        self.menu_wake.arm(schedule, window, cx);
+        self.popover
+            .render(placement, viewport, div().w(width).child(menu))
     }
 
     /// The item a menu for `target` opens on: the value its control shows.
@@ -899,7 +1006,15 @@ impl SettingsView {
         }
     }
 
+    /// Closes the menu without moving focus, for when focus has already
+    /// gone elsewhere or the menu's control is gone. True when one was open.
+    fn drop_menu(&mut self) -> bool {
+        let _ = self.popover.close();
+        self.menu.take().is_some()
+    }
+
     fn close_menu(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let _ = self.popover.close();
         if let Some((_, _, opener)) = self.menu.take() {
             opener.focus(window, cx);
             cx.notify();
@@ -1179,7 +1294,12 @@ impl SettingsView {
     /// Smoke state: the section, the search, what has focus, and the file
     /// status, as `settings.` fields on one line.
     pub(super) fn smoke_state(&self, window: &Window, cx: &App) -> String {
-        let focus = if self.menu.is_some() {
+        // Focus names what really has it, so a menu left open behind focus
+        // that moved on reads as such; `settings.menu` reports the menu.
+        let menu = self.menu.as_ref().map(|(menu, _, _)| menu);
+        let focus = if menu.is_some_and(|menu| {
+            menu.read(cx).focus_handle(cx).is_focused(window)
+        }) {
             "menu".to_owned()
         } else if self.search.read(cx).focus_handle(cx).is_focused(window) {
             "search".to_owned()
@@ -1199,11 +1319,39 @@ impl SettingsView {
         } else {
             "none".to_owned()
         };
+        let rect = |bounds: Option<gpui::Bounds<gpui::Pixels>>| {
+            bounds.map_or_else(
+                || "none".to_owned(),
+                |bounds| {
+                    format!(
+                        "{},{},{},{}",
+                        f32::from(bounds.origin.x).round(),
+                        f32::from(bounds.origin.y).round(),
+                        f32::from(bounds.size.width).round(),
+                        f32::from(bounds.size.height).round()
+                    )
+                },
+            )
+        };
+        let mut selects: Vec<String> = self
+            .triggers
+            .borrow()
+            .iter()
+            .map(|(key, bounds)| format!("{key}:{}", rect(Some(*bounds))))
+            .collect();
+        selects.sort();
         format!(
-            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.status={:?} settings.read_only={} settings.writing={}",
+            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.status={:?} settings.read_only={} settings.writing={}",
             window.is_window_active(),
             self.section.id(),
             self.query(cx),
+            menu.is_some(),
+            rect(self.popover.content_bounds()),
+            if selects.is_empty() {
+                "none".to_owned()
+            } else {
+                selects.join("|")
+            },
             self.status.line().text,
             self.locked(),
             self.busy(),
@@ -1421,6 +1569,9 @@ impl Render for SettingsView {
         let query = self.query(cx);
         let searching = !query.is_empty();
         self.drawn.clear();
+        // Triggers record their bounds as they paint, so the map holds only
+        // this frame's by the time an event reads it.
+        self.triggers.borrow_mut().clear();
         let sidebar = self.render_sidebar(swatch, searching, cx);
         let main = self.render_main(swatch, &query, window, cx);
         // A followed control, or focus stranded on a control this frame did
@@ -1449,6 +1600,13 @@ impl Render for SettingsView {
                 cx.notify();
             });
         }
+        // A press outside the open menu, or on its trigger, closes it before
+        // anything under it acts, even before the menu's first frame.
+        let weak = cx.entity().downgrade();
+        let guard = self.popover.guard(move |_, window, cx| {
+            let _ = weak.update(cx, |view, cx| view.close_menu(window, cx));
+        });
+        let popover = self.render_popover(window, cx);
         let mut context = KeyContext::default();
         context.add("Settings");
         div()
@@ -1471,8 +1629,11 @@ impl Render for SettingsView {
             .size_full()
             .bg(swatch.bg)
             .text_color(swatch.fg)
+            .child(huterm_ui::focus::tracker())
+            .child(guard)
             .child(sidebar)
             .child(main)
+            .children(popover)
     }
 }
 
@@ -1538,14 +1699,14 @@ impl SettingsView {
     }
 
     /// The open menu's item identities, in order: what a pick writes.
-    pub(super) fn menu_ids(&self, cx: &App) -> Vec<&'static str> {
+    pub(super) fn menu_ids(&self, cx: &App) -> Vec<String> {
         self.menu.as_ref().map_or_else(Vec::new, |(menu, _, _)| {
             menu.read(cx)
                 .model()
                 .rows
                 .iter()
                 .filter_map(|row| match row {
-                    MenuRow::Item(item) => Some(item.id),
+                    MenuRow::Item(item) => Some(item.id.to_string()),
                     _ => None,
                 })
                 .collect()
@@ -1561,6 +1722,73 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         self.open_argument_menu(row, argument, window, cx);
+    }
+
+    /// Whether the window's root has focus, as recovery leaves it.
+    pub(super) fn root_focused(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+    }
+
+    /// Gives the control of setting `path` keyboard focus.
+    pub(super) fn focus_stop(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let handle = self
+            .stops
+            .iter()
+            .find_map(|(stop, handle)| (*stop == path).then(|| handle.clone()))
+            .expect("a drawn control");
+        handle.focus(window, cx);
+    }
+
+    /// Shows `section`, as clicking it in the sidebar does.
+    pub(super) fn show_section(
+        &mut self,
+        section: SectionId,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.select_section(section, cx);
+    }
+
+    /// Every select trigger the last frame drew, by menu key, with its
+    /// bounds in the window.
+    pub(super) fn select_triggers(
+        &self,
+    ) -> Vec<(String, gpui::Bounds<gpui::Pixels>)> {
+        let mut triggers: Vec<_> = self
+            .triggers
+            .borrow()
+            .iter()
+            .map(|(key, bounds)| (key.clone(), *bounds))
+            .collect();
+        triggers.sort_by(|a, b| a.0.cmp(&b.0));
+        triggers
+    }
+
+    /// Whether a menu is open. The popover must agree: a menu dropped
+    /// without closing it would leave its guard stopping presses.
+    pub(super) fn menu_open(&self) -> bool {
+        assert_eq!(
+            self.menu.is_some(),
+            self.popover.is_open(),
+            "the menu and its popover disagree"
+        );
+        self.menu.is_some()
+    }
+
+    /// The open menu's painted bounds, and whether its rows scroll.
+    pub(super) fn menu_layout(
+        &self,
+        cx: &App,
+    ) -> Option<(gpui::Bounds<gpui::Pixels>, bool)> {
+        let (menu, _, _) = self.menu.as_ref()?;
+        Some((
+            self.popover.content_bounds()?,
+            menu.read(cx).scroll_state().0,
+        ))
     }
 
     /// Dismisses an open menu, as Escape in it does.

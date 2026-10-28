@@ -973,6 +973,7 @@ fn menu_defaults() -> Vec<BindingEntry> {
         default("space", ids::MENU_CONFIRM, "Run Item"),
         default("escape", ids::MENU_CLOSE, "Close"),
         default("tab", ids::MENU_CLOSE, "Close"),
+        default("shift-tab", ids::MENU_CLOSE, "Close"),
     ]
 }
 

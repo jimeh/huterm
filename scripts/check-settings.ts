@@ -147,6 +147,41 @@ position = "top"
     }
     await state(`settings.focus=${name}`);
   }
+  /** Waits for the open menu's first painted frame, so a press tests the
+   * drawn menu rather than the guard's catch before any frame. */
+  async function menuPainted(): Promise<void> {
+    await waitFor(async () => (field(await current(), "menu_rect") ?? "none") !== "none", "the menu's painted bounds");
+  }
+  /** The center of the select trigger `name` in window points. */
+  async function selectCenter(name: string): Promise<[number, number]> {
+    let rect: number[] | undefined;
+    await waitFor(async () => {
+      const selects = field(await current(), "selects") ?? "";
+      const entry = selects.split("|").find((select) => select.startsWith(`${name}:`));
+      rect = entry?.slice(name.length + 1).split(",").map(Number);
+      return rect?.length === 4;
+    }, `the ${name} select's bounds`);
+    const [x = 0, y = 0, width = 0, height = 0] = rect ?? [];
+    return [Math.round(x + width / 2), Math.round(y + height / 2)];
+  }
+  /** A primary press and release at `at`, in the Settings window's points. */
+  async function press([x, y]: [number, number]): Promise<void> {
+    if (process.platform === "darwin") {
+      await command(`native\tmouse\t1\t${x}\t${y}`);
+      await command(`native\tmouse\t2\t${x}\t${y}`);
+    } else {
+      const window = x11Window("^Settings$");
+      run(["xdotool", "mousemove", "--window", window, String(x), String(y)]);
+      run(["xdotool", "click", "1"]);
+    }
+  }
+  /** This app's visible X11 window whose name matches `name`. */
+  function x11Window(name: string): string {
+    const probe = Bun.spawnSync(["xdotool", "search", "--all", "--onlyvisible", "--pid", String(app.pid), "--name", name], { stdout: "pipe" });
+    const id = probe.stdout.toString().trim().split(/\s+/)[0] ?? "";
+    if (!/^\d+$/.test(id)) throw new Error(`no X11 window ${name}`);
+    return id;
+  }
   /** Focuses this app's visible X11 window whose name matches `name`. */
   async function focusX11(name: string): Promise<void> {
     if (!wm) return;
@@ -210,6 +245,21 @@ position = "top"
     await state("settings.focus=action:qgo");
     await key("space");
     await state("settings.section=quake", "settings.focus=action:qprof");
+    // A select's menu closes on a second press on its trigger and on a
+    // press outside it, which acts on nothing beneath and returns focus to
+    // the trigger.
+    const profile = await selectCenter("qprof");
+    const position = await selectCenter("quake.profiles.default.position");
+    await press(profile);
+    await state("settings.menu=true", "settings.focus=menu");
+    await menuPainted();
+    await press(profile);
+    await state("settings.menu=false", "settings.focus=action:qprof");
+    await press(profile);
+    await state("settings.menu=true", "settings.focus=menu");
+    await menuPainted();
+    await press(position);
+    await state("settings.menu=false", "settings.focus=action:qprof");
     await tabTo("quake.profiles.default.height");
     await key("select-all");
     await typeText("0.4");
@@ -269,7 +319,7 @@ position = "top"
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved record=intercepted rebind=applied quake=saved global=recorded close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

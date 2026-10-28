@@ -1,13 +1,14 @@
 # UI components
 
-Status: in progress. Step 1 (the foundation) and the components of steps 2
-and 3 are implemented. Approved on 2026-10-27 after four Codex and Claude
-review rounds, then revised for a separate crate, the terminal window's
-adoption, and normalization against shadcn/ui, which three more review rounds
-checked. Follows [the settings plan](settings-ui.md), whose PR 3 built a
-control kit inside the Settings window, and folds in the open Settings
-follow-ups [#276][issue-276] and [#277][issue-277]. The running-app checks are
-still owed (see Defects).
+Status: in progress. Step 1 (the foundation), the components of steps 2 and
+3, and migration 2a (Settings selects) are implemented. Approved on 2026-10-27
+after four Codex and Claude review rounds, then revised for a separate crate,
+the terminal window's adoption, and normalization against shadcn/ui, which
+three more review rounds checked. Follows [the settings plan](settings-ui.md),
+whose PR 3 built a control kit inside the Settings window, and folds in the
+open Settings follow-ups [#276][issue-276] and [#277][issue-277]. Migration
+2a's running-app review covered the select defects; the running-app checks
+for the other controls are still owed (see Defects).
 
 The Settings series (#269, #274, #275) built its controls one at a time,
 inside the window that uses them. Each works on its happy path, but the kit
@@ -688,7 +689,8 @@ has room for one more field at most:
   them; D9 gets the focus-ring test above; D7 gets its test in step 4 and
   D17 in step 7.
 - **Smokes.** `scripts/check-settings.ts` gains a pointer step on macOS
-  (through `hid-pointer`) and X11 (through `xdotool`): open a select by
+  (posting native mouse events to the window, which does not move the real
+  pointer) and X11 (through `xdotool`): open a select by
   click, close it by an outside click and by a second trigger click, and
   check focus. Smoke state reports the focused control and `settings.menu`
   as separate fields, plus the menu's drawn rect, so a stale open menu can
