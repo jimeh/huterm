@@ -1,12 +1,18 @@
 //! Settings fields, number fields, and sliders on `huterm-ui`'s `Input`,
 //! `InputGroup`, `NumberField`, and `Slider`, driven by real keyboard and
 //! pointer events: D7, D10, and D12 of `docs/plans/ui-components.md`, the
-//! search field's clear button, and `text_cut`.
+//! search field's clear button, `text_cut`, and the Page Up, Page Down,
+//! Home, and End keys on number fields and sliders.
 
-use gpui::Modifiers;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use gpui::{Keystroke, Modifiers};
 use huterm_config::settings::SectionId;
 
-use super::settings::{ScratchConfig, settled, with_view, with_window};
+use super::settings::{
+    ScratchConfig, settings, settled, with_view, with_window,
+};
 use super::settings_controls::{
     a11y_click, a11y_find, a11y_node, break_file, focus, keys, ring, show,
     visual,
@@ -319,4 +325,175 @@ fn text_cut_moves_a_fields_selection_to_the_clipboard(cx: &mut TestAppContext) {
         .cx
         .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
     assert_eq!(clipboard.as_deref(), Some("scrollback"));
+}
+
+/// Sends `key` and waits for the file to read exactly `text`.
+fn key_writes(
+    harness: &mut DesktopHarness,
+    file: &ScratchConfig,
+    key: &str,
+    text: &str,
+) {
+    keys(harness, key);
+    harness.wait_for(&format!("{key} to write {text:?}"), |cx| {
+        settled(cx) && file.text() == text
+    });
+}
+
+/// Sends each of `keys` and asserts, before any background task runs, that
+/// it queued no write. A write against an invalid file fails on disk, so
+/// only the queue shows whether the control refused.
+fn assert_keys_queue_no_write(harness: &mut DesktopHarness, keys: &str) {
+    let window = harness
+        .cx
+        .update(|cx| settings(cx).expect("Settings is open"));
+    for key in keys.split(' ') {
+        let keystroke = Keystroke::parse(key).expect("a valid keystroke");
+        harness.cx.dispatch_keystroke(window.into(), keystroke);
+        assert!(harness.cx.update(settled), "{key} queued a write");
+    }
+    visual(harness).run_until_parked();
+}
+
+#[gpui::test]
+fn page_keys_page_a_slider_and_home_and_end_reach_its_ends(
+    cx: &mut TestAppContext,
+) {
+    let width = "quake.profiles.logs.width";
+    let wrote =
+        |value: &str| format!("[quake.profiles.logs]\nwidth = {value}\n");
+    let file = ScratchConfig::new("fields-slider-pages", &wrote("0.95"));
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_stop(width, window, cx);
+    });
+    // A page is a tenth of the range, two 5% steps, clamped at 100%.
+    key_writes(&mut harness, &file, "pageup", &wrote("1.0"));
+    key_writes(&mut harness, &file, "pagedown", &wrote("0.9"));
+    key_writes(&mut harness, &file, "home", &wrote("0.05"));
+    key_writes(&mut harness, &file, "pageup", &wrote("0.15"));
+    key_writes(&mut harness, &file, "end", &wrote("1.0"));
+    assert_eq!(focus(&mut harness), width);
+}
+
+#[gpui::test]
+fn page_keys_page_a_number_field_and_home_and_end_move_its_caret(
+    cx: &mut TestAppContext,
+) {
+    // Font sizes run from 6 to 96; a page is a tenth of that, nine steps.
+    let path = "font.size";
+    let file =
+        ScratchConfig::new("fields-number-pages", "[font]\nsize = 90.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field(path, window, cx);
+    });
+    key_writes(&mut harness, &file, "pageup", "[font]\nsize = 96.0\n");
+    key_writes(&mut harness, &file, "pagedown", "[font]\nsize = 87.0\n");
+    // Home and End move the caret in the text, so typing lands at each
+    // end, and write nothing.
+    keys(&harness, "home");
+    let mut typing = visual(&harness);
+    typing.simulate_input("1");
+    typing.run_until_parked();
+    assert_eq!(field_text(&mut harness, path), "187");
+    keys(&harness, "end");
+    let mut typing = visual(&harness);
+    typing.simulate_input("0");
+    typing.run_until_parked();
+    assert_eq!(field_text(&mut harness, path), "1870");
+    assert!(harness.cx.update(settled), "Home or End queued a write");
+    keys(&harness, "escape");
+    assert_eq!(field_text(&mut harness, path), "87");
+    assert_eq!(file.text(), "[font]\nsize = 87.0\n");
+}
+
+#[gpui::test]
+fn page_home_and_end_elsewhere_in_settings_stay_unbound_and_write_nothing(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("fields-pages-elsewhere", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Tabs);
+    // What each keystroke resolved to: none on a control that is neither
+    // a slider nor a number field, so the key is not consumed.
+    let resolved = Rc::new(RefCell::new(Vec::new()));
+    let record = resolved.clone();
+    let _observer = harness.cx.update(|cx| {
+        cx.observe_keystrokes(move |event, _, _| {
+            record.borrow_mut().push((
+                event.keystroke.key.clone(),
+                event.action.as_ref().map(|action| action.name()),
+            ));
+        })
+    });
+    for path in ["tabs.always_show", "tabs.style"] {
+        with_window(&mut harness, |view, window, cx| {
+            view.focus_stop(path, window, cx);
+        });
+        keys(&harness, "pageup pagedown home end");
+        assert_eq!(focus(&mut harness), path);
+    }
+    let resolved = resolved.borrow().clone();
+    assert_eq!(resolved.len(), 8, "{resolved:?}");
+    assert!(
+        resolved.iter().all(|(_, action)| action.is_none()),
+        "a key resolved to a binding: {resolved:?}"
+    );
+    // A text field keeps its own palette commands for the keys.
+    let path = "font.family";
+    with_window(&mut harness, |view, window, cx| {
+        view.show_section(SectionId::Appearance, cx);
+        window.refresh();
+    });
+    visual(&harness).run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field(path, window, cx);
+    });
+    type_over(&harness, "Menlo");
+    keys(&harness, "pageup pagedown");
+    assert_eq!(field_text(&mut harness, path), "Menlo");
+    assert!(harness.cx.update(settled), "a page key queued a write");
+    assert_eq!(file.text(), "");
+}
+
+#[gpui::test]
+fn page_home_and_end_refuse_on_a_read_only_slider(cx: &mut TestAppContext) {
+    let width = "quake.profiles.logs.width";
+    let file = ScratchConfig::new(
+        "fields-slider-read-only",
+        "[quake.profiles.logs]\nwidth = 0.3\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_stop(width, window, cx);
+    });
+    let broken = "[quake.profiles.logs]\nwidth = 0.3\n[window\n";
+    break_file(&mut harness, &file, broken);
+    // Focus stays, so a key reaching the window root cannot pass for a
+    // refusal.
+    assert_eq!(focus(&mut harness), width);
+    assert_keys_queue_no_write(&mut harness, "pageup pagedown home end");
+    assert_eq!(file.text(), broken);
+}
+
+#[gpui::test]
+fn page_keys_refuse_on_a_read_only_number_field(cx: &mut TestAppContext) {
+    let path = "font.size";
+    let file =
+        ScratchConfig::new("fields-number-read-only", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field(path, window, cx);
+    });
+    let broken = "[font]\nsize = 13.0\n[window\n";
+    break_file(&mut harness, &file, broken);
+    assert_eq!(focus(&mut harness), path);
+    assert_keys_queue_no_write(&mut harness, "pageup pagedown");
+    assert_eq!(field_text(&mut harness, path), "13");
+    assert_eq!(file.text(), broken);
 }

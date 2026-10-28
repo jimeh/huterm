@@ -886,6 +886,15 @@ pub mod ids {
     /// Steps the focused control down or to its previous option.
     pub const SETTINGS_DECREASE: CommandId =
         CommandId::new("settings_decrease");
+    /// Steps the focused slider up one page.
+    pub const SETTINGS_PAGE_UP: CommandId = CommandId::new("settings_page_up");
+    /// Steps the focused slider down one page.
+    pub const SETTINGS_PAGE_DOWN: CommandId =
+        CommandId::new("settings_page_down");
+    /// Moves the focused slider to its minimum.
+    pub const SETTINGS_FIRST: CommandId = CommandId::new("settings_first");
+    /// Moves the focused slider to its maximum.
+    pub const SETTINGS_LAST: CommandId = CommandId::new("settings_last");
     /// Resets the focused setting to its default.
     pub const SETTINGS_RESET: CommandId = CommandId::new("settings_reset");
     /// Moves the palette selection down.
@@ -1861,6 +1870,38 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Settings: Decrease",
         "Step the focused control down, or to its previous option.",
+        &[],
+    ),
+    spec_in(
+        "SettingsControl",
+        ids::SETTINGS_PAGE_UP,
+        CommandScope::Window,
+        "Settings: Page Up",
+        "Step the focused slider up one page.",
+        &[],
+    ),
+    spec_in(
+        "SettingsControl",
+        ids::SETTINGS_PAGE_DOWN,
+        CommandScope::Window,
+        "Settings: Page Down",
+        "Step the focused slider down one page.",
+        &[],
+    ),
+    spec_in(
+        "SettingsControl",
+        ids::SETTINGS_FIRST,
+        CommandScope::Window,
+        "Settings: Minimum",
+        "Move the focused slider to its minimum.",
+        &[],
+    ),
+    spec_in(
+        "SettingsControl",
+        ids::SETTINGS_LAST,
+        CommandScope::Window,
+        "Settings: Maximum",
+        "Move the focused slider to its maximum.",
         &[],
     ),
     spec_in(

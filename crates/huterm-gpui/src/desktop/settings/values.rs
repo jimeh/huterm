@@ -185,7 +185,9 @@ const UNBOUNDED_STEPS: f64 = 1_099_511_627_776.0;
 /// The range and grid a number setting steps along: its schema bounds, an
 /// exclusive minimum as the first grid value above it, and its
 /// `x-huterm-step`, else one. A missing bound lies far enough away to never
-/// be reached. `None` for any other kind.
+/// be reached. A bounded range pages by about a tenth of itself, as sliders
+/// conventionally do, and an unbounded one by ten steps. `None` for any
+/// other kind.
 pub(crate) fn steps(setting: &Setting) -> Option<Steps> {
     let step = setting.step.unwrap_or(1.0);
     let (min, max) = match &setting.kind {
@@ -206,7 +208,19 @@ pub(crate) fn steps(setting: &Setting) -> Option<Steps> {
         _ => return None,
     };
     let far = step * UNBOUNDED_STEPS;
-    Some(Steps::new(min.unwrap_or(-far), max.unwrap_or(far), step))
+    let steps = Steps::new(min.unwrap_or(-far), max.unwrap_or(far), step);
+    Some(match (min, max) {
+        (Some(min), Some(max)) => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a tenth of a bounded range's step count fits a u32"
+            )]
+            let tenth = ((max - min) / step / 10.0).round().max(1.0) as u32;
+            steps.page(tenth)
+        }
+        _ => steps,
+    })
 }
 
 /// `value` as the setting stores it: rounded to an integer for `Integer`,

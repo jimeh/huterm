@@ -715,6 +715,15 @@ fn default(key: &str, command: CommandId, description: &str) -> BindingEntry {
     default_with(key, command, &[], description)
 }
 
+/// A Settings binding that matches only while a slider, whose context sets
+/// `control = slider`, has focus.
+fn on_slider(key: &str, command: CommandId, description: &str) -> BindingEntry {
+    BindingEntry {
+        when: Some("control == slider".to_owned()),
+        ..default(key, command, description)
+    }
+}
+
 /// A movement command bound with `select = true`, so it extends the
 /// selection instead of moving the cursor.
 fn selecting(key: &str, command: CommandId, description: &str) -> BindingEntry {
@@ -991,10 +1000,13 @@ fn notice_defaults() -> Vec<BindingEntry> {
 
 /// Settings window bindings. Search and focus movement carry the `Settings`
 /// context; toggling, stepping, and reset carry `SettingsControl`, which
-/// only switches, selects, and section rows set, so Space and the arrows
-/// still reach a focused text field, whose `Palette` context handles them.
-/// The window also reads the close and tab-switching shortcuts, so they
-/// need no bindings of their own.
+/// only switches, selects, sliders, and section rows set, so Space and the
+/// arrows still reach a focused text field, whose `Palette` context handles
+/// them. Page Up, Page Down, Home, and End match only on a slider: a number
+/// field's `Palette` context pages it and keeps Home and End for its text,
+/// and on any other control the keys stay unbound. The window also reads
+/// the close and tab-switching shortcuts, so they need no bindings of their
+/// own.
 fn settings_defaults(platform: Platform) -> Vec<BindingEntry> {
     let mut entries = vec![
         default("tab", ids::SETTINGS_FOCUS_NEXT, "Next Control"),
@@ -1009,6 +1021,10 @@ fn settings_defaults(platform: Platform) -> Vec<BindingEntry> {
         default("right", ids::SETTINGS_INCREASE, "Increase"),
         default("down", ids::SETTINGS_DECREASE, "Decrease"),
         default("left", ids::SETTINGS_DECREASE, "Decrease"),
+        on_slider("pageup", ids::SETTINGS_PAGE_UP, "Page Up"),
+        on_slider("pagedown", ids::SETTINGS_PAGE_DOWN, "Page Down"),
+        on_slider("home", ids::SETTINGS_FIRST, "Minimum"),
+        on_slider("end", ids::SETTINGS_LAST, "Maximum"),
     ];
     entries.extend(match platform {
         Platform::MacOs => [

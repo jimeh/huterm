@@ -442,7 +442,10 @@ impl SettingsView {
 
     /// A slider for a setting whose schema asks for one, with its value as
     /// a readout. A value off the grid shows as is; the arrows, as
-    /// `settings_increase` and `settings_decrease`, step it along the grid.
+    /// `settings_increase` and `settings_decrease`, step it along the grid,
+    /// Page Up and Page Down page it, and Home and End move it to its ends.
+    /// Its `control = slider` context lets those last four bind on sliders
+    /// alone.
     fn render_slider(
         &mut self,
         setting: &'static Setting,
@@ -470,7 +473,7 @@ impl SettingsView {
             swatch,
         )
         .readout(readout(setting, value))
-        .key_context("SettingsControl")
+        .key_context("SettingsControl control=slider")
         .when_some(read_only, |slider, reason| slider.disabled(Some(reason)))
         .on_change(Self::listen(cx, move |view, value: f64, window, cx| {
             focus.focus(window, cx);

@@ -51,6 +51,7 @@ use huterm_ui::components::toggle_group::roving_target;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
+use huterm_ui::steps::Steps;
 
 const SIDEBAR_WIDTH: f32 = 200.0;
 const WINDOW_SIZE: (f32, f32) = (860.0, 620.0);
@@ -867,13 +868,13 @@ impl SettingsView {
         }
     }
 
-    /// Steps the focused control: a tri-state or a choice to its
-    /// neighbour, a number or a slider along its grid, clamped to its
-    /// range. A number field steps from its typed value. A read-only
-    /// control refuses.
+    /// Moves the focused control by `jump`: a tri-state or a choice one
+    /// step to its neighbour, a number or a slider along its grid, clamped
+    /// to its range. A number field moves from its typed value. A
+    /// read-only control refuses.
     fn step(
         &mut self,
-        forward: bool,
+        jump: Jump,
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -881,7 +882,7 @@ impl SettingsView {
             return;
         };
         if self.read_only_reason(setting).is_none() {
-            self.step_setting(setting, forward, cx);
+            self.step_setting(setting, jump, cx);
         }
     }
 
@@ -920,14 +921,16 @@ impl SettingsView {
     fn step_setting(
         &mut self,
         setting: &'static Setting,
-        forward: bool,
+        jump: Jump,
         cx: &mut Context<'_, Self>,
     ) {
         if matches!(setting.kind, SettingKind::Bool) {
             // A switch has no steps: Space and Return toggle it, as
             // WAI-ARIA's switch pattern has it, so moving through the form
             // writes nothing. A tri-state steps as its radios read.
-            if !self.has_default(setting) {
+            if !self.has_default(setting)
+                && let Jump::Step(forward) = jump
+            {
                 let current =
                     self.value(setting).and_then(|value| value.as_bool());
                 let next = tri_stepped(current, forward);
@@ -940,30 +943,26 @@ impl SettingsView {
         // A number field steps its own value, typed or shown; the change
         // it reports commits through `commit_field`.
         if let Some(number) = self.numbers.get(setting.path.as_str()).cloned() {
-            number.update(cx, |number, cx| {
-                if forward {
-                    number.increment(cx);
-                } else {
-                    number.decrement(cx);
-                }
+            number.update(cx, |number, cx| match jump {
+                Jump::Step(true) => number.increment(cx),
+                Jump::Step(false) => number.decrement(cx),
+                Jump::Page(true) => number.page_up(cx),
+                Jump::Page(false) => number.page_down(cx),
+                Jump::First => number.to_min(cx),
+                Jump::Last => number.to_max(cx),
             });
             return;
         }
         let current = self.value(setting);
-        let next = match (&setting.kind, values::steps(setting)) {
-            (SettingKind::Choice(choices), _) => {
+        let next = match (&setting.kind, values::steps(setting), jump) {
+            (SettingKind::Choice(choices), _, Jump::Step(forward)) => {
                 choice_stepped(choices, current.as_ref(), forward)
             }
-            (_, Some(steps)) => {
-                current.as_ref().and_then(as_number).map(|value| {
-                    let next = if forward {
-                        steps.increment(value)
-                    } else {
-                        steps.decrement(value)
-                    };
-                    number_value(setting, next)
-                })
-            }
+            (SettingKind::Choice(_), _, _) => None,
+            (_, Some(steps), _) => current
+                .as_ref()
+                .and_then(as_number)
+                .map(|value| number_value(setting, jump.from(steps, value))),
             _ => None,
         };
         let Some(value) = next else {
@@ -1268,9 +1267,15 @@ impl SettingsView {
                 if !self.step_chips(forward, window, cx)
                     && !self.step_filter(forward, window)
                 {
-                    self.step(forward, window, cx);
+                    self.step(Jump::Step(forward), window, cx);
                 }
             }
+            ids::SETTINGS_PAGE_UP | ids::SETTINGS_PAGE_DOWN => {
+                let forward = invocation.id == ids::SETTINGS_PAGE_UP;
+                self.step(Jump::Page(forward), window, cx);
+            }
+            ids::SETTINGS_FIRST => self.step(Jump::First, window, cx),
+            ids::SETTINGS_LAST => self.step(Jump::Last, window, cx),
             ids::SETTINGS_RESET => {
                 if let Some(command) = self
                     .focused_action(window)
@@ -1356,15 +1361,19 @@ impl SettingsView {
                     self.focus_first_match(window, cx);
                 }
             }
-            // Up and Down step a number field's value.
+            // Up and Down step a number field's value, and Page Up and Page
+            // Down page it; Home and End stay with its text.
             ids::PALETTE_SELECT_PREVIOUS | ids::PALETTE_SELECT_NEXT
                 if focused.is_some() =>
             {
-                self.step(
-                    invocation.id == ids::PALETTE_SELECT_PREVIOUS,
-                    window,
-                    cx,
-                );
+                let forward = invocation.id == ids::PALETTE_SELECT_PREVIOUS;
+                self.step(Jump::Step(forward), window, cx);
+            }
+            ids::PALETTE_PAGE_UP | ids::PALETTE_PAGE_DOWN
+                if focused.is_some() =>
+            {
+                let forward = invocation.id == ids::PALETTE_PAGE_UP;
+                self.step(Jump::Page(forward), window, cx);
             }
             ids::PALETTE_EXPAND => window.focus_next(cx),
             ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
@@ -1621,6 +1630,35 @@ fn tri_stepped(current: Option<bool>, forward: bool) -> Option<bool> {
         index.saturating_sub(1)
     };
     TRI_STATES.get(next).map_or(current, |(_, state)| *state)
+}
+
+/// How a Settings command moves a number or slider. A tri-state or a
+/// choice moves only by `Step`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Jump {
+    /// One step, up when true: the arrows.
+    Step(bool),
+    /// One page, up when true: Page Up and Page Down.
+    Page(bool),
+    /// The minimum: Home.
+    First,
+    /// The maximum: End.
+    Last,
+}
+
+impl Jump {
+    /// Where the jump lands from `value` on `steps`' grid, clamped to its
+    /// range.
+    fn from(self, steps: Steps, value: f64) -> f64 {
+        match self {
+            Self::Step(true) => steps.increment(value),
+            Self::Step(false) => steps.decrement(value),
+            Self::Page(true) => steps.page_up(value),
+            Self::Page(false) => steps.page_down(value),
+            Self::First => steps.min(),
+            Self::Last => steps.max(),
+        }
+    }
 }
 
 /// The choice one step from `current`, stopping at the ends; the first
@@ -2060,7 +2098,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         let setting = self.setting_at(path).expect("a known setting");
-        self.step_setting(setting, forward, cx);
+        self.step_setting(setting, Jump::Step(forward), cx);
     }
 
     /// Runs the control an action key names, as Space on it does.

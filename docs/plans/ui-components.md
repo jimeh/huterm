@@ -9,9 +9,12 @@ Quake width and height sliders, and `text_cut`) are implemented; 2b removed
 `desktop/menu.rs` and its menu host (D13). 3a also moved the Keybindings
 filter and shortcut switches; the key recorders, delete prompt, theme cards,
 and sidebar rows keep their GPUI focus styles until their own migrations.
-4a leaves Page Up, Page Down, Home, and End without Settings commands until
-those are decided, and keybinding argument fields stay `Input`s with their
-own clamped stepping.
+4a binds Page Up and Page Down on number fields and sliders and Home and End
+on sliders alone (`settings_page_up`, `settings_page_down`,
+`settings_first`, and `settings_last` under `control == slider`; a number
+field pages through `palette_page_up` and `palette_page_down` and keeps Home
+and End for its text), and keybinding argument fields stay `Input`s with
+their own clamped stepping.
 Approved on 2026-10-27 after four Codex and Claude review rounds, then
 revised for a separate crate, the terminal window's adoption, and
 normalization against shadcn/ui, which three more review rounds checked.

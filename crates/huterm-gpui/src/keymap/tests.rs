@@ -638,6 +638,57 @@ fn dialog_defaults_match_only_while_confirming() {
 }
 
 #[test]
+fn settings_page_home_and_end_keys_match_only_on_a_slider() {
+    for platform in [Platform::MacOs, Platform::Linux] {
+        let keymap = Keymap::new(compile(platform, &[]).unwrap().bindings);
+        let within = |focused: &str| {
+            [
+                KeyContext::parse("Settings").unwrap(),
+                KeyContext::parse(focused).unwrap(),
+            ]
+        };
+        // A slider sets `control = slider`; a number field is a `Palette`
+        // field; a switch or select is a bare `SettingsControl`.
+        let slider = within("SettingsControl control=slider");
+        let number = within("Palette");
+        let switch = within("SettingsControl");
+        let matched = |key: &str, contexts: &[KeyContext]| {
+            let (bindings, pending) =
+                keymap.bindings_for_input(&[keystroke(key)], contexts);
+            assert!(!pending, "{platform:?}: {key} left a pending chord");
+            bindings.iter().map(command_of).collect::<Vec<_>>()
+        };
+        let slider_commands = [
+            ("pageup", ids::SETTINGS_PAGE_UP, ids::PALETTE_PAGE_UP),
+            ("pagedown", ids::SETTINGS_PAGE_DOWN, ids::PALETTE_PAGE_DOWN),
+            ("home", ids::SETTINGS_FIRST, ids::TEXT_LINE_START),
+            ("end", ids::SETTINGS_LAST, ids::TEXT_LINE_END),
+        ];
+        for (key, on_slider, in_number) in slider_commands {
+            assert_eq!(
+                matched(key, &slider),
+                vec![on_slider],
+                "{platform:?}: {key} on a slider"
+            );
+            let in_field = matched(key, &number);
+            assert_eq!(
+                in_field.first(),
+                Some(&in_number),
+                "{platform:?}: {key} in a number field"
+            );
+            assert!(
+                !in_field.contains(&on_slider),
+                "{platform:?}: {key} reached {on_slider} in a number field"
+            );
+            assert!(
+                matched(key, &switch).is_empty(),
+                "{platform:?}: {key} bound on a switch"
+            );
+        }
+    }
+}
+
+#[test]
 fn menu_defaults_match_only_while_a_menu_has_focus() {
     for platform in [Platform::MacOs, Platform::Linux] {
         let compiled = compile(platform, &[]).unwrap();

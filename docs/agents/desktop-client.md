@@ -398,7 +398,15 @@ binding under `Settings` matched inside a focused text field too, because the
 field's `Palette` context binds no Space, and ate the space. `SettingsView::run`
 routes the arrows to the focused modifier chip's group (`step_chips`) and the
 shortcut filter (`step_filter`) before `step`, which finds only settings and
-would drop them; `step_setting` gives a switch no steps.
+would drop them; `step_setting` gives a switch no steps. Page Up, Page Down,
+Home, and End bind under `SettingsControl && control == slider`, which only
+a slider's `SettingsControl control=slider` context matches, so the keys stay
+unbound, not swallowed, on every other control. A number field's context is
+`Palette` alone, so no `SettingsControl` binding reaches it; a
+`SettingsControl` wrapper around it would still lose to `Palette`'s deeper
+`pageup` and `pagedown`. `run_palette` pages a focused number field from
+`palette_page_up` and `palette_page_down` instead, as it steps one from
+`palette_select_previous` and `palette_select_next`.
 
 A command whose arguments are all unprompted, such as `resize_pane_left` or
 `close_tab`, has no palette slot. `SlotEditor::new` returns `None` for it, and
