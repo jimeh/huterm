@@ -7,20 +7,24 @@
 //! context, so the palette's list and text bindings apply whether the
 //! search field or a button has focus, and Tab and Shift-Tab
 //! (`palette_expand`, `palette_previous_slot`) move through the dialog's
-//! focus cycle. Typing and text editing on a button move focus to the
-//! search first, so the search shows what they change.
+//! focus cycle. While a button has focus, the search's input handler
+//! takes the platform's text input, composition included, and the first
+//! text moves focus to the search; text edits on a button move it there
+//! too, so the search shows what they change.
 
 // User input picks positions here, so a stale index must not panic.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, ClipboardItem, Context, Corners, Entity, EventEmitter, FocusHandle,
-    Focusable, FontWeight, KeyDownEvent, MouseButton, Pixels, Render,
-    ScrollHandle, ScrollWheelEvent, SharedString, Size, Subscription, Task,
-    Window, div, point, prelude::*, px, relative,
+    App, Bounds, ClipboardItem, Context, Corners, ElementInputHandler, Entity,
+    EventEmitter, FocusHandle, Focusable, FontWeight, InputHandler,
+    MouseButton, Pixels, Point, Render, ScrollHandle, ScrollWheelEvent,
+    SharedString, Size, Subscription, Task, TextInputConfiguration,
+    UTF16Selection, Window, canvas, div, point, prelude::*, px, relative,
 };
 use huterm_protocol::{CommandError, CommandInvocation, CommandOutcome, ids};
 
@@ -282,7 +286,10 @@ impl LicensesView {
             ids::PALETTE_CONFIRM => self.press_focused(window, cx),
             ids::PALETTE_POP => {}
             id if FORWARDED_TEXT_COMMANDS.contains(&id) => {
-                self.focus_search(window, cx);
+                // Copying changes nothing to show, so focus stays put.
+                if id != ids::TEXT_COPY {
+                    self.focus_search(window, cx);
+                }
                 self.input.update(cx, |field, cx| {
                     crate::ui::input::run(field, invocation, cx)
                 })?;
@@ -323,37 +330,6 @@ impl LicensesView {
         if !search.is_focused(window) {
             search.focus(window, cx);
         }
-    }
-
-    /// Types a printable key pressed on a button into the search, which
-    /// takes focus; Space stays the button's, and shortcuts with Command or
-    /// Control pass by.
-    fn type_from_button(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let keystroke = &event.keystroke;
-        let Some(text) = keystroke.key_char.as_deref() else {
-            return;
-        };
-        if keystroke.modifiers.platform
-            || keystroke.modifiers.control
-            || keystroke.key == "space"
-            || text.is_empty()
-            || text.chars().any(char::is_control)
-            || self
-                .focus(window, cx)
-                .is_none_or(|focus| focus == LicensesFocus::Search)
-        {
-            return;
-        }
-        self.focus_search(window, cx);
-        self.input.update(cx, |input, cx| {
-            input.replace(input.selection(), text, cx);
-        });
-        cx.stop_propagation();
     }
 
     /// Recomputes the matches, keeping the selected component when it still
@@ -486,11 +462,223 @@ impl LicensesView {
         cx.notify();
     }
 
+    /// An element over the search field that, while a button has focus,
+    /// registers the search's input handler for that button, so text
+    /// typed or composed there reaches the search. The field's bounds place
+    /// the IME's candidate window.
+    fn button_text_input(&self, cx: &App) -> impl IntoElement + use<> {
+        let buttons = [
+            self.buttons.website.clone(),
+            self.buttons.copy.clone(),
+            self.buttons.done.clone(),
+        ];
+        let search = self.focus_handle(cx);
+        let input = self.input.clone();
+        canvas(
+            |_, _, _| {},
+            move |bounds, (), window, cx| {
+                if let Some(button) =
+                    buttons.iter().find(|button| button.is_focused(window))
+                {
+                    window.handle_input(
+                        button,
+                        SearchFromButton::new(search, bounds, input),
+                        cx,
+                    );
+                }
+            },
+        )
+        .absolute()
+        .inset_0()
+    }
+
     fn advance(&mut self, now: Instant, cx: &mut Context<'_, Self>) {
         // Both always advance; `|` keeps either from short-circuiting.
         if self.list_scrollbar.advance(now) | self.text_scrollbar.advance(now) {
             cx.notify();
         }
+    }
+}
+
+/// The search's own input handler, registered while a button has focus.
+/// Text, marked text, or a paste moves focus to the search before it
+/// applies, and a composition the button started continues there under the
+/// search's handler, since the search keeps the marked text.
+struct SearchFromButton {
+    search: FocusHandle,
+    input: ElementInputHandler<Input>,
+}
+
+impl SearchFromButton {
+    fn new(
+        search: FocusHandle,
+        bounds: Bounds<Pixels>,
+        input: Entity<Input>,
+    ) -> Self {
+        Self {
+            search,
+            input: ElementInputHandler::new(bounds, input),
+        }
+    }
+
+    fn focus_search(&self, window: &mut Window, cx: &mut App) {
+        if !self.search.is_focused(window) {
+            self.search.focus(window, cx);
+        }
+    }
+}
+
+impl InputHandler for SearchFromButton {
+    fn selected_text_range(
+        &mut self,
+        ignore_disabled_input: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<UTF16Selection> {
+        self.input
+            .selected_text_range(ignore_disabled_input, window, cx)
+    }
+
+    fn marked_text_range(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Range<usize>> {
+        self.input.marked_text_range(window, cx)
+    }
+
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<String> {
+        self.input
+            .text_for_range(range_utf16, adjusted_range, window, cx)
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.focus_search(window, cx);
+        self.input
+            .replace_text_in_range(replacement_range, text, window, cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.focus_search(window, cx);
+        self.input.replace_and_mark_text_in_range(
+            range_utf16,
+            new_text,
+            new_selected_range,
+            window,
+            cx,
+        );
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut App) {
+        self.input.unmark_text(window, cx);
+    }
+
+    fn paste(
+        &mut self,
+        item: ClipboardItem,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.focus_search(window, cx);
+        self.input.paste(item, window, cx);
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Bounds<Pixels>> {
+        self.input.bounds_for_range(range_utf16, window, cx)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        point: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<usize> {
+        self.input.character_index_for_point(point, window, cx)
+    }
+
+    fn set_selected_text_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.input.set_selected_text_range(range_utf16, window, cx);
+    }
+
+    fn element_bounds(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Bounds<Pixels>> {
+        self.input.element_bounds(window, cx)
+    }
+
+    fn text_length_utf16(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<usize> {
+        self.input.text_length_utf16(window, cx)
+    }
+
+    fn apple_press_and_hold_enabled(&mut self) -> bool {
+        self.input.apple_press_and_hold_enabled()
+    }
+
+    fn accepts_text_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        self.input.accepts_text_input(window, cx)
+    }
+
+    fn text_input_editable_range(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Range<usize>> {
+        self.input.text_input_editable_range(window, cx)
+    }
+
+    fn prefers_ime_for_printable_keys(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        self.input.prefers_ime_for_printable_keys(window, cx)
+    }
+
+    fn text_input_configuration(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> TextInputConfiguration {
+        self.input.text_input_configuration(window, cx)
     }
 }
 
@@ -951,9 +1139,11 @@ impl Render for LicensesView {
                     .when(search.is_focused(window), |field| {
                         field.shadow(swatch.focus_ring())
                     })
+                    .relative()
                     .bg(swatch.bg)
                     .text_size(px(12.5))
-                    .child(self.input.clone()),
+                    .child(self.input.clone())
+                    .child(self.button_text_input(cx)),
             );
         let (website, copy) = self.shows_buttons();
         // The panel's top edge sits at the inset below the window's top, and
@@ -964,7 +1154,6 @@ impl Render for LicensesView {
         .clamp(px(0.0), px(PANEL_HEIGHT));
         let content = div()
             .key_context("Palette")
-            .on_key_down(cx.listener(Self::type_from_button))
             .flex()
             .flex_col()
             .flex_1()
@@ -1011,5 +1200,21 @@ impl LicensesView {
     /// Sets the search's text as an edit that arrives without moving focus.
     pub(super) fn set_search(&self, text: &str, cx: &mut Context<'_, Self>) {
         self.input.update(cx, |input, cx| input.set_text(text, cx));
+    }
+
+    /// The search field.
+    pub(super) fn search(&self) -> Entity<Input> {
+        self.input.clone()
+    }
+
+    /// The input handler the view registers while a button has focus, for
+    /// platform input GPUI's tests cannot send through the window, such as
+    /// marked text.
+    pub(super) fn button_input_handler(&self, cx: &App) -> impl InputHandler {
+        SearchFromButton::new(
+            self.focus_handle(cx),
+            Bounds::default(),
+            self.input.clone(),
+        )
     }
 }

@@ -807,10 +807,19 @@ closes on an outside press or on deactivation, so the guard's callback
 ignores the reason. In Licenses, a press that focuses nothing
 returns focus to the search, and so do Escape that clears the search and a
 selection or search change that hides the focused Website or Copy button.
-The `Palette` context wraps the buttons, so a printable key on a button
-(no Command or Control, not Space) types into the search through the
-content's key-down listener, and a forwarded text command focuses the
-search before it edits.
+The `Palette` context wraps the buttons, so the list keys and text commands
+work from a button. While Website, Copy, or Done has focus, a canvas over
+the search field registers the search `Input`'s handler for that button with
+`window.handle_input`, wrapped in `SearchFromButton`. Unbound keys then reach
+the search through the platform's ordinary text input, so dead keys, IME
+composition, and Linux's Shift-only rule behave as on the focused search,
+and Space, which no `Palette` binding claims, types a space. The wrapper
+focuses the search before text, marked text, or a paste applies, and the
+composition continues there under the search's own handler, because the
+`Input` holds the marked text. GPUI's tests cannot send marked text through
+the window, so the composition test calls the view's handler directly. A
+forwarded text command focuses the search before it edits, except Copy,
+which changes nothing to show.
 Smoke state reads `dialog_focus`, `about_focus`, and `licenses_focus` from
 real focus.
 

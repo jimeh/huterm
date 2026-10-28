@@ -1,12 +1,16 @@
 //! The terminal window's dialogs in its `huterm-ui` dialog slot, migration
 //! 7b of `docs/plans/ui-components.md`: the close confirmation, About, and
 //! Licenses stay open through outside presses and window deactivation,
-//! keep Tab inside, and return focus to the terminal; a long license
+//! keep Tab inside, and return focus to the terminal; text typed or
+//! composed on a Licenses button reaches its search; a long license
 //! scrolls to its end.
 
 use std::sync::Arc;
 
-use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+use gpui::{
+    EntityInputHandler, InputHandler, Modifiers, ScrollDelta, ScrollWheelEvent,
+    TouchPhase, point,
+};
 
 use super::buttons::CLOSE;
 use super::*;
@@ -213,6 +217,82 @@ fn license_matches(
     }
 }
 
+/// The Licenses search's text in `window`.
+fn search_text(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> String {
+    harness.update_view(window, |view, _, cx| {
+        let search = view.licenses.as_ref().unwrap().read(cx).search();
+        search.read(cx).text().to_owned()
+    })
+}
+
+#[gpui::test]
+fn typing_on_a_licenses_button_inserts_once_at_the_search_caret(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let window = open_two_components(&mut harness);
+    harness.press(window, "a l p h a tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
+    harness.press(window, "z");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    assert_eq!(search_text(&mut harness, window), "alphaz");
+    // Done shows with no match, so only the typing moves focus from it.
+    harness.press(window, "tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Done));
+    harness.press(window, "z");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    assert_eq!(search_text(&mut harness, window), "alphazz");
+}
+
+#[gpui::test]
+fn a_composition_started_on_a_licenses_button_finishes_in_the_search(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let window = open_two_components(&mut harness);
+    // Done shows whatever the search matches, so only the composition moves
+    // focus from it.
+    harness.press(window, "shift-tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Done));
+    // A dead key marks text through the handler the view registers for the
+    // focused button; GPUI's tests can only send committed text through the
+    // window.
+    harness.update_view(window, |view, window, cx| {
+        let licenses = view.licenses.as_ref().unwrap().read(cx);
+        let mut handler = licenses.button_input_handler(cx);
+        handler.replace_and_mark_text_in_range(None, "´", None, window, cx);
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    let marked = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, window, cx| {
+            let search = view.licenses.as_ref().unwrap().read(cx).search();
+            search.update(cx, |input, cx| input.marked_text_range(window, cx))
+        })
+    };
+    assert_eq!(search_text(&mut harness, window), "´");
+    assert_eq!(marked(&mut harness), Some(0..1));
+    // The commit replaces the marked text through the window's handler.
+    harness.press(window, "é");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    assert_eq!(search_text(&mut harness, window), "é");
+    assert_eq!(marked(&mut harness), None);
+}
+
+#[gpui::test]
+fn copy_on_a_licenses_button_keeps_focus_there(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let window = open_two_components(&mut harness);
+    harness.press(window, "a l p h a tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
+    harness.invoke(window, ids::TEXT_COPY).unwrap();
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
+    assert_eq!(search_text(&mut harness, window), "alpha");
+}
+
 #[gpui::test]
 fn editing_keys_on_a_licenses_button_move_to_the_search(
     cx: &mut TestAppContext,
@@ -229,10 +309,14 @@ fn editing_keys_on_a_licenses_button_move_to_the_search(
     assert_eq!(license_matches(&mut harness, window), 1);
     harness.press(window, "tab");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
-    // Space stays the button's: it types nothing.
+    // No binding claims Space on a button, so it types into the search, as
+    // it would with the search focused.
     harness.press(window, "space");
-    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    assert_eq!(search_text(&mut harness, window), "alpha ");
     assert_eq!(license_matches(&mut harness, window), 1);
+    harness.press(window, "tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
     harness.press(window, "left");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
     harness.press(window, "tab tab");
