@@ -166,15 +166,7 @@ impl Menu {
     /// sits flush against its anchor when it opens upward.
     #[must_use]
     pub fn content_height(model: &Model) -> Pixels {
-        let rows: f32 = model
-            .rows
-            .iter()
-            .map(|row| match row {
-                Row::Item(_) => ROW_HEIGHT,
-                Row::Separator => SEPARATOR_HEIGHT,
-                Row::Buttons { .. } => BUTTON_ROW_HEIGHT,
-            })
-            .sum();
+        let rows: f32 = model.rows.iter().map(row_height).sum();
         px(rows + (PANEL_PADDING + PANEL_BORDER) * 2.0)
     }
 
@@ -215,9 +207,40 @@ impl Menu {
     ) {
         if self.max_height != max_height {
             self.max_height = max_height;
+            if let Some(selection) = self.selection {
+                self.reveal(selection.row);
+            }
             self.scrollbar.show();
             cx.notify();
         }
+    }
+
+    /// Scrolls the fewest points that show `row` whole, with the panel's
+    /// padding beside it, within the menu's height. The fixed row heights
+    /// give its place before any layout. GPUI's `scroll_to_item` would wait
+    /// for the next frame's layout, after the scrollbar has drawn from the
+    /// old offset, and before the first frame it has no rows to scroll to.
+    fn reveal(&self, row: usize) {
+        let (Some(height), Some(revealed)) =
+            (self.max_height, self.model.rows.get(row))
+        else {
+            return;
+        };
+        let height = f32::from(height);
+        let top: f32 = self.model.rows[..row].iter().map(row_height).sum();
+        let bottom = top + row_height(revealed) + PANEL_PADDING * 2.0;
+        let rows: f32 = self.model.rows.iter().map(row_height).sum();
+        let max = (rows + PANEL_PADDING * 2.0 - height).max(0.0);
+        let shown = -f32::from(self.scroll.offset().y);
+        let shown = if top < shown {
+            top
+        } else if bottom > shown + height {
+            bottom - height
+        } else {
+            shown
+        };
+        self.scroll
+            .set_offset(Point::new(px(0.0), px(-shown.clamp(0.0, max))));
     }
 
     fn set_selection(
@@ -230,7 +253,7 @@ impl Menu {
         }
         self.selection = selection;
         if let Some(selection) = selection {
-            self.scroll.scroll_to_item(selection.row);
+            self.reveal(selection.row);
             self.scrollbar.show();
         }
         cx.notify();
@@ -597,6 +620,15 @@ impl EntityInputHandler for Menu {
     }
 }
 
+/// A row's fixed height.
+fn row_height(row: &Row) -> f32 {
+    match row {
+        Row::Item(_) => ROW_HEIGHT,
+        Row::Separator => SEPARATOR_HEIGHT,
+        Row::Buttons { .. } => BUTTON_ROW_HEIGHT,
+    }
+}
+
 impl Render for Menu {
     fn render(
         &mut self,
@@ -647,7 +679,7 @@ impl Render for Menu {
             .flex_col()
             // Typed text reaches `replace_text_in_range` for type-ahead only
             // while the menu has focus. The canvas stays outside the scrolled
-            // rows container so `scroll_to_item` indexes rows alone.
+            // rows container so the scroll handle's child bounds are rows.
             .child(
                 canvas(
                     |_, _, _| (),
@@ -833,6 +865,78 @@ mod tests {
                 .map(|node| node["aria"]["label"].clone())
                 .collect();
             assert_eq!(disabled, ["Copy Directory Path"]);
+        });
+    }
+
+    /// A host drawing a menu of `count` rows, at most 200 points tall, with
+    /// `id` selected before its first frame, as a select opens on its value.
+    fn long<'a>(
+        cx: &'a mut TestAppContext,
+        count: usize,
+        id: &str,
+    ) -> (Entity<Menu>, &'a mut gpui::VisualTestContext) {
+        let (host, cx) = cx.add_window_view(|_, _| Host { menu: None });
+        let rows = (0..count)
+            .map(|row| {
+                Row::Item(Item::new(format!("row-{row}"), format!("Row {row}")))
+            })
+            .collect();
+        let id = id.to_owned();
+        let menu = cx.update(|_, cx| {
+            let menu = cx.new(|cx| {
+                let mut menu =
+                    Menu::new("Fonts", Model::new(rows), tokens(), false, cx);
+                menu.select_item(&id, cx);
+                menu.set_max_height(Some(px(200.0)), cx);
+                menu
+            });
+            host.update(cx, |host, cx| {
+                host.menu = Some(menu.clone());
+                cx.notify();
+            });
+            menu
+        });
+        cx.run_until_parked();
+        (menu, cx)
+    }
+
+    /// Whether the last frame drew `row` whole inside the scrolled rows.
+    fn shows(menu: &Menu, row: usize) -> bool {
+        let viewport = menu.scroll.bounds();
+        let item = menu
+            .scroll
+            .bounds_for_item(row)
+            .expect("the last frame laid the row out");
+        let top = item.top() + menu.scroll.offset().y;
+        top >= viewport.top() && top + item.size.height <= viewport.bottom()
+    }
+
+    #[gpui::test]
+    fn a_menu_opens_scrolled_to_its_selection(cx: &mut TestAppContext) {
+        let (menu, cx) = long(cx, 40, "row-30");
+        cx.read(|cx| {
+            let menu = menu.read(cx);
+            assert_eq!(menu.selection().map(|s| s.row), Some(30));
+            assert!(shows(menu, 30), "offset {:?}", menu.scroll.offset());
+        });
+    }
+
+    #[gpui::test]
+    fn a_keyboard_step_scrolls_before_the_frame_draws_the_thumb(
+        cx: &mut TestAppContext,
+    ) {
+        let (menu, cx) = long(cx, 40, "row-0");
+        // The scrollbar's thumb comes from the offset as the menu renders,
+        // so a step must not leave the scroll to the frame's layout.
+        let stepped = menu.update(cx, |menu, cx| {
+            menu.select_last(cx);
+            menu.scroll.offset()
+        });
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let menu = menu.read(cx);
+            assert_eq!(menu.scroll.offset(), stepped);
+            assert!(shows(menu, 39), "offset {stepped:?}");
         });
     }
 }
