@@ -3482,6 +3482,11 @@ pub struct KeystrokeEvent {
     /// even when this is [`InputPreference::CharacterInput`].
     pub input_preference: InputPreference,
 
+    /// Whether the keystroke is a held key's repeat, from its
+    /// [`KeyDownEvent::is_held`](crate::KeyDownEvent::is_held). Only interceptors receive it set;
+    /// observers and modifier-only keystrokes always see `false`.
+    pub is_held: bool,
+
     /// The action that was resolved for the keystroke, if any
     pub action: Option<Box<dyn Action>>,
 
