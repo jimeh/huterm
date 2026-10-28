@@ -1,14 +1,16 @@
 # UI components
 
 Status: in progress. Step 1 (the foundation), the components of steps 2 and
-3, and migration 2a (Settings selects) are implemented. Approved on 2026-10-27
-after four Codex and Claude review rounds, then revised for a separate crate,
-the terminal window's adoption, and normalization against shadcn/ui, which
-three more review rounds checked. Follows [the settings plan](settings-ui.md),
-whose PR 3 built a control kit inside the Settings window, and folds in the
-open Settings follow-ups [#276][issue-276] and [#277][issue-277]. Migration
-2a's running-app review covered the select defects; the running-app checks
-for the other controls are still owed (see Defects).
+3, and migrations 2a (Settings selects) and 2b (terminal-window menus) are
+implemented; 2b removed `desktop/menu.rs` and its menu host (D13). Approved
+on 2026-10-27 after four Codex and Claude review rounds, then revised for a
+separate crate, the terminal window's adoption, and normalization against
+shadcn/ui, which three more review rounds checked. Follows
+[the settings plan](settings-ui.md), whose PR 3 built a control kit inside
+the Settings window, and folds in the open Settings follow-ups
+[#276][issue-276] and [#277][issue-277]. Migration 2a's running-app review
+covered the select defects; the running-app checks for the other controls are
+still owed (see Defects).
 
 The Settings series (#269, #274, #275) built its controls one at a time,
 inside the window that uses them. Each works on its happy path, but the kit
@@ -54,8 +56,8 @@ App-specific surfaces). Everything else in the table migrates.
 | Tri-state (Default, On, Off) | `controls.rs` `render_optional_bool` | Settings | One tab stop; arrows step | Click a segment | Ring on group | n/a | Opacity |
 | Segmented control | `controls.rs` `render_segments` | Settings | One tab stop; arrows step and write | Click a segment | Ring on group | n/a | Opacity |
 | Select | `controls.rs` `render_select`, `with_menu` | Settings, Quake, keybinding arguments | Space, Return open; arrows step and write without opening | Click opens; a second click opens a new menu | Ring | Escape, Tab, a pick; not Shift-Tab, an outside press, a trigger press, or deactivation | Opacity |
-| Menu (listbox) | `desktop/menu.rs` `Menu`, `MenuModel` | Window menu, tab and terminal context menus, every select | Arrows, Home, End, Return, Space, Escape, Tab, type-ahead | Moving pointer selects; click picks | n/a | Emits `Dismissed`; each host closes it | Disabled rows with a hint |
-| Menu host | `windows.rs` (`toggle_menu`, capture-phase press), `settings_window.rs` (`show_menu`, `close_menu`) | Two hosts | n/a | Terminal window: outside press closes, button toggles. Settings: neither | n/a | See defects D1 to D4 | n/a |
+| Menu (listbox) | `desktop/menu.rs` `Menu`, `MenuModel` (removed in 2b) | Window menu, tab and terminal context menus, every select | Arrows, Home, End, Return, Space, Escape, Tab, type-ahead | Moving pointer selects; click picks | n/a | Emits `Dismissed`; each host closes it | Disabled rows with a hint |
+| Menu host | `windows.rs` (`toggle_menu`, capture-phase press), `settings_window.rs` (`show_menu`, `close_menu`) | Two hosts (one since 2b) | n/a | Before 2b, terminal window: outside press closes, button toggles. Settings: neither | n/a | See defects D1 to D4 | n/a |
 | Font picker | `controls.rs` `render_font` | Settings | Field plus an "Installed" select | Menu of every family | Ring | As select | Opacity |
 | Text field | `ui/text_field.rs` `TextField` | Palette, Licenses, Settings | Catalog text commands under `Palette`; IME | Click, drag, double-click word | None (caret only) | Escape restores in Settings | None in the field itself |
 | Number field | `render_field` plus `stepped` in `settings_window.rs` | Settings, Quake | Up and Down add or subtract 1 | None | None | n/a | Opacity |
@@ -112,7 +114,7 @@ Settings menu.
 | D10 | Read-only is opacity only. A read-only text field still takes focus from a click and accepts typing, which is then dropped; no disabled control says why. | `render_field` sets `opacity(0.5)` and clears the tab stop only; `TextField` has no read-only state; the write is refused in `saving.rs:416`. Runtime check pending. | Medium |
 | D11 | Nothing is exposed to VoiceOver or Orca. | No `role` or `aria_*` calls; GPUI 0.3.9 already builds an AccessKit tree, and `accesskit_macos` and `accesskit_unix` are in `Cargo.lock`. | High |
 | D12 | `TextField` never scrolls horizontally, and has no Cut or Undo. Long text in a fixed-width Settings field (90, 120, or 180 points) runs past it, and the caret can leave view. | No offset in `text_field.rs` render (552-660); `run` (433-462) and the protocol have no cut or undo commands. Overflow is a runtime check pending. A future field Undo needs its own command id: #256 adds a generic Window-scope `undo` on `cmd-z` (`layout-undo.md`). | Medium |
-| D13 | The two menu hosts duplicate anchoring, outside-press handling, toggling, and focus return, and Settings implements half of it. | `windows.rs` (`menu_bounds`, `menu_button_bounds`, `toggle_menu`, `render_menu`) versus `settings_window.rs` (`show_menu`, `close_menu`) and `controls.rs` (`with_menu`). This is the root cause of D1 to D4. | Structural |
+| D13 | The two menu hosts duplicate anchoring, outside-press handling, toggling, and focus return, and Settings implements half of it. | `windows.rs` (`menu_bounds`, `menu_button_bounds`, `toggle_menu`, `render_menu`) versus `settings_window.rs` (`show_menu`, `close_menu`) and `controls.rs` (`with_menu`). This is the root cause of D1 to D4. | Structural; fixed in 2b |
 | D14 | `Swatch::focus_ring` carries two doc comments, the first stale. | `overlay.rs:155-156` | Trivial |
 | D15 | Shift-Tab in an open Settings menu moves focus behind it and leaves the menu open, the stale state of D5, reached from the keyboard alone. Smoke state hides it: it reports `focus=menu` whenever a menu exists. | `menu_defaults` binds `tab` but not `shift-tab` (`keymap.rs:950-951`), so `settings_focus_previous` runs `window.focus_prev` (`settings_window.rs:946`); `smoke_state` at `settings_window.rs:1182`. | Medium |
 | D16 | Removing or rebinding the Enter or Space binding of a Settings control does not stop those keys from activating it. | GPUI turns Enter or Space on a focused element with `on_click` into a `ClickEvent::Keyboard` (`gpui-pre-0.3.9/src/elements/div.rs:3016-3045`); Settings click handlers ignore the event kind (for example `controls.rs:139`). | Medium |
@@ -482,11 +484,12 @@ needed:
 The backdrop answers D1, D2, and D5 at once. A press anywhere outside the
 content, including on the trigger, lands on the backdrop, which closes the
 popover and stops the press. That matches AppKit, GTK's autohide popovers, and
-Radix's modal menus. The terminal window's menus today let the press proceed;
-see the open questions. Shift-Tab gets a `menu_close` binding under `menu`,
-as Tab has (D15). `menu_close` carries no direction, so in a modal popover
-Tab and Shift-Tab only dismiss and return focus to the target, which matches
-what Tab does today; a further Tab moves on. Radix Select and AppKit menus do
+Radix's modal menus. Before 2b, the terminal window's menus let the press
+proceed; decision 1 settled that they consume it too. Shift-Tab gets a
+`menu_close` binding under `menu`, as Tab has (D15). `menu_close` carries
+no direction, so in a modal popover Tab and Shift-Tab only dismiss and return
+focus to the target, which matches what Tab does today; a further Tab moves
+on. Radix Select and AppKit menus do
 not move focus on Tab either.
 
 Window deactivation must set focus itself. GPUI leaves focus on the closed
@@ -501,7 +504,7 @@ dialogs. A click-handler guard would come too late: GPUI moves focus on
 mouse-down, in the bubble phase, and runs `on_click` on mouse-up, and the
 terminal sends a mouse report on mouse-down. So the owner registers a
 capture-phase mouse-down listener on every frame, whether or not a popover
-is open, as the terminal window's menu host does today (`windows.rs:10549`).
+is open, as the terminal window's menu host did before 2b.
 It reads the live popover state, not the drawn frame. When a modal popover
 is open and the press falls outside its last painted content bounds (or no
 content has been painted yet; the bounds clear on every open and close, as

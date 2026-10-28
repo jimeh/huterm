@@ -34,10 +34,6 @@ use super::close_dialog::{
 };
 use super::config_watch::ReloadKind;
 use super::licenses::{Done as LicensesDone, LicensesState, LicensesView};
-use super::menu::{
-    MENU_MIN_WIDTH, Menu as MenuView, MenuAnchor, MenuEvent, MenuModel,
-    MenuRow, place_menu,
-};
 use super::notices::{
     Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
     ToastHandlers, render_notice_stack,
@@ -71,6 +67,11 @@ use huterm_protocol::{
     ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name, validate,
     validate_supplied,
 };
+use huterm_ui::components::menu::{
+    MIN_WIDTH as MENU_MIN_WIDTH, Menu as MenuView, MenuEvent,
+};
+use huterm_ui::components::popover::{Anchor, Popover, place};
+use huterm_ui::listbox::{Model as MenuModel, Row as MenuRow};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -2305,7 +2306,7 @@ fn open_window_with_profile(
                 startup_reporter: reporter.clone(),
                 menu: None,
                 menu_button_bounds: Rc::new(Cell::new(None)),
-                menu_bounds: Rc::new(Cell::new(None)),
+                popover: Popover::new(),
                 window_button_bounds: Rc::default(),
                 title_row_press: Rc::new(Cell::new(false)),
                 title_row_moves: Rc::new(Cell::new(0)),
@@ -2362,6 +2363,10 @@ fn open_window_with_profile(
                         view.cancel_divider_drag(cx);
                         view.cancel_reorder(window, cx);
                         view.cancel_pane_drag(window, cx);
+                        // An open menu closes, as AppKit menus and GTK
+                        // popovers do, and focus is on the terminal when
+                        // the window comes back.
+                        view.close_menu(MenuFocusReturn::Terminal, window, cx);
                     }
                     view.refresh_tab_visibility(window, cx);
                     // A failure latched while every window was hidden or
@@ -3401,9 +3406,12 @@ struct WorkspaceView {
     startup_reporter: Option<WeakEntity<WorkspaceView>>,
     /// The open window, tab, or terminal menu.
     menu: Option<OpenMenu>,
+    /// Where the open menu draws, and the guard that closes it on a press
+    /// outside its painted content. Its content bounds are smoke state's
+    /// `menu_rect`.
+    popover: Popover,
     /// Where the menu button was last painted, for anchoring the menu and
-    /// letting a press on it toggle rather than dismiss; `None` while the
-    /// button is not drawn.
+    /// for smoke state; `None` while the button is not drawn.
     menu_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The window controls' painted bounds in Huterm's own title row, for
     /// smoke pointer fixtures; `None` while the row is not drawn.
@@ -3415,8 +3423,6 @@ struct WorkspaceView {
     title_row_press: Rc<Cell<bool>>,
     /// How many window moves the title row has started, for smokes.
     title_row_moves: Rc<Cell<u32>>,
-    /// Where the open menu was last painted, for outside-press dismissal.
-    menu_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The About panel's details while it is showing.
     about: Option<AboutDetails>,
     /// The About panel button keyboard focus is on.
@@ -3460,6 +3466,25 @@ struct OpenMenu {
     pointer: Option<gpui::Point<Pixels>>,
     /// The key contexts captured when the menu opened, for shortcut text.
     contexts: Vec<KeyContext>,
+    /// Closes the menu when focus leaves it; dropping the menu drops it.
+    _blur: gpui::Subscription,
+}
+
+/// The open menu's scroll indicator fades on the window's frame clock.
+impl refresh::Animated for MenuView {
+    fn animation_schedule(&self, now: Instant) -> AnimationSchedule {
+        self.schedule(now)
+    }
+
+    fn advance_animation(
+        &mut self,
+        now: Instant,
+        _frame: bool,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.advance(now, cx);
+    }
 }
 
 /// Where focus goes when the window menu closes.
@@ -10602,10 +10627,7 @@ impl Render for WorkspaceView {
                         },
                     );
                     window.on_mouse_event(
-                        move |event: &gpui::MouseDownEvent,
-                              phase,
-                              window,
-                              cx| {
+                        move |_: &gpui::MouseDownEvent, phase, window, cx| {
                             if phase == DispatchPhase::Capture {
                                 let _ = press_view.update(cx, |view, cx| {
                                     view.pointer_reveal.outside = false;
@@ -10614,24 +10636,6 @@ impl Render for WorkspaceView {
                                     // become a window move.
                                     view.title_row_press.set(false);
                                     view.defer_pointer_refresh(window, cx);
-                                    // A press outside the menu closes it and
-                                    // then proceeds; the button toggles it.
-                                    let inside = [
-                                        view.menu_bounds.get(),
-                                        view.menu_button_bounds.get(),
-                                    ]
-                                    .into_iter()
-                                    .flatten()
-                                    .any(|bounds| {
-                                        bounds.contains(&event.position)
-                                    });
-                                    if view.menu.is_some() && !inside {
-                                        view.close_menu(
-                                            MenuFocusReturn::Terminal,
-                                            window,
-                                            cx,
-                                        );
-                                    }
                                 });
                             }
                         },
@@ -10702,6 +10706,16 @@ impl Render for WorkspaceView {
             .absolute()
             .inset_0(),
         );
+        // A press outside the open menu, or on its button, closes it and
+        // stops there, even before the menu's first frame: nothing beneath
+        // takes focus, starts a selection, or sends a mouse report. It
+        // follows the listeners above, which every press must reach.
+        let guard_view = cx.entity().downgrade();
+        root = root.child(self.popover.guard(move |_, window, cx| {
+            let _ = guard_view.update(cx, |view, cx| {
+                view.close_menu(MenuFocusReturn::Terminal, window, cx);
+            });
+        }));
         let titlebar = self.title_row();
         let top_chrome = titlebar + self.fullscreen_insets.top.max(px(0.0));
         let bar_drawn = self.bar_drawn();
@@ -11686,6 +11700,7 @@ impl WorkspaceView {
         }
         if let Some(menu) = &mut self.menu {
             menu.pointer = Some(pointer);
+            self.popover.open(Anchor::Pointer(pointer), true);
         }
     }
 
@@ -11770,8 +11785,8 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        // A right-click closes any open menu in the capture phase before
-        // the terminal sees it, so an open menu here was opened after the
+        // A right-click while a menu is open only closes it, before the
+        // terminal sees it, so an open menu here was opened after the
         // click; a lookup that finished late must not replace it.
         if self.active_view(cx).as_ref() == Some(terminal)
             && self.menu.is_none()
@@ -11891,20 +11906,61 @@ impl WorkspaceView {
         self.cancel_pane_drag(window, cx);
         let swatch = tokens(&self.config.theme);
         let clock = Rc::clone(&self.frame_clock);
+        let label = match kind {
+            MenuKind::Window => "Menu",
+            MenuKind::Tab(_) => "Tab",
+            MenuKind::Terminal { .. } => "Terminal",
+        };
         let view = cx.new(|cx| {
             clock.observe(cx);
-            MenuView::new(model, swatch, from_keyboard, cx)
+            MenuView::new(label, model, swatch, from_keyboard, cx)
         });
         cx.subscribe_in(&view, window, Self::handle_menu_event)
             .detach();
-        view.read(cx).focus_handle(cx).focus(window, cx);
+        // A menu supersedes a right-click still waiting for its link
+        // lookup, as any terminal press does: the press that dismisses this
+        // menu stops at the popover and never reaches the terminal to
+        // cancel it.
+        if let Some(terminal) = self.active_view(cx) {
+            terminal.update(cx, |terminal, _| terminal.cancel_context_lookup());
+        }
+        // Focus leaving the menu closes it where focus went. The closes
+        // that move focus themselves drop the menu first, so this finds
+        // nothing to close then. Blur runs in the draw's focus phase, which
+        // drops a notify, so the close waits for the draw to end. The
+        // activation observer closes a menu whose window deactivates before
+        // this runs; skipping an inactive window only guards that order.
+        let menu_id = view.entity_id();
+        let menu_focus = view.read(cx).focus_handle(cx);
+        let blur = cx.on_blur(&menu_focus, window, move |_, window, cx| {
+            cx.defer_in(window, move |view, window, cx| {
+                let current =
+                    view.menu.as_ref().map(|menu| menu.view.entity_id());
+                if current == Some(menu_id) && window.is_window_active() {
+                    view.close_menu(MenuFocusReturn::Keep, window, cx);
+                }
+            });
+        });
+        menu_focus.focus(window, cx);
+        // The button's anchor follows its painted bounds at every render.
+        self.popover.open(
+            pointer.map_or_else(
+                || {
+                    Anchor::Trigger(
+                        self.menu_button_bounds.get().unwrap_or_default(),
+                    )
+                },
+                Anchor::Pointer,
+            ),
+            true,
+        );
         self.menu = Some(OpenMenu {
             view,
             kind,
             pointer,
             contexts,
+            _blur: blur,
         });
-        self.menu_bounds.set(None);
         cx.notify();
     }
 
@@ -11926,10 +11982,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
+        let _ = self.popover.close();
         if self.menu.take().is_none() {
             return false;
         }
-        self.menu_bounds.set(None);
         match focus {
             MenuFocusReturn::Terminal => self.focus_terminal(window, cx),
             MenuFocusReturn::Keep => {}
@@ -11997,7 +12053,7 @@ impl WorkspaceView {
                 {
                     return;
                 }
-                let Some(spec) = huterm_protocol::lookup(id) else {
+                let Some(spec) = huterm_protocol::lookup(id.as_ref()) else {
                     self.report_failure(
                         "Command failed",
                         format!("unknown command `{id}`"),
@@ -12141,6 +12197,9 @@ impl WorkspaceView {
         let swatch = tokens(&self.config.theme);
         div()
             .id("window-menu")
+            .role(gpui::Role::Button)
+            .aria_label("Menu")
+            .aria_expanded(open)
             .group("window-menu")
             .occlude()
             .w(CONTROL_SIZE)
@@ -12189,6 +12248,7 @@ impl WorkspaceView {
                 .absolute()
                 .inset_0(),
             )
+            .child(self.popover.trigger_probe())
     }
 
     /// The gestures of a title row Huterm owns, on its empty space: a
@@ -12331,59 +12391,32 @@ impl WorkspaceView {
         controls
     }
 
-    /// The open menu mounted at its placement: below the anchor, or above
-    /// it from the lower half; right-aligned from the right half; scrolling
-    /// within the space left. Edges facing the anchor stay flush even if
-    /// the panel measures wider or shorter than expected.
+    /// The open menu in its popover: below its button, or above it from
+    /// the lower half; right-aligned from the right half; at the pointer
+    /// for a context menu; scrolling within the space left.
     fn render_menu(
         &self,
         layout: &ChromeLayout,
         window: &Window,
         cx: &mut Context<'_, Self>,
-    ) -> Option<gpui::Div> {
+    ) -> Option<gpui::AnyElement> {
         let open = self.menu.as_ref()?;
         let menu = open.view.clone();
         let viewport = window.viewport_size();
-        let height = menu.read(cx).model().height();
+        let height = MenuView::content_height(menu.read(cx).model());
         let anchor = match open.pointer {
-            Some(pointer) => MenuAnchor::Pointer(pointer),
-            None => MenuAnchor::Button(self.menu_anchor(layout)),
+            Some(pointer) => Anchor::Pointer(pointer),
+            None => Anchor::Trigger(self.menu_anchor(layout)),
         };
-        let placement =
-            place_menu(anchor, size(MENU_MIN_WIDTH, height), viewport);
+        let placement = place(anchor, size(MENU_MIN_WIDTH, height), viewport);
         menu.update(cx, |menu, cx| {
             menu.set_max_height(Some(placement.max_height), cx);
         });
-        let bounds_cell = Rc::clone(&self.menu_bounds);
-        let shown_height = height.min(placement.max_height);
-        let wrapper = div()
-            .absolute()
-            .when(placement.align_right, |wrapper| {
-                wrapper.right(
-                    viewport.width - (placement.origin.x + MENU_MIN_WIDTH),
-                )
-            })
-            .when(!placement.align_right, |wrapper| {
-                wrapper.left(placement.origin.x)
-            })
-            .when(placement.opens_up, |wrapper| {
-                wrapper.bottom(
-                    viewport.height - (placement.origin.y + shown_height),
-                )
-            })
-            .when(!placement.opens_up, |wrapper| {
-                wrapper.top(placement.origin.y)
-            })
-            .child(menu)
-            .child(
-                canvas(
-                    |_, _, _| (),
-                    move |bounds, (), _, _| bounds_cell.set(Some(bounds)),
-                )
-                .absolute()
-                .inset_0(),
-            );
-        Some(wrapper)
+        self.popover.render(
+            placement,
+            viewport,
+            div().w(MENU_MIN_WIDTH).child(menu),
+        )
     }
 
     /// The open menu's smoke fields: kind, focus, selection, items with
@@ -12401,7 +12434,7 @@ impl WorkspaceView {
                 let selection = menu
                     .selection()
                     .and_then(|selection| menu.model().id_at(selection))
-                    .unwrap_or("none");
+                    .unwrap_or_else(|| "none".into());
                 let kind = match open.kind {
                     MenuKind::Window => "window",
                     MenuKind::Tab(_) => "tab",
@@ -12421,7 +12454,7 @@ impl WorkspaceView {
         format!(
             "{menu} {prefix}menu_button_open={} {prefix}menu_rect={}",
             self.menu_button_open(),
-            self.menu_bounds.get().map_or_else(
+            self.popover.content_bounds().map_or_else(
                 || "none".to_owned(),
                 |bounds| format!(
                     "{},{},{},{}",

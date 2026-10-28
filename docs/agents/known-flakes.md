@@ -418,6 +418,9 @@ bootstrap and its limits are in [the CI guide](ci.md#toolchain-bootstrap).
 Treat a single 429 or 403 there as an infrastructure failure and rerun it.
 Repeated failures usually follow Actions cache eviction: the repository has
 exceeded GitHub's 10 GB cache limit before, which forced cold installs.
+The step can also hang: in run 40636655413 (2026-10-28), `Package macOS
+arm64`'s `Install Zig` ran from 05:19 until the job stopped at 06:04, about
+45 minutes, and no later step started. Rerunning the failed jobs passed.
 
 ## Local environment hazards
 

@@ -100,7 +100,6 @@ mod key_hint;
 mod keyboard;
 mod licenses;
 mod links;
-mod menu;
 mod notices;
 mod overlay;
 pub(crate) mod palette;
@@ -2040,6 +2039,12 @@ impl TerminalView {
             self.clear_selection();
             cx.notify();
         }
+    }
+
+    /// Drops a right-click still waiting for its link lookup, so it never
+    /// opens its menu.
+    fn cancel_context_lookup(&mut self) {
+        self.context_lookup = None;
     }
 
     /// Asks the window for the context menu at `position`, first looking

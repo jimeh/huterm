@@ -4,8 +4,10 @@
 
 use gpui::KeyContext;
 use huterm_protocol::{CommandId, ids};
+use huterm_ui::listbox::{
+    Item as MenuItem, Model as MenuModel, Row as MenuRow,
+};
 
-use super::super::menu::{MenuItem, MenuModel, MenuRow};
 use super::window_menu::{label, shortcut_hint};
 use crate::keymap::{InstalledKeymap, Platform};
 
@@ -43,8 +45,11 @@ pub(super) fn tab_menu_model(
     } else {
         copy_directory.disabled(Some("Directory unknown".to_owned()))
     };
-    let close_tab = item(ids::CLOSE_TAB)
-        .shortcut(input.active.then(|| shortcut(ids::CLOSE_TAB)).flatten());
+    let close_tab = item(ids::CLOSE_TAB).shortcut(if input.active {
+        shortcut(ids::CLOSE_TAB)
+    } else {
+        Vec::new()
+    });
     let close_others = item(ids::CLOSE_OTHER_TABS);
     let close_others = if input.count > 1 {
         close_others
@@ -81,10 +86,10 @@ pub(super) fn tab_menu_model(
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::key_hint::KeyHint;
     use super::*;
     use crate::config::KeybindingEntry;
     use crate::keymap::compile;
+    use huterm_ui::components::kbd;
 
     fn keymap(platform: Platform, user: &[KeybindingEntry]) -> InstalledKeymap {
         let (bindings, installed) =
@@ -131,7 +136,7 @@ mod tests {
         let model = model(&input(1, 3));
         let labels: Vec<(&str, &str, bool)> = items(&model)
             .iter()
-            .map(|item| (item.id, item.label.as_str(), item.enabled))
+            .map(|item| (item.id.as_ref(), item.label.as_str(), item.enabled))
             .collect();
         assert_eq!(
             labels,
@@ -215,12 +220,12 @@ mod tests {
         };
         // The default close shortcut closes the pane, so Close Tab shows
         // one only when the user binds it.
-        assert_eq!(items(&model(&active))[2].shortcut, None);
+        assert_eq!(kbd::text(&items(&model(&active))[2].shortcut), "");
         let linux = TabMenuInput {
             platform: Platform::Linux,
             ..active
         };
-        assert_eq!(items(&model(&linux))[2].shortcut, None);
+        assert_eq!(kbd::text(&items(&model(&linux))[2].shortcut), "");
         let user = [KeybindingEntry {
             key: "ctrl-alt-w".to_owned(),
             command: "close_tab".to_owned(),
@@ -234,19 +239,12 @@ mod tests {
             &keymap(Platform::MacOs, &user),
             &contexts(),
         );
-        assert_eq!(
-            items(&model)[2]
-                .shortcut
-                .as_ref()
-                .map(KeyHint::text)
-                .as_deref(),
-            Some("⌃⌥W")
-        );
+        assert_eq!(kbd::text(&items(&model)[2].shortcut), "⌃⌥W");
         let inactive = tab_menu_model(
             &input(0, 2),
             &keymap(Platform::MacOs, &user),
             &contexts(),
         );
-        assert_eq!(items(&inactive)[2].shortcut, None);
+        assert_eq!(kbd::text(&items(&inactive)[2].shortcut), "");
     }
 }

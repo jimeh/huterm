@@ -6,16 +6,18 @@
 
 use gpui::KeyContext;
 use huterm_protocol::{CommandId, ids};
+use huterm_ui::listbox::{
+    Item as MenuItem, Model as MenuModel, Row as MenuRow,
+};
 
-use super::super::menu::{MenuItem, MenuItemId, MenuModel, MenuRow};
 use super::window_menu::{label, shortcut_hint};
 use crate::keymap::{InstalledKeymap, Platform};
 
 /// Opens the link under the pointer. Link rows are not catalog commands:
 /// they act on the destination captured when the menu opened.
-pub(super) const OPEN_LINK: MenuItemId = "open_link";
+pub(super) const OPEN_LINK: &str = "open_link";
 /// Copies the link under the pointer.
-pub(super) const COPY_LINK: MenuItemId = "copy_link";
+pub(super) const COPY_LINK: &str = "copy_link";
 
 /// What the tab's working directory allows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,9 +144,9 @@ pub(super) fn terminal_menu_model(
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::key_hint::KeyHint;
     use super::*;
     use crate::keymap::compile;
+    use huterm_ui::components::kbd;
 
     fn model(input: TerminalMenuInput) -> MenuModel {
         let (bindings, keymap) =
@@ -175,7 +177,7 @@ mod tests {
             .rows
             .iter()
             .map(|row| match row {
-                MenuRow::Item(item) if item.enabled => item.id.to_owned(),
+                MenuRow::Item(item) if item.enabled => item.id.to_string(),
                 MenuRow::Item(item) => format!("{}!", item.id),
                 MenuRow::Separator => "-".to_owned(),
                 MenuRow::Buttons { .. } => "buttons".to_owned(),
@@ -246,7 +248,7 @@ mod tests {
             .iter()
             .filter_map(|row| match row {
                 MenuRow::Item(item) if !item.enabled => {
-                    Some((item.id, item.disabled_hint.as_deref()))
+                    Some((item.id.to_string(), item.disabled_hint.clone()))
                 }
                 _ => None,
             })
@@ -254,8 +256,8 @@ mod tests {
         assert_eq!(
             hints,
             [
-                ("copy", Some("Nothing selected")),
-                ("paste", Some("Shell exited")),
+                ("copy".to_owned(), Some("Nothing selected".to_owned())),
+                ("paste".to_owned(), Some("Shell exited".to_owned())),
             ]
         );
     }
@@ -302,7 +304,9 @@ mod tests {
             })
             .unwrap()
         };
-        let hint = |item: MenuItem| item.shortcut.as_ref().map(KeyHint::text);
+        let hint = |item: MenuItem| {
+            (!item.shortcut.is_empty()).then(|| kbd::text(&item.shortcut))
+        };
         assert_eq!(
             item(Platform::MacOs, "open_tab_directory").label,
             "Show in Finder"
