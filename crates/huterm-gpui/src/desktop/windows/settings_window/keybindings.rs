@@ -1079,7 +1079,7 @@ impl SettingsView {
 
     /// The context suggestions under a `when` field. The first match is
     /// highlighted as the user types, so Return completes it; a pick
-    /// replaces the name before the caret, and only while it still
+    /// completes the name before the caret, and only while it still
     /// completes that name. Names draw in the monospace font the field
     /// takes them in.
     fn condition_list(
@@ -1112,9 +1112,23 @@ impl SettingsView {
                         .iter()
                         .any(|context| context.name == name.as_ref())
                 {
-                    // The whole name under the caret goes, so a completion
-                    // in the middle of a word keeps none of its tail.
-                    let end = name_end(field.text(), field.cursor());
+                    // A name the caret sits inside goes whole when the pick
+                    // completes all of it, so "Termin|a" keeps no tail;
+                    // otherwise the pick goes in before the caret, so a
+                    // name typed in front of another keeps it: "sel|split"
+                    // becomes "selection|split".
+                    let caret = field.cursor();
+                    let end = name_end(field.text(), caret);
+                    let whole =
+                        field.text().get(start..end).unwrap_or_default();
+                    let end = if name
+                        .to_lowercase()
+                        .starts_with(&whole.to_lowercase())
+                    {
+                        end
+                    } else {
+                        caret
+                    };
                     field.replace(start..end, name, cx);
                 }
             });

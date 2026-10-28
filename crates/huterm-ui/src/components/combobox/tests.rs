@@ -1176,3 +1176,63 @@ fn a_caret_move_keeps_a_scrolled_list_where_it_was(cx: &mut TestAppContext) {
         "the caret move scrolled back to the highlight"
     );
 }
+
+#[gpui::test]
+fn reopening_a_scrolled_browsing_list_shows_the_value_again(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            browse: true,
+            many: true,
+            ..Setup::default()
+        },
+    );
+    probe.write(cx, "Font 30");
+    let combobox = probe.combobox(cx);
+    let shows = |cx: &mut VisualTestContext, row: usize| {
+        cx.read(|cx| combobox.read(cx).list.shows(row))
+    };
+    keys(cx, "down");
+    deliver_frames(cx);
+    assert!(shows(cx, 30));
+    let list = probe.list_bounds(cx);
+    wheel(cx, list.center(), 2000.0);
+    assert!(!shows(cx, 30), "the wheel scrolled the value away");
+    keys(cx, "escape");
+    keys(cx, "down");
+    deliver_frames(cx);
+    assert!(shows(cx, 30), "reopening left the value out of view");
+}
+
+#[gpui::test]
+fn an_edit_that_keeps_the_options_shows_the_highlight_again(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            auto_highlight: true,
+            many: true,
+            ..Setup::default()
+        },
+    );
+    type_text(cx, "font");
+    let combobox = probe.combobox(cx);
+    let shows = |cx: &mut VisualTestContext, row: usize| {
+        cx.read(|cx| combobox.read(cx).list.shows(row))
+    };
+    assert!(shows(cx, 0));
+    let list = probe.list_bounds(cx);
+    wheel(cx, list.center(), -2000.0);
+    assert!(!shows(cx, 0), "the wheel scrolled the highlight away");
+    // Every font still contains "font ", so the options come back the same.
+    type_text(cx, " ");
+    assert_eq!(probe.labels(cx).len(), 40);
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Font 00"));
+    assert!(
+        shows(cx, 0),
+        "the edit left the highlight Return picks out of view"
+    );
+}

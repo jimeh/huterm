@@ -401,7 +401,7 @@ impl Combobox {
         if !self.open {
             return;
         }
-        self.filter(cx);
+        self.filter(cx, true);
         if self.auto_highlight && self.list.highlight().is_none() {
             self.list.set_highlight(Some(0));
         }
@@ -446,14 +446,17 @@ impl Combobox {
 
     /// Replaces the suggestions with the filter's, or the browse ones while
     /// browsing, keeping the highlight on the same suggestion.
-    fn filter(&mut self, cx: &App) {
+    /// Runs the filter. With `keep_scroll`, as after a caret move or an
+    /// owner's write, options that come back unchanged leave the list
+    /// where the user scrolled it; opening and editing reveal the
+    /// highlight.
+    fn filter(&mut self, cx: &App, keep_scroll: bool) {
         let filter = match &self.browse {
             Some(browse) if !browse.typed => &browse.filter,
             _ => &self.filter,
         };
         let options = filter(self.input.read(cx));
-        // Unchanged options keep the list where the user scrolled it.
-        if options != self.list.options() {
+        if !keep_scroll || options != self.list.options() {
             self.list.set_options(options);
         }
     }
@@ -480,7 +483,7 @@ impl Combobox {
         cx: &mut Context<'_, Self>,
     ) -> bool {
         if !self.open && self.usable(cx) {
-            self.filter(cx);
+            self.filter(cx, false);
             match (self.current(cx), end) {
                 (Some(row), _) => {
                     self.list.set_highlight(Some(row));
@@ -506,7 +509,7 @@ impl Combobox {
         if !self.usable(cx) {
             return;
         }
-        self.filter(cx);
+        self.filter(cx, false);
         let first = self.auto_highlight.then_some(0);
         self.list.set_highlight(first);
         if self.list.options().is_empty() {
