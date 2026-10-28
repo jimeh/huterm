@@ -156,14 +156,14 @@ fn a_slider_row_keeps_its_description_beside_the_slider(
     );
     let mut harness = DesktopHarness::new(cx);
     show_logs(&mut harness, &file);
-    for (row, slider, reset) in [
+    for (label, slider, reset) in [
         (
-            "settings-row-quake.profiles.logs.width",
+            "settings-label-quake.profiles.logs.width",
             "settings-slider-quake.profiles.logs.width",
             "settings-reset-quake.profiles.logs.width",
         ),
         (
-            "settings-row-quake.profiles.logs.height",
+            "settings-label-quake.profiles.logs.height",
             "settings-slider-quake.profiles.logs.height",
             "settings-reset-quake.profiles.logs.height",
         ),
@@ -174,11 +174,13 @@ fn a_slider_row_keeps_its_description_beside_the_slider(
                 .debug_bounds(selector)
                 .unwrap_or_else(|| panic!("{selector} was drawn"))
         };
-        let (row, slider, reset) = (bounds(row), bounds(slider), bounds(reset));
-        // The field's label column runs from its 14-point padding to the
-        // 12-point gap before Reset.
-        let label = reset.left() - row.left() - px(26.0);
-        assert!(label > px(100.0), "the label is squeezed to {label:?}");
+        let (label, slider, reset) =
+            (bounds(label), bounds(slider), bounds(reset));
+        assert!(
+            label.right() <= slider.left(),
+            "{label:?} overlaps {slider:?}"
+        );
+        assert!(label.size.width > px(100.0), "{label:?} is squeezed");
         assert!(
             reset.right() <= slider.left() && !reset.intersects(&slider),
             "{reset:?} overlaps {slider:?}"

@@ -1795,6 +1795,11 @@ impl SettingsView {
                     hint.text(),
                     swatch,
                 )
+                .title_element(
+                    hint.element(px(12.0), swatch.fg).debug_selector(
+                        move || format!("settings-kunbound-keys-{entry}"),
+                    ),
+                )
                 .description("Unbound; programs receive this key.")
                 .action(remove)
                 .into_any_element(),
@@ -2470,7 +2475,8 @@ impl SettingsView {
             return None;
         }
         let mut rows = Vec::new();
-        for spec in commands.into_iter().take(20) {
+        let count = commands.len().min(20);
+        for (index, spec) in commands.into_iter().take(count).enumerate() {
             let caps: Vec<String> = self
                 .keys
                 .inventory
@@ -2488,34 +2494,31 @@ impl SettingsView {
                         .collect()
                 })
                 .unwrap_or_default();
-            let mut keys = div().flex().flex_none().gap(px(6.0));
-            for key in &caps {
-                keys = keys.child(cap(key, Origin::Default, swatch));
-            }
-            let element = div()
-                .id(id(format!("settings-kgo-{}", spec.id.as_str())))
-                .flex()
-                .items_center()
-                .gap(px(10.0))
-                .px(px(14.0))
-                .py(px(8.0))
-                .hover(|style| style.bg(swatch.hover))
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(px(13.0))
-                        .text_color(swatch.fg)
-                        .child(spec.title),
-                )
-                .child(keys);
-            rows.push(
-                self.actionable(
-                    element,
-                    format!("kgo:{}", spec.id.as_str()),
+            let key = format!("kgo:{}", spec.id.as_str());
+            let handle = self.action_stop(key.clone(), cx);
+            let focus = handle.clone();
+            let act = Self::listen(cx, move |view, (), window, cx| {
+                focus.focus(window, cx);
+                view.act(&key, window, cx);
+            });
+            let item = caps.iter().fold(
+                Item::new(
+                    id(format!("settings-kgo-{}", spec.id.as_str())),
+                    spec.title,
                     swatch,
-                    cx,
-                )
-                .into_any_element(),
+                ),
+                |item, key| item.action(cap(key, Origin::Default, swatch)),
+            );
+            let corners = card::row_corners(index, count);
+            rows.push(
+                item.link(&handle)
+                    .key_context("SettingsControl")
+                    .rounded_tl(corners.top_left)
+                    .rounded_tr(corners.top_right)
+                    .rounded_br(corners.bottom_right)
+                    .rounded_bl(corners.bottom_left)
+                    .on_click(move |window, cx| act((), window, cx))
+                    .into_any_element(),
             );
         }
         Some(group_card("settings-kresults", "Commands", rows, swatch))

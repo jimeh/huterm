@@ -55,11 +55,11 @@ test("huterm-ui draws focus rings only through focus::ring", () => {
 test("Settings draws focus rings through huterm-ui, except where a later migration moves them", () => {
   // Migration 3a moved Settings' buttons, links, switches, toggle groups,
   // and chips onto `huterm-ui`, whose rings follow `focus::ring`, and 6a
-  // the theme cards, the sidebar, and the keybinding command rows. One GPUI
-  // focus style remains: `actionable`, for the key recorders and their Add
-  // buttons, which migration 8 of `docs/plans/ui-components.md` owns, and
-  // the command search results. Lower the count as it moves; a new GPUI
-  // focus style fails here.
+  // the theme cards, the sidebar, the keybinding command rows, and the
+  // command search results. One GPUI focus style remains: `actionable`, for
+  // the key recorders and their Add buttons, which migration 8 of
+  // `docs/plans/ui-components.md` owns. Lower the count as it moves; a new
+  // GPUI focus style fails here.
   const remaining: Record<string, number> = {
     "crates/huterm-gpui/src/desktop/windows/settings_window/render.rs": 1,
   };

@@ -167,9 +167,10 @@ pub(crate) const CONTEXTS: &[Context] = &[
         "A Settings switch, select, slider, or section has focus.",
     ),
     context(
-        "control",
-        "`slider` on a Settings slider, `group` on sections, themes, or chips.",
+        "SettingsGroup",
+        "A Settings section, theme card, or modifier chip has focus.",
     ),
+    context("control", "`slider` on a Settings slider."),
 ];
 
 /// Checks a `when` condition: `Err` with the parser's message when it does
@@ -417,6 +418,7 @@ fn place_name(context: &str) -> &str {
         "Palette" => "the palette and text fields",
         "Settings" => "Settings",
         "SettingsControl" => "Settings controls",
+        "SettingsGroup" => "Settings groups",
         other => other,
     }
 }

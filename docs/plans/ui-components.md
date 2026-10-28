@@ -12,12 +12,14 @@ the focused control into view), 7a (the Settings delete-profile alert
 dialog, which fixes D17), and 7c (the New profile and Rename profile
 dialogs, a rename written in one save) are implemented; 2b removed
 `desktop/menu.rs` and its menu host (D13). 3a also moved the Keybindings
-filter and shortcut switches; since 6a only the key recorders, their Add
-buttons, and the command search results keep their GPUI focus styles,
-until step 8. 6a adds `settings_next` and `settings_previous`, bound to the
-arrows under `SettingsControl && control == group`, which the sidebar, the
-theme cards, and the modifier chips set, so Down and Right move forward and
-Up and Left back in each, wrapping; the chips' Up and Down reversed. 7a checks
+filter and shortcut switches; since 6a only the key recorders and their
+Add buttons keep their GPUI focus styles, until step 8, and the command
+search results are link `Item`s. 6a adds `settings_next` and
+`settings_previous`, bound to the arrows under their own `SettingsGroup`
+context, which the sidebar's tabs, the theme cards, and the modifier chips
+nest inside their `SettingsControl` one, so Down and Right move forward and
+Up and Left back in each, wrapping, and rebinding the stepping commands
+never reaches them; the chips' Up and Down reversed. 7a checks
 whether a global shortcut uses the profile before asking, so Delete profile
 opens a refusal alert with only OK instead; a refusal found on Delete, such
 as a file that turned invalid meanwhile, takes the question's place.
@@ -313,7 +315,7 @@ keyboard and focus, AppKit and GNOME for platform feel.
 | Settings buttons, links, dialog buttons, title-row icon buttons | Button (variants default, secondary, outline, ghost, destructive, and link; an icon size) | Adopt |
 | Switch | Switch | Adopt |
 | Segmented control, tri-state Default/On/Off | Toggle Group, single | Adopt one `ToggleGroup`; exposed to accessibility as a radio group. One tab stop; arrows move the selection and write, as a radio group does, which keeps today's stepping |
-| Modifier chips | Toggle Group, multiple | Adopt the same `ToggleGroup`. **Changes** the chips from one tab stop each to one roving tab stop, as Radix and Base UI toggle groups have: Left and Right move between chips, Space toggles one. Migration 3a moved focus between chips with `settings_increase` and `settings_decrease`; since 6a the chips set `control = group`, as the sidebar and theme cards do, and `settings_next` (Down and Right) and `settings_previous` (Up and Left) move focus between them, wrapping at the ends as Radix's roving focus does, while `settings_toggle` toggles the focused chip. Each chip keeps its own focus handle, and only the focused one is a tab stop |
+| Modifier chips | Toggle Group, multiple | Adopt the same `ToggleGroup`. **Changes** the chips from one tab stop each to one roving tab stop, as Radix and Base UI toggle groups have: Left and Right move between chips, Space toggles one. Migration 3a moved focus between chips with `settings_increase` and `settings_decrease`; since 6a the chips take the `SettingsGroup` context, as the sidebar and theme cards do, and `settings_next` (Down and Right) and `settings_previous` (Up and Left) move focus between them, wrapping at the ends as Radix's roving focus does, while `settings_toggle` toggles the focused chip. Each chip keeps its own focus handle, and only the focused one is a tab stop |
 | Theme cards | Radio Group | Adopt `RadioGroup` with a card variant; the color preview stays custom. One tab stop; `settings_next` and `settings_previous` move between cards and choose the theme they reach (6a) |
 | Select | Select | Adopt |
 | Window menu, tab and terminal context menus | Dropdown Menu, Context Menu | Adopt one `Menu` with both triggers |
@@ -328,7 +330,7 @@ keyboard and focus, AppKit and GNOME for platform feel.
 | Settings sidebar | Tabs, vertical (shadcn's Sidebar is an app shell) | **Change:** vertical `Tabs`, so the arrows move between sections and show them, as Radix Tabs do (#276): `settings_next` on Down and Right, `settings_previous` on Up and Left (6a). Tab from the sidebar enters the section, before the footer's links |
 | Keybinding command rows that expand | Collapsible, inside an Item | Adopt |
 | Setting rows (label, description, control, error) | Field | Adopt |
-| Keybinding, global shortcut, and profile rows | Item | Adopt. In 6a the `unbind` rows and the search rows for keybindings, global shortcuts, and Quake profiles are `Item`s; the Quake section's global shortcut rows keep their layout, since every part of them is a control and an `Item` needs a title |
+| Keybinding, global shortcut, and profile rows | Item | Adopt. In 6a the `unbind` rows, which draw their key caps through `Item::title_element`, and the search rows for keybindings, global shortcuts, and Quake profiles are `Item`s; the command search results are link `Item`s (`Item::link`), as shadcn/ui renders an Item as an anchor; the Quake section's global shortcut rows keep their layout, since every part of them is a control and an `Item` needs a title |
 | Groups of rows | Card | Adopt |
 | Default and Custom tags, sidebar counts, menu badges | Badge | Adopt |
 | Invalid-file banner, conflict notes | Alert | Adopt |
@@ -714,7 +716,7 @@ has room for one more field at most:
     `ToggleGroup` moves focus with the arrow keys, wrapping, without writing,
     toggles with Space, and refuses to turn off the last modifier; since 6a
     both, and the theme cards, move through `settings_next` and
-    `settings_previous`, which bind only under `control == group`;
+    `settings_previous`, which bind only under `SettingsGroup`;
   - Return in a condition field completes the highlighted context, while
     the font field, with `auto_highlight` off, saves the typed name;
   - a disabled or read-only control refuses pointer, keyboard, and

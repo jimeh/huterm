@@ -4,6 +4,9 @@
 //! `settings_previous`, Tab scrolling the focused control into view, and
 //! the rows, alerts, and empty states.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gpui::{Bounds, FocusHandle, Modifiers, Pixels};
 use huterm_config::settings::SectionId;
 use serde_json::Value;
@@ -17,6 +20,8 @@ use super::settings_controls::{
 };
 use super::*;
 use crate::config::KeybindingEntry;
+use crate::desktop::key_hint::KeyHint;
+use crate::keymap::Platform;
 
 /// A key the tracker notes as the last press, which nothing in Settings
 /// binds, so a focus move that follows counts as the keyboard's.
@@ -151,6 +156,42 @@ fn a_section_tab_reports_its_role_and_selection(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn an_arrow_during_a_search_shows_the_section_it_reaches(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("layout-sidebar-search", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
+    });
+    let mut typing = visual(&harness);
+    typing.simulate_input("font");
+    typing.run_until_parked();
+    // The search hides the selection, so reaching the section shown
+    // before it still shows that section, and ends the search.
+    assert_eq!(
+        labelled(&mut harness, "Tab", "Appearance")["aria"]["selected"],
+        false
+    );
+    let general = with_view(&mut harness, |view, _| {
+        view.section_handle(SectionId::General)
+    });
+    keyboard_focus(&mut harness, &general);
+    keys(&harness, "down");
+    assert_eq!(focus(&mut harness), "section:appearance");
+    assert_eq!(
+        with_window(&mut harness, |view, _, cx| view.search_text(cx)),
+        ""
+    );
+    assert_eq!(section(&mut harness), SectionId::Appearance);
+    assert_eq!(
+        labelled(&mut harness, "Tab", "Appearance")["aria"]["selected"],
+        true
+    );
+}
+
 /// The theme names and the index of the one the picker marks.
 fn themes(harness: &mut DesktopHarness) -> (Vec<String>, usize) {
     with_view(harness, |view, _| {
@@ -252,6 +293,28 @@ fn a_theme_card_rings_after_tab_but_not_a_click_in_a_light_theme(
 }
 
 #[gpui::test]
+fn arrows_on_a_theme_card_that_turned_read_only_move_and_write_nothing(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("layout-theme-read-only", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    let (names, start) = themes(&mut harness);
+    let handle = theme_handle(&mut harness, &names[start]);
+    keyboard_focus(&mut harness, &handle);
+    break_file(&mut harness, &file, "[window\n");
+    let card = format!("action:theme:{}", names[start]);
+    assert_eq!(focus(&mut harness), card, "the card lost focus");
+    for key in ["down", "right", "up", "left"] {
+        keys(&harness, key);
+        assert_eq!(focus(&mut harness), card, "after {key}");
+        assert_eq!(themes(&mut harness).1, start, "after {key}");
+    }
+    assert!(harness.cx.update(settled), "an arrow queued a write");
+    assert_eq!(file.text(), "[window\n");
+}
+
+#[gpui::test]
 fn the_theme_cards_are_one_tab_stop_of_radio_buttons(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("layout-theme-stop", "");
     let mut harness = DesktopHarness::new(cx);
@@ -327,52 +390,167 @@ fn group_bindings_leave_a_select_a_switch_and_a_slider_their_arrows(
     });
 }
 
-#[gpui::test]
-fn a_rebound_settings_next_moves_groups_and_leaves_sliders_alone(
+/// A Settings window whose config, and its scratch file `name` after
+/// `text`, add `entries`, each `(key, command, disabled)` with no `when`.
+/// The file carries them too, so a write's reload keeps them.
+fn with_bindings(
     cx: &mut TestAppContext,
-) {
-    let file = ScratchConfig::new(
-        "layout-group-rebound",
-        "[quake.profiles.logs]\nwidth = 0.5\n",
-    );
-    let mut harness = DesktopHarness::with_config(cx, |config| {
-        // Switching the default off names its condition, as it was bound.
-        for (key, when, disabled) in [
-            ("down", Some("control == group".into()), Some(true)),
-            ("j", None, None),
-        ] {
-            config.keybindings.push(KeybindingEntry {
-                key: key.into(),
-                command: "settings_next".into(),
-                when,
-                args: None,
-                description: None,
-                disabled,
-            });
-        }
+    name: &str,
+    text: &str,
+    entries: &[(&str, &str, bool)],
+) -> (ScratchConfig, DesktopHarness) {
+    let mut text = text.to_owned();
+    for (key, command, disabled) in entries {
+        let disabled = if *disabled { "disabled = true\n" } else { "" };
+        let _ = write!(
+            text,
+            "\n[[keybinding]]\nkey = \"{key}\"\ncommand = \"{command}\"\n\
+             {disabled}"
+        );
+    }
+    let file = ScratchConfig::new(name, &text);
+    let entries: Vec<_> = entries
+        .iter()
+        .map(|(key, command, disabled)| KeybindingEntry {
+            key: (*key).into(),
+            command: (*command).into(),
+            when: None,
+            args: None,
+            description: None,
+            disabled: disabled.then_some(true),
+        })
+        .collect();
+    let harness = DesktopHarness::with_config(cx, move |config| {
+        config.keybindings.extend(entries);
     });
-    show(&mut harness, &file, SectionId::Appearance);
-    let (names, start) = themes(&mut harness);
-    let handle = theme_handle(&mut harness, &names[start]);
-    keyboard_focus(&mut harness, &handle);
-    // Down no longer moves between cards; `j` does.
-    keys(&harness, "down");
-    assert_eq!(themes(&mut harness).1, start);
-    keys(&harness, "j");
+    (file, harness)
+}
+
+/// Presses `key` on the sections, the theme cards, and the modifier
+/// chips in turn, and checks that each moves forward.
+fn key_moves_every_group(
+    harness: &mut DesktopHarness,
+    file: &ScratchConfig,
+    key: &str,
+) {
+    show(harness, file, SectionId::General);
+    let general =
+        with_view(harness, |view, _| view.section_handle(SectionId::General));
+    keyboard_focus(harness, &general);
+    keys(harness, key);
+    assert_eq!(section(harness), SectionId::Appearance, "{key} on sections");
+    assert_eq!(focus(harness), "section:appearance", "{key} on sections");
+    let (names, start) = themes(harness);
+    let handle = theme_handle(harness, &names[start]);
+    keyboard_focus(harness, &handle);
+    keys(harness, key);
     let next = (start + 1) % names.len();
-    assert_eq!(themes(&mut harness).1, next);
+    assert_eq!(themes(harness).1, next, "{key} on theme cards");
     harness.wait_for("the theme saves", |cx| {
         settled(cx) && file.text().contains(&names[next])
     });
-    // On a slider, `j` steps nothing, and Down still steps it.
+    show(harness, file, SectionId::Terminal);
+    let chips = "chip:terminal.link_modifiers";
+    let first = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    let chip = with_view(harness, |view, _| {
+        view.action_handle(&format!("{chips}:{first}"))
+    });
+    keyboard_focus(harness, &chip);
+    keys(harness, key);
+    assert_eq!(
+        focus(harness),
+        format!("action:{chips}:alt"),
+        "{key} on chips"
+    );
+}
+
+#[gpui::test]
+fn a_stepping_arrow_without_a_condition_leaves_the_groups_their_arrows(
+    cx: &mut TestAppContext,
+) {
+    let (file, mut harness) = with_bindings(
+        cx,
+        "layout-group-stepping-arrow",
+        "[quake.profiles.logs]\nwidth = 0.5\n",
+        &[("down", "settings_increase", false)],
+    );
+    // The group moves match deeper than any stepping binding, so Down
+    // still moves every group.
+    key_moves_every_group(&mut harness, &file, "down");
+    // On a slider Down runs the user's binding.
     show_logs(&mut harness);
     with_window(&mut harness, |view, window, cx| {
         view.focus_stop("quake.profiles.logs.width", window, cx);
     });
+    keys(&harness, "down");
+    harness.wait_for("the slider's step", |cx| {
+        settled(cx) && file.text().contains("width = 0.55")
+    });
+}
+
+#[gpui::test]
+fn a_rebound_settings_next_moves_groups_and_leaves_steppers_alone(
+    cx: &mut TestAppContext,
+) {
+    let (file, mut harness) = with_bindings(
+        cx,
+        "layout-group-rebound",
+        "[font]\nsize = 14.0\n\n[quake.profiles.logs]\nwidth = 0.5\n",
+        &[
+            ("down", "settings_next", true),
+            ("j", "settings_next", false),
+        ],
+    );
+    key_moves_every_group(&mut harness, &file, "j");
+    // Switching Down off, with no condition, leaves the theme cards still.
+    show(&mut harness, &file, SectionId::Appearance);
+    let (names, start) = themes(&mut harness);
+    let handle = theme_handle(&mut harness, &names[start]);
+    keyboard_focus(&mut harness, &handle);
+    keys(&harness, "down");
+    assert_eq!(themes(&mut harness).1, start);
+    // What each keystroke resolved to: `j` reaches no binding on a slider
+    // or a number field.
+    let resolved = Rc::new(RefCell::new(Vec::new()));
+    let record = resolved.clone();
+    let _observer = harness.cx.update(|cx| {
+        cx.observe_keystrokes(move |event, _, _| {
+            record.borrow_mut().push((
+                event.keystroke.key.clone(),
+                event.action.as_ref().map(|action| action.name()),
+            ));
+        })
+    });
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field("font.size", window, cx);
+    });
     let before = file.text();
     keys(&harness, "j");
+    assert_eq!(focus(&mut harness), "font.size");
+    show_logs(&mut harness);
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_stop("quake.profiles.logs.width", window, cx);
+    });
+    keys(&harness, "j");
+    assert_eq!(focus(&mut harness), "quake.profiles.logs.width");
     assert!(harness.cx.update(settled), "`j` queued a write");
     assert_eq!(file.text(), before);
+    let pressed: Vec<_> = resolved
+        .borrow()
+        .iter()
+        .filter(|(key, _)| key == "j")
+        .cloned()
+        .collect();
+    assert_eq!(
+        pressed,
+        [("j".to_owned(), None), ("j".to_owned(), None)],
+        "`j` resolved to a binding"
+    );
+    // Down still steps the slider.
     keys(&harness, "down");
     harness.wait_for("the slider's step", |cx| {
         settled(cx) && file.text().contains("width = 0.45")
@@ -538,6 +716,84 @@ fn a_click_on_a_control_partly_out_of_view_scrolls_nothing(
     assert_eq!(scrolled(&mut harness), target, "the click scrolled");
 }
 
+/// Shows the `logs` Quake profile in a short window, where Add global
+/// shortcut sits below the fold, and checks that the keyboard reaching it
+/// with nothing open scrolls the pane; then scrolls back to the top.
+fn short_quake(
+    harness: &mut DesktopHarness,
+    file: &ScratchConfig,
+) -> FocusHandle {
+    show(harness, file, SectionId::Quake);
+    visual(harness).simulate_resize(gpui::size(px(860.0), px(420.0)));
+    show_logs(harness);
+    let add = with_view(harness, |view, _| view.action_handle("gadd"));
+    keyboard_focus(harness, &add);
+    assert!(
+        scrolled(harness) > px(0.0),
+        "Add global shortcut was in view"
+    );
+    let first = with_view(harness, |view, _| view.action_handle("qprof"));
+    keyboard_focus(harness, &first);
+    with_view(harness, |view, cx| {
+        view.scroll_pane_to(px(0.0));
+        cx.notify();
+    });
+    visual(harness).run_until_parked();
+    assert_eq!(scrolled(harness), px(0.0));
+    add
+}
+
+#[gpui::test]
+fn focus_moving_under_an_open_menu_scrolls_nothing(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new(
+        "layout-reveal-menu",
+        "[quake.profiles.logs]\nheight = 0.3\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    let add = short_quake(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        view.press("qprof", window, cx);
+    });
+    visual(&harness).run_until_parked();
+    assert!(with_view(&mut harness, |view, _| view.menu_open()));
+    keyboard_focus(&mut harness, &add);
+    assert_eq!(focus(&mut harness), "action:gadd");
+    assert!(with_view(&mut harness, |view, _| view.menu_open()));
+    assert_eq!(scrolled(&mut harness), px(0.0), "the pane scrolled");
+}
+
+#[gpui::test]
+fn focus_moving_under_an_open_dialog_scrolls_nothing(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new(
+        "layout-reveal-dialog",
+        "[quake.profiles.logs]\nheight = 0.3\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    let add = short_quake(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        view.action_handle("qdel").focus(window, cx);
+    });
+    keys(&harness, "enter");
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.dialog_name()),
+        "delete"
+    );
+    // Delete profile sits below the fold too, so focus reaching it scrolled.
+    with_view(&mut harness, |view, cx| {
+        view.scroll_pane_to(px(0.0));
+        cx.notify();
+    });
+    visual(&harness).run_until_parked();
+    assert_eq!(scrolled(&mut harness), px(0.0));
+    keyboard_focus(&mut harness, &add);
+    assert_eq!(focus(&mut harness), "action:gadd");
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.dialog_name()),
+        "delete"
+    );
+    assert_eq!(scrolled(&mut harness), px(0.0), "the pane scrolled");
+}
+
 #[gpui::test]
 fn a_command_row_toggles_from_its_trigger_and_not_from_its_shortcuts(
     cx: &mut TestAppContext,
@@ -635,5 +891,71 @@ fn a_setting_row_names_its_descriptions_and_error(cx: &mut TestAppContext) {
         row["aria"]["description"],
         format!("{described}\nMust be a whole number"),
         "{row}"
+    );
+}
+
+#[gpui::test]
+fn a_command_search_result_is_a_named_link_that_opens_its_command(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("layout-command-result", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::General);
+    let search = |harness: &mut DesktopHarness| {
+        with_window(harness, |view, window, cx| {
+            view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
+        });
+        let mut typing = visual(harness);
+        typing.simulate_input("split right");
+        typing.run_until_parked();
+    };
+    search(&mut harness);
+    let result = a11y_node(&mut harness, "settings-kgo-split_right");
+    assert_eq!(result["aria"]["role"], "Link", "{result}");
+    assert_eq!(result["aria"]["label"], "Split Right", "{result}");
+    a11y_click(&mut harness, &result);
+    assert_eq!(section(&mut harness), SectionId::Keybindings);
+    assert_eq!(focus(&mut harness), "action:kcmd:split_right");
+    // From the keyboard: Return in the search reaches the first result,
+    // and Return there opens it.
+    show(&mut harness, &file, SectionId::General);
+    search(&mut harness);
+    keys(&harness, "enter");
+    assert_eq!(focus(&mut harness), "action:kgo:split_right");
+    let handle = with_view(&mut harness, |view, _| {
+        view.action_handle("kgo:split_right")
+    });
+    assert!(
+        with_window(&mut harness, |_, window, cx| {
+            huterm_ui::focus::inset_ring_drawn(&handle, window, cx)
+        }),
+        "the focused result drew no ring"
+    );
+    keys(&harness, "enter");
+    assert_eq!(section(&mut harness), SectionId::Keybindings);
+    assert_eq!(focus(&mut harness), "action:kcmd:split_right");
+}
+
+#[gpui::test]
+fn an_unbound_key_row_draws_its_key_caps_and_names_the_key(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "layout-unbound-row",
+        "[[keybinding]]\nkey = \"alt-shift-k\"\ncommand = \"unbind\"\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Keybindings);
+    let row = a11y_node(&mut harness, "settings-kunbound-0");
+    assert_eq!(
+        row["aria"]["label"],
+        KeyHint::parse("alt-shift-k", Platform::current()).text(),
+        "{row}"
+    );
+    assert!(
+        visual(&harness)
+            .debug_bounds("settings-kunbound-keys-0")
+            .is_some(),
+        "the key caps did not draw"
     );
 }

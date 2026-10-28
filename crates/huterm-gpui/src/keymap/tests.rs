@@ -692,18 +692,18 @@ fn settings_page_home_and_end_keys_match_only_on_a_slider() {
 fn settings_arrows_move_a_group_and_step_every_other_control() {
     for platform in [Platform::MacOs, Platform::Linux] {
         let keymap = Keymap::new(compile(platform, &[]).unwrap().bindings);
-        let within = |focused: &str| {
-            [
-                KeyContext::parse("Settings").unwrap(),
-                KeyContext::parse(focused).unwrap(),
-            ]
+        let within = |focused: &[&str]| {
+            std::iter::once("Settings")
+                .chain(focused.iter().copied())
+                .map(|context| KeyContext::parse(context).unwrap())
+                .collect::<Vec<_>>()
         };
-        // The sidebar, theme cards, and chips set `control = group`; a
-        // switch or select is a bare `SettingsControl`.
-        let group = within("SettingsControl control=group");
-        let slider = within("SettingsControl control=slider");
-        let switch = within("SettingsControl");
-        let number = within("Palette");
+        // The sidebar, theme cards, and chips nest `SettingsGroup` inside
+        // `SettingsControl`; a switch or select is a bare `SettingsControl`.
+        let group = within(&["SettingsControl", "SettingsGroup"]);
+        let slider = within(&["SettingsControl control=slider"]);
+        let switch = within(&["SettingsControl"]);
+        let number = within(&["Palette"]);
         // GPUI runs the first binding it lists.
         let first = |key: &str, contexts: &[KeyContext]| {
             let (bindings, pending) =
@@ -755,7 +755,69 @@ fn settings_arrows_move_a_group_and_step_every_other_control() {
                 "{platform:?}: {key} in a number field"
             );
         }
+        // The group's own context carries the move commands alone, so
+        // its items still take every `SettingsControl` command.
+        for (key, command) in [
+            ("space", ids::SETTINGS_TOGGLE),
+            ("enter", ids::SETTINGS_TOGGLE),
+        ] {
+            assert_eq!(
+                first(key, &group),
+                Some(command),
+                "{platform:?}: {key} on a group"
+            );
+        }
+        let compiled = compile(platform, &[]).unwrap();
+        for command in [ids::SETTINGS_NEXT, ids::SETTINGS_PREVIOUS] {
+            let contexts: Vec<_> = compiled
+                .bindings
+                .iter()
+                .filter(|binding| command_of(binding) == command)
+                .map(|binding| {
+                    binding.predicate().map(|predicate| predicate.to_string())
+                })
+                .collect();
+            assert_eq!(
+                contexts,
+                vec![Some("SettingsGroup".to_owned()); 2],
+                "{platform:?}: {command}"
+            );
+        }
     }
+}
+
+/// Stepping and group moves bind under different contexts, so rebinding
+/// one set never changes where the other runs.
+#[test]
+fn settings_stepping_and_group_moves_rebind_apart() {
+    let contexts = |focused: &[&str]| {
+        std::iter::once("Settings")
+            .chain(focused.iter().copied())
+            .map(|context| KeyContext::parse(context).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let group = contexts(&["SettingsControl", "SettingsGroup"]);
+    let slider = contexts(&["SettingsControl control=slider"]);
+    let user = [
+        entry("down", "settings_increase"),
+        entry("j", "settings_next"),
+    ];
+    let keymap = Keymap::new(compile(Platform::MacOs, &user).unwrap().bindings);
+    let first = |key: &str, contexts: &[KeyContext]| {
+        let (bindings, _) =
+            keymap.bindings_for_input(&[keystroke(key)], contexts);
+        bindings.first().map(command_of)
+    };
+    assert_eq!(first("down", &group), Some(ids::SETTINGS_NEXT));
+    assert_eq!(first("down", &slider), Some(ids::SETTINGS_INCREASE));
+    assert_eq!(first("j", &group), Some(ids::SETTINGS_NEXT));
+    assert_eq!(first("j", &slider), None);
+    let inventory = inventory(Platform::MacOs, &user).unwrap();
+    assert!(inventory.bindings.iter().any(|listed| {
+        listed.binding.key == "down"
+            && listed.binding.command == ids::SETTINGS_NEXT
+            && listed.state == BindingState::Active
+    }));
 }
 
 #[test]

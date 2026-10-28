@@ -1911,7 +1911,7 @@ const CATALOG: &[CommandSpec] = &[
         &[],
     ),
     spec_in(
-        "SettingsControl",
+        "SettingsGroup",
         ids::SETTINGS_NEXT,
         CommandScope::Window,
         "Settings: Next Item",
@@ -1919,7 +1919,7 @@ const CATALOG: &[CommandSpec] = &[
         &[],
     ),
     spec_in(
-        "SettingsControl",
+        "SettingsGroup",
         ids::SETTINGS_PREVIOUS,
         CommandScope::Window,
         "Settings: Previous Item",

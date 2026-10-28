@@ -396,15 +396,22 @@ calls the handler directly still passes. Settings binds Space and the arrows
 under `SettingsControl`, which only its controls and section rows carry: a
 binding under `Settings` matched inside a focused text field too, because the
 field's `Palette` context binds no Space, and ate the space. The roving
-groups (the sidebar's sections, the theme cards, and the modifier chips) set
-`SettingsControl control=group`, where the arrows bind to `settings_next` and
-`settings_previous` (`on_group`), listed after the stepping bindings so they
-win GPUI's equal-depth tie; `SettingsView::run` routes those to `move_group`,
-which tries each group in turn, and routes `settings_increase` and
-`settings_decrease` to the shortcut filter (`step_filter`) before `step`,
-which finds only settings and would drop it; `step_setting` gives a switch no
-steps. A user entry that switches a group default off names its
-`when = "control == group"`, or it matches nothing. Page Up, Page Down,
+groups (the sidebar's sections, the theme cards, and the modifier chips)
+give each item a `SettingsGroup` context nested inside a `SettingsControl`
+wrapper around the group, and the catalog puts `settings_next` and
+`settings_previous` under `SettingsGroup`, where the arrows bind to them.
+GPUI ranks a binding by the depth its predicate matches, then by later
+index, so the group bindings win over any `SettingsControl` binding on the
+same key whatever their order: a user arrow bound to a stepping command
+leaves the groups alone, and the reverse. Both contexts on one node would
+tie on depth, and the later user binding would win. The wrapper keeps the
+`SettingsControl` commands (toggle, reset) reaching a group's items; wrap
+only the group, since a text field under a `SettingsControl` ancestor would
+lose Space to `settings_toggle`. `SettingsView::run` routes the moves to
+`move_group`, which tries each group in turn, and routes `settings_increase`
+and `settings_decrease` to the shortcut filter (`step_filter`) before
+`step`, which finds only settings and would drop it; `step_setting` gives a
+switch no steps. Page Up, Page Down,
 Home, and End bind under `SettingsControl && control == slider`, which only
 a slider's `SettingsControl control=slider` context matches, so the keys stay
 unbound, not swallowed, on every other control. A number field's context is
@@ -766,7 +773,11 @@ commands move and select along; the footer's links take `tab_index(1)`
 from its first control returns. The theme cards are a card `RadioGroup` whose
 moves choose the theme. A setting's row is a `Field` (`render_row`), with its
 conflict under it as a warning `Alert`; the rows that only lead to another
-section are `Item`s, as are the `unbind` rows; a command row is a
+section are `Item`s, as are the `unbind` rows, whose key caps draw through
+`Item::title_element` while the key's text names the row; a command search
+result is a link `Item` (`Item::link`) on its `kgo:` action stop, so it is
+one focusable, named `Link` that `settings_toggle` and a click run; a
+command row is a
 `Collapsible::item` whose shortcut summary is the item's action, outside the
 trigger; groups of rows are titled `Card`s (`group_card`, which uppercases
 the title); the invalid-file banner is a danger `Alert`; and an empty global

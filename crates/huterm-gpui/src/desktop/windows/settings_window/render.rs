@@ -116,7 +116,13 @@ impl SettingsView {
                     .p(px(10.0))
                     .child(div().key_context("Palette").child(search)),
             )
-            .child(div().flex_1().px(px(8.0)).child(nav))
+            .child(
+                div()
+                    .key_context("SettingsControl")
+                    .flex_1()
+                    .px(px(8.0))
+                    .child(nav),
+            )
             .child(self.render_footer(swatch, cx))
             .into_any_element()
     }
@@ -158,7 +164,9 @@ impl SettingsView {
 
     /// The sections as a vertical tab list: one tab stop whose arrows,
     /// as `settings_next` and `settings_previous`, show the section they
-    /// reach. A search hides the selection.
+    /// reach. A search hides the selection. Each tab's `SettingsGroup`
+    /// context nests inside the `SettingsControl` one `render_sidebar` sets
+    /// around the list.
     fn render_nav(
         &mut self,
         swatch: Swatch,
@@ -167,7 +175,7 @@ impl SettingsView {
     ) -> Tabs {
         let mut tabs = Tabs::new("settings-sections", "Sections", swatch)
             .vertical()
-            .key_context("SettingsControl control=group");
+            .key_context("SettingsGroup");
         for section in self.visible_sections() {
             let handle = self.section_stop(section, cx);
             // A list counts its entries, as each is something the file sets.
@@ -417,6 +425,7 @@ impl SettingsView {
             swatch,
         )
         .when(wide, Field::vertical)
+        .label_debug_selector(|| format!("settings-label-{path}"))
         .when(changed, |field| field.before_label(changed_dot(swatch)))
         .when(setting.advanced, |field| {
             field.after_label(badge(

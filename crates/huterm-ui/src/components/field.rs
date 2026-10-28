@@ -39,6 +39,7 @@ pub struct Field {
     error: Option<SharedString>,
     actions: Vec<AnyElement>,
     control: Option<AnyElement>,
+    label_selector: Option<String>,
     style: StyleRefinement,
 }
 
@@ -72,6 +73,7 @@ impl Field {
             error: None,
             actions: Vec::new(),
             control: None,
+            label_selector: None,
             style: StyleRefinement::default(),
         }
     }
@@ -124,6 +126,21 @@ impl Field {
         self.control = Some(control.into_any_element());
         self
     }
+
+    /// Names the label column for GPUI's `debug_bounds` in tests. Like
+    /// GPUI's own `debug_selector`, it calls `selector` only where GPUI
+    /// records selectors: in debug builds with `test-support`, which also
+    /// enables GPUI's.
+    #[must_use]
+    pub fn label_debug_selector(
+        mut self,
+        selector: impl FnOnce() -> String,
+    ) -> Self {
+        if cfg!(any(test, all(debug_assertions, feature = "test-support"))) {
+            self.label_selector = Some(selector());
+        }
+        self
+    }
 }
 
 impl Styled for Field {
@@ -171,7 +188,10 @@ impl RenderOnce for Field {
                     .into_iter()
                     .map(|text| line(text, tokens.muted)),
             )
-            .children(self.error.map(|text| line(text, tokens.danger_text())));
+            .children(self.error.map(|text| line(text, tokens.danger_text())))
+            .when_some(self.label_selector.take(), |column, selector| {
+                column.debug_selector(|| selector)
+            });
         let head = div()
             .flex()
             .items_center()
@@ -256,5 +276,23 @@ mod tests {
         assert_eq!(horizontal.right(), px(286.0));
         let vertical = cx.debug_bounds("vertical").expect("drawn");
         assert_eq!(vertical.left(), px(14.0));
+    }
+
+    #[gpui::test]
+    fn a_label_selector_names_the_label_column(cx: &mut TestAppContext) {
+        let (_, cx) = host(cx, |_, _| {
+            div()
+                .w(px(300.0))
+                .child(
+                    Field::new("font", "Font size", tokens())
+                        .label_debug_selector(|| "label".into())
+                        .control(div().size(px(40.0))),
+                )
+                .into_any_element()
+        });
+        let label = cx.debug_bounds("label").expect("drawn");
+        // From the 14-point padding to the 12-point gap before the control.
+        assert_eq!(label.left(), px(14.0));
+        assert_eq!(label.right(), px(234.0));
     }
 }

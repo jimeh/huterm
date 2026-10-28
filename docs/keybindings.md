@@ -168,7 +168,8 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `Palette` | The command palette or the About panel's Licenses view is open and has focus, or a Settings text field has focus. |
 | `Settings` | The Settings window has focus. |
 | `SettingsControl` | A Settings switch, select, segmented control, slider, modifier chip, theme card, button, or section has focus. |
-| `control` | `slider` while a Settings slider has focus, so `SettingsControl && control == slider` matches sliders alone; `group` while a Settings section, theme card, or modifier chip has focus, so `SettingsControl && control == group` matches those roving groups alone. |
+| `SettingsGroup` | A Settings section, theme card, or modifier chip has focus. It sits inside that item's `SettingsControl`, so a binding under it matches deeper and wins over a `SettingsControl` binding on the same key. |
+| `control` | `slider` while a Settings slider has focus, so `SettingsControl && control == slider` matches sliders alone. |
 
 Most contexts are bare words for the state of the view or window, such as
 `selection` and `pane_zoomed`. The `has_` prefix marks a context that says
@@ -220,7 +221,8 @@ palette prompts for them where a command needs one, and omitted targets
 default to the invoking window's active tab, workspace, or session.
 Palette-scope commands imply the `Palette` context, and dialog, menu, and
 notice commands imply `confirming`, `menu`, and `notices`. Settings commands
-imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
+imply `Settings`, `SettingsControl`, or `SettingsGroup`. User bindings for
+them need no `when`.
 
 | Command | Scope | Arguments |
 | --- | --- | --- |
@@ -314,8 +316,8 @@ imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 | `settings_page_down` | Window | Bound only while `SettingsControl`. Steps the focused slider down one page, a tenth of its range; other controls ignore it. |
 | `settings_first` | Window | Bound only while `SettingsControl`. Moves the focused slider to its minimum; other controls ignore it. |
 | `settings_last` | Window | Bound only while `SettingsControl`. Moves the focused slider to its maximum; other controls ignore it. |
-| `settings_next` | Window | Bound only while `SettingsControl`. Moves to the next section, theme, or modifier chip of the focused group, wrapping from the last to the first; a section or theme it reaches is shown or chosen. Other controls ignore it. |
-| `settings_previous` | Window | Bound only while `SettingsControl`. Moves to the previous section, theme, or modifier chip of the focused group, wrapping from the first to the last; a section or theme it reaches is shown or chosen. Other controls ignore it. |
+| `settings_next` | Window | Bound only while `SettingsGroup`. Moves to the next section, theme, or modifier chip of the focused group, wrapping from the last to the first; a section or theme it reaches is shown or chosen. Other controls ignore it. |
+| `settings_previous` | Window | Bound only while `SettingsGroup`. Moves to the previous section, theme, or modifier chip of the focused group, wrapping from the first to the last; a section or theme it reaches is shown or chosen. Other controls ignore it. |
 | `settings_reset` | Window | Bound only while `SettingsControl`. |
 | `palette_select_next` | Palette | Also steps a focused Settings number field down. |
 | `palette_select_previous` | Palette | Also steps a focused Settings number field up. |
@@ -538,10 +540,14 @@ leave a switch alone. They step a Default, On, Off control in that order and
 stop at the ends; stepping to Default removes the setting, as Reset does.
 
 The sidebar's sections, the theme cards, and the link modifier chips are
-roving groups: each is one tab stop, and its context sets `control = group`.
-On a group, `settings_next` (Down and Right) and `settings_previous` (Up and
-Left) move between its items and wrap at the ends, and they bind with
-`when = "control == group"`, so the arrows keep stepping every other control.
+roving groups: each is one tab stop, and its items take the `SettingsGroup`
+context. On a group, `settings_next` (Down and Right) and `settings_previous`
+(Up and Left) move between its items and wrap at the ends. They bind under
+`SettingsGroup`, so the arrows keep stepping every other control, and since
+that context sits inside the item's `SettingsControl`, they win over any
+`SettingsControl` binding on the same key: binding an arrow to a stepping
+command leaves the groups their arrows, and binding `settings_next` to
+another key leaves the stepping alone.
 Moving to a section shows it, and moving to a theme card chooses that theme.
 `settings_toggle` turns the focused modifier chip on or off. Tab from the
 sidebar moves into the shown section's first control, and Shift-Tab from that

@@ -503,8 +503,9 @@ impl SettingsView {
     }
 
     /// The link modifiers as a multiple toggle group: one roving tab stop,
-    /// whose `control = group` context binds the arrows to `settings_next`
-    /// and `settings_previous`, which `SettingsView::run` routes between the
+    /// whose chips' `SettingsGroup` context, nested inside a
+    /// `SettingsControl` wrapper, binds the arrows to `settings_next` and
+    /// `settings_previous`, which `SettingsView::run` routes between the
     /// chips. The chip that would leave no modifier refuses, as a link needs
     /// one, and says so; it stays focusable, as the roving stop may rest on
     /// it.
@@ -526,7 +527,7 @@ impl SettingsView {
             setting.label.clone(),
             swatch,
         )
-        .key_context("SettingsControl control=group");
+        .key_context("SettingsGroup");
         for modifier in offered_modifiers() {
             let on = held.split('-').any(|token| token == *modifier);
             let handle =
@@ -541,7 +542,7 @@ impl SettingsView {
                 group = group.description("Keep at least one modifier");
             }
         }
-        group
+        let group = group
             .when_some(read_only, |group, reason| group.disabled(Some(reason)))
             .on_select(Self::listen(
                 cx,
@@ -552,14 +553,21 @@ impl SettingsView {
                     }
                     view.act(&key, window, cx);
                 },
-            ))
+            ));
+        // Sized as the group is, so the wrapper changes no layout.
+        div()
+            .key_context("SettingsControl")
+            .flex()
+            .flex_none()
+            .child(group)
             .into_any_element()
     }
 
     /// Cards for every theme `[theme] name` can select, as a radio group
-    /// whose `control = group` context binds the arrows to `settings_next`
-    /// and `settings_previous`, which choose the theme they reach, and a
-    /// note on the color overrides the file sets on top. `read_only` says
+    /// whose cards' `SettingsGroup` context, nested inside the block's
+    /// `SettingsControl`, binds the arrows to `settings_next` and
+    /// `settings_previous`, which choose the theme they reach, and a note on
+    /// the color overrides the file sets on top. `read_only` says
     /// why the cards cannot change, when they cannot.
     fn render_themes(
         &mut self,
@@ -573,7 +581,7 @@ impl SettingsView {
         let mut cards =
             RadioGroup::new("settings-themes", setting.label.clone(), swatch)
                 .card(px(116.0))
-                .key_context("SettingsControl control=group");
+                .key_context("SettingsGroup");
         for (name, preview) in &themes {
             let handle = self.action_stop(format!("theme:{name}"), cx);
             cards = cards.option(
@@ -608,6 +616,7 @@ impl SettingsView {
             })
             .unwrap_or_default();
         div()
+            .key_context("SettingsControl")
             .flex()
             .flex_col()
             .gap(px(8.0))
