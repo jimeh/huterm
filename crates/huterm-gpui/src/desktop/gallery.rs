@@ -10,10 +10,10 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, Entity, FocusHandle, Focusable as _,
-    IntoElement, Render, ScrollHandle, Task, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, size,
+    IntoElement, Render, ScrollHandle, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, size,
 };
-use huterm_ui::animation::AnimationSchedule;
+use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::badge::{Tone, badge};
 use huterm_ui::components::menu::{
     MIN_WIDTH, Menu, MenuEvent, Role as MenuRole,
@@ -103,9 +103,8 @@ fn command_menu() -> Model {
 struct Gallery {
     columns: [Column; 2],
     focus: FocusHandle,
-    /// The pending wake for the scrollbars' next deadline, such as the end
-    /// of an indicator's hold, and that deadline.
-    wake: Option<(Instant, Task<()>)>,
+    /// Wakes the gallery at the scrollbars' and menus' next deadline.
+    wake: Wake,
 }
 
 impl Gallery {
@@ -137,7 +136,7 @@ impl Gallery {
                 column(LIGHT_THEME, &light),
             ],
             focus: cx.focus_handle(),
-            wake: None,
+            wake: Wake::default(),
         }
     }
 
@@ -155,25 +154,7 @@ impl Gallery {
                 schedule = schedule.merge(menu.read(cx).schedule(now));
             }
         }
-        if schedule.frame {
-            window.request_animation_frame();
-        }
-        match schedule.deadline {
-            Some(deadline)
-                if self.wake.as_ref().map(|(at, _)| *at) != Some(deadline) =>
-            {
-                let timer = cx
-                    .background_executor()
-                    .timer(deadline.saturating_duration_since(now));
-                let task = cx.spawn(async move |gallery, cx| {
-                    timer.await;
-                    let _ = gallery.update(cx, |_, cx| cx.notify());
-                });
-                self.wake = Some((deadline, task));
-            }
-            Some(_) => {}
-            None => self.wake = None,
-        }
+        self.wake.arm(schedule, window, cx);
     }
 
     fn column(
