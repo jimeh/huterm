@@ -192,11 +192,12 @@ constructor and transforms validate every invariant, so core, the reducer, and
 tests share one implementation (see [the split panes plan](../plans/split-panes.md)).
 `split_pane` spawns the terminal before it changes the layout, so a failed spawn
 changes no structure and emits nothing. Closing a tab's only pane closes the
-tab. Splits and pane closes advance `Mux::revision`; `resize_split` and
-`set_pane_zoom` do not, because neither changes which terminals a close covers
-and a stale commit makes the desktop show its confirmation again. Every layout
-change emits the whole layout in `PaneLayoutChanged`, with the shared zoom, so
-removing the zoomed pane clears the zoom in the same event. Pane IDs are
+tab. Splits and pane closes advance `Mux::revision`; `resize_split`,
+`set_pane_zoom`, and `arrange_panes` do not, because none changes which
+terminals a close covers and a stale commit makes the desktop show its
+confirmation again. Every layout change emits the whole layout in
+`PaneLayoutChanged`, with the shared zoom, so removing the zoomed pane clears
+the zoom in the same event. Pane IDs are
 scoped like tab IDs, and the reducer rejects a layout that reuses another tab's
 pane or terminal.
 Pane moves (`mux/moves.rs`) never start or stop a terminal: a move changes
@@ -208,6 +209,16 @@ checks `next_id` before calling `allocate`, which advances the revision before
 it detects exhaustion, so a refused move leaves pending close tickets valid.
 Moves advance the revision; swaps, like resizes, do not. A tab whose last pane
 moves away is removed, unlike an emptied workspace or session.
+`arrange_panes` (`mux/arrange.rs`) rearranges one tab's existing panes into a
+client-fitted `Arrangement`, for named layouts, cycling, and balancing. It
+refuses a tab whose structure no longer matches the caller's `expected` layout
+(`PaneLayout::same_structure`, which ignores weights), and builds the result
+through `PaneLayout::arranged`, which refuses an added, dropped, or repeated
+pane. A new shape's split identities come from `reserve_ids`, which, unlike
+`allocate`, does not advance the revision, because no close ticket names a
+split; check `next_id.checked_add(count)` before any change, as moves do. A
+change clears the shared zoom in its one `PaneLayoutChanged`; a no-op leaves
+it.
 `restore_tabs` (`mux/restore.rs`) undoes or redoes a move's `LayoutChange`
 only while every touched tab keeps the splits, panes, terminals, and session
 the change left. Weights, zoom, names, and positions never block it, and

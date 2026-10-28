@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+mod arrange;
 mod hierarchy;
 mod lifecycle;
 mod moves;
@@ -166,7 +167,7 @@ pub struct OpenedPane {
 #[derive(Debug)]
 pub struct Mux {
     /// Advances on every change that can affect a close ticket's scope.
-    /// Pane resizes and shared zoom leave it alone.
+    /// Pane resizes, swaps, arrangements, and shared zoom leave it alone.
     revision: u64,
     attachments: BTreeMap<AttachmentId, SessionId>,
     runtime_id: RuntimeId,
@@ -236,6 +237,16 @@ impl Mux {
         self.next_id =
             self.next_id.checked_add(1).ok_or(MuxError::IdExhausted)?;
         Ok(self.next_id)
+    }
+    /// Advances allocation past `count` split identities without advancing
+    /// the revision: no close ticket names a split, so an arrangement that
+    /// takes new splits leaves pending close assessments valid.
+    fn reserve_ids(&mut self, count: u64) -> Result<(), MuxError> {
+        self.next_id = self
+            .next_id
+            .checked_add(count)
+            .ok_or(MuxError::IdExhausted)?;
+        Ok(())
     }
     fn validate_scope(&self, runtime: RuntimeId) -> Result<(), MuxError> {
         if runtime == self.runtime_id {
