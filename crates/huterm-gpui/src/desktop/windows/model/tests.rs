@@ -311,6 +311,12 @@ fn quake_state_follows_summon_hide_tabs_detach_and_close() {
     assert!(model.record(window(3)).is_none());
 }
 
+/// Notes a rename of `from` to `to` whose save started and landed.
+fn landed(model: &mut WindowModel, from: &str, to: &str) {
+    let id = model.quake_rename_started(from, to);
+    model.quake_rename_settled(id, true);
+}
+
 #[test]
 fn a_renamed_profiles_window_follows_the_reloads_that_read_the_rename() {
     let mut model = WindowModel::default();
@@ -322,14 +328,14 @@ fn a_renamed_profiles_window_follows_the_reloads_that_read_the_rename() {
     };
     // A reload that read the file before the rename keeps the window.
     let before = model.quake_renames_noted();
-    model.quake_renamed("logs", "work");
+    landed(&mut model, "logs", "work");
     let applied = model.reconcile_quake(before, |name| name == "logs");
     assert_eq!(applied, QuakeReconciled::default());
     assert_eq!(model.quake_window("logs"), Some(window(2)));
     // The rename's own reload reads the file, then a second rename lands
     // before that reload applies what it read.
     let first = model.quake_renames_noted();
-    model.quake_renamed("work", "build");
+    landed(&mut model, "work", "build");
     assert_eq!(
         model.reconcile_quake(first, |name| name == "work"),
         renamed("work")
@@ -346,12 +352,41 @@ fn a_renamed_profiles_window_follows_the_reloads_that_read_the_rename() {
 }
 
 #[test]
+fn a_reload_follows_a_rename_whose_save_has_not_settled() {
+    let mut model = WindowModel::default();
+    model.open(window(2), Some(quake("logs", false)), layout(5.0));
+    // The save replaced the file, and a reload read it, before it settled.
+    let id = model.quake_rename_started("logs", "work");
+    assert!(model.quake_name_held("logs"), "the rename may still fail");
+    let read = model.quake_renames_noted();
+    assert_eq!(
+        model.reconcile_quake(read, |name| name == "work").renamed,
+        [(window(2), "work".to_owned())]
+    );
+    // It stays until a reload that read the file after it landed.
+    model.quake_rename_settled(id, true);
+    let read = model.quake_renames_noted();
+    assert_eq!(
+        model.reconcile_quake(read, |name| name == "work"),
+        QuakeReconciled::default()
+    );
+    // A save that wrote nothing leaves no rename to follow.
+    let id = model.quake_rename_started("work", "build");
+    model.quake_rename_settled(id, false);
+    let read = model.quake_renames_noted();
+    assert_eq!(
+        model.reconcile_quake(read, |name| name == "build").removed,
+        [window(2)]
+    );
+}
+
+#[test]
 fn a_renamed_profile_keeps_its_window_unless_the_new_name_has_one() {
     let mut model = WindowModel::default();
     model.open(window(2), Some(quake("logs", false)), layout(5.0));
     // Two renames land before a reload reads the file.
-    model.quake_renamed("logs", "work");
-    model.quake_renamed("work", "build");
+    landed(&mut model, "logs", "work");
+    landed(&mut model, "work", "build");
     let read = model.quake_renames_noted();
     let applied = model.reconcile_quake(read, |name| name == "build");
     assert_eq!(applied.renamed, [(window(2), "build".to_owned())]);
@@ -359,7 +394,7 @@ fn a_renamed_profile_keeps_its_window_unless_the_new_name_has_one() {
     // renamed profile's window cannot take it.
     model.open(window(3), Some(quake("old", true)), layout(5.0));
     assert!(model.quake_name_held("old"));
-    model.quake_renamed("build", "old");
+    landed(&mut model, "build", "old");
     assert!(!model.quake_name_held("build"), "the rename moves it on");
     let read = model.quake_renames_noted();
     let applied = model.reconcile_quake(read, |name| name == "old");

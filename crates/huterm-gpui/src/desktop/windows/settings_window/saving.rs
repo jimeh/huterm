@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use gpui::{AppContext as _, Context, Window};
+use gpui::{App, AppContext as _, Context, Window};
 use huterm_config::document::{
     ApplyError, ConfigFile, EntryLocator, List, Patch, Snapshot,
 };
@@ -33,6 +33,7 @@ use super::super::super::settings::values::{
 };
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
+use super::super::model::QuakeRenameId;
 use super::{SettingsView, current, field_text, quake, size_value, themes};
 use crate::keymap::{Inventory, Platform, inventory};
 
@@ -768,6 +769,9 @@ impl SettingsView {
         self.writing = Some("batch");
         self.writing_batch = Some(outcome);
         self.status.saving();
+        let started = Self::batch_started(&batch, cx);
+        #[cfg(test)]
+        let gate = self.batch_gate.take();
         let file = ConfigFile::new(self.path.clone());
         let validate = crate::config::validator(self.path.clone());
         let config_path = self.path.clone();
@@ -793,6 +797,14 @@ impl SettingsView {
         });
         cx.spawn(async move |view, cx| {
             let (patches, result) = task.await;
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                let _ = gate.recv().await;
+            }
+            // Settled here, even if the window has closed meanwhile.
+            let landed =
+                matches!(result, Ok(_) | Err(ApplyError::WrittenNotDurable(_)));
+            cx.update(|cx| Self::batch_settled(started, landed, cx));
             let _ = view.update(cx, |view, cx| {
                 view.written_batch(&batch, &patches, result, cx);
             });
@@ -826,7 +838,6 @@ impl SettingsView {
                 self.status.saved();
                 self.sync_fields(cx);
                 self.sync_key_fields(cx);
-                Self::batch_landed(batch, cx);
                 cx.defer(|cx| {
                     let _ = super::super::reload(cx);
                 });
@@ -836,7 +847,6 @@ impl SettingsView {
                 // The write landed; queued edits move past it as after any
                 // other. With no snapshot of it, a queued change to a path
                 // it wrote reads the file afresh.
-                Self::batch_landed(batch, cx);
                 for queued in &mut self.queued {
                     if let Queued::Setting(queued) = queued
                         && patches
@@ -884,16 +894,40 @@ impl SettingsView {
         self.next_write(failed, cx);
     }
 
-    /// Follows `batch` outside the window once it is written, before the
-    /// reload that follows it. A renamed profile's open Quake window takes
-    /// the new name in the first reload that reads it, so no reload takes
-    /// it for a removed profile's window and turns it into an ordinary one.
-    fn batch_landed(batch: &Batch, cx: &mut Context<'_, Self>) {
+    /// Follows `batch` outside the window as its write starts, since the
+    /// write can replace the file, and a reload read it, before the save
+    /// settles here. A renamed profile's open Quake window takes the new
+    /// name in the first reload that reads it, so no reload takes it for a
+    /// removed profile's window and turns it into an ordinary one.
+    fn batch_started(
+        batch: &Batch,
+        cx: &mut Context<'_, Self>,
+    ) -> QuakeRenameId {
         match batch {
-            Batch::RenameProfile { from, to } => {
-                cx.global_mut::<Desktop>().windows.quake_renamed(from, to);
-            }
+            Batch::RenameProfile { from, to } => cx
+                .global_mut::<Desktop>()
+                .windows
+                .quake_rename_started(from, to),
         }
+    }
+
+    /// Holds the next batch's save after its write, before it settles,
+    /// until the returned sender sends or drops.
+    #[cfg(test)]
+    pub(in crate::desktop::windows) fn hold_batch(
+        &mut self,
+    ) -> async_channel::Sender<()> {
+        let (release, gate) = async_channel::bounded(1);
+        self.batch_gate = Some(gate);
+        release
+    }
+
+    /// Settles what `batch_started` began once the write `landed` in the
+    /// file or wrote nothing.
+    fn batch_settled(started: QuakeRenameId, landed: bool, cx: &mut App) {
+        cx.global_mut::<Desktop>()
+            .windows
+            .quake_rename_settled(started, landed);
     }
 
     /// Says why `batch` wrote nothing, after the footer has said how the

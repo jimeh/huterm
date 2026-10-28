@@ -230,6 +230,9 @@ pub(super) struct SettingsView {
     writing: Option<&'static str>,
     /// What the batch in flight put in `pending`, if one is.
     writing_batch: Option<saving::Outcome>,
+    /// Holds the next batch's save, once written, until a test releases it.
+    #[cfg(test)]
+    batch_gate: Option<async_channel::Receiver<()>>,
     queued: VecDeque<Queued>,
     /// The latest value requested for each setting whose write has not
     /// settled; controls show it, and steps build on it.
@@ -349,6 +352,8 @@ impl SettingsView {
             conflicts: HashMap::new(),
             writing: None,
             writing_batch: None,
+            #[cfg(test)]
+            batch_gate: None,
             queued: VecDeque::new(),
             pending: HashMap::new(),
             epoch: 0,

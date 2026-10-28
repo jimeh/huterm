@@ -788,14 +788,19 @@ copied value as its base and builds on the batch instead of conflicting;
 until the batch lands, so a draft typed over it is not taken for a conflict
 when an earlier save lands. `batch_refused` says why it failed and drops the
 queued and pending edits under the new name, which written alone would create
-it; `batch_landed` follows a written batch outside the window. A rename notes
-itself in the window model (`quake_renamed`) rather than moving the Quake
-window's association at once: a reload that read the file before the rename
-can apply after it, and its `reconcile` would turn the moved window into an
-ordinary one. Each reload takes `quake_renames_noted` before it reads, and
-`reconcile_quake` moves a window along the noted renames to the first name
-the file it read has, dropping the renames that read already shows. Another
-rename adds a `Batch` variant.
+it; `batch_started` and `batch_settled` follow a batch outside the window. A
+rename records itself in the window model when its write starts
+(`quake_rename_started`) rather than moving the Quake window's association: a
+reload that read the file before the rename can apply after it, and its
+`reconcile` would turn the moved window into an ordinary one. The save can
+also replace the file, and a reload read and apply it, before the save
+settles on the main thread. The save's continuation settles the record
+before `written_batch`, even when Settings has closed: noted when the write
+landed, dropped when it wrote nothing. Each reload takes
+`quake_renames_noted` before it reads, and `reconcile_quake` moves a window
+along the running and noted renames to the first name the file it read has,
+dropping the noted renames that read already shows. Another rename adds a
+`Batch` variant.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with

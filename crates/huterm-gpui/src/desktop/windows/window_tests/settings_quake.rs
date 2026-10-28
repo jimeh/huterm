@@ -996,6 +996,38 @@ fn a_reload_read_before_a_second_rename_keeps_the_window(
 }
 
 #[gpui::test]
+fn a_reload_reading_a_rename_before_its_save_settles_keeps_the_window(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("quake-rename-mid-save", LOGS);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.general.watch_config = false;
+    });
+    open_quake(&mut harness, &file);
+    let id = serving(&mut harness, "logs");
+    let release = with_view(&mut harness, |view, _| view.hold_batch());
+    rename(&mut harness, "logs", "work");
+    // The save replaced the file and is held before it settles, while a
+    // reload reads the file and applies it.
+    harness.wait_for("the write", |_| file.text().contains("work"));
+    harness.cx.update(|cx| {
+        let _ = reload(cx);
+    });
+    applied(&mut harness, "work");
+    harness.cx.update(|cx| {
+        let windows = &cx.global::<Desktop>().windows;
+        assert_eq!(windows.quake_window("work"), Some(id));
+    });
+    drop(release);
+    saved(&mut harness, &file, |text| text.contains("work"));
+    applied(&mut harness, "work");
+    harness.cx.update(|cx| {
+        let windows = &cx.global::<Desktop>().windows;
+        assert_eq!(windows.quake_window("work"), Some(id));
+    });
+}
+
+#[gpui::test]
 fn a_rename_to_a_name_whose_window_is_still_closing_is_refused(
     cx: &mut TestAppContext,
 ) {
