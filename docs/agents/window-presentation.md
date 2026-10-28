@@ -251,7 +251,9 @@ The drawn window buttons follow XSettings `Gtk/DecorationLayout`, read on a
 dedicated x11rb thread. GPUI is built without Wayland, so XWayland's XSettings
 also covers Wayland sessions; do not add a GSettings or portal reader unless
 that changes. Smoke state publishes the new layout order before the next paint
-moves `window_buttons` rects, so poll for settled geometry.
+moves `window_buttons` rects, so poll for settled geometry. Each drawn button
+is a `huterm_ui` `Button` that occludes and stops its press, so neither the
+title row's move gesture nor the tab strip sees it.
 
 Start a title-row move on the first drag motion, not the press: the window
 manager's move grab otherwise swallows the second click of a double-click.

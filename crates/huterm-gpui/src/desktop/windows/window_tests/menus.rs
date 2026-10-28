@@ -55,7 +55,11 @@ fn terminal_focused(cx: &mut App, window: AnyWindowHandle, tab: TabId) -> bool {
 
 /// The accessibility node of the element named `id` in `window`'s last
 /// frame. The dump spells element ids in their `Debug` form.
-fn a11y_node(cx: &mut App, window: AnyWindowHandle, id: &str) -> Value {
+pub(super) fn a11y_node(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    id: &str,
+) -> Value {
     let json = window
         .update(cx, |_, window, _| window.debug_a11y_tree_json())
         .unwrap()

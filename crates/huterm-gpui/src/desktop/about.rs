@@ -4,13 +4,12 @@
 //! buttons and keys. Its Licenses button opens the Licenses view.
 
 use gpui::{
-    App, ClickEvent, Div, Pixels, Size, Window, div, img, prelude::*, px,
+    App, Div, Pixels, SharedString, Size, Window, div, img, prelude::*, px,
 };
+use huterm_ui::components::button::{Button, Variant};
 
 use super::key_hint::KeyHint;
-use super::overlay::{
-    Swatch, key_cap_on, mono_font_family, raised_panel, scrim,
-};
+use super::overlay::{Swatch, mono_font_family, raised_panel, scrim};
 use crate::APP_ID;
 use crate::assets::APP_ICON;
 use crate::keymap::Platform;
@@ -71,7 +70,7 @@ impl AboutFocus {
     }
 }
 
-/// The About panel's button handlers.
+/// The About panel's button handlers, run on a pointer click.
 pub(crate) struct AboutActions<L, C, X> {
     pub(crate) licenses: L,
     pub(crate) copy: C,
@@ -211,9 +210,9 @@ pub(crate) fn render_about(
     hints: bool,
     focus: AboutFocus,
     actions: AboutActions<
-        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        impl Fn(&mut Window, &mut App) + 'static,
+        impl Fn(&mut Window, &mut App) + 'static,
+        impl Fn(&mut Window, &mut App) + 'static,
     >,
 ) -> Div {
     let width = (viewport.width - px(32.0)).clamp(px(0.0), px(PANEL_WIDTH));
@@ -316,14 +315,12 @@ fn footer(
     hints: bool,
     focus: AboutFocus,
     actions: AboutActions<
-        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        impl Fn(&mut Window, &mut App) + 'static,
+        impl Fn(&mut Window, &mut App) + 'static,
+        impl Fn(&mut Window, &mut App) + 'static,
     >,
 ) -> Div {
-    let ring = |button: gpui::Stateful<Div>, which: AboutFocus| {
-        button.when(focus == which, |button| button.shadow(swatch.focus_ring()))
-    };
+    let enter = hints.then(|| KeyHint::keys(&["enter"], Platform::current()));
     div()
         .flex()
         .flex_none()
@@ -334,66 +331,50 @@ fn footer(
         .border_t_1()
         .border_color(swatch.line)
         .bg(swatch.footer())
-        .child(ring(
-            footer_button("about-licenses", swatch, false, false)
-                .on_click(actions.licenses)
-                .child("Licenses"),
-            AboutFocus::Licenses,
-        ))
+        .child(
+            footer_button("about-licenses", "Licenses", swatch, false, None)
+                .current(focus == AboutFocus::Licenses)
+                .on_click(actions.licenses),
+        )
         .child(div().flex_1())
-        .child(ring(
-            footer_button("about-copy", swatch, false, false)
-                .on_click(actions.copy)
-                .child("Copy Details"),
-            AboutFocus::Copy,
-        ))
-        .child(ring(
-            footer_button("about-close", swatch, true, hints)
-                .on_click(actions.close)
-                .child("Close")
-                .when(hints, |button| {
-                    button.child(key_cap_on(
-                        &KeyHint::keys(&["enter"], Platform::current()),
-                        swatch.on_accent(),
-                    ))
-                }),
-            AboutFocus::Close,
-        ))
+        .child(
+            footer_button("about-copy", "Copy Details", swatch, false, None)
+                .current(focus == AboutFocus::Copy)
+                .on_click(actions.copy),
+        )
+        .child(
+            footer_button("about-close", "Close", swatch, true, enter.as_ref())
+                .current(focus == AboutFocus::Close)
+                .on_click(actions.close),
+        )
 }
 
-/// A footer button; `hint` leaves room for its trailing key cap.
+/// A 26-point footer button, outlined or, when `primary`, accent-filled;
+/// `shortcut` draws its key cap. The owner marks the keyboard's place with
+/// [`Button::current`].
 pub(super) fn footer_button(
     id: &'static str,
+    label: impl Into<SharedString>,
     swatch: Swatch,
     primary: bool,
-    hint: bool,
-) -> gpui::Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(6.0))
+    shortcut: Option<&KeyHint>,
+) -> Button {
+    Button::new(id, label, swatch)
+        .variant(if primary {
+            Variant::Primary
+        } else {
+            Variant::Outline
+        })
+        .when_some(shortcut, |button, hint| button.shortcut(hint.glyphs()))
         .h(px(26.0))
+        .gap(px(6.0))
         .pl(px(12.0))
-        .pr(px(if hint { 7.0 } else { 12.0 }))
-        .rounded(px(6.0))
-        .border_1()
+        .pr(px(if shortcut.is_some() { 7.0 } else { 12.0 }))
         .text_size(px(12.0))
         .line_height(px(24.0))
+        // A clear border keeps a primary button as wide as an outlined one.
         .when(primary, |button| {
-            button
-                .bg(swatch.accent)
-                .border_color(gpui::transparent_black())
-                .text_color(swatch.on_accent())
-                .active(|style| style.bg(swatch.accent_pressed()))
-        })
-        .when(!primary, |button| {
-            button
-                .border_color(swatch.line_strong)
-                .text_color(swatch.fg)
-                .hover(|style| style.bg(swatch.hover))
-                .active(|style| style.bg(swatch.pressed()))
+            button.border_1().border_color(gpui::transparent_black())
         })
 }
 

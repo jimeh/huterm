@@ -2,9 +2,10 @@
 
 use gpui::{Div, Hsla, Point, Stateful, Svg, TextRun, point, svg};
 use huterm_config::{Rgba, TabCloseButton, TabStyle, TabWidth, TabsConfig};
+use huterm_ui::components::button::{Button, Colors as ButtonColors};
 
 use crate::assets::Icon;
-use crate::desktop::overlay::accent_bar;
+use crate::desktop::overlay::{Swatch, accent_bar};
 use crate::renderer::rgba_color;
 use crate::ui::scrollbar::ScrollbarColors;
 
@@ -115,6 +116,18 @@ impl TabColors {
 
     fn hover(self) -> Hsla {
         self.hover
+    }
+
+    /// A tab-bar or title-row button's colors: its icon in the inactive
+    /// tint on no fill, with the bar's control hover and pressed overlays.
+    pub(super) fn control(self) -> ButtonColors {
+        ButtonColors {
+            fill: None,
+            text: self.inactive,
+            border: None,
+            hover: self.control_hover,
+            pressed: self.control_pressed,
+        }
     }
 }
 
@@ -250,7 +263,7 @@ impl TabItem {
 struct TabParts {
     status: Option<gpui::AnyElement>,
     title: Div,
-    close: Stateful<Div>,
+    close: Div,
 }
 
 impl WorkspaceView {
@@ -260,6 +273,7 @@ impl WorkspaceView {
         bounds: Bounds<Pixels>,
         tabs: TabsConfig,
         colors: TabColors,
+        swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> Stateful<Div> {
         // The merged title-bar row draws its tabs as a top bar.
@@ -340,6 +354,7 @@ impl WorkspaceView {
                 id,
                 close_button_shown(tabs.close_button, item.active()),
                 colors,
+                swatch,
                 cx,
             ),
         };
@@ -403,38 +418,41 @@ impl WorkspaceView {
         id: TabId,
         shown: bool,
         colors: TabColors,
+        swatch: Swatch,
         cx: &mut Context<'_, Self>,
-    ) -> Stateful<Div> {
+    ) -> Div {
         let foreground = colors.foreground;
         div()
-            .id(("close-tab", id.get()))
-            .group("close-tab")
             .flex_shrink_0()
-            .w(CLOSE_SIZE)
-            .h(CLOSE_SIZE)
-            .rounded(px(4.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .when(!shown, |button| {
-                button
-                    .opacity(0.0)
+            .when(!shown, |slot| {
+                slot.opacity(0.0)
                     .group_hover("tab", |style| style.opacity(1.0))
             })
-            .hover(|style| style.bg(colors.control_hover))
-            .active(|style| style.bg(colors.control_pressed))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                cx.stop_propagation();
-            })
-            .on_click(cx.listener(move |view, _, window, cx| {
-                cx.stop_propagation();
-                view.request_close(CloseTarget::Tab(id), window, cx);
-            }))
             .child(
-                icon_element(Icon::X, colors.inactive)
-                    .group_hover("close-tab", |style| {
-                        style.text_color(foreground)
-                    }),
+                Button::new(("close-tab", id.get()), "Close Tab", swatch)
+                    .colors(colors.control())
+                    .icon(
+                        icon_element(Icon::X, colors.inactive)
+                            .group_hover("close-tab", |style| {
+                                style.text_color(foreground)
+                            }),
+                    )
+                    .icon_only()
+                    .group("close-tab")
+                    .stop_presses()
+                    .size(CLOSE_SIZE)
+                    .rounded(px(4.0))
+                    .on_click(Self::button_action(
+                        cx,
+                        move |view, window, cx| {
+                            cx.stop_propagation();
+                            view.request_close(
+                                CloseTarget::Tab(id),
+                                window,
+                                cx,
+                            );
+                        },
+                    )),
             )
     }
 }

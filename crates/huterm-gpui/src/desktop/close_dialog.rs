@@ -6,12 +6,12 @@
 //! under its `confirming` context, and maps core's close assessment onto
 //! [`CloseDialogInput`].
 
-use gpui::{App, ClickEvent, Div, Pixels, Size, Window, div, prelude::*, px};
+use gpui::{App, Div, Pixels, Size, Window, div, prelude::*, px};
+use huterm_ui::components::button::{Button, Colors};
 
 use super::key_hint::KeyHint;
 use super::overlay::{
-    Swatch, accent_bar, key_cap_on, mono_font_family, raised_panel, scrim,
-    severity_mark,
+    Swatch, accent_bar, mono_font_family, raised_panel, scrim, severity_mark,
 };
 use crate::keymap::Platform;
 
@@ -401,21 +401,26 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
     }
 }
 
-/// A footer button; `hint` leaves room for its trailing key cap.
-fn button(swatch: Swatch, focused: bool, hint: bool) -> Div {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(8.0))
+/// A 28-point footer button reading `label`; with `hint`, its key cap
+/// follows. `focused` marks the keyboard's place.
+fn button(
+    id: &'static str,
+    label: impl Into<gpui::SharedString>,
+    swatch: Swatch,
+    focused: bool,
+    hint: Option<&str>,
+) -> Button {
+    Button::new(id, label, swatch)
+        .current(focused)
+        .when_some(hint, |button, key| {
+            button.shortcut(KeyHint::keys(&[key], Platform::current()).glyphs())
+        })
         .h(px(28.0))
         .pl(px(12.0))
-        .pr(px(if hint { 8.0 } else { 12.0 }))
-        .rounded(px(6.0))
+        .pr(px(if hint.is_some() { 8.0 } else { 12.0 }))
         .text_size(px(12.5))
         .font_weight(gpui::FontWeight::MEDIUM)
         .cursor_pointer()
-        .when(focused, |button| button.shadow(swatch.focus_ring()))
 }
 
 /// Cancel and the destructive primary button, nothing else. With `hints`,
@@ -425,15 +430,10 @@ fn dialog_footer(
     focus: DialogFocus,
     swatch: Swatch,
     hints: bool,
-    on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    on_confirm: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_cancel: impl Fn(&mut Window, &mut App) + 'static,
+    on_confirm: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Div {
     let danger = swatch.danger_fill();
-    let danger_hover = swatch.danger_hover();
-    let danger_pressed = swatch.danger_pressed();
-    // Its hover and pressed shades move away from this text, so it reads on
-    // every fill the button shows.
-    let on_danger = swatch.on(danger);
     div()
         .flex()
         .flex_none()
@@ -447,40 +447,34 @@ fn dialog_footer(
         .border_color(swatch.line)
         .bg(swatch.footer())
         .child(
-            button(swatch, focus == DialogFocus::Cancel, hints)
-                .id("cancel-close")
-                .border_1()
-                .border_color(swatch.line_strong)
-                .text_color(swatch.fg)
-                .hover(move |button| button.bg(swatch.hover))
-                .active(move |button| button.bg(swatch.pressed()))
-                .on_click(on_cancel)
-                .child("Cancel")
-                .when(hints, |button| {
-                    // A cap on a button draws outlined, so it reads on the
-                    // button's hover and pressed fills too.
-                    button.child(key_cap_on(
-                        &KeyHint::keys(&["escape"], Platform::current()),
-                        swatch.fg,
-                    ))
-                }),
+            button(
+                "cancel-close",
+                "Cancel",
+                swatch,
+                focus == DialogFocus::Cancel,
+                hints.then_some("escape"),
+            )
+            .on_click(on_cancel),
         )
         .child(
-            button(swatch, focus == DialogFocus::Primary, hints)
-                .id("confirm-close")
-                .debug_selector(|| "confirm-close".to_owned())
-                .bg(danger)
-                .text_color(on_danger)
-                .hover(move |button| button.bg(danger_hover))
-                .active(move |button| button.bg(danger_pressed))
-                .on_click(on_confirm)
-                .child(model.primary_label.clone())
-                .when(hints, |button| {
-                    button.child(key_cap_on(
-                        &KeyHint::keys(&["enter"], Platform::current()),
-                        on_danger,
-                    ))
-                }),
+            button(
+                "confirm-close",
+                model.primary_label.clone(),
+                swatch,
+                focus == DialogFocus::Primary,
+                hints.then_some("enter"),
+            )
+            .debug_selector("confirm-close")
+            // Its hover and pressed shades move away from its text, so it
+            // reads on every fill the button shows.
+            .colors(Colors {
+                fill: Some(danger),
+                text: swatch.on(danger),
+                border: None,
+                hover: swatch.danger_hover(),
+                pressed: swatch.danger_pressed(),
+            })
+            .on_click(on_confirm),
         )
 }
 
@@ -495,8 +489,8 @@ pub(crate) fn render_close_dialog(
     viewport: Size<Pixels>,
     swatch: Swatch,
     hints: bool,
-    on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    on_confirm: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_cancel: impl Fn(&mut Window, &mut App) + 'static,
+    on_confirm: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Div {
     let width = (viewport.width - px(32.0)).clamp(px(0.0), px(PANEL_WIDTH));
     let (glyph, fill) = match model.mark {

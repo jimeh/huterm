@@ -38,7 +38,7 @@ use super::notices::{
     Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
     ToastHandlers, render_notice_stack,
 };
-use super::overlay::{OverlayColors, TextTooltip, overlay_colors, tokens};
+use super::overlay::{OverlayColors, overlay_colors, tokens};
 use super::palette::{
     CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
     PaletteHierarchy, PaletteOpen, PaletteScope, PaletteTarget,
@@ -67,6 +67,7 @@ use huterm_protocol::{
     ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name, validate,
     validate_supplied,
 };
+use huterm_ui::components::button::{Button, Colors as ButtonColors};
 use huterm_ui::components::menu::{
     MIN_WIDTH as MENU_MIN_WIDTH, Menu as MenuView, MenuEvent,
 };
@@ -10552,7 +10553,8 @@ impl Render for WorkspaceView {
                     }
                 },
             ))
-            .on_action(cx.listener(Self::invoke_palette));
+            .on_action(cx.listener(Self::invoke_palette))
+            .child(huterm_ui::focus::tracker());
         if decorated {
             root = root.child(
                 div()
@@ -11018,8 +11020,9 @@ impl Render for WorkspaceView {
                             |drag| drag.spring.tab() == Some(tab.id),
                         ),
                     };
-                bar = bar
-                    .child(Self::tab_element(&item, bounds, tabs, colors, cx));
+                bar = bar.child(Self::tab_element(
+                    &item, bounds, tabs, colors, swatch, cx,
+                ));
             }
             for forward in [false, true] {
                 if !vertical
@@ -11032,68 +11035,70 @@ impl Render for WorkspaceView {
                         px(0.0)
                     } + CONTROL_INSET;
                     bar = bar.child(
-                        div()
-                            .id(if forward {
+                        Button::new(
+                            if forward {
                                 "scroll-tabs-forward"
                             } else {
                                 "scroll-tabs-backward"
-                            })
-                            .absolute()
-                            .left(if vertical {
-                                (strip.bounds.size.width - CONTROL_SIZE)
-                                    .max(px(0.0))
-                                    / 2.0
+                            },
+                            if forward {
+                                "Scroll Tabs Right"
                             } else {
-                                edge
-                            })
-                            .top(if vertical { edge } else { bar_inset })
-                            .w(CONTROL_SIZE)
-                            .h(CONTROL_SIZE)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .group("scroll-tabs")
-                            .bg(colors.bar)
-                            .hover(|style| style.bg(colors.control_hover))
-                            .active(|style| style.bg(colors.control_pressed))
-                            .rounded_md()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation();
-                            })
-                            .on_click(cx.listener(
-                                move |view, _, window, cx| {
-                                    let amount = view
-                                        .tab_strip(window)
-                                        .available()
-                                        * if forward { 0.75 } else { -0.75 };
-                                    let strip = view.tab_strip(window);
-                                    if view.scroll_target.is_none() {
-                                        view.last_scroll = Instant::now();
-                                    }
-                                    view.scroll_target = Some(
-                                        (view
-                                            .scroll_target
-                                            .unwrap_or(strip.offset)
-                                            + amount)
-                                            .clamp(px(0.0), strip.max_offset()),
-                                    );
-                                    cx.notify();
-                                    cx.stop_propagation();
+                                "Scroll Tabs Left"
+                            },
+                            swatch,
+                        )
+                        .colors(ButtonColors {
+                            fill: Some(colors.bar),
+                            ..colors.control()
+                        })
+                        .icon(
+                            icon_element(
+                                if forward {
+                                    Icon::ChevronRight
+                                } else {
+                                    Icon::ChevronLeft
                                 },
-                            ))
-                            .child(
-                                icon_element(
-                                    if forward {
-                                        Icon::ChevronRight
-                                    } else {
-                                        Icon::ChevronLeft
-                                    },
-                                    colors.inactive,
-                                )
-                                .group_hover("scroll-tabs", |style| {
-                                    style.text_color(colors.foreground)
-                                }),
-                            ),
+                                colors.inactive,
+                            )
+                            .group_hover("scroll-tabs", |style| {
+                                style.text_color(colors.foreground)
+                            }),
+                        )
+                        .icon_only()
+                        .group("scroll-tabs")
+                        .stop_presses()
+                        .absolute()
+                        .left(if vertical {
+                            (strip.bounds.size.width - CONTROL_SIZE)
+                                .max(px(0.0))
+                                / 2.0
+                        } else {
+                            edge
+                        })
+                        .top(if vertical { edge } else { bar_inset })
+                        .size(CONTROL_SIZE)
+                        .rounded_md()
+                        .on_click(Self::button_action(
+                            cx,
+                            move |view, window, cx| {
+                                let amount = view.tab_strip(window).available()
+                                    * if forward { 0.75 } else { -0.75 };
+                                let strip = view.tab_strip(window);
+                                if view.scroll_target.is_none() {
+                                    view.last_scroll = Instant::now();
+                                }
+                                view.scroll_target = Some(
+                                    (view
+                                        .scroll_target
+                                        .unwrap_or(strip.offset)
+                                        + amount)
+                                        .clamp(px(0.0), strip.max_offset()),
+                                );
+                                cx.notify();
+                                cx.stop_propagation();
+                            },
+                        )),
                     );
                 }
             }
@@ -11104,12 +11109,17 @@ impl Render for WorkspaceView {
                 menu_placement == MenuButtonPlacement::SplitRow,
             );
             chrome = chrome.child(bar).child(
-                div()
-                    .id("new-tab")
+                Button::new("new-tab", "New Tab", swatch)
+                    .colors(colors.control())
+                    .icon(
+                        icon_element(Icon::Plus, colors.inactive)
+                            .group_hover("new-tab", |style| {
+                                style.text_color(colors.foreground)
+                            }),
+                    )
+                    .icon_only()
                     .group("new-tab")
                     .occlude()
-                    .hover(|style| style.bg(colors.control_hover))
-                    .active(|style| style.bg(colors.control_pressed))
                     .rounded(px(7.0))
                     .absolute()
                     .left(
@@ -11138,10 +11148,7 @@ impl Render for WorkspaceView {
                     } else {
                         CONTROL_SIZE
                     })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .on_click(cx.listener(|view, _, window, cx| {
+                    .on_click(Self::button_action(cx, |view, window, cx| {
                         if let Err(error) = view.new_tab(window, cx) {
                             view.report_failure(
                                 "Cannot open tab",
@@ -11149,13 +11156,7 @@ impl Render for WorkspaceView {
                                 cx,
                             );
                         }
-                    }))
-                    .child(
-                        icon_element(Icon::Plus, colors.inactive)
-                            .group_hover("new-tab", |style| {
-                                style.text_color(colors.foreground)
-                            }),
-                    ),
+                    })),
             );
             let bar_menu_button = match menu_placement {
                 // The strip area ends where the bar does, or before the
@@ -11437,13 +11438,13 @@ impl Render for WorkspaceView {
                 self.config.window.shortcut_hints,
                 self.about_focus,
                 AboutActions {
-                    licenses: cx.listener(|view, _, window, cx| {
+                    licenses: Self::button_action(cx, |view, window, cx| {
                         view.show_licenses(window, cx);
                     }),
-                    copy: cx.listener(|view, _, _, cx| {
+                    copy: Self::button_action(cx, |view, _, cx| {
                         view.copy_about_details(cx);
                     }),
-                    close: cx.listener(|view, _, window, cx| {
+                    close: Self::button_action(cx, |view, window, cx| {
                         view.close_about(window, cx);
                     }),
                 },
@@ -11462,10 +11463,10 @@ impl Render for WorkspaceView {
                 content.size,
                 tokens(&self.config.theme),
                 self.config.window.shortcut_hints,
-                cx.listener(|view, _, window, cx| {
+                Self::button_action(cx, |view, window, cx| {
                     view.cancel_confirmation(window, cx);
                 }),
-                cx.listener(move |view, _, window, cx| {
+                Self::button_action(cx, move |view, window, cx| {
                     view.confirm_confirmation(
                         target.clone(),
                         generation,
@@ -12156,6 +12157,17 @@ impl WorkspaceView {
         Ok(CommandOutcome::Completed)
     }
 
+    /// `run` on this view as a [`Button`]'s click action.
+    pub(super) fn button_action(
+        cx: &Context<'_, Self>,
+        run: impl Fn(&mut Self, &mut Window, &mut Context<'_, Self>) + 'static,
+    ) -> impl Fn(&mut Window, &mut App) + 'static {
+        let view = cx.entity().downgrade();
+        move |window, cx| {
+            let _ = view.update(cx, |view, cx| run(view, window, cx));
+        }
+    }
+
     /// The menu's anchor: the painted menu button, or the terminal's top
     /// right corner when the button is hidden and `open_menu` ran.
     fn menu_anchor(&self, layout: &ChromeLayout) -> Bounds<Pixels> {
@@ -12188,35 +12200,14 @@ impl WorkspaceView {
         &self,
         colors: TabColors,
         cx: &mut Context<'_, Self>,
-    ) -> gpui::Stateful<gpui::Div> {
+    ) -> Button {
         let bounds_cell = Rc::clone(&self.menu_button_bounds);
         let open = self.menu_button_open();
         let dot = !open && !self.notices.is_empty();
         let swatch = tokens(&self.config.theme);
-        div()
-            .id("window-menu")
-            .role(gpui::Role::Button)
-            .aria_label("Menu")
-            .aria_expanded(open)
-            .group("window-menu")
-            .occlude()
-            .w(CONTROL_SIZE)
-            .h(CONTROL_SIZE)
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
-            .hover(|style| style.bg(colors.control_hover))
-            .when(open, |button| button.bg(colors.control_hover))
-            .active(|style| style.bg(colors.control_pressed))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                cx.stop_propagation();
-            })
-            .on_click(cx.listener(|view, _, window, cx| {
-                view.toggle_menu(window, cx);
-                cx.stop_propagation();
-            }))
-            .child(
+        Button::new("window-menu", "Menu", swatch)
+            .colors(colors.control())
+            .icon(
                 icon_element(Icon::Menu, colors.inactive)
                     .w(px(14.0))
                     .h(px(14.0))
@@ -12224,6 +12215,18 @@ impl WorkspaceView {
                         style.text_color(colors.foreground)
                     }),
             )
+            .icon_only()
+            .expanded(open)
+            .group("window-menu")
+            .occlude()
+            .stop_presses()
+            .size(CONTROL_SIZE)
+            .rounded_md()
+            .when(open, |button| button.bg(colors.control_hover))
+            .on_click(Self::button_action(cx, |view, window, cx| {
+                view.toggle_menu(window, cx);
+                cx.stop_propagation();
+            }))
             .when(dot, |button| {
                 button.child(
                     div()
@@ -12335,30 +12338,24 @@ impl WorkspaceView {
                 }
             };
             let bounds = Rc::clone(&self.window_button_bounds);
-            let element = div()
-                .id(id)
-                .group(id)
-                .occlude()
-                .relative()
-                .w(WINDOW_CONTROL_SIZE)
-                .h(WINDOW_CONTROL_SIZE)
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .bg(colors.hover)
-                .hover(|style| style.bg(colors.control_hover))
-                .active(|style| style.bg(colors.control_pressed))
-                .tooltip(move |_, cx| TextTooltip::view(label, swatch, cx))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                    cx.stop_propagation();
+            let element = Button::new(id, label, swatch)
+                .colors(ButtonColors {
+                    fill: Some(colors.hover),
+                    ..colors.control()
                 })
-                .child(
+                .icon(
                     icon_element(icon, colors.inactive)
                         .group_hover(id, |style| {
                             style.text_color(colors.foreground)
                         }),
                 )
+                .icon_only()
+                .group(id)
+                .occlude()
+                .stop_presses()
+                .relative()
+                .size(WINDOW_CONTROL_SIZE)
+                .rounded_full()
                 .child(
                     canvas(
                         |_, _, _| (),
@@ -12370,20 +12367,21 @@ impl WorkspaceView {
                     .inset_0(),
                 );
             controls = controls.child(match button {
-                WindowButton::Minimize => element.on_click(|_, window, cx| {
+                WindowButton::Minimize => element.on_click(|window, cx| {
                     window.minimize_window();
                     cx.stop_propagation();
                 }),
-                WindowButton::Maximize => element.on_click(|_, window, cx| {
+                WindowButton::Maximize => element.on_click(|window, cx| {
                     window.zoom_window();
                     cx.stop_propagation();
                 }),
-                WindowButton::Close => {
-                    element.on_click(cx.listener(|view, _, window, cx| {
+                WindowButton::Close => element.on_click(Self::button_action(
+                    cx,
+                    |view, window, cx| {
                         view.request_close(CloseTarget::Window, window, cx);
                         cx.stop_propagation();
-                    }))
-                }
+                    },
+                )),
             });
         }
         controls
