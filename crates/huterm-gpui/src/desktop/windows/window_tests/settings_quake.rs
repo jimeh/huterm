@@ -1017,9 +1017,14 @@ fn a_reload_reading_a_rename_before_its_save_settles_keeps_the_window(
     harness.cx.update(|cx| {
         let windows = &cx.global::<Desktop>().windows;
         assert_eq!(windows.quake_window("work"), Some(id));
+        assert_eq!(windows.quake_renames_noted(), 0, "the save still runs");
     });
     drop(release);
     saved(&mut harness, &file, |text| text.contains("work"));
+    harness.cx.update(|cx| {
+        let windows = &cx.global::<Desktop>().windows;
+        assert_eq!(windows.quake_renames_noted(), 1, "the save landed");
+    });
     applied(&mut harness, "work");
     harness.cx.update(|cx| {
         let windows = &cx.global::<Desktop>().windows;

@@ -913,7 +913,7 @@ impl SettingsView {
 
     /// Holds the next batch's save after its write, before it settles,
     /// until the returned sender sends or drops.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "test-support"))]
     pub(in crate::desktop::windows) fn hold_batch(
         &mut self,
     ) -> async_channel::Sender<()> {
