@@ -1000,15 +1000,37 @@ pub(super) fn close(
     }
 }
 
-pub(super) fn reconcile(cx: &mut App) {
-    let desktop = cx.global::<Desktop>();
+/// Brings the quake windows up to a reload that read the file once `read`
+/// renames were noted (`WindowModel::quake_renames_noted`). A renamed
+/// profile's window takes its new name once the file read has it, and the
+/// windows of profiles the file no longer has become ordinary windows.
+pub(super) fn reconcile(cx: &mut App, read: u64) {
+    let desktop = cx.global_mut::<Desktop>();
+    let profiles = &desktop.config.quake.profiles;
+    let reconciled = desktop
+        .windows
+        .reconcile_quake(read, |name| profiles.contains_key(name));
+    for (id, name) in reconciled.renamed {
+        let Some(handle) = window_handle(cx, Some(id)) else {
+            continue;
+        };
+        let _ = handle.update(cx, |root, _, cx| {
+            let Ok(view) = root.downcast::<WorkspaceView>() else {
+                return;
+            };
+            view.update(cx, |view, _| {
+                if let Some(state) = view.quake.as_mut() {
+                    state.name = name;
+                }
+            });
+        });
+    }
     // A removed profile's window keeps its association until its detach
     // completes, so a re-added profile cannot open a second window.
-    let removed: Vec<_> = desktop
-        .windows
-        .quake_windows()
-        .filter(|(name, _)| !desktop.config.quake.profiles.contains_key(*name))
-        .filter_map(|(_, id)| window_handle(cx, Some(id)))
+    let removed: Vec<_> = reconciled
+        .removed
+        .into_iter()
+        .filter_map(|id| window_handle(cx, Some(id)))
         .collect();
     for handle in removed {
         cx.defer(move |cx| {

@@ -311,6 +311,103 @@ fn quake_state_follows_summon_hide_tabs_detach_and_close() {
     assert!(model.record(window(3)).is_none());
 }
 
+/// Notes a rename of `from` to `to` whose save started and landed.
+fn landed(model: &mut WindowModel, from: &str, to: &str) {
+    let id = model.quake_rename_started(from, to);
+    model.quake_rename_settled(id, true);
+}
+
+#[test]
+fn a_renamed_profiles_window_follows_the_reloads_that_read_the_rename() {
+    let mut model = WindowModel::default();
+    model.open(window(2), Some(quake("logs", false)), layout(5.0));
+    model.open_tab(window(2), entry(1));
+    let renamed = |name: &str| QuakeReconciled {
+        renamed: vec![(window(2), name.to_owned())],
+        removed: Vec::new(),
+    };
+    // A reload that read the file before the rename keeps the window.
+    let before = model.quake_renames_noted();
+    landed(&mut model, "logs", "work");
+    let applied = model.reconcile_quake(before, |name| name == "logs");
+    assert_eq!(applied, QuakeReconciled::default());
+    assert_eq!(model.quake_window("logs"), Some(window(2)));
+    // The rename's own reload reads the file, then a second rename lands
+    // before that reload applies what it read.
+    let first = model.quake_renames_noted();
+    landed(&mut model, "work", "build");
+    assert_eq!(
+        model.reconcile_quake(first, |name| name == "work"),
+        renamed("work")
+    );
+    let second = model.quake_renames_noted();
+    assert_eq!(
+        model.reconcile_quake(second, |name| name == "build"),
+        renamed("build")
+    );
+    assert_eq!(model.quake_state("build"), Some((false, 1)));
+    // Every rename is applied, so a later file without the name removes it.
+    let applied = model.reconcile_quake(second, |name| name == "work");
+    assert_eq!(applied.removed, [window(2)]);
+}
+
+#[test]
+fn a_reload_follows_a_rename_whose_save_has_not_settled() {
+    let mut model = WindowModel::default();
+    model.open(window(2), Some(quake("logs", false)), layout(5.0));
+    // The save replaced the file, and a reload read it, before it settled.
+    let id = model.quake_rename_started("logs", "work");
+    assert!(model.quake_name_held("logs"), "the rename may still fail");
+    let read = model.quake_renames_noted();
+    assert_eq!(
+        model.reconcile_quake(read, |name| name == "work").renamed,
+        [(window(2), "work".to_owned())]
+    );
+    // It stays until a reload that read the file after it landed.
+    model.quake_rename_settled(id, true);
+    let read = model.quake_renames_noted();
+    assert_eq!(
+        model.reconcile_quake(read, |name| name == "work"),
+        QuakeReconciled::default()
+    );
+    // A save that wrote nothing leaves no rename to follow.
+    let id = model.quake_rename_started("work", "build");
+    model.quake_rename_settled(id, false);
+    let read = model.quake_renames_noted();
+    assert_eq!(
+        model.reconcile_quake(read, |name| name == "build").removed,
+        [window(2)]
+    );
+}
+
+#[test]
+fn a_renamed_profile_keeps_its_window_unless_the_new_name_has_one() {
+    let mut model = WindowModel::default();
+    model.open(window(2), Some(quake("logs", false)), layout(5.0));
+    // Two renames land before a reload reads the file.
+    landed(&mut model, "logs", "work");
+    landed(&mut model, "work", "build");
+    let read = model.quake_renames_noted();
+    let applied = model.reconcile_quake(read, |name| name == "build");
+    assert_eq!(applied.renamed, [(window(2), "build".to_owned())]);
+    // A removed profile's detaching window still holds its name, so a
+    // renamed profile's window cannot take it.
+    model.open(window(3), Some(quake("old", true)), layout(5.0));
+    assert!(model.quake_name_held("old"));
+    landed(&mut model, "build", "old");
+    assert!(!model.quake_name_held("build"), "the rename moves it on");
+    let read = model.quake_renames_noted();
+    let applied = model.reconcile_quake(read, |name| name == "old");
+    assert_eq!(
+        applied,
+        QuakeReconciled {
+            renamed: Vec::new(),
+            removed: vec![window(2)],
+        }
+    );
+    assert_eq!(model.quake_window("old"), Some(window(3)));
+}
+
 #[test]
 fn palette_tab_order_lists_recent_tabs_first_and_the_active_tab_last() {
     let (a, b, c) = (TabId::new(1), TabId::new(2), TabId::new(3));

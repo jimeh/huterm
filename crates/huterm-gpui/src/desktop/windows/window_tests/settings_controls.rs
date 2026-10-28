@@ -380,9 +380,9 @@ fn create_refuses_a_click_and_says_why_while_the_file_is_invalid(
     let before = focus(&mut harness);
     a11y_click(&mut harness, &create);
     assert_eq!(focus(&mut harness), before, "the click took focus");
-    with_view(&mut harness, |view, _| {
+    with_view(&mut harness, |view, cx| {
         // The command's own refusal would have said why in the prompt.
-        assert_eq!(view.quake_message(), None, "the click ran Create");
+        assert_eq!(view.quake_message(cx), None, "the click ran Create");
         assert_eq!(view.quake_prompts(), (true, false));
     });
     assert!(harness.cx.update(settled));

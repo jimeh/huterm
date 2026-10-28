@@ -13,16 +13,25 @@
 //! prompt's Cancel does. While a dialog is open, the window runs no other
 //! command except its own close, minimize, zoom, and fullscreen. A dialog
 //! stays open while the window is inactive.
+//!
+//! A prompt may hold one text field, opened with
+//! [`SettingsView::open_field_dialog`]. The field carries the `Palette`
+//! context, as Settings' other fields do, so Left and Right edit it, and
+//! [`SettingsView::run_dialog_field`] routes that context's Tab and
+//! Shift-Tab (`palette_expand`, `palette_previous_slot`) to the dialog's
+//! focus cycle, Enter (`palette_confirm`) to the prompt's confirm key, and
+//! Escape (`palette_back`) to its Cancel, so focus never leaves the dialog.
 
 use std::collections::HashMap;
 
 use gpui::{
-    AnyElement, Context, ElementId, FocusHandle, IntoElement, SharedString,
-    Window,
+    AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable as _,
+    IntoElement, SharedString, Window,
 };
-use huterm_protocol::{CommandId, ids};
+use huterm_protocol::{CommandId, CommandInvocation, ids};
 use huterm_ui::components::button::Button;
 use huterm_ui::components::dialog::{Dismissal, Modal};
+use huterm_ui::components::input::Input;
 
 use super::super::super::overlay::Swatch;
 use super::SettingsView;
@@ -34,6 +43,12 @@ pub(super) enum Prompt {
     DeleteProfile(String),
     /// Why the Quake profile cannot be deleted.
     DeleteRefused { profile: String, message: String },
+    /// The name of a new Quake profile, typed into the dialog's field.
+    NewProfile,
+    /// The Quake profile's new name, typed into the dialog's field.
+    RenameProfile(String),
+    /// Why the Quake profile was not renamed.
+    RenameRefused { profile: String, message: String },
 }
 
 impl Prompt {
@@ -42,6 +57,20 @@ impl Prompt {
     fn cancel(&self) -> &'static str {
         match self {
             Self::DeleteProfile(_) | Self::DeleteRefused { .. } => "qdelno",
+            Self::NewProfile => "qcancel",
+            Self::RenameProfile(_) | Self::RenameRefused { .. } => "qrenno",
+        }
+    }
+
+    /// The action key that Enter in the prompt's field runs, as its
+    /// primary button does.
+    fn confirm(&self) -> Option<&'static str> {
+        match self {
+            Self::NewProfile => Some("qcreate"),
+            Self::RenameProfile(_) => Some("qrename"),
+            Self::DeleteProfile(_)
+            | Self::DeleteRefused { .. }
+            | Self::RenameRefused { .. } => None,
         }
     }
 
@@ -50,6 +79,9 @@ impl Prompt {
         match self {
             Self::DeleteProfile(_) => "delete",
             Self::DeleteRefused { .. } => "delete-refused",
+            Self::NewProfile => "new-profile",
+            Self::RenameProfile(_) => "rename",
+            Self::RenameRefused { .. } => "rename-refused",
         }
     }
 }
@@ -61,6 +93,8 @@ pub(super) struct SettingsDialog {
     prompt: Option<Prompt>,
     /// Footer buttons' focus handles, by the action key each answers with.
     buttons: HashMap<&'static str, FocusHandle>,
+    /// The open prompt's text field, if it has one.
+    field: Option<Entity<Input>>,
 }
 
 impl SettingsDialog {
@@ -72,6 +106,11 @@ impl SettingsDialog {
     /// The modal the open dialog draws with.
     pub(super) fn modal(&self) -> &Modal {
         &self.modal
+    }
+
+    /// The open prompt's text field.
+    pub(super) fn field(&self) -> Option<&Entity<Input>> {
+        self.field.as_ref().filter(|_| self.prompt().is_some())
     }
 
     /// The action key of the footer button that has focus.
@@ -95,7 +134,20 @@ impl SettingsView {
     ) {
         let _ = self.drop_menu();
         self.dialog.prompt = Some(prompt);
+        self.dialog.field = None;
         self.dialog.modal.open(return_to);
+    }
+
+    /// Opens `prompt` with `field` in its body, as [`Self::open_dialog`]
+    /// does; the prompt's renderer draws the field and gives it focus.
+    pub(super) fn open_field_dialog(
+        &mut self,
+        prompt: Prompt,
+        field: Entity<Input>,
+        return_to: &FocusHandle,
+    ) {
+        self.open_dialog(prompt, return_to);
+        self.dialog.field = Some(field);
     }
 
     /// Closes the dialog and returns focus to the target given to
@@ -106,6 +158,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         self.dialog.prompt = None;
+        self.dialog.field = None;
         if self.dialog.modal.close(window, cx) {
             cx.notify();
         }
@@ -175,15 +228,71 @@ impl SettingsView {
         true
     }
 
-    /// Answers the dialog as its Cancel does, for `dialog_cancel`, an owner
-    /// change, or an outside press, which an alert never reports. The
-    /// window does not route its deactivation here.
+    /// Takes a text-editing command while the open dialog's field has
+    /// focus: Tab and Shift-Tab cycle the dialog, Enter runs the prompt's
+    /// confirm key, Escape answers as Cancel does, and every other command
+    /// edits the field. Returns whether it took the command; any command
+    /// while a dialog is open is taken, since nothing it covers may edit.
+    pub(super) fn run_dialog_field(
+        &mut self,
+        invocation: &CommandInvocation,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let Some(prompt) = self.dialog.prompt().cloned() else {
+            return false;
+        };
+        let Some(field) = self.focused_dialog_field(window, cx) else {
+            return true;
+        };
+        match invocation.id {
+            ids::PALETTE_EXPAND => self.dialog.modal.focus_next(window, cx),
+            ids::PALETTE_PREVIOUS_SLOT => {
+                self.dialog.modal.focus_previous(window, cx);
+            }
+            ids::PALETTE_CONFIRM => {
+                if let Some(key) = prompt.confirm() {
+                    self.act(key, window, cx);
+                }
+            }
+            ids::PALETTE_BACK => {
+                self.dismiss_dialog(Dismissal::Escape, window, cx);
+            }
+            _ => {
+                let _ = field.update(cx, |field, cx| {
+                    crate::ui::input::run(field, invocation, cx)
+                });
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    /// The open dialog's field, when it has focus.
+    pub(super) fn focused_dialog_field(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<Entity<Input>> {
+        self.dialog
+            .field()
+            .filter(|field| field.read(cx).focus_handle(cx).is_focused(window))
+            .cloned()
+    }
+
+    /// Answers the dialog as its Cancel does, for `dialog_cancel` or an
+    /// owner change. An outside press leaves it open, keeping a typed name,
+    /// as a macOS sheet does; an alert never reports one. The window does
+    /// not route its deactivation here.
     pub(super) fn dismiss_dialog(
         &mut self,
-        _reason: Dismissal,
+        reason: Dismissal,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if reason == Dismissal::OutsidePress {
+            return;
+        }
         if let Some(key) = self.dialog.prompt().map(Prompt::cancel) {
             self.act(key, window, cx);
         }
@@ -214,6 +323,12 @@ impl SettingsView {
         match prompt {
             Prompt::DeleteProfile(_) | Prompt::DeleteRefused { .. } => {
                 self.render_delete_alert(&prompt, swatch, window, cx)
+            }
+            Prompt::NewProfile | Prompt::RenameProfile(_) => {
+                self.render_name_dialog(&prompt, swatch, window, cx)
+            }
+            Prompt::RenameRefused { profile, message } => {
+                Some(self.render_rename_refusal(&profile, message, swatch, cx))
             }
         }
     }
@@ -253,6 +368,20 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         let _ = self.act_quake("qdel", "", window, cx);
+    }
+
+    /// The open dialog's field's caret and selection, as byte offsets.
+    pub(in crate::desktop::windows) fn dialog_caret(
+        &self,
+        cx: &App,
+    ) -> Option<(usize, std::ops::Range<usize>)> {
+        let field = self.dialog.field()?.read(cx);
+        Some((field.cursor(), field.selection()))
+    }
+
+    /// The number of writes that finished, whatever their outcome.
+    pub(in crate::desktop::windows) fn writes_finished(&self) -> u64 {
+        self.epoch
     }
 
     /// The open dialog panel's painted bounds.

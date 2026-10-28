@@ -114,10 +114,38 @@ pub(super) struct WindowRestore {
     pub(super) quake_profile: Option<String>,
 }
 
+/// A quake profile rename Settings is writing or wrote, until the reloads
+/// that read the file after it apply it.
+#[derive(Debug)]
+struct QuakeRename {
+    id: QuakeRenameId,
+    from: String,
+    to: String,
+    /// The count of renames noted, this one included, once its save
+    /// landed; `None` while it runs.
+    noted: Option<u64>,
+}
+
+/// Names a rename whose save `quake_rename_started` saw start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct QuakeRenameId(u64);
+
+/// How a reload changed the quake associations.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct QuakeReconciled {
+    /// Windows that took a renamed profile's new name.
+    pub(super) renamed: Vec<(WindowId, String)>,
+    /// Windows whose profile the file no longer has.
+    pub(super) removed: Vec<WindowId>,
+}
+
 /// The client's windows, in the order they opened.
 #[derive(Debug, Default)]
 pub(super) struct WindowModel {
     records: Vec<WindowRecord>,
+    renames: Vec<QuakeRename>,
+    renames_noted: u64,
+    renames_started: u64,
 }
 
 impl WindowModel {
@@ -289,6 +317,111 @@ impl WindowModel {
         {
             quake.visible = visible;
         }
+    }
+
+    /// Notes that Settings started saving a rename of quake profile `from`
+    /// to `to`. The window serving `from` takes the new name in the first
+    /// reload that reads the file with it (`reconcile_quake`), so a reload
+    /// that read the file before the rename does not take the window for a
+    /// removed profile's. The save can replace the file before it settles,
+    /// so a reload may read the rename while it still runs.
+    pub(super) fn quake_rename_started(
+        &mut self,
+        from: &str,
+        to: &str,
+    ) -> QuakeRenameId {
+        self.renames_started += 1;
+        let id = QuakeRenameId(self.renames_started);
+        self.renames.push(QuakeRename {
+            id,
+            from: from.to_owned(),
+            to: to.to_owned(),
+            noted: None,
+        });
+        id
+    }
+
+    /// Settles rename `id`: noted when its save `landed` in the file,
+    /// forgotten when it wrote nothing.
+    pub(super) fn quake_rename_settled(
+        &mut self,
+        id: QuakeRenameId,
+        landed: bool,
+    ) {
+        if landed {
+            self.renames_noted += 1;
+            let noted = self.renames_noted;
+            if let Some(rename) =
+                self.renames.iter_mut().find(|rename| rename.id == id)
+            {
+                rename.noted = Some(noted);
+            }
+        } else {
+            self.renames.retain(|rename| rename.id != id);
+        }
+    }
+
+    /// How many renames have been noted, which a reload takes before it
+    /// reads the file: each rename noted by then was already written.
+    pub(super) fn quake_renames_noted(&self) -> u64 {
+        self.renames_noted
+    }
+
+    /// Whether a window keeps serving profile `name`: one serves it, and no
+    /// noted rename moves it on. Settings renames no profile to such a
+    /// name, which a removed profile's window keeps until its detach ends.
+    pub(super) fn quake_name_held(&self, name: &str) -> bool {
+        self.quake_window(name).is_some()
+            && !self
+                .renames
+                .iter()
+                .any(|rename| rename.noted.is_some() && rename.from == name)
+    }
+
+    /// Brings the quake associations up to a reload whose file has the
+    /// profiles `has` names and was read once `read` renames were noted. A
+    /// window whose profile the file lacks follows the renames noted or
+    /// running for it to the first name the file has, unless another
+    /// window serves that name. Renames noted by `read` go, since the file
+    /// read shows them, and the windows whose profile the file still lacks
+    /// are returned to detach.
+    pub(super) fn reconcile_quake(
+        &mut self,
+        read: u64,
+        has: impl Fn(&str) -> bool,
+    ) -> QuakeReconciled {
+        let moves: Vec<(WindowId, String)> = self
+            .quake_windows()
+            .filter_map(|(profile, id)| {
+                let mut name = profile;
+                let mut renames = self.renames.iter();
+                while !has(name) {
+                    name =
+                        renames.find(|rename| rename.from == name)?.to.as_str();
+                }
+                (name != profile).then(|| (id, name.to_owned()))
+            })
+            .collect();
+        let mut renamed = Vec::new();
+        for (id, name) in moves {
+            if self.quake_window(&name).is_some() {
+                continue;
+            }
+            if let Some(quake) =
+                self.record_mut(id).and_then(|record| record.quake.as_mut())
+            {
+                name.clone_into(&mut quake.profile);
+                renamed.push((id, name));
+            }
+        }
+        self.renames
+            .retain(|rename| rename.noted.is_none_or(|noted| noted > read));
+        let removed = self
+            .quake_windows()
+            .filter(|(profile, _)| !has(profile))
+            .map(|(_, id)| id)
+            .collect();
+        QuakeReconciled { renamed, removed }
     }
 
     /// Ends a window's profile association; the window stays open.

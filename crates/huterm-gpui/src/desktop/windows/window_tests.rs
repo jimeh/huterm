@@ -2489,6 +2489,7 @@ fn a_reload_finishing_after_quit_commits_applies_nothing(
                 inputs: config::Inputs::default(),
                 missing: false,
             },
+            0,
         );
         assert_eq!(cx.global::<Desktop>().config.font.size, size);
     });

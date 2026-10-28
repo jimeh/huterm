@@ -8,10 +8,15 @@
 //! holds the value the edit expected at its path. Use mine and a profile's
 //! deletion read the file afresh instead: the user chose to replace or
 //! remove what is there.
+//!
+//! A [`Batch`] is one save of several patches, such as a rename: the old
+//! key's removal, the new key, and the references rewritten. They go to
+//! `ConfigFile::apply` together, which checks each against the file on
+//! disk and writes nothing unless all apply.
 
 use std::path::Path;
 
-use gpui::{AppContext as _, Context, Window};
+use gpui::{App, AppContext as _, Context, Window};
 use huterm_config::document::{
     ApplyError, ConfigFile, EntryLocator, List, Patch, Snapshot,
 };
@@ -20,12 +25,15 @@ use huterm_config::settings::{
 };
 use toml::{Table, Value};
 
-use super::super::super::settings::keybindings::Edit;
+use super::super::super::settings::keybindings::{
+    Edit, rename_profile_references,
+};
 use super::super::super::settings::values::{
     self, FileValues, as_number, parse_number, patch_at, shown,
 };
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
+use super::super::model::QuakeRenameId;
 use super::{SettingsView, current, field_text, quake, size_value, themes};
 use crate::keymap::{Inventory, Platform, inventory};
 
@@ -72,10 +80,45 @@ pub(super) struct KeyChange {
     pub(super) field: Option<(String, Option<String>)>,
 }
 
+/// Several changes written in one save: every patch lands, or none does.
+///
+/// When its turn comes, the values it moves are read from the file as this
+/// window last read or wrote it, so they build on the window's own earlier
+/// writes, and they apply against that snapshot, so an edit made elsewhere
+/// since conflicts with the whole batch. The entries it rewrites are found
+/// in the file as it is when the batch applies, so one added elsewhere
+/// since is rewritten too. While it waits, `pending` shows its outcome, as
+/// for a setting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Batch {
+    /// Renames a Quake profile and the shortcuts that name it.
+    RenameProfile { from: String, to: String },
+}
+
+impl Batch {
+    /// The patches built from `current`, the file as it is when the batch
+    /// applies: the entries a rename rewrites.
+    fn current_patches(&self, current: &Snapshot) -> Vec<Patch> {
+        match self {
+            Self::RenameProfile { from, to } => rename_profile_references(
+                &current.entries(List::Keybinding),
+                &current.entries(List::GlobalKeybinding),
+                from,
+                to,
+            ),
+        }
+    }
+}
+
+/// The values a batch put in `pending` when it was submitted, which go
+/// when it settles unless a newer change replaced them.
+pub(super) type Outcome = Vec<(&'static str, Option<Value>)>;
+
 /// A write waiting behind the one in flight.
 pub(super) enum Queued {
     Setting(Pending),
     Keys(KeyChange),
+    Batch(Batch, Outcome),
 }
 
 /// What a background read found.
@@ -117,6 +160,17 @@ fn listed(snapshot: &Snapshot, path: &Path) -> Listed {
         entries: snapshot.entries(List::Keybinding),
         globals: snapshot.entries(List::GlobalKeybinding),
     }
+}
+
+/// Whether `patch` writes the dotted path `at` or a table holding it.
+fn writes(patch: &Patch, at: &str) -> bool {
+    let (Patch::Set { path: written, .. } | Patch::Remove { path: written }) =
+        patch
+    else {
+        return false;
+    };
+    let mut keys = at.split('.');
+    written.iter().all(|key| keys.next() == Some(key.as_str()))
 }
 
 /// The path a setting's changes write: the theme row edits the theme's
@@ -344,7 +398,9 @@ impl SettingsView {
         else {
             return;
         };
-        let text = field_text(shown(setting, &self.file, &self.defaults));
+        let text = self.batch_baseline(setting, path).unwrap_or_else(|| {
+            field_text(shown(setting, &self.file, &self.defaults))
+        });
         let current = field.read(cx).text().to_owned();
         let draft = self
             .synced
@@ -368,6 +424,24 @@ impl SettingsView {
         }
         self.show_text(path, text.clone(), cx);
         self.synced.insert(path, text);
+    }
+
+    /// How `setting`'s field shows what `path` will hold once the batches
+    /// waiting to land do, when one writes it, such as a value a rename
+    /// copies to the profile's new name. The field syncs against that until
+    /// they land, as it showed it.
+    fn batch_baseline(&self, setting: &Setting, path: &str) -> Option<String> {
+        let queued = self.queued.iter().filter_map(|queued| match queued {
+            Queued::Batch(_, outcome) => Some(outcome),
+            _ => None,
+        });
+        let (_, value) = self
+            .writing_batch
+            .iter()
+            .chain(queued)
+            .flatten()
+            .rfind(|(at, _)| *at == path)?;
+        Some(self.display(setting, value.clone()))
     }
 
     /// Saves `value` for `setting`, or resets it when `None`.
@@ -633,6 +707,298 @@ impl SettingsView {
         self.next_write(failed, cx);
     }
 
+    /// Queues `batch` after any write in flight, showing its outcome in
+    /// `pending` meanwhile; `false` when the window cannot write.
+    pub(super) fn submit_batch(
+        &mut self,
+        batch: Batch,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if self.locked() {
+            return false;
+        }
+        let outcome = self.batch_outcome(&batch);
+        for (path, value) in &outcome {
+            self.pending.insert(path, value.clone());
+        }
+        if self.writing.is_some() {
+            self.queued.push_back(Queued::Batch(batch, outcome));
+        } else {
+            self.start_batch(batch, outcome, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    /// The pending values `batch` shows until it settles.
+    fn batch_outcome(&self, batch: &Batch) -> Outcome {
+        match batch {
+            Batch::RenameProfile { from, to } => self.rename_outcome(from, to),
+        }
+    }
+
+    /// Drops what a batch put in `pending`, unless a newer change replaced
+    /// it.
+    fn settle_batch(&mut self, outcome: &Outcome) {
+        for (path, value) in outcome {
+            if self.pending.get(path) == Some(value) {
+                self.pending.remove(path);
+            }
+        }
+    }
+
+    fn start_batch(
+        &mut self,
+        batch: Batch,
+        outcome: Outcome,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let built = match &batch {
+            Batch::RenameProfile { from, to } => self.rename_patches(from, to),
+        };
+        let patches = match built {
+            Ok(patches) => patches,
+            Err(message) => {
+                self.settle_batch(&outcome);
+                self.status.failed(message.clone());
+                self.batch_refused(&batch, message, cx);
+                self.next_write(true, cx);
+                return;
+            }
+        };
+        self.writing = Some("batch");
+        self.writing_batch = Some(outcome);
+        self.status.saving();
+        let started = Self::batch_started(&batch, cx);
+        #[cfg(test)]
+        let gate = self.batch_gate.take();
+        let file = ConfigFile::new(self.path.clone());
+        let validate = crate::config::validator(self.path.clone());
+        let config_path = self.path.clone();
+        let base = self.base.clone();
+        let rewrites = batch.clone();
+        let task = cx.background_spawn(async move {
+            let mut patches = patches;
+            let current = match file.load() {
+                Ok(current) => current,
+                Err(error) => return (patches, Err(error)),
+            };
+            patches.extend(rewrites.current_patches(&current));
+            let base = base.unwrap_or(current);
+            let written =
+                file.apply(&base, &patches, &validate).map(|snapshot| {
+                    Written {
+                        file: FileValues::parse(snapshot.text()),
+                        keys: listed(&snapshot, &config_path),
+                        snapshot,
+                    }
+                });
+            (patches, written)
+        });
+        cx.spawn(async move |view, cx| {
+            let (patches, result) = task.await;
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                let _ = gate.recv().await;
+            }
+            // Settled here, even if the window has closed meanwhile.
+            let landed =
+                matches!(result, Ok(_) | Err(ApplyError::WrittenNotDurable(_)));
+            cx.update(|cx| Self::batch_settled(started, landed, cx));
+            let _ = view.update(cx, |view, cx| {
+                view.written_batch(&batch, &patches, result, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn written_batch(
+        &mut self,
+        batch: &Batch,
+        patches: &[Patch],
+        result: Result<Written, ApplyError>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.writing = None;
+        self.epoch += 1;
+        if let Some(outcome) = self.writing_batch.take() {
+            self.settle_batch(&outcome);
+        }
+        let failed = match result {
+            Ok(written) => {
+                if let Ok(file) = written.file {
+                    self.forward_queued(&file, &written.snapshot);
+                    self.file = file;
+                }
+                self.keys.inventory = written.keys.inventory;
+                self.keys.entries = written.keys.entries;
+                self.set_globals(written.keys.globals);
+                self.base = Some(written.snapshot);
+                self.rebase_queued_keys(patches);
+                self.status.saved();
+                self.sync_fields(cx);
+                self.sync_key_fields(cx);
+                cx.defer(|cx| {
+                    let _ = super::super::reload(cx);
+                });
+                false
+            }
+            Err(ApplyError::WrittenNotDurable(error)) => {
+                // The write landed; queued edits move past it as after any
+                // other. With no snapshot of it, a queued change to a path
+                // it wrote reads the file afresh.
+                for queued in &mut self.queued {
+                    if let Queued::Setting(queued) = queued
+                        && patches
+                            .iter()
+                            .any(|patch| writes(patch, queued.path))
+                    {
+                        queued.base = None;
+                    }
+                }
+                self.rebase_queued_keys(patches);
+                self.status.saved_with_warning(error.to_string());
+                self.load(cx);
+                cx.defer(|cx| {
+                    let _ = super::super::reload(cx);
+                });
+                true
+            }
+            Err(ApplyError::InvalidFile(message)) => {
+                self.status.invalid_file(message);
+                self.batch_refused(
+                    batch,
+                    "config.toml has an error. Not saved.".to_owned(),
+                    cx,
+                );
+                self.drop_queue_for_invalid_file(cx);
+                self.pending.clear();
+                self.sync_fields(cx);
+                true
+            }
+            Err(ApplyError::Conflict(changes)) => {
+                let message =
+                    format!("config.toml changed: {}", changes.join("; "));
+                self.status.failed("config.toml changed on disk");
+                self.batch_refused(batch, message, cx);
+                self.load(cx);
+                true
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.status.failed(message.clone());
+                self.batch_refused(batch, message, cx);
+                true
+            }
+        };
+        self.next_write(failed, cx);
+    }
+
+    /// Follows `batch` outside the window as its write starts, since the
+    /// write can replace the file, and a reload read it, before the save
+    /// settles here. A renamed profile's open Quake window takes the new
+    /// name in the first reload that reads it, so no reload takes it for a
+    /// removed profile's window and turns it into an ordinary one.
+    fn batch_started(
+        batch: &Batch,
+        cx: &mut Context<'_, Self>,
+    ) -> QuakeRenameId {
+        match batch {
+            Batch::RenameProfile { from, to } => cx
+                .global_mut::<Desktop>()
+                .windows
+                .quake_rename_started(from, to),
+        }
+    }
+
+    /// Holds the next batch's save after its write, before it settles,
+    /// until the returned sender sends or drops.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(in crate::desktop::windows) fn hold_batch(
+        &mut self,
+    ) -> async_channel::Sender<()> {
+        let (release, gate) = async_channel::bounded(1);
+        self.batch_gate = Some(gate);
+        release
+    }
+
+    /// Settles what `batch_started` began once the write `landed` in the
+    /// file or wrote nothing.
+    fn batch_settled(started: QuakeRenameId, landed: bool, cx: &mut App) {
+        cx.global_mut::<Desktop>()
+            .windows
+            .quake_rename_settled(started, landed);
+    }
+
+    /// Says why `batch` wrote nothing, after the footer has said how the
+    /// write failed. Changes made under a renamed profile's new name while
+    /// it waited go too: written alone, they would create the profile.
+    fn batch_refused(
+        &mut self,
+        batch: &Batch,
+        message: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match batch {
+            Batch::RenameProfile { from, to } => {
+                let table = quake::profile_path(to);
+                let message = if self.drop_profile_edits(&table, cx) {
+                    format!(
+                        "{message} The changes made to {to} meanwhile were \
+                         not saved."
+                    )
+                } else {
+                    message
+                };
+                self.rename_refused(from, to, message, cx);
+            }
+        }
+    }
+
+    /// Drops the queued and pending changes to the settings of the profile
+    /// at `table`, a profile that will not exist, and puts their fields
+    /// back to the file's values, so leaving a field does not submit its
+    /// change again. Returns whether a change went.
+    fn drop_profile_edits(
+        &mut self,
+        table: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let prefix = format!("{table}.");
+        let (queued, pending) = (self.queued.len(), self.pending.len());
+        self.queued.retain(|queued| {
+            !matches!(queued, Queued::Setting(queued) if queued.path.starts_with(&prefix))
+        });
+        self.pending.retain(|path, _| !path.starts_with(&prefix));
+        let dropped =
+            self.queued.len() != queued || self.pending.len() != pending;
+        self.errors.retain(|path, _| !path.starts_with(&prefix));
+        self.conflicts.retain(|path, _| !path.starts_with(&prefix));
+        let fields: Vec<&'static str> = self
+            .fields
+            .keys()
+            .copied()
+            .filter(|path| path.starts_with(&prefix))
+            .collect();
+        for path in fields {
+            self.sync_field(path, true, cx);
+        }
+        dropped
+    }
+
+    /// Moves each queued setting change whose path still holds what it
+    /// expected onto `snapshot`, which this window just wrote: nothing else
+    /// touched that path, so the change can build on the write.
+    fn forward_queued(&mut self, file: &FileValues, snapshot: &Snapshot) {
+        for queued in &mut self.queued {
+            if let Queued::Setting(queued) = queued
+                && file.get(queued.path) == queued.expected.as_ref()
+            {
+                queued.base = Some(snapshot.clone());
+            }
+        }
+    }
+
     fn start(&mut self, change: Pending, cx: &mut Context<'_, Self>) {
         self.writing = Some(change.setting.path.as_str());
         self.status.saving();
@@ -702,22 +1068,8 @@ impl SettingsView {
         };
         if change.value.is_some() {
             // Edits to the new profile's settings would create it, or write
-            // into a profile another editor made, so they go, and their
-            // fields drop the text that would submit them again.
-            let prefix = format!("{key}.");
-            self.queued.retain(|queued| {
-                !matches!(queued, Queued::Setting(queued) if queued.path.starts_with(&prefix))
-            });
-            self.pending.retain(|path, _| !path.starts_with(&prefix));
-            let fields: Vec<&'static str> = self
-                .fields
-                .keys()
-                .copied()
-                .filter(|path| path.starts_with(&prefix))
-                .collect();
-            for path in fields {
-                self.sync_field(path, true, cx);
-            }
+            // into a profile another editor made, so they go.
+            self.drop_profile_edits(key, cx);
         }
         // This change's name comes back before any queued creation's.
         self.profile_failed(key, change.value.is_some(), message.clone(), cx);
@@ -769,13 +1121,7 @@ impl SettingsView {
                 // A queued change whose path still holds what it expected
                 // can build on this write: nothing else touched it.
                 if let Ok(file) = written.file {
-                    for queued in &mut self.queued {
-                        if let Queued::Setting(queued) = queued
-                            && file.get(queued.path) == queued.expected.as_ref()
-                        {
-                            queued.base = Some(written.snapshot.clone());
-                        }
-                    }
+                    self.forward_queued(&file, &written.snapshot);
                     self.file = file;
                 }
                 self.keys.inventory = written.keys.inventory;
@@ -854,6 +1200,15 @@ impl SettingsView {
     /// marked, for after the fix.
     fn drop_queue_for_invalid_file(&mut self, cx: &mut Context<'_, Self>) {
         for queued in std::mem::take(&mut self.queued) {
+            if let Queued::Batch(batch, outcome) = &queued {
+                self.settle_batch(outcome);
+                self.batch_refused(
+                    batch,
+                    "config.toml has an error. Not saved.".to_owned(),
+                    cx,
+                );
+                continue;
+            }
             // A queued profile creation gives its name back to retry.
             if let Queued::Setting(change) = &queued
                 && change.value.is_some()
@@ -989,6 +1344,9 @@ impl SettingsView {
         match self.queued.pop_front() {
             Some(Queued::Setting(next)) => self.start(next, cx),
             Some(Queued::Keys(next)) => self.start_keys(next, cx),
+            Some(Queued::Batch(next, outcome)) => {
+                self.start_batch(next, outcome, cx);
+            }
             None if self.closing => {
                 let handle = self.handle;
                 cx.defer(move |cx| {
@@ -1027,7 +1385,11 @@ impl SettingsView {
     }
 
     /// How a field shows `value`, or the default for a reset.
-    fn display(&self, setting: &Setting, value: Option<Value>) -> String {
+    pub(super) fn display(
+        &self,
+        setting: &Setting,
+        value: Option<Value>,
+    ) -> String {
         field_text(value.or_else(|| self.default_value(setting)))
     }
 

@@ -757,8 +757,50 @@ Cancel key. `run` routes the `dialog_*` commands to the slot and, while a
 dialog is open, ignores every other command except the window's close,
 minimize, zoom, and fullscreen. App commands such as Quit and Settings… go
 through the application's handler, not `run`, so they still work and need
-no gate. A dialog with a text field also routes that
-field's `palette_*` commands from `run_palette`, as above.
+no gate.
+
+A prompt with a text field opens with `open_field_dialog`, which gives the
+slot its `Input`, and its renderer draws the field inside a `Field`, wrapping
+the `InputGroup` in a `div` with the `Palette` context, declares the field's
+handle with `Dialog::focusable` and `initial_focus`, and names the key Enter
+runs in `Prompt::confirm`. `run_palette` calls `run_dialog_field` first: it
+routes `palette_expand` and `palette_previous_slot` to the modal's focus
+cycle, `palette_confirm` to the confirm key, `palette_back` to the prompt's
+Cancel, and every other palette command to the field, and while a dialog is
+open it takes them all. Route Shift-Tab to the modal, not the window: the
+field is the dialog's first control, so `window.focus_prev` leaves the
+dialog. The New profile and Rename profile dialogs (`quake.rs`,
+`render_name_dialog`) check the typed name on every frame, show the message
+under the field, and disable the primary button, which then leaves the Tab
+cycle. Settings ignores an outside press on its dialogs, as a macOS sheet
+does, so a typed name survives a stray click. A save of several patches,
+such as a rename's, goes through `saving.rs`'s `Batch`: `submit_batch`
+queues it, and they go to `ConfigFile::apply` together, so a failed save
+writes nothing. When its turn comes, the values it moves are read from the
+file as the window last read or wrote it, so an edit made elsewhere to them
+conflicts, but the entries it rewrites (`Batch::current_patches`) are found
+in the file as it is when the batch applies, since a reference added
+elsewhere would otherwise survive a successful rename. `batch_outcome` lists
+the values `pending` shows meanwhile, including each value a rename copies
+under the new name, so an edit made there before the batch lands takes the
+copied value as its base and builds on the batch instead of conflicting;
+`batch_baseline` makes a field there sync against that value, not the file,
+until the batch lands, so a draft typed over it is not taken for a conflict
+when an earlier save lands. `batch_refused` says why it failed and drops the
+queued and pending edits under the new name, which written alone would create
+it; `batch_started` and `batch_settled` follow a batch outside the window. A
+rename records itself in the window model when its write starts
+(`quake_rename_started`) rather than moving the Quake window's association: a
+reload that read the file before the rename can apply after it, and its
+`reconcile` would turn the moved window into an ordinary one. The save can
+also replace the file, and a reload read and apply it, before the save
+settles on the main thread. The save's continuation settles the record
+before `written_batch`, even when Settings has closed: noted when the write
+landed, dropped when it wrote nothing. Each reload takes
+`quake_renames_noted` before it reads, and `reconcile_quake` moves a window
+along the running and noted renames to the first name the file it read has,
+dropping the noted renames that read already shows. Another rename adds a
+`Batch` variant.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with

@@ -472,6 +472,15 @@ a global shortcut uses the profile, the dialog says why and offers only OK.
 While the dialog is open, other Settings commands do nothing; closing the
 window and app commands such as Quit still work.
 
+New profile and Rename profile ask for a name in a dialog whose name field has
+focus; Rename profile starts with the current name selected. The field takes
+the `Palette` context, as other Settings fields do, so the text commands edit
+it, `palette_expand` and `palette_previous_slot` move focus between the field,
+Cancel, and Create or Rename, `palette_confirm` creates or renames, and
+`palette_back` cancels. On a button, the dialog commands apply. Create and
+Rename stay disabled, and out of the focus order, while the name is blank,
+unchanged, needs quoting, or names another profile.
+
 The Licenses view takes the `Palette` context, so the palette bindings apply
 there: `palette_select_next` and `palette_select_previous` move the selection,
 `palette_page_down` and `palette_page_up` scroll the license text,

@@ -228,6 +228,11 @@ pub(super) struct SettingsView {
     conflicts: HashMap<&'static str, Conflict>,
     /// The setting whose write is in flight.
     writing: Option<&'static str>,
+    /// What the batch in flight put in `pending`, if one is.
+    writing_batch: Option<saving::Outcome>,
+    /// Holds the next batch's save, once written, until a test releases it.
+    #[cfg(test)]
+    batch_gate: Option<async_channel::Receiver<()>>,
     queued: VecDeque<Queued>,
     /// The latest value requested for each setting whose write has not
     /// settled; controls show it, and steps build on it.
@@ -346,6 +351,9 @@ impl SettingsView {
             errors: HashMap::new(),
             conflicts: HashMap::new(),
             writing: None,
+            writing_batch: None,
+            #[cfg(test)]
+            batch_gate: None,
             queued: VecDeque::new(),
             pending: HashMap::new(),
             epoch: 0,
@@ -423,7 +431,7 @@ impl SettingsView {
             .chain(self.fields.values().cloned())
             .chain(std::iter::once(self.keys.search.clone()))
             .chain(self.keys.fields.values().cloned())
-            .chain(self.quake.naming.clone());
+            .chain(self.dialog.field().cloned());
         for field in fields {
             field.update(cx, |field, cx| field.set_tokens(swatch, cx));
         }
@@ -478,11 +486,13 @@ impl SettingsView {
         })
         .detach();
         self.fields.insert(path, field.clone());
-        self.show_text(
-            path,
-            field_text(shown(setting, &self.file, &self.defaults)),
-            cx,
-        );
+        // A pending change shows until it lands, such as a value a rename
+        // is copying to the profile's new name.
+        let text = match self.pending.get(path) {
+            Some(value) => self.display(setting, value.clone()),
+            None => field_text(shown(setting, &self.file, &self.defaults)),
+        };
+        self.show_text(path, text, cx);
         self.synced.insert(path, text_for(field.read(cx)));
         field
     }
@@ -1315,30 +1325,19 @@ impl SettingsView {
     }
 
     /// Text editing reaches the focused field; Enter commits it, Tab moves
-    /// on, and Escape clears the search.
+    /// on, and Escape clears the search. An open dialog takes every such
+    /// command.
     fn run_palette(
         &mut self,
         invocation: &CommandInvocation,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if let Some((key, field)) = self.focused_key_field(window, cx) {
-            self.run_key_field(&key, &field, invocation, window, cx);
-            cx.notify();
+        if self.run_dialog_field(invocation, window, cx) {
             return;
         }
-        if let Some(field) = self.focused_name_field(window, cx) {
-            match invocation.id {
-                ids::PALETTE_CONFIRM => self.create_profile(window, cx),
-                ids::PALETTE_BACK => self.act("qcancel", window, cx),
-                ids::PALETTE_EXPAND => window.focus_next(cx),
-                ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
-                _ => {
-                    let _ = field.update(cx, |field, cx| {
-                        crate::ui::input::run(field, invocation, cx)
-                    });
-                }
-            }
+        if let Some((key, field)) = self.focused_key_field(window, cx) {
+            self.run_key_field(&key, &field, invocation, window, cx);
             cx.notify();
             return;
         }
@@ -1526,6 +1525,8 @@ impl SettingsView {
             format!("action:{key}")
         } else if let Some(key) = self.focused_dialog_button(window) {
             format!("dialog:{key}")
+        } else if self.focused_dialog_field(window, cx).is_some() {
+            "dialog:field".to_owned()
         } else if let Some((key, _)) = self.focused_key_field(window, cx) {
             format!("key:{key}")
         } else if let Some(setting) = self.focused_setting(window, cx) {
@@ -2179,6 +2180,18 @@ impl SettingsView {
         let setting = self.setting_at(path).expect("a known setting");
         let field = self.field(setting, window, cx);
         field.update(cx, |field, cx| field.set_text(text, cx));
+    }
+
+    /// The text the setting's field shows, making the field as drawing
+    /// its row does when it has none.
+    pub(super) fn field_shows(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> String {
+        let setting = self.setting_at(path).expect("a known setting");
+        self.field(setting, window, cx).read(cx).text().to_owned()
     }
 
     pub(super) fn field_value(&self, path: &str, cx: &App) -> String {

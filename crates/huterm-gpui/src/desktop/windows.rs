@@ -9760,21 +9760,26 @@ fn run_reload(cx: &mut App, kind: ReloadKind) {
     }
     let path = cx.global::<Desktop>().config_path.clone();
     let reload_path = path.clone();
+    // Taken before the read, so every rename it counts is in the file read.
+    let renames = cx.global::<Desktop>().windows.quake_renames_noted();
     let task = cx
         .background_executor()
         .spawn(async move { config::reload(&reload_path) });
     cx.spawn(async move |cx| {
         let reloaded = task.await;
-        cx.update(|cx| finish_reload(cx, kind, &path, reloaded));
+        cx.update(|cx| finish_reload(cx, kind, &path, reloaded, renames));
     })
     .detach();
 }
 
+/// Applies a reload that read the file once `renames` quake profile
+/// renames were noted.
 fn finish_reload(
     cx: &mut App,
     kind: ReloadKind,
     path: &Path,
     reloaded: config::Reloaded,
+    renames: u64,
 ) {
     // Quit already unregistered the global shortcuts and is closing the
     // windows; applying now would register the shortcuts again.
@@ -9808,7 +9813,7 @@ fn finish_reload(
         desktop.config = config.clone();
         desktop.diagnostics = reload_diagnostics(path, &config, &compiled);
         desktop.latched.clear();
-        quake_windows::reconcile(cx);
+        quake_windows::reconcile(cx, renames);
         let keymap = bind_keymap(cx, compiled);
         cx.global_mut::<Desktop>().keymap = keymap;
         maybe_exit(cx);

@@ -732,6 +732,44 @@ fn change_default(
     patches
 }
 
+/// Whether an entry runs a quake command for the profile named `profile`
+/// through its `profile` argument. Every global shortcut runs one.
+pub(crate) fn names_profile(content: &Table, profile: &str) -> bool {
+    let quake = content
+        .get("command")
+        .and_then(Value::as_str)
+        .and_then(lookup)
+        .is_some_and(|spec| {
+            [ids::TOGGLE_QUAKE, ids::SHOW_QUAKE, ids::HIDE_QUAKE]
+                .contains(&spec.id)
+        });
+    quake
+        && content
+            .get("args")
+            .and_then(|args| args.get("profile"))
+            .and_then(Value::as_str)
+            == Some(profile)
+}
+
+/// The patches that point every entry naming the quake profile `from` at
+/// `to` instead: each of `entries`, a `[[keybinding]]` locator, and of
+/// `globals`, a `[[global_keybinding]]` one, for which [`names_profile`]
+/// holds. The entries' other fields and arguments stay as they are.
+pub(crate) fn rename_profile_references(
+    entries: &[EntryLocator],
+    globals: &[EntryLocator],
+    from: &str,
+    to: &str,
+) -> Vec<Patch> {
+    let to = Value::String(to.to_owned());
+    entries
+        .iter()
+        .chain(globals)
+        .filter(|locator| names_profile(locator.content(), from))
+        .map(|locator| argument_patch(locator.clone(), "profile", Some(&to)))
+        .collect()
+}
+
 /// Sets or clears one argument of an entry, rewriting its `args` table and
 /// removing it when the last argument goes.
 fn argument_patch(
