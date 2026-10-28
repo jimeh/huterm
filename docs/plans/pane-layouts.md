@@ -1272,11 +1272,13 @@ None.
 
 Recorded with PR 2:
 
-- Notices name a built-in layout by its name in prose, underscores read as
-  spaces: "Window too small for the main left layout" and "The columns
-  layout holds at most 256 panes". The two examples above disagree on
-  whether "columns" is the title ("Equal Columns") or the name; the name
-  satisfies both. Menus, the palette, and undo labels still use titles.
+- Notices name a built-in layout by its title in lower case: "Window too
+  small for the main left layout" and "The equal columns layout holds at
+  most 256 panes", where the plan's example said "the columns layout". The
+  UX review found the name and the title disagreeing between the palette,
+  Settings, and notices, so every surface now shows the title and only the
+  config stores the name. The Settings keybinding editor's `layout`
+  dropdown lists titles and shows the chosen layout's title.
 - A layout key pressed while this window's last arrangement is in flight
   does nothing, as `undo` does while busy, so a held cycle key repeats
   quietly instead of raising a notice per repeat. The palette and menus

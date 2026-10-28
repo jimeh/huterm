@@ -111,9 +111,10 @@ fn arrange_label(layout: &NamedLayout) -> &'static str {
     }
 }
 
-/// How a notice names `layout` in a sentence, such as "main left".
+/// How a notice names `layout` in a sentence: its title in lower case,
+/// such as "equal rows", so notices match the names the palette shows.
 fn prose(layout: &NamedLayout) -> String {
-    layout.name.replace('_', " ")
+    layout.title.to_lowercase()
 }
 
 /// The most panes `layout` holds below `count`, which it cannot hold: the
@@ -614,7 +615,7 @@ mod tests {
         let many = built_in("tiled", 258);
         assert_eq!(
             arrange(&many, "columns", fits).unwrap_err().message(),
-            "The columns layout holds at most 256 panes"
+            "The equal columns layout holds at most 256 panes"
         );
         assert_eq!(
             arrange(&many, "main_top", fits).unwrap_err().message(),

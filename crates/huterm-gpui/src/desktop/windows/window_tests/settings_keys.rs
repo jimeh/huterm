@@ -1024,7 +1024,14 @@ fn an_arrange_panes_shortcut_picks_its_layout_from_the_built_ins(
         // Unset, the palette asks for the layout.
         assert_eq!(
             view.menu_labels(cx),
-            ["Ask", "columns", "rows", "main_left", "main_top", "tiled"]
+            [
+                "Ask",
+                "Equal Columns",
+                "Equal Rows",
+                "Main Left",
+                "Main Top",
+                "Tiled"
+            ]
         );
     });
     with_window(&mut harness, |view, window, cx| {

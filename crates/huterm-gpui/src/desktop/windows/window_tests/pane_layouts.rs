@@ -301,7 +301,8 @@ fn a_short_window_refuses_a_layout_and_cycling_skips_it(
         let shown_notices = notices(cx, window);
         assert_eq!(shown_notices.len(), 1, "{shown_notices:?}");
         assert!(
-            shown_notices[0].ends_with("|Window too small for the rows layout"),
+            shown_notices[0]
+                .ends_with("|Window too small for the equal rows layout"),
             "{shown_notices:?}"
         );
         assert_eq!(arranging(cx, window), 0);

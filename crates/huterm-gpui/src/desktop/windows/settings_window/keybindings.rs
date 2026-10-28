@@ -17,7 +17,7 @@ use gpui::{
 };
 use huterm_protocol::{
     ArgumentKind, ArgumentSpec, BUILT_IN_LAYOUTS, CommandId, CommandSpec,
-    Requirement, SIDES, catalog, lookup,
+    NamedLayout, Requirement, SIDES, catalog, lookup,
 };
 use toml::Value;
 
@@ -1458,9 +1458,13 @@ impl SettingsView {
                 );
             }
             ArgumentKind::Layout => {
+                // The palette's titles, with the name the file stores as
+                // the item's identity.
                 rows.extend(BUILT_IN_LAYOUTS.iter().map(|layout| {
-                    let name = layout.name.as_str();
-                    MenuRow::Item(MenuItem::new(name, name))
+                    MenuRow::Item(MenuItem::new(
+                        layout.name.as_str(),
+                        layout.title.as_str(),
+                    ))
                 }));
             }
             ArgumentKind::QuakeProfile => {
@@ -2363,8 +2367,16 @@ impl SettingsView {
                     .into_any_element()
             }
             _ => {
-                let label =
-                    value.unwrap_or_else(|| unset_label(argument).to_owned());
+                let label = match value {
+                    // A built-in layout shows its title; the file keeps
+                    // its name.
+                    Some(name) if argument.kind == ArgumentKind::Layout => {
+                        NamedLayout::built_in(&name)
+                            .map_or(name, |layout| layout.title.clone())
+                    }
+                    Some(value) => value,
+                    None => unset_label(argument).to_owned(),
+                };
                 let element = button(
                     format!("settings-karg-{name}-{}", argument.name),
                     swatch,

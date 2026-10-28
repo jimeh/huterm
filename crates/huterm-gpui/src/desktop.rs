@@ -7,13 +7,13 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, DispatchPhase, EventEmitter,
-    FocusHandle, Focusable, KeyContext, Keystroke, Menu, MenuItem,
-    Modifiers as GpuiModifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Render, ScrollDelta, ScrollWheelEvent, Subscription,
-    SystemMenuType, Task, TitlebarOptions, Window, WindowBounds,
-    WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
-    svg,
+    AnyElement, App, Bounds, ClipboardItem, Context, DispatchPhase,
+    EventEmitter, FocusHandle, Focusable, KeyContext, Keystroke, Menu,
+    MenuItem, Modifiers as GpuiModifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollDelta,
+    ScrollWheelEvent, Size, Subscription, SystemMenuType, Task,
+    TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions,
+    canvas, div, point, prelude::*, px, size, svg,
 };
 use huterm_core::{Mux, RuntimeError, TerminalViewer, ViewerWake};
 use huterm_protocol::{
@@ -3071,12 +3071,46 @@ impl TerminalView {
             )
     }
 
-    /// The centred `columns × rows` panel while the grid size changes. The
-    /// surface stays opaque; the fade applies to the whole panel.
-    fn render_size_panel(&self) -> impl IntoElement {
+    /// The centred `columns × rows` panel while the grid size changes, sized
+    /// to what `viewport` holds: the full panel, the numbers alone in a
+    /// small pane, or nothing in a tiny one. The surface stays opaque; the
+    /// fade applies to the whole panel.
+    fn render_size_panel(&self, viewport: Size<Pixels>) -> Option<AnyElement> {
         let swatch = tokens(&self.theme);
         let grid = self.displayed_grid().unwrap_or(self.requested_grid);
-        div()
+        let centred = || {
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+        };
+        match size_panel(viewport) {
+            SizePanel::Hidden => return None,
+            SizePanel::Compact => {
+                return Some(
+                    centred()
+                        .child(
+                            raised_panel(swatch, 6.0)
+                                .opacity(self.resize_visibility.opacity)
+                                .py(px(3.0))
+                                .px(px(8.0))
+                                .font_family(mono_font_family())
+                                .text_size(px(13.0))
+                                .line_height(px(16.0))
+                                .text_color(swatch.fg)
+                                .child(format!(
+                                    "{}×{}",
+                                    grid.columns, grid.rows
+                                )),
+                        )
+                        .into_any_element(),
+                );
+            }
+            SizePanel::Full => {}
+        }
+        let panel = div()
             .absolute()
             .inset_0()
             .flex()
@@ -3117,7 +3151,38 @@ impl TerminalView {
                             .text_color(swatch.muted)
                             .child("columns × rows"),
                     ),
-            )
+            );
+        Some(panel.into_any_element())
+    }
+}
+
+/// How much of the size panel a view holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SizePanel {
+    Full,
+    Compact,
+    Hidden,
+}
+
+/// The smallest view that holds the full size panel: its 26-point
+/// `columns × rows` line, caption, and padding, with a margin.
+const FULL_SIZE_PANEL: (Pixels, Pixels) = (px(200.0), px(96.0));
+
+/// The smallest view that holds the compact panel, the numbers alone.
+const COMPACT_SIZE_PANEL: (Pixels, Pixels) = (px(96.0), px(32.0));
+
+/// Which size panel fits `viewport`, so a small pane never shows one
+/// clipped or wrapped.
+fn size_panel(viewport: Size<Pixels>) -> SizePanel {
+    let holds = |(width, height): (Pixels, Pixels)| {
+        viewport.width >= width && viewport.height >= height
+    };
+    if holds(FULL_SIZE_PANEL) {
+        SizePanel::Full
+    } else if holds(COMPACT_SIZE_PANEL) {
+        SizePanel::Compact
+    } else {
+        SizePanel::Hidden
     }
 }
 
@@ -3357,8 +3422,10 @@ impl Render for TerminalView {
                 ));
             }
         }
-        if self.resize_visibility.opacity > 0.0 {
-            root = root.child(self.render_size_panel());
+        if self.resize_visibility.opacity > 0.0
+            && let Some(panel) = self.render_size_panel(self.viewport(window))
+        {
+            root = root.child(panel);
         }
         root
     }
@@ -3830,6 +3897,18 @@ fn control_byte(key: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_size_panel_compacts_then_hides_in_small_views() {
+        let view = |width: f32, height: f32| size(px(width), px(height));
+        assert_eq!(size_panel(view(800.0, 600.0)), SizePanel::Full);
+        assert_eq!(size_panel(view(200.0, 96.0)), SizePanel::Full);
+        assert_eq!(size_panel(view(199.0, 300.0)), SizePanel::Compact);
+        assert_eq!(size_panel(view(300.0, 95.0)), SizePanel::Compact);
+        assert_eq!(size_panel(view(96.0, 32.0)), SizePanel::Compact);
+        assert_eq!(size_panel(view(95.0, 300.0)), SizePanel::Hidden);
+        assert_eq!(size_panel(view(300.0, 31.0)), SizePanel::Hidden);
+    }
 
     #[test]
     fn terminal_presentation_uses_the_resolved_theme() {
