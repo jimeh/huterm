@@ -1320,3 +1320,38 @@ fn an_arrange_panes_shortcut_picks_its_layout_from_every_layout(
          args = { layout = \"dev\" }\n"
     );
 }
+
+#[gpui::test]
+fn removing_an_unbind_entry_reports_the_save_through_the_watchers_reload(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "keys-unbind-status",
+        "[[keybinding]]\nkey = \"alt-q\"\ncommand = \"unbind\"\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kunbind:0");
+    saved(&mut harness, &file, |text| !text.contains("alt-q"));
+    harness.cx.run_until_parked();
+    // The watcher fingerprinted the write against the inputs before the
+    // save's reload, so its report starts another reload.
+    let watcher_reload = |harness: &mut DesktopHarness| {
+        harness.cx.update(|cx| {
+            assert!(!super::reloading(cx));
+            super::handle_watch_report(cx, super::config_changed());
+            assert!(super::reloading(cx), "the report started no reload");
+        });
+        harness.cx.run_until_parked();
+    };
+    watcher_reload(&mut harness);
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.status_text(), "Saved");
+    });
+    // Another editor's change still reports itself.
+    std::fs::write(file.path(), "[font]\nsize = 15.0\n").unwrap();
+    watcher_reload(&mut harness);
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.status_text(), "Reloaded");
+    });
+}

@@ -9953,6 +9953,7 @@ fn finish_reload(
     settings_window::reloaded(
         cx,
         result.as_ref().map(|_| ()).map_err(Clone::clone),
+        kind == ReloadKind::Automatic,
     );
     let diagnostics = match &result {
         Ok(_) => cx.global::<Desktop>().diagnostics.clone(),

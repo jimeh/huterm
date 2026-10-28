@@ -1138,8 +1138,12 @@ stream restart `FSEvents` performs on every `watch` call. With no events the
 worker blocks on its channel: no timer, no reads. On the desktop,
 `config_watch::Reloads` admits one reload at a time; a report during a reload
 marks it dirty even when the content matches, and one follow-up runs when it
-finishes. Every finished reload sends the watcher fresh `Settings`, including
-after a failure, which keeps the previous `watch_config`. An automatic reload
+finishes. A report can also arrive after the reload a Settings save asked
+for, because the worker fingerprinted the write against the older inputs, so
+Settings reports an automatic reload only when its reread finds the file
+changed since the window last read or wrote it. Every finished reload sends
+the watcher fresh `Settings`, including after a failure, which keeps the
+previous `watch_config`. An automatic reload
 that finds the file missing is skipped silently, since editors remove it while
 saving. An editor that truncates the file and writes it more than `QUIET_PERIOD`
 (150 ms) later can briefly apply the empty file, that is the defaults, until the

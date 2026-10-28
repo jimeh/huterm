@@ -298,6 +298,12 @@ impl SettingsView {
                 valid,
                 keys,
             }) => {
+                if std::mem::take(&mut self.reload_unreported)
+                    && self.base.as_ref().map(Snapshot::text)
+                        != Some(snapshot.text())
+                {
+                    self.status.reloaded();
+                }
                 self.keys.inventory = keys.inventory;
                 self.keys.entries = keys.entries;
                 self.set_globals(keys.globals);
@@ -321,7 +327,10 @@ impl SettingsView {
                 self.forget_gone_layouts(cx);
                 self.sync_key_fields(cx);
             }
-            Err(error) => self.status.failed(error.to_string()),
+            Err(error) => {
+                self.reload_unreported = false;
+                self.status.failed(error.to_string());
+            }
         }
     }
 
@@ -383,9 +392,15 @@ impl SettingsView {
     /// Follows a reload: the file and themes are reread, and every control
     /// follows them. A failed reload makes the window read-only only when
     /// the file itself fails validation.
+    ///
+    /// The watcher can report this window's own write after the reload its
+    /// save asked for, so an automatic reload is reported only when the
+    /// reread finds the file changed since this window last read or wrote
+    /// it.
     pub(super) fn reloaded(
         &mut self,
         outcome: Result<(), String>,
+        automatic: bool,
         cx: &mut Context<'_, Self>,
     ) {
         self.status
@@ -393,7 +408,11 @@ impl SettingsView {
         match outcome {
             Ok(()) => {
                 self.reload_error = None;
-                self.status.reloaded();
+                if automatic {
+                    self.reload_unreported = true;
+                } else {
+                    self.status.reloaded();
+                }
             }
             Err(message) => self.reload_error = Some(message),
         }
