@@ -338,8 +338,6 @@ fn suggestions(field: &Input) -> Option<(usize, Vec<WhenContext>)> {
     (start < field.cursor() && !matches.is_empty()).then_some((start, matches))
 }
 
-/// A `when` field's suggestions: the contexts completing the name before
-/// the caret, each with its description.
 /// A context suggestion's row: its name in the monospace font, and its
 /// description as secondary text in the interface font.
 fn condition_row(
@@ -376,6 +374,8 @@ fn condition_row(
         .into_any_element()
 }
 
+/// A `when` field's suggestions: the contexts completing the name before
+/// the caret, each with its description.
 fn condition_suggestions(field: &Input) -> Vec<ListOption> {
     suggestions(field).map_or_else(Vec::new, |(_, matches)| {
         matches
@@ -1066,8 +1066,9 @@ impl SettingsView {
 
     /// The context suggestions under a `when` field. The first match is
     /// highlighted as the user types, so Return completes it; a pick
-    /// replaces the name before the caret. Names draw in the monospace font
-    /// the field takes them in.
+    /// replaces the name before the caret, and only while it still
+    /// completes that name. Names draw in the monospace font the field
+    /// takes them in.
     fn condition_list(
         &mut self,
         field: &Entity<Input>,
@@ -1093,8 +1094,14 @@ impl SettingsView {
         cx.subscribe(&list, move |_, _, event: &ComboboxEvent, cx| {
             let ComboboxEvent::Picked(name) = event;
             let _ = field.update(cx, |field, cx| {
-                let start = completions(field.text(), field.cursor()).0;
-                field.replace(start..field.cursor(), name, cx);
+                if let Some((start, matches)) = suggestions(field)
+                    && matches
+                        .iter()
+                        .any(|context| context.name == name.as_ref())
+                {
+                    let caret = field.cursor();
+                    field.replace(start..caret, name, cx);
+                }
             });
         })
         .detach();

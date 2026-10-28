@@ -15,8 +15,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Context, Div, MouseButton, MouseMoveEvent, Pixels, Point,
-    ScrollHandle, SharedString, Window, canvas, div, prelude::*, px,
+    AnyElement, App, Context, Div, ElementId, MouseButton, MouseMoveEvent,
+    Pixels, Point, ScrollHandle, SharedString, Window, canvas, div, prelude::*,
+    px,
 };
 
 use crate::animation::AnimationSchedule;
@@ -486,7 +487,10 @@ fn option_row<V: Owner>(
     let tokens = look.tokens;
     let (hovered, picked) = (option.id.clone(), option.id.clone());
     div()
-        .id(("option", row))
+        // Keyed by the option, so a press is not completed by whichever
+        // option takes the row's place if the list changes before the
+        // release.
+        .id((ElementId::from("option"), option.id.clone()))
         .role(gpui::Role::ListBoxOption)
         .aria_label(option.label.clone())
         .aria_position_in_set(row)

@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gpui::{Bounds, Entity, Modifiers, Pixels, Point, point, px};
 use huterm_config::settings::SectionId;
-use huterm_ui::components::combobox::Combobox;
+use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 
 use super::settings::{
     ScratchConfig, open_settings, settled, with_view, with_window,
@@ -277,6 +277,41 @@ fn pressing_a_condition_suggestion_completes_it_without_a_blur(
 }
 
 #[gpui::test]
+fn a_condition_suggestion_never_lands_where_the_caret_moved(
+    cx: &mut TestAppContext,
+) {
+    // The highlight outlived a caret move, and Return inserted the name at
+    // the new caret: "TerminalTe".
+    let file = ScratchConfig::new("lists-condition-caret", "");
+    let mut harness = DesktopHarness::new(cx);
+    let when = condition(&mut harness, &file, ids::NEXT_TAB, "ctrl-tab");
+    let list = with_view(&mut harness, |view, _| view.key_list(&when));
+    typed(&harness, "Te");
+    assert_eq!(shown(&mut harness, &list).2.as_deref(), Some("Terminal"));
+    // The suggestions follow the name before the caret.
+    keys(&harness, "left");
+    let (open, _, highlight) = shown(&mut harness, &list);
+    assert!(open, "\"T\" before the caret closed the list");
+    assert_eq!(highlight.as_deref(), Some("Terminal"));
+    keys(&harness, "left");
+    assert!(!shown(&mut harness, &list).0, "no name before the caret");
+    // A pick that no longer completes the name before the caret, as from
+    // a list that has not caught up, changes nothing.
+    harness.cx.update(|cx| {
+        list.update(cx, |_, cx| {
+            cx.emit(ComboboxEvent::Picked("Terminal".into()));
+        });
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(key_text(&mut harness, &when), "Te");
+    // With the list closed, Return saves the typed text as it stands.
+    keys(&harness, "enter");
+    assert!(harness.cx.update(settled));
+    let text = file.text();
+    assert!(text.ends_with("when = \"Te\"\n"), "{text}");
+}
+
+#[gpui::test]
 fn condition_suggestions_float_over_the_rows_below(cx: &mut TestAppContext) {
     // D6: the list laid out in the row's flow and pushed the rows below
     // it down.
@@ -358,11 +393,14 @@ fn saved(harness: &mut DesktopHarness, file: &ScratchConfig, family: &str) {
 fn a_font_name_that_is_not_installed_saves_on_enter_and_on_blur(
     cx: &mut TestAppContext,
 ) {
-    let file = ScratchConfig::new("lists-font-missing", "");
+    // A set family, as the default one differs by platform.
+    let file = ScratchConfig::new(
+        "lists-font-missing",
+        "[font]\nfamily = \"Menlo\"\n",
+    );
     let mut harness = DesktopHarness::new(cx);
     font_field(&mut harness, &file);
     let list = font_list(&mut harness);
-    // The field shows the default family until it is set.
     assert_eq!(field_text(&mut harness), "Menlo");
     type_over(&harness, "Huterm Missing");
     assert!(!shown(&mut harness, &list).0, "a missing name matched");

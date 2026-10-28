@@ -45,7 +45,9 @@
 //!
 //! Events: [`Changed`] follows every change of the text, and [`Edited`]
 //! comes first when the user made it, so an owner can tell typing from its
-//! own writes.
+//! own writes. Ending a composition leaves the text as it is and emits
+//! neither. [`Moved`] follows a caret or selection move that leaves the
+//! text as it is, such as an arrow key or a press.
 //!
 //! Reference: WAI-ARIA's textbox and editable combobox, and `NSTextField`
 //! for editing and scrolling.
@@ -76,6 +78,11 @@ pub struct Changed;
 /// [`Input::set_text`] and [`Input::replace`] emit only [`Changed`].
 #[derive(Clone, Debug)]
 pub struct Edited;
+
+/// Emitted when the caret or the selection moves and the text stays the
+/// same, so an owner whose suggestions depend on the caret can follow it.
+#[derive(Clone, Debug)]
+pub struct Moved;
 
 /// What a field reports while it drives a list of suggestions.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -547,9 +554,10 @@ impl Input {
         if self.is_disabled() {
             return;
         }
+        let before = self.selection_state();
         self.buffer.selection = 0..self.buffer.content.len();
         self.buffer.reversed = false;
-        cx.notify();
+        self.moved(&before, cx);
     }
 
     /// Deletes the selection, or the grapheme before the caret.
@@ -668,6 +676,20 @@ impl Input {
         Self::edited(cx);
     }
 
+    /// The selection and which end the caret is at.
+    fn selection_state(&self) -> (Range<usize>, bool) {
+        (self.buffer.selection.clone(), self.buffer.reversed)
+    }
+
+    /// Redraws after a caret or selection change, reporting [`Moved`] when
+    /// it differs from `before`.
+    fn moved(&self, before: &(Range<usize>, bool), cx: &mut Context<'_, Self>) {
+        if self.selection_state() != *before {
+            cx.emit(Moved);
+        }
+        cx.notify();
+    }
+
     /// Moves the cursor to `target`, or extends the selection there when
     /// `select` is set. Cursor changes never emit `Changed`; the text is the
     /// same.
@@ -680,12 +702,13 @@ impl Input {
         if self.is_disabled() {
             return;
         }
+        let before = self.selection_state();
         if select {
             self.buffer.select_to(target);
         } else {
             self.buffer.move_to(target);
         }
-        cx.notify();
+        self.moved(&before, cx);
     }
 
     /// The grapheme offset nearest to a window `position`, from the last
@@ -706,6 +729,7 @@ impl Input {
         let Some(index) = self.index_at(event.position) else {
             return;
         };
+        let before = self.selection_state();
         match event.click_count {
             2 => {
                 let word = self
@@ -730,7 +754,7 @@ impl Input {
             _ => self.buffer.move_to(index),
         }
         self.dragging = true;
-        cx.notify();
+        self.moved(&before, cx);
     }
 
     fn drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<'_, Self>) {
@@ -740,8 +764,9 @@ impl Input {
         if let Some(index) = self.index_at(position)
             && index != self.buffer.cursor()
         {
+            let before = self.selection_state();
             self.buffer.select_to(index);
-            cx.notify();
+            self.moved(&before, cx);
         }
     }
 
@@ -756,6 +781,8 @@ impl Input {
 impl EventEmitter<Changed> for Input {}
 
 impl EventEmitter<Edited> for Input {}
+
+impl EventEmitter<Moved> for Input {}
 
 impl Focusable for Input {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -800,8 +827,10 @@ impl EntityInputHandler for Input {
             .map(|range| range_to_utf16(&self.buffer.content, range))
     }
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
+        // The composed text stays as it is, so this is no change of the
+        // text: an owner must not take it for its own write.
         self.buffer.marked = None;
-        Self::changed(cx);
+        cx.notify();
     }
     fn replace_text_in_range(
         &mut self,

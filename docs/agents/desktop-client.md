@@ -701,7 +701,15 @@ highlight after a parent resized it, pumps `Window::simulate_next_frame`,
 after first draining the frames already pending, or another request
 redraws in its place. The filter runs once per `Edited`, which `Input`
 emits before `Changed` for the user's edits alone, so an owner's `set_text`,
-such as Escape putting back a value, opens nothing. The filter reads its own
+such as Escape putting back a value, opens nothing. Ending a composition
+leaves the text as it is and emits neither, or a combobox would take it for
+an owner's write and start browsing. A caret or selection move emits
+`Moved`, which refilters a list that shows, so suggestions for the name
+before the caret, as the condition field's, follow it. GPUI completes a
+click on whichever element holds the pressed element's id at the release,
+through that frame's listener, so `option_list` keys rows by option id,
+never by position, and a list that changes under a held press picks
+nothing in its place. The filter reads its own
 data, never the owner's entity: it also runs inside `open`, `toggle`,
 `select_next` and `select_previous` on a closed list, and `refresh`, which
 an owner usually calls from its own action handler mid-update. `Command`

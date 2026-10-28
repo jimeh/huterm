@@ -16,8 +16,10 @@
 //! Suggestions: the owner's filter turns the field into suggestions
 //! whenever the user edits it, once per edit. It runs synchronously, so
 //! the list, the highlight, and the open state always match the text; call
-//! [`Combobox::refresh`] when the filter's own data changes. The field
-//! accepts any text, not only a suggestion.
+//! [`Combobox::refresh`] when the filter's own data changes. A caret move
+//! refilters a list that shows, keeping its highlight, so suggestions for
+//! the word before the caret follow it. The field accepts any text, not
+//! only a suggestion.
 //!
 //! Browsing: with [`Combobox::with_browse`], a field that holds a value
 //! rather than the user's typing lists the browse suggestions instead, such
@@ -29,8 +31,8 @@
 //! as the field reads, ignoring case, and scrolls it into view.
 //!
 //! The filters must read only their own data, never the owner's entity.
-//! Besides the user's edits and an owner's write to the field while the
-//! list shows, they run inside [`Combobox::open`], [`Combobox::toggle`] on a
+//! Besides the user's edits, and a caret move or an owner's write to the
+//! field while the list shows, they run inside [`Combobox::open`], [`Combobox::toggle`] on a
 //! closed list, [`Combobox::select_next`] and [`Combobox::select_previous`]
 //! on a closed list, and [`Combobox::refresh`] on an open one, which an
 //! owner usually calls from its own action handler, while its entity is
@@ -55,7 +57,8 @@
 //!
 //! Pointer: a moving pointer highlights a suggestion, and a click picks it.
 //! A press on a suggestion prevents the field's blur, so a pick is reported
-//! once, with no blur before it. A press on the field leaves the list open.
+//! once, with no blur before it. A click picks only the suggestion it
+//! pressed: one the list dropped before the release picks nothing. A press on the field leaves the list open.
 //! A wheel over the list scrolls it.
 //!
 //! Dismissal: a pick, Confirm, and Close close the list. Escape is the
@@ -91,7 +94,7 @@ use gpui::{
 };
 
 use crate::animation::AnimationSchedule;
-use crate::components::input::{Changed, Edited, Input, ListState};
+use crate::components::input::{Changed, Edited, Input, ListState, Moved};
 use crate::components::popover::{Anchor, MARGIN, Popover, place};
 use crate::components::surface::surface;
 use crate::listbox::ItemId;
@@ -142,7 +145,7 @@ pub struct Combobox {
     edit_filtered: bool,
     popover: Popover,
     list: OptionList,
-    _subscriptions: [Subscription; 4],
+    _subscriptions: [Subscription; 5],
 }
 
 impl std::fmt::Debug for Combobox {
@@ -188,6 +191,10 @@ impl Combobox {
                         combobox.refresh(cx);
                     }
                 }
+            }),
+            // Suggestions may depend on where the caret is.
+            cx.subscribe(input, |combobox, _, _: &Moved, cx| {
+                combobox.refresh(cx);
             }),
             // A field turned disabled or read-only notifies.
             cx.observe(input, |combobox, _, cx| {

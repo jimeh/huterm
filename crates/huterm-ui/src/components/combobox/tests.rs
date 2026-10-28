@@ -2,10 +2,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, Bounds, Context, Div, Entity, FocusHandle, Focusable as _,
-    KeyBinding, Modifiers, MouseButton, Pixels, Point, Render, ScrollDelta,
-    ScrollHandle, ScrollWheelEvent, TestAppContext, TouchPhase,
-    VisualTestContext, Window, div, point, prelude::*, px, size,
+    Action, App, Bounds, Context, Div, Entity, EntityInputHandler as _,
+    FocusHandle, Focusable as _, KeyBinding, Modifiers, MouseButton, Pixels,
+    Point, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, TestAppContext,
+    TouchPhase, VisualTestContext, Window, div, point, prelude::*, px, size,
 };
 
 use super::{Combobox, ComboboxEvent};
@@ -1070,4 +1070,79 @@ fn toggle_browsing_lists_every_suggestion_whatever_was_typed(
     assert_eq!(probe.labels(cx), FONTS);
     type_text(cx, "x");
     assert!(!probe.open(cx), "the edit browsed");
+}
+
+#[gpui::test]
+fn ending_a_composition_keeps_the_typed_list(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            browse: true,
+            ..Setup::default()
+        },
+    );
+    probe.write(cx, "");
+    let input = probe.input(cx);
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.replace_and_mark_text_in_range(None, "mo", None, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    keys(cx, "down");
+    assert_eq!(probe.labels(cx), probe_labels());
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Monaco"));
+    // The platform ends the composition, as before a press, with the
+    // composed text left as it is.
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| input.unmark_text(window, cx));
+    });
+    cx.run_until_parked();
+    assert!(probe.open(cx));
+    assert_eq!(probe.labels(cx), probe_labels(), "the list browsed");
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Monaco"));
+    keys(cx, "escape down");
+    assert_eq!(probe.labels(cx), probe_labels(), "the typing was forgotten");
+}
+
+#[gpui::test]
+fn a_press_picks_nothing_once_its_suggestion_leaves_the_list(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(cx, Setup::default());
+    type_text(cx, "mo");
+    let list = probe.list_bounds(cx);
+    // The first row's center, under the list's border and padding.
+    let row = point(list.left() + px(20.0), list.top() + px(1.0 + 4.0 + 14.0));
+    cx.simulate_mouse_down(row, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    // The list changes under the held press; another suggestion takes the
+    // pressed row's place.
+    probe.write(cx, "fira");
+    assert_eq!(probe.labels(cx), ["Fira Code", "Fira Mono"]);
+    cx.simulate_mouse_up(row, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(probe.taken(cx), Vec::<String>::new());
+    assert_eq!(probe.text(cx), "fira");
+}
+
+#[gpui::test]
+fn a_caret_move_refilters_a_list_that_shows(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(cx, Setup::default());
+    type_text(cx, "mo");
+    probe.filtered(cx);
+    let input = probe.input(cx);
+    let left = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| input.move_left(false, cx));
+        });
+        cx.run_until_parked();
+    };
+    left(cx);
+    assert_eq!(probe.filtered(cx), 1);
+    assert!(probe.open(cx));
+    keys(cx, "escape");
+    left(cx);
+    assert_eq!(probe.filtered(cx), 0, "a closed list filtered");
+    assert!(!probe.open(cx));
 }
