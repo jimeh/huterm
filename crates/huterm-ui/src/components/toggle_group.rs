@@ -218,7 +218,6 @@ struct Shape {
     single: bool,
     enabled: bool,
     index: usize,
-    count: usize,
     /// Whether a multiple group's item is its roving tab stop.
     stop: bool,
     key_context: Option<SharedString>,
@@ -237,7 +236,6 @@ fn render_item(
         single,
         enabled,
         index,
-        count,
         stop,
         key_context,
     } = shape;
@@ -257,8 +255,8 @@ fn render_item(
         } else {
             Toggled::False
         })
-        .aria_position_in_set(index + 1)
-        .aria_size_of_set(count)
+        // AccessKit positions are zero-based; the group carries the size.
+        .aria_position_in_set(index)
         .when_some(focus.as_ref(), InteractiveElement::track_focus)
         .when_some(key_context, |element, context| {
             element.key_context(context.as_ref())
@@ -332,7 +330,6 @@ impl RenderOnce for ToggleGroup {
                     single,
                     enabled,
                     index,
-                    count,
                     stop: index == roving,
                     key_context: self.key_context.clone().filter(|_| !single),
                 };
@@ -350,6 +347,7 @@ impl RenderOnce for ToggleGroup {
                 gpui::Role::Group
             })
             .aria_label(self.label)
+            .aria_size_of_set(count)
             .when_some(reason, StatefulInteractiveElement::aria_description)
             .when_some(group_focus.as_ref(), |group, focus| {
                 group.track_focus(focus)
@@ -450,14 +448,15 @@ mod tests {
             let group = &a11y_node(window, "tabs")["aria"];
             assert_eq!(group["role"], "RadioGroup");
             assert_eq!(group["label"], "Tab bar position");
+            assert_eq!(group["size_of_set"], 2);
             let top = &a11y_labelled(window, "Top")["aria"];
             assert_eq!(top["role"], "RadioButton");
             assert_eq!(top["toggled"], "True");
-            assert_eq!(top["position_in_set"], 1);
-            assert_eq!(top["size_of_set"], 2);
+            assert_eq!(top["position_in_set"], 0);
+            assert!(top["size_of_set"].is_null());
             let bottom = &a11y_labelled(window, "Bottom")["aria"];
             assert_eq!(bottom["toggled"], "False");
-            assert_eq!(bottom["position_in_set"], 2);
+            assert_eq!(bottom["position_in_set"], 1);
         });
     }
 
