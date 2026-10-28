@@ -4,10 +4,12 @@
 //! checks.
 
 pub mod alert;
+pub mod alert_dialog;
 pub mod badge;
 pub mod button;
 pub mod card;
 pub mod collapsible;
+pub mod dialog;
 pub mod empty;
 pub mod field;
 pub mod input;
