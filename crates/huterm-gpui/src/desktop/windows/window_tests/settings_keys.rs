@@ -695,6 +695,75 @@ fn a_recorded_key_keeps_its_own_draft_when_another_editor_removes_a_twin(
 }
 
 #[gpui::test]
+fn a_recorded_key_and_another_draft_both_follow_entries_another_editor_swapped(
+    cx: &mut TestAppContext,
+) {
+    let pair = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_window\"\n\n\
+                [[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n\
+                when = \"Terminal\"\n";
+    let file = ScratchConfig::new("keys-record-swap", pair);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_window");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u0", "Terminal ||", window, cx);
+        view.enter_key("when:u0", cx);
+        view.type_key("when:u1", "Terminal &&", window, cx);
+        view.enter_key("when:u1", cx);
+        view.press("krec:u1", window, cx);
+    });
+    // Another editor swaps the two entries before the key lands.
+    let (first, second) = pair.split_once("\n\n").unwrap();
+    std::fs::write(file.path(), format!("{second}\n{first}")).unwrap();
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    saved(&mut harness, &file, |text| text.contains("ctrl-alt-k"));
+    harness.cx.run_until_parked();
+    assert_eq!(row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-k"), "u0");
+    assert_eq!(row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-a"), "u1");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal &&");
+        assert_eq!(view.key_text("when:u1", cx), "Terminal ||");
+    });
+}
+
+#[gpui::test]
+fn a_recorded_key_keeps_its_draft_when_another_editor_moved_entries_before_a_queued_write(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-record-queued-shift", THREE);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:close_tab");
+    harness.cx.run_until_parked();
+    // Another editor removes the second entry before this window's removal
+    // of the first reads the file, so the queued key's locator, moved up
+    // past one removal, names a row that no longer exists.
+    let without_second = THREE.replacen(
+        "[[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n\n",
+        "",
+        1,
+    );
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u2", "Terminal &&", window, cx);
+        view.enter_key("when:u2", cx);
+        assert!(view.key_error("u2").is_some());
+        view.press("kdel:u0", window, cx);
+        view.press("krec:u2", window, cx);
+        std::fs::write(file.path(), &without_second).unwrap();
+    });
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    saved(&mut harness, &file, |text| {
+        !text.contains("ctrl-alt-a") && text.contains("ctrl-alt-k")
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(row(&mut harness, ids::CLOSE_TAB, "ctrl-alt-k"), "u0");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal &&");
+    });
+}
+
+#[gpui::test]
 fn a_switched_off_shortcuts_key_cap_says_why_it_refuses(
     cx: &mut TestAppContext,
 ) {

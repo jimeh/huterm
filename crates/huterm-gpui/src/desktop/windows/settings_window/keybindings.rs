@@ -851,17 +851,14 @@ impl SettingsView {
     }
 
     /// Keeps the drafts in a shortcut's condition and argument fields when
-    /// its recorded key lands. Fields follow a shortcut by its key and
-    /// command, so a new key would otherwise count as another shortcut and
-    /// drop them. A user entry keeps its row, which now shows the new key;
-    /// a default's change is the file's last entry, so its fields move
-    /// there. Nothing moves unless that row shows the recorded key for the
-    /// same command, such as after a queued edit moved the entries.
-    ///
-    /// Entries can move between recording and the write: a removal queued
-    /// ahead of it, or another editor's change. The user entry's row before
-    /// the write is its locator's, which queued writes carry along, and its
-    /// row now is the one whose binding is that row's on the recorded key.
+    /// its recorded key lands. Fields follow a shortcut by its binding, so
+    /// a new key would otherwise count as another shortcut and drop them.
+    /// The edited binding's identity before the write becomes its identity
+    /// now, so `follow_moved_rows` moves its fields with every other row's,
+    /// to wherever the entries now put it. A user entry is matched by the
+    /// key its write replaced, and a default's change is the file's last
+    /// entry. Nothing follows unless exactly one row shows the recorded key
+    /// for that binding.
     fn keep_drafts_for_new_key(
         &mut self,
         edit: &Edit,
@@ -871,37 +868,51 @@ impl SettingsView {
         let Some(inventory) = &self.keys.inventory else {
             return;
         };
-        let (from, to, key) = match edit {
+        let (from, now) = match edit {
             Edit::ChangeUser {
                 field: Field::Key,
                 value: Some(Value::String(key)),
                 ..
             } => {
-                let Some(from) = patches.iter().find_map(|patch| match patch {
-                    Patch::SetEntryField { locator, field, .. }
-                        if field == "key" =>
-                    {
-                        Some(format!("u{}", locator.index()))
-                    }
-                    _ => None,
-                }) else {
-                    return;
-                };
-                let Some(before) = self.keys.identities.get(&from) else {
-                    return;
-                };
-                let rekeyed: Vec<String> = rows(inventory)
-                    .into_iter()
-                    .filter(|(_, listed)| {
-                        listed.binding.key == *key
-                            && before.rekeyed(&Identity::of(listed))
+                // Another editor can move the entries, so the write's
+                // locator may no longer name the row; its content still
+                // names the key it replaced.
+                let Some(replaced) =
+                    patches.iter().find_map(|patch| match patch {
+                        Patch::SetEntryField { locator, field, .. }
+                            if field == "key" =>
+                        {
+                            locator.content().get("key").and_then(Value::as_str)
+                        }
+                        _ => None,
                     })
-                    .map(|(name, _)| name)
-                    .collect();
-                let [to] = rekeyed.as_slice() else {
+                else {
                     return;
                 };
-                (from, to.clone(), key)
+                let found: Vec<(String, Identity)> = rows(inventory)
+                    .into_iter()
+                    .filter(|(_, listed)| listed.binding.key == *key)
+                    .filter_map(|(_, listed)| {
+                        let now = Identity::of(listed);
+                        let before: Vec<&String> = self
+                            .keys
+                            .identities
+                            .iter()
+                            .filter(|(_, before)| {
+                                before.key == replaced && before.rekeyed(&now)
+                            })
+                            .map(|(name, _)| name)
+                            .collect();
+                        match before.as_slice() {
+                            [from] => Some(((*from).clone(), now)),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                let [found] = found.as_slice() else {
+                    return;
+                };
+                found.clone()
             }
             Edit::ChangeDefault {
                 field: Field::Key,
@@ -918,65 +929,21 @@ impl SettingsView {
                 ) else {
                     return;
                 };
-                (from.to_owned(), format!("u{last}"), key)
+                let command =
+                    self.keys.identities.get(from).map(|before| before.command);
+                let Some(listed) =
+                    row(inventory, &format!("u{last}")).filter(|listed| {
+                        listed.binding.key == *key
+                            && Some(listed.binding.command) == command
+                    })
+                else {
+                    return;
+                };
+                (from.to_owned(), Identity::of(listed))
             }
             _ => return,
         };
-        let from = from.as_str();
-        let command =
-            self.keys.identities.get(from).map(|before| before.command);
-        let Some(listed) = row(inventory, &to).filter(|listed| {
-            listed.binding.key == *key
-                && Some(listed.binding.command) == command
-        }) else {
-            return;
-        };
-        // The row's identity before this read becomes the new binding's, so
-        // `follow_moved_rows` keeps its fields where they now are.
-        let identity = Identity::of(listed);
-        self.keys.identities.insert(to.clone(), identity);
-        if to != from {
-            self.move_row_fields(from, &to);
-        }
-    }
-
-    /// Moves a row's fields with their drafts, synced text, and errors to
-    /// another row, displacing any left there.
-    fn move_row_fields(&mut self, from: &str, to: &str) {
-        let displaced: Vec<String> = self
-            .keys
-            .fields
-            .keys()
-            .filter(|key| field_row(key) == Some(to))
-            .cloned()
-            .collect();
-        for key in displaced {
-            self.keys.fields.remove(&key);
-            self.keys.synced.remove(&key);
-            self.keys.errors.remove(&key);
-        }
-        let moved: Vec<String> = self
-            .keys
-            .fields
-            .keys()
-            .filter(|key| field_row(key) == Some(from))
-            .cloned()
-            .collect();
-        for key in moved {
-            let target = key.replacen(from, to, 1);
-            if let Some(field) = self.keys.fields.remove(&key) {
-                self.keys.fields.insert(target.clone(), field);
-            }
-            if let Some(text) = self.keys.synced.remove(&key) {
-                self.keys.synced.insert(target.clone(), text);
-            }
-            if let Some(error) = self.keys.errors.remove(&key) {
-                self.keys.errors.insert(target.clone(), error);
-            }
-            if self.keys.editing.as_ref() == Some(&key) {
-                self.keys.editing = Some(target);
-            }
-        }
+        self.keys.identities.insert(from, now);
     }
 
     /// Focuses a followed control once it draws.

@@ -649,11 +649,13 @@ timeout. A recorder cancels itself on blur, window deactivation, and an outside
 press; an outside press also ends that Return or Space guard. It tells a held
 key's repeat by `KeystrokeEvent::is_held`, which only interceptors receive set
 (see [desktop input](desktop-input.md)). A recorded key lands through
-`follow_changed_default`, which first moves the shortcut's drafts to the row
-that now shows it (`keep_drafts_for_new_key`): fields follow a shortcut by its
-key and command, so a new key would otherwise drop them. A user entry's row is
-the one whose binding changed only its key, since a write that landed first,
-such as a removal, may have moved it. `set_globals` has no context to cancel a
+`follow_changed_default`, which first keeps the shortcut's drafts
+(`keep_drafts_for_new_key`): fields follow a shortcut by its binding, so a new
+key would otherwise drop them. It gives the edited row's identity before the
+write the binding's new identity, so `follow_moved_rows` moves those fields
+together with every other row's. Queued writes and other editors can move the
+entries first, so a user entry is matched by the key its write's locator
+replaced, never by the locator's row. `set_globals` has no context to cancel a
 recording whose global shortcut moved, so it marks the recording stale, and the
 next frame or keystroke cancels it.
 
