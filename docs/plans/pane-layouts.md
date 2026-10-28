@@ -893,7 +893,7 @@ three points.
 | Another window drags a divider of the tab | A layout of another shape cancels the drag; a balance lets it continue from the new weights | Tier 2 |
 | Another window zooms a pane in view mode | Its zoom stays on the same pane | Tier 2 (convergence) |
 | A pane exits while the commit is queued | With `close_on_exit = false` the pane stays and the guard passes; an exit-close changes the shape, the guard refuses, and the close proceeds, because no `busy` hold defers it | Tier 2 |
-| A structural command (undo, a cycle step, resize, split) or a divider press in this window while an arrangement is in flight | Unavailable or refused until the completion; keystrokes still reach the shell | Tier 2 |
+| A structural command (undo, a cycle step, resize, split) or a divider press in this window while an arrangement is in flight | Unavailable in the palette and menus, and a key does nothing, until the completion; keystrokes still reach the shell | Tier 2 |
 | This window's divider drag is in progress when a layout command runs | Step 6 cancels it before the commit is queued | Tier 2 |
 | A pane drag that started earlier drops while an arrangement is in flight, and the two complete out of commit order | History keeps the entry with the newer commit sequence | Tier 2 (completion order) |
 | The layout event and the tab's terminal output interleave | Terminal events route by pane, and the geometry rules above order the repaint | Existing rule |
@@ -1296,8 +1296,8 @@ Recorded with PR 2:
   quietly instead of raising a notice per repeat. The palette and menus
   still show the commands unavailable through `check_available`.
 - Resize commands from bindings never called `check_available`, so
-  `resize_pane` refuses on its own while an arrangement is in flight, which
-  the race in "Desktop flow" needs.
+  `resize_pane` checks the count itself and does nothing while an
+  arrangement is in flight, which the race in "Desktop flow" needs.
 - The keybinding schema gives the `layout` argument the name's syntax as a
   `pattern` as well as a description naming the built-ins, kept aligned with
   the catalog through three new `schemas/fixtures.json` cases.
