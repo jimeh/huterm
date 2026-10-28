@@ -1,10 +1,12 @@
 # Pane layouts
 
-Status: approved on 2026-10-27, after five Codex and five Claude review
-rounds; PR 1, runtime arrangements, is implemented and pending merge, and
-PR 2, commands, is in progress. Jim settled every open
-question that day (see "Settled decisions"), adding default cycle bindings
-and user-defined layouts. Plans [issue #30][issue-30] within
+Status: in progress. Approved on 2026-10-27, after five Codex and five
+Claude review rounds; Jim settled every open question that day (see
+"Settled decisions"), adding default cycle bindings and user-defined
+layouts. PR 1, runtime arrangements (#284), and PR 2, commands (#286), are
+implemented. On 2026-10-28 Jim split PR 3: PR 3a, user-defined layouts
+from the config file, is in progress, and PR 3b, their Settings editor,
+waits for the `huterm-ui` components it builds on. Plans [issue #30][issue-30] within
 [epic #12][issue-12].
 Builds on [the split panes plan](split-panes.md) (#28) and
 [the pane moves plan](pane-moves.md) (#29), both implemented. Layout undo,
@@ -103,7 +105,8 @@ In scope:
 - Balancing the active tab's whole split tree.
 - One runtime operation that rearranges one tab's existing panes, shared by
   all of the above.
-- User-defined layouts in the config file and the Settings window (PR 3).
+- User-defined layouts in the config file (PR 3a) and the Settings window
+  (PR 3b).
 - Small-window fallbacks, focus and zoom rules, menus, default bindings,
   and undo entries through #256.
 
@@ -687,15 +690,15 @@ binding, given a plain string schema, resolved when the command runs, and
 prompted in the palette with rows from the config. The catalog validates
 only the name's syntax, and the window resolves the name at run time (step
 3 of "Desktop flow"). PR 2's schema describes the argument as one of the
-built-in names; PR 3 extends the description to `[panes.layouts]` entries.
-The picker lists the built-ins by title, then, from PR 3, user layouts by
+built-in names; PR 3a extends the description to `[panes.layouts]` entries.
+The picker lists the built-ins by title, then, from PR 3a, user layouts by
 name, each with its template as detail text.
 
 The Settings keybinding editor offers only argument kinds its
 `configurable()` filter lists (`settings_window/keybindings.rs:329-340`),
 and that match is not exhaustive, so a new kind would compile and be
 silently hidden. PR 2 adds `Layout` there with a dropdown of the
-built-ins, as `QuakeProfile` has one of profiles, and PR 3 adds the user
+built-ins, as `QuakeProfile` has one of profiles, and PR 3a adds the user
 layouts to it. A binding names a layout directly:
 
 ```toml
@@ -743,7 +746,7 @@ the dev layout".
 
 ### User-defined layouts
 
-PR 3 lets users name their own layouts in the template language and choose
+PR 3a lets users name their own layouts in the template language and choose
 the cycle (settled decision 8):
 
 ```toml
@@ -772,7 +775,7 @@ and two thirds: weights 333,334 and 666,666.
   name, or names an unknown layout. Each error carries its key path and
   the parser's offset, through the same path as every other config error.
 - The published schema describes both keys, with the grammar summarized in
-  the description and the built-in names listed. PR 3 regenerates it.
+  the description and the built-in names listed. PR 3a regenerates it.
 - `docs/configuration.md` documents the language with examples,
   including `columns(pane, *)`, whose pane keeps about half the width, and
   notes
@@ -786,7 +789,7 @@ and two thirds: weights 333,334 and 666,666.
 
 ### Settings window
 
-PR 3 adds a Pane Layouts group to the Panes settings. Adding and removing
+PR 3b adds a Pane Layouts group to the Panes settings. Adding and removing
 layouts follows the named quake profiles editor (`Special::QuakeProfiles`,
 `create_profile` and `delete_profile` in `settings_window/quake.rs:473`,
 `:523`); renaming is new, because profiles cannot be renamed.
@@ -810,7 +813,7 @@ layouts follows the named quake profiles editor (`Special::QuakeProfiles`,
 - A rename is three patches in one save: remove the old key, set the new
   one, and rewrite `layout_cycle` when it names the layout. Removal is two:
   the key and the cycle entry. The settings queue carries one patch per
-  save today (`saving.rs:651`), so PR 3 lets it carry a batch;
+  save today (`saving.rs:651`), so PR 3b lets it carry a batch;
   `ConfigFile::apply` already takes one (`crates/huterm-config/src/
   document.rs:386-398`) and checks every path for conflicts, so a failed
   save changes nothing. `Patch` has no rename, and a `Set` on a table
@@ -1114,7 +1117,10 @@ other changes against those gates, never with sleeps.
   `df -h` first and cleaning volumes and images after. Never run
   `vm:macos:smoke`.
 
-### User-defined layouts and Settings (PR 3)
+### User-defined layouts (PR 3a) and Settings (PR 3b)
+
+PR 3a carries the config, schema, keymap, palette, keybinding editor, and
+first tier 2 lists; PR 3b carries the Settings tier 2 list.
 
 - Config tests: `[panes.layouts]` and `layout_cycle` load; each rejection
   (a bad template with its offset, an invalid or reserved name, more than
@@ -1128,7 +1134,7 @@ other changes against those gates, never with sleeps.
 - Settings keybinding editor, as `window_tests/settings_keys.rs:604` tests
   profile arguments: an `arrange_panes` binding offers the `layout`
   argument with a dropdown of the built-ins (PR 2) and user layouts
-  (PR 3), and writes the chosen name.
+  (PR 3a), and writes the chosen name.
 - Palette tests: the layout picker lists the built-ins by title, then user
   layouts by name, with templates as detail text.
 - Tier 2:
@@ -1182,23 +1188,28 @@ Three PRs, each leaving `main` consistent and shippable:
    notices; undo recording through #256; and the tier 1, tier 2, menu, and
    native tests. Docs: `docs/keybindings.md`, `CONTEXT.md`, and the
    guides.
-3. **PR 3, user-defined layouts.** `[panes.layouts]` and `layout_cycle` in
-   `huterm-config` with validation, the regenerated schema, name
-   resolution and the picker over user layouts, the Settings group, and
-   the config, keymap, palette, tier 2, and Settings tests. Docs:
-   `docs/configuration.md` and `docs/keybindings.md`. About 1,000 to
-   1,500 lines.
+3. **PR 3, user-defined layouts,** split on 2026-10-28 into two PRs:
+   - **PR 3a, the config file.** `[panes.layouts]` and `layout_cycle` in
+     `huterm-config` with validation, the regenerated schema, name
+     resolution, the cycle, the palette picker and the Settings keybinding
+     editor's `layout` dropdown over user layouts, reload, and the config,
+     palette, keybinding editor, and tier 2 tests. Docs:
+     `docs/configuration.md` and `docs/keybindings.md`.
+   - **PR 3b, the Settings editor.** The Pane Layouts group of "Settings
+     window": add, rename, and remove layouts, the cycle list, and the
+     Settings tests. It closes #30.
 
 PR 2's undo recording uses `WorkspaceView::record_layout_change`, which
 the client PR of #256 (#281, merged) added, and PR 2 opens after PR 1
-merges. PR 3
+merges. PR 3b
 waits for the shared UI component library (`huterm-ui`, approved in
 `docs/plans/ui-components.md`) and builds on it instead of its own
 controls: the cycle list on its `Listbox` (step 2), the name and template
 fields on `Input` and `InputGroup` (step 4), and rename and the refusal
 prompts on the `Field` and `InputGroup` composition and `AlertDialog` of
 step 7, which also adds quake profile rename (#277). Its "Settings window"
-section is revised against those components when PR 3 starts.
+section is revised against those components when PR 3b starts. PR 3a
+needs none of them.
 
 ## Documentation
 
@@ -1212,9 +1223,9 @@ section is revised against those components when PR 3 starts.
 - `docs/agents/desktop-client.md` (PR 2): the layout commit queue, the
   fit-before-commit rule, and why arrangements gate on their own in-flight
   count rather than `busy`.
-- `docs/keybindings.md` (PR 2, PR 3): the commands, the cycle and balance
+- `docs/keybindings.md` (PR 2, PR 3a): the commands, the cycle and balance
   bindings, and bindings with a `layout` argument.
-- `docs/configuration.md` (PR 3): `[panes.layouts]`, `layout_cycle`, and
+- `docs/configuration.md` (PR 3a): `[panes.layouts]`, `layout_cycle`, and
   the template language with examples.
 - This plan's `Status:` in each PR.
 
@@ -1321,6 +1332,22 @@ Recorded with PR 2:
   for the layout and balance keys, but found that KWin's
   `ctrl-super-shift-` arrows, which move a window to another desktop, take
   the existing Linux resize keys; `docs/keybindings.md` notes it.
+
+Recorded with PR 3a:
+
+- Until PR 3b, the Settings window lists `panes.layouts` and
+  `panes.layout_cycle` as file-only settings, as it does `themes`, so it
+  shows no control for them. Their schema entries carry the Settings
+  metadata PR 3b needs.
+- Undo labels became owned strings, so an entry can read "Arrange Panes:
+  dev". Built-in layouts keep the labels PR 2 gave them.
+- A template error names the key, the parser's message, and a one-based
+  column counted in characters, the column the Settings field will show:
+  `dev = "columns(pane, )"` fails with "panes.layouts.dev: expected
+  \`columns\`, \`rows\`, \`grid\`, \`pane\`, or \`*\` at column 15".
+- The schema also rejects built-in names as `[panes.layouts]` keys and
+  bounds each template at 1 KiB and the table at 64 entries, so an editor
+  flags them before a reload does.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-30]: https://github.com/jimeh/huterm/issues/30
