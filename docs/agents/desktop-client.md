@@ -548,6 +548,11 @@ than catalog commands. `desktop/overlay.rs` re-exports `Tokens` as `Swatch`
 and builds it with `tokens(theme)` and `overlay_colors(theme)`; the orphan
 rule rules out `from_theme` constructors on the crate's types.
 
+`Tokens` corrects arbitrary themes toward WCAG's minimums, and the `contrast`
+test in `desktop/overlay.rs` checks every bundled theme: draw text on an
+accent fill with `on_accent()`, never `bg`, and focus rings through
+`focus_ring()`.
+
 `pub` items of a library are always live, so `#[expect(dead_code)]` cannot
 mark a component that lands before its caller: the expectation is never met
 and Clippy fails. A component's first consumer is its entry in

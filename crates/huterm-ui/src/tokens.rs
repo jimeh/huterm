@@ -2,6 +2,11 @@
 //!
 //! [`OverlayColors`] is the crate's color input: the few theme colors an
 //! owner supplies. [`Tokens`] derives every shade components use from them.
+//! Themes are arbitrary, so the derivation corrects shades that would miss
+//! WCAG's minimums: text reaches 4.5:1 (secondary text and text on an accent
+//! fill included), and the focus ring reaches 3:1 against the surfaces it
+//! sits on. Disabled text is exempt, as WCAG exempts inactive controls, and
+//! so are the borders of controls whose text labels identify them.
 //! Further shades are methods rather than fields, because [`Tokens`] is passed
 //! by value and must stay under Clippy's 256-byte `large_types_passed_by_value`
 //! limit: its thirteen colors and [`ScrollbarColors`] take 240 bytes.
@@ -66,11 +71,23 @@ impl Tokens {
     /// Derives every shade from `colors`.
     #[must_use]
     pub fn new(colors: OverlayColors) -> Self {
+        let surface = mix(colors.background, colors.foreground, 0.07);
+        // Secondary text at the lightest opacity that stays readable on both
+        // surfaces it sits on, else the foreground itself.
+        let muted = [0.62, 0.7, 0.78, 0.86, 0.94]
+            .into_iter()
+            .map(|alpha| colors.foreground.opacity(alpha))
+            .find(|muted| {
+                [colors.background, surface].iter().all(|under| {
+                    contrast(over(*muted, *under), *under) >= TEXT_CONTRAST
+                })
+            })
+            .unwrap_or(colors.foreground);
         Self {
             fg: colors.foreground,
             bg: colors.background,
-            surface: mix(colors.background, colors.foreground, 0.07),
-            muted: colors.foreground.opacity(0.62),
+            surface,
+            muted,
             dim: colors.foreground.opacity(0.38),
             line: colors.foreground.opacity(0.1),
             line_strong: colors.foreground.opacity(0.22),
@@ -108,10 +125,37 @@ impl Tokens {
         mix(self.accent, self.bg, 0.22)
     }
 
-    /// Text and icons drawn on an accent fill.
+    /// Text and icons drawn on an accent fill: the background, or the
+    /// foreground, whichever reads better, unless neither reaches 4.5:1,
+    /// when black or white does.
     #[must_use]
     pub fn on_accent(&self) -> Hsla {
-        self.bg
+        let best = |candidates: [Hsla; 2]| {
+            candidates.into_iter().max_by(|a, b| {
+                contrast(*a, self.accent).total_cmp(&contrast(*b, self.accent))
+            })
+        };
+        best([self.bg, self.fg])
+            .filter(|color| contrast(*color, self.accent) >= TEXT_CONTRAST)
+            .or_else(|| {
+                best([hsla(0.0, 0.0, 0.0, 1.0), hsla(0.0, 0.0, 1.0, 1.0)])
+            })
+            .unwrap_or(self.bg)
+    }
+
+    /// The focus ring's color: the accent, moved toward the foreground in
+    /// steps until it reaches 3:1 against both the background and the
+    /// surface.
+    #[must_use]
+    pub fn ring(&self) -> Hsla {
+        (0..=10_u8)
+            .map(|step| mix(self.accent, self.fg, f32::from(step) / 10.0))
+            .find(|ring| {
+                [self.bg, self.surface]
+                    .iter()
+                    .all(|under| contrast(*ring, *under) >= NON_TEXT_CONTRAST)
+            })
+            .unwrap_or(self.fg)
     }
 
     /// The dimming layer beneath a modal surface.
@@ -166,13 +210,13 @@ impl Tokens {
         ]
     }
 
-    /// A soft accent ring, [`size::FOCUS_RING`] wide, around a focused
-    /// control. Components draw it through [`crate::focus::ring`], which
-    /// shows it only for keyboard focus.
+    /// A solid ring of [`Self::ring`], [`size::FOCUS_RING`] wide, around a
+    /// focused control. Components draw it through [`crate::focus::ring`],
+    /// which shows it only for keyboard focus.
     #[must_use]
     pub fn focus_ring(&self) -> Vec<BoxShadow> {
         vec![BoxShadow {
-            color: self.accent.opacity(0.45),
+            color: self.ring(),
             offset: point(px(0.0), px(0.0)),
             blur_radius: px(0.0),
             spread_radius: size::FOCUS_RING,
@@ -193,6 +237,41 @@ pub fn mix(from: Hsla, to: Hsla, amount: f32) -> Hsla {
         b: channel(from.b, to.b),
         a: 1.0,
     })
+}
+
+/// WCAG 2's minimum contrast for text.
+pub const TEXT_CONTRAST: f32 = 4.5;
+/// WCAG 2.1's minimum contrast for focus indicators and other meaningful
+/// graphics (1.4.11).
+pub const NON_TEXT_CONTRAST: f32 = 3.0;
+
+/// `color` drawn over the opaque `background`, as the screen shows it.
+#[must_use]
+pub fn over(color: Hsla, background: Hsla) -> Hsla {
+    let alpha = color.a;
+    let mixed = mix(background, Hsla { a: 1.0, ..color }, alpha);
+    Hsla { a: 1.0, ..mixed }
+}
+
+/// The WCAG 2 contrast ratio between two opaque colors, from 1 to 21.
+#[must_use]
+pub fn contrast(a: Hsla, b: Hsla) -> f32 {
+    fn luminance(color: Hsla) -> f32 {
+        let rgb = Rgba::from(color);
+        let channel = |value: f32| {
+            if value <= 0.039_28 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(rgb.r)
+            + 0.7152 * channel(rgb.g)
+            + 0.0722 * channel(rgb.b)
+    }
+    let (a, b) = (luminance(a), luminance(b));
+    let (light, dark) = if a > b { (a, b) } else { (b, a) };
+    (light + 0.05) / (dark + 0.05)
 }
 
 /// The sizes components share, in points.

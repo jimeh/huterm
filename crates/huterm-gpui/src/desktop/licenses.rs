@@ -794,7 +794,7 @@ impl LicensesView {
                 .when(self.hints, |button| {
                     button.child(key_cap_on(
                         &KeyHint::keys(&["escape"], platform),
-                        swatch.bg,
+                        swatch.on_accent(),
                     ))
                 }),
             )

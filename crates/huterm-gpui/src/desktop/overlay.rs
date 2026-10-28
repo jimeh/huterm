@@ -156,3 +156,59 @@ mod tests {
         assert!((light.surface.a - 1.0).abs() < f32::EPSILON);
     }
 }
+
+#[cfg(test)]
+mod contrast {
+    use huterm_ui::tokens::{NON_TEXT_CONTRAST, TEXT_CONTRAST, contrast, over};
+
+    use super::tokens;
+    use crate::config::Theme;
+
+    /// Every bundled theme, and the built-in default.
+    fn bundled() -> Vec<(String, Theme)> {
+        let directory = std::path::Path::new("");
+        crate::themes::names(None)
+            .into_iter()
+            .map(|name| {
+                let theme = if name == "huterm-dark" {
+                    Theme::huterm_dark()
+                } else {
+                    crate::themes::preview(&name, directory)
+                        .unwrap_or_else(|| panic!("{name} resolves"))
+                };
+                (name, theme)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bundled_themes_meet_the_contrast_minimums() {
+        let themes = bundled();
+        assert!(themes.len() > 10, "{} themes", themes.len());
+        for (name, theme) in themes {
+            let t = tokens(&theme);
+            for (under, surface) in
+                [(t.bg, "background"), (t.surface, "surface")]
+            {
+                let muted = contrast(over(t.muted, under), under);
+                println!("CONTRAST {name} muted/{surface} {muted:.2}");
+                assert!(
+                    muted >= TEXT_CONTRAST || t.muted == t.fg,
+                    "{name}: secondary text on the {surface} is {muted:.2}:1"
+                );
+                let ring = contrast(t.ring(), under);
+                println!("CONTRAST {name} ring/{surface} {ring:.2}");
+                assert!(
+                    ring >= NON_TEXT_CONTRAST,
+                    "{name}: the focus ring on the {surface} is {ring:.2}:1"
+                );
+            }
+            let on_accent = contrast(t.on_accent(), t.accent);
+            println!("CONTRAST {name} on_accent {on_accent:.2}");
+            assert!(
+                on_accent >= TEXT_CONTRAST,
+                "{name}: text on the accent is {on_accent:.2}:1"
+            );
+        }
+    }
+}
