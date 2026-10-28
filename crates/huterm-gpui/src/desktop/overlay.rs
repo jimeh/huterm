@@ -54,13 +54,12 @@ pub(crate) fn accent_bar(color: Hsla, left: Pixels, inset: Pixels) -> Div {
         .bg(color)
 }
 
-/// A keystroke chip, as the palette shows shortcuts and footer hints.
+/// A keystroke chip on a static surface, as footer hints show them.
 pub(crate) fn key_cap(hint: &KeyHint, swatch: Swatch) -> Div {
     huterm_ui::components::kbd::cap(&hint.glyphs(), swatch)
 }
 
-/// A keystroke chip on a filled button, drawn in the button's text colour
-/// `on`.
+/// A keystroke chip on a row or button, outlined in its text colour `on`.
 pub(crate) fn key_cap_on(hint: &KeyHint, on: Hsla) -> Div {
     huterm_ui::components::kbd::cap_on(&hint.glyphs(), on)
 }

@@ -1746,13 +1746,16 @@ impl SettingsView {
     ) -> AnyElement {
         let search = self.keys.search.clone();
         self.drawn.insert("search".to_owned());
+        // Outlined rather than filled, so the selected segment's selection
+        // and the others' hover sit on the plain pane, where they read.
         let mut segments = div()
             .flex()
             .flex_none()
             .p(px(2.0))
             .gap(px(2.0))
             .rounded(px(6.0))
-            .bg(swatch.chip);
+            .border_1()
+            .border_color(swatch.line_strong);
         for (filter, name, label) in Filter::ALL {
             let on = self.keys.filter == filter;
             let segment = div()
