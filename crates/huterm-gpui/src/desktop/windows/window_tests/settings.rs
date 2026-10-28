@@ -554,15 +554,17 @@ fn repeated_steps_build_on_each_other_before_they_save(
     with_view(&mut harness, |view, cx| {
         view.step_once("font.size", true, cx);
         view.step_once("font.size", true, cx);
-        view.step_once("terminal.bell.visual", false, cx);
-        view.step_once("terminal.bell.visual", true, cx);
+        // The second step starts from the first's pending choice, not the
+        // shown default.
+        view.step_once("tabs.width", false, cx);
+        view.step_once("tabs.width", true, cx);
     });
     harness.wait_for("both settings to save", |cx| {
         settled(cx) && file.text().contains("15.0")
     });
     assert_eq!(
         file.text(),
-        "[font]\nsize = 15.0\n\n[terminal.bell]\nvisual = true\n"
+        "[font]\nsize = 15.0\n\n[tabs]\nwidth = \"fit\"\n"
     );
 }
 

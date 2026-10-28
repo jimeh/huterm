@@ -1,8 +1,12 @@
 # UI components
 
 Status: in progress. Step 1 (the foundation), the components of steps 2, 3,
-and 4, and migrations 2a (Settings selects) and 2b (terminal-window menus)
-are implemented; 2b removed `desktop/menu.rs` and its menu host (D13).
+and 4, and migrations 2a (Settings selects), 2b (terminal-window menus), and
+3a (Settings buttons, links, switches, segmented controls, tri-states,
+modifier chips, tags, and counts) are implemented; 2b removed
+`desktop/menu.rs` and its menu host (D13). 3a also moved the Keybindings
+filter and shortcut switches; the key recorders, delete prompt, theme cards,
+and sidebar rows keep their GPUI focus styles until their own migrations.
 Approved on 2026-10-27 after four Codex and Claude review rounds, then
 revised for a separate crate, the terminal window's adoption, and
 normalization against shadcn/ui, which three more review rounds checked.
@@ -614,9 +618,10 @@ has room for one more field at most:
   1.5:1 to 2.7:1 across all bundled themes. Borders of controls whose text
   labels identify them are exempt, as WCAG's understanding of 1.4.11 exempts
   them; raising `line_strong` (1.3:1 to 2:1) to 3:1 would make every outline
-  heavy. `line_strong` also draws a switch's off track and the modifier chips'
-  borders, which are state indicators rather than labelled outlines; step 3's
-  migrations owe them 3:1. Disabled text (`dim`) is exempt as well;
+  heavy. A switch's off track and the modifier chips' borders are state
+  indicators rather than labelled outlines, so since 3a they draw with
+  `state_line()` (and a selected chip with `ring()`), which reach 3:1.
+  Disabled text (`dim`) is exempt as well;
   placeholders are enabled text and use `muted`. A script test rejects raw
   theme colors used directly as text, and the pair table checks the tokens;
   a color chosen in a branch still needs a reviewer.

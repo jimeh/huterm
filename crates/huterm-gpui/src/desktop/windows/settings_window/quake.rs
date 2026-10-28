@@ -17,9 +17,7 @@ use super::super::super::key_hint::KeyHint;
 use super::super::super::overlay::Swatch;
 use super::super::super::settings::keybindings::Edit;
 use super::controls::Opener;
-use super::keybindings::{
-    CAP_WIDTH, Target, card, group_block, remove_button, small,
-};
+use super::keybindings::{CAP_WIDTH, Target, card, group_block, small};
 use super::{MenuFor, SettingsView, button};
 use crate::keymap::Platform;
 use huterm_ui::components::input::{Chrome, Input};
@@ -729,7 +727,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let read_only = self.locked();
+        let reason = self.lock_reason();
         let profile = self.shown_profile();
         // Choosing which profile to show writes nothing, so it stays
         // available while the file is read-only.
@@ -752,25 +750,40 @@ impl SettingsView {
                 .child(small("Profile".to_owned(), swatch.muted))
                 .child(dropdown)
                 .when(self.quake.naming.is_none(), |bar| {
-                    let new = button("settings-qnew", swatch)
-                        .when(read_only, |button| button.opacity(0.5))
-                        .child("New profile");
-                    let new =
-                        self.actionable(new, "qnew".to_owned(), swatch, cx);
-                    let _ = self
-                        .action_stop("qnew".to_owned(), cx)
-                        .tab_stop(!read_only);
+                    let new = self
+                        .action_button(
+                            "settings-qnew".to_owned(),
+                            "New profile",
+                            "qnew".to_owned(),
+                            swatch,
+                            cx,
+                        )
+                        .when_some(reason.clone(), |button, reason| {
+                            button.disabled(Some(reason))
+                        });
                     bar.child(new)
                 }),
         );
         if let Some(field) = self.quake.naming.clone() {
             self.drawn.insert("qname".to_owned());
-            let create = button("settings-qcreate", swatch).child("Create");
-            let create =
-                self.actionable(create, "qcreate".to_owned(), swatch, cx);
-            let cancel = button("settings-qcancel", swatch).child("Cancel");
-            let cancel =
-                self.actionable(cancel, "qcancel".to_owned(), swatch, cx);
+            let create = self
+                .action_button(
+                    "settings-qcreate".to_owned(),
+                    "Create",
+                    "qcreate".to_owned(),
+                    swatch,
+                    cx,
+                )
+                .when_some(reason, |button, reason| {
+                    button.disabled(Some(reason))
+                });
+            let cancel = self.action_button(
+                "settings-qcancel".to_owned(),
+                "Cancel",
+                "qcancel".to_owned(),
+                swatch,
+                cx,
+            );
             bar = bar
                 .child(
                     div()
@@ -866,7 +879,6 @@ impl SettingsView {
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let read_only = self.locked();
         let mut row = div()
             .flex()
             .flex_col()
@@ -892,12 +904,18 @@ impl SettingsView {
                 ))
                 .child(div().flex().gap(px(8.0)).child(yes).child(no));
         } else {
-            let delete = button("settings-qdel", swatch)
-                .when(read_only, |button| button.opacity(0.5))
-                .child("Delete profile");
-            let delete = self.actionable(delete, "qdel".to_owned(), swatch, cx);
-            let _ =
-                self.action_stop("qdel".to_owned(), cx).tab_stop(!read_only);
+            let reason = self.lock_reason();
+            let delete = self
+                .action_button(
+                    "settings-qdel".to_owned(),
+                    "Delete profile",
+                    "qdel".to_owned(),
+                    swatch,
+                    cx,
+                )
+                .when_some(reason, |button, reason| {
+                    button.disabled(Some(reason))
+                });
             row = row.child(div().flex().child(delete)).child(small(
                 "An open window of a deleted profile becomes an ordinary \
                      window and keeps its tabs."
@@ -1051,12 +1069,6 @@ impl SettingsView {
             swatch,
             cx,
         );
-        let remove = remove_button(format!("settings-gdel-{index}"), swatch);
-        let remove =
-            self.actionable(remove, format!("gdel:{index}"), swatch, cx);
-        let _ = self
-            .action_stop(format!("gdel:{index}"), cx)
-            .tab_stop(!read_only);
         let error = self.keys.errors.get(&format!("g{index}")).cloned();
         div()
             .flex()
@@ -1073,7 +1085,16 @@ impl SettingsView {
                     .child(command)
                     .child(profile)
                     .child(div().flex_1())
-                    .when(!read_only, |row| row.child(remove)),
+                    // A read-only row draws no remove button.
+                    .when(!read_only, |row| {
+                        row.child(self.remove_button(
+                            format!("settings-gdel-{index}"),
+                            format!("gdel:{index}"),
+                            &global.key,
+                            swatch,
+                            cx,
+                        ))
+                    }),
             )
             .when(recording, |row| row.child(self.recording_hint(swatch)))
             .children(error.map(|error| small(error, swatch.danger_text())))

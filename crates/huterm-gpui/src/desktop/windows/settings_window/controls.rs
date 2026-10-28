@@ -2,17 +2,20 @@
 //! controls the override table names.
 
 use gpui::{
-    AnyElement, Context, ElementId, Focusable as _, Window, canvas, div,
-    prelude::*, px,
+    AnyElement, Context, ElementId, Focusable as _, SharedString, Window,
+    canvas, div, prelude::*, px,
 };
 use huterm_config::settings::{Choice, Setting, SettingKind};
 use huterm_ui::components::select::Select;
+use huterm_ui::components::switch::Switch;
+use huterm_ui::components::toggle_group::ToggleGroup;
 use toml::Value;
 
 use super::super::super::overlay::Swatch;
 use super::super::super::settings::{Special, special};
 use super::{
-    SEGMENTED_MAX, SettingsView, button, modifier_label, option_label,
+    SEGMENTED_MAX, SettingsView, TRI_STATES, modifier_label, offered_modifiers,
+    option_label, toggled_modifiers,
 };
 use crate::config::Theme;
 use crate::renderer::rgb_color as color;
@@ -34,34 +37,38 @@ fn id(name: String) -> ElementId {
 }
 
 impl SettingsView {
+    /// The control for `setting`; `read_only` says why it cannot change,
+    /// when it cannot.
     pub(super) fn render_control(
         &mut self,
         setting: &'static Setting,
-        read_only: bool,
+        read_only: Option<SharedString>,
         swatch: Swatch,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
+        let locked = read_only.is_some();
         match special(&setting.path) {
             Some(Special::ThemePicker) => {
-                return self.render_themes(setting, read_only, swatch, cx);
+                return self.render_themes(setting, locked, swatch, cx);
             }
             // Search results lead to the section's editors.
             Some(Special::GlobalShortcuts | Special::QuakeProfiles) => {
-                let element =
-                    button(format!("settings-show-{}", setting.path), swatch)
-                        .child("Show");
                 return self
-                    .actionable(element, "qgo".to_owned(), swatch, cx)
+                    .action_button(
+                        format!("settings-show-{}", setting.path),
+                        "Show",
+                        "qgo".to_owned(),
+                        swatch,
+                        cx,
+                    )
                     .into_any_element();
             }
             Some(Special::Keybindings) => {
-                let element =
-                    button(format!("settings-open-{}", setting.path), swatch)
-                        .child("Open config.toml");
                 return self
-                    .actionable(
-                        element,
+                    .action_button(
+                        format!("settings-open-{}", setting.path),
+                        "Open config.toml",
                         format!("open:{}", setting.path),
                         swatch,
                         cx,
@@ -72,12 +79,10 @@ impl SettingsView {
                 return self.render_modifiers(setting, read_only, swatch, cx);
             }
             Some(Special::FontPicker) => {
-                return self
-                    .render_font(setting, read_only, swatch, window, cx);
+                return self.render_font(setting, locked, swatch, window, cx);
             }
             Some(Special::Size) => {
-                return self
-                    .render_field(setting, read_only, swatch, window, cx);
+                return self.render_field(setting, locked, swatch, window, cx);
             }
             None => {}
         }
@@ -92,12 +97,12 @@ impl SettingsView {
                 self.render_segments(setting, choices, read_only, swatch, cx)
             }
             SettingKind::Choice(choices) => {
-                self.render_select(setting, choices, read_only, swatch, cx)
+                self.render_select(setting, choices, locked, swatch, cx)
             }
             SettingKind::Integer { .. }
             | SettingKind::Number { .. }
             | SettingKind::Text { .. } => {
-                self.render_field(setting, read_only, swatch, window, cx)
+                self.render_field(setting, locked, swatch, window, cx)
             }
             SettingKind::Compound => div().into_any_element(),
         }
@@ -111,7 +116,7 @@ impl SettingsView {
     fn render_switch(
         &mut self,
         setting: &'static Setting,
-        read_only: bool,
+        read_only: Option<SharedString>,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
@@ -120,37 +125,22 @@ impl SettingsView {
             .value(setting)
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        let handle = self.stop(path, cx).tab_stop(!read_only);
-        div()
-            .id(id(format!("settings-switch-{path}")))
-            .track_focus(&handle)
-            .key_context("SettingsControl")
-            .flex_none()
-            .w(px(34.0))
-            .h(px(20.0))
-            .p(px(2.0))
-            .rounded_full()
-            .bg(if on {
-                swatch.accent
-            } else {
-                swatch.line_strong
-            })
-            .focus(|style| style.shadow(swatch.focus_ring()))
-            .when(read_only, |control| control.opacity(0.5))
-            .child(
-                div()
-                    .size(px(16.0))
-                    .rounded_full()
-                    .bg(swatch.bg)
-                    .when(on, |knob| knob.ml(px(14.0))),
-            )
-            .when(!read_only, |control| {
-                control.on_click(cx.listener(move |view, _, window, cx| {
-                    view.stop(path, cx).focus(window, cx);
-                    view.write(setting, Some(Value::Boolean(!on)), cx);
-                }))
-            })
-            .into_any_element()
+        let handle = self.stop(path, cx);
+        let focus = handle.clone();
+        Switch::new(
+            id(format!("settings-switch-{path}")),
+            setting.label.clone(),
+            on,
+            &handle,
+            swatch,
+        )
+        .key_context("SettingsControl")
+        .when_some(read_only, |switch, reason| switch.disabled(Some(reason)))
+        .on_toggle(Self::listen(cx, move |view, on, window, cx| {
+            focus.focus(window, cx);
+            view.write(setting, Some(Value::Boolean(on)), cx);
+        }))
+        .into_any_element()
     }
 
     /// An optional switch, such as automatic update checks, has a third
@@ -158,39 +148,47 @@ impl SettingsView {
     fn render_optional_bool(
         &mut self,
         setting: &'static Setting,
-        read_only: bool,
+        read_only: Option<SharedString>,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
         let current = self.value(setting).and_then(|value| value.as_bool());
-        let handle = self.stop(path, cx).tab_stop(!read_only);
-        let mut group =
-            segment_group(format!("settings-tristate-{path}"), swatch)
-                .track_focus(&handle)
-                .key_context("SettingsControl");
-        for (label, state) in
-            [("Default", None), ("On", Some(true)), ("Off", Some(false))]
-        {
-            let on = current == state;
-            group = group.child(
-                segment(
-                    format!("settings-{path}-{label}"),
-                    on,
-                    read_only,
+        let handle = self.stop(path, cx);
+        let focus = handle.clone();
+        TRI_STATES
+            .iter()
+            .fold(
+                ToggleGroup::single(
+                    id(format!("settings-tristate-{path}")),
+                    setting.label.clone(),
+                    &handle,
                     swatch,
-                )
-                .child(label)
-                .when(!read_only && !on, |segment| {
-                    segment.on_click(cx.listener(move |view, _, window, cx| {
-                        view.stop(path, cx).focus(window, cx);
+                ),
+                |group, (label, state)| {
+                    group.option(*label, *label, current == *state)
+                },
+            )
+            .key_context("SettingsControl")
+            .when_some(read_only, |group, reason| group.disabled(Some(reason)))
+            .on_select(Self::listen(
+                cx,
+                move |view, picked: SharedString, window, cx| {
+                    focus.focus(window, cx);
+                    let Some((_, state)) = TRI_STATES
+                        .iter()
+                        .find(|(label, _)| *label == picked.as_ref())
+                    else {
+                        return;
+                    };
+                    // The shown state is already chosen.
+                    if view.value(setting).and_then(|value| value.as_bool())
+                        != *state
+                    {
                         view.write(setting, state.map(Value::Boolean), cx);
-                    }))
-                }),
-            );
-        }
-        group
-            .when(read_only, |group| group.opacity(0.5))
+                    }
+                },
+            ))
             .into_any_element()
     }
 
@@ -198,39 +196,44 @@ impl SettingsView {
         &mut self,
         setting: &'static Setting,
         choices: &'static [Choice],
-        read_only: bool,
+        read_only: Option<SharedString>,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
         let selected = self.value(setting);
-        let handle = self.stop(path, cx).tab_stop(!read_only);
-        let mut group =
-            segment_group(format!("settings-segments-{path}"), swatch)
-                .track_focus(&handle)
-                .key_context("SettingsControl");
-        for choice in choices {
-            let on = selected.as_ref().and_then(Value::as_str)
-                == Some(choice.value.as_str());
-            let value = Value::String(choice.value.clone());
-            group = group.child(
-                segment(
-                    format!("settings-{path}-{}", choice.value),
-                    on,
-                    read_only,
+        let handle = self.stop(path, cx);
+        let focus = handle.clone();
+        choices
+            .iter()
+            .fold(
+                ToggleGroup::single(
+                    id(format!("settings-segments-{path}")),
+                    setting.label.clone(),
+                    &handle,
                     swatch,
-                )
-                .child(option_label(choice))
-                .when(!read_only && !on, |segment| {
-                    segment.on_click(cx.listener(move |view, _, window, cx| {
-                        view.stop(path, cx).focus(window, cx);
-                        view.write(setting, Some(value.clone()), cx);
-                    }))
-                }),
-            );
-        }
-        group
-            .when(read_only, |group| group.opacity(0.5))
+                ),
+                |group, choice| {
+                    let on = selected.as_ref().and_then(Value::as_str)
+                        == Some(choice.value.as_str());
+                    group.option(choice.value.clone(), option_label(choice), on)
+                },
+            )
+            .key_context("SettingsControl")
+            .when_some(read_only, |group, reason| group.disabled(Some(reason)))
+            .on_select(Self::listen(
+                cx,
+                move |view, picked: SharedString, window, cx| {
+                    focus.focus(window, cx);
+                    // The shown choice is already chosen.
+                    if view.value(setting).as_ref().and_then(Value::as_str)
+                        != Some(picked.as_ref())
+                    {
+                        let value = Value::String(picked.to_string());
+                        view.write(setting, Some(value), cx);
+                    }
+                },
+            ))
             .into_any_element()
     }
 
@@ -444,68 +447,56 @@ impl SettingsView {
             .into_any_element()
     }
 
+    /// The link modifiers as a multiple toggle group: one roving tab stop,
+    /// whose arrows `SettingsView::run` routes between the chips. The chip
+    /// that would leave no modifier refuses, as a link needs one, and says
+    /// so; it stays focusable, as the roving stop may rest on it.
     fn render_modifiers(
         &mut self,
         setting: &'static Setting,
-        read_only: bool,
+        read_only: Option<SharedString>,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
-        let current = self.value(setting);
-        let held = match &current {
-            Some(Value::String(text)) => text.clone(),
+        let held = match self.value(setting) {
+            Some(Value::String(text)) => text,
             _ if cfg!(target_os = "macos") => "cmd".to_owned(),
             _ => "ctrl".to_owned(),
         };
-        // macOS rejects Ctrl: Control-click opens the context menu.
-        let offered: &[&str] = if cfg!(target_os = "macos") {
-            &["cmd", "alt", "shift"]
-        } else {
-            &["ctrl", "alt", "shift"]
-        };
-        let mut chips = div().flex().flex_none().gap(px(4.0));
-        for modifier in offered {
+        let mut group = ToggleGroup::multiple(
+            id(format!("settings-modifiers-{path}")),
+            setting.label.clone(),
+            swatch,
+        )
+        .key_context("SettingsControl");
+        for modifier in offered_modifiers() {
             let on = held.split('-').any(|token| token == *modifier);
-            // A link needs at least one modifier.
-            let enabled = !read_only
-                && super::toggled_modifiers(current.clone(), modifier)
-                    .is_some();
-            let key = format!("chip:{path}:{modifier}");
-            let handle = self.action_stop(key.clone(), cx).tab_stop(enabled);
-            chips = chips.child(
-                div()
-                    .id(id(format!("settings-{path}-{modifier}")))
-                    .track_focus(&handle)
-                    .key_context("SettingsControl")
-                    .focus(|style| style.shadow(swatch.focus_ring()))
-                    .px(px(8.0))
-                    .h(px(22.0))
-                    .flex()
-                    .items_center()
-                    .rounded(px(5.0))
-                    .border_1()
-                    .border_color(if on {
-                        swatch.accent
-                    } else {
-                        swatch.line_strong
-                    })
-                    .bg(if on { swatch.selection } else { swatch.bg })
-                    .text_size(px(12.0))
-                    .text_color(swatch.fg)
-                    .child(modifier_label(modifier))
-                    .when(read_only, |chip| chip.opacity(0.5))
-                    .when(enabled, |chip| {
-                        chip.on_click(cx.listener(
-                            move |view, _, window, cx| {
-                                handle.focus(window, cx);
-                                view.act(&key, window, cx);
-                            },
-                        ))
-                    }),
-            );
+            let handle =
+                self.action_stop(format!("chip:{path}:{modifier}"), cx);
+            group =
+                group.toggle(*modifier, modifier_label(modifier), on, &handle);
+            // A read-only group's own reason speaks for every chip.
+            let refuses =
+                toggled_modifiers(Some(Value::String(held.clone())), modifier)
+                    .is_none();
+            if refuses && read_only.is_none() {
+                group = group.description("Keep at least one modifier");
+            }
         }
-        chips.into_any_element()
+        group
+            .when_some(read_only, |group, reason| group.disabled(Some(reason)))
+            .on_select(Self::listen(
+                cx,
+                move |view, modifier: SharedString, window, cx| {
+                    let key = format!("chip:{path}:{modifier}");
+                    if let Some(handle) = view.actions.get(&key) {
+                        handle.clone().focus(window, cx);
+                    }
+                    view.act(&key, window, cx);
+                },
+            ))
+            .into_any_element()
     }
 
     /// Cards for every theme `[theme] name` can select, and a note on the
@@ -623,36 +614,5 @@ fn segmented(choices: &[Choice]) -> bool {
     choices.len() <= SEGMENTED_MAX
         && choices.iter().all(|choice| {
             option_label(choice).chars().count() <= SEGMENT_LABEL_MAX
-        })
-}
-
-fn segment_group(name: String, swatch: Swatch) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id(name))
-        .flex()
-        .flex_none()
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(swatch.line_strong)
-        .focus(|style| style.shadow(swatch.focus_ring()))
-}
-
-fn segment(
-    name: String,
-    on: bool,
-    read_only: bool,
-    swatch: Swatch,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id(name))
-        .px(px(10.0))
-        .h(px(22.0))
-        .flex()
-        .items_center()
-        .text_size(px(12.0))
-        .text_color(swatch.fg)
-        .when(on, |segment| segment.bg(swatch.selection))
-        .when(!on && !read_only, |segment| {
-            segment.hover(|style| style.bg(swatch.hover))
         })
 }

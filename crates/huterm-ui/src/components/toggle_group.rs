@@ -15,14 +15,16 @@
 //!
 //! Pointer: a click selects an item (single) or toggles it (multiple). A
 //! disabled group takes no focus from a press, does not act, and shows its
-//! reason as a tooltip.
+//! reason as a tooltip. An item's own description, such as why it refuses
+//! to change, shows as its tooltip.
 //!
 //! Accessibility, single: a `RadioGroup` of `RadioButton`s whose toggled
 //! state marks the selection, with their position in the set; while the
 //! group has focus, the selected radio is its active descendant, which
 //! assistive technology follows. Multiple: a `Group` of `Button`s whose
 //! toggled state follows each item. Each item reports a disabled group's
-//! disabled state, since AccessKit states are per node.
+//! disabled state, since AccessKit states are per node, and its own
+//! description as its accessible description.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -55,6 +57,7 @@ struct Item {
     on: bool,
     /// The item's own handle in a multiple group.
     focus: Option<FocusHandle>,
+    description: Option<SharedString>,
 }
 
 type Select = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
@@ -151,6 +154,7 @@ impl ToggleGroup {
             label: label.into(),
             on,
             focus: None,
+            description: None,
         });
         self
     }
@@ -175,7 +179,20 @@ impl ToggleGroup {
             label: label.into(),
             on,
             focus: Some(focus.clone()),
+            description: None,
         });
+        self
+    }
+
+    /// Describes the item added last, as its tooltip and accessible
+    /// description: why it refuses to change, for example.
+    #[must_use]
+    pub fn description(mut self, text: impl Into<SharedString>) -> Self {
+        let item = self.items.last_mut();
+        debug_assert!(item.is_some(), "`description` follows an item");
+        if let Some(item) = item {
+            item.description = Some(text.into());
+        }
         self
     }
 
@@ -265,66 +282,77 @@ fn render_item(
     let id = ElementId::NamedChild(parent, item.value.clone());
     let focus = item.focus.map(|focus| focus.tab_stop(enabled && stop));
     let value = item.value.clone();
-    let element = div()
-        .id(id)
-        .role(if single {
-            gpui::Role::RadioButton
-        } else {
-            gpui::Role::Button
-        })
-        .aria_label(item.label.clone())
-        .aria_toggled(if item.on {
-            Toggled::True
-        } else {
-            Toggled::False
-        })
-        // AccessKit positions are zero-based; the group carries the size.
-        .aria_position_in_set(index)
-        // Focus stays on a single group, so its selection is what assistive
-        // technology follows.
-        .when(followed, StatefulInteractiveElement::aria_active_descendant)
-        .when_some(focus.as_ref(), InteractiveElement::track_focus)
-        .when_some(key_context, |element, context| {
-            element.key_context(context.as_ref())
-        })
-        .px(px(10.0))
-        .h(px(22.0))
-        .flex()
-        .items_center()
-        .text_size(size::TEXT_CONTROL)
-        .text_color(tokens.fg)
-        .when(!single, |element| {
-            element
-                .rounded(px(5.0))
-                .border_1()
-                .border_color(if item.on {
-                    tokens.accent
-                } else {
-                    tokens.line_strong
+    let element =
+        div()
+            .id(id)
+            .role(if single {
+                gpui::Role::RadioButton
+            } else {
+                gpui::Role::Button
+            })
+            .aria_label(item.label.clone())
+            // A disabled group's own reason is the one that applies.
+            .when_some(
+                item.description.clone().filter(|_| enabled),
+                |element, text| {
+                    element.aria_description(text.clone()).tooltip(
+                        move |_, cx| Tooltip::view(text.clone(), tokens, cx),
+                    )
+                },
+            )
+            .aria_toggled(if item.on {
+                Toggled::True
+            } else {
+                Toggled::False
+            })
+            // AccessKit positions are zero-based; the group carries the size.
+            .aria_position_in_set(index)
+            // Focus stays on a single group, so its selection is what assistive
+            // technology follows.
+            .when(followed, StatefulInteractiveElement::aria_active_descendant)
+            .when_some(focus.as_ref(), InteractiveElement::track_focus)
+            .when_some(key_context, |element, context| {
+                element.key_context(context.as_ref())
+            })
+            .px(px(10.0))
+            .h(px(22.0))
+            .flex()
+            .items_center()
+            .text_size(size::TEXT_CONTROL)
+            .text_color(tokens.fg)
+            .when(!single, |element| {
+                element
+                    .rounded(px(5.0))
+                    .border_1()
+                    // A chip's border alone shows its state, so it keeps 3:1.
+                    .border_color(if item.on {
+                        tokens.ring()
+                    } else {
+                        tokens.state_line()
+                    })
+            })
+            .when(item.on, |element| element.bg(tokens.selection))
+            .when(enabled && !item.on, |element| {
+                element.hover(|style| style.bg(tokens.hover))
+            })
+            .when(enabled, |element| {
+                element.active(|style| style.bg(tokens.selection_pressed()))
+            })
+            // A focusable item takes focus from a press before the group's own
+            // guard sees it, so a disabled item refuses the press itself.
+            .when(!enabled && focus.is_some(), |element| {
+                element.on_mouse_down(MouseButton::Left, |_, window, _| {
+                    window.prevent_default();
                 })
-        })
-        .when(item.on, |element| element.bg(tokens.selection))
-        .when(enabled && !item.on, |element| {
-            element.hover(|style| style.bg(tokens.hover))
-        })
-        .when(enabled, |element| {
-            element.active(|style| style.bg(tokens.selection_pressed()))
-        })
-        // A focusable item takes focus from a press before the group's own
-        // guard sees it, so a disabled item refuses the press itself.
-        .when(!enabled && focus.is_some(), |element| {
-            element.on_mouse_down(MouseButton::Left, |_, window, _| {
-                window.prevent_default();
             })
-        })
-        .when_some(select, |element, select| {
-            element.on_click(move |event, window, cx| {
-                if !from_keyboard(event) {
-                    select(value.clone(), window, cx);
-                }
+            .when_some(select, |element, select| {
+                element.on_click(move |event, window, cx| {
+                    if !from_keyboard(event) {
+                        select(value.clone(), window, cx);
+                    }
+                })
             })
-        })
-        .child(item.label);
+            .child(item.label);
     let element = match &focus {
         Some(focus) => focus::ring(element, focus, tokens, window, cx),
         None => element,
@@ -549,7 +577,8 @@ mod tests {
         picks: Rc<RefCell<Vec<SharedString>>>,
     }
 
-    /// A multiple group of three chips with Alt on, then a focusable button.
+    /// A multiple group of three chips with Alt on and described, then a
+    /// focusable button.
     fn multiple(
         cx: &mut TestAppContext,
         disabled: bool,
@@ -567,7 +596,13 @@ mod tests {
                 .fold(
                     ToggleGroup::multiple("mods", "Link modifiers", tokens()),
                     |group, (label, focus)| {
-                        group.toggle(*label, *label, *label == "Alt", focus)
+                        let on = *label == "Alt";
+                        let group = group.toggle(*label, *label, on, focus);
+                        if on {
+                            group.description("Keep at least one")
+                        } else {
+                            group
+                        }
                     },
                 )
                 .on_select(move |value, _, _| seen.borrow_mut().push(value));
@@ -603,6 +638,7 @@ mod tests {
             let alt = &a11y_labelled(window, "Alt")["aria"];
             assert_eq!(alt["role"], "Button");
             assert_eq!(alt["toggled"], "True");
+            assert_eq!(alt["description"], "Keep at least one");
             assert_eq!(
                 a11y_labelled(window, "Cmd")["aria"]["toggled"],
                 "False"

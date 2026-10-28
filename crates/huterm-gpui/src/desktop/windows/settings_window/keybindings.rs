@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, Context, ElementId, Entity, FocusHandle, Focusable, Keystroke,
-    Subscription, Window, div, prelude::*, px,
+    SharedString, Subscription, Window, div, prelude::*, px,
 };
 use huterm_protocol::{
     ArgumentKind, ArgumentSpec, CommandId, CommandSpec, NamedLayout,
@@ -33,7 +33,11 @@ use super::saving::Queued;
 use super::{MenuFor, SettingsView, button};
 use crate::assets::Icon;
 use crate::keymap::{BindingState, Inventory, ListedBinding, Origin, Platform};
+use huterm_ui::components::badge::{Tone as BadgeTone, badge};
+use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::input::{Changed, Chrome, Input};
+use huterm_ui::components::switch::Switch;
+use huterm_ui::components::toggle_group::ToggleGroup;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
@@ -398,7 +402,42 @@ pub(super) fn interned(name: &str) -> &'static str {
 
 impl SettingsView {
     pub(super) fn keys_read_only(&self) -> bool {
-        self.locked() || self.keys.inventory.is_none()
+        self.keys_lock_reason().is_some()
+    }
+
+    /// Why the shortcut controls are read-only, if they are.
+    pub(super) fn keys_lock_reason(&self) -> Option<SharedString> {
+        self.lock_reason().or_else(|| {
+            self.keys
+                .inventory
+                .is_none()
+                .then(|| "Read-only until the keybindings load".into())
+        })
+    }
+
+    /// Steps the shortcut filter, which is one tab stop, to the next or
+    /// previous segment, as the arrows do; false when it lacks focus.
+    pub(super) fn step_filter(
+        &mut self,
+        forward: bool,
+        window: &Window,
+    ) -> bool {
+        if self.focused_action(window).as_deref() != Some("kfilter") {
+            return false;
+        }
+        let index = Filter::ALL
+            .iter()
+            .position(|(filter, ..)| *filter == self.keys.filter)
+            .unwrap_or(0);
+        let next = if forward {
+            (index + 1).min(Filter::ALL.len() - 1)
+        } else {
+            index.saturating_sub(1)
+        };
+        if let Some((filter, ..)) = Filter::ALL.get(next) {
+            self.keys.filter = *filter;
+        }
+        true
     }
 
     /// Whether a command has a user entry or a default that is not active.
@@ -988,6 +1027,15 @@ impl SettingsView {
     ) -> Entity<Input> {
         let text = self.key_field_text(key).unwrap_or_default();
         self.key_field(key.to_owned(), text, "", window, cx)
+    }
+
+    /// The shortcut filter's segment, by its value.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(in crate::desktop::windows) fn key_filter(&self) -> &'static str {
+        Filter::ALL
+            .iter()
+            .find(|(filter, ..)| *filter == self.keys.filter)
+            .map_or("", |(_, name, _)| name)
     }
 
     /// The file's text for a field key, or `None` when its row is gone.
@@ -1713,12 +1761,17 @@ impl SettingsView {
         }
         let mut card = card(swatch);
         for (index, (entry, key)) in inventory.unbinds.iter().enumerate() {
-            let remove = self.actionable(
-                remove_button(format!("settings-kunbind-{entry}"), swatch),
-                format!("kunbind:{entry}"),
-                swatch,
-                cx,
-            );
+            let remove = self
+                .remove_button(
+                    format!("settings-kunbind-{entry}"),
+                    format!("kunbind:{entry}"),
+                    key,
+                    swatch,
+                    cx,
+                )
+                .when_some(self.keys_lock_reason(), |button, reason| {
+                    button.disabled(Some(reason))
+                });
             card = card.child(
                 div()
                     .flex()
@@ -1754,36 +1807,31 @@ impl SettingsView {
     ) -> AnyElement {
         let search = self.keys.search.clone();
         self.drawn.insert("search".to_owned());
-        // Outlined rather than filled, so the selected segment's selection
-        // and the others' hover sit on the plain pane, where they read.
-        let mut segments = div()
-            .flex()
-            .flex_none()
-            .p(px(2.0))
-            .gap(px(2.0))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(swatch.line_strong);
-        for (filter, name, label) in Filter::ALL {
-            let on = self.keys.filter == filter;
-            let segment = div()
-                .id(id(format!("settings-kfilter-{name}")))
-                .px(px(8.0))
-                .h(px(22.0))
-                .flex()
-                .items_center()
-                .rounded(px(4.0))
-                .text_size(px(12.0))
-                .text_color(if on { swatch.fg } else { swatch.muted })
-                .when(on, |segment| segment.bg(swatch.selection))
-                .child(label);
-            segments = segments.child(self.actionable(
-                segment,
-                format!("kfilter:{name}"),
-                swatch,
+        // One tab stop whose arrows step the filter, as a segmented
+        // control's do.
+        let handle = self.action_stop("kfilter".to_owned(), cx);
+        let focus = handle.clone();
+        let segments = Filter::ALL
+            .iter()
+            .fold(
+                ToggleGroup::single(
+                    "settings-kfilter",
+                    "Show shortcuts",
+                    &handle,
+                    swatch,
+                ),
+                |group, (filter, name, label)| {
+                    group.option(*name, *label, self.keys.filter == *filter)
+                },
+            )
+            .key_context("SettingsControl")
+            .on_select(Self::listen(
                 cx,
+                move |view, name: SharedString, window, cx| {
+                    focus.focus(window, cx);
+                    view.act(&format!("kfilter:{name}"), window, cx);
+                },
             ));
-        }
         // The filter wraps below the search when the pane is narrow.
         div()
             .flex()
@@ -1965,16 +2013,19 @@ impl SettingsView {
                 restorable(inventory, spec.id)
             });
         if !entries.is_empty() {
-            let element =
-                button(format!("settings-kreset-{}", spec.id.as_str()), swatch)
-                    .when(read_only, |button| button.opacity(0.5))
-                    .child("Restore defaults");
-            buttons = buttons.child(self.actionable(
-                element,
-                format!("kreset:{}", spec.id.as_str()),
-                swatch,
-                cx,
-            ));
+            let reason = self.keys_lock_reason();
+            buttons = buttons.child(
+                self.action_button(
+                    format!("settings-kreset-{}", spec.id.as_str()),
+                    "Restore defaults",
+                    format!("kreset:{}", spec.id.as_str()),
+                    swatch,
+                    cx,
+                )
+                .when_some(reason, |button, reason| {
+                    button.disabled(Some(reason))
+                }),
+            );
             // With no defaults, removing what the user added is all the
             // button does, and it needs no note.
             let has_defaults =
@@ -2170,16 +2221,15 @@ impl SettingsView {
                     false,
                 ) => ("Default", swatch.muted),
             };
-            div()
-                .flex_none()
-                .w(px(TAG_WIDTH))
-                .flex()
-                .justify_center()
-                .rounded(px(4.0))
-                .bg(swatch.chip)
-                .text_size(px(10.5))
-                .text_color(color)
-                .child(label)
+            // The text color tells an active custom shortcut from the rest.
+            badge(
+                id(format!("settings-ktag-{name}")),
+                label,
+                BadgeTone::Neutral,
+                swatch,
+            )
+            .w(px(TAG_WIDTH))
+            .text_color(color)
         };
         let switchable = matches!(
             listed.state,
@@ -2187,44 +2237,41 @@ impl SettingsView {
                 | BindingState::Disabled(_)
                 | BindingState::SwitchedOff
         );
+        let reason = self.keys_lock_reason();
         let toggle = switchable.then(|| {
-            let on = active;
-            let element = div()
-                .id(id(format!("settings-kon-{name}")))
-                .flex_none()
-                .w(px(30.0))
-                .h(px(18.0))
-                .p(px(2.0))
-                .rounded_full()
-                .bg(if on {
-                    swatch.accent
-                } else {
-                    swatch.line_strong
-                })
-                .when(read_only, |control| control.opacity(0.5))
-                .child(
-                    div()
-                        .size(px(14.0))
-                        .rounded_full()
-                        .bg(swatch.bg)
-                        .when(on, |knob| knob.ml(px(12.0))),
-                );
-            let element =
-                self.actionable(element, format!("kon:{name}"), swatch, cx);
-            let _ = self
-                .action_stop(format!("kon:{name}"), cx)
-                .tab_stop(!read_only);
-            element
+            let key = format!("kon:{name}");
+            let handle = self.action_stop(key.clone(), cx);
+            let focus = handle.clone();
+            Switch::new(
+                id(format!("settings-kon-{name}")),
+                format!("{} on {}", spec.title, listed.binding.key),
+                active,
+                &handle,
+                swatch,
+            )
+            .key_context("SettingsControl")
+            .when_some(reason.clone(), |switch, reason| {
+                switch.disabled(Some(reason))
+            })
+            .on_toggle(Self::listen(
+                cx,
+                move |view, _, window, cx| {
+                    focus.focus(window, cx);
+                    view.act(&key, window, cx);
+                },
+            ))
         });
         let remove = (user && listed.entry.is_some()).then(|| {
-            let element =
-                remove_button(format!("settings-kdel-{name}"), swatch);
-            let element =
-                self.actionable(element, format!("kdel:{name}"), swatch, cx);
-            let _ = self
-                .action_stop(format!("kdel:{name}"), cx)
-                .tab_stop(!read_only);
-            element
+            // A key can repeat under different conditions, so the name
+            // carries the command, as the row's switch does.
+            self.remove_button(
+                format!("settings-kdel-{name}"),
+                format!("kdel:{name}"),
+                &format!("{} on {}", spec.title, listed.binding.key),
+                swatch,
+                cx,
+            )
+            .when_some(reason, |button, reason| button.disabled(Some(reason)))
         });
         let messages = self.shortcut_messages(name, listed, swatch);
         // Fixed slots keep each row's controls in line with the others.
@@ -2249,8 +2296,8 @@ impl SettingsView {
                     .child(key)
                     .child(when_box)
                     .child(slot(TAG_WIDTH).child(tag))
-                    .child(slot(30.0).children(toggle))
-                    .child(slot(20.0).children(remove)),
+                    .child(slot(34.0).children(toggle))
+                    .child(slot(24.0).children(remove)),
             )
             .when(!arguments.is_empty(), |row| {
                 row.child(
@@ -2553,26 +2600,29 @@ fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
     summary
 }
 
-/// A small × that removes an entry from the file.
-pub(super) fn remove_button(
-    name: String,
-    swatch: Swatch,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id(name))
-        .flex()
-        .items_center()
-        .justify_center()
-        .size(px(20.0))
-        .rounded(px(4.0))
-        .text_color(swatch.muted)
-        .hover(|style| style.bg(swatch.hover).text_color(swatch.fg))
-        .child(
-            gpui::svg()
-                .path(Icon::X.asset_path())
-                .size(px(12.0))
-                .text_color(swatch.muted),
-        )
+impl SettingsView {
+    /// A small × that removes an entry from the file, by running the
+    /// action `key` names. It is named "Remove `subject`", where `subject`
+    /// is the shortcut, or the command and its shortcut where a key can
+    /// repeat, so each row's button reads differently.
+    pub(super) fn remove_button(
+        &mut self,
+        name: String,
+        key: String,
+        subject: &str,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Button {
+        self.action_button(name, format!("Remove {subject}"), key, swatch, cx)
+            .variant(Variant::Ghost)
+            .icon(
+                gpui::svg()
+                    .path(Icon::X.asset_path())
+                    .size(px(12.0))
+                    .text_color(swatch.muted),
+            )
+            .icon_only()
+    }
 }
 
 pub(super) fn card(swatch: Swatch) -> gpui::Div {

@@ -393,10 +393,12 @@ are schema-required.
 `app_command_availability` lists every Application command; a new one it
 omits is refused as unknown from every shortcut and menu, while a test that
 calls the handler directly still passes. Settings binds Space and the arrows
-under `SettingsControl`, which only its switches, selects, segmented controls,
-and section rows carry: a binding under `Settings` matched inside a focused
-text field too, because the field's `Palette` context binds no Space, and ate
-the space.
+under `SettingsControl`, which only its controls and section rows carry: a
+binding under `Settings` matched inside a focused text field too, because the
+field's `Palette` context binds no Space, and ate the space. `SettingsView::run`
+routes the arrows to the focused modifier chip's group (`step_chips`) and the
+shortcut filter (`step_filter`) before `step`, which finds only settings and
+would drop them; `step_setting` gives a switch no steps.
 
 A command whose arguments are all unprompted, such as `resize_pane_left` or
 `close_tab`, has no palette slot. `SlotEditor::new` returns `None` for it, and
@@ -583,7 +585,20 @@ along the focus path, so the tracker notes keys with an app-wide keystroke
 interceptor. It records during paint, after lists that render rows while
 prepainting. The same script test rejects those styles and `focus_ring`
 references in `huterm-ui` outside `focus.rs`; `huterm-gpui` keeps its own until
-the migrations replace them.
+the migrations replace them. In the Settings window it counts the GPUI focus
+styles left for later migrations, so lower the count when one moves.
+
+Settings builds its buttons, links, switches, segmented controls, tri-states,
+modifier chips, tags, and counts from `huterm-ui`: `action_button` makes a
+`Button` that runs an action key, and `SettingsView::listen` adapts a
+component callback to the view, as `cx.listener` does for element events. A
+read-only control passes its reason (`read_only_reason`, `lock_reason`,
+`keys_lock_reason`) to the component's `disabled`, which shows it as a
+tooltip and accessible description and refuses a press's focus; the command
+paths (`step`, `toggle`) refuse a read-only control themselves, because a
+control can turn read-only while it has focus. Tests click these components
+through `simulate_a11y_action` from the window, not inside a view update, since
+the click updates the view.
 
 Text fields are `huterm_ui::components::input::Input` entities, and
 `huterm_ui::text` holds the UTF-16 range conversions that `Input` and

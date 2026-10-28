@@ -44,6 +44,7 @@ use huterm_ui::components::menu::{
     MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole,
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
+use huterm_ui::components::toggle_group::roving_target;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
@@ -383,7 +384,27 @@ impl SettingsView {
     /// read has not finished, so an edit cannot race the default file's
     /// creation or build on a file the window has not seen.
     fn locked(&self) -> bool {
-        self.status.invalid() || self.base.is_none()
+        self.lock_reason().is_some()
+    }
+
+    /// Why every control that writes the file is read-only, if they are;
+    /// see [`Self::locked`].
+    fn lock_reason(&self) -> Option<SharedString> {
+        if self.status.invalid() {
+            Some("Read-only until config.toml is fixed".into())
+        } else if self.base.is_none() {
+            Some("Read-only until config.toml is read".into())
+        } else {
+            None
+        }
+    }
+
+    /// Why `setting`'s control is read-only, which the control shows as its
+    /// tooltip and accessible description, or `None` when it can change.
+    fn read_only_reason(&self, setting: &Setting) -> Option<SharedString> {
+        foreign_note(setting)
+            .map(SharedString::from)
+            .or_else(|| self.lock_reason())
     }
 
     /// Brings every text field to the current theme's colors, which a
@@ -765,9 +786,9 @@ impl SettingsView {
         }
     }
 
-    /// Steps the focused control: a switch on or off, a choice to its
+    /// Steps the focused control: a tri-state or a choice to its
     /// neighbour, a number by one unit. A number field steps from its
-    /// typed value.
+    /// typed value. A read-only control refuses.
     fn step(
         &mut self,
         forward: bool,
@@ -777,7 +798,41 @@ impl SettingsView {
         let Some(setting) = self.focused_setting(window, cx) else {
             return;
         };
-        self.step_setting(setting, forward, cx);
+        if self.read_only_reason(setting).is_none() {
+            self.step_setting(setting, forward, cx);
+        }
+    }
+
+    /// Moves focus to the next or previous modifier chip, wrapping, when a
+    /// chip has focus; the chips are one roving tab stop, as a multiple
+    /// toggle group is. False when no chip has focus.
+    fn step_chips(
+        &self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let Some(path) = self
+            .focused_action(window)
+            .as_deref()
+            .and_then(|key| key.strip_prefix("chip:"))
+            .and_then(|chip| chip.rsplit_once(':'))
+            .map(|(path, _)| path.to_owned())
+        else {
+            return false;
+        };
+        let chips: Vec<FocusHandle> = offered_modifiers()
+            .iter()
+            .filter_map(|modifier| {
+                self.actions
+                    .get(&format!("chip:{path}:{modifier}"))
+                    .cloned()
+            })
+            .collect();
+        if let Some(target) = roving_target(&chips, forward, window) {
+            target.focus(window, cx);
+        }
+        true
     }
 
     fn step_setting(
@@ -786,6 +841,20 @@ impl SettingsView {
         forward: bool,
         cx: &mut Context<'_, Self>,
     ) {
+        if matches!(setting.kind, SettingKind::Bool) {
+            // A switch has no steps: Space and Return toggle it, as
+            // WAI-ARIA's switch pattern has it, so moving through the form
+            // writes nothing. A tri-state steps as its radios read.
+            if !self.has_default(setting) {
+                let current =
+                    self.value(setting).and_then(|value| value.as_bool());
+                let next = tri_stepped(current, forward);
+                if next != current {
+                    self.write(setting, next.map(Value::Boolean), cx);
+                }
+            }
+            return;
+        }
         let field = self.fields.get(setting.path.as_str()).cloned();
         let typed = field
             .as_ref()
@@ -810,7 +879,10 @@ impl SettingsView {
     }
 
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let Some(setting) = self.focused_setting(window, cx) else {
+        let Some(setting) = self
+            .focused_setting(window, cx)
+            .filter(|setting| self.read_only_reason(setting).is_none())
+        else {
             return;
         };
         match &setting.kind {
@@ -1094,8 +1166,15 @@ impl SettingsView {
                     self.toggle(window, cx);
                 }
             }
-            ids::SETTINGS_INCREASE => self.step(true, window, cx),
-            ids::SETTINGS_DECREASE => self.step(false, window, cx),
+            // The arrows move between chips and step everything else.
+            ids::SETTINGS_INCREASE | ids::SETTINGS_DECREASE => {
+                let forward = invocation.id == ids::SETTINGS_INCREASE;
+                if !self.step_chips(forward, window, cx)
+                    && !self.step_filter(forward, window)
+                {
+                    self.step(forward, window, cx);
+                }
+            }
             ids::SETTINGS_RESET => {
                 if let Some(command) = self
                     .focused_action(window)
@@ -1428,9 +1507,29 @@ fn size_value(text: &str) -> Option<Value> {
     }
 }
 
-/// The value one step from `current`: a switch on or off, a choice's
-/// neighbour, or a number one unit up or down. A `Number` written in
-/// integer form steps as a float.
+/// A tri-state's states in the order its control draws them; `None`
+/// leaves the choice to the setting's owner and removes the key.
+const TRI_STATES: [(&str, Option<bool>); 3] =
+    [("Default", None), ("On", Some(true)), ("Off", Some(false))];
+
+/// The tri-state one step from `current` in [`TRI_STATES`], stopping at
+/// the ends as a choice does.
+fn tri_stepped(current: Option<bool>, forward: bool) -> Option<bool> {
+    let index = TRI_STATES
+        .iter()
+        .position(|(_, state)| *state == current)
+        .unwrap_or(0);
+    let next = if forward {
+        (index + 1).min(TRI_STATES.len() - 1)
+    } else {
+        index.saturating_sub(1)
+    };
+    TRI_STATES.get(next).map_or(current, |(_, state)| *state)
+}
+
+/// The value one step from `current`: a choice's neighbour, or a number
+/// one unit up or down. A `Number` written in integer form steps as a
+/// float.
 fn stepped(
     setting: &Setting,
     current: Option<Value>,
@@ -1438,7 +1537,6 @@ fn stepped(
 ) -> Option<Value> {
     let delta: i64 = if forward { 1 } else { -1 };
     match (&setting.kind, current) {
-        (SettingKind::Bool, _) => Some(Value::Boolean(forward)),
         (SettingKind::Choice(choices), current) => {
             let index = choices.iter().position(|choice| {
                 current.as_ref().and_then(Value::as_str)
@@ -1560,13 +1658,25 @@ fn button(id: impl Into<SharedString>, swatch: Swatch) -> Stateful<gpui::Div> {
         .active(|style| style.bg(swatch.pressed()))
 }
 
-fn link(id: impl Into<SharedString>, swatch: Swatch) -> Stateful<gpui::Div> {
-    div()
-        .id(gpui::ElementId::Name(id.into()))
-        .flex_none()
-        .text_size(px(11.5))
-        .text_color(swatch.accent_text())
-        .hover(gpui::Styled::underline)
+/// The link modifiers Settings offers. macOS rejects Ctrl: Control-click
+/// opens the context menu.
+fn offered_modifiers() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        &["cmd", "alt", "shift"]
+    } else {
+        &["ctrl", "alt", "shift"]
+    }
+}
+
+/// What a setting for another platform says: that it applies there only.
+fn foreign_note(setting: &Setting) -> Option<String> {
+    let platform =
+        setting.platform.filter(|platform| *platform != current())?;
+    let name = match platform {
+        SettingPlatform::Macos => "macOS",
+        SettingPlatform::Linux => "Linux",
+    };
+    Some(format!("{name} only. Set in config.toml and ignored here."))
 }
 
 fn modifier_label(modifier: &str) -> &'static str {
@@ -1771,6 +1881,19 @@ impl SettingsView {
             .find_map(|(stop, handle)| (*stop == path).then(|| handle.clone()))
             .expect("a drawn control");
         handle.focus(window, cx);
+    }
+
+    /// The focus handle of setting `path`'s control.
+    pub(super) fn stop_handle(&self, path: &str) -> FocusHandle {
+        self.stops
+            .iter()
+            .find_map(|(stop, handle)| (*stop == path).then(|| handle.clone()))
+            .expect("a drawn control")
+    }
+
+    /// The focus handle of the control an action key names.
+    pub(super) fn action_handle(&self, key: &str) -> FocusHandle {
+        self.actions.get(key).cloned().expect("a drawn control")
     }
 
     /// Shows `section`, as clicking it in the sidebar does.

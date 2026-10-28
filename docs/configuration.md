@@ -38,7 +38,8 @@ waits for pending saves.
 
 Theme colors and `[themes]` are edited in the file for now. In the window,
 Tab moves between controls, Space or Return toggles a switch or opens a
-select, the arrow keys step a control, Cmd+Backspace on macOS or
+select, the arrow keys step a segmented control and move between the link
+modifier chips but leave a switch alone, Cmd+Backspace on macOS or
 Ctrl+Backspace on Linux resets the focused setting, and Return in the search
 field moves to the first match.
 

@@ -110,9 +110,11 @@ impl RenderOnce for Switch {
         let on = self.on;
         let focus = self.focus.clone().tab_stop(enabled);
         let reason = self.disabled.clone().filter(|reason| !reason.is_empty());
+        // The off track alone shows the state, so it keeps 3:1.
+        let off = tokens.state_line();
         let deeper = |amount: f32| Hsla {
-            a: (tokens.line_strong.a + amount).min(1.0),
-            ..tokens.line_strong
+            a: (off.a + amount).min(1.0),
+            ..off
         };
         let (track, hover, pressed) = if on {
             (
@@ -121,7 +123,7 @@ impl RenderOnce for Switch {
                 tokens.accent_pressed(),
             )
         } else {
-            (tokens.line_strong, deeper(0.08), deeper(0.16))
+            (off, deeper(0.08), deeper(0.16))
         };
         let switch = div()
             .id(self.id)
