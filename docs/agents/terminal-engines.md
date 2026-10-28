@@ -82,9 +82,9 @@ isolation also prevents enclosing Git tags from changing Ghostty's generated
 version data. In a repository with several checkouts, preparation reuses a
 matching archive from another one instead of downloading; see
 [linked worktrees](development.md#linked-worktrees).
-The adapter disables Kitty graphics, the Glyph protocol, APC buffering, and
-scrollback compression, uses the portable CPU baseline, and limits history by
-the configured rows and optional size, as
+The adapter disables Kitty graphics, the Glyph protocol, and APC buffering,
+does not yet schedule scrollback compression, uses the portable CPU baseline,
+and limits history by the configured rows and optional size, as
 [the huterm-ghostty crate](#the-huterm-ghostty-crate) describes.
 
 ## Runtime behavior
@@ -189,12 +189,23 @@ mise run bench:engine
 mise run bench:scroll
 mise run bench:renderer
 mise run bench:links
+mise run bench:compression
 ```
 
 The engine benchmark reports the fixed Ghostty revision, p50/p95 elapsed
 processing and snapshot times, row reuse, throughput, and retained history.
 Its `resize-history` fixture also reports resize times and peak RSS, and gates
 both at sizes within the maximum.
+The compression benchmark saturates the maximum history with build-log,
+per-word colored, and per-cell truecolor output, which grows pages to about
+2.3 MiB. It reports the saving, each step's elapsed time, and the first-touch
+cost of scrolling into compressed history, and gates the build-log saving and
+the step p95 of the build-log and per-cell fixtures. Its resize fixture drains
+a pass before each width change and gates the median and, on Linux, the peak
+resident size from a `VmHWM` reset just before the first resize, so the fill
+does not count. Each benchmark holds up to 400 MiB, so the task runs each in
+its own process, and their names must never match the `engine_benchmark`
+filter, or they would inflate `resize-history`'s peak.
 The scroll and link gates keep their existing thresholds and queue limits.
 The link benchmark runs its viewport, above-viewport, mid-history, long-line,
 and scrolled fixtures with empty scrollback and with scrollback saturated at
@@ -383,6 +394,15 @@ checks every key's type against the bytes the library writes or reads. Tests
 read native-written memory only at declared fields and the tag-selected union
 member, taken from the manifest: foreign writes may leave padding
 uninitialized.
+
+Scrollback compression is exposed as plain values only: `compress_step` runs
+one incremental step, `compression_activity` returns Ghostty's opaque token,
+and `memory_usage` reads page metadata without restoring anything. Full mode
+stays unbound because it can stall on large history. A step after `Complete`
+starts a new pass that may find nothing, so callers compare the token instead
+of stepping. Reading any cell of a compressed page through a grid reference or
+render state restores that page and leaves it resident until the next pass.
+`compression_tests.rs` pins these contracts.
 
 The build script reads `GHOSTTY_SOURCE_DIR`, `HUTERM_GHOSTTY_OPTIMIZE` (Debug,
 ReleaseSafe, ReleaseFast, or ReleaseSmall), `HUTERM_GHOSTTY_CPU`,

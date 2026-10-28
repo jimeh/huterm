@@ -35,6 +35,7 @@ pub(crate) mod terminal_data {
         "MODE",
         "VT_GROUND",
         "CLIPBOARD_WRITE_MAX_BYTES",
+        "MEMORY_USAGE",
     ];
 
     /// `GHOSTTY_TERMINAL_DATA_COLS`.
@@ -260,6 +261,16 @@ pub(crate) mod terminal_data {
         const KEY: ffi::GhosttyTerminalData =
             ffi::GHOSTTY_TERMINAL_DATA_CLIPBOARD_WRITE_MAX_BYTES;
         type Out = usize;
+    }
+
+    /// `GHOSTTY_TERMINAL_DATA_MEMORY_USAGE`.
+    #[derive(Debug)]
+    pub(crate) enum MemoryUsage {}
+
+    impl super::super::TerminalData for MemoryUsage {
+        const KEY: ffi::GhosttyTerminalData =
+            ffi::GHOSTTY_TERMINAL_DATA_MEMORY_USAGE;
+        type Out = ffi::GhosttyTerminalMemoryUsage;
     }
 }
 
@@ -831,6 +842,12 @@ impl super::SizedStruct for ffi::GhosttySelection {
 }
 
 impl super::SizedStruct for ffi::GhosttyTerminalSelectionFormatOptions {
+    fn size_mut(&mut self) -> &mut usize {
+        &mut self.size
+    }
+}
+
+impl super::SizedStruct for ffi::GhosttyTerminalMemoryUsage {
     fn size_mut(&mut self) -> &mut usize {
         &mut self.size
     }

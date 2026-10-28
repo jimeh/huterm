@@ -505,6 +505,28 @@ depends = ["ghostty:prepare"]
 description = "Measure release engine processing and snapshot elapsed times"
 run = "bash scripts/build-exec.sh cargo test --release --locked -p huterm-core engine_benchmark -- --ignored --nocapture --test-threads=1"
 
+[tasks."bench:compression"]
+depends = ["ghostty:prepare"]
+description = "Measure scrollback compression savings, step times, first access, and compressed reflow"
+# Each benchmark holds up to 400 MiB of history and gates a peak resident
+# size, so each runs in its own process.
+run = '''
+set -eu
+for name in compression_benchmark_steps compression_benchmark_resize; do
+  output=$(bash scripts/build-exec.sh cargo test --release --locked -p huterm-core \
+    --lib "engine::compression_benchmark::$name" -- --ignored --nocapture --exact 2>&1) || {
+    printf '%s\n' "$output"
+    exit 1
+  }
+  printf '%s\n' "$output"
+  # A renamed or moved benchmark would otherwise run no test and pass.
+  case "$output" in
+    *"test result: ok. 1 passed"*) ;;
+    *) echo "bench:compression: $name ran no test" >&2; exit 1 ;;
+  esac
+done
+'''
+
 [tasks."ghostty:prepare"]
 description = "Verify pinned source and Zig for the Ghostty engine"
 run = "bash scripts/build-exec.sh bun scripts/prepare-ghostty.ts"
@@ -1122,7 +1144,7 @@ esac
 '''
 
 [tasks."ci:benchmarks"]
-description = "Run CI scroll, output latency, keystroke snapshot, link lookup, and history reflow budgets for Ghostty"
+description = "Run CI scroll, output latency, keystroke snapshot, link lookup, history reflow, and scrollback compression budgets for Ghostty"
 depends = ["verify:toolchain"]
 run = [
   "mise run bench:scroll",
@@ -1130,6 +1152,7 @@ run = [
   "HUTERM_OUTPUT_LATENCY_SNAPSHOTS_PER_KEY_BUDGET=1.5 mise run bench:output-latency -- keys",
   "mise run bench:links",
   "mise run bench:engine",
+  "mise run bench:compression",
 ]
 
 [tasks."smoke:renderer"]

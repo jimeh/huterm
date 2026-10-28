@@ -72,6 +72,52 @@ pub struct Scrollbar {
     pub len: u64,
 }
 
+/// Whether this target can compress scrollback. Ghostty compresses where it
+/// can release a page's physical memory while keeping its address range:
+/// 64-bit Linux, macOS, Windows and FreeBSD, which covers every target
+/// Huterm builds for.
+pub const COMPRESSION_SUPPORTED: bool = cfg!(target_pointer_width = "64");
+
+/// The outcome of one incremental compression step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Compression {
+    /// Cold history remains; take another step while the terminal is idle.
+    Pending,
+    /// The pass finished. Another pass is worthwhile once the activity token
+    /// changes, or after reads restored compressed pages, which leaves the
+    /// token unchanged.
+    Complete,
+    /// This target cannot release compressed memory.
+    Unsupported,
+}
+
+/// Page memory held by one screen.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ScreenMemory {
+    /// Pages, including compressed ones.
+    pub pages: u64,
+    /// Address space reserved for the pages, which compression keeps.
+    pub virtual_bytes: u64,
+    /// Physical memory the pages use; a compressed page counts its encoded
+    /// size.
+    pub resident_bytes: u64,
+    /// Pages held compressed.
+    pub compressed_pages: u64,
+    /// Encoded bytes of the compressed pages, included in `resident_bytes`.
+    pub compressed_bytes: u64,
+}
+
+/// Page memory held by a terminal's two screens.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MemoryUsage {
+    /// Whether this target can compress; see [`COMPRESSION_SUPPORTED`].
+    pub compression_supported: bool,
+    /// The primary screen, which holds all history.
+    pub primary: ScreenMemory,
+    /// The alternate screen; all zero until a program first switches to it.
+    pub alternate: ScreenMemory,
+}
+
 /// A viewport movement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Scroll {

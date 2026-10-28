@@ -697,6 +697,27 @@ impl TerminalEngine {
         Ok(built)
     }
 
+    /// One bounded incremental compression step over cold history.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the runtime scheduler is the next change")
+    )]
+    pub(super) fn compress_step(
+        &mut self,
+    ) -> Result<huterm_ghostty::Compression, RuntimeError> {
+        Ok(self.terminal.compress_step()?)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the runtime scheduler is the next change")
+    )]
+    pub(super) fn memory_usage(
+        &self,
+    ) -> Result<huterm_ghostty::MemoryUsage, RuntimeError> {
+        Ok(self.terminal.memory_usage()?)
+    }
+
     pub(super) fn link_reader(&self) -> Result<GhosttyLinks<'_>, RuntimeError> {
         let total = self.terminal.total_rows()?;
         let (bottom, _) = self.viewport_state()?;

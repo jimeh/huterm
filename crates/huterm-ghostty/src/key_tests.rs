@@ -170,6 +170,16 @@ fn terminal_data_keys_write_exactly_their_output_type() {
         Mode,
         key_probe::terminal::<key::Mode>(t, &mode, keep)
     );
+    // The memory key reads the struct's size from its output.
+    exact!(
+        probed,
+        MemoryUsage,
+        key_probe::terminal::<key::MemoryUsage>(
+            t,
+            &ffi::sized(),
+            size_of::<usize>()
+        )
+    );
     covers(probed, key::KEYS);
 }
 

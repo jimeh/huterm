@@ -30,6 +30,8 @@ mod types;
 #[cfg(test)]
 mod abi_tests;
 #[cfg(test)]
+mod compression_tests;
+#[cfg(test)]
 mod contract_tests;
 #[cfg(test)]
 mod grid_ref_tests;
@@ -48,11 +50,11 @@ pub use overrides::ColorOverrides;
 pub use render::{RenderCells, RenderRow, RenderState, Rows};
 pub use terminal::{GridRef, Options, RowRef, Terminal};
 pub use types::{
-    Cell, CellContent, CellWidth, ClipboardContent, ClipboardLocation,
-    ClipboardWrite, ClipboardWriteResult, ColorScheme, Cursor, CursorStyle,
-    DeviceAttributes, Dirty, Effect, Fill, Mode, Optimize, Palette, Point,
-    PointSpace, RenderColors, Rgb, Row, Screen, Scroll, Scrollbar, Style,
-    StyleColor,
+    COMPRESSION_SUPPORTED, Cell, CellContent, CellWidth, ClipboardContent,
+    ClipboardLocation, ClipboardWrite, ClipboardWriteResult, ColorScheme,
+    Compression, Cursor, CursorStyle, DeviceAttributes, Dirty, Effect, Fill,
+    MemoryUsage, Mode, Optimize, Palette, Point, PointSpace, RenderColors, Rgb,
+    Row, Screen, ScreenMemory, Scroll, Scrollbar, Style, StyleColor,
 };
 
 /// The optimization mode of the linked library.

@@ -40,6 +40,13 @@ each smoke covers and how to run it through Docker or Tart.
   measurements. On Linux, peak RSS comes from `VmHWM`: `getrusage` carries the
   forked `cargo` process's peak across `execve`, which doubled the first run
   after a build.
+- `mise run bench:compression` measures scrollback compression on saturated
+  history: the saving, step elapsed times, first-touch cost, and a compressed
+  resize. It gates the build-log saving, step p95, and the compressed resize's
+  median and Linux peak from a `VmHWM` reset. `ci:benchmarks` runs it after
+  `bench:engine`, each benchmark in its own process; the budgets and the CI
+  measurements behind them sit in
+  `crates/huterm-core/src/engine/compression_benchmark.rs`.
 
 Headless Xvfb does not deliver continuous GPUI frames after the initial
 presentation. Keep Linux scroll gates based on completion-time snapshot and

@@ -236,6 +236,25 @@ impl NativeTerminal {
             ffi::ghostty_terminal_scroll_viewport(self.ptr.as_ptr(), behavior);
         }
     }
+
+    /// Runs one incremental compression step and returns its raw result.
+    pub(crate) fn compress(
+        &mut self,
+    ) -> Result<ffi::GhosttyTerminalCompressionResult> {
+        let mut result = ffi::GHOSTTY_TERMINAL_COMPRESSION_RESULT_UNSUPPORTED;
+        // SAFETY: terminal.h `ghostty_terminal_compress` takes a live handle,
+        // a mode, and writes the result through `result`; `&mut self`
+        // serializes it with every other call on this terminal.
+        let code = unsafe {
+            ffi::ghostty_terminal_compress(
+                self.ptr.as_ptr(),
+                ffi::GHOSTTY_TERMINAL_COMPRESSION_MODE_INCREMENTAL,
+                &raw mut result,
+            )
+        };
+        Error::from_code(code)?;
+        Ok(result)
+    }
 }
 
 impl Drop for NativeTerminal {
@@ -306,6 +325,21 @@ impl<'a> TerminalRef<'a> {
         // SAFETY: terminal.h documents title and pwd strings as valid until
         // the next mutating terminal call, which `'a` excludes.
         Ok(unsafe { string_bytes(string) })
+    }
+
+    /// The opaque compression activity token.
+    pub(crate) fn compression_activity(self) -> Result<u64> {
+        let mut activity = 0;
+        // SAFETY: terminal.h `ghostty_terminal_compression_activity` reads a
+        // live handle and writes the token through `activity`.
+        let code = unsafe {
+            ffi::ghostty_terminal_compression_activity(
+                self.ptr.as_ptr(),
+                &raw mut activity,
+            )
+        };
+        Error::from_code(code)?;
+        Ok(activity)
     }
 
     pub(crate) fn grid_ref(self, point: Point) -> Result<GridRef<'a>> {

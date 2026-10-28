@@ -231,6 +231,29 @@ impl TerminalEngine {
         self.inner.last_snapshot_stats()
     }
 
+    /// One bounded incremental compression step over cold history. Call it
+    /// only while the terminal is idle.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the runtime scheduler is the next change")
+    )]
+    pub(crate) fn compress_step(
+        &mut self,
+    ) -> Result<huterm_ghostty::Compression, RuntimeError> {
+        self.inner.compress_step()
+    }
+
+    /// Page memory for both screens, without restoring compressed pages.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the runtime scheduler is the next change")
+    )]
+    pub(crate) fn memory_usage(
+        &self,
+    ) -> Result<huterm_ghostty::MemoryUsage, RuntimeError> {
+        self.inner.memory_usage()
+    }
+
     /// Applies a history limit and returns whether it evicted visible rows.
     pub(crate) fn set_scrollback(
         &mut self,
@@ -287,3 +310,9 @@ mod link_contract_tests;
 
 #[cfg(test)]
 mod link_benchmark;
+
+#[cfg(test)]
+mod compression_tests;
+
+#[cfg(test)]
+mod compression_benchmark;
