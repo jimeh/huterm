@@ -193,9 +193,14 @@ impl Menu {
         if self.model == model {
             return;
         }
-        self.selection = remap_selection(&self.model, self.selection, &model);
+        let previous = self.selection;
+        self.selection = remap_selection(&self.model, previous, &model);
         self.model = model;
-        if let Some(selection) = self.selection {
+        // Only a selection the new rows moved scrolls; a refresh leaves a
+        // list the user scrolled away from where it is.
+        if let Some(selection) = self.selection
+            && previous.map(|previous| previous.row) != Some(selection.row)
+        {
             self.reveal(selection.row);
         }
         cx.notify();
@@ -355,12 +360,13 @@ impl Menu {
         }
     }
 
-    /// Renders `item` at `row`, the `position`th of `items` items.
+    /// Renders `item` at `row`, at the zero-based `position` among the
+    /// menu's items and buttons.
     fn render_item(
         &self,
         row: usize,
         item: &Item,
-        (position, items): (usize, usize),
+        position: usize,
         cx: &mut Context<'_, Self>,
     ) -> gpui::AnyElement {
         let tokens = self.tokens;
@@ -414,7 +420,6 @@ impl Menu {
             })
             .aria_label(item.label.clone())
             .aria_position_in_set(position)
-            .aria_size_of_set(items)
             .when(self.role == Role::ListBox, |row| {
                 row.aria_selected(selected)
             })
@@ -458,11 +463,14 @@ impl Menu {
         .into_any_element()
     }
 
+    /// Renders a button row at `row`, its first button at the zero-based
+    /// `position` among the menu's items and buttons.
     fn render_buttons(
         &self,
         row: usize,
         label: &str,
         buttons: &[Button],
+        position: usize,
         cx: &mut Context<'_, Self>,
     ) -> gpui::AnyElement {
         let tokens = self.tokens;
@@ -490,6 +498,7 @@ impl Menu {
                         )))
                         .role(gpui::Role::MenuItem)
                         .aria_label(button.label.clone())
+                        .aria_position_in_set(position + index)
                         .when(
                             selected,
                             StatefulInteractiveElement::aria_active_descendant,
@@ -654,12 +663,8 @@ impl Render for Menu {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let tokens = self.tokens;
-        let items = self
-            .model
-            .rows
-            .iter()
-            .filter(|row| matches!(row, Row::Item(_)))
-            .count();
+        // Items and buttons form one set: AccessKit positions are
+        // zero-based, and adapters read the set's size from the container.
         let mut position = 0;
         let rows: Vec<gpui::AnyElement> = self
             .model
@@ -670,17 +675,20 @@ impl Render for Menu {
             .map(|(row, model_row)| match model_row {
                 Row::Item(item) => {
                     position += 1;
-                    self.render_item(row, item, (position, items), cx)
+                    self.render_item(row, item, position - 1, cx)
                 }
                 Row::Separator => separator::horizontal(tokens)
                     .mx(px(4.0))
                     .my(px(4.0))
                     .into_any_element(),
                 Row::Buttons { label, buttons } => {
-                    self.render_buttons(row, label, buttons, cx)
+                    position += buttons.len();
+                    let first = position - buttons.len();
+                    self.render_buttons(row, label, buttons, first, cx)
                 }
             })
             .collect();
+        let set_size = position;
         let focus = self.focus.clone();
         let menu = cx.entity();
         let scrollbar = self.scrollbar.elements(
@@ -697,6 +705,7 @@ impl Render for Menu {
                 Role::ListBox => gpui::Role::ListBox,
             })
             .aria_label(self.label.clone())
+            .aria_size_of_set(set_size)
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .occlude()
@@ -784,6 +793,13 @@ mod tests {
                     .disabled(Some("Directory unknown".to_owned())),
             ),
             Row::Item(Item::new("quit", "Quit")),
+            Row::Buttons {
+                label: "Edit".to_owned(),
+                buttons: vec![
+                    Button::new("copy", "Copy"),
+                    Button::new("paste", "Paste"),
+                ],
+            },
         ])
     }
 
@@ -862,25 +878,34 @@ mod tests {
             let menu = &a11y_node(window, "menu")["aria"];
             assert_eq!(menu["role"], "Menu");
             assert_eq!(menu["label"], "Actions");
+            // AccessKit positions are zero-based, and adapters read the
+            // set's size from the container, not the items.
+            assert_eq!(menu["size_of_set"], 6);
             let mut items: Vec<_> = crate::testing::a11y_nodes(window)
                 .into_iter()
                 .filter(|node| node["aria"]["role"] == "MenuItem")
                 .map(|node| {
                     let aria = &node["aria"];
+                    assert!(aria["size_of_set"].is_null(), "{aria}");
                     (
                         aria["position_in_set"].as_u64(),
                         aria["label"].as_str().map(str::to_owned),
-                        aria["size_of_set"].as_u64(),
                     )
                 })
                 .collect();
             items.sort();
-            let labels =
-                ["Command Palette", "New Tab", "Copy Directory Path", "Quit"];
-            let expected: Vec<_> = (1..)
+            let labels = [
+                "Command Palette",
+                "New Tab",
+                "Copy Directory Path",
+                "Quit",
+                "Copy",
+                "Paste",
+            ];
+            let expected: Vec<_> = (0..)
                 .zip(labels)
                 .map(|(position, label)| {
-                    (Some(position), Some(label.to_owned()), Some(4))
+                    (Some(position), Some(label.to_owned()))
                 })
                 .collect();
             assert_eq!(items, expected);
@@ -1035,6 +1060,20 @@ mod tests {
             assert_eq!(menu.selection().map(|s| s.row), Some(39));
             assert!(shows(menu, 39), "offset {:?}", menu.scroll.offset());
         });
+    }
+
+    #[gpui::test]
+    fn a_refresh_leaves_a_scrolled_list_where_it_is(cx: &mut TestAppContext) {
+        let (menu, cx) = long(cx, items(40), "row-0");
+        let scrolled = point(px(0.0), px(-400.0));
+        menu.update(cx, |menu, _| menu.scroll.set_offset(scrolled));
+        cx.run_until_parked();
+        // A changed label leaves the selection on its row.
+        let mut rows = items(40);
+        rows[5] = Row::Item(Item::new("row-5", "Row five"));
+        menu.update(cx, |menu, cx| menu.set_model(Model::new(rows), cx));
+        cx.run_until_parked();
+        cx.read(|cx| assert_eq!(menu.read(cx).scroll.offset(), scrolled));
     }
 
     #[gpui::test]
