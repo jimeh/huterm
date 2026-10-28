@@ -2,10 +2,11 @@
 //! controls the override table names.
 
 use gpui::{
-    AnyElement, Context, ElementId, Focusable as _, Window, anchored, deferred,
-    div, prelude::*, px,
+    AnyElement, Context, ElementId, Focusable as _, Window, canvas, div,
+    prelude::*, px,
 };
 use huterm_config::settings::{Choice, Setting, SettingKind};
+use huterm_ui::components::select::Select;
 use toml::Value;
 
 use super::super::super::overlay::Swatch;
@@ -19,6 +20,14 @@ use crate::renderer::rgb_color as color;
 /// The longest option label a segmented control shows; longer ones use a
 /// select.
 const SEGMENT_LABEL_MAX: usize = 16;
+
+/// How a select trigger opens its menu.
+pub(super) enum Opener {
+    /// A setting's own choices.
+    Setting(&'static Setting),
+    /// The action an action key names, such as `qprof` or `gcmd:0`.
+    Action(String),
+}
 
 fn id(name: String) -> ElementId {
     ElementId::Name(name.into())
@@ -249,45 +258,100 @@ impl SettingsView {
                         .map_or_else(|| value.to_owned(), option_label)
                 },
             );
-        let handle = self.stop(path, cx).tab_stop(!read_only);
-        let trigger = select_trigger(format!("settings-select-{path}"), swatch)
-            .track_focus(&handle)
-            .key_context("SettingsControl")
-            .when(read_only, |control| control.opacity(0.5))
-            .child(div().flex_1().child(label))
-            .child(caret(swatch))
-            .when(!read_only, |control| {
-                control.on_click(cx.listener(move |view, _, window, cx| {
-                    view.stop(path, cx).focus(window, cx);
-                    view.open_select(setting, window, cx);
-                }))
-            });
-        self.with_menu(path, trigger.into_any_element())
+        self.select(
+            format!("settings-select-{path}"),
+            path,
+            setting.label.clone(),
+            label,
+            Opener::Setting(setting),
+            read_only,
+            swatch,
+            cx,
+        )
     }
 
-    /// `control` with the select menu open beneath it when it is `path`'s.
-    pub(super) fn with_menu(
-        &self,
-        path: &str,
-        control: AnyElement,
+    /// A select trigger for the menu `key`, showing `value` and named
+    /// `label`, that opens through `opener`. It is a `huterm-ui` select:
+    /// pointer presses toggle it, keys reach it only as `SettingsControl`
+    /// commands, and its ring shows for keyboard focus alone.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a trigger needs its names, value, opener, and state"
+    )]
+    pub(super) fn select(
+        &mut self,
+        id: String,
+        key: &str,
+        label: String,
+        value: String,
+        opener: Opener,
+        read_only: bool,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let menu = self
+        let focus = match &opener {
+            Opener::Setting(setting) => self.stop(setting.path.as_str(), cx),
+            Opener::Action(key) => self.action_stop(key.clone(), cx),
+        };
+        let open = self
             .menu
             .as_ref()
-            .filter(|(_, open, _)| open.key() == path)
-            .map(|(menu, _, _)| menu.clone());
+            .is_some_and(|(_, target, _)| target.key() == key);
+        let weak = cx.entity().downgrade();
+        let opening = focus.clone();
+        let select = Select::new(id, label, value, &focus, swatch)
+            .key_context("SettingsControl")
+            .open(open)
+            .on_toggle(move |window, cx| {
+                let _ = weak.update(cx, |view, cx| {
+                    opening.focus(window, cx);
+                    match &opener {
+                        Opener::Setting(setting) => {
+                            view.open_select(setting, window, cx);
+                        }
+                        Opener::Action(key) => view.act(key, window, cx),
+                    }
+                });
+            });
+        let select = if read_only {
+            select.disabled(None)
+        } else {
+            select
+        };
+        self.with_menu(key, select.into_any_element())
+    }
+
+    /// `control`, a select trigger for the menu `key`, recording its painted
+    /// bounds so the menu anchors to it. While `key`'s menu is open the
+    /// popover's guard also knows the trigger, so a press on it closes the
+    /// menu rather than opening another. The menu itself draws in the
+    /// window's popover layer.
+    pub(super) fn with_menu(
+        &self,
+        key: &str,
+        control: AnyElement,
+    ) -> AnyElement {
+        let open = self
+            .menu
+            .as_ref()
+            .is_some_and(|(_, target, _)| target.key() == key);
+        let triggers = self.triggers.clone();
+        let recorded = key.to_owned();
         div()
             .relative()
             .flex_none()
             .child(control)
-            .children(menu.map(|menu| {
-                deferred(
-                    anchored()
-                        .snap_to_window_with_margin(px(8.0))
-                        .child(div().mt(px(28.0)).child(menu)),
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, (), _, _| {
+                        triggers.borrow_mut().insert(recorded.clone(), bounds);
+                    },
                 )
-                .with_priority(1)
-            }))
+                .absolute()
+                .inset_0(),
+            )
+            .when(open, |trigger| trigger.child(self.popover.trigger_probe()))
             .into_any_element()
     }
 
@@ -355,28 +419,23 @@ impl SettingsView {
     ) -> AnyElement {
         let path = setting.path.as_str();
         let field = self.render_field(setting, read_only, swatch, window, cx);
-        let key = format!("fonts:{path}");
-        let handle = self.action_stop(key.clone(), cx).tab_stop(!read_only);
-        let pick = select_trigger(format!("settings-fonts-{path}"), swatch)
-            .track_focus(&handle)
-            .key_context("SettingsControl")
-            .min_w(px(0.0))
-            .when(read_only, |control| control.opacity(0.5))
-            .child("Installed")
-            .child(caret(swatch))
-            .when(!read_only, |control| {
-                control.on_click(cx.listener(move |view, _, window, cx| {
-                    handle.focus(window, cx);
-                    view.act(&key, window, cx);
-                }))
-            });
+        let pick = self.select(
+            format!("settings-fonts-{path}"),
+            path,
+            "Installed fonts".to_owned(),
+            "Installed".to_owned(),
+            Opener::Action(format!("fonts:{path}")),
+            read_only,
+            swatch,
+            cx,
+        );
         div()
             .flex()
             .flex_none()
             .items_center()
             .gap(px(6.0))
             .child(field)
-            .child(self.with_menu(path, pick.into_any_element()))
+            .child(pick)
             .into_any_element()
     }
 
@@ -591,29 +650,4 @@ fn segment(
         .when(!on && !read_only, |segment| {
             segment.hover(|style| style.bg(swatch.hover))
         })
-}
-
-pub(super) fn select_trigger(
-    name: String,
-    swatch: Swatch,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id(name))
-        .flex()
-        .items_center()
-        .gap(px(8.0))
-        .min_w(px(150.0))
-        .h(px(24.0))
-        .px(px(10.0))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(swatch.line_strong)
-        .bg(swatch.bg)
-        .text_size(px(12.0))
-        .text_color(swatch.fg)
-        .focus(|style| style.shadow(swatch.focus_ring()))
-}
-
-pub(super) fn caret(swatch: Swatch) -> gpui::Div {
-    div().flex_none().text_color(swatch.dim).child("▾")
 }

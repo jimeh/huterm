@@ -4683,3 +4683,4 @@ mod pane_moves;
 mod settings;
 mod settings_keys;
 mod settings_quake;
+mod settings_selects;

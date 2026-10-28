@@ -483,7 +483,7 @@ the menu and returns focus to the terminal.
 | `menu_select_right` | `right` | `right` |
 | `menu_select_left` | `left` | `left` |
 | `menu_confirm` | `enter`, `space` | `enter`, `space` |
-| `menu_close` | `escape`, `tab` | `escape`, `tab` |
+| `menu_close` | `escape`, `tab`, `shift-tab` | `escape`, `tab`, `shift-tab` |
 
 ### Notices
 

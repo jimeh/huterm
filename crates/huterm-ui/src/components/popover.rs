@@ -118,6 +118,13 @@ impl Popover {
         self.state.borrow().trigger
     }
 
+    /// The open content's bounds from its last paint; `None` while closed
+    /// or before the content first paints.
+    #[must_use]
+    pub fn content_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.state.borrow().content
+    }
+
     /// An element that records the trigger's bounds as it paints. Mount it
     /// inside the trigger, which must be relatively positioned. When
     /// several triggers share one popover, mount it only in the open one:
