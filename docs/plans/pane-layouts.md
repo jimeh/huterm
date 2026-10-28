@@ -4,10 +4,9 @@ Status: in progress. Approved on 2026-10-27, after five Codex and five Claude
 review rounds; Jim settled every open question that day (see "Settled
 decisions"), adding default cycle bindings and user-defined layouts. PR 1,
 runtime arrangements (#284), and PR 2, commands (#286), are implemented. On
-2026-10-28 Jim split PR 3: PR 3a, user-defined layouts from the config file, is
-in progress, and PR 3b, their Settings editor, waits for the `huterm-ui`
-components it builds on. Plans [issue #30][issue-30] within
-[epic #12][issue-12].
+2026-10-28 Jim split PR 3: PR 3a, user-defined layouts from the config file
+(#298), is implemented, and PR 3b, their Settings editor, is in progress.
+Plans [issue #30][issue-30] within [epic #12][issue-12].
 Builds on [the split panes plan](split-panes.md) (#28) and
 [the pane moves plan](pane-moves.md) (#29), both implemented. Layout undo,
 [#256][issue-256], is related with no ordering dependency; this plan assumes
@@ -789,45 +788,84 @@ and two thirds: weights 333,334 and 666,666.
 
 ### Settings window
 
-PR 3b adds a Pane Layouts group to the Panes settings. Adding and removing
-layouts follows the named quake profiles editor (`Special::QuakeProfiles`,
-`create_profile` and `delete_profile` in `settings_window/quake.rs:473`,
-`:523`); renaming is new, because profiles cannot be renamed.
+PR 3b edits both keys in the Settings window, built from the `huterm-ui`
+components and the patterns the Quake profile editor uses
+(`settings_window/quake.rs`, #311). It adds no default key bindings.
 
-- `Special::PaneLayouts` edits `panes.layouts`. Built-ins show as
-  read-only rows with their templates. Each user layout is a row with a
-  name field and a template field, and the group has add, rename, and
-  remove actions.
-- Name and template fields validate on every keystroke, with the parser's
-  message below the field, such as "expected `,` or `)` at column 18"
-  (offsets index the text as typed, shown as a one-based character
-  column). They save only on commit, Enter or leaving the field, as other
-  Settings text fields do (`settings_window.rs:996`), so a template
+- **Placement.** A "Pane layouts" card in the Window and panes section,
+  after the Panes card: both keys move to that group, and
+  `FILE_ONLY` drops them. `Special::PaneLayouts` draws `panes.layouts`
+  and `Special::LayoutCycle` draws `panes.layout_cycle`.
+- **Layouts.** Each built-in is a read-only `Item`: its title, with its
+  template as the description. Each user layout is a row, named by its
+  name, with its template in an `Input` inside an `InputGroup`
+  (`Chrome::Grouped`, in a `div` with the `Palette` context, as Settings'
+  other text fields), and Rename and Delete buttons. A New layout button
+  ends the card.
+- **Template field.** It validates on every keystroke with
+  `LayoutTemplate::parse`, and shows the parser's message under the field
+  in `danger_text`, such as "expected `,` or `)` at column 18 of the
+  template" (one-based, in characters, with the line for a multi-line
+  template, as the config error says). It saves only on commit, Enter or
+  leaving the field, as other Settings text fields do, so a template
   passing through `5%` on its way to `55%` writes nothing. An invalid
-  template or name is never saved.
-- `Special::LayoutCycle` edits `panes.layout_cycle`, because Settings has
-  no list control (`SettingKind` has no list kind). It shows every layout,
-  built-in and user, as an ordered row with an include checkbox and
-  move up and move down buttons. Unchecking the last included layout is
-  refused, since the cycle cannot be empty.
-- A rename is three patches in one save: remove the old key, set the new
-  one, and rewrite `layout_cycle` when it names the layout. Removal is two:
-  the key and the cycle entry. The settings queue carries one patch per
-  save today (`saving.rs:651`), so PR 3b lets it carry a batch;
-  `ConfigFile::apply` already takes one (`crates/huterm-config/src/
-  document.rs:386-398`) and checks every path for conflicts, so a failed
-  save changes nothing. `Patch` has no rename, and a `Set` on a table
-  merges keys rather than removing one (`document.rs:120-125`), so a
-  renamed entry moves to the end of `[panes.layouts]` and loses comments
-  attached to the old key.
-- Removing a layout that is the cycle's only entry is refused with "Add
-  another layout to the cycle first", as unchecking the last row is.
-- Renaming or removing a layout that a keybinding names is refused with a
-  message naming the binding, as `delete_profile` refuses to delete a
-  quake profile a global shortcut uses (`quake.rs:539-551`) (settled decision
-  12). Bindings in the file are never rewritten.
+  template is never saved, and Escape returns the field to the file's
+  value.
+- **New layout.** A `Dialog` in the Settings dialog slot asks for the name
+  only, as New profile does, because the slot holds one text field. The name
+  is checked on every frame (`NamedLayout::valid_name`, not a built-in,
+  not taken, at most 64 layouts), with the message under the field and
+  Create disabled while it fails. Create writes the layout as
+  `columns(*)` and focuses its template field with the text selected.
+  The new layout is not added to the cycle (settled decision 8).
+- **Rename.** A `Dialog` with the name field, checked as for New layout
+  (its own name is not "taken"); Cancel and Rename. Renaming rewrites
+  every reference in one save, a `Batch::RenameLayout { from, to }` in
+  `saving.rs`: set `to` to `from`'s template, remove `from`, rewrite each
+  `[[keybinding]]` whose `arrange_panes` `layout` argument names `from`,
+  and rewrite `layout_cycle` with `to` in `from`'s place. The table moves
+  and the cycle are built from the file as the window last saw it; the
+  bindings it rewrites are found in the file as it is when the batch
+  applies (`Batch::current_patches`), so one added elsewhere meanwhile is
+  rewritten too. A reference the save cannot rewrite refuses the whole
+  rename with an `AlertDialog` (OK only) that names it, and writes
+  nothing (settled decision 12). A rename whose save fails, for example
+  because the file changed on disk, writes nothing and says why, as
+  `rename_refused` does for profiles.
+- **Delete.** An `AlertDialog` with Cancel and a destructive Delete.
+  Deleting a layout that a keybinding or `layout_cycle` uses is refused
+  in an `AlertDialog` (OK only) that names each user: the binding's keys,
+  and "the layout cycle". Remove it from the cycle, or give the binding
+  another layout, first.
+- **Cycle.** `Special::LayoutCycle` lists every layout, built-in and user:
+  the cycle's members first, in cycle order, then the rest in picker
+  order. Each row has an include switch and Move up and Move down
+  buttons; moving applies among the members only. The rows are a roving
+  group (`SettingsGroup`, `settings_next` and `settings_previous` on the
+  arrows), Space toggles the focused row's switch, and Tab reaches its
+  buttons. Every change writes the whole `layout_cycle` array. Turning off
+  the last member is refused with an `AlertDialog`: "The cycle needs at
+  least one layout."
+- **Dialog rules** (#308): a dialog's text field carries `Palette`; the
+  owner routes `palette_expand` and `palette_previous_slot` to
+  `Modal::focus_next` and `focus_previous`, `palette_confirm` to the
+  confirm key, and `palette_back` to `Dismissal::Escape`; the `Modal`
+  guard mounts every frame; dialog buttons carry no `SettingsControl`; an
+  outside press does not dismiss a name dialog, while Escape and Cancel
+  close it. A long dialog body scrolls in `ScrollArea::fill()`.
+- **Keyboard.** Every row control is reachable with Tab and Shift-Tab,
+  each keyboard focus move keeps `ScrollArea::reveal` working, and focus
+  moves to a neighbouring row when a row goes away.
+- **Saves around a rename.** Edits queued or pending around a rename
+  follow #311's handling: an edit to the renamed layout's template made
+  before the batch lands builds on the batch rather than conflicting, and
+  a refused batch drops edits made under the new name and puts the fields
+  back, saying so in the refusal.
 - Saving goes through the existing settings write path, so comments and
-  formatting elsewhere in the file survive, as for every other setting.
+  formatting elsewhere in the file survive. `Patch` has no rename, and a
+  `Set` on a table merges keys rather than removing one, so a renamed
+  entry moves to the end of `[panes.layouts]` and loses comments attached
+  to the old key.
 
 ### Undo (#256)
 
@@ -1144,24 +1182,36 @@ first tier 2 lists; PR 3b carries the Settings tier 2 list.
     list order;
   - after a reload removes the layout, its binding shows one notice and
     changes nothing.
-- Settings tier 2, through the existing settings window tests:
-  - adding a layout with a valid template writes `[panes.layouts]`, and
-    the new layout is usable at once;
-  - an invalid template shows the parser's message and writes nothing;
-  - renaming a layout renames it in `layout_cycle` in the same save, and
-    removing it removes it from the cycle;
+- Settings tier 2 (PR 3b), through the existing settings window tests,
+  each seen failing with its fix removed:
+  - New layout writes `[panes.layouts]` with `columns(*)` and focuses its
+    template field, and the layout is usable at once; an invalid, built-in,
+    taken, or 65th name disables Create and shows why;
+  - a template edit writes nothing until Enter or blur, an invalid
+    template shows the parser's message and writes nothing, and Escape
+    reverts the field;
+  - Rename rewrites `[panes.layouts]`, every `arrange_panes` binding that
+    names the layout, and `layout_cycle`, in one save; a binding added
+    elsewhere before the batch applies is rewritten too;
   - a rename whose save fails, for example because the file changed on
-    disk, leaves both `[panes.layouts]` and `layout_cycle` unchanged;
-  - renaming or removing a layout that a keybinding names is refused with
-    the binding named, and writes nothing;
-  - typing a template writes nothing until Enter or blur;
-  - reordering and unchecking cycle rows writes `layout_cycle` in the new
-    order; unchecking the last included row, and removing a layout that is
-    the cycle's only entry, are refused with the message and write
+    disk, leaves the table, the bindings, and `layout_cycle` unchanged and
+    says why; a reference it cannot rewrite refuses the rename and writes
     nothing;
-  - the new rows and buttons are reachable by Tab and Shift-Tab, and focus
-    moves to a neighbouring row when a row is removed;
+  - a template edit queued around a rename lands under the new name, and
+    a refused rename drops edits made under the new name;
+  - Delete asks first, then removes the key; deleting a layout a binding
+    or the cycle uses is refused with the users named, and writes nothing;
+  - turning cycle rows on and off and moving them writes `layout_cycle` in
+    the new order; turning off the last member is refused and writes
+    nothing;
+  - keyboard: Tab and Shift-Tab reach every new control, the arrows move
+    along the cycle rows, Space toggles a row, dialog Tab, Shift-Tab,
+    Enter, and Escape follow the #308 routing, and focus moves to a
+    neighbouring row when a row goes away;
   - comments elsewhere in the file survive a save.
+- `scripts/check-settings.ts` gains a layouts step: create a layout, edit
+  its template, rename it with a binding naming it, and add it to the
+  cycle, checking the file after each.
 
 ### Commands
 
@@ -1201,15 +1251,12 @@ Three PRs, each leaving `main` consistent and shippable:
 
 PR 2's undo recording uses `WorkspaceView::record_layout_change`, which
 the client PR of #256 (#281, merged) added, and PR 2 opens after PR 1
-merges. PR 3b
-waits for the shared UI component library (`huterm-ui`, approved in
-`docs/plans/ui-components.md`) and builds on it instead of its own
-controls: the cycle list on its `Listbox` (step 2), the name and template
-fields on `Input` and `InputGroup` (step 4), and rename and the refusal
-prompts on the `Field` and `InputGroup` composition and `AlertDialog` of
-step 7, which also adds quake profile rename (#277). Its "Settings window"
-section is revised against those components when PR 3b starts. PR 3a
-needs none of them.
+merges. PR 3b builds on the shared UI component library (`huterm-ui`,
+`docs/plans/ui-components.md`) instead of its own controls: `Input` and
+`InputGroup` (#303, #306), `Field`, `Item`, and `Card` (#307, #313),
+`Dialog` and `AlertDialog` in the Settings dialog slot (#310), and the
+batched save and rename dialogs of Quake profile rename (#311). Its
+"Settings window" section was revised against them when PR 3b started.
 
 ## Documentation
 
@@ -1269,10 +1316,13 @@ alternatives he considered.
     last split.
 11. **Settings preview:** none in PR 3. Not chosen: a drawing of the
     template expanded for four panes.
-12. **Renaming or removing a layout a keybinding uses:** refused in
-    Settings with a message naming the binding, as the quake profile
-    editor refuses to delete a profile a global shortcut uses. Not chosen:
-    rewriting the bindings in the same save, or letting them show the
+12. **Renaming or removing a layout a keybinding uses:** revised by Jim
+    on 2026-10-28 for PR 3b. Renaming rewrites every keybinding that
+    names the layout, and the cycle, in one save, as Quake profile rename
+    (#311) does, so bindings keep their layout. Deleting a layout that a
+    keybinding or `layout_cycle` uses stays refused, with an alert naming
+    the users. First decided as: both refused, with a message naming the
+    binding. Not chosen then or now: letting bindings show the
     unknown-layout notice.
 
 ## Open questions
