@@ -19,11 +19,11 @@ exists and opens it in the system editor.
 the Settings window, or brings it forward when it is open. It edits the same
 file: each change saves at once and changes only the lines that setting owns,
 so comments, ordering, and formatting stay as you wrote them. A dot marks each
-setting the file sets, and Reset removes it, returning the setting to its
-default. A setting that does not apply at once says when it does, such as
-"Applies to new terminals". Search finds settings in every section, and
-settings marked Advanced appear after you turn on Show advanced settings in
-their section.
+setting the file sets, and its Reset button, a counterclockwise arrow, removes
+it and returns the setting to its default. A setting that does not apply at
+once says when it does, such as "Applies to new terminals". Search finds
+settings in every section, and settings marked Advanced appear after you turn
+on Show advanced settings in their section.
 
 Saving applies the change even when `watch_config` is off. When the file does
 not parse or has an invalid setting, Settings shows the error, keeps the

@@ -31,6 +31,7 @@ export const iconNames = [
   "maximize-2",
   "minimize-2",
   "search",
+  "rotate-ccw",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {

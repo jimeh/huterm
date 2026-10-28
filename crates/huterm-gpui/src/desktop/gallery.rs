@@ -976,10 +976,18 @@ impl Column {
                         .action(
                             Button::new(
                                 ("field-reset", index),
-                                "Reset",
+                                "Reset Copy on select",
                                 swatch,
                             )
-                            .variant(Variant::Ghost),
+                            .variant(Variant::Ghost)
+                            .tooltip("Reset to default")
+                            .icon(
+                                gpui::svg()
+                                    .path(Icon::RotateCcw.asset_path())
+                                    .size(px(12.0))
+                                    .text_color(swatch.muted),
+                            )
+                            .icon_only(),
                         )
                         .control(Switch::new(
                             ("field-switch", index),
