@@ -26,11 +26,15 @@
 //!
 //! Focus: the ring shows for keyboard focus, or on the current button while
 //! the window's last press was a key, never after a pointer press. A button
-//! with a tooltip shows it below itself while the ring shows.
+//! with a tooltip shows it below itself while the ring shows. A button whose
+//! menu is expanded shows no tooltip, which would cover the menu.
 //!
-//! Accessibility: a `Button` (or `Link`) named by its label, reporting its
+//! Accessibility: a `Button` (or a `Link`, unless a link-look action takes
+//! [`Button::button_role`]) named by its label, reporting its
 //! shortcut, its tooltip or disabled reason as its description, whether a
-//! menu it opens is expanded, and its disabled state.
+//! menu it opens is expanded, and its disabled state. The current button is
+//! its focused owner's active descendant, so assistive technology follows
+//! the keyboard's place.
 
 use std::rc::Rc;
 
@@ -104,6 +108,7 @@ pub struct Button {
     icon_only: bool,
     small: bool,
     expanded: Option<bool>,
+    plain_role: bool,
     group: Option<SharedString>,
     occlude: bool,
     stop_presses: bool,
@@ -148,6 +153,7 @@ impl Button {
             icon_only: false,
             small: false,
             expanded: None,
+            plain_role: false,
             group: None,
             occlude: false,
             stop_presses: false,
@@ -185,7 +191,9 @@ impl Button {
     /// Marks the button as the keyboard's place among its owner's buttons,
     /// for an owner that keeps focus itself and moves between them with its
     /// own commands, as a dialog does. It shows the ring while the window's
-    /// last press was a key.
+    /// last press was a key, and reports the button as the active
+    /// descendant of the focused owner, which needs an accessibility role.
+    /// A button with a focus handle ignores it.
     #[must_use]
     pub fn current(mut self, current: bool) -> Self {
         self.current = current;
@@ -242,6 +250,14 @@ impl Button {
     #[must_use]
     pub fn expanded(mut self, expanded: bool) -> Self {
         self.expanded = Some(expanded);
+        self
+    }
+
+    /// Reports a `Button` in the link variant too, for a control that looks
+    /// like a link but runs an action rather than opening a page.
+    #[must_use]
+    pub fn button_role(mut self) -> Self {
+        self.plain_role = true;
         self
     }
 
@@ -392,6 +408,7 @@ impl Button {
         look: &Colors,
         description: Option<SharedString>,
         focus: Option<&FocusHandle>,
+        current: bool,
     ) -> Stateful<Div> {
         let height = if self.small {
             size::SMALL_CONTROL_HEIGHT
@@ -403,7 +420,7 @@ impl Button {
             (!self.shortcut.is_empty()).then(|| kbd::text(&self.shortcut));
         let mut button = div()
             .id(self.id.clone())
-            .role(if link {
+            .role(if link && !self.plain_role {
                 gpui::Role::Link
             } else {
                 gpui::Role::Button
@@ -419,6 +436,7 @@ impl Button {
                 button.aria_expanded(expanded)
             })
             .when_some(focus, InteractiveElement::track_focus)
+            .when(current, StatefulInteractiveElement::aria_active_descendant)
             .when_some(self.key_context.take(), |button, context| {
                 button.key_context(context.as_ref())
             })
@@ -477,14 +495,16 @@ impl RenderOnce for Button {
         // already its accessible name, so it is not also its description.
         let tooltip = description
             .clone()
-            .or_else(|| self.icon_only.then(|| self.label.clone()));
+            .or_else(|| self.icon_only.then(|| self.label.clone()))
+            .filter(|_| self.expanded != Some(true));
         let focus = self.focus.take().map(|focus| focus.tab_stop(enabled));
+        let current = self.current && focus.is_none();
         let ringed = match &focus {
             Some(focus) => focus::visible(focus, window, cx),
-            None => self.current && focus::current_visible(window, cx),
+            None => current && focus::current_visible(window, cx),
         };
         let button = self
-            .frame(&look, description, focus.as_ref())
+            .frame(&look, description, focus.as_ref(), current)
             .when_some(tooltip.clone(), |button, text| {
                 button.tooltip(move |_, cx| {
                     Tooltip::view(text.clone(), tokens, cx)
@@ -507,7 +527,7 @@ impl RenderOnce for Button {
             });
         let button = match &focus {
             Some(focus) => focus::ring(button, focus, tokens, window, cx),
-            None if self.current => {
+            None if current => {
                 focus::current_ring(button, &self.id, tokens, window, cx)
             }
             None => button,
@@ -524,6 +544,7 @@ impl RenderOnce for Button {
 mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
+    use std::time::Duration;
 
     use gpui::{
         FocusHandle, KeyUpEvent, Keystroke, Modifiers, TestAppContext,
@@ -578,10 +599,25 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_link_button_reports_a_link(cx: &mut TestAppContext) {
-        let (_, cx) = button(cx, |button| button.variant(Variant::Link));
+    fn a_link_button_reports_a_link_unless_it_takes_the_button_role(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, cx) = host(cx, |_, _| {
+            gpui::div()
+                .child(
+                    Button::new("link", "Docs", tokens())
+                        .variant(Variant::Link),
+                )
+                .child(
+                    Button::new("action", "Reload", tokens())
+                        .variant(Variant::Link)
+                        .button_role(),
+                )
+                .into_any_element()
+        });
         cx.update(|window, _| {
-            assert_eq!(a11y_node(window, "reload")["aria"]["role"], "Link");
+            assert_eq!(a11y_node(window, "link")["aria"]["role"], "Link");
+            assert_eq!(a11y_node(window, "action")["aria"]["role"], "Button");
         });
     }
 
@@ -689,6 +725,25 @@ mod tests {
         cx.run_until_parked();
         assert!(cx.update(|window, _| probe.focus.is_focused(window)));
         assert!(cx.debug_bounds("tooltip").is_none(), "a press hides it");
+    }
+
+    #[gpui::test]
+    fn an_expanded_button_shows_no_hover_tooltip(cx: &mut TestAppContext) {
+        let (_, cx) = button(cx, |button| {
+            button.tooltip("Reload the config file").expanded(true)
+        });
+        cx.simulate_mouse_move(
+            point(px(20.0), px(10.0)),
+            None,
+            Modifiers::none(),
+        );
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("tooltip").is_none(), "it covers the menu");
+        cx.update(|window, _| {
+            let aria = &a11y_node(window, "reload")["aria"];
+            assert_eq!(aria["description"], "Reload the config file");
+        });
     }
 
     #[gpui::test]

@@ -10501,6 +10501,12 @@ impl Render for WorkspaceView {
                 self.window_button_bounds[button.index()].set(None);
             }
         }
+        // The top dialog holds the window's focus on its own node, so
+        // assistive technology follows its current button, the node's
+        // active descendant. Licenses keeps focus in its search field.
+        let confirming = self.close.confirmation.is_some();
+        let about_holds_focus =
+            !confirming && self.licenses.is_none() && self.about.is_some();
         let mut root = div()
             .size_full()
             .relative()
@@ -10508,7 +10514,9 @@ impl Render for WorkspaceView {
             .text_color(foreground)
             .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
-            .track_focus(&self.focus)
+            .when(!confirming && !about_holds_focus, |root| {
+                root.track_focus(&self.focus)
+            })
             .on_drag_move::<gpui::ExternalPaths>(|_, window, cx| {
                 // GPUI owns one app-wide drag. Closing another window must
                 // not cancel the external payload delivered to this one.
@@ -11442,12 +11450,23 @@ impl Render for WorkspaceView {
                         view.show_licenses(window, cx);
                     }),
                     copy: Self::button_action(cx, |view, _, cx| {
+                        // A click moves the keyboard's place, as a browser
+                        // moves focus, so Enter repeats what was clicked.
+                        view.about_focus = AboutFocus::Copy;
                         view.copy_about_details(cx);
+                        cx.notify();
                     }),
                     close: Self::button_action(cx, |view, window, cx| {
                         view.close_about(window, cx);
                     }),
                 },
+            );
+            let about = dialog_node(
+                about,
+                "about-dialog",
+                gpui::Role::Dialog,
+                "About Huterm".into(),
+                about_holds_focus.then_some(&self.focus),
             );
             root = root.child(modal_layer(about, &layout));
         }
@@ -11474,6 +11493,13 @@ impl Render for WorkspaceView {
                         cx,
                     );
                 }),
+            );
+            let dialog = dialog_node(
+                dialog,
+                "close-dialog",
+                gpui::Role::AlertDialog,
+                model.title.clone().into(),
+                Some(&self.focus),
             );
             root = root.child(modal_layer(dialog, &layout));
         }
@@ -11517,9 +11543,12 @@ impl Render for WorkspaceView {
 /// Hosts a modal `overlay` that fills its parent: the whole window, or the
 /// content inside a drawn client frame, so the transparent border around
 /// the frame's shadow stays untinted and its rounded top corners hold.
-fn modal_layer(overlay: gpui::Div, layout: &ChromeLayout) -> gpui::Div {
+fn modal_layer(
+    overlay: impl IntoElement + Styled,
+    layout: &ChromeLayout,
+) -> gpui::AnyElement {
     if !layout.frame.decorated() {
-        return overlay;
+        return overlay.into_any_element();
     }
     let content = layout.content;
     div()
@@ -11529,6 +11558,25 @@ fn modal_layer(overlay: gpui::Div, layout: &ChromeLayout) -> gpui::Div {
         .w(content.size.width)
         .h(content.size.height)
         .child(overlay.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS))
+        .into_any_element()
+}
+
+/// Makes a dialog's `overlay` its accessibility node, `role` named `label`,
+/// holding the window's `focus` while it is the top dialog. Its current
+/// button then reports as the node's active descendant, which GPUI honors
+/// only under the focused node.
+fn dialog_node(
+    overlay: gpui::Div,
+    id: &'static str,
+    role: gpui::Role,
+    label: gpui::SharedString,
+    focus: Option<&FocusHandle>,
+) -> gpui::Stateful<gpui::Div> {
+    overlay
+        .id(id)
+        .role(role)
+        .aria_label(label)
+        .when_some(focus, InteractiveElement::track_focus)
 }
 
 /// The split, close, and focus commands for panes.

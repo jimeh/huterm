@@ -567,6 +567,8 @@ fn toast_body(
                 swatch,
             )
             .variant(Variant::Link)
+            // It runs a command rather than opening a page.
+            .button_role()
             .h_auto()
             .text_size(px(12.5))
             .font_weight(gpui::FontWeight::MEDIUM)
@@ -595,6 +597,12 @@ fn render_toast(
     }
     let dismiss = Rc::clone(&handlers.dismiss);
     let hover = Rc::clone(&handlers.hover);
+    // The name and tooltip say which of the stacked toasts it dismisses.
+    let dismiss_name = if content.title.is_empty() {
+        "Dismiss".to_owned()
+    } else {
+        format!("Dismiss {}", content.title)
+    };
     // Presses stay on the toast: a click must not start a terminal selection
     // or application mouse input beneath it. Releases pass through, so a
     // terminal gesture that ends over the toast still finishes; the terminal
@@ -624,7 +632,7 @@ fn render_toast(
         .child(severity_mark(content.severity.glyph(), stripe, swatch))
         .child(toast_body(id, content, swatch, handlers))
         .child(
-            Button::new(("toast-dismiss", id.0), "Dismiss", swatch)
+            Button::new(("toast-dismiss", id.0), dismiss_name, swatch)
                 .variant(Variant::Ghost)
                 .icon(
                     svg()

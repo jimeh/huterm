@@ -767,7 +767,10 @@ still change. Siblings that share a shape land together.
    chips. Migration 3b: the terminal window's dialog, title-row, tab-bar, and
    notice buttons and tooltips. The dialogs keep their own focus model until
    7b, so their buttons mark the keyboard's place with `Button::current`
-   rather than taking focus.
+   rather than taking focus, and a click moves the mark. The close dialog
+   and About already hold focus on an `AlertDialog` or `Dialog` node, so
+   the current button is its active descendant; Licenses keeps focus in its
+   search field until 7b, so its mark has no active descendant.
 4. **Text entry:** `Input` (the moved `TextField`, hardened with a
    read-only state, horizontal scrolling, Cut, and an accessible value),
    `InputGroup`, `NumberField`, and `Slider`. `ui/text.rs` moves with

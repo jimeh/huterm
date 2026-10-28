@@ -9,8 +9,9 @@
 //!
 //! Behavior: GPUI shows it after its hover delay and hides it when the
 //! pointer leaves. A control that keyboard focus reached shows it at once,
-//! below itself, while its focus ring shows: mount [`focused`] in it then.
-//! A pointer press hides the ring, and the tooltip with it.
+//! below itself, while its focus ring shows and it is not scrolled out of
+//! view: mount [`focused`] in it then. A pointer press hides the ring, and
+//! the tooltip with it.
 //!
 //! Accessibility: the tooltip view reports no node. The control it explains
 //! carries the text as its `aria_description`, because assistive technology
@@ -50,11 +51,15 @@ impl Tooltip {
 /// Shows `text` as a tooltip below its parent in this frame, for a control
 /// that shows its keyboard focus ring. Mount it in the control only while
 /// the ring shows; it takes no space. GPUI keeps the tooltip inside the
-/// window.
+/// window. A control clipped by its scroll area, even in part, shows none,
+/// so the tooltip never floats over what covers the control.
 #[must_use]
 pub fn focused(text: SharedString, tokens: Tokens) -> impl IntoElement {
     canvas(
         move |bounds, window, cx| {
+            if window.content_mask().bounds.intersect(&bounds) != bounds {
+                return;
+            }
             let view = Tooltip::view(text, tokens, cx);
             window.set_tooltip(AnyTooltip {
                 view,
@@ -93,5 +98,83 @@ impl Render for Tooltip {
             .text_color(tokens.fg)
             .whitespace_nowrap()
             .child(self.text.clone())
+    }
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod tests {
+    use gpui::{
+        Context, FocusHandle, IntoElement, Render, ScrollHandle,
+        TestAppContext, Window, div, point, prelude::*, px,
+    };
+
+    use crate::components::button::Button;
+    use crate::components::scroll_area::ScrollArea;
+    use crate::list_scrollbar::ListScrollbar;
+    use crate::testing::tokens;
+
+    /// A focusable button with a tooltip at the top of a short scroll area.
+    struct Scrolled {
+        focus: FocusHandle,
+        scroll: ScrollHandle,
+        scrollbar: ListScrollbar,
+    }
+
+    impl Render for Scrolled {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut Context<'_, Self>,
+        ) -> impl IntoElement {
+            let view = cx.entity();
+            div().size(px(400.0)).child(crate::focus::tracker()).child(
+                ScrollArea::new("area", &self.scroll)
+                    .max_height(Some(px(100.0)))
+                    .child(
+                        Button::new("reload", "Reload", tokens())
+                            .focus(&self.focus)
+                            .tooltip("Reload the config file"),
+                    )
+                    .children((0..20).map(|_| div().flex_none().h(px(20.0))))
+                    .render(
+                        &mut self.scrollbar,
+                        tokens().scrollbar,
+                        &view,
+                        |view| &mut view.scrollbar,
+                        cx,
+                    ),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn a_focused_control_scrolled_out_of_view_shows_no_tooltip(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let scroll = ScrollHandle::new();
+            Scrolled {
+                focus: cx.focus_handle(),
+                scrollbar: ListScrollbar::new(scroll.clone()),
+                scroll,
+            }
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("a");
+        cx.update(|window, cx| {
+            view.read(cx).focus.clone().focus(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("tooltip").is_some(), "in view, it shows");
+        view.update(cx, |view, cx| {
+            view.scroll.set_offset(point(px(0.0), px(-60.0)));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.update(|window, cx| view.read(cx).focus.is_focused(window)));
+        assert!(
+            cx.debug_bounds("tooltip").is_none(),
+            "scrolled out, it hides"
+        );
     }
 }

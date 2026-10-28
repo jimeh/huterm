@@ -3,8 +3,12 @@
 //! keys, and ignore GPUI's implicit Enter click; title-row and tab-bar
 //! buttons are named buttons that leave focus on the terminal.
 
-use gpui::KeyUpEvent;
+use gpui::{
+    KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent,
+};
 use huterm_ui::focus::current_ring_drawn;
+use serde_json::Value;
 
 use super::super::close_dialog::DialogFocus;
 use super::menus::a11y_node;
@@ -49,6 +53,61 @@ fn a11y_click(harness: &mut DesktopHarness, window: AnyWindowHandle, id: &str) {
     });
 }
 
+/// The element id, in its `Debug` spelling, of the node assistive
+/// technology follows in `window`'s last frame, if any.
+fn active_descendant(cx: &mut App, window: AnyWindowHandle) -> Option<String> {
+    let json = window
+        .update(cx, |_, window, _| window.debug_a11y_tree_json())
+        .unwrap()
+        .expect("test windows report an accessibility tree for every frame");
+    let tree: Value = serde_json::from_str(&json).unwrap();
+    let key = tree["active_descendant_focus"].as_str()?;
+    tree["nodes"][key]["element_id"].as_str().map(str::to_owned)
+}
+
+/// `id` as the accessibility dump spells element ids.
+fn spelled(id: &str) -> String {
+    format!("{:?}", gpui::ElementId::Name(id.to_owned().into()))
+}
+
+/// Sends a left `click_count` press at `at` to `window`.
+fn press_at(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    at: gpui::Point<Pixels>,
+    click_count: usize,
+) {
+    VisualTestContext::from_window(window, &harness.cx).simulate_event(
+        MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::none(),
+            click_count,
+            first_mouse: false,
+        },
+    );
+}
+
+/// Drags the held left button to `to` and releases it there.
+fn drag_and_release(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    to: gpui::Point<Pixels>,
+) {
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_event(MouseMoveEvent {
+        position: to,
+        modifiers: Modifiers::none(),
+        pressed_button: Some(MouseButton::Left),
+    });
+    visual.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: to,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+    });
+}
+
 impl DesktopHarness {
     /// A window showing a tab with a background job beside an idle one,
     /// the busy tab focused, so closing it asks first.
@@ -62,6 +121,33 @@ impl DesktopHarness {
         });
         self.activate(window, runs);
         (window, runs)
+    }
+
+    /// Whether the title row saw a press, and how many window moves it
+    /// started.
+    fn title_row(&mut self, window: AnyWindowHandle) -> (bool, u32) {
+        self.update_view(window, |view, _, _| {
+            (view.title_row_press.get(), view.title_row_moves.get())
+        })
+    }
+
+    /// Waits for the menu button to paint and returns its centre.
+    fn menu_button_centre(
+        &mut self,
+        window: AnyWindowHandle,
+    ) -> gpui::Point<Pixels> {
+        self.wait_for("the menu button to paint", |cx| {
+            window
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                        view.read(cx).menu_button_bounds.get().is_some()
+                    })
+                })
+                .unwrap_or(false)
+        });
+        self.update_view(window, |view, _, _| view.menu_button_bounds.get())
+            .unwrap()
+            .center()
     }
 
     /// The close confirmation's keyboard focus, or `None` while none shows.
@@ -217,4 +303,269 @@ fn title_row_and_tab_bar_buttons_are_named_and_leave_focus_on_the_terminal(
             })
             .unwrap()
     });
+}
+
+#[gpui::test]
+fn a_click_on_a_dialog_button_moves_the_keyboard_mark_to_it(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    assert_eq!(harness.about_focus(window), Some(AboutFocus::Close));
+    let details = harness
+        .update_view(window, |view, _, _| view.about.clone().unwrap().text());
+    a11y_click(&mut harness, window, "about-copy");
+    harness.wait_for("the click to copy the details", |cx| {
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_ref()
+            == Some(&details)
+    });
+    harness.cx.update(|cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+            "cleared".to_owned(),
+        ));
+    });
+    // Enter presses what was clicked, not the Close button Enter started on.
+    harness.press(window, "enter");
+    harness.cx.update(|cx| {
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(copied.as_ref(), Some(&details), "Enter copied again");
+    });
+    assert_eq!(harness.about_focus(window), Some(AboutFocus::Copy));
+}
+
+#[gpui::test]
+fn a_click_on_a_licenses_button_moves_the_keyboard_mark_to_it(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    // The press on the panel first returns focus to the search; the click
+    // then moves it to the button.
+    a11y_click(&mut harness, window, "license-copy");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Copy));
+}
+
+#[gpui::test]
+fn a_dialogs_current_button_is_its_accessible_active_descendant(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.busy_window();
+    harness.invoke(window, ids::ABOUT).unwrap();
+    let followed = |harness: &mut DesktopHarness, id: &'static str| {
+        harness.wait_for(id, |cx| {
+            active_descendant(cx, window) == Some(spelled(id))
+        });
+    };
+    followed(&mut harness, "about-close");
+    harness.press(window, "tab");
+    followed(&mut harness, "about-licenses");
+    harness.press(window, "tab");
+    followed(&mut harness, "about-copy");
+    harness.press(window, "escape");
+    harness.press(window, CLOSE);
+    harness.wait_for("the confirmation", |cx| confirming(cx, window));
+    followed(&mut harness, "confirm-close");
+    harness.press(window, "tab");
+    followed(&mut harness, "cancel-close");
+}
+
+#[gpui::test]
+fn a_press_on_an_inactive_tabs_close_button_neither_selects_nor_drags_it(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let other = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab, other]);
+    harness.wait_text(window, tab, "READY");
+    harness.update_view(window, |view, window, cx| {
+        view.select(tab, window, cx);
+    });
+    harness.activate(window, tab);
+    // GPUI looks debug selectors up by a static name.
+    let selector = format!("close-tab-{}", other.get()).leak();
+    let close = VisualTestContext::from_window(window, &harness.cx)
+        .debug_bounds(selector)
+        .expect("the inactive tab draws its close button")
+        .center();
+    press_at(&mut harness, window, close, 1);
+    harness.update_view(window, |view, _, cx| {
+        assert!(view.reorder.is_none(), "the press started a tab drag");
+        assert_eq!(view.active_tab(cx), Some(tab));
+    });
+    VisualTestContext::from_window(window, &harness.cx).simulate_event(
+        MouseUpEvent {
+            button: MouseButton::Left,
+            position: close,
+            modifiers: Modifiers::none(),
+            click_count: 1,
+        },
+    );
+    harness.wait_for("the click to close the inactive tab", |cx| {
+        terminal(cx, window, other).is_none()
+    });
+    assert_eq!(
+        harness.update_view(window, |view, _, cx| view.active_tab(cx)),
+        Some(tab)
+    );
+}
+
+/// macOS draws the menu button on its title strip, whose empty space moves
+/// the window; Linux has a title row only with client-side decorations,
+/// which the next test covers.
+#[gpui::test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the menu button sits on a title row only on macOS here"
+)]
+fn a_press_on_the_menu_button_starts_no_title_row_move(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let button = harness.menu_button_centre(window);
+    let away = harness.terminal_centre(window);
+    press_at(&mut harness, window, button, 1);
+    assert_eq!(harness.title_row(window), (false, 0), "the row saw it");
+    drag_and_release(&mut harness, window, away);
+    assert_eq!(harness.title_row(window), (false, 0));
+    // The strip's empty space beside the button does take the press.
+    let empty = gpui::point(button.x - px(60.0), button.y);
+    press_at(&mut harness, window, empty, 1);
+    assert_eq!(harness.title_row(window), (true, 0));
+}
+
+/// The test platform does not implement a window move or zoom, so a press
+/// that reached the title row would fail there too.
+#[gpui::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "Huterm draws its own window controls only on Linux"
+)]
+fn a_press_on_a_drawn_window_control_starts_no_title_row_gesture(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.position = crate::config::TabPosition::Titlebar;
+    });
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    // The test platform reports server-side decorations; take the client
+    // frame a desktop without a title bar would give.
+    harness.update_view(window, |view, window, cx| {
+        view.frame_state.decorations = gpui::Decorations::Client {
+            tiling: gpui::Tiling::default(),
+        };
+        view.layout_pending = true;
+        view.refresh_tab_visibility(window, cx);
+        view.sync_tab_layout(window, cx);
+        cx.notify();
+    });
+    harness.wait_for("the window controls to paint", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx).window_button_bounds
+                        [WindowButton::Minimize.index()]
+                    .get()
+                    .is_some()
+                })
+            })
+            .unwrap_or(false)
+    });
+    let minimize = harness
+        .update_view(window, |view, _, _| {
+            view.window_button_bounds[WindowButton::Minimize.index()].get()
+        })
+        .unwrap()
+        .center();
+    let menu = harness.menu_button_centre(window);
+    // Releasing over the terminal clicks nothing, so no control acts.
+    let away = harness.terminal_centre(window);
+    for at in [minimize, menu] {
+        press_at(&mut harness, window, at, 1);
+        assert_eq!(harness.title_row(window), (false, 0), "{at:?}");
+        drag_and_release(&mut harness, window, away);
+        assert_eq!(harness.title_row(window), (false, 0), "{at:?}");
+    }
+    // A double-click on the row zooms the window.
+    press_at(&mut harness, window, minimize, 2);
+    drag_and_release(&mut harness, window, away);
+    assert_eq!(harness.title_row(window), (false, 0));
+}
+
+#[gpui::test]
+fn tab_close_and_toast_buttons_are_named_after_what_they_act_on(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let other = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab, other]);
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.update_view(window, |view, _, cx| {
+        view.notify(
+            NoticeContent::diagnostic(
+                super::super::notices::Severity::Error,
+                NoticeSource::Config,
+                "Config has errors",
+                "line 3",
+            )
+            .action(
+                "Reload",
+                huterm_protocol::CommandInvocation::new(
+                    ids::RELOAD_CONFIG,
+                    Vec::new(),
+                ),
+            ),
+            cx,
+        );
+    });
+    let title = harness.update_view(window, |view, _, cx| {
+        let shown = view.tabs.iter().find(|shown| shown.id == other).unwrap();
+        shown.label(view.config.tabs, cx).0
+    });
+    assert_ne!(title, "");
+    let labelled = |harness: &mut DesktopHarness, label: String| {
+        harness.wait_for(&label.clone(), |cx| {
+            let json = window
+                .update(cx, |_, window, _| window.debug_a11y_tree_json())
+                .unwrap()
+                .unwrap();
+            let tree: Value = serde_json::from_str(&json).unwrap();
+            tree["nodes"].as_object().unwrap().values().any(|node| {
+                node["aria"]["label"].as_str() == Some(label.as_str())
+                    && node["aria"]["role"] == "Button"
+            })
+        });
+    };
+    labelled(&mut harness, format!("Close {title}"));
+    labelled(&mut harness, "Dismiss Config has errors".to_owned());
+    // The action looks like a link but runs a command.
+    labelled(&mut harness, "Reload".to_owned());
 }

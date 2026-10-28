@@ -321,6 +321,14 @@ impl LicensesView {
         cx.notify();
     }
 
+    /// Moves keyboard focus to the clicked `button`, as a browser moves
+    /// focus on a click, so Enter presses what was clicked. The press on
+    /// the panel moved it to the search first.
+    fn mark(&mut self, button: LicensesFocus, cx: &mut Context<'_, Self>) {
+        self.focus = button;
+        cx.notify();
+    }
+
     fn press_focused(&mut self, cx: &mut Context<'_, Self>) {
         match self.focus {
             LicensesFocus::Search => {}
@@ -580,7 +588,9 @@ impl LicensesView {
         });
         let copied = self.copied == Some(self.selected);
         let mut actions = div().flex().flex_none().items_center().gap(px(8.0));
+        let view = cx.entity().downgrade();
         if let Some(url) = component.url.clone() {
+            let view = view.clone();
             actions = actions.child(
                 footer_button(
                     "license-website",
@@ -590,10 +600,14 @@ impl LicensesView {
                     None,
                 )
                 .current(self.focus == LicensesFocus::Website)
-                .on_click(move |_, cx| cx.open_url(&url)),
+                .on_click(move |_, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        view.mark(LicensesFocus::Website, cx);
+                    });
+                    cx.open_url(&url);
+                }),
             );
         }
-        let view = cx.entity().downgrade();
         actions = actions.child(
             footer_button(
                 "license-copy",
@@ -604,7 +618,10 @@ impl LicensesView {
             )
             .current(self.focus == LicensesFocus::Copy)
             .on_click(move |_, cx| {
-                let _ = view.update(cx, LicensesView::copy_selected);
+                let _ = view.update(cx, |view, cx| {
+                    view.mark(LicensesFocus::Copy, cx);
+                    view.copy_selected(cx);
+                });
             }),
         );
         div()
@@ -893,7 +910,8 @@ impl Render for LicensesView {
                     .flex_col()
                     .text_color(swatch.fg)
                     // A press anywhere in the panel returns keys and keyboard
-                    // focus to the search; a button's click still acts.
+                    // focus to the search; a button's click then acts and
+                    // moves keyboard focus to that button.
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(

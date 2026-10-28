@@ -352,6 +352,7 @@ impl WorkspaceView {
                 .child(item.title.clone()),
             close: Self::close_tab_button(
                 id,
+                &item.title,
                 close_button_shown(tabs.close_button, item.active()),
                 colors,
                 swatch,
@@ -416,12 +417,20 @@ impl WorkspaceView {
     /// hidden so hovering never changes tab width.
     fn close_tab_button(
         id: TabId,
+        title: &str,
         shown: bool,
         colors: TabColors,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> Div {
         let foreground = colors.foreground;
+        // Every tab has one, so its name and tooltip say which tab it
+        // closes.
+        let name = if title.is_empty() {
+            "Close Tab".to_owned()
+        } else {
+            format!("Close {title}")
+        };
         div()
             .flex_shrink_0()
             .when(!shown, |slot| {
@@ -429,7 +438,7 @@ impl WorkspaceView {
                     .group_hover("tab", |style| style.opacity(1.0))
             })
             .child(
-                Button::new(("close-tab", id.get()), "Close Tab", swatch)
+                Button::new(("close-tab", id.get()), name, swatch)
                     .colors(colors.control())
                     .icon(
                         icon_element(Icon::X, colors.inactive)
@@ -439,6 +448,7 @@ impl WorkspaceView {
                     )
                     .icon_only()
                     .group("close-tab")
+                    .debug_selector(format!("close-tab-{}", id.get()))
                     .stop_presses()
                     .size(CLOSE_SIZE)
                     .rounded(px(4.0))

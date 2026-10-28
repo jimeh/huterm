@@ -490,7 +490,9 @@ overrides.
 Clickable controls pair their hover style with an `.active` pressed style:
 `Swatch::pressed`, `accent_pressed`, or `selection_pressed` in overlays.
 Title-row and tab-bar buttons are `Button`s in `TabColors::control()`, which
-carries the bar's control hover and pressed overlays. `Swatch` is passed
+carries the bar's control hover and pressed overlays. Pane title-bar buttons
+are not `Button`s yet and still use `TabColors::control_hover` and
+`control_pressed` directly. `Swatch` is passed
 by value and must stay under Clippy's 256-byte limit, so derive further shades
 through methods rather than fields.
 
@@ -611,13 +613,23 @@ palette its own `Colors`. Its click action takes no event, so
 `WorkspaceView::button_action` adapts a view method. Chrome buttons take no
 focus handle, so they never hold focus, and `stop_presses` keeps their
 presses from the title row's move gesture and the tab strip. The close
-dialog, About, and Licenses keep GPUI focus on the window root or the search
-field and move a view-state focus with their own commands; their buttons mark
-it with `Button::current`, whose ring shows after a key and hides on a pointer
-press (`focus::current_visible`), so the terminal window mounts
-`focus::tracker()` too. A button with a tooltip shows it below itself while
-its ring shows (`tooltip::focused`), and an icon-only button's label is its
-tooltip.
+dialog, About, and Licenses keep GPUI focus on the window's focus handle or
+the search field and move a view-state focus with their own commands; their
+buttons mark it with `Button::current`, whose ring shows after a key and hides
+on a pointer press (`focus::current_visible`), so the terminal window mounts
+`focus::tracker()` too. A click on a button that leaves its dialog open moves
+the mark to it, as a browser moves focus. Licenses moves between its buttons
+with Tab and Shift-Tab only, because the arrows stay with its list and
+search. The top close dialog or About panel tracks the window's focus handle
+on its own `AlertDialog` or `Dialog` node (`dialog_node`) rather than the
+root, because GPUI honors the current button's active descendant only under
+the focused node; Licenses keeps focus in its search field, which does not
+contain its buttons, so assistive technology does not follow its mark. A
+dialog opened from the native app menu right after a key press can show its
+ring at once, because AppKit menu clicks reach GPUI as no pointer event. A
+button with a tooltip shows it below itself while its ring shows and it is
+not clipped (`tooltip::focused`), an expanded button shows none, and an
+icon-only button's label is its tooltip.
 
 Text fields are `huterm_ui::components::input::Input` entities, and
 `huterm_ui::text` holds the UTF-16 range conversions that `Input` and

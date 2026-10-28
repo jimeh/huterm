@@ -104,7 +104,7 @@ impl DesktopHarness {
     }
 
     /// The centre of the active terminal's drawn pane.
-    fn terminal_centre(
+    pub(super) fn terminal_centre(
         &mut self,
         window: AnyWindowHandle,
     ) -> gpui::Point<Pixels> {
