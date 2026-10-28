@@ -478,11 +478,13 @@ impl SettingsView {
         })
         .detach();
         self.fields.insert(path, field.clone());
-        self.show_text(
-            path,
-            field_text(shown(setting, &self.file, &self.defaults)),
-            cx,
-        );
+        // A pending change shows until it lands, such as a value a rename
+        // is copying to the profile's new name.
+        let text = match self.pending.get(path) {
+            Some(value) => self.display(setting, value.clone()),
+            None => field_text(shown(setting, &self.file, &self.defaults)),
+        };
+        self.show_text(path, text, cx);
         self.synced.insert(path, text_for(field.read(cx)));
         field
     }
@@ -2170,6 +2172,18 @@ impl SettingsView {
         let setting = self.setting_at(path).expect("a known setting");
         let field = self.field(setting, window, cx);
         field.update(cx, |field, cx| field.set_text(text, cx));
+    }
+
+    /// The text the setting's field shows, making the field as drawing
+    /// its row does when it has none.
+    pub(super) fn field_shows(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> String {
+        let setting = self.setting_at(path).expect("a known setting");
+        self.field(setting, window, cx).read(cx).text().to_owned()
     }
 
     pub(super) fn field_value(&self, path: &str, cx: &App) -> String {

@@ -1000,6 +1000,30 @@ pub(super) fn close(
     }
 }
 
+/// Keeps profile `from`'s window, if one is open, as the window of `to`,
+/// the name Settings renamed it to. Call it before the reload that follows
+/// the rename, so `reconcile` does not take the window for a removed
+/// profile's and turn it into an ordinary window.
+pub(super) fn rename(cx: &mut App, from: &str, to: &str) {
+    let Some(id) = cx.global_mut::<Desktop>().windows.rename_quake(from, to)
+    else {
+        return;
+    };
+    let Some(handle) = window_handle(cx, Some(id)) else {
+        return;
+    };
+    let _ = handle.update(cx, |root, _, cx| {
+        let Ok(view) = root.downcast::<WorkspaceView>() else {
+            return;
+        };
+        view.update(cx, |view, _| {
+            if let Some(state) = view.quake.as_mut() {
+                to.clone_into(&mut state.name);
+            }
+        });
+    });
+}
+
 pub(super) fn reconcile(cx: &mut App) {
     let desktop = cx.global::<Desktop>();
     // A removed profile's window keeps its association until its detach

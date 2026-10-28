@@ -280,15 +280,19 @@ impl SettingsView {
             .cloned()
     }
 
-    /// Answers the dialog as its Cancel does, for `dialog_cancel`, an owner
-    /// change, or an outside press, which an alert never reports. The
-    /// window does not route its deactivation here.
+    /// Answers the dialog as its Cancel does, for `dialog_cancel` or an
+    /// owner change. An outside press leaves it open, keeping a typed name,
+    /// as a macOS sheet does; an alert never reports one. The window does
+    /// not route its deactivation here.
     pub(super) fn dismiss_dialog(
         &mut self,
-        _reason: Dismissal,
+        reason: Dismissal,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if reason == Dismissal::OutsidePress {
+            return;
+        }
         if let Some(key) = self.dialog.prompt().map(Prompt::cancel) {
             self.act(key, window, cx);
         }

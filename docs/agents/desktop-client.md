@@ -772,12 +772,24 @@ field is the dialog's first control, so `window.focus_prev` leaves the
 dialog. The New profile and Rename profile dialogs (`quake.rs`,
 `render_name_dialog`) check the typed name on every frame, show the message
 under the field, and disable the primary button, which then leaves the Tab
-cycle. A save of several patches, such as a rename's, goes through
-`saving.rs`'s `Batch`: `submit_batch` queues it, its patches are built when
-its turn comes, from the file as the window last read or wrote it, and they
-go to `ConfigFile::apply` together, so a failed save writes nothing.
-`batch_outcome` lists the values `pending` shows meanwhile, and
-`batch_refused` says why it failed. Another rename adds a `Batch` variant.
+cycle. Settings ignores an outside press on its dialogs, as a macOS sheet
+does, so a typed name survives a stray click. A save of several patches,
+such as a rename's, goes through `saving.rs`'s `Batch`: `submit_batch`
+queues it, and they go to `ConfigFile::apply` together, so a failed save
+writes nothing. When its turn comes, the values it moves are read from the
+file as the window last read or wrote it, so an edit made elsewhere to them
+conflicts, but the entries it rewrites (`Batch::current_patches`) are found
+in the file as it is when the batch applies, since a reference added
+elsewhere would otherwise survive a successful rename. `batch_outcome` lists
+the values `pending` shows meanwhile, including each value a rename copies
+under the new name, so an edit made there before the batch lands takes the
+copied value as its base and builds on the batch instead of conflicting.
+`batch_refused` says why it failed and drops the queued and pending edits
+under the new name, which written alone would create it; `batch_landed`
+follows a written batch outside the window, such as moving a renamed
+profile's Quake window association before the reload, whose `reconcile`
+would otherwise turn it into an ordinary window. Another rename adds a
+`Batch` variant.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with

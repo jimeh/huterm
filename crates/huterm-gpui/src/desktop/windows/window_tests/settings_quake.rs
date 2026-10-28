@@ -575,12 +575,38 @@ fn a_delete_on_an_invalid_file_says_why(cx: &mut TestAppContext) {
 /// Renames the profile shown to `to` from its Rename profile dialog.
 fn rename(harness: &mut DesktopHarness, from: &str, to: &str) {
     with_window(harness, |view, window, cx| {
-        view.pick_profile(from);
-        view.press("qren", window, cx);
-        assert_eq!(view.dialog_name(), "rename");
-        view.type_dialog_name(to, cx);
-        view.answer("qrename", window, cx);
-        assert_eq!(view.dialog_name(), "none", "{:?}", view.quake_message(cx));
+        renaming(view, from, to, window, cx);
+    });
+}
+
+/// Starts renaming `from` to `to` from its Rename profile dialog, for a
+/// test that acts before the save runs.
+fn renaming(
+    view: &mut SettingsView,
+    from: &str,
+    to: &str,
+    window: &mut gpui::Window,
+    cx: &mut gpui::Context<'_, SettingsView>,
+) {
+    view.pick_profile(from);
+    view.press("qren", window, cx);
+    assert_eq!(view.dialog_name(), "rename");
+    view.type_dialog_name(to, cx);
+    view.answer("qrename", window, cx);
+    assert_eq!(view.dialog_name(), "none", "{:?}", view.quake_message(cx));
+}
+
+/// Waits for a refused rename's alert.
+fn refused_rename(harness: &mut DesktopHarness) {
+    harness.wait_for("the refused rename", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| {
+                        view.dialog_name() == "rename-refused"
+                    })
+                    .unwrap_or(false)
+            })
     });
 }
 
@@ -708,4 +734,217 @@ fn a_queued_rename_carries_the_edit_saved_before_it(cx: &mut TestAppContext) {
         file.text(),
         "# Mine.\n\n[quake.profiles.work]\nheight = 0.5\n"
     );
+}
+
+#[gpui::test]
+fn a_rename_rewrites_a_keybinding_added_since_settings_read_the_file(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("quake-rename-added", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    // Another editor binds the profile before Settings rereads.
+    let binding = "\n[[keybinding]]\nkey = \"alt-l\"\ncommand = \"show_quake\"\n\
+                   args = { profile = \"logs\" }\n";
+    std::fs::write(file.path(), format!("{LOGS}{binding}")).unwrap();
+    rename(&mut harness, "logs", "work");
+    saved(&mut harness, &file, |text| text.contains("work"));
+    assert_eq!(
+        file.text(),
+        format!(
+            "# Mine.\n\n[quake.profiles.work]\nheight = 0.3\n{}",
+            binding.replace("\"logs\"", "\"work\"")
+        )
+    );
+}
+
+#[gpui::test]
+fn an_edit_made_under_the_new_name_while_renaming_builds_on_the_rename(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("quake-rename-edit", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    let height = "quake.profiles.work.height";
+    with_window(&mut harness, |view, window, cx| {
+        renaming(view, "logs", "work", window, cx);
+        // The card shows what the rename copies; leaving it writes nothing.
+        assert_eq!(view.field_shows(height, window, cx), "0.3");
+        view.blur(height, cx);
+        view.type_into(height, "0.6", window, cx);
+        view.enter(height, cx);
+    });
+    harness.wait_for("both saves", settled);
+    assert_eq!(
+        file.text(),
+        "# Mine.\n\n[quake.profiles.work]\nheight = 0.6\n"
+    );
+    with_view(&mut harness, |view, _| {
+        assert!(!view.conflicted(height));
+        assert_eq!(view.setting_error(height), None);
+    });
+}
+
+#[gpui::test]
+fn a_refused_rename_drops_the_edits_made_under_the_new_name(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("quake-rename-refused-edit", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    // Another editor changes the profile before Settings rereads.
+    let theirs = LOGS.replace("0.3", "0.4");
+    std::fs::write(file.path(), &theirs).unwrap();
+    let height = "quake.profiles.work.height";
+    with_window(&mut harness, |view, window, cx| {
+        renaming(view, "logs", "work", window, cx);
+        // Queued behind the rename; written alone, it would create `work`.
+        view.type_into(height, "0.6", window, cx);
+        view.enter(height, cx);
+    });
+    refused_rename(&mut harness);
+    assert_eq!(file.text(), theirs);
+    visual(&harness).run_until_parked();
+    let alert = a11y_node(&mut harness, "settings-rename-refused");
+    let why = alert["aria"]["description"].as_str().unwrap_or_default();
+    assert!(
+        why.ends_with("The changes made to work meanwhile were not saved."),
+        "{alert}"
+    );
+    // Leaving the field does not submit the dropped edit again.
+    with_view(&mut harness, |view, cx| view.blur(height, cx));
+    harness.cx.run_until_parked();
+    assert!(harness.cx.update(settled));
+    assert_eq!(file.text(), theirs);
+}
+
+#[gpui::test]
+fn a_refused_rename_leaves_the_card_behind_another_dialog(
+    cx: &mut TestAppContext,
+) {
+    let original = format!("{LOGS}\n[quake.profiles.build]\n");
+    let file = ScratchConfig::new("quake-rename-refused-behind", &original);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    let theirs = original.replace("0.3", "0.4");
+    std::fs::write(file.path(), &theirs).unwrap();
+    let before = with_view(&mut harness, |view, _| view.writes_finished());
+    with_window(&mut harness, |view, window, cx| {
+        renaming(view, "logs", "work", window, cx);
+        // The delete alert for another profile is open when the refusal
+        // arrives.
+        view.pick_profile("build");
+        view.press("qdel", window, cx);
+        assert_eq!(view.dialog_name(), "delete");
+    });
+    harness.wait_for("the refused rename", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.writes_finished() > before)
+                    .unwrap_or(false)
+            })
+    });
+    assert_eq!(file.text(), theirs);
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.dialog_name(), "delete");
+        assert_eq!(view.shown_profile_name(), "build");
+    });
+}
+
+#[gpui::test]
+fn a_queued_rename_is_refused_when_the_file_turns_invalid(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("quake-rename-invalid", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        view.set("font.size", Some(Value::Float(15.0)), cx);
+        renaming(view, "logs", "work", window, cx);
+    });
+    // The file turns invalid before the write ahead of the rename runs.
+    let broken = format!("{LOGS}[window\n");
+    std::fs::write(file.path(), &broken).unwrap();
+    harness.wait_for("the refused writes", settled);
+    assert_eq!(file.text(), broken);
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.dialog_name(), "rename-refused");
+        assert_eq!(view.shown_profile_name(), "logs");
+        assert_eq!(view.profile_names(), ["default", "logs"]);
+    });
+    visual(&harness).run_until_parked();
+    let alert = a11y_node(&mut harness, "settings-rename-refused");
+    assert_eq!(
+        alert["aria"]["description"],
+        "config.toml has an error. Not saved."
+    );
+}
+
+#[gpui::test]
+fn a_shortcut_edit_queued_behind_a_rename_follows_the_rewritten_entry(
+    cx: &mut TestAppContext,
+) {
+    let shortcut = "\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+                    command = \"toggle_quake\"\nargs = { profile = \"logs\" }\n";
+    let file = ScratchConfig::new(
+        "quake-rename-queued-key",
+        &format!("{LOGS}{shortcut}"),
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        renaming(view, "logs", "work", window, cx);
+        // Built against the entry naming `logs`, which the rename rewrites.
+        view.pick_global(0, "command", "show_quake", cx);
+    });
+    harness.wait_for("both saves", settled);
+    assert_eq!(
+        file.text(),
+        format!(
+            "# Mine.\n\n[quake.profiles.work]\nheight = 0.3\n{}",
+            shortcut
+                .replace("\"logs\"", "\"work\"")
+                .replace("toggle_quake", "show_quake")
+        )
+    );
+}
+
+#[gpui::test]
+fn a_rename_keeps_the_profiles_open_window_under_the_new_name(
+    cx: &mut TestAppContext,
+) {
+    use crate::desktop::windows::model::{QuakeRecord, WindowLayout};
+    let file = ScratchConfig::new("quake-rename-window", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    // A window serving `logs`, as a summon records it.
+    let id = gpui::WindowId::from(9_999);
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().windows.open(
+            id,
+            Some(QuakeRecord {
+                profile: "logs".to_owned(),
+                visible: true,
+            }),
+            WindowLayout {
+                bounds: gpui::WindowBounds::Windowed(gpui::Bounds::default()),
+                sidebar_width: gpui::px(180.0),
+            },
+        );
+    });
+    rename(&mut harness, "logs", "work");
+    saved(&mut harness, &file, |text| text.contains("work"));
+    harness.wait_for("the reload", |cx| {
+        cx.global::<Desktop>()
+            .config
+            .quake
+            .profiles
+            .contains_key("work")
+    });
+    harness.cx.update(|cx| {
+        let windows = &cx.global::<Desktop>().windows;
+        assert_eq!(windows.quake_window("work"), Some(id));
+        assert_eq!(windows.quake_window("logs"), None);
+    });
 }

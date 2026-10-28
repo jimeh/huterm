@@ -480,12 +480,17 @@ assesses and closes every visible or hidden terminal.
 Renaming a profile in Settings writes one save: the profile's table under its
 new name, the old table removed, and the `profile` argument of every
 `[[global_keybinding]]`, and of every `[[keybinding]]` running a quake command,
-that named the old name changed to the new one. The table is written afresh,
-so comments on its lines and directly above its header are removed; a
-comment on a rewritten shortcut's line stays. When the save cannot be
-written, such as for a shortcut in an inline `global_keybinding = [...]`
-array, which Settings cannot edit in place, or for a file that changed
-meanwhile, Settings writes nothing and says why. Deleting a profile that a
+that named the old name changed to the new one, including a shortcut another
+editor added since Settings read the file. The table is written afresh before
+the file's first `[[...]]` entry, or at its end when it has none, rather than
+where the old table stood, so comments on its lines and directly above its
+header are removed; a comment on a rewritten shortcut's line stays. An open
+quake window of the profile stays open as that profile's window under the new
+name, with its tabs and shells. When the save cannot be written, such as for a
+shortcut in an inline `global_keybinding = [...]` array, which Settings cannot
+edit in place, or for a profile another editor changed meanwhile, Settings
+writes nothing and says why, and changes made to the new name's settings
+while the rename waited are not written either. Deleting a profile that a
 global shortcut uses is refused; deleting one that a `[[keybinding]]` runs
 warns first, since the file still accepts that binding and it fails only when
 pressed.

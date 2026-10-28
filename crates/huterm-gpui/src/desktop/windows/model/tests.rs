@@ -312,6 +312,23 @@ fn quake_state_follows_summon_hide_tabs_detach_and_close() {
 }
 
 #[test]
+fn a_renamed_profile_keeps_its_window_unless_the_new_name_has_one() {
+    let mut model = WindowModel::default();
+    model.open(window(2), Some(quake("logs", false)), layout(5.0));
+    model.open_tab(window(2), entry(1));
+    assert_eq!(model.rename_quake("logs", "work"), Some(window(2)));
+    assert_eq!(model.quake_window("logs"), None);
+    assert_eq!(model.quake_state("work"), Some((false, 1)));
+    // A window still serving the new name, such as a removed profile's
+    // detaching window, keeps it, and the renamed one stays as it was.
+    model.open(window(3), Some(quake("build", true)), layout(5.0));
+    assert_eq!(model.rename_quake("work", "build"), None);
+    assert_eq!(model.quake_window("work"), Some(window(2)));
+    assert_eq!(model.quake_window("build"), Some(window(3)));
+    assert_eq!(model.rename_quake("missing", "other"), None);
+}
+
+#[test]
 fn palette_tab_order_lists_recent_tabs_first_and_the_active_tab_last() {
     let (a, b, c) = (TabId::new(1), TabId::new(2), TabId::new(3));
     let mut model = attached(3);

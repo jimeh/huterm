@@ -16,9 +16,7 @@ use toml::{Table, Value};
 
 use super::super::super::key_hint::KeyHint;
 use super::super::super::overlay::Swatch;
-use super::super::super::settings::keybindings::{
-    Edit, names_profile, rename_profile_references,
-};
+use super::super::super::settings::keybindings::{Edit, names_profile};
 use super::controls::Opener;
 use super::dialog::Prompt;
 use super::keybindings::{CAP_WIDTH, Target, card, group_block, small};
@@ -77,6 +75,11 @@ pub(super) fn bare(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// The dotted path of the profile named `name`'s table.
+pub(super) fn profile_path(name: &str) -> String {
+    format!("{PREFIX}{name}")
 }
 
 /// Whether `path` names a whole profile, `quake.profiles.<name>`, as its
@@ -469,16 +472,17 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Shows why a rename of `from` wrote nothing, in an alert, unless
-    /// another dialog is open, when the footer alone says why.
+    /// Shows why a rename of `from` wrote nothing, in an alert over `from`'s
+    /// card, unless another dialog is open, when the footer alone says why
+    /// and the card behind that dialog stays as it is.
     pub(super) fn rename_refused(
         &mut self,
         from: &str,
         message: String,
         cx: &mut Context<'_, Self>,
     ) {
-        self.pick_profile(from);
         if self.dialog.prompt().is_none() {
+            self.pick_profile(from);
             let rename = self.action_stop("qren".to_owned(), cx);
             self.open_dialog(
                 Prompt::RenameRefused {
@@ -639,25 +643,48 @@ impl SettingsView {
         self.close_dialog(window, cx);
     }
 
-    /// What a rename shows until it lands: `from` gone and `to` there.
+    /// What a rename shows until it lands: `from` gone, and `to` there
+    /// with each value `from` sets or is saving. An edit to `to` meanwhile
+    /// then starts from the value the rename writes, and builds on it.
     pub(super) fn rename_outcome(
         &self,
         from: &str,
         to: &str,
     ) -> Vec<(&'static str, Option<Value>)> {
-        [(from, None), (to, Some(Value::Table(Table::new())))]
-            .into_iter()
-            .filter_map(|(name, value)| {
-                let setting =
-                    profile_setting(self.model, &format!("{PREFIX}{name}"))?;
-                Some((setting.path.as_str(), value))
-            })
-            .collect()
+        let mut outcome: Vec<(&'static str, Option<Value>)> =
+            [(from, None), (to, Some(Value::Table(Table::new())))]
+                .into_iter()
+                .filter_map(|(name, value)| {
+                    let setting =
+                        profile_setting(self.model, &profile_path(name))?;
+                    Some((setting.path.as_str(), value))
+                })
+                .collect();
+        for template in self.model.profile_settings() {
+            let field = |name: &str| {
+                profile_setting(
+                    self.model,
+                    &format!("{}.{}", profile_path(name), template.path),
+                )
+            };
+            let (Some(source), Some(target)) = (field(from), field(to)) else {
+                continue;
+            };
+            let value = match self.pending.get(source.path.as_str()) {
+                Some(pending) => pending.clone(),
+                None => self.file.get(&source.path).cloned(),
+            };
+            if value.is_some() {
+                outcome.push((target.path.as_str(), value));
+            }
+        }
+        outcome
     }
 
-    /// A rename's patches, built from the file as the window last saw it:
-    /// `to` set to `from`'s table, `from` removed, and every shortcut that
-    /// names `from` pointed at `to`.
+    /// A rename's patches for the profile's table, built from the file as
+    /// the window last saw it: `to` set to `from`'s table and `from`
+    /// removed. The shortcuts that name `from` are found when the batch
+    /// applies (`Batch::current_patches`).
     pub(super) fn rename_patches(
         &self,
         from: &str,
@@ -676,20 +703,13 @@ impl SettingsView {
         let path = |name: &str| {
             vec!["quake".to_owned(), "profiles".to_owned(), name.to_owned()]
         };
-        let mut patches = vec![
+        Ok(vec![
             Patch::Set {
                 path: path(to),
                 value: Value::Table(table.clone()),
             },
             Patch::Remove { path: path(from) },
-        ];
-        patches.extend(rename_profile_references(
-            &self.keys.entries,
-            &self.keys.globals,
-            from,
-            to,
-        ));
-        Ok(patches)
+        ])
     }
 
     /// Why `profile` cannot be deleted now, if it cannot.

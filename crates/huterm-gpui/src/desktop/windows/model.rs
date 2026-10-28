@@ -291,6 +291,23 @@ impl WindowModel {
         }
     }
 
+    /// Moves the association of the window serving quake profile `from`
+    /// to `to`, a renamed profile, unless a window already serves `to`.
+    /// Returns the window that moved.
+    pub(super) fn rename_quake(
+        &mut self,
+        from: &str,
+        to: &str,
+    ) -> Option<WindowId> {
+        if self.quake_window(to).is_some() {
+            return None;
+        }
+        let id = self.quake_window(from)?;
+        let quake = self.record_mut(id)?.quake.as_mut()?;
+        to.clone_into(&mut quake.profile);
+        Some(id)
+    }
+
     /// Ends a window's profile association; the window stays open.
     pub(super) fn detach_quake(&mut self, id: WindowId) {
         if let Some(record) = self.record_mut(id) {

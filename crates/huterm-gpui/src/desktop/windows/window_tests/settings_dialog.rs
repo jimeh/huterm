@@ -482,3 +482,37 @@ fn the_delete_alert_warns_of_keybindings_that_run_the_profile(
     );
     assert_eq!(file.text(), original);
 }
+
+#[gpui::test]
+fn an_outside_press_keeps_the_name_dialogs_and_their_drafts(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("dialog-name-outside", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    let profiles = with_view(&mut harness, |view, _| {
+        view.select_triggers()
+            .into_iter()
+            .find_map(|(key, bounds)| (key == "qprof").then_some(bounds))
+            .expect("the profile select painted")
+    });
+    for (opener, name) in [("qnew", "new-profile"), ("qren", "rename")] {
+        press_button(&mut harness, opener);
+        with_view(&mut harness, |view, cx| view.type_dialog_name("draft", cx));
+        let mut visual = visual(&harness);
+        visual.run_until_parked();
+        let panel = with_view(&mut harness, |view, _| view.dialog_panel())
+            .expect("the dialog painted");
+        assert!(!panel.contains(&profiles.center()));
+        visual.simulate_click(profiles.center(), gpui::Modifiers::none());
+        visual.run_until_parked();
+        assert_eq!(dialog(&mut harness), name);
+        assert_eq!(focus(&mut harness), "dialog:field", "{opener}");
+        assert!(!with_view(&mut harness, |view, _| view.menu_open()));
+        with_view(&mut harness, |view, cx| {
+            assert_eq!(view.profile_name_text(cx), "draft", "{opener}");
+        });
+        keys(&harness, "escape");
+    }
+    assert_eq!(file.text(), LOGS);
+}
