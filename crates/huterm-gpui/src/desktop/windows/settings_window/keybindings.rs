@@ -856,9 +856,9 @@ impl SettingsView {
     /// The edited binding's identity before the write becomes its identity
     /// now, so `follow_moved_rows` moves its fields with every other row's,
     /// to wherever the entries now put it. A user entry is matched by the
-    /// key its write replaced, and a default's change is the file's last
-    /// entry. Nothing follows unless exactly one row shows the recorded key
-    /// for that binding.
+    /// key its write replaced, and by its write's row among identical
+    /// entries; a default's change is the file's last entry. Without one
+    /// match, `follow_moved_rows` handles the fields as after any edit.
     fn keep_drafts_for_new_key(
         &mut self,
         edit: &Edit,
@@ -876,13 +876,18 @@ impl SettingsView {
             } => {
                 // Another editor can move the entries, so the write's
                 // locator may no longer name the row; its content still
-                // names the key it replaced.
-                let Some(replaced) =
+                // names the key it replaced. Its row tells identical
+                // entries apart.
+                let Some((replaced, located)) =
                     patches.iter().find_map(|patch| match patch {
                         Patch::SetEntryField { locator, field, .. }
                             if field == "key" =>
                         {
-                            locator.content().get("key").and_then(Value::as_str)
+                            let replaced = locator
+                                .content()
+                                .get("key")
+                                .and_then(Value::as_str)?;
+                            Some((replaced, format!("u{}", locator.index())))
                         }
                         _ => None,
                     })
@@ -903,10 +908,13 @@ impl SettingsView {
                             })
                             .map(|(name, _)| name)
                             .collect();
-                        match before.as_slice() {
-                            [from] => Some(((*from).clone(), now)),
-                            _ => None,
-                        }
+                        let from = match before.as_slice() {
+                            [from] => Some(*from),
+                            _ => before
+                                .into_iter()
+                                .find(|name| **name == located),
+                        };
+                        from.map(|from| (from.clone(), now))
                     })
                     .collect();
                 let [found] = found.as_slice() else {

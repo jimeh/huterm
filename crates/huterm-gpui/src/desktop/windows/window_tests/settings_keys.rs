@@ -695,6 +695,37 @@ fn a_recorded_key_keeps_its_own_draft_when_another_editor_removes_a_twin(
 }
 
 #[gpui::test]
+fn a_recorded_key_keeps_its_draft_on_the_rebound_one_of_identical_entries(
+    cx: &mut TestAppContext,
+) {
+    let entry = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_tab\"\n";
+    let file = ScratchConfig::new(
+        "keys-record-identical",
+        &format!("{entry}\n{entry}"),
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_tab");
+    harness.cx.run_until_parked();
+    // The second entry is the active one.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u1", "Terminal &&", window, cx);
+        view.enter_key("when:u1", cx);
+        assert!(view.key_error("u1").is_some());
+        view.press("krec:u1", window, cx);
+    });
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    saved(&mut harness, &file, |text| text.contains("ctrl-alt-k"));
+    harness.cx.run_until_parked();
+    assert_eq!(row(&mut harness, ids::NEW_TAB, "ctrl-alt-k"), "u1");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u1", cx), "Terminal &&");
+        assert_eq!(view.key_text("when:u0", cx), "");
+        assert!(view.key_error("u0").is_none());
+    });
+}
+
+#[gpui::test]
 fn a_recorded_key_and_another_draft_both_follow_entries_another_editor_swapped(
     cx: &mut TestAppContext,
 ) {

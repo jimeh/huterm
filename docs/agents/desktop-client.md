@@ -655,7 +655,9 @@ key would otherwise drop them. It gives the edited row's identity before the
 write the binding's new identity, so `follow_moved_rows` moves those fields
 together with every other row's. Queued writes and other editors can move the
 entries first, so a user entry is matched by the key its write's locator
-replaced, never by the locator's row. `set_globals` has no context to cancel a
+replaced; the locator's row only tells identical entries apart. Without a
+match the fields fall to `follow_moved_rows` alone, which moves a draft to an
+identical entry. `set_globals` has no context to cancel a
 recording whose global shortcut moved, so it marks the recording stale, and the
 next frame or keystroke cancels it.
 
