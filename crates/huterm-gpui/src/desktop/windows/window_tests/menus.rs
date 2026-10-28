@@ -315,3 +315,38 @@ fn opening_the_palette_closes_the_menu(cx: &mut TestAppContext) {
             .unwrap();
     });
 }
+
+#[gpui::test]
+fn a_menu_supersedes_a_right_click_waiting_for_its_link(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.menu_window(ECHO);
+    // A right-click on a cell waits for a snapshot to say whether a link
+    // is there. The window menu then opens and closes before it draws, so
+    // no terminal press or blur supersedes the lookup.
+    harness.update_view(window, |view, window, cx| {
+        let terminal = view.active_view(cx).unwrap();
+        terminal.update(cx, |terminal, cx| {
+            terminal.request_context_menu(
+                point(px(20.0), px(20.0)),
+                Some(huterm_protocol::MousePosition { column: 1, row: 0 }),
+                cx,
+            );
+            assert!(terminal.context_lookup.is_some(), "the lookup waits");
+        });
+        view.toggle_menu(window, cx);
+        assert!(view.menu.is_some(), "the window menu opens");
+        view.toggle_menu(window, cx);
+        assert!(view.menu.is_none(), "the window menu closes");
+    });
+    // Neither the snapshot's answer nor the lookup's timeout opens a menu.
+    harness
+        .cx
+        .executor()
+        .advance_clock(crate::desktop::CONTEXT_LINK_TIMEOUT * 2);
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert_eq!(menu_kind(cx, window), None, "the lookup opens no menu");
+    });
+}

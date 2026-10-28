@@ -3466,6 +3466,8 @@ struct OpenMenu {
     pointer: Option<gpui::Point<Pixels>>,
     /// The key contexts captured when the menu opened, for shortcut text.
     contexts: Vec<KeyContext>,
+    /// Closes the menu when focus leaves it; dropping the menu drops it.
+    _blur: gpui::Subscription,
 }
 
 /// The open menu's scroll indicator fades on the window's frame clock.
@@ -11915,15 +11917,22 @@ impl WorkspaceView {
         });
         cx.subscribe_in(&view, window, Self::handle_menu_event)
             .detach();
+        // A menu supersedes a right-click still waiting for its link
+        // lookup, as any terminal press does: the press that dismisses this
+        // menu stops at the popover and never reaches the terminal to
+        // cancel it.
+        if let Some(terminal) = self.active_view(cx) {
+            terminal.update(cx, |terminal, _| terminal.cancel_context_lookup());
+        }
         // Focus leaving the menu closes it where focus went. The closes
         // that move focus themselves drop the menu first, so this finds
-        // nothing to close then. Deactivation also blurs it, and leaves the
-        // close to the activation observer, which focuses the terminal.
-        // Blur runs in the draw's focus phase, which drops a notify, so the
-        // close waits for the draw to end.
+        // nothing to close then. Blur runs in the draw's focus phase, which
+        // drops a notify, so the close waits for the draw to end. The
+        // activation observer closes a menu whose window deactivates before
+        // this runs; skipping an inactive window only guards that order.
         let menu_id = view.entity_id();
         let menu_focus = view.read(cx).focus_handle(cx);
-        cx.on_blur(&menu_focus, window, move |_, window, cx| {
+        let blur = cx.on_blur(&menu_focus, window, move |_, window, cx| {
             cx.defer_in(window, move |view, window, cx| {
                 let current =
                     view.menu.as_ref().map(|menu| menu.view.entity_id());
@@ -11931,8 +11940,7 @@ impl WorkspaceView {
                     view.close_menu(MenuFocusReturn::Keep, window, cx);
                 }
             });
-        })
-        .detach();
+        });
         menu_focus.focus(window, cx);
         // The button's anchor follows its painted bounds at every render.
         self.popover.open(
@@ -11951,6 +11959,7 @@ impl WorkspaceView {
             kind,
             pointer,
             contexts,
+            _blur: blur,
         });
         cx.notify();
     }

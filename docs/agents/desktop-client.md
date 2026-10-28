@@ -592,9 +592,12 @@ is drawn yet. GPUI runs capture listeners in paint order, and the guard
 stops the presses it consumes, so the terminal window mounts it after its own
 window-level listeners, which every press must reach. The window, tab, and
 terminal menus share that window's one popover and return focus to the
-active terminal. GPUI also blurs a focused menu when its window deactivates;
-the menu's blur close skips an inactive window and leaves the close to the
-activation observer, or focus would stay on the dropped menu. Component
+active terminal. GPUI also blurs a focused menu when its window deactivates.
+The activation observer runs first and closes the menu onto the terminal;
+the deferred blur close also skips an inactive window, so it can never strand
+focus on a dropped menu. Opening a menu drops a right-click still waiting for
+its link lookup, because the press that dismisses the menu no longer reaches
+the terminal to cancel it. Component
 click listeners ignore `ClickEvent::Keyboard` through
 `huterm_ui::click::from_keyboard`, so a removed Enter or Space binding really
 removes the key.

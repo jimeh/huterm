@@ -57,7 +57,7 @@ App-specific surfaces). Everything else in the table migrates.
 | Segmented control | `controls.rs` `render_segments` | Settings | One tab stop; arrows step and write | Click a segment | Ring on group | n/a | Opacity |
 | Select | `controls.rs` `render_select`, `with_menu` | Settings, Quake, keybinding arguments | Space, Return open; arrows step and write without opening | Click opens; a second click opens a new menu | Ring | Escape, Tab, a pick; not Shift-Tab, an outside press, a trigger press, or deactivation | Opacity |
 | Menu (listbox) | `desktop/menu.rs` `Menu`, `MenuModel` (removed in 2b) | Window menu, tab and terminal context menus, every select | Arrows, Home, End, Return, Space, Escape, Tab, type-ahead | Moving pointer selects; click picks | n/a | Emits `Dismissed`; each host closes it | Disabled rows with a hint |
-| Menu host | `windows.rs` (`toggle_menu`, capture-phase press), `settings_window.rs` (`show_menu`, `close_menu`) | Two hosts (one since 2b) | n/a | Terminal window: outside press closes, button toggles. Settings: neither | n/a | See defects D1 to D4 | n/a |
+| Menu host | `windows.rs` (`toggle_menu`, capture-phase press), `settings_window.rs` (`show_menu`, `close_menu`) | Two hosts (one since 2b) | n/a | Before 2b, terminal window: outside press closes, button toggles. Settings: neither | n/a | See defects D1 to D4 | n/a |
 | Font picker | `controls.rs` `render_font` | Settings | Field plus an "Installed" select | Menu of every family | Ring | As select | Opacity |
 | Text field | `ui/text_field.rs` `TextField` | Palette, Licenses, Settings | Catalog text commands under `Palette`; IME | Click, drag, double-click word | None (caret only) | Escape restores in Settings | None in the field itself |
 | Number field | `render_field` plus `stepped` in `settings_window.rs` | Settings, Quake | Up and Down add or subtract 1 | None | None | n/a | Opacity |
@@ -484,11 +484,12 @@ needed:
 The backdrop answers D1, D2, and D5 at once. A press anywhere outside the
 content, including on the trigger, lands on the backdrop, which closes the
 popover and stops the press. That matches AppKit, GTK's autohide popovers, and
-Radix's modal menus. The terminal window's menus today let the press proceed;
-see the open questions. Shift-Tab gets a `menu_close` binding under `menu`,
-as Tab has (D15). `menu_close` carries no direction, so in a modal popover
-Tab and Shift-Tab only dismiss and return focus to the target, which matches
-what Tab does today; a further Tab moves on. Radix Select and AppKit menus do
+Radix's modal menus. Before 2b, the terminal window's menus let the press
+proceed; decision 1 settled that they consume it too. Shift-Tab gets a
+`menu_close` binding under `menu`, as Tab has (D15). `menu_close` carries
+no direction, so in a modal popover Tab and Shift-Tab only dismiss and return
+focus to the target, which matches what Tab does today; a further Tab moves
+on. Radix Select and AppKit menus do
 not move focus on Tab either.
 
 Window deactivation must set focus itself. GPUI leaves focus on the closed
@@ -503,7 +504,7 @@ dialogs. A click-handler guard would come too late: GPUI moves focus on
 mouse-down, in the bubble phase, and runs `on_click` on mouse-up, and the
 terminal sends a mouse report on mouse-down. So the owner registers a
 capture-phase mouse-down listener on every frame, whether or not a popover
-is open, as the terminal window's menu host does today (`windows.rs:10549`).
+is open, as the terminal window's menu host did before 2b.
 It reads the live popover state, not the drawn frame. When a modal popover
 is open and the press falls outside its last painted content bounds (or no
 content has been painted yet; the bounds clear on every open and close, as
