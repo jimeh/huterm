@@ -15,7 +15,7 @@ use super::*;
 use crate::config::KeybindingEntry;
 
 /// Opens Settings on `section` and draws it.
-fn show(
+pub(super) fn show(
     harness: &mut DesktopHarness,
     file: &ScratchConfig,
     section: SectionId,
@@ -28,7 +28,7 @@ fn show(
     visual(harness).run_until_parked();
 }
 
-fn visual(harness: &DesktopHarness) -> VisualTestContext {
+pub(super) fn visual(harness: &DesktopHarness) -> VisualTestContext {
     let handle = harness
         .cx
         .update(|cx| settings(cx).expect("Settings is open"));
@@ -36,7 +36,7 @@ fn visual(harness: &DesktopHarness) -> VisualTestContext {
 }
 
 /// Sends `keys`, space separated, through the keymap.
-fn keys(harness: &DesktopHarness, keys: &str) {
+pub(super) fn keys(harness: &DesktopHarness, keys: &str) {
     let mut visual = visual(harness);
     visual.simulate_keystrokes(keys);
     visual.run_until_parked();
@@ -53,13 +53,13 @@ fn press_and_release(harness: &DesktopHarness, key: &str) {
     visual.run_until_parked();
 }
 
-fn focus(harness: &mut DesktopHarness) -> String {
+pub(super) fn focus(harness: &mut DesktopHarness) -> String {
     with_window(harness, |view, window, cx| view.focus_name(window, cx))
 }
 
 /// The accessibility node the element named `id` reported in the last
 /// frame; the dump spells element ids in their `Debug` form.
-fn a11y_node(harness: &mut DesktopHarness, id: &str) -> Value {
+pub(super) fn a11y_node(harness: &mut DesktopHarness, id: &str) -> Value {
     let spelled = format!("{:?}", gpui::ElementId::Name(id.to_owned().into()));
     a11y_find(harness, |node| {
         node["element_id"].as_str() == Some(spelled.as_str())
@@ -67,7 +67,7 @@ fn a11y_node(harness: &mut DesktopHarness, id: &str) -> Value {
     .unwrap_or_else(|| panic!("no accessibility node for `{id}`"))
 }
 
-fn a11y_find(
+pub(super) fn a11y_find(
     harness: &mut DesktopHarness,
     matches: impl Fn(&Value) -> bool,
 ) -> Option<Value> {
@@ -87,17 +87,26 @@ fn a11y_find(
 
 /// An accessibility Click on `node`, which GPUI performs as a pointer
 /// press and release at its center.
-fn a11y_click(harness: &mut DesktopHarness, node: &Value) {
+pub(super) fn a11y_click(harness: &mut DesktopHarness, node: &Value) {
+    a11y_act(harness, node, AccessibleAction::Click);
+}
+
+/// Sends the accessibility `action` to `node`.
+pub(super) fn a11y_act(
+    harness: &mut DesktopHarness,
+    node: &Value,
+    action: AccessibleAction,
+) {
     let target = node["accesskit_id"]
         .as_str()
         .and_then(|id| id.parse().ok())
         .expect("every node reports its AccessKit id");
-    // Through the window, not the view: the click updates the view.
+    // Through the window, not the view: the action updates the view.
     let mut visual = visual(harness);
     visual.update(|window, cx| {
         window.simulate_a11y_action(
             gpui::accesskit::ActionRequest {
-                action: AccessibleAction::Click,
+                action,
                 target_tree: gpui::accesskit::TreeId::ROOT,
                 target_node: gpui::accesskit::NodeId(target),
                 data: None,
@@ -109,7 +118,7 @@ fn a11y_click(harness: &mut DesktopHarness, node: &Value) {
 }
 
 /// Whether the last painted frame drew `handle`'s focus ring.
-fn ring(harness: &mut DesktopHarness, handle: &FocusHandle) -> bool {
+pub(super) fn ring(harness: &mut DesktopHarness, handle: &FocusHandle) -> bool {
     with_window(harness, |_, window, cx| {
         huterm_ui::focus::ring_drawn(handle, window, cx)
     })
@@ -302,7 +311,7 @@ fn arrows_move_between_modifier_chips_and_space_toggles_one(
 
 /// Breaks the file with `broken` and waits until Settings reads it and
 /// turns read-only, then draws the result.
-fn break_file(
+pub(super) fn break_file(
     harness: &mut DesktopHarness,
     file: &ScratchConfig,
     broken: &str,

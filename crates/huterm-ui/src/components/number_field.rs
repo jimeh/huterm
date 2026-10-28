@@ -2,10 +2,10 @@
 //! after React Aria's and Base UI's number fields, GNOME's `AdwSpinRow`,
 //! and an `NSTextField` with an `NSStepper`.
 //!
-//! Anatomy: an [`InputGroup`] holding the number as text, then decrement
-//! and increment buttons, as `AdwSpinRow` places them. The value may be
-//! shown scaled, such as a fraction as a percent, rounded to a number of
-//! decimals; a unit is the owner's addon or label.
+//! Anatomy: an [`InputGroup`] holding the number as text, an optional unit
+//! as a text addon, then decrement and increment buttons, as `AdwSpinRow`
+//! places them. The value may be shown scaled, such as a fraction as a
+//! percent, rounded to a number of decimals.
 //!
 //! Keyboard: the field binds no keys. The owner routes text editing to
 //! [`NumberField::input`], and its commands to [`NumberField::increment`]
@@ -13,7 +13,10 @@
 //! and [`NumberField::page_down`] (Page Up and Page Down), and
 //! [`NumberField::to_min`] and [`NumberField::to_max`] (Home and End).
 //! Typed text commits on [`NumberField::commit`] (Enter) and when the field
-//! loses focus; [`NumberField::revert`] (Escape) puts back the value.
+//! loses focus, unless the owner commits on blur itself
+//! ([`NumberField::with_commit_on_blur`]), as an owner that keeps a draft
+//! across a press elsewhere does; [`NumberField::revert`] (Escape) puts
+//! back the value.
 //!
 //! Values: every change the user makes is clamped to the range, and steps
 //! move along its grid ([`Steps`]): a value off the grid steps to the next
@@ -23,7 +26,9 @@
 //! the field shows, and are not snapped to the grid. A value the owner
 //! sets is shown as is, even off the grid or out of range. An empty
 //! field steps to the minimum going up and the maximum going down, as
-//! React Aria's does.
+//! React Aria's does, unless the owner says otherwise with
+//! [`NumberField::with_empty_step`], as one whose range is open at an end
+//! does.
 //!
 //! Pointer: the steppers step once per click, committing typed text
 //! first, and keep focus in the field. A stepper at its bound is disabled,
@@ -117,6 +122,21 @@ impl Format {
     }
 }
 
+/// Where a step from an empty field goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum EmptyStep {
+    /// The minimum going up and the maximum going down, as React Aria's
+    /// field does.
+    #[default]
+    Ends,
+    /// One step from this value, as though the field held it, such as a
+    /// setting's default.
+    From(f64),
+    /// This value, clamped, in either direction, such as the bound of a
+    /// range open at its other end.
+    To(f64),
+}
+
 /// A number field.
 pub struct NumberField {
     id: ElementId,
@@ -126,6 +146,9 @@ pub struct NumberField {
     steps: Steps,
     format: Format,
     value: Option<f64>,
+    unit: Option<SharedString>,
+    empty_step: EmptyStep,
+    commit_on_blur: bool,
     _blur: Subscription,
 }
 
@@ -162,8 +185,10 @@ impl NumberField {
         let focus = input.read(cx).focus_handle(cx);
         // Blur runs inside a draw, where a change would not show until the
         // next input; deferring lets the commit draw.
-        let blur = cx.on_blur(&focus, window, |_, window, cx| {
-            cx.defer_in(window, |field, _, cx| field.commit(cx));
+        let blur = cx.on_blur(&focus, window, |field, window, cx| {
+            if field.commit_on_blur {
+                cx.defer_in(window, |field, _, cx| field.commit(cx));
+            }
         });
         Self {
             id,
@@ -173,8 +198,33 @@ impl NumberField {
             steps,
             format,
             value: None,
+            unit: None,
+            empty_step: EmptyStep::Ends,
+            commit_on_blur: true,
             _blur: blur,
         }
+    }
+
+    /// The field with `unit`, such as `pt`, after the number.
+    #[must_use]
+    pub fn with_unit(mut self, unit: impl Into<SharedString>) -> Self {
+        self.unit = Some(unit.into());
+        self
+    }
+
+    /// The field stepping from empty as `empty_step` says.
+    #[must_use]
+    pub fn with_empty_step(mut self, empty_step: EmptyStep) -> Self {
+        self.empty_step = empty_step;
+        self
+    }
+
+    /// The field committing typed text when it loses focus, as it does by
+    /// default, or leaving that to the owner.
+    #[must_use]
+    pub fn with_commit_on_blur(mut self, commit: bool) -> Self {
+        self.commit_on_blur = commit;
+        self
     }
 
     /// The text field inside, for routing text editing to it and setting
@@ -273,12 +323,12 @@ impl NumberField {
 
     /// The minimum.
     pub fn to_min(&mut self, cx: &mut Context<'_, Self>) {
-        self.step(|steps, _| steps.min(), Steps::min, cx);
+        self.jump(Steps::min, cx);
     }
 
     /// The maximum.
     pub fn to_max(&mut self, cx: &mut Context<'_, Self>) {
-        self.step(|steps, _| steps.max(), Steps::max, cx);
+        self.jump(Steps::max, cx);
     }
 
     /// Takes the typed number as the value, rounded to the shown decimals
@@ -330,23 +380,41 @@ impl NumberField {
         !input.is_disabled() && !input.is_read_only()
     }
 
-    /// Commits typed text, then moves the value with `step`, or to
-    /// `empty` of the range while there is none.
+    /// Commits typed text, then moves the value with `step`. While there
+    /// is none, the field's [`EmptyStep`] decides, and its `Ends` go to
+    /// `end` of the range.
     fn step(
         &mut self,
         step: impl FnOnce(Steps, f64) -> f64,
-        empty: impl FnOnce(Steps) -> f64,
+        end: impl FnOnce(Steps) -> f64,
         cx: &mut Context<'_, Self>,
     ) {
         if !self.editable(cx) {
             return;
         }
         self.commit(cx);
-        let next = match self.value {
-            Some(value) => step(self.steps, value),
-            None => empty(self.steps),
+        let next = match (self.value, self.empty_step) {
+            (Some(value), _) | (None, EmptyStep::From(value)) => {
+                step(self.steps, value)
+            }
+            (None, EmptyStep::To(value)) => self.steps.clamp(value),
+            (None, EmptyStep::Ends) => end(self.steps),
         };
         self.change(next, cx);
+    }
+
+    /// Commits typed text, then moves the value to `end` of the range,
+    /// empty or not.
+    fn jump(
+        &mut self,
+        end: impl FnOnce(Steps) -> f64,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !self.editable(cx) {
+            return;
+        }
+        self.commit(cx);
+        self.change(end(self.steps), cx);
     }
 
     /// Takes `value` as the user's change, emitting [`Changed`] when it
@@ -426,6 +494,9 @@ impl Render for NumberField {
         let increment = stepper("increment", "Increase", "+", at_max, cx);
         let group =
             InputGroup::new(child_id(&self.id, "group"), &self.input, tokens)
+                .when_some(self.unit.clone(), |group, unit| {
+                    group.trailing(Addon::Text(unit))
+                })
                 .trailing(Addon::Button(decrement))
                 .trailing(Addon::Button(increment));
         let (to_increment, to_decrement) =

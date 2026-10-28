@@ -95,6 +95,8 @@ pub struct Profile {
             "x-huterm-label" = "Width",
             "x-huterm-order" = 20,
             "x-huterm-apply" = "later_events",
+            "x-huterm-step" = 0.05,
+            "x-huterm-control" = "slider",
             "x-huterm-visible-when" = {"setting": "fullscreen", "equals": false}
         ))
     )]
@@ -113,6 +115,8 @@ pub struct Profile {
             "x-huterm-label" = "Height",
             "x-huterm-order" = 30,
             "x-huterm-apply" = "later_events",
+            "x-huterm-step" = 0.05,
+            "x-huterm-control" = "slider",
             "x-huterm-visible-when" = {"setting": "fullscreen", "equals": false}
         ))
     )]

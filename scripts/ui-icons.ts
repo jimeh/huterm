@@ -30,6 +30,7 @@ export const iconNames = [
   "link",
   "maximize-2",
   "minimize-2",
+  "search",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {

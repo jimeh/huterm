@@ -7,7 +7,7 @@ use gpui::{
     div, point, prelude::*, px,
 };
 
-use super::{Changed, Format, NumberField};
+use super::{Changed, EmptyStep, Format, NumberField};
 use crate::steps::Steps;
 use crate::testing::{
     a11y_action, a11y_labelled, a11y_node, a11y_send, tokens,
@@ -55,10 +55,19 @@ fn number(
     cx: &mut TestAppContext,
     value: f64,
 ) -> (Probe, &mut VisualTestContext) {
+    number_with(cx, value, |field| field)
+}
+
+/// A [`number`] field that `build` configures before it shows `value`.
+fn number_with(
+    cx: &mut TestAppContext,
+    value: f64,
+    build: impl FnOnce(NumberField) -> NumberField,
+) -> (Probe, &mut VisualTestContext) {
     let (steps, format) = quake();
     let (host, cx) = cx.add_window_view(|window, cx| Host {
         field: cx.new(|cx| {
-            let mut field = NumberField::new(
+            let mut field = build(NumberField::new(
                 "width",
                 "Width",
                 steps,
@@ -66,7 +75,7 @@ fn number(
                 tokens(),
                 window,
                 cx,
-            );
+            ));
             field.set_value(Some(value), cx);
             field
         }),
@@ -158,6 +167,37 @@ fn every_step_stays_in_the_range(cx: &mut TestAppContext) {
     assert_eq!(probe.changes(), [0.95, 0.05, 0.55, 1.0, 0.5]);
 }
 
+type Act = fn(&mut NumberField, &mut Context<'_, NumberField>);
+
+#[gpui::test]
+fn an_empty_field_steps_as_its_owner_says(cx: &mut TestAppContext) {
+    // A range open at its top once stepped down from empty to a stand-in
+    // maximum far out of the value's type.
+    let (up, down, page_down): (Act, Act, Act) = (
+        NumberField::increment,
+        NumberField::decrement,
+        NumberField::page_down,
+    );
+    for (empty, act, expected) in [
+        (EmptyStep::Ends, up, 0.05),
+        (EmptyStep::Ends, down, 1.0),
+        (EmptyStep::From(0.5), up, 0.55),
+        (EmptyStep::From(0.9), page_down, 0.4),
+        (EmptyStep::To(0.05), down, 0.05),
+        (EmptyStep::To(0.05), page_down, 0.05),
+        (EmptyStep::To(0.05), up, 0.05),
+        // The end, whatever an empty field steps to.
+        (EmptyStep::To(0.05), NumberField::to_max, 1.0),
+    ] {
+        let (probe, cx) =
+            number_with(cx, 0.3, |field| field.with_empty_step(empty));
+        probe.act(cx, |field, cx| field.set_value(None, cx));
+        probe.act(cx, act);
+        assert_eq!(probe.value(cx), Some(expected), "{empty:?}");
+        assert_eq!(probe.changes(), [expected], "{empty:?}");
+    }
+}
+
 #[gpui::test]
 fn typed_text_commits_and_a_bad_entry_restores_the_value(
     cx: &mut TestAppContext,
@@ -187,6 +227,18 @@ fn typed_text_commits_and_a_bad_entry_restores_the_value(
     cx.run_until_parked();
     assert_eq!(probe.value(cx), Some(0.3));
     assert_eq!(probe.changes(), [0.42, 1.0, 0.3]);
+}
+
+#[gpui::test]
+fn an_owner_that_commits_on_blur_keeps_the_typed_text(cx: &mut TestAppContext) {
+    let (probe, cx) =
+        number_with(cx, 0.3, |field| field.with_commit_on_blur(false));
+    probe.type_text("90", cx);
+    cx.update(|window, cx| probe.other.focus(window, cx));
+    cx.run_until_parked();
+    assert_eq!(probe.text(cx), "90");
+    assert_eq!(probe.value(cx), Some(0.3));
+    assert!(probe.changes().is_empty(), "leaving committed nothing");
 }
 
 #[gpui::test]

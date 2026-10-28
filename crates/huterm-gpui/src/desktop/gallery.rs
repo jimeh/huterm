@@ -155,7 +155,8 @@ impl Fields {
                 swatch,
                 window,
                 cx,
-            );
+            )
+            .with_unit("%");
             field.set_value(Some(0.6), cx);
             field
         });

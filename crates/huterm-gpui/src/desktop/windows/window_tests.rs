@@ -781,6 +781,42 @@ fn focus_a_key_and_blur_reach_the_child_in_order(cx: &mut TestAppContext) {
     assert_eq!(bytes.as_deref(), Some(expected));
 }
 
+/// A child that prints `READY` and then every byte it receives as two hex
+/// digits.
+const HEX_ECHO: &str = "stty raw -echo; printf READY; \
+     while byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); \
+     [ -n \"$byte\" ]; do printf '%s' \"$byte\"; done";
+
+#[gpui::test]
+fn ctrl_x_reaches_the_shell_while_text_cut_binds_it_in_fields(
+    cx: &mut TestAppContext,
+) {
+    // Linux binds `ctrl-x` to `text_cut` by default. The binding here does
+    // the same on every platform: `text_cut` implies the `Palette` context,
+    // so a focused terminal still sends Control-X to its child.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.keybindings.push(huterm_config::KeybindingEntry {
+            key: "ctrl-x".to_owned(),
+            command: "text_cut".to_owned(),
+            args: None,
+            when: None,
+            description: None,
+            disabled: None,
+        });
+    });
+    let tab = harness.open_tab(HEX_ECHO);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    harness.press(window, "ctrl-x a");
+    harness.wait_for("the keys to reach the child", |cx| {
+        received(cx, window, tab, "READY")
+            .is_some_and(|bytes| bytes.contains("61"))
+    });
+    let bytes = harness.cx.update(|cx| received(cx, window, tab, "READY"));
+    assert_eq!(bytes.as_deref(), Some("1861"));
+}
+
 /// A child that prints `READY` and exits once it reads a line.
 const EXITS: &str = "printf READY; read line; exit 0";
 
@@ -4684,6 +4720,7 @@ mod pane_layouts;
 mod pane_moves;
 mod settings;
 mod settings_controls;
+mod settings_fields;
 mod settings_keys;
 mod settings_quake;
 mod settings_selects;

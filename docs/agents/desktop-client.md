@@ -398,7 +398,15 @@ binding under `Settings` matched inside a focused text field too, because the
 field's `Palette` context binds no Space, and ate the space. `SettingsView::run`
 routes the arrows to the focused modifier chip's group (`step_chips`) and the
 shortcut filter (`step_filter`) before `step`, which finds only settings and
-would drop them; `step_setting` gives a switch no steps.
+would drop them; `step_setting` gives a switch no steps. Page Up, Page Down,
+Home, and End bind under `SettingsControl && control == slider`, which only
+a slider's `SettingsControl control=slider` context matches, so the keys stay
+unbound, not swallowed, on every other control. A number field's context is
+`Palette` alone, so no `SettingsControl` binding reaches it; a
+`SettingsControl` wrapper around it would still lose to `Palette`'s deeper
+`pageup` and `pagedown`. `run_palette` pages a focused number field from
+`palette_page_up` and `palette_page_down` instead, as it steps one from
+`palette_select_previous` and `palette_select_next`.
 
 A command whose arguments are all unprompted, such as `resize_pane_left` or
 `close_tab`, has no palette slot. `SlotEditor::new` returns `None` for it, and
@@ -640,10 +648,26 @@ Text fields are `huterm_ui::components::input::Input` entities, and
 catalog's `text_*` commands onto `Input` methods; route a field's commands
 through `crate::ui::input::run`. `Input` refuses typing, composition, paste,
 cut, and deletion while read-only or disabled, but the owner's `set_text` and
-`replace` always apply. The palette, Licenses, and Settings draw their own
-frames around `Chrome::Bare` fields until their migrations; a field inside an
-`InputGroup` uses `Chrome::Grouped`. `NumberField` and `Slider` step along
+`replace` always apply. The palette and Licenses draw their own frames
+around `Chrome::Bare` fields until their migrations; Settings fields are
+`Chrome::Framed`, and a field inside an `InputGroup`, such as Settings'
+searches, uses `Chrome::Grouped`. `NumberField` and `Slider` step along
 `huterm_ui::steps::Steps`, whose grid clamps every user change to the range.
+Settings builds a number setting's `Steps` with `values::steps` from the
+schema's bounds, an exclusive minimum as the first grid value above it, an
+unsigned integer `format`'s limit when there is no `maximum`, and
+`x-huterm-step`; an open end gets a far stand-in bound, so an empty field
+steps as `values::empty_step` says, from the default or to the minimum, never
+to that stand-in. `x-huterm-control = "slider"` picks a `Slider` instead of a
+field; without `x-huterm-unit` its readout is a percent, so the model refuses
+a unitless slider whose range leaves 0 to 1. Row controls take a fixed width:
+a full-width control squeezes the row's description to a character per line.
+A locked Settings field is `Input`'s disabled state with the lock
+reason, not read-only, so a press takes no focus. Settings commits number
+fields itself (`with_commit_on_blur(false)`), so a conflicted draft survives
+focus moving to Use mine or Use file, and routes every `NumberField` change
+through `commit_field`; keep text that Settings shows in a number field going
+through `show_text`, which keeps the field's value in step.
 GPUI sends focus and blur events only while a window is active, so a test of
 blur behavior, such as `NumberField`'s commit, activates its window first.
 
@@ -839,7 +863,8 @@ optional in the schema, so its argument checks use constraints such as
 
 Constraints, descriptions, and Settings metadata live on the config types:
 `#[schemars(range(...))]`, `regex`, doc comments, and `extend` with the
-`x-huterm-*` keys that `huterm_config::settings` reads. `schema.rs` keeps only
+`x-huterm-*` keys that `huterm_config::settings` reads, including
+`x-huterm-step` and `x-huterm-control` for number settings. `schema.rs` keeps only
 what no single type owns. Every schema property needs `x-huterm-label` unless
 it is a namespace object, or `SettingsModel::load` fails, and the coverage
 test in `desktop/settings.rs` fails until a new setting has a generic control,

@@ -167,7 +167,8 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `palette` | The window owns an open command palette. |
 | `Palette` | The command palette or the About panel's Licenses view is open and has focus, or a Settings text field has focus. |
 | `Settings` | The Settings window has focus. |
-| `SettingsControl` | A Settings switch, select, segmented control, modifier chip, button, or section has focus. |
+| `SettingsControl` | A Settings switch, select, segmented control, slider, modifier chip, button, or section has focus. |
+| `control` | `slider` while a Settings slider has focus, so `SettingsControl && control == slider` matches sliders alone. |
 
 Most contexts are bare words for the state of the view or window, such as
 `selection` and `pane_zoomed`. The `has_` prefix marks a context that says
@@ -309,11 +310,15 @@ imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 | `settings_toggle` | Window | Bound only while `SettingsControl`. Toggles a switch or modifier chip, opens a select, presses a button, or shows the focused section. |
 | `settings_increase` | Window | Bound only while `SettingsControl`. Steps the focused control, or moves to the next modifier chip; a switch ignores it. |
 | `settings_decrease` | Window | Bound only while `SettingsControl`. Steps the focused control back, or moves to the previous modifier chip; a switch ignores it. |
+| `settings_page_up` | Window | Bound only while `SettingsControl`. Steps the focused slider up one page, a tenth of its range; other controls ignore it. |
+| `settings_page_down` | Window | Bound only while `SettingsControl`. Steps the focused slider down one page, a tenth of its range; other controls ignore it. |
+| `settings_first` | Window | Bound only while `SettingsControl`. Moves the focused slider to its minimum; other controls ignore it. |
+| `settings_last` | Window | Bound only while `SettingsControl`. Moves the focused slider to its maximum; other controls ignore it. |
 | `settings_reset` | Window | Bound only while `SettingsControl`. |
-| `palette_select_next` | Palette | |
-| `palette_select_previous` | Palette | |
-| `palette_page_down` | Palette | |
-| `palette_page_up` | Palette | |
+| `palette_select_next` | Palette | Also steps a focused Settings number field down. |
+| `palette_select_previous` | Palette | Also steps a focused Settings number field up. |
+| `palette_page_down` | Palette | Also pages a focused Settings number field down. |
+| `palette_page_up` | Palette | Also pages a focused Settings number field up. |
 | `palette_confirm` | Palette | |
 | `palette_back` | Palette | |
 | `palette_pop` | Palette | |
@@ -332,6 +337,7 @@ imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 | `text_line_start` | Palette | Optional `select`. |
 | `text_line_end` | Palette | Optional `select`. |
 | `text_select_all` | Palette | |
+| `text_cut` | Palette | |
 | `text_copy` | Palette | |
 | `text_paste` | Palette | |
 
@@ -446,6 +452,7 @@ directions if you use them.
 | `text_line_start` / `text_line_end` | `home`, `ctrl-a`, `cmd-left` / `end`, `ctrl-e`, `cmd-right` | `home` / `end` |
 | movement with `select = true` | `shift-` plus each movement key above | `shift-` plus each movement key above |
 | `text_select_all` | `cmd-a` | `ctrl-a` |
+| `text_cut` | `cmd-x` | `ctrl-x`, `ctrl-shift-x` |
 | `text_copy` | `cmd-c` | `ctrl-c`, `ctrl-shift-c` |
 | `text_paste` | `cmd-v` | `ctrl-v`, `ctrl-shift-v` |
 
@@ -520,8 +527,16 @@ remaining Settings controls follow in later migrations.
 The window's text fields take the `Palette` context, so the palette bindings
 edit them: `palette_confirm` saves a field, or from the search field moves to
 the first match; `palette_expand` and `palette_previous_slot` move focus on and
-back; `palette_select_previous` and `palette_select_next` step a number; and
-`palette_back` clears the search. In a
+back; `palette_select_previous` and `palette_select_next` step a number within
+its range; `palette_page_up` and `palette_page_down` page a number by a tenth
+of its range, or by ten steps when either end is open; and `palette_back` puts
+a field's value back or clears the search.
+Home and End keep moving the caret in a number field. `settings_increase` and
+`settings_decrease` step a Quake width or height slider by 5%, stopping at 5%
+and 100%; on a slider, `settings_page_up` and `settings_page_down` page it by
+10%, and `settings_first` and `settings_last` move it to 5% and 100%. Their
+default keys carry `when = "control == slider"`, so Page Up, Page Down, Home,
+and End stay unbound on other Settings controls. In a
 shortcut's `when` field, `palette_select_next` and `palette_select_previous`
 move through the context suggestions and `palette_confirm` takes one; in an
 argument's number field they step it. In Keybindings, `settings_search`
@@ -538,4 +553,8 @@ also reads `close_window`, `close_tab`, and `close_pane` as closing it, and
 | `settings_toggle` | `space`, `enter` | `space`, `enter` |
 | `settings_increase` | `up`, `right` | `up`, `right` |
 | `settings_decrease` | `down`, `left` | `down`, `left` |
+| `settings_page_up` | `pageup` | `pageup` |
+| `settings_page_down` | `pagedown` | `pagedown` |
+| `settings_first` | `home` | `home` |
+| `settings_last` | `end` | `end` |
 | `settings_reset` | `cmd-backspace` | `ctrl-backspace` |

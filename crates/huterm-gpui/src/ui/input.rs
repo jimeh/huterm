@@ -28,6 +28,7 @@ pub(crate) fn run(
         ids::TEXT_LINE_START => input.move_to_start(select, cx),
         ids::TEXT_LINE_END => input.move_to_end(select, cx),
         ids::TEXT_SELECT_ALL => input.select_all(cx),
+        ids::TEXT_CUT => input.cut(cx),
         ids::TEXT_COPY => input.copy(cx),
         ids::TEXT_PASTE => input.paste(cx),
         other => return Err(CommandError::UnknownCommand(other)),

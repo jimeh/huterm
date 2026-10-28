@@ -103,6 +103,18 @@ test("terminal-window files whose buttons moved to Button draw only the rings th
   expect(counts).toEqual(remaining);
 });
 
+test("Settings fields draw a frame or sit in an input group", () => {
+  // Migration 4a moved Settings' fields onto framed and grouped chrome,
+  // whose rings follow `focus::ring`. A bare field leaves its frame, and
+  // its ring, to hand-drawn styles.
+  const window = join(repoRoot, "crates/huterm-gpui/src/desktop/windows");
+  const files = [join(window, "settings_window.rs"), ...rustFiles(join(window, "settings_window"))];
+  const offenders = files
+    .filter((file) => readFileSync(file, "utf8").includes("Chrome::Bare"))
+    .map((file) => file.slice(repoRoot.length + 1));
+  expect(offenders).toEqual([]);
+});
+
 test("text draws with corrected tokens, never raw theme colors", () => {
   // `Tokens` corrects arbitrary themes so enabled text reads on its fill:
   // `accent_text()`, `warning_text()`, `danger_text()`, `on(fill)`, and

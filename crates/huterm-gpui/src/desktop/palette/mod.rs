@@ -60,6 +60,7 @@ pub(super) const FORWARDED_TEXT_COMMANDS: &[CommandId] = &[
     ids::TEXT_LINE_START,
     ids::TEXT_LINE_END,
     ids::TEXT_SELECT_ALL,
+    ids::TEXT_CUT,
     ids::TEXT_COPY,
     ids::TEXT_PASTE,
 ];

@@ -362,17 +362,17 @@ fn escape_closes_the_delete_prompt_only_from_its_buttons(
     open_quake(&mut harness, &file);
     with_view(&mut harness, |view, _| view.pick_profile("logs"));
     press(&mut harness, "qdel");
-    let height = "quake.profiles.logs.height";
+    let duration = "quake.profiles.logs.animation_ms";
     with_window(&mut harness, |view, window, cx| {
-        view.focus_field(height, window, cx);
-        view.type_into(height, "0.9", window, cx);
+        view.focus_field(duration, window, cx);
+        view.type_into(duration, "900", window, cx);
     });
     harness.cx.run_until_parked();
     // Escape in the field puts its value back and leaves the prompt.
     keystrokes(&mut harness, "escape");
     harness.cx.run_until_parked();
     with_window(&mut harness, |view, _, cx| {
-        assert_eq!(view.field_value(height, cx), "0.3");
+        assert_eq!(view.field_value(duration, cx), "150");
         assert_eq!(view.quake_prompts(), (false, true));
     });
     assert_eq!(file.text(), LOGS);
@@ -477,13 +477,13 @@ fn a_refused_create_keeps_a_newer_name_and_drops_its_queued_edits(
     // Another editor adds an empty `build` before Settings rereads.
     let theirs = format!("{LOGS}\n[quake.profiles.build]\n");
     std::fs::write(file.path(), &theirs).unwrap();
-    let height = "quake.profiles.build.height";
+    let duration = "quake.profiles.build.animation_ms";
     with_window(&mut harness, |view, window, cx| {
         view.type_profile_name("build", window, cx);
         view.press("qcreate", window, cx);
         // Queued behind the creation, and a newer name in the field.
-        view.type_into(height, "0.4", window, cx);
-        view.enter(height, cx);
+        view.type_into(duration, "400", window, cx);
+        view.enter(duration, cx);
         view.type_profile_name("other", window, cx);
     });
     harness.wait_for("the refused create", |cx| {
@@ -500,7 +500,7 @@ fn a_refused_create_keeps_a_newer_name_and_drops_its_queued_edits(
         assert_eq!(view.profile_name_text(cx), "other");
         assert!(view.quake_message().unwrap().starts_with("build: "));
         // Leaving the field does not submit the dropped edit again.
-        view.blur(height, cx);
+        view.blur(duration, cx);
     });
     harness.wait_for("any save", settled);
     harness.cx.run_until_parked();
