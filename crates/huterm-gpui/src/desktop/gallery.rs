@@ -672,9 +672,13 @@ impl Gallery {
                 .detach();
             }
         }
-        // The recorders see raw keys, before any binding.
+        // The recorders see raw keys in this window, before any binding.
         let gallery = cx.entity().downgrade();
-        let interceptor = cx.intercept_keystrokes(move |event, _, cx| {
+        let handle = window.window_handle();
+        let interceptor = cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle() != handle {
+                return;
+            }
             let taken = gallery
                 .update(cx, |gallery, cx| {
                     gallery.recorder.clone().is_some_and(|recorder| {

@@ -18,8 +18,10 @@
 //! catalog commands: the owner registers one keystroke interceptor and
 //! forwards each [`KeystrokeEvent`] to [`KeyRecorder::intercept`], which
 //! says whether it took the key, so the owner stops its propagation and no
-//! binding, menu, or field acts on it. Feed the recorder that started last,
-//! even after it stops, so it can swallow what follows its recording.
+//! binding, menu, or field acts on it. Scope the interceptor to the owner's
+//! window, since GPUI calls it for keystrokes in every window. Feed the
+//! recorder that started last, even after it stops, so it can swallow what
+//! follows its recording.
 //!
 //! Keyboard while recording:
 //!
@@ -39,8 +41,8 @@
 //! so a held shortcut acts nowhere else. A Return or Space pressed just
 //! after the timeout saved, meant to save, is swallowed too rather than
 //! starting another recording, but only as the first key after it: once
-//! the user has pressed another, such as Tab to a field, Return and Space
-//! reach whatever has focus.
+//! the user has pressed another, such as Tab to a field, or pressed the
+//! pointer outside the button, Return and Space reach whatever has focus.
 //!
 //! Dismissal: Escape, focus leaving the button, window deactivation, which
 //! GPUI reports as focus leaving, and a press outside the button cancel,
@@ -320,6 +322,15 @@ impl KeyRecorder {
         meant_to_save
     }
 
+    /// A pointer press outside the button cancels a recording and, as a
+    /// keystroke does, ends the window in which a Return or Space after a
+    /// timeout save is swallowed: the press may have moved focus to the
+    /// control that key is meant for.
+    fn pressed_outside(&mut self, cx: &mut Context<'_, Self>) {
+        self.timed_out_at = None;
+        self.cancel(cx);
+    }
+
     fn finish(&mut self, cx: &mut Context<'_, Self>) {
         let Some(recording) = self.recording.take() else {
             return;
@@ -518,7 +529,8 @@ fn content(
 
 /// `button`'s pointer behavior: hover and pressed states and a click that
 /// starts recording, or, when disabled, its dimming and a press guard; and
-/// for both, a press outside it that cancels a recording.
+/// for both, a press outside it that cancels a recording and ends the
+/// guard after a timeout save.
 fn interactions(
     button: Stateful<Div>,
     recorder: &Entity<KeyRecorder>,
@@ -547,8 +559,9 @@ fn interactions(
     };
     let cancels = recorder.clone();
     button.on_mouse_down_out(move |_, _, cx| {
-        if cancels.read(cx).is_recording() {
-            cancels.update(cx, KeyRecorder::cancel);
+        let recorder = cancels.read(cx);
+        if recorder.is_recording() || recorder.timed_out_at.is_some() {
+            cancels.update(cx, KeyRecorder::pressed_outside);
         }
     })
 }

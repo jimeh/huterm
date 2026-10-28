@@ -12,8 +12,10 @@ and file drops in `huterm-gpui`. Smoke fixtures that exercise this input are in
 whose key has had no release since; a server that refuses the flag leaves
 every press unheld. With the flag on, X11 sends no release before each
 repeat, so a held key's `KeyUp` arrives once, at its real release, as on
-macOS. Keystroke interceptors see the flag through the `keystroke-held-flag`
-patch; keystroke observers and modifier-only keystrokes always see `false`.
+macOS, and the patch skips GPUI's 20 ms release filter, which would
+otherwise drop a real release before a fast fresh press. Keystroke
+interceptors see the flag through the `keystroke-held-flag` patch; keystroke
+observers and modifier-only keystrokes always see `false`.
 
 GPUI's macOS `key_char` resolves Option dead keys separately, and AppKit handles
 marked text before GPUI shortcuts. Keep Option-only composition in caller-owned

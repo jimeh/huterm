@@ -641,20 +641,21 @@ Settings' key recorders are `huterm_ui::components::key_recorder::KeyRecorder`
 entities, one per action key (`krec:<row>`, `kadd:<command>`, `grec:<entry>`,
 `gadd`), created by `SettingsView::recorder` with that key's focus handle and
 drawn each frame by a `KeyRecorderButton` with the file's shortcut, so the
-component never caches it. The crate registers no interceptor: the window's
-one keystroke interceptor feeds every key to the recorder that started last
+component never caches it. The crate registers no interceptor: the window's one
+keystroke interceptor feeds every key to the recorder that started last
 (`intercept_key`), even after it stops, so that recorder swallows a held key's
 repeats and a Return or Space meant to save that lands just after the chord
-timeout. A recorder cancels itself on blur, window deactivation, and an
-outside press. It tells a held key's repeat by `KeystrokeEvent::is_held`,
-which only interceptors receive set (see [desktop input](desktop-input.md)).
-A recorded
-key lands through `follow_changed_default`, which first moves the shortcut's
-drafts to the row that now shows it (`keep_drafts_for_new_key`): fields follow
-a shortcut by its key and command, so a new key would otherwise drop them.
-`set_globals` has no context to cancel a recording whose global shortcut
-moved, so it marks the recording stale, and the next frame or keystroke
-cancels it.
+timeout. A recorder cancels itself on blur, window deactivation, and an outside
+press; an outside press also ends that Return or Space guard. It tells a held
+key's repeat by `KeystrokeEvent::is_held`, which only interceptors receive set
+(see [desktop input](desktop-input.md)). A recorded key lands through
+`follow_changed_default`, which first moves the shortcut's drafts to the row
+that now shows it (`keep_drafts_for_new_key`): fields follow a shortcut by its
+key and command, so a new key would otherwise drop them. A user entry's row is
+the one whose binding changed only its key, since a write that landed first,
+such as a removal, may have moved it. `set_globals` has no context to cancel a
+recording whose global shortcut moved, so it marks the recording stale, and the
+next frame or keystroke cancels it.
 
 The terminal window's dialog, title-row, tab-bar, and toast buttons are
 `huterm_ui::components::button::Button`s; tabs, pane title-bar buttons, and

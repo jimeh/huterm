@@ -33,7 +33,9 @@ use super::render::{changed_dot, group_card};
 use super::saving::Queued;
 use super::{MenuFor, SettingsView};
 use crate::assets::Icon;
-use crate::keymap::{BindingState, Inventory, ListedBinding, Origin, Platform};
+use crate::keymap::{
+    BindingState, Bound, Inventory, ListedBinding, Origin, Platform,
+};
 use huterm_ui::components::badge::{Tone as BadgeTone, badge};
 use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::card;
@@ -224,14 +226,21 @@ impl Keys {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Identity {
     whole: String,
+    /// The binding without its key.
+    keyless: String,
     key: String,
     command: CommandId,
 }
 
 impl Identity {
     fn of(listed: &ListedBinding) -> Self {
+        let keyless = Bound {
+            key: String::new(),
+            ..listed.binding.clone()
+        };
         Self {
             whole: format!("{:?}", listed.binding),
+            keyless: format!("{keyless:?}"),
             key: listed.binding.key.clone(),
             command: listed.binding.command,
         }
@@ -240,6 +249,11 @@ impl Identity {
     /// The same shortcut with another condition or other arguments.
     fn same_shortcut(&self, other: &Self) -> bool {
         self.key == other.key && self.command == other.command
+    }
+
+    /// The same binding on another key.
+    fn rekeyed(&self, other: &Self) -> bool {
+        self.key != other.key && self.keyless == other.keyless
     }
 }
 
@@ -492,8 +506,8 @@ impl SettingsView {
         })
     }
 
-    /// Why a shortcut's condition and argument fields refuse edits: the
-    /// section is read-only, or the shortcut is not active. `None` for an
+    /// Why a shortcut's key cap, condition, and argument fields refuse
+    /// edits: the section is read-only, or the shortcut is not active. `None` for an
     /// active shortcut that can change.
     fn key_field_refusal(&self, active: bool) -> Option<SharedString> {
         self.keys_lock_reason().or_else(|| {
@@ -841,34 +855,56 @@ impl SettingsView {
     /// a default's change is the file's last entry, so its fields move
     /// there. Nothing moves unless that row shows the recorded key for the
     /// same command, such as after a queued edit moved the entries.
+    ///
+    /// A write that lands ahead of the recorded key, such as an entry's
+    /// removal, can move the user entry to another row after `changed` was
+    /// named, so the user entry is found as the one row whose binding only
+    /// changed its key, to the recorded one.
     fn keep_drafts_for_new_key(&mut self, edit: &Edit, changed: Option<&str>) {
-        let (Some(from), Some(inventory)) = (changed, &self.keys.inventory)
-        else {
+        let Some(inventory) = &self.keys.inventory else {
             return;
         };
-        let (to, key) = match edit {
+        let (from, to, key) = match edit {
             Edit::ChangeUser {
                 field: Field::Key,
                 value: Some(Value::String(key)),
                 ..
-            } => (from.to_owned(), key),
+            } => {
+                let rekeyed: Vec<String> = rows(inventory)
+                    .into_iter()
+                    .filter(|(name, listed)| {
+                        listed.binding.key == *key
+                            && self.keys.identities.get(name).is_some_and(
+                                |before| before.rekeyed(&Identity::of(listed)),
+                            )
+                    })
+                    .map(|(name, _)| name)
+                    .collect();
+                let [row] = rekeyed.as_slice() else {
+                    return;
+                };
+                (row.clone(), row.clone(), key)
+            }
             Edit::ChangeDefault {
                 field: Field::Key,
                 value: Some(Value::String(key)),
                 ..
             } => {
-                let Some(last) = inventory
-                    .bindings
-                    .iter()
-                    .filter_map(|listed| listed.entry)
-                    .max()
-                else {
+                let (Some(from), Some(last)) = (
+                    changed,
+                    inventory
+                        .bindings
+                        .iter()
+                        .filter_map(|listed| listed.entry)
+                        .max(),
+                ) else {
                     return;
                 };
-                (format!("u{last}"), key)
+                (from.to_owned(), format!("u{last}"), key)
             }
             _ => return,
         };
+        let from = from.as_str();
         let command =
             self.keys.identities.get(from).map(|before| before.command);
         let Some(listed) = row(inventory, &to).filter(|listed| {
@@ -2184,9 +2220,9 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let read_only = self.keys_read_only();
         let active = listed.state == BindingState::Active;
-        let editable = active && !read_only;
+        // Why the key cap, condition, and arguments refuse edits, if they do.
+        let refusal = self.key_field_refusal(active);
         let user = listed.binding.origin == Origin::User;
         // The key cap records a new key.
         let record_key = format!("krec:{name}");
@@ -2206,7 +2242,9 @@ impl SettingsView {
             } else {
                 swatch.line_strong
             })
-            .when(!editable, |cap| cap.disabled(self.keys_lock_reason()))
+            .when_some(refusal.clone(), |cap, reason| {
+                cap.disabled(Some(reason))
+            })
         };
         // The condition, with suggestions floating below it while typing.
         let when_key = format!("when:{name}");
@@ -2219,7 +2257,6 @@ impl SettingsView {
             cx,
         );
         let invalid = self.keys.errors.contains_key(&when_key);
-        let refusal = self.key_field_refusal(active);
         when.update(cx, |field, cx| {
             field.set_disabled(refusal.is_some(), refusal.clone(), cx);
             field.set_invalid(invalid, cx);

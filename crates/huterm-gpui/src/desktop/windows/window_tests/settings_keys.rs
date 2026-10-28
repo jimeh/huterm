@@ -6,7 +6,7 @@ use super::super::settings_window::SettingsView;
 use super::settings::{
     ScratchConfig, open_settings, settings, settled, with_view, with_window,
 };
-use super::settings_controls::visual;
+use super::settings_controls::{a11y_node, visual};
 use super::*;
 
 /// The default that closes a pane, which closes Settings unless the
@@ -627,6 +627,60 @@ fn a_queued_edit_after_a_removal_changes_the_entry_the_user_saw(
         file.text(),
         "[[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n\
          disabled = true\n\n[[keybinding]]\nkey = \"ctrl-alt-c\"\ncommand = \"close_tab\"\n"
+    );
+}
+
+#[gpui::test]
+fn a_recorded_key_queued_behind_a_removal_keeps_the_condition_draft(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-record-queued", THREE);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_window");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u1", "Terminal &&", window, cx);
+        view.enter_key("when:u1", cx);
+        assert!(view.key_error("u1").is_some());
+        view.press("kdel:u0", window, cx);
+        view.press("krec:u1", window, cx);
+    });
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    // The removal had not landed when the recording ended.
+    assert!(file.text().contains("ctrl-alt-a"));
+    saved(&mut harness, &file, |text| {
+        !text.contains("ctrl-alt-a") && text.contains("ctrl-alt-k")
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-k"), "u0");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal &&");
+        assert!(view.key_error("u0").is_some());
+    });
+}
+
+#[gpui::test]
+fn a_switched_off_shortcuts_key_cap_says_why_it_refuses(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "keys-off-cap",
+        "[[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n\
+         disabled = true\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_window");
+    harness.cx.run_until_parked();
+    let name = row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-b");
+    let aria =
+        a11y_node(&mut harness, &format!("settings-krec-{name}"))["aria"]
+            .clone();
+    assert_eq!(aria["disabled"], true, "{aria}");
+    assert_eq!(
+        aria["description"], "Only an active shortcut can change",
+        "{aria}"
     );
 }
 

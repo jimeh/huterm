@@ -14,8 +14,10 @@ use crate::testing::{Activate, KEYS, a11y_node, bind_keys, host, tokens};
 
 gpui::actions!(key_recorder_test, [Bound]);
 
-/// Where the button draws, and a point outside it.
+/// Where the button draws, the other tab stop below it, and a point
+/// outside both.
 const BUTTON: (f32, f32) = (20.0, 10.0);
+const OTHER: (f32, f32) = (10.0, 34.0);
 const OUTSIDE: (f32, f32) = (300.0, 300.0);
 
 struct Probe {
@@ -335,6 +337,26 @@ fn a_return_after_another_key_reaches_the_control_that_has_focus(
     cx.simulate_keystrokes("a");
     cx.update(|window, cx| probe.other.focus(window, cx));
     cx.run_until_parked();
+    let before = probe.bound.get();
+    cx.simulate_keystrokes("enter");
+    assert_eq!(probe.bound.get(), before + 1, "the recorder swallowed it");
+}
+
+#[gpui::test]
+fn a_return_after_a_click_on_another_control_reaches_that_control(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = recorder(cx, 2, false);
+    cx.update(|_, cx| cx.bind_keys([KeyBinding::new("enter", Bound, None)]));
+    probe.start(cx);
+    key_down(cx, "ctrl-j", false);
+    cx.executor().advance_clock(CHORD_TIMEOUT);
+    cx.run_until_parked();
+    assert_eq!(probe.log(), ["started", "recorded ctrl-j"]);
+    // A click moves focus to the other control, so the Return that follows
+    // within the guard window is meant for it.
+    click(cx, OTHER);
+    assert!(cx.update(|window, _| probe.other.is_focused(window)));
     let before = probe.bound.get();
     cx.simulate_keystrokes("enter");
     assert_eq!(probe.bound.get(), before + 1, "the recorder swallowed it");

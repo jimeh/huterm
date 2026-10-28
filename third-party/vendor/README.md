@@ -256,8 +256,13 @@ down (`linux/x11/key_repeat.rs`): a press of a key still down is held. Focus
 leaving the window forgets every key, since its release may reach another
 client. A server that refuses the flag leaves every press unheld. The flag
 also stops the synthetic releases, so a held key's `KeyUp` arrives once, at
-its real release, as on macOS. `huterm-gpui`'s `gpui_x11_key_repeat` test
-compiles the tracker directly. An input method that consumes a release it
+its real release, as on macOS. GPUI's event reducer drops a release that a
+press of the same key follows within 20 ms, as a repeat's synthetic release;
+with the flag granted, every release is real, so the patch skips that filter
+there and a fast fresh press neither loses its `KeyUp` nor reads as held. A
+server that refuses the flag keeps the filter. `huterm-gpui`'s
+`gpui_x11_key_repeat` test compiles the tracker and the reducer's release
+decision directly. An input method that consumes a release it
 was forwarded leaves its key marked down until the key's next release, so
 one fresh press of it reads as held.
 
