@@ -197,9 +197,11 @@ fn release(drag: &Entity<Drag>, cx: &mut App) {
     });
 }
 
-/// The canvas that records the track's painted bounds and, while a drag is
-/// in progress, follows the pointer beyond the slider until the release,
-/// as a scrollbar thumb does.
+/// The canvas that records the track's painted bounds and follows a drag
+/// beyond the slider until the release, as a scrollbar thumb does. Its
+/// window-level listeners exist on every frame and read the live drag
+/// state, so a release anywhere ends a drag that began after the last
+/// paint.
 fn drag_tracker(
     drag: &Entity<Drag>,
     steps: Steps,
@@ -209,13 +211,7 @@ fn drag_tracker(
     canvas(
         |_, _, _| {},
         move |bounds, (), window, cx| {
-            let dragging = drag.update(cx, |drag, _| {
-                drag.track = Some(bounds);
-                drag.dragging
-            });
-            if !dragging {
-                return;
-            }
+            drag.update(cx, |drag, _| drag.track = Some(bounds));
             let ended = drag.clone();
             window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
                 if phase.bubble() {
@@ -228,7 +224,11 @@ fn drag_tracker(
             let follow = drag.clone();
             window.on_mouse_event(
                 move |event: &MouseMoveEvent, phase, window, cx| {
-                    let Some(track) = follow.read(cx).track else {
+                    let (dragging, track) = {
+                        let drag = follow.read(cx);
+                        (drag.dragging, drag.track)
+                    };
+                    let Some(track) = track.filter(|_| dragging) else {
                         return;
                     };
                     if phase.bubble() && event.dragging() {

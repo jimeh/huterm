@@ -166,6 +166,40 @@ fn a_press_and_release_in_one_frame_ends_the_drag(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_release_outside_in_the_same_frame_ends_the_drag(cx: &mut TestAppContext) {
+    let (probe, cx) = slider(cx, 0.5, |slider| slider);
+    let mut outside = along(0.25);
+    outside.y += px(200.0);
+    // The release lands off the slider before a frame paints, so only a
+    // window-level listener from an earlier frame can see it.
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: along(0.25),
+                modifiers: Modifiers::none(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: outside,
+                modifiers: Modifiers::none(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(probe.changes(), [0.3]);
+    drag_to(cx, 0.9);
+    assert_eq!(probe.changes(), [0.3]);
+}
+
+#[gpui::test]
 fn assistive_technology_steps_within_the_range(cx: &mut TestAppContext) {
     let (probe, cx) = slider(cx, 0.95, |slider| slider.readout("95%"));
     cx.update(|window, _| {

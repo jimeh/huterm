@@ -438,8 +438,11 @@ impl Render for NumberField {
             .aria_min_numeric_value(steps.min() * scale)
             .aria_max_numeric_value(steps.max() * scale)
             .aria_numeric_value_step(steps.step() * scale)
+            // The number shown, so assistive technology reads what the
+            // field displays.
             .when_some(self.value, |spin, value| {
-                spin.aria_numeric_value(self.format.round(value * scale))
+                let shown = self.format.text(value).parse();
+                spin.aria_numeric_value(shown.unwrap_or(value * scale))
             })
             .w_full()
             .when(editable, |spin| {

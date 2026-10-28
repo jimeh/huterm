@@ -340,6 +340,17 @@ fn the_field_reports_a_spin_button(cx: &mut TestAppContext) {
     });
 }
 
+#[gpui::test]
+fn the_reported_number_matches_the_shown_one(cx: &mut TestAppContext) {
+    // Halfway between two shown numbers, the display rounds to even.
+    let (_, cx) = number(cx, 0.325);
+    cx.update(|window, _| {
+        let aria = &a11y_node(window, "width")["aria"];
+        assert_eq!(aria["value"], "32");
+        assert_eq!(aria["numeric_value"], 32.0);
+    });
+}
+
 #[test]
 fn formats_scale_round_and_parse_numbers() {
     let (_, percent) = quake();
