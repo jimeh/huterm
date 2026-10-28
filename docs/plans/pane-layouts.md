@@ -1,13 +1,13 @@
 # Pane layouts
 
-Status: in progress. Approved on 2026-10-27, after five Codex and five
-Claude review rounds; Jim settled every open question that day (see
-"Settled decisions"), adding default cycle bindings and user-defined
-layouts. PR 1, runtime arrangements (#284), and PR 2, commands (#286), are
-implemented. On 2026-10-28 Jim split PR 3: PR 3a, user-defined layouts
-from the config file, is in progress, and PR 3b, their Settings editor,
-waits for the `huterm-ui` components it builds on. Plans
-[issue #30][issue-30] within [epic #12][issue-12].
+Status: in progress. Approved on 2026-10-27, after five Codex and five Claude
+review rounds; Jim settled every open question that day (see "Settled
+decisions"), adding default cycle bindings and user-defined layouts. PR 1,
+runtime arrangements (#284), and PR 2, commands (#286), are implemented. On
+2026-10-28 Jim split PR 3: PR 3a, user-defined layouts from the config file, is
+in progress, and PR 3b, their Settings editor, waits for the `huterm-ui`
+components it builds on. Plans [issue #30][issue-30] within
+[epic #12][issue-12].
 Builds on [the split panes plan](split-panes.md) (#28) and
 [the pane moves plan](pane-moves.md) (#29), both implemented. Layout undo,
 [#256][issue-256], is related with no ordering dependency; this plan assumes
