@@ -342,11 +342,29 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   opened the palette, although the `D` typed before it reached the terminal,
   whose last bytes were `1f 43 44`. The next head passed the same job. Both
   failures sit in the `busy-on` step, where `xdotool` input and the smoke's
-  file commands are not ordered.
+  file commands are not ordered. It recurred on 2026-10-28 on x86_64 (PR
+  #318 at `bbeb8be1`, run 40767320033, job 123094963780) with the same
+  state, `w0.busy=true` and `w0.palette=false`; the next head passed.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused
   the Enter before the smoke sends `busy-off`.
+
+## huterm-gpui inactive tab close button on hosted macOS
+
+- **Label:** `desktop::windows::window_tests::buttons::a_press_on_an_inactive_tabs_close_button_neither_selects_nor_drags_it`
+  in `Checks (macOS arm64)` fails at `window_tests.rs:427` with "timed out
+  waiting for the click to close the inactive tab".
+- **Occurrences:** 2026-10-28 (PR #319 at `2a5e7882`, run 40766561133, job
+  123092154740). The rerun passed, the test passed locally, and it passed
+  on the PR's previous head.
+- **Evidence:** the failed run's `huterm-gpui` suite took 99.58 seconds
+  against about 13 locally, and the PR touched no tab code. The last state
+  still held both tabs with the active one unchanged, so the click had not
+  closed the inactive tab before the harness deadline.
+- **Triage:** compare the suite's wall time with a passing run. If it
+  recurs on a normal-speed run, the harness wait or the close path needs a
+  closer look; otherwise record the run here and rerun.
 
 ## `smoke-process.test.ts` retained-pipe deadline
 

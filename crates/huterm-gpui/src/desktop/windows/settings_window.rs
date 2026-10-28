@@ -39,6 +39,7 @@ use crate::APP_ID;
 use crate::commands::{InvokePalette, InvokeWindow};
 use crate::config::Theme;
 use huterm_ui::animation::{AnimationSchedule, Wake};
+use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::components::menu::{
     MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole,
@@ -52,6 +53,7 @@ use huterm_ui::components::toggle_group::roving_target;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
+use huterm_ui::option_list::ListOption;
 use huterm_ui::roving::{self, Group, Move};
 use huterm_ui::steps::Steps;
 
@@ -218,6 +220,13 @@ pub(super) struct SettingsView {
     fields: HashMap<&'static str, Entity<Input>>,
     /// Number fields, by setting path.
     numbers: HashMap<&'static str, Entity<NumberField>>,
+    /// The installed families a font family field suggests, by setting
+    /// path.
+    font_lists: HashMap<&'static str, Entity<Combobox>>,
+    /// The families font fields suggest in place of the installed ones,
+    /// which a test platform does not list.
+    #[cfg(test)]
+    families: Option<&'static [&'static str]>,
     /// The text each field last showed from the file; a field whose text
     /// differs holds an unsaved draft that a reload must not replace.
     synced: HashMap<&'static str, String>,
@@ -277,6 +286,8 @@ pub(super) struct SettingsView {
     menu_wake: Wake,
     /// The window size the open menu was placed for.
     menu_viewport: Option<gpui::Size<gpui::Pixels>>,
+    /// Wakes the window for the suggestion lists' scroll indicators.
+    list_wake: Wake,
     /// The Keybindings section.
     keys: Keys,
     /// The Quake windows section.
@@ -300,13 +311,12 @@ pub(super) struct SettingsView {
 }
 
 impl SettingsView {
-    fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
-        let model = SettingsModel::load()
-            .expect("tests keep the committed schema valid");
-        let desktop = cx.global::<Desktop>();
-        let path = desktop.config_path.clone();
-        let watching = desktop.config.general.watch_config;
-        let swatch = tokens(&desktop.config.theme);
+    /// The sidebar's search field: a tab stop whose every change scrolls
+    /// the pane back to its top.
+    fn search_field(
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Entity<Input> {
         let search = cx.new(|cx| {
             Input::new("settings-search", "Search settings", swatch, cx)
                 .with_placeholder("Search settings")
@@ -318,6 +328,17 @@ impl SettingsView {
             cx.notify();
         })
         .detach();
+        search
+    }
+
+    fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
+        let model = SettingsModel::load()
+            .expect("tests keep the committed schema valid");
+        let desktop = cx.global::<Desktop>();
+        let path = desktop.config_path.clone();
+        let watching = desktop.config.general.watch_config;
+        let swatch = tokens(&desktop.config.theme);
+        let search = Self::search_field(swatch, cx);
         let keys = Keys::new(swatch, cx);
         // While a shortcut records, its keys reach no binding, menu, or
         // field: the interceptor runs before GPUI matches the keymap.
@@ -355,6 +376,9 @@ impl SettingsView {
             search,
             fields: HashMap::new(),
             numbers: HashMap::new(),
+            font_lists: HashMap::new(),
+            #[cfg(test)]
+            families: None,
             synced: HashMap::new(),
             stops: HashMap::new(),
             sections: HashMap::new(),
@@ -382,6 +406,7 @@ impl SettingsView {
             focus_group: Rc::default(),
             menu_wake: Wake::default(),
             menu_viewport: None,
+            list_wake: Wake::default(),
             scroll: ScrollHandle::new(),
         };
         view.create_and_load(cx);
@@ -447,6 +472,13 @@ impl SettingsView {
         for field in fields {
             field.update(cx, |field, cx| field.set_tokens(swatch, cx));
         }
+        let lists = self
+            .font_lists
+            .values()
+            .chain(self.keys.completions.values());
+        for list in lists {
+            list.update(cx, |list, cx| list.set_tokens(swatch, cx));
+        }
         for number in self.numbers.values() {
             number.update(cx, |number, cx| number.set_tokens(swatch, cx));
         }
@@ -492,8 +524,9 @@ impl SettingsView {
                     swatch,
                     cx,
                 );
-                // A template field sits in an input group.
-                if template {
+                // A template field, and the font family field with its
+                // chevron, sit in an input group.
+                if template || special(path) == Some(Special::FontPicker) {
                     input.with_chrome(Chrome::Grouped)
                 } else {
                     input
@@ -572,6 +605,48 @@ impl SettingsView {
         .detach();
         self.numbers.insert(path, number.clone());
         number
+    }
+
+    /// The installed families under a font family field. Until the user
+    /// edits the field, the list shows every family on the one the field
+    /// shows; typing filters them, and any name still saves. A pick saves
+    /// the family as Enter does.
+    pub(super) fn font_list(
+        &mut self,
+        setting: &'static Setting,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Entity<Combobox> {
+        let path = setting.path.as_str();
+        if let Some(list) = self.font_lists.get(path) {
+            return list.clone();
+        }
+        let field = self.field(setting, window, cx);
+        #[cfg(test)]
+        let families = self.families.unwrap_or_else(|| installed_fonts(cx));
+        #[cfg(not(test))]
+        let families = installed_fonts(cx);
+        let swatch = Self::swatch(cx);
+        let list = cx.new(|cx| {
+            Combobox::new(
+                SharedString::from(format!("settings-font-list-{path}")),
+                "Installed fonts",
+                &field,
+                swatch,
+                move |input: &Input| families_matching(families, input.text()),
+                window,
+                cx,
+            )
+            .with_browse(move |_: &Input| families_matching(families, ""))
+        });
+        cx.subscribe(&list, move |view, _, event: &ComboboxEvent, cx| {
+            let ComboboxEvent::Picked(family) = event;
+            view.show_text(setting.path.as_str(), family.to_string(), cx);
+            view.commit_field(setting, cx);
+        })
+        .detach();
+        self.font_lists.insert(path, list.clone());
+        list
     }
 
     /// Shows `text` in `path`'s field. A number field takes the number it
@@ -732,11 +807,6 @@ impl SettingsView {
                     && !self.advanced.remove(&section)
                 {
                     self.advanced.insert(section);
-                }
-            }
-            "fonts" => {
-                if let Some(setting) = model.setting(argument) {
-                    self.open_fonts(setting, window, cx);
                 }
             }
             "mine" => {
@@ -1210,27 +1280,6 @@ impl SettingsView {
         );
     }
 
-    /// Opens a menu of the installed font families for `setting`.
-    fn open_fonts(
-        &mut self,
-        setting: &'static Setting,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let rows = installed_fonts(cx)
-            .iter()
-            .map(|name| MenuRow::Item(MenuItem::new(*name, *name)))
-            .collect();
-        let opener = self.action_stop(format!("fonts:{}", setting.path), cx);
-        self.show_menu(
-            MenuFor::Setting(setting),
-            MenuModel::new(rows),
-            opener,
-            window,
-            cx,
-        );
-    }
-
     fn show_menu(
         &mut self,
         target: MenuFor,
@@ -1356,6 +1405,26 @@ impl SettingsView {
         self.menu_wake.arm(schedule, window, cx);
         self.popover
             .render(placement, viewport, div().w(width).child(menu))
+    }
+
+    /// Advances the suggestion lists' scroll indicators, asking for the
+    /// next frame or a wake at their next deadline.
+    fn animate_lists(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let now = Instant::now();
+        let mut schedule = AnimationSchedule::IDLE;
+        for list in self
+            .font_lists
+            .values()
+            .chain(self.keys.completions.values())
+        {
+            list.update(cx, |list, cx| list.advance(now, cx));
+            schedule = schedule.merge(list.read(cx).schedule(now));
+        }
+        self.list_wake.arm(schedule, window, cx);
     }
 
     /// The item a menu for `target` opens on: the value its control shows.
@@ -1527,7 +1596,14 @@ impl SettingsView {
             }
             None => return,
         };
+        let list = focused
+            .as_ref()
+            .and_then(|(path, _)| self.font_lists.get(path).cloned());
         match invocation.id {
+            // A font field's suggestions take the keys they act on; Enter
+            // with none highlighted saves the typed name, and a second
+            // Escape puts back the value.
+            id if run_list(list.as_ref(), id, cx) => {}
             ids::PALETTE_CONFIRM => {
                 if let Some((path, _)) = focused
                     && let Some(setting) = self.setting_at(path)
@@ -1574,9 +1650,10 @@ impl SettingsView {
 }
 
 impl SettingsView {
-    /// Text editing in a keybinding field: completion takes Up, Down,
-    /// Enter, Tab, and Escape while its list is open; otherwise Enter saves
-    /// and Escape puts the saved text back.
+    /// Text editing in a keybinding field: a `when` field's suggestions
+    /// take Up, Down, Page Up, Page Down, Enter, Tab, and Escape while
+    /// they show; otherwise Enter saves and Escape puts the saved text
+    /// back.
     fn run_key_field(
         &mut self,
         key: &str,
@@ -1585,21 +1662,9 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let completing = self
-            .keys
-            .completion
-            .as_ref()
-            .is_some_and(|(open, _)| open == key);
+        let list = self.condition_for(key);
         match invocation.id {
-            ids::PALETTE_SELECT_NEXT | ids::PALETTE_SELECT_PREVIOUS
-                if completing =>
-            {
-                self.step_completion(
-                    key,
-                    invocation.id == ids::PALETTE_SELECT_NEXT,
-                    cx,
-                );
-            }
+            id if run_list(list.as_ref(), id, cx) => {}
             // Up and Down step a number argument.
             ids::PALETTE_SELECT_NEXT | ids::PALETTE_SELECT_PREVIOUS
                 if key.starts_with("arg:") =>
@@ -1610,17 +1675,16 @@ impl SettingsView {
                     cx,
                 );
             }
-            ids::PALETTE_CONFIRM
-                if completing && self.accept_completion(key, None, cx) => {}
             ids::PALETTE_CONFIRM if key == "search" => {
                 self.focus_first_command(window, cx);
             }
             ids::PALETTE_CONFIRM => self.commit_key_field(key, cx),
-            // Tab and Escape close an open suggestion list first, keeping
+            // Tab closes open suggestions first, as Escape does, keeping
             // the text; a suggestion takes Return or a click.
-            ids::PALETTE_EXPAND | ids::PALETTE_BACK if completing => {
-                self.keys.completion = None;
-            }
+            ids::PALETTE_EXPAND
+                if list
+                    .as_ref()
+                    .is_some_and(|list| list.update(cx, Combobox::close)) => {}
             ids::PALETTE_EXPAND => window.focus_next(cx),
             ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
             ids::PALETTE_BACK if key == "search" => {
@@ -1671,6 +1735,32 @@ impl SettingsView {
                 return;
             }
         }
+    }
+
+    /// The field whose suggestions show, named as smoke state names its
+    /// focus, and the highlighted suggestion; `none` and empty when none
+    /// show.
+    fn open_list(&self, cx: &App) -> (String, String) {
+        let open = self
+            .font_lists
+            .iter()
+            .map(|(path, list)| ((*path).to_owned(), list))
+            .chain(self.keys.completions.values().filter_map(|list| {
+                let id = list.read(cx).input().entity_id();
+                Some((format!("key:{}", self.keys.key_of(id)?), list))
+            }))
+            .find(|(_, list)| list.read(cx).is_open());
+        open.map_or_else(
+            || ("none".to_owned(), String::new()),
+            |(name, list)| {
+                let highlight = list
+                    .read(cx)
+                    .highlighted()
+                    .map(|option| option.label.to_string())
+                    .unwrap_or_default();
+                (name, highlight)
+            },
+        )
     }
 
     /// Smoke state: the section, the search, what has focus, and the file
@@ -1736,6 +1826,7 @@ impl SettingsView {
                     "false"
                 }
             });
+        let (list, highlight) = self.open_list(cx);
         let mut selects: Vec<String> = self
             .triggers
             .borrow()
@@ -1744,7 +1835,7 @@ impl SettingsView {
             .collect();
         selects.sort();
         format!(
-            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.dialog={} settings.scroll={} settings.in_view={in_view} settings.status={:?} settings.read_only={} settings.writing={}",
+            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.dialog={} settings.list={list} settings.highlight={highlight:?} settings.scroll={} settings.in_view={in_view} settings.status={:?} settings.read_only={} settings.writing={}",
             window.is_window_active(),
             self.section.id(),
             self.query(cx),
@@ -1784,8 +1875,8 @@ fn themes(config: &std::path::Path) -> Vec<(String, Option<Theme>)> {
         .collect()
 }
 
-/// The installed font families, read once. The menu names its items with
-/// static strings.
+/// The installed font families, read once and kept for every font field's
+/// suggestions.
 fn installed_fonts(cx: &App) -> &'static [&'static str] {
     static FONTS: OnceLock<Vec<&'static str>> = OnceLock::new();
     FONTS.get_or_init(|| {
@@ -1796,6 +1887,38 @@ fn installed_fonts(cx: &App) -> &'static [&'static str] {
             .map(|name| &*Box::leak(name.into_boxed_str()))
             .collect()
     })
+}
+
+/// The families containing `text`, ignoring case, in their sorted order.
+fn families_matching(families: &[&'static str], text: &str) -> Vec<ListOption> {
+    let text = text.trim().to_lowercase();
+    families
+        .iter()
+        .filter(|family| family.to_lowercase().contains(&text))
+        .map(|family| ListOption::new(*family, *family))
+        .collect()
+}
+
+/// Runs a field's list command on its suggestions, `list`; returns whether
+/// they acted, so a key they leave alone keeps the field's own behavior.
+fn run_list(
+    list: Option<&Entity<Combobox>>,
+    id: huterm_protocol::CommandId,
+    cx: &mut App,
+) -> bool {
+    let Some(list) = list else {
+        return false;
+    };
+    let act: fn(&mut Combobox, &mut Context<'_, Combobox>) -> bool = match id {
+        ids::PALETTE_SELECT_NEXT => Combobox::select_next,
+        ids::PALETTE_SELECT_PREVIOUS => Combobox::select_previous,
+        ids::PALETTE_PAGE_DOWN => Combobox::select_page_down,
+        ids::PALETTE_PAGE_UP => Combobox::select_page_up,
+        ids::PALETTE_CONFIRM => Combobox::confirm,
+        ids::PALETTE_BACK => Combobox::close,
+        _ => return false,
+    };
+    list.update(cx, act)
 }
 
 /// A size field's value: a byte count when it is only digits, else the
@@ -2010,6 +2133,7 @@ impl Render for SettingsView {
     ) -> impl IntoElement {
         let swatch = Self::swatch(cx);
         self.recolor_fields(swatch, cx);
+        self.animate_lists(window, cx);
         let query = self.query(cx);
         let searching = !query.is_empty();
         self.drawn.clear();
@@ -2512,6 +2636,36 @@ impl SettingsView {
         self.keys.editing = Some(key.to_owned());
     }
 
+    /// The suggestions under a `when` field.
+    pub(super) fn key_list(&self, key: &str) -> Entity<Combobox> {
+        self.condition_for(key).expect("a rendered `when` field")
+    }
+
+    /// The bounds a keybinding field's text last painted in.
+    pub(super) fn key_field_bounds(
+        &self,
+        key: &str,
+        cx: &App,
+    ) -> Option<gpui::Bounds<gpui::Pixels>> {
+        let (_, bounds) =
+            self.keys.fields.get(key)?.read(cx).painted_caret()?;
+        Some(bounds)
+    }
+
+    /// Suggests `families` in font fields made from now on, as the
+    /// installed families.
+    pub(super) fn set_families(&mut self, families: &'static [&'static str]) {
+        self.families = Some(families);
+    }
+
+    /// The suggestions under a font family field.
+    pub(super) fn font_list_at(&self, path: &str) -> Entity<Combobox> {
+        self.font_lists
+            .get(path)
+            .expect("a rendered font field")
+            .clone()
+    }
+
     /// Leaves a keybinding field, as moving focus away does.
     pub(super) fn blur_key(&mut self, key: &str, cx: &mut Context<'_, Self>) {
         self.keys.editing = None;
@@ -2542,8 +2696,12 @@ impl SettingsView {
         self.pick_argument(row, name, kind, value, cx);
     }
 
-    pub(super) fn completion_open(&self) -> bool {
-        self.keys.completion.is_some()
+    /// Whether any `when` field's suggestions show.
+    pub(super) fn completion_open(&self, cx: &App) -> bool {
+        self.keys
+            .completions
+            .values()
+            .any(|list| list.read(cx).is_open())
     }
 
     pub(super) fn key_text(&self, key: &str, cx: &App) -> String {

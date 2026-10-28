@@ -701,10 +701,20 @@ highlight after a parent resized it, pumps `Window::simulate_next_frame`,
 after first draining the frames already pending, or another request
 redraws in its place. The filter runs once per `Edited`, which `Input`
 emits before `Changed` for the user's edits alone, so an owner's `set_text`,
-such as Escape putting back a value, opens nothing. The filter reads its own
-data, never the owner's entity: it also runs inside `open`, `toggle`,
-`select_next` and `select_previous` on a closed list, and `refresh`, which
-an owner usually calls from its own action handler mid-update. `Command`
+such as Escape putting back a value, opens nothing. Ending a composition
+leaves the text as it is and emits neither, or a combobox would take it for
+an owner's write and start browsing. A caret or selection move emits
+`Moved`, which refilters a list that shows, so suggestions for the name
+before the caret, as the condition field's, follow it. GPUI completes a
+click on whichever element holds the pressed element's id at the release,
+through that frame's listener, so `option_list` keys rows by option id,
+never by position, and a list that changes under a held press picks
+nothing in its place; option ids are unique within a list. A refilter
+that finds the same options leaves the list where the user scrolled it.
+The filter reads its own data, never the owner's entity: it also runs
+inside `open`, `toggle`, `select_next` and `select_previous` on a closed
+list, and `refresh`, which an owner usually calls from its own action
+handler mid-update. `Command`
 takes the items its owner filters and ranks through `set_options`,
 typically from `Changed`, and draws them inline; turn off its pointer
 highlight where the highlight shows details, as Licenses does. A picker
@@ -720,7 +730,25 @@ the default focus change, and a combobox's list also occludes and stops it,
 so the field never blurs before a pick. Test such a press under a focusable
 root, as a window's root view is, or no blur could happen without them.
 GPUI blurs the focused field when its window deactivates, which closes a
-combobox's list.
+combobox's list. GPUI also reports a notification made during a draw to no
+observer, so a combobox cannot observe a field its owner disables while
+rendering, as Settings does; it checks its field when it draws instead.
+
+Settings has two comboboxes. A keybinding's `when` field suggests context
+names with `with_auto_highlight(true)`, so Return completes the name before
+the caret; `Keys::completions` holds each list by its field's entity, which
+keeps it as the field moves between rows; its rows draw names in the
+monospace font through `with_content`. The font family field suggests the
+installed families with no highlight, so Enter saves the typed name, and a
+pick saves the family through `commit_field`, as Enter does. Its
+`with_browse` list shows every family on the shown one until the user edits
+the field, and the chevron addon calls `toggle_browsing`; the chevron has no
+focus handle, so it is no tab stop, and carries the read-only reason itself,
+since a disabled `InputGroup` keeps a button's own reason. The GPUI test
+platform lists no installed fonts, so font tests set `set_families` before
+the Appearance section first draws. `run_list` routes the `Palette` field
+commands to the focused field's list first; the field's own behavior gets
+the keys the list leaves alone.
 
 Open menus and selects in a `huterm_ui::components::popover::Popover` and
 mount its `guard` in the owner's root view on every frame, open or not. The

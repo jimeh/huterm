@@ -16,15 +16,27 @@
 //! Suggestions: the owner's filter turns the field into suggestions
 //! whenever the user edits it, once per edit. It runs synchronously, so
 //! the list, the highlight, and the open state always match the text; call
-//! [`Combobox::refresh`] when the filter's own data changes. The field
-//! accepts any text, not only a suggestion.
+//! [`Combobox::refresh`] when the filter's own data changes. A caret move
+//! refilters a list that shows, keeping its highlight, so suggestions for
+//! the word before the caret follow it. The field accepts any text, not
+//! only a suggestion.
 //!
-//! The filter must read only its own data, never the owner's entity. Besides
-//! the user's edits and an owner's write to the field while the list shows,
-//! it runs inside [`Combobox::open`], [`Combobox::toggle`] on a closed list,
-//! [`Combobox::select_next`] and [`Combobox::select_previous`] on a closed
-//! list, and [`Combobox::refresh`] on an open one, which an owner usually
-//! calls from its own action handler, while its entity is being updated.
+//! Browsing: with [`Combobox::with_browse`], a field that holds a value
+//! rather than the user's typing lists the browse suggestions instead, such
+//! as every installed family under a family the field shows, as
+//! `NSComboBox`'s button does. The field holds a value until the user edits
+//! it, and again after it takes focus or its owner writes it, as a pick or
+//! putting back the value does, or when [`Combobox::toggle_browsing`]
+//! opens the list. Opening a browsing list highlights the suggestion named
+//! as the field reads, ignoring case, and scrolls it into view.
+//!
+//! The filters must read only their own data, never the owner's entity.
+//! Besides the user's edits, and a caret move or an owner's write to the
+//! field while the list shows, they run inside [`Combobox::open`],
+//! [`Combobox::toggle`], [`Combobox::select_next`], and
+//! [`Combobox::select_previous`] on a closed list, and in
+//! [`Combobox::refresh`] on an open one, which an owner usually calls from
+//! its own action handler, while its entity is being updated.
 //!
 //! Keyboard: focus stays in the field, which keeps every key, so typing
 //! continues while the list shows. The owner routes its commands to
@@ -34,15 +46,20 @@
 //! [`Combobox::select_last`], [`Combobox::confirm`], and
 //! [`Combobox::close`]; each returns whether it acted, so a key the
 //! combobox leaves alone can do what it does in a plain field. Down and Up
-//! on a closed list open it on the first or last suggestion. Moving changes
-//! the highlight, never the field's text; Next and Previous wrap. No
-//! suggestion is highlighted until the user moves to one, so Confirm leaves
-//! the typed text to the owner, unless [`Combobox::with_auto_highlight`]
-//! highlights the first suggestion on every edit, so Confirm completes it.
+//! on a closed list open it on the first or last suggestion, or on the
+//! field's value while browsing. [`Combobox::toggle_browsing`] suits a
+//! trigger beside the field, such as an input group's chevron that takes
+//! no focus. Moving changes the highlight, never the field's text; Next and
+//! Previous wrap. No suggestion is highlighted until the user moves to one,
+//! so Confirm leaves the typed text to the owner, unless
+//! [`Combobox::with_auto_highlight`] highlights the first suggestion on
+//! every edit, so Confirm completes it.
 //!
 //! Pointer: a moving pointer highlights a suggestion, and a click picks it.
 //! A press on a suggestion prevents the field's blur, so a pick is reported
-//! once, with no blur before it. A press on the field leaves the list open.
+//! once, with no blur before it. A click picks only the suggestion it
+//! pressed: one the list dropped before the release picks nothing. A press
+//! on the field leaves the list open.
 //! A wheel over the list scrolls it.
 //!
 //! Dismissal: a pick, Confirm, and Close close the list. Escape is the
@@ -78,7 +95,7 @@ use gpui::{
 };
 
 use crate::animation::AnimationSchedule;
-use crate::components::input::{Changed, Edited, Input, ListState};
+use crate::components::input::{Changed, Edited, Input, ListState, Moved};
 use crate::components::popover::{Anchor, MARGIN, Popover, place};
 use crate::components::surface::surface;
 use crate::listbox::ItemId;
@@ -98,6 +115,15 @@ pub enum ComboboxEvent {
 /// The suggestions for the field as it is.
 type Filter = Rc<dyn Fn(&Input) -> Vec<ListOption>>;
 
+/// The suggestions while the field holds a value; see
+/// [`Combobox::with_browse`].
+struct Browse {
+    filter: Filter,
+    /// The user edited the field since it took focus or its owner last
+    /// wrote it, so it holds a query rather than a value.
+    typed: bool,
+}
+
 /// How many suggestions show before the rest scroll.
 const VISIBLE_ROWS: f32 = 8.0;
 /// The list's narrowest width, for narrow fields.
@@ -112,6 +138,7 @@ pub struct Combobox {
     input: Entity<Input>,
     tokens: Tokens,
     filter: Filter,
+    browse: Option<Browse>,
     auto_highlight: bool,
     open: bool,
     /// The user's edit was filtered, so the `Changed` that follows it is
@@ -119,7 +146,7 @@ pub struct Combobox {
     edit_filtered: bool,
     popover: Popover,
     list: OptionList,
-    _subscriptions: [Subscription; 4],
+    _subscriptions: [Subscription; 5],
 }
 
 impl std::fmt::Debug for Combobox {
@@ -152,16 +179,23 @@ impl Combobox {
         let focus = input.read(cx).focus_handle(cx);
         let subscriptions = [
             cx.subscribe(input, |combobox, _, _: &Edited, cx| {
+                combobox.set_typed(true);
                 combobox.edited(cx);
                 combobox.edit_filtered = true;
             }),
-            // An owner's write refilters a list that shows; only the
-            // user's edits open one.
+            // An owner's write leaves a value in the field and refilters a
+            // list that shows; only the user's edits open one.
             cx.subscribe(input, |combobox, _, _: &Changed, cx| {
-                if !std::mem::take(&mut combobox.edit_filtered) && combobox.open
-                {
-                    combobox.refresh(cx);
+                if !std::mem::take(&mut combobox.edit_filtered) {
+                    combobox.set_typed(false);
+                    if combobox.open {
+                        combobox.refresh(cx);
+                    }
                 }
+            }),
+            // Suggestions may depend on where the caret is.
+            cx.subscribe(input, |combobox, _, _: &Moved, cx| {
+                combobox.refresh(cx);
             }),
             // A field turned disabled or read-only notifies.
             cx.observe(input, |combobox, _, cx| {
@@ -172,7 +206,8 @@ impl Combobox {
             // Blur runs inside a draw, where a change would not show until
             // the next input; deferring lets the close draw. A window that
             // deactivates blurs its focused field too.
-            cx.on_blur(&focus, window, |_, window, cx| {
+            cx.on_blur(&focus, window, |combobox, window, cx| {
+                combobox.set_typed(false);
                 cx.defer_in(window, |combobox, _, cx| {
                     combobox.close(cx);
                 });
@@ -184,6 +219,7 @@ impl Combobox {
             input: input.clone(),
             tokens,
             filter: Rc::new(filter),
+            browse: None,
             auto_highlight: false,
             open: false,
             edit_filtered: false,
@@ -200,6 +236,22 @@ impl Combobox {
     #[must_use]
     pub fn with_auto_highlight(mut self, auto_highlight: bool) -> Self {
         self.auto_highlight = auto_highlight;
+        self
+    }
+
+    /// The combobox listing what `browse` returns while the field holds a
+    /// value rather than the user's typing, such as every installed family,
+    /// on the suggestion named as the field reads; the filter's suggestions
+    /// show once the user edits the field.
+    #[must_use]
+    pub fn with_browse(
+        mut self,
+        browse: impl Fn(&Input) -> Vec<ListOption> + 'static,
+    ) -> Self {
+        self.browse = Some(Browse {
+            filter: Rc::new(browse),
+            typed: false,
+        });
         self
     }
 
@@ -252,14 +304,7 @@ impl Combobox {
     /// Opens the list when its field is usable and has suggestions;
     /// returns whether it shows.
     pub fn open(&mut self, cx: &mut Context<'_, Self>) -> bool {
-        if !self.open && self.usable(cx) {
-            self.filter(cx);
-            self.list.set_highlight(self.auto_highlight.then_some(0));
-            if !self.list.options().is_empty() {
-                self.show(cx);
-            }
-        }
-        self.open
+        self.open_on(None, cx)
     }
 
     /// Opens a closed list or closes an open one; returns whether it acted.
@@ -269,6 +314,18 @@ impl Combobox {
         } else {
             self.open(cx)
         }
+    }
+
+    /// Opens a closed list on the browse suggestions, whatever the user
+    /// typed, or closes an open one; returns whether it acted. The field's
+    /// text counts as a value until the next edit, as for a trigger beside
+    /// the field that browses, such as `NSComboBox`'s button. Without browse
+    /// suggestions it is [`Combobox::toggle`].
+    pub fn toggle_browsing(&mut self, cx: &mut Context<'_, Self>) -> bool {
+        if !self.open {
+            self.set_typed(false);
+        }
+        self.toggle(cx)
     }
 
     /// Closes the list; returns whether it was open, so a second Escape
@@ -344,7 +401,7 @@ impl Combobox {
         if !self.open {
             return;
         }
-        self.filter(cx);
+        self.filter(cx, true);
         if self.auto_highlight && self.list.highlight().is_none() {
             self.list.set_highlight(Some(0));
         }
@@ -375,11 +432,75 @@ impl Combobox {
         !input.is_disabled() && !input.is_read_only()
     }
 
-    /// Replaces the suggestions with the filter's, keeping the highlight
-    /// on the same suggestion.
-    fn filter(&mut self, cx: &App) {
-        let options = (self.filter)(self.input.read(cx));
-        self.list.set_options(options);
+    /// Records whether the field holds the user's typing, for browsing.
+    fn set_typed(&mut self, typed: bool) {
+        if let Some(browse) = &mut self.browse {
+            browse.typed = typed;
+        }
+    }
+
+    /// Whether the list shows the browse suggestions.
+    fn browsing(&self) -> bool {
+        self.browse.as_ref().is_some_and(|browse| !browse.typed)
+    }
+
+    /// Replaces the suggestions with the filter's, or the browse ones while
+    /// browsing, keeping the highlight on the same suggestion.
+    ///
+    /// With `keep_scroll`, as after a caret move or an owner's write,
+    /// options that come back unchanged leave the list where the user
+    /// scrolled it; opening and editing reveal the highlight.
+    fn filter(&mut self, cx: &App, keep_scroll: bool) {
+        let filter = match &self.browse {
+            Some(browse) if !browse.typed => &browse.filter,
+            _ => &self.filter,
+        };
+        let options = filter(self.input.read(cx));
+        if !keep_scroll || options != self.list.options() {
+            self.list.set_options(options);
+        }
+    }
+
+    /// The suggestion named as the field reads, ignoring case, while
+    /// browsing.
+    fn current(&self, cx: &App) -> Option<usize> {
+        if !self.browsing() {
+            return None;
+        }
+        let text = self.input.read(cx).text().trim().to_lowercase();
+        self.list
+            .options()
+            .iter()
+            .position(|option| option.label.to_lowercase() == text)
+    }
+
+    /// Opens the list when its field is usable and has suggestions, on the
+    /// field's value while browsing, else on `end`, else on the first
+    /// suggestion with auto-highlight; returns whether it shows.
+    fn open_on(
+        &mut self,
+        end: Option<Move>,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if !self.open && self.usable(cx) {
+            self.filter(cx, false);
+            match (self.current(cx), end) {
+                (Some(row), _) => {
+                    self.list.set_highlight(Some(row));
+                }
+                (None, Some(end)) => {
+                    self.list.set_highlight(None);
+                    self.list.step(end, false);
+                }
+                (None, None) => {
+                    self.list.set_highlight(self.auto_highlight.then_some(0));
+                }
+            }
+            if !self.list.options().is_empty() {
+                self.show(cx);
+            }
+        }
+        self.open
     }
 
     /// The user edited the field: filter it, highlight afresh, and show
@@ -388,7 +509,7 @@ impl Combobox {
         if !self.usable(cx) {
             return;
         }
-        self.filter(cx);
+        self.filter(cx, false);
         let first = self.auto_highlight.then_some(0);
         self.list.set_highlight(first);
         if self.list.options().is_empty() {
@@ -416,21 +537,16 @@ impl Combobox {
         wrap: bool,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        let step = if self.open {
-            step
-        } else {
+        if !self.open {
             // Only Down and Up open a closed list, on its first or last
-            // suggestion.
+            // suggestion, or on the field's value while browsing.
             let end = match step {
                 Move::Next => Move::First,
                 Move::Previous => Move::Last,
                 _ => return false,
             };
-            if !self.open(cx) {
-                return false;
-            }
-            end
-        };
+            return self.open_on(Some(end), cx);
+        }
         self.list.step(step, wrap);
         self.sync_field(cx);
         cx.notify();
@@ -495,8 +611,19 @@ impl Render for Combobox {
         let guard = self.popover.guard(move |_, _, cx| {
             let _ = view.update(cx, Combobox::close);
         });
+        // An owner that disables its field while drawing, as it renders,
+        // notifies no observer: GPUI drops a notification during a draw.
+        // The list hides now and closes once the draw is done.
+        let usable = self.usable(cx);
+        if self.open && !usable {
+            cx.defer_in(window, |combobox, _, cx| {
+                if !combobox.usable(cx) {
+                    combobox.close(cx);
+                }
+            });
+        }
         let viewport = window.viewport_size();
-        let list = match (self.open, self.popover.trigger_bounds()) {
+        let list = match (self.open && usable, self.popover.trigger_bounds()) {
             (true, Some(field)) => {
                 let width = field
                     .size

@@ -573,9 +573,15 @@ and 100%; on a slider, `settings_page_up` and `settings_page_down` page it by
 10%, and `settings_first` and `settings_last` move it to 5% and 100%. Their
 default keys carry `when = "control == slider"`, so Page Up, Page Down, Home,
 and End stay unbound on other Settings controls. In a
-shortcut's `when` field, `palette_select_next` and `palette_select_previous`
-move through the context suggestions and `palette_confirm` takes one; in an
-argument's number field they step it. In Keybindings, `settings_search`
+shortcut's `when` field and the font family field, `palette_select_next` and
+`palette_select_previous` move through the suggestions, opening them when
+they are closed, `palette_page_up` and `palette_page_down` page through
+them, `palette_confirm` takes the highlighted one, and `palette_back`, like
+`palette_expand` in a `when` field, closes them before it acts on the field.
+The font field highlights nothing until you move, so `palette_confirm` saves
+the typed name. Until you type in it, the font field's list shows every
+installed family, on the one it holds. In an argument's number field,
+`palette_select_next` and `palette_select_previous` step it. In Keybindings, `settings_search`
 focuses the section's own search, where `palette_confirm` moves to the first
 command, and `settings_reset` on a command restores its defaults. The window
 also reads `close_window`, `close_tab`, and `close_pane` as closing it, and

@@ -884,19 +884,6 @@ fn a_chosen_theme_shows_while_it_saves(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_font_menu_gives_focus_back_to_its_button(cx: &mut TestAppContext) {
-    let file = ScratchConfig::new("font-menu", "");
-    let mut harness = DesktopHarness::new(cx);
-    open_settings(&mut harness, &file.path());
-    with_window(&mut harness, |view, window, cx| {
-        view.press("fonts:font.family", window, cx);
-        assert_eq!(view.focus_name(window, cx), "menu");
-        view.dismiss_menu(window, cx);
-        assert_eq!(view.focus_name(window, cx), "action:fonts:font.family");
-    });
-}
-
-#[gpui::test]
 fn reset_and_menu_saves_update_an_untouched_field(cx: &mut TestAppContext) {
     let file = ScratchConfig::new(
         "untouched",

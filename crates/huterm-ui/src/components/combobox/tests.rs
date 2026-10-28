@@ -2,10 +2,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, Bounds, Context, Div, Entity, FocusHandle, Focusable as _,
-    KeyBinding, Modifiers, MouseButton, Pixels, Point, Render, ScrollDelta,
-    ScrollHandle, ScrollWheelEvent, TestAppContext, TouchPhase,
-    VisualTestContext, Window, div, point, prelude::*, px, size,
+    Action, App, Bounds, Context, Div, Entity, EntityInputHandler as _,
+    FocusHandle, Focusable as _, KeyBinding, Modifiers, MouseButton, Pixels,
+    Point, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, TestAppContext,
+    TouchPhase, VisualTestContext, Window, div, point, prelude::*, px, size,
 };
 
 use super::{Combobox, ComboboxEvent};
@@ -17,7 +17,8 @@ use crate::testing::{a11y_labelled, a11y_node, a11y_nodes, a11y_send, tokens};
 gpui::actions!(
     combobox_test,
     [
-        Next, Previous, PageDown, PageUp, First, Last, Confirm, Escape, Toggle
+        Next, Previous, PageDown, PageUp, First, Last, Confirm, Escape, Toggle,
+        Browse
     ]
 );
 
@@ -55,10 +56,23 @@ fn containing(
     }
 }
 
+/// Every one of `fonts`, as a font family field browses the installed
+/// families.
+fn every(fonts: Vec<String>) -> impl Fn(&Input) -> Vec<ListOption> + 'static {
+    move |_| {
+        fonts
+            .iter()
+            .map(|font| ListOption::new(font.to_lowercase(), font.clone()))
+            .collect()
+    }
+}
+
 /// How a test's owner is set up.
 #[derive(Clone, Copy, Default)]
 struct Setup {
     auto_highlight: bool,
+    /// Browses every font while the field holds a value.
+    browse: bool,
     /// Forty numbered fonts in place of [`FONTS`].
     many: bool,
     field: Field,
@@ -95,6 +109,9 @@ struct Owner {
     field: Field,
     /// How far right of the window's edge the field sits.
     shift: Pixels,
+    /// Makes the field read-only while rendering, as an owner that derives
+    /// its fields' states from its own does.
+    lock_in_render: bool,
 }
 
 impl Owner {
@@ -113,16 +130,21 @@ impl Owner {
         let filtered = Rc::new(Cell::new(0));
         let runs = filtered.clone();
         let combobox = cx.new(|cx| {
-            Combobox::new(
+            let combobox = Combobox::new(
                 "font-family",
                 "Font family",
                 &input,
                 tokens(),
-                containing(fonts, runs),
+                containing(fonts.clone(), runs),
                 window,
                 cx,
             )
-            .with_auto_highlight(setup.auto_highlight)
+            .with_auto_highlight(setup.auto_highlight);
+            if setup.browse {
+                combobox.with_browse(every(fonts))
+            } else {
+                combobox
+            }
         });
         let log = Log::default();
         let picks = log.clone();
@@ -159,6 +181,7 @@ impl Owner {
             scroll: ScrollHandle::new(),
             field: setup.field,
             shift: px(0.0),
+            lock_in_render: false,
         }
     }
 
@@ -173,6 +196,10 @@ impl Render for Owner {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        if self.lock_in_render {
+            self.input
+                .update(cx, |input, cx| input.set_read_only(true, cx));
+        }
         let viewport = window.viewport_size();
         let top = if self.field == Field::AtBottom {
             viewport.height - px(30.0)
@@ -211,6 +238,7 @@ impl Render for Owner {
         let keys = route::<First>(keys, Combobox::select_first, cx);
         let keys = route::<Last>(keys, Combobox::select_last, cx);
         let keys = route::<Toggle>(keys, Combobox::toggle, cx);
+        let keys = route::<Browse>(keys, Combobox::toggle_browsing, cx);
         div()
             .size_full()
             .relative()
@@ -307,6 +335,7 @@ fn setup(
             KeyBinding::new("enter", Confirm, context),
             KeyBinding::new("escape", Escape, context),
             KeyBinding::new("alt-down", Toggle, context),
+            KeyBinding::new("alt-up", Browse, context),
         ]);
     });
     // Blur reaches focus listeners only in an active window.
@@ -363,6 +392,16 @@ impl Probe {
 
     fn text(&self, cx: &mut VisualTestContext) -> String {
         cx.update(|_, cx| self.owner.read(cx).text(cx))
+    }
+
+    /// Writes `text` into the field as its owner does, such as a value it
+    /// shows.
+    fn write(&self, cx: &mut VisualTestContext, text: &'static str) {
+        let input = self.input(cx);
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| input.set_text(text, cx));
+        });
+        cx.run_until_parked();
     }
 
     fn field_focused(&self, cx: &mut VisualTestContext) -> bool {
@@ -675,6 +714,31 @@ fn a_read_only_or_disabled_field_never_shows_suggestions(
 }
 
 #[gpui::test]
+fn a_field_its_owner_locks_while_drawing_closes_the_list(
+    cx: &mut TestAppContext,
+) {
+    // GPUI drops a notification made during a draw, so no observer sees a
+    // field its owner locks while rendering.
+    let (probe, cx) = setup(cx, Setup::default());
+    type_text(cx, "mo");
+    assert!(probe.open(cx));
+    cx.update(|_, cx| {
+        probe.owner.update(cx, |owner, cx| {
+            owner.lock_in_render = true;
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+    assert!(!probe.open(cx), "the list stayed open on a read-only field");
+    let combobox = probe.combobox(cx);
+    assert!(
+        cx.read(|cx| combobox.read(cx).list_bounds()).is_none(),
+        "the list still draws"
+    );
+    assert!(probe.field_focused(cx));
+}
+
+#[gpui::test]
 fn the_field_and_list_report_their_roles_and_states(cx: &mut TestAppContext) {
     let (_, cx) = setup(cx, Setup::default());
     cx.update(|window, _| {
@@ -909,4 +973,266 @@ fn a_wheel_over_the_list_scrolls_it_and_keeps_it_open(cx: &mut TestAppContext) {
     wheel(cx, list.center(), -100.0);
     assert!(probe.open(cx));
     assert!(!shows(cx, 0), "the list scrolled");
+}
+
+#[gpui::test]
+fn a_browsing_list_opens_on_every_suggestion_with_the_value_in_view(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            browse: true,
+            many: true,
+            ..Setup::default()
+        },
+    );
+    probe.write(cx, "Font 30");
+    let combobox = probe.combobox(cx);
+    let shows = |cx: &mut VisualTestContext, row: usize| {
+        cx.read(|cx| combobox.read(cx).list.shows(row))
+    };
+    for open in ["down", "up", "alt-down"] {
+        keys(cx, open);
+        deliver_frames(cx);
+        assert_eq!(probe.labels(cx).len(), 40, "{open} filtered the list");
+        assert_eq!(
+            probe.highlighted(cx).as_deref(),
+            Some("Font 30"),
+            "{open} missed the value"
+        );
+        assert!(shows(cx, 30), "{open} left the value out of view");
+        keys(cx, "escape");
+    }
+    // A value no suggestion has opens on the ends, as a filtered list does.
+    probe.write(cx, "Comic");
+    keys(cx, "down");
+    assert_eq!(probe.labels(cx).len(), 40);
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Font 00"));
+}
+
+#[gpui::test]
+fn an_edit_filters_a_browsing_list_until_a_pick_or_a_blur(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            browse: true,
+            ..Setup::default()
+        },
+    );
+    probe.write(cx, "");
+    type_text(cx, "mo");
+    assert_eq!(probe.labels(cx), probe_labels());
+    keys(cx, "escape down");
+    assert_eq!(probe.labels(cx), probe_labels(), "the edit was forgotten");
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Monaco"));
+    // The pick leaves a value in the field, which browses again.
+    keys(cx, "enter");
+    assert_eq!(probe.text(cx), "Monaco");
+    keys(cx, "down");
+    assert_eq!(probe.labels(cx), FONTS);
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Monaco"));
+    // So does the field taking focus again after an edit.
+    keys(cx, "escape");
+    type_text(cx, "x");
+    let other = cx.update(|_, cx| probe.owner.read(cx).other.clone());
+    cx.update(|window, cx| other.focus(window, cx));
+    cx.run_until_parked();
+    probe.focus_field(cx);
+    keys(cx, "down");
+    assert_eq!(probe.labels(cx), FONTS);
+}
+
+#[gpui::test]
+fn toggle_browsing_lists_every_suggestion_whatever_was_typed(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            browse: true,
+            ..Setup::default()
+        },
+    );
+    probe.write(cx, "");
+    // Typing that matches nothing still browses.
+    type_text(cx, "zz");
+    assert!(!probe.open(cx));
+    keys(cx, "alt-up");
+    assert_eq!(probe.labels(cx), FONTS);
+    assert_eq!(probe.highlighted(cx), None);
+    keys(cx, "alt-up");
+    assert!(!probe.open(cx));
+    // The typed text counts as a value until the next edit.
+    keys(cx, "down");
+    assert_eq!(probe.labels(cx), FONTS);
+    type_text(cx, "x");
+    assert!(!probe.open(cx), "the edit browsed");
+}
+
+#[gpui::test]
+fn ending_a_composition_keeps_the_typed_list(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            browse: true,
+            ..Setup::default()
+        },
+    );
+    probe.write(cx, "");
+    let input = probe.input(cx);
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.replace_and_mark_text_in_range(None, "mo", None, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    keys(cx, "down");
+    assert_eq!(probe.labels(cx), probe_labels());
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Monaco"));
+    // The platform ends the composition, as before a press, with the
+    // composed text left as it is.
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| input.unmark_text(window, cx));
+    });
+    cx.run_until_parked();
+    assert!(probe.open(cx));
+    assert_eq!(probe.labels(cx), probe_labels(), "the list browsed");
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Monaco"));
+    keys(cx, "escape down");
+    assert_eq!(probe.labels(cx), probe_labels(), "the typing was forgotten");
+}
+
+#[gpui::test]
+fn a_press_picks_nothing_once_its_suggestion_leaves_the_list(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(cx, Setup::default());
+    type_text(cx, "mo");
+    let list = probe.list_bounds(cx);
+    // The first row's center, under the list's border and padding.
+    let row = point(list.left() + px(20.0), list.top() + px(1.0 + 4.0 + 14.0));
+    cx.simulate_mouse_down(row, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    // The list changes under the held press; another suggestion takes the
+    // pressed row's place.
+    probe.write(cx, "fira");
+    assert_eq!(probe.labels(cx), ["Fira Code", "Fira Mono"]);
+    cx.simulate_mouse_up(row, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(probe.taken(cx), Vec::<String>::new());
+    assert_eq!(probe.text(cx), "fira");
+}
+
+#[gpui::test]
+fn a_caret_move_refilters_a_list_that_shows(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(cx, Setup::default());
+    type_text(cx, "mo");
+    probe.filtered(cx);
+    let input = probe.input(cx);
+    let left = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| input.move_left(false, cx));
+        });
+        cx.run_until_parked();
+    };
+    left(cx);
+    assert_eq!(probe.filtered(cx), 1);
+    assert!(probe.open(cx));
+    keys(cx, "escape");
+    left(cx);
+    assert_eq!(probe.filtered(cx), 0, "a closed list filtered");
+    assert!(!probe.open(cx));
+}
+
+#[gpui::test]
+fn a_caret_move_keeps_a_scrolled_list_where_it_was(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            many: true,
+            ..Setup::default()
+        },
+    );
+    type_text(cx, "font");
+    let combobox = probe.combobox(cx);
+    let shows = |cx: &mut VisualTestContext, row: usize| {
+        cx.read(|cx| combobox.read(cx).list.shows(row))
+    };
+    keys(cx, "down");
+    let list = probe.list_bounds(cx);
+    wheel(cx, list.center(), -100.0);
+    assert!(!shows(cx, 0), "the wheel scrolled the list");
+    let input = probe.input(cx);
+    cx.update(|_, cx| {
+        input.update(cx, |input, cx| input.move_left(false, cx));
+    });
+    cx.run_until_parked();
+    assert!(probe.open(cx));
+    assert!(
+        !shows(cx, 0),
+        "the caret move scrolled back to the highlight"
+    );
+}
+
+#[gpui::test]
+fn reopening_a_scrolled_browsing_list_shows_the_value_again(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            browse: true,
+            many: true,
+            ..Setup::default()
+        },
+    );
+    probe.write(cx, "Font 30");
+    let combobox = probe.combobox(cx);
+    let shows = |cx: &mut VisualTestContext, row: usize| {
+        cx.read(|cx| combobox.read(cx).list.shows(row))
+    };
+    keys(cx, "down");
+    deliver_frames(cx);
+    assert!(shows(cx, 30));
+    let list = probe.list_bounds(cx);
+    wheel(cx, list.center(), 2000.0);
+    assert!(!shows(cx, 30), "the wheel scrolled the value away");
+    keys(cx, "escape");
+    keys(cx, "down");
+    deliver_frames(cx);
+    assert!(shows(cx, 30), "reopening left the value out of view");
+}
+
+#[gpui::test]
+fn an_edit_that_keeps_the_options_shows_the_highlight_again(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            auto_highlight: true,
+            many: true,
+            ..Setup::default()
+        },
+    );
+    type_text(cx, "font");
+    let combobox = probe.combobox(cx);
+    let shows = |cx: &mut VisualTestContext, row: usize| {
+        cx.read(|cx| combobox.read(cx).list.shows(row))
+    };
+    assert!(shows(cx, 0));
+    let list = probe.list_bounds(cx);
+    wheel(cx, list.center(), -2000.0);
+    assert!(!shows(cx, 0), "the wheel scrolled the highlight away");
+    // Every font still contains "font ", so the options come back the same.
+    type_text(cx, " ");
+    assert_eq!(probe.labels(cx).len(), 40);
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Font 00"));
+    assert!(
+        shows(cx, 0),
+        "the edit left the highlight Return picks out of view"
+    );
 }

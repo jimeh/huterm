@@ -6,6 +6,7 @@ use super::super::settings_window::SettingsView;
 use super::settings::{
     ScratchConfig, open_settings, settings, settled, with_view, with_window,
 };
+use super::settings_controls::visual;
 use super::*;
 
 /// The default that closes a pane, which closes Settings unless the
@@ -259,7 +260,7 @@ fn a_condition_completes_on_return_and_tab_never_writes_a_suggestion(
         view.focus_key(&when, window, cx);
     });
     harness.cx.run_until_parked();
-    with_view(&mut harness, |view, _| assert!(!view.completion_open()));
+    with_view(&mut harness, |view, cx| assert!(!view.completion_open(cx)));
     keystrokes(&mut harness, "tab");
     harness.cx.run_until_parked();
     assert_ne!(focus_name(&mut harness), format!("key:{when}"));
@@ -273,7 +274,7 @@ fn a_condition_completes_on_return_and_tab_never_writes_a_suggestion(
         view.type_key(&when, "", window, cx);
     });
     harness.cx.run_until_parked();
-    with_view(&mut harness, |view, _| assert!(!view.completion_open()));
+    with_view(&mut harness, |view, cx| assert!(!view.completion_open(cx)));
     keystrokes(&mut harness, "enter");
     harness.cx.run_until_parked();
     assert_eq!(file.text(), "");
@@ -282,16 +283,15 @@ fn a_condition_completes_on_return_and_tab_never_writes_a_suggestion(
         view.focus_key(&when, window, cx);
     });
     harness.cx.run_until_parked();
-    with_window(&mut harness, |view, window, cx| {
-        view.type_key(&when, "Te", window, cx);
-    });
-    harness.cx.run_until_parked();
-    with_view(&mut harness, |view, _| assert!(view.completion_open()));
+    let mut typing = visual(&harness);
+    typing.simulate_input("Te");
+    typing.run_until_parked();
+    with_view(&mut harness, |view, cx| assert!(view.completion_open(cx)));
     keystrokes(&mut harness, "enter");
     harness.cx.run_until_parked();
     with_view(&mut harness, |view, cx| {
         assert_eq!(view.key_text(&when, cx), "Terminal");
-        assert!(!view.completion_open());
+        assert!(!view.completion_open(cx));
     });
     assert_eq!(file.text(), "");
     keystrokes(&mut harness, "enter");

@@ -2,10 +2,14 @@
 //! controls the override table names.
 
 use gpui::{
-    AnyElement, Context, ElementId, FocusHandle, SharedString, Window, canvas,
-    div, prelude::*, px,
+    AnyElement, Context, ElementId, Entity, FocusHandle, SharedString, Window,
+    canvas, div, prelude::*, px,
 };
 use huterm_config::settings::{Choice, Control, Setting, SettingKind};
+use huterm_ui::components::button::{Button, Variant};
+use huterm_ui::components::combobox::Combobox;
+use huterm_ui::components::input::Input;
+use huterm_ui::components::input_group::{Addon, InputGroup};
 use huterm_ui::components::number_field::Format;
 use huterm_ui::components::radio_group::RadioGroup;
 use huterm_ui::components::select::Select;
@@ -34,6 +38,9 @@ const SEGMENT_LABEL_MAX: usize = 16;
 /// steps beside a "100%" readout.
 const SLIDER_WIDTH: f32 = 200.0;
 
+/// A text field's width, chevron included for a font family field.
+const FIELD_WIDTH: f32 = 180.0;
+
 /// How a select trigger opens its menu.
 pub(super) enum Opener {
     /// A setting's own choices.
@@ -44,6 +51,17 @@ pub(super) enum Opener {
 
 fn id(name: String) -> ElementId {
     ElementId::Name(name.into())
+}
+
+/// A field's `control` at `width`, in the `Palette` context that routes
+/// its keys.
+fn field_frame(width: f32, control: AnyElement) -> AnyElement {
+    div()
+        .flex_none()
+        .w(px(width))
+        .key_context("Palette")
+        .child(control)
+        .into_any_element()
 }
 
 impl SettingsView {
@@ -416,32 +434,44 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
-        let field = self.field(setting, window, cx);
-        let invalid = self.errors.contains_key(path);
-        field.update(cx, |field, cx| {
-            field.set_disabled(read_only.is_some(), read_only, cx);
-            field.set_invalid(invalid, cx);
-        });
+        let field = self.field_in_state(setting, read_only, window, cx);
         let (width, control) = match self.numbers.get(path) {
             Some(number) => (150.0, number.clone().into_any_element()),
             None => (
                 if special(path) == Some(Special::Size) {
                     120.0
                 } else {
-                    180.0
+                    FIELD_WIDTH
                 },
                 field.into_any_element(),
             ),
         };
-        div()
-            .flex_none()
-            .w(px(width))
-            .key_context("Palette")
-            .child(control)
-            .into_any_element()
+        field_frame(width, control)
     }
 
-    /// A family name field with a menu of the installed families.
+    /// `setting`'s field, disabled with `read_only`'s reason and marked
+    /// invalid while the file rejects its value.
+    fn field_in_state(
+        &mut self,
+        setting: &'static Setting,
+        read_only: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Entity<Input> {
+        let field = self.field(setting, window, cx);
+        let invalid = self.errors.contains_key(setting.path.as_str());
+        field.update(cx, |field, cx| {
+            field.set_disabled(read_only.is_some(), read_only, cx);
+            field.set_invalid(invalid, cx);
+        });
+        field
+    }
+
+    /// A family name field whose suggestions are the installed families,
+    /// floating below it. A chevron at its trailing edge, which takes no
+    /// focus and leaves focus in the field, toggles every family, whatever
+    /// the user typed. The list mounts last in a relatively positioned
+    /// wrapper around the field, which it measures.
     fn render_font(
         &mut self,
         setting: &'static Setting,
@@ -451,26 +481,33 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
-        let locked = read_only.is_some();
-        let field = self.render_field(setting, read_only, window, cx);
-        let pick = self.select(
-            format!("settings-fonts-{path}"),
-            path,
-            "Installed fonts".to_owned(),
-            "Installed".to_owned(),
-            Opener::Action(format!("fonts:{path}")),
-            locked,
-            px(0.0),
+        let field = self.field_in_state(setting, read_only.clone(), window, cx);
+        let list = self.font_list(setting, window, cx);
+        let toggled = list.downgrade();
+        let chevron = Button::new(
+            id(format!("settings-fonts-{path}")),
+            "Installed fonts",
             swatch,
-            cx,
-        );
+        )
+        .variant(Variant::Ghost)
+        .icon(div().text_color(swatch.muted).child("▾"))
+        .icon_only()
+        .expanded(list.read(cx).is_open())
+        .when_some(read_only, |chevron, reason| chevron.disabled(Some(reason)))
+        .on_click(move |_, cx| {
+            let _ = toggled.update(cx, Combobox::toggle_browsing);
+        });
+        let group = InputGroup::new(
+            id(format!("settings-font-group-{path}")),
+            &field,
+            swatch,
+        )
+        .trailing(Addon::Button(chevron));
         div()
-            .flex()
             .flex_none()
-            .items_center()
-            .gap(px(6.0))
-            .child(field)
-            .child(pick)
+            .relative()
+            .child(field_frame(FIELD_WIDTH, group.into_any_element()))
+            .child(list)
             .into_any_element()
     }
 

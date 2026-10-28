@@ -8,12 +8,14 @@
 //! across reads while the file keeps its entries.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, Context, ElementId, Entity, FocusHandle, Focusable, Keystroke,
-    SharedString, Subscription, Window, div, prelude::*, px,
+    AnyElement, App, Context, ElementId, Entity, EntityId, FocusHandle,
+    Focusable, Keystroke, SharedString, Subscription, Window, div, prelude::*,
+    px,
 };
 use huterm_protocol::{
     ArgumentKind, ArgumentSpec, CommandId, CommandSpec, NamedLayout,
@@ -22,9 +24,9 @@ use huterm_protocol::{
 use toml::Value;
 
 use super::super::super::key_hint::KeyHint;
-use super::super::super::overlay::{Swatch, mono_font_family};
+use super::super::super::overlay::{Swatch, mono_font_family, tokens};
 use super::super::super::settings::keybindings::{
-    Binding, Context as WhenContext, Edit, Field, GROUPS, OVERLAYS,
+    Binding, CONTEXTS, Context as WhenContext, Edit, Field, GROUPS, OVERLAYS,
     check_condition, completions, notes,
 };
 use super::super::Desktop;
@@ -38,6 +40,7 @@ use huterm_ui::components::badge::{Tone as BadgeTone, badge};
 use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::card;
 use huterm_ui::components::collapsible::{Collapsible, chevron};
+use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::components::item::Item;
 use huterm_ui::components::switch::Switch;
@@ -45,6 +48,8 @@ use huterm_ui::components::toggle_group::ToggleGroup;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
+use huterm_ui::option_list::ListOption;
+use huterm_ui::tokens::size;
 
 /// How long the recorder waits for a chord's second stroke: GPUI's own
 /// chord timeout.
@@ -114,9 +119,9 @@ pub(super) struct Keys {
     /// Errors by row.
     pub(super) errors: HashMap<String, String>,
     pub(super) recording: Option<Recording>,
-    /// The completion list under a `when` field: the field's key and the
-    /// selected suggestion.
-    pub(super) completion: Option<(String, usize)>,
+    /// Each `when` field's context suggestions, by the field's entity,
+    /// which keeps them as the field moves between rows.
+    pub(super) completions: HashMap<EntityId, Entity<Combobox>>,
     /// The field being edited, whose draft a read must not replace.
     pub(super) editing: Option<String>,
     /// A control to focus once it draws, and the control focus must still
@@ -196,7 +201,7 @@ impl Keys {
             synced: HashMap::new(),
             errors: HashMap::new(),
             recording: None,
-            completion: None,
+            completions: HashMap::new(),
             editing: None,
             follow: None,
             stranded: false,
@@ -331,6 +336,69 @@ fn grouped() -> Vec<(&'static str, Vec<&'static CommandSpec>)> {
 fn suggestions(field: &Input) -> Option<(usize, Vec<WhenContext>)> {
     let (start, matches) = completions(field.text(), field.cursor());
     (start < field.cursor() && !matches.is_empty()).then_some((start, matches))
+}
+
+/// Where the context name running through `caret` ends: past the name
+/// characters that follow it.
+fn name_end(text: &str, caret: usize) -> usize {
+    let after = text.get(caret..).unwrap_or_default();
+    caret
+        + after
+            .find(|character: char| {
+                !(character.is_ascii_alphanumeric()
+                    || matches!(character, '_' | '-'))
+            })
+            .unwrap_or(after.len())
+}
+
+/// A context suggestion's row: its name in the monospace font, and its
+/// description as secondary text in the interface font.
+fn condition_row(
+    option: &ListOption,
+    highlighted: bool,
+    _: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let swatch = tokens(&cx.global::<Desktop>().config.theme);
+    let secondary = if highlighted {
+        swatch.muted_on(swatch.selection)
+    } else {
+        swatch.muted
+    };
+    div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .child(
+            div()
+                .truncate()
+                .font_family(mono_font_family())
+                .child(option.label.clone()),
+        )
+        .when_some(option.description.clone(), |row, description| {
+            row.child(
+                div()
+                    .truncate()
+                    .text_size(size::TEXT_SMALL)
+                    .text_color(secondary)
+                    .child(description),
+            )
+        })
+        .into_any_element()
+}
+
+/// A `when` field's suggestions: the contexts completing the name before
+/// the caret, each with its description.
+fn condition_suggestions(field: &Input) -> Vec<ListOption> {
+    suggestions(field).map_or_else(Vec::new, |(_, matches)| {
+        matches
+            .into_iter()
+            .map(|context| {
+                ListOption::new(context.name, context.name)
+                    .description(context.description)
+            })
+            .collect()
+    })
 }
 
 /// The arguments a binding can carry in the file.
@@ -994,7 +1062,6 @@ impl SettingsView {
             if view.keys.editing.as_ref() == Some(&blurred) {
                 view.keys.editing = None;
             }
-            view.keys.completion = None;
             // Blur runs inside a draw, where a redraw request is lost; the
             // save waits until the draw is done, so an error it finds shows.
             cx.defer_in(window, move |view, _, cx| {
@@ -1003,30 +1070,80 @@ impl SettingsView {
         })
         .detach();
         if key.starts_with("when:") {
-            // Typing a name in the focused field offers its completions;
-            // an empty name, or text set from the file, offers none.
-            cx.subscribe_in(
-                &field,
-                window,
-                move |view, field, _: &Changed, window, cx| {
-                    let open = {
-                        let field = field.read(cx);
-                        field.focus_handle(cx).is_focused(window)
-                            && suggestions(field).is_some()
-                    };
-                    view.keys.completion = view
-                        .keys
-                        .key_of(id)
-                        .filter(|_| open)
-                        .map(|key| (key, 0));
-                    cx.notify();
-                },
-            )
-            .detach();
+            self.condition_list(&field, swatch, window, cx);
         }
         self.keys.fields.insert(key.clone(), field.clone());
         self.keys.synced.insert(key, text);
         field
+    }
+
+    /// The context suggestions under a `when` field. The first match is
+    /// highlighted as the user types, so Return completes it; a pick
+    /// completes the name before the caret, and only while it still
+    /// completes that name. Names draw in the monospace font the field
+    /// takes them in.
+    fn condition_list(
+        &mut self,
+        field: &Entity<Input>,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let id = field.entity_id();
+        let list = cx.new(|cx| {
+            Combobox::new(
+                SharedString::from(format!("settings-kwhen-{id}")),
+                "Contexts",
+                field,
+                swatch,
+                condition_suggestions,
+                window,
+                cx,
+            )
+            .with_auto_highlight(true)
+            .with_content(Rc::new(condition_row))
+        });
+        let field = field.downgrade();
+        cx.subscribe(&list, move |_, _, event: &ComboboxEvent, cx| {
+            let ComboboxEvent::Picked(name) = event;
+            let _ = field.update(cx, |field, cx| {
+                if let Some((start, matches)) = suggestions(field)
+                    && matches
+                        .iter()
+                        .any(|context| context.name == name.as_ref())
+                {
+                    // A name the caret sits inside goes whole when the pick
+                    // completes all of it, so "Termin|a" keeps no tail, or
+                    // when it is already a context, so "Settings|Control"
+                    // becomes "SettingsGroup"; otherwise the pick goes in
+                    // before the caret, so a name typed in front of another
+                    // keeps it: "sel|split" becomes "selection|split".
+                    let caret = field.cursor();
+                    let end = name_end(field.text(), caret);
+                    let whole =
+                        field.text().get(start..end).unwrap_or_default();
+                    let end = if name
+                        .to_lowercase()
+                        .starts_with(&whole.to_lowercase())
+                        || CONTEXTS.iter().any(|context| {
+                            context.name.eq_ignore_ascii_case(whole)
+                        }) {
+                        end
+                    } else {
+                        caret
+                    };
+                    field.replace(start..end, name, cx);
+                }
+            });
+        })
+        .detach();
+        self.keys.completions.insert(id, list);
+    }
+
+    /// The suggestions under the `when` field held under `key`.
+    pub(super) fn condition_for(&self, key: &str) -> Option<Entity<Combobox>> {
+        let field = self.keys.fields.get(key)?;
+        self.keys.completions.get(&field.entity_id()).cloned()
     }
 
     /// A field by key, created with the file's text as its row would.
@@ -1087,7 +1204,9 @@ impl SettingsView {
                     self.keys.editing = None;
                     self.keys.stranded = true;
                 }
-                self.keys.fields.remove(&key);
+                if let Some(field) = self.keys.fields.remove(&key) {
+                    self.keys.completions.remove(&field.entity_id());
+                }
                 self.keys.synced.remove(&key);
                 self.keys.errors.remove(&key);
                 continue;
@@ -1173,6 +1292,7 @@ impl SettingsView {
                 if self.keys.editing.as_ref() == Some(&key) {
                     self.keys.stranded = true;
                 }
+                self.keys.completions.remove(&field.entity_id());
                 continue;
             };
             if self.keys.editing.as_ref() == Some(&key) {
@@ -1196,7 +1316,6 @@ impl SettingsView {
         self.keys.synced = synced;
         self.keys.errors = errors;
         self.keys.editing = editing;
-        self.keys.completion = None;
     }
 
     /// Whether a field key's row is an active shortcut, which edits apply
@@ -1314,7 +1433,9 @@ impl SettingsView {
         key: &str,
         cx: &mut Context<'_, Self>,
     ) {
-        self.keys.completion = None;
+        if let Some(list) = self.condition_for(key) {
+            list.update(cx, Combobox::close);
+        }
         if let (Some(field), Some(text)) = (
             self.keys.fields.get(key).cloned(),
             self.keys.synced.get(key).cloned(),
@@ -1347,69 +1468,6 @@ impl SettingsView {
                 field.read(cx).focus_handle(cx).is_focused(window)
             })
             .map(|(key, field)| (key.clone(), field.clone()))
-    }
-
-    /// Moves the completion selection; `false` when no list is open for
-    /// `key`.
-    pub(super) fn step_completion(
-        &mut self,
-        key: &str,
-        forward: bool,
-        cx: &mut Context<'_, Self>,
-    ) -> bool {
-        let Some(field) = self.keys.fields.get(key) else {
-            return false;
-        };
-        let count =
-            suggestions(field.read(cx)).map_or(0, |(_, matches)| matches.len());
-        let Some((open, selected)) = &mut self.keys.completion else {
-            return false;
-        };
-        if open != key || count == 0 {
-            return false;
-        }
-        *selected = if forward {
-            (*selected + 1) % count
-        } else {
-            (*selected + count - 1) % count
-        };
-        cx.notify();
-        true
-    }
-
-    /// Accepts the selected completion; `false` when no list is open for
-    /// `key`.
-    pub(super) fn accept_completion(
-        &mut self,
-        key: &str,
-        index: Option<usize>,
-        cx: &mut Context<'_, Self>,
-    ) -> bool {
-        let Some((open, selected)) = self.keys.completion.clone() else {
-            return false;
-        };
-        if open != key {
-            return false;
-        }
-        let Some(field) = self.keys.fields.get(key).cloned() else {
-            return false;
-        };
-        let Some((start, cursor, matches)) = ({
-            let field = field.read(cx);
-            suggestions(field)
-                .map(|(start, matches)| (start, field.cursor(), matches))
-        }) else {
-            return false;
-        };
-        let Some(context) = matches.get(index.unwrap_or(selected)) else {
-            return false;
-        };
-        field.update(cx, |field, cx| {
-            field.replace(start..cursor, context.name, cx);
-        });
-        self.keys.completion = None;
-        cx.notify();
-        true
     }
 
     /// Moves focus from the section's search to the first command it
@@ -2136,7 +2194,7 @@ impl SettingsView {
                 .tab_stop(editable);
             element
         };
-        // The condition, with completion while typing.
+        // The condition, with suggestions floating below it while typing.
         let when_key = format!("when:{name}");
         let placeholder = spec.context.unwrap_or("Anywhere");
         let when = self.key_field(
@@ -2152,13 +2210,11 @@ impl SettingsView {
             field.set_disabled(refusal.is_some(), refusal.clone(), cx);
             field.set_invalid(invalid, cx);
         });
-        let completion =
-            self.render_completion(&when_key, &when, swatch, window, cx);
+        let completion = self.condition_for(&when_key);
         let when_box = div()
             .flex_1()
             .min_w(px(110.0))
-            .flex()
-            .flex_col()
+            .relative()
             .child(
                 div()
                     .font_family(mono_font_family())
@@ -2289,60 +2345,6 @@ impl SettingsView {
             .when(recording, |row| row.child(self.recording_hint(swatch)))
             .children(messages)
             .into_any_element()
-    }
-
-    /// The completion list under a focused `when` field.
-    fn render_completion(
-        &mut self,
-        key: &str,
-        field: &Entity<Input>,
-        swatch: Swatch,
-        window: &Window,
-        cx: &mut Context<'_, Self>,
-    ) -> Option<AnyElement> {
-        let (open, selected) = self.keys.completion.clone()?;
-        if open != key || !field.read(cx).focus_handle(cx).is_focused(window) {
-            return None;
-        }
-        let (_, matches) = suggestions(field.read(cx))?;
-        let mut list = div()
-            .flex()
-            .flex_col()
-            .mt(px(2.0))
-            .p(px(2.0))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(swatch.line_strong)
-            .bg(swatch.surface);
-        for (index, context) in matches.into_iter().take(8).enumerate() {
-            let key = key.to_owned();
-            list = list.child(
-                div()
-                    .id(id(format!("settings-kwhen-{index}")))
-                    .flex()
-                    .flex_col()
-                    .px(px(6.0))
-                    .py(px(3.0))
-                    .rounded(px(4.0))
-                    .when(index == selected, |item| item.bg(swatch.selection))
-                    .hover(|item| item.bg(swatch.hover))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |view, _, _, cx| {
-                            view.accept_completion(&key, Some(index), cx);
-                        }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(swatch.fg)
-                            .font_family(mono_font_family())
-                            .child(context.name),
-                    )
-                    .child(small(context.description.to_owned(), swatch.muted)),
-            );
-        }
-        Some(list.into_any_element())
     }
 
     /// One argument's control: a number or text field, or a select.

@@ -1,10 +1,10 @@
 /**
  * Drive the Settings window with native keys against the palette smoke
  * binary: open it, move between sidebar sections, search, toggle and reset
- * a switch, step a number, rebind
- * a command, edit, rename, and delete a quake profile, record a global
- * shortcut, create, edit, and rename a pane layout and add it to the
- * layout cycle, and close it,
+ * a switch, step a number, type a font family and browse its suggestions,
+ * rebind a command and complete its condition, edit, rename, and delete a
+ * quake profile, record a global shortcut, create, edit, and rename a pane
+ * layout and add it to the layout cycle, and close it,
  * checking `config.toml` after each save and that keys reach the terminal
  * again afterwards.
  */
@@ -31,7 +31,7 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
 
 type SettingsKey =
   | "open" | "search" | "select-all" | "enter" | "space" | "tab" | "shift-tab" | "up" | "down" | "escape"
-  | "reset" | "close" | "new-tab" | "global";
+  | "reset" | "close" | "new-tab" | "global" | "backspace";
 
 // AppKit key codes, modifier flags, and characters.
 const macKeys: Record<SettingsKey, [number, number, string]> = {
@@ -40,12 +40,13 @@ const macKeys: Record<SettingsKey, [number, number, string]> = {
   down: [125, 0, ""], escape: [53, 0, "\x1b"],
   "shift-tab": [48, shiftFlag, "\\t"], reset: [51, commandFlag, "\x7f"], close: [13, commandFlag, "w"],
   "new-tab": [17, commandFlag, "t"], global: [16, controlFlag | optionFlag | shiftFlag, "y"],
+  backspace: [51, 0, "\x7f"],
 };
 const x11Keys: Record<SettingsKey, string> = {
   open: "ctrl+comma", search: "ctrl+f", "select-all": "ctrl+a", enter: "Return", space: "space",
   tab: "Tab", "shift-tab": "shift+Tab", up: "Up", down: "Down", escape: "Escape", reset: "ctrl+BackSpace",
   close: "ctrl+shift+w",
-  "new-tab": "ctrl+shift+t", global: "ctrl+alt+shift+y",
+  "new-tab": "ctrl+shift+t", global: "ctrl+alt+shift+y", backspace: "BackSpace",
 };
 // What the recorder writes for the search key, and New Tab's default.
 const searchKey = process.platform === "darwin" ? "cmd-f" : "ctrl-f";
@@ -146,12 +147,15 @@ args = { layout = "smoke" }
     }
     return text;
   }
-  /** Presses Tab until `name` has focus, waiting for each press to move it. */
+  /** Presses Tab until `name` has focus, waiting for each press to move it.
+   * A name ending in ":", such as `key:when:`, matches any control it
+   * starts, as `state` reads it. */
   async function tabTo(name: string): Promise<void> {
+    const reached = (focus: string) => focus === name || (name.endsWith(":") && focus.startsWith(name));
     for (let step = 0; step < 20; step++) {
       let focus: string | undefined;
       await waitFor(async () => (focus = field(await current(), "focus")) !== undefined, "a readable focus");
-      if (focus === name) return;
+      if (focus !== undefined && reached(focus)) return;
       await key("tab");
       await waitFor(async () => {
         const now = field(await current(), "focus");
@@ -258,6 +262,40 @@ args = { layout = "smoke" }
     await state("settings.focus=font.size");
     await key("up");
     await saved((text) => /\[font\]\nsize = 15(\.0)?\n/.test(text), "font size stepped in config.toml");
+
+    // The font family field saves a name no installed family has. Before an
+    // edit, Down lists every installed family on the one the field shows,
+    // which is macOS's default, Menlo. Emptied, it suggests every installed
+    // family, highlighting none until Down; the first Escape closes the list
+    // and keeps focus, and the second puts back the saved name and leaves the
+    // field.
+    await key("search");
+    await state("settings.focus=search");
+    await key("select-all");
+    await typeText("font family");
+    await state('settings.query="font family"');
+    await key("enter");
+    await state("settings.focus=font.family");
+    await key("down");
+    await state("settings.list=font.family", "settings.focus=font.family");
+    if (process.platform === "darwin") await state('settings.highlight="Menlo"');
+    await key("escape");
+    await state("settings.list=none", "settings.focus=font.family");
+    await key("select-all");
+    await typeText("Huterm Smoke Mono");
+    await state("settings.list=none");
+    await key("enter");
+    await saved((text) => text.includes('family = "Huterm Smoke Mono"'), "font family in config.toml");
+    await key("select-all");
+    await key("backspace");
+    await state("settings.list=font.family", 'settings.highlight=""', "settings.focus=font.family");
+    await key("down");
+    await waitFor(async () => (field(await current(), "highlight") ?? '""') !== '""', "a highlighted family");
+    await key("escape");
+    await state("settings.list=none", "settings.focus=font.family");
+    await key("escape");
+    await waitFor(async () => field(await current(), "focus") !== "font.family", "focus to leave the font field");
+    await saved((text) => text.includes('family = "Huterm Smoke Mono"'), "font family kept in config.toml");
 
     // Search leads to the Quake windows section, where Up steps the default
     // profile's height slider by 5% and a global shortcut records one
@@ -410,6 +448,25 @@ args = { layout = "smoke" }
       "New Tab rebound in config.toml",
     );
     await state("settings.focus=action:krec:");
+    // The shortcut's condition field suggests contexts as you type, with the
+    // first highlighted: Escape closes them, typing reopens them, Return
+    // completes the name, and the next Return saves it. The rebind's reload
+    // can add a row stop, such as the replaced default's switch, between
+    // the recorder and the field, so Tab until the field has focus.
+    await tabTo("key:when:");
+    await typeText("Te");
+    await state("settings.list=key:when:", 'settings.highlight="Terminal"');
+    await key("escape");
+    await state("settings.list=none", "settings.focus=key:when:");
+    await typeText("r");
+    await state("settings.list=key:when:", 'settings.highlight="Terminal"');
+    await key("enter");
+    await state("settings.list=none");
+    await key("enter");
+    await saved(
+      (text) => text.includes(`key = "${searchKey}"\ncommand = "new_tab"\n`) && text.includes('when = "Terminal"'),
+      "New Tab's condition in config.toml",
+    );
 
     // Closing returns keys to the terminal, where the new key opens a tab
     // and the switched-off default does nothing.
@@ -432,7 +489,7 @@ args = { layout = "smoke" }
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} sidebar=arrows search=focus-first toggle=saved reset=removed tab=round-trip step=saved reveal=in-view select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands layouts=saved close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} sidebar=arrows search=focus-first toggle=saved reset=removed tab=round-trip step=saved font=combobox condition=combobox reveal=in-view select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands layouts=saved close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);
