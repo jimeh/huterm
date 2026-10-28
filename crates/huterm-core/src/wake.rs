@@ -38,6 +38,16 @@ impl Wake {
         *pending = false;
     }
 
+    /// Whether a notification is pending, without consuming it. Every send
+    /// to the runtime's queues sets it, so work running between messages can
+    /// check it to yield to queued work.
+    pub(crate) fn is_pending(&self) -> bool {
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Consumes a pending notification without waiting.
     #[cfg(test)]
     pub(crate) fn take_pending(&self) -> bool {

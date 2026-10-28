@@ -511,8 +511,9 @@ applies.
 
 ```toml
 [terminal]
-scrollback_rows = 10000    # 0 through 100000; 0 keeps no history
-scrollback_bytes = "64MiB" # optional; up to "16GiB"; 0 keeps no history
+scrollback_rows = 10000       # 0 through 100000; 0 keeps no history
+scrollback_bytes = "64MiB"    # optional; up to "16GiB"; 0 keeps no history
+scrollback_compression = true # compress history while the terminal is idle
 ```
 
 A long line that wraps across three rows counts as three rows. Huterm frees
@@ -552,7 +553,29 @@ The 100,000-row maximum holds even under a large `scrollback_bytes`. It keeps
 resizing quick: a change in width rewraps every row of history, which pauses
 that terminal for about 7 ms at the maximum on an Apple silicon Mac. Plain
 history at 120 columns takes about 1 KB per row, so a full 100,000 rows uses
-about 110 MB per terminal, and wider rows use more.
+about 100 MB per terminal before compression, and wider rows use more.
+
+`scrollback_compression`, on by default, compresses each terminal's history
+once nothing has changed in it for a quarter of a second and you have stopped
+typing. Text-heavy history shrinks to about a tenth of its memory: a full
+100,000 rows of build output or file listings drops to 5 to 13 MB. Output with
+a different color on every word or cell compresses about half as well.
+Compressed history reads exactly as before. Scrolling into it, selecting it,
+or looking up a link in it restores only the pages involved, and the next
+idle period compresses them again. The limits above count uncompressed
+history, so compression changes how much memory history uses, not how much
+history a terminal keeps.
+
+The first change in width after compression restores all history before
+rewrapping it, which takes two to three times as long as an uncompressed
+rewrap: about 30 ms instead of 10 ms for a full 100,000 rows of build output
+on an Apple silicon Mac, and a few milliseconds at the default limit. Further
+resizes during the same drag cost the usual amount. On macOS, Activity
+Monitor's **Memory** column shows the saving at once. Tools that report
+resident size, such as `ps` and `top`, show it only when the system needs the
+memory back. Reload applies the setting to every open terminal. Turning it
+off stops further compression; history already compressed stays compressed
+until something reads it.
 
 Reload applies new limits to every open terminal, including tabs in the
 background and tabs whose shell has exited. Lowering either limit discards the

@@ -8,6 +8,8 @@ export type SmokeOutcome = {
   exitCode: number | null;
   signalCode: string | null;
   timedOut: boolean;
+  /** `stopWhen` matched and the supervisor ended the process. */
+  stopped: boolean;
   stdout: string;
   stderr: string;
   elapsedMs: number;
@@ -19,6 +21,8 @@ export async function runSmokeProcess(command: string[], options: {
   evidenceDir?: string;
   env?: NodeJS.ProcessEnv;
   stream?: boolean;
+  /** Ends the process early once this holds for the standard error so far. */
+  stopWhen?: (stderr: string) => boolean;
 }): Promise<SmokeOutcome> {
   const [executable, ...args] = command;
   if (!executable) throw new Error("smoke command is empty");
@@ -38,6 +42,7 @@ export async function runSmokeProcess(command: string[], options: {
   let stdout = "";
   let stderr = "";
   let timedOut = false;
+  let stopped = false;
   let interrupted: NodeJS.Signals | null = null;
   let force: ReturnType<typeof setTimeout> | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -82,6 +87,11 @@ export async function runSmokeProcess(command: string[], options: {
       if (options.stream !== false) process.stderr.write(chunk);
       if (directory) appendFileSync(join(directory, "stderr.log"), chunk);
       event("stderr", { text: chunk });
+      if (!stopped && !timedOut && options.stopWhen?.(stderr)) {
+        stopped = true;
+        event("stopped");
+        terminate("SIGTERM");
+      }
     });
     deadline = setTimeout(() => {
       timedOut = true;
@@ -95,7 +105,7 @@ export async function runSmokeProcess(command: string[], options: {
       // Wait for output as well as exit; descendants holding pipes are also bounded.
       spawned.once("close", (exitCode, signalCode) => resolve({ exitCode, signalCode }));
     });
-    const outcome = { ...status, signalCode: interrupted ?? status.signalCode, timedOut, stdout, stderr, elapsedMs: elapsed() };
+    const outcome = { ...status, signalCode: interrupted ?? status.signalCode, timedOut, stopped, stdout, stderr, elapsedMs: elapsed() };
     event("closed", status);
     if (directory) writeFileSync(join(directory, "outcome.json"), `${JSON.stringify({ exitCode: outcome.exitCode, signalCode: outcome.signalCode, timedOut, elapsedMs: outcome.elapsedMs }, null, 2)}\n`);
     return outcome;

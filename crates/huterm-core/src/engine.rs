@@ -233,21 +233,19 @@ impl TerminalEngine {
 
     /// One bounded incremental compression step over cold history. Call it
     /// only while the terminal is idle.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the runtime scheduler is the next change")
-    )]
     pub(crate) fn compress_step(
         &mut self,
     ) -> Result<huterm_ghostty::Compression, RuntimeError> {
         self.inner.compress_step()
     }
 
+    /// The token that changes when history may hold new compression work.
+    pub(crate) fn compression_activity(&self) -> Result<u64, RuntimeError> {
+        self.inner.compression_activity()
+    }
+
     /// Page memory for both screens, without restoring compressed pages.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the runtime scheduler is the next change")
-    )]
+    #[cfg(test)]
     pub(crate) fn memory_usage(
         &self,
     ) -> Result<huterm_ghostty::MemoryUsage, RuntimeError> {

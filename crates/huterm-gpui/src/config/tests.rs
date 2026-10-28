@@ -76,6 +76,18 @@ fn scrollback_rows_and_bytes_reach_the_terminal_limit() {
 }
 
 #[test]
+fn scrollback_compression_defaults_on_and_can_be_turned_off() {
+    assert!(parse("").unwrap().terminal.scrollback_compression);
+    assert!(
+        !parse("[terminal]\nscrollback_compression = false")
+            .unwrap()
+            .terminal
+            .scrollback_compression
+    );
+    assert!(parse("[terminal]\nscrollback_compression = 1").is_err());
+}
+
+#[test]
 fn pane_zoom_defaults_to_the_view_and_can_be_shared() {
     use huterm_config::{PaneZoomScope, PanesConfig};
     assert_eq!(parse(DEFAULT_CONFIG).unwrap().panes, PanesConfig::default());

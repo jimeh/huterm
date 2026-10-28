@@ -213,6 +213,8 @@ pub(crate) struct Registry {
     changed: AtomicBool,
     generation: AtomicU64,
     state: Mutex<RegistryState>,
+    /// Idle compression totals the runtime publishes for benchmarks.
+    pub(crate) compression: crate::compression::CompressionCounters,
 }
 
 /// Why a viewer could not register.
@@ -240,6 +242,7 @@ impl Registry {
                 slots: Vec::new(),
                 status: Arc::new(TerminalStatus::default()),
             }),
+            compression: crate::compression::CompressionCounters::default(),
         }
     }
 
@@ -594,6 +597,13 @@ impl TerminalViewer {
         self.slot.capabilities
     }
 
+    /// Totals of the terminal's idle compression, for benchmarks. Reading
+    /// them never disturbs the runtime.
+    #[must_use]
+    pub fn compression_stats(&self) -> crate::CompressionStats {
+        self.client.compression_stats()
+    }
+
     /// Returns the immutable engine version used by this terminal.
     #[must_use]
     pub fn engine_revision(&self) -> &'static str {
@@ -751,6 +761,23 @@ impl TerminalViewer {
         limit: ScrollbackLimit,
     ) -> Result<(), RuntimeError> {
         self.send_edit(BufferEdit::Scrollback(limit))
+    }
+
+    /// Sets whether the runtime compresses history while the terminal is
+    /// idle, after earlier input. Like the history limit, the setting belongs
+    /// to the terminal, and the latest request from any viewer that may send
+    /// input applies. Turning it off stops further compression; history
+    /// already compressed stays compressed until something reads it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the viewer may not send input, or the runtime
+    /// stopped or cannot accept it yet.
+    pub fn set_scrollback_compression(
+        &self,
+        enabled: bool,
+    ) -> Result<(), RuntimeError> {
+        self.send_edit(BufferEdit::ScrollbackCompression(enabled))
     }
 
     fn send_edit(&self, edit: BufferEdit) -> Result<(), RuntimeError> {

@@ -7525,6 +7525,16 @@
           "x-huterm-order": 20,
           "x-huterm-section": "scrollback"
         },
+        "scrollback_compression": {
+          "default": true,
+          "description": "Compress each terminal's history once it has been idle for a quarter\nof a second. Text-heavy history shrinks to about a tenth of its memory\nand reads back exactly as before. The first width change after\ncompression takes two to three times longer, because it restores all\nhistory. Reload applies it to open terminals; turning it off leaves\nhistory already compressed until something reads it.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Memory",
+          "x-huterm-label": "Compress idle history",
+          "x-huterm-order": 30,
+          "x-huterm-section": "scrollback"
+        },
         "scrollback_rows": {
           "default": 10000,
           "description": "Live history each terminal keeps above its screen, in screen rows: a\nline that wraps counts once for each row it fills. 0 keeps none,\nwhatever `scrollback_bytes` says. The oldest history is freed a page\nat a time, about 570 rows at 80 columns, so a terminal can hold up to\na page fewer, and a smaller nonzero limit keeps up to one page. It\ncounts rows; `scrollback_bytes` limits size. Reload applies it to open\nterminals; lowering it discards the oldest rows at once.",

@@ -698,20 +698,18 @@ impl TerminalEngine {
     }
 
     /// One bounded incremental compression step over cold history.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the runtime scheduler is the next change")
-    )]
     pub(super) fn compress_step(
         &mut self,
     ) -> Result<huterm_ghostty::Compression, RuntimeError> {
         Ok(self.terminal.compress_step()?)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the runtime scheduler is the next change")
-    )]
+    /// The token that changes when history may hold new compression work.
+    pub(super) fn compression_activity(&self) -> Result<u64, RuntimeError> {
+        Ok(self.terminal.compression_activity()?)
+    }
+
+    #[cfg(test)]
     pub(super) fn memory_usage(
         &self,
     ) -> Result<huterm_ghostty::MemoryUsage, RuntimeError> {

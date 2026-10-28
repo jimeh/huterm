@@ -55,12 +55,65 @@ fn keys(stdout: &mut impl Write) -> io::Result<()> {
     Ok(())
 }
 
+/// Lines that saturate a 100,000-row history at 120 columns.
+const HISTORY_LINES: u64 = 121_000;
+
+/// Writes enough history to saturate the maximum, then echoes keys. With
+/// `HUTERM_RENDER_HISTORY=styles` every cell has its own truecolor pair,
+/// which grows pages to several times their usual size; otherwise the
+/// history is a colored build log.
+fn compression(stdout: &mut impl Write) -> io::Result<()> {
+    let styles =
+        std::env::var("HUTERM_RENDER_HISTORY").as_deref() == Ok("styles");
+    let mut seed = 0x5eed_u64;
+    let mut next = move || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        seed >> 33
+    };
+    let mut batch = Vec::with_capacity(1 << 20);
+    for line in 0..HISTORY_LINES {
+        if styles {
+            for _ in 0..118 {
+                write!(
+                    batch,
+                    "\x1b[38;2;{};{};{};48;2;{};{};{}mx",
+                    next() % 256,
+                    next() % 256,
+                    next() % 256,
+                    next() % 256,
+                    next() % 256,
+                    next() % 256
+                )?;
+            }
+            batch.extend_from_slice(b"\x1b[0m\r\n");
+        } else {
+            write!(
+                batch,
+                "\x1b[1;32m   Compiling\x1b[0m crate-{} v0.{}.{} (/src/crates/crate-{})\r\n",
+                next() % 400,
+                next() % 30,
+                next() % 10,
+                line % 97
+            )?;
+        }
+        if batch.len() >= 1 << 20 || line + 1 == HISTORY_LINES {
+            stdout.write_all(&batch)?;
+            batch.clear();
+        }
+    }
+    stdout.flush()?;
+    keys(stdout)
+}
+
 fn main() -> io::Result<()> {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
     match std::env::var("HUTERM_RENDER_WORKLOAD").as_deref() {
         Ok("echo") => return echo(&mut stdout),
         Ok("keys") => return keys(&mut stdout),
+        Ok("compression") => return compression(&mut stdout),
         _ => {}
     }
     let mut frame = 0_u64;

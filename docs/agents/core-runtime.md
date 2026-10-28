@@ -75,6 +75,16 @@ without holding a shared lock across `wait`; bounded teardown uses its
 cached-status proxy.
 Never join it before signalling and closing PTY handles.
 
+Idle work, such as scrollback compression, runs only from the branch where
+output, client messages, and controls were all empty, never on the output
+path. It runs in bounded batches that check `Wake::is_pending` between steps,
+which every queue's sender sets, and it arms a deadline that joins the
+foreground probe's in the idle wait. Do not poll the runtime with controls to
+watch such work: each control sets the wake flag and ends the batch. Publish
+counters through shared atomics instead, as `CompressionCounters` does. The
+runtime tests hold a batch mid-pass with `RuntimeControl::CompressionProbe`
+to prove queued work runs before the next step.
+
 ## Terminal viewers
 
 Each view reaches a terminal through its own `TerminalViewer` registration (see

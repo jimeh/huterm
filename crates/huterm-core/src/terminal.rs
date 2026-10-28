@@ -18,6 +18,7 @@ use huterm_protocol::{
 use huterm_protocol::{CellSize, GridSize, TerminalPresentation};
 use thiserror::Error;
 
+use crate::compression::{self, CompressionSchedule, CompressionStats};
 use crate::engine::{EngineEffect, TerminalEngine};
 use crate::foreground::{ProbeSchedule, Reports};
 use crate::host_effects::HostEffectSink;
@@ -57,6 +58,11 @@ pub(crate) struct RuntimeClient {
 }
 
 impl RuntimeClient {
+    /// The runtime's idle compression totals, read without disturbing it.
+    pub(crate) fn compression_stats(&self) -> CompressionStats {
+        self.registry.compression.stats()
+    }
+
     pub(crate) fn terminal_id(&self) -> TerminalId {
         self.terminal_id
     }
@@ -418,6 +424,7 @@ impl TerminalRuntime {
                     run_terminal(
                         terminal_id,
                         engine,
+                        command.scrollback_compression,
                         Arbiter::new(
                             command.grid_size,
                             command.cell_size,
@@ -644,6 +651,8 @@ pub(crate) enum BufferEdit {
     Reset,
     /// A new history limit for the terminal, whichever viewer sends it.
     Scrollback(huterm_protocol::ScrollbackLimit),
+    /// Whether the runtime compresses idle history.
+    ScrollbackCompression(bool),
 }
 
 #[derive(Debug)]
@@ -699,6 +708,49 @@ pub(crate) enum RuntimeControl {
     /// it open any more, as when the shell has just exited.
     WriterHangup,
     Wake,
+    /// Installs a probe on the runtime's idle compression.
+    #[cfg(test)]
+    CompressionProbe(CompressionProbe),
+    /// Reports the engine's page memory.
+    #[cfg(test)]
+    MemoryUsage(Sender<Result<huterm_ghostty::MemoryUsage, RuntimeError>>),
+}
+
+/// Observes and steers the runtime's idle compression in tests.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct CompressionProbe {
+    /// Replaces [`compression::IDLE`] and arms a pass.
+    pub(crate) idle: Duration,
+    /// Lets only queued work end a batch, never its time budget.
+    pub(crate) unlimited_batch: bool,
+    /// Receives every step and every handled output batch and control, in
+    /// order.
+    pub(crate) events: Sender<CompressionEvent>,
+    /// Holds the runtime after the first step that leaves the pass
+    /// pending, inside its batch, until the test sends on `.1`.
+    pub(crate) hold: Option<(Sender<()>, Receiver<()>)>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompressionEvent {
+    Step(huterm_ghostty::Compression),
+    Output,
+    Control,
+}
+
+#[cfg(test)]
+impl CompressionProbe {
+    fn stepped(&mut self, result: huterm_ghostty::Compression) {
+        let _ = self.events.send(CompressionEvent::Step(result));
+        if result == huterm_ghostty::Compression::Pending
+            && let Some((entered, release)) = self.hold.take()
+        {
+            let _ = entered.send(());
+            let _ = release.recv();
+        }
+    }
 }
 
 /// The runtime's publication state: the revision that advances on every
@@ -826,9 +878,66 @@ struct Owner<'a> {
     publication: Publication,
     registry: &'a Registry,
     child_exited: bool,
+    /// When to compress idle history; see [`crate::compression`].
+    compression: CompressionSchedule,
+    #[cfg(test)]
+    compression_probe: Option<CompressionProbe>,
 }
 
 impl Owner<'_> {
+    /// Runs when every queue is empty: notes whether history changed, runs
+    /// a due compression batch, or else waits for work or the next
+    /// deadline. Compression never runs while output, messages, or controls
+    /// wait.
+    fn idle(
+        &mut self,
+        wake: &crate::wake::Wake,
+        probes: &ProbeSchedule,
+    ) -> Result<(), RuntimeError> {
+        let now = Instant::now();
+        self.compression
+            .observe(self.engine.compression_activity()?, now);
+        if self.compression.due(now) {
+            #[cfg(not(test))]
+            let budget = compression::BATCH;
+            #[cfg(test)]
+            let budget = match &self.compression_probe {
+                Some(probe) if probe.unlimited_batch => Duration::MAX,
+                _ => compression::BATCH,
+            };
+            let started = Instant::now();
+            let mut steps = 0;
+            let result = compression::run_batch(
+                || {
+                    steps += 1;
+                    let result = self.engine.compress_step();
+                    #[cfg(test)]
+                    if let (Ok(step), Some(probe)) =
+                        (&result, &mut self.compression_probe)
+                    {
+                        probe.stepped(*step);
+                    }
+                    result
+                },
+                || wake.is_pending(),
+                || started.elapsed(),
+                budget,
+            );
+            self.registry
+                .compression
+                .record_batch(steps, started.elapsed());
+            let result = result?;
+            self.compression.finished(result, Instant::now());
+            return Ok(());
+        }
+        let deadline = match (probes.deadline(), self.compression.deadline()) {
+            (Some(probe), Some(compress)) => Some(probe.min(compress)),
+            (probe, compress) => probe.or(compress),
+        };
+        wake.wait_until(deadline);
+        Ok(())
+    }
+
     /// Reconciles the viewer table if the registry changed: adds viewers
     /// that have sent nothing yet and finalizes dropped and revoked ones.
     /// While writes are backed up it waits: the focus reports and releases
@@ -1119,6 +1228,7 @@ fn process_queued_output(
 fn run_terminal(
     terminal_id: TerminalId,
     engine: TerminalEngine,
+    scrollback_compression: bool,
     mut arbiter: Arbiter,
     process: PtyProcess,
     messages: Receiver<RuntimeMessage>,
@@ -1253,6 +1363,9 @@ fn run_terminal(
         publication: Publication::default(),
         registry,
         child_exited: false,
+        compression: CompressionSchedule::new(scrollback_compression),
+        #[cfg(test)]
+        compression_probe: None,
     };
     owner.publish();
 
@@ -1302,6 +1415,10 @@ fn run_terminal(
                 if closing.load(Ordering::Acquire) {
                     break;
                 }
+                #[cfg(test)]
+                if let Some(probe) = &owner.compression_probe {
+                    let _ = probe.events.send(CompressionEvent::Control);
+                }
                 match control {
                     RuntimeControl::Snapshot {
                         slot,
@@ -1321,6 +1438,11 @@ fn run_terminal(
                             let _ =
                                 reply.try_send(Err(RuntimeError::NotPermitted));
                             continue;
+                        }
+                        // A link lookup reads the rows around the point,
+                        // which may restore compressed pages.
+                        if point.is_some() {
+                            owner.compression.restored(Instant::now());
                         }
                         let result = build_snapshot(
                             &mut owner.engine,
@@ -1349,6 +1471,8 @@ fn run_terminal(
                         let result = if slot.is_revoked() {
                             Err(RuntimeError::Revoked)
                         } else {
+                            // Extraction restores every page it reads.
+                            owner.compression.restored(Instant::now());
                             owner.engine.extract_text(generation, range)
                         };
                         let _ = reply.try_send(result);
@@ -1456,6 +1580,15 @@ fn run_terminal(
                         let _ = reply.try_send(busy);
                     }
                     RuntimeControl::Wake => {}
+                    #[cfg(test)]
+                    RuntimeControl::CompressionProbe(probe) => {
+                        owner.compression.set_idle(probe.idle, Instant::now());
+                        owner.compression_probe = Some(probe);
+                    }
+                    #[cfg(test)]
+                    RuntimeControl::MemoryUsage(reply) => {
+                        let _ = reply.send(owner.engine.memory_usage());
+                    }
                 }
             }
             if closing.load(Ordering::Acquire) {
@@ -1499,12 +1632,24 @@ fn run_terminal(
                     Err(TryRecvError::Empty) => {
                         owner.status.flush(registry);
                         if controls_drained < MESSAGE_CAPACITY {
-                            wake.wait_until(probes.deadline());
+                            match owner.idle(&wake, &probes) {
+                                Ok(()) => {}
+                                Err(error) => {
+                                    owner.status.failure(error.to_string());
+                                    closing.store(true, Ordering::Release);
+                                }
+                            }
                         }
                         continue;
                     }
                     Err(TryRecvError::Disconnected) => break,
                 };
+            #[cfg(test)]
+            if let (NextMessage::Output(_), Some(probe)) =
+                (&message, &owner.compression_probe)
+            {
+                let _ = probe.events.send(CompressionEvent::Output);
+            }
             let healthy = match message {
                 NextMessage::Output(bytes) => process_output(
                     &mut owner,
@@ -1640,6 +1785,10 @@ fn handle_client_message(
         && (!message.permitted()
             || match message {
                 RuntimeMessage::Input { input, stamp, .. } => {
+                    if owner.compression.in_pass() {
+                        owner.registry.compression.record_input_during_pass();
+                    }
+                    owner.compression.input(Instant::now());
                     handle_input(owner, arbiter, probes, &slot, &input, stamp)
                 }
                 RuntimeMessage::Arbitration { report, .. } => {
@@ -1668,6 +1817,10 @@ fn handle_edit(
     let effects = match edit {
         BufferEdit::ClearHistory => owner.engine.clear_history(),
         BufferEdit::Reset => owner.engine.reset(),
+        BufferEdit::ScrollbackCompression(enabled) => {
+            owner.compression.set_enabled(enabled, Instant::now());
+            return true;
+        }
         BufferEdit::Scrollback(limit) => {
             return match owner.engine.set_scrollback(limit) {
                 Ok(evicted) => {

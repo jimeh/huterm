@@ -14,6 +14,7 @@ fn command(script: &str) -> TerminalCommand {
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        scrollback_compression: false,
     }
 }
 fn ready(client: &crate::test_support::TestClient, text: &str) {

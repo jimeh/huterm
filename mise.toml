@@ -241,6 +241,8 @@ fi
 bash scripts/build-exec.sh cargo build --release --locked -p huterm
 bench_config="$(mktemp)"
 trap 'rm -f "$bench_config"' EXIT
+# A compression pass that starts mid-run would change what is measured.
+printf '[terminal]\nscrollback_compression = false\n' > "$bench_config"
 export HUTERM_CONFIG_FILE="$bench_config"
 bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example render_workload
 workload="$(pwd)/target/release/examples/render_workload"
@@ -303,8 +305,9 @@ fi
 bash scripts/build-exec.sh cargo build --release --locked -p huterm
 bench_config="$(mktemp)"
 # The benchmark waits for 10,000 history rows, which the default limit,
-# freed a page at a time, may never hold at once.
-printf '[terminal]\nscrollback_rows = 20000\n' > "$bench_config"
+# freed a page at a time, may never hold at once. A compression pass that
+# starts during a scroll pause would change what is measured.
+printf '[terminal]\nscrollback_rows = 20000\nscrollback_compression = false\n' > "$bench_config"
 export HUTERM_CONFIG_FILE="$bench_config"
 bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example scroll_workload
 workload="$(pwd)/target/release/examples/scroll_workload"

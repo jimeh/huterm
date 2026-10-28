@@ -1,8 +1,9 @@
 # Scrollback compression
 
-Status: in progress. Approved on 2026-10-27, when Jim accepted every
-recommendation in [Open questions](#open-questions). PR 1 adds the bindings,
-safe API, tests and benchmarks; PR 2 adds the scheduler and setting.
+Status: implemented. Approved on 2026-10-27, when Jim accepted every
+recommendation in [Open questions](#open-questions). PR 1 (#283) added the
+bindings, safe API, tests and benchmarks; PR 2 added the scheduler and
+setting. See [Implementation outcome](#implementation-outcome).
 
 Ghostty 1.4.0 can compress scrollback that is off screen. It encodes each cold
 history page with LZ4, keeps the page's virtual mapping, and returns its
@@ -858,3 +859,45 @@ Decided on 2026-10-27: each recommendation below was accepted as written.
      reviews quickly.
    - Against: the first PR adds API with no production caller for a short
      time.
+
+## Implementation outcome
+
+Both PRs follow the design above, with these differences:
+
+- **Benchmark counters.** The output-latency variant needs to know when a pass
+  is running without disturbing it, and polling the runtime with a control
+  sets the wake flag and ends every batch. `TerminalViewer::compression_stats`
+  instead reads steps, step time, and input handled mid-pass from atomics on
+  the runtime's registry.
+- **Activity forwarding.** PR 1 forwarded only `compress_step` and
+  `memory_usage`; nothing in core read the token until PR 2's scheduler. In
+  core, `memory_usage` stays test-only.
+- **Reload coverage.** GPUI tests check that a reload changing only
+  `scrollback_compression` reaches the viewer and survives a viewer
+  replacement. They cannot see a pass, because compression never shows in a
+  snapshot; a core runtime test proves the same viewer call starts one.
+- **Settings.** The setting sits in the Scrollback section's own "Memory"
+  group.
+- **Smokes.** Smoke configurations keep the default instead of pinning
+  compression off, as [Testing strategy](#testing-strategy) said, so they
+  exercise what users run. Their histories are a few pages, so a pass costs
+  them microseconds; the benchmarks whose numbers a pass could shift still pin
+  it off.
+- **Latency variant.** The driver waits for history to stop growing, because
+  per-cell truecolor history reaches the size allowance at about 67,000 rows,
+  and the run ends when the driver finishes its 50 cycles. A key counts when
+  the runtime handled it while a pass was unfinished, which includes the idle
+  interval after earlier input, not only a running step.
+
+`bench:output-latency -- compression` on an Apple M3 Max, 50 cycles each;
+three cycles per run saw no echo within 5 s, with or without compression:
+
+| History | Compression | Keys mid-pass | Applied p50 | Applied max | Mean step |
+| --- | --- | --- | --- | --- | --- |
+| Build log | on | 47 | 180 µs | 3.1 ms | 125 µs |
+| Build log | off | | 181 µs | 1.7 ms | |
+| Per-cell truecolor | on | 47 | 241 µs | 5.8 ms | 4.4 ms |
+| Per-cell truecolor | off | | 298 µs | 5.4 ms | |
+
+Keys mostly arrive in the 1 ms gap between batches, so even 4 ms steps leave
+the median unchanged; the worst case grows by up to one step.

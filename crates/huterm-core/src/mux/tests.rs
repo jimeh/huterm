@@ -534,6 +534,7 @@ pub(super) fn command(script: &str) -> TerminalCommand {
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        scrollback_compression: false,
     }
 }
 pub(super) fn wait_for_text(

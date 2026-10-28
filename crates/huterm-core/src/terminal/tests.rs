@@ -1453,6 +1453,131 @@ fn engine_benchmark_pty_throughput() {
     );
 }
 
+/// A terminal whose shell prints `lines` lines of history, then `FILLED`,
+/// and waits for input. The grid is wide enough that history spans many
+/// pages.
+fn compressible(id: u64, lines: usize, compression: bool) -> TerminalRuntime {
+    let mut command = command(&format!(
+        "yes 'scrollback compression keeps this history line' | head -n {lines}; \
+         printf 'FILLED\\n'; exec cat"
+    ));
+    command.grid_size = GridSize::clamped(120, 40);
+    command.scrollback_compression = compression;
+    TerminalRuntime::spawn(TerminalId::new(id), &command).unwrap()
+}
+
+fn memory_usage(client: &TestClient) -> huterm_ghostty::MemoryUsage {
+    let (reply, usage) = mpsc::channel();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::MemoryUsage(reply))
+        .unwrap();
+    usage.recv_timeout(Duration::from_secs(2)).unwrap().unwrap()
+}
+
+/// Polls until a pass has compressed history, under a bounded deadline.
+/// Each memory control ends the batch in progress, unlike the counters a
+/// benchmark reads, but every batch still takes at least one step.
+fn wait_for_compressed_pages(client: &TestClient) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let usage = memory_usage(client);
+        if usage.primary.compressed_pages > 0 {
+            return usage.primary.compressed_pages;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no history was compressed: {usage:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn idle_compression_yields_to_output_and_controls_queued_during_a_batch() {
+    if !huterm_ghostty::COMPRESSION_SUPPORTED {
+        return;
+    }
+    let runtime = compressible(111, 6_000, true);
+    let client = test_client(&runtime);
+    wait_for_text(&client, "FILLED");
+    let (events, recorded) = mpsc::channel();
+    let (entered, held) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::CompressionProbe(CompressionProbe {
+            idle: Duration::from_millis(20),
+            // Only the wake check can end a batch, so the ordering below
+            // shows that it ran.
+            unlimited_batch: true,
+            events,
+            hold: Some((entered, released)),
+        }))
+        .unwrap();
+    held.recv_timeout(Duration::from_secs(5))
+        .expect("a pass should start once the terminal is idle");
+
+    // The runtime is inside a batch, after a step that left the pass
+    // pending. Queue output and a control, then let it continue.
+    client.control.output.send(b"QUEUED\r\n".to_vec()).unwrap();
+    client.control.controls.send(RuntimeControl::Wake).unwrap();
+    release.send(()).unwrap();
+
+    let mut after_hold = Vec::new();
+    let mut held_step_seen = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let event = recorded
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("the pass should continue after the queued work");
+        if !held_step_seen {
+            held_step_seen = event
+                == CompressionEvent::Step(huterm_ghostty::Compression::Pending);
+            continue;
+        }
+        if matches!(event, CompressionEvent::Step(_)) {
+            break;
+        }
+        after_hold.push(event);
+    }
+    assert!(
+        after_hold.contains(&CompressionEvent::Output)
+            && after_hold.contains(&CompressionEvent::Control),
+        "queued work ran after the next step: {after_hold:?}"
+    );
+    wait_for_text(&client, "QUEUED");
+    wait_for_compressed_pages(&client);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn enabling_compression_compresses_existing_history_without_new_output() {
+    if !huterm_ghostty::COMPRESSION_SUPPORTED {
+        return;
+    }
+    let runtime = compressible(112, 6_000, false);
+    let client = test_client(&runtime);
+    wait_for_text(&client, "FILLED");
+    let (events, _recorded) = mpsc::channel();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::CompressionProbe(CompressionProbe {
+            idle: Duration::from_millis(20),
+            unlimited_batch: false,
+            events,
+            hold: None,
+        }))
+        .unwrap();
+    assert_eq!(memory_usage(&client).primary.compressed_pages, 0);
+    client.set_scrollback_compression(true).unwrap();
+    assert!(wait_for_compressed_pages(&client) > 0);
+    runtime.shutdown().unwrap();
+}
+
 fn command(script: &str) -> TerminalCommand {
     TerminalCommand {
         program: PathBuf::from("/bin/sh"),
@@ -1467,6 +1592,7 @@ fn command(script: &str) -> TerminalCommand {
         },
         presentation: TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        scrollback_compression: false,
     }
 }
 

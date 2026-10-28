@@ -26,6 +26,17 @@ test("success output does not forgive a stuck exit or ignored TERM", async () =>
   expect(() => checkSmokeProcess(result, "fixture")).toThrow("timed out");
 });
 
+test("a stop condition ends the process before its deadline", async () => {
+  const result = await runSmokeProcess(
+    [process.execPath, "-e", 'console.error("working"); setTimeout(() => console.error("finished"), 50); setInterval(() => {}, 10)'],
+    { timeoutMs: 10_000, graceMs: 50, stream: false, stopWhen: stderr => stderr.includes("finished") },
+  );
+  expect(result.stopped).toBe(true);
+  expect(result.timedOut).toBe(false);
+  expect(result.stderr).toContain("finished");
+  expect(result.elapsedMs).toBeLessThan(5_000);
+});
+
 test("smoke process distinguishes a signal from its deadline", async () => {
   const result = await run('process.kill(process.pid, "SIGTERM")');
   expect(result.signalCode).toBe("SIGTERM");

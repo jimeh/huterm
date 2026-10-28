@@ -76,6 +76,7 @@ fn main() {
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        scrollback_compression: false,
     };
     let runtime = TerminalRuntime::spawn(TerminalId::new(1), &command).unwrap();
     let client = Arc::new(
