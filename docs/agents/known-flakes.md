@@ -225,10 +225,16 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Label:**
   `desktop::windows::window_tests::a_replaced_view_receives_output_status_exit_and_clipboard_without_frames`
   in `Checks (Linux aarch64)`, "timed out waiting for the clipboard write".
-- **Occurrences:** three, all on aarch64: on `main` (run 40211388780,
-  2026-10-25), on PR #243 (run 40264983260, head `0ddb1fa4`), and on `main`
-  again (run 40308946971, 2026-10-26). It passed 20 of 20 isolated runs on
-  a macOS host.
+- **Occurrences:** four, all on aarch64: on `main` (run 40211388780,
+  2026-10-25), on PR #243 (run 40264983260, head `0ddb1fa4`), on `main`
+  again (run 40308946971, 2026-10-26), and on PR #294 (run 40633635594,
+  head `fa3fe8f8`, 2026-10-28). It passed 20 of 20 isolated runs on a
+  macOS host.
+- **Triaged state:** the PR #294 run is the first with the triage state
+  below: `epoch=1 revoked=false exited=false title="two"
+  clipboard_writes=0 text_tail="READYout OUTtitle clip CLIPPED"`. That is
+  the case where the terminal parsed the write and it never reached the
+  view, with no second replacement. The next head passed.
 - **Evidence:** the output and title steps before it passed, so the
   replacement viewer was live. It did not reproduce in Docker on arm64:
   700 isolated runs, including 300 pinned to one CPU, and about 100 full
