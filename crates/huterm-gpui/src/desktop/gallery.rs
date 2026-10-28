@@ -6,27 +6,37 @@
 //! fails when a file under `crates/huterm-ui/src/components/` has no
 //! [`entry`] here, so every entry names its component file.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, Entity, FocusHandle, Focusable as _,
-    IntoElement, Render, ScrollHandle, SharedString, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, size,
+    IntoElement, Pixels, Render, ScrollHandle, SharedString, Window,
+    WindowBounds, WindowOptions, canvas, div, prelude::*, px, size,
 };
 use huterm_ui::animation::{AnimationSchedule, Wake};
+use huterm_ui::components::alert::{Alert, Tone as AlertTone};
 use huterm_ui::components::badge::{Tone, badge};
 use huterm_ui::components::button::{Button, Variant};
+use huterm_ui::components::card::Card;
+use huterm_ui::components::collapsible::{Collapsible, chevron};
+use huterm_ui::components::empty::Empty;
+use huterm_ui::components::field::Field;
 use huterm_ui::components::input::{Chrome, Input};
 use huterm_ui::components::input_group::{Addon, InputGroup};
+use huterm_ui::components::item::Item as RowItem;
 use huterm_ui::components::menu::{
     MIN_WIDTH, Menu, MenuEvent, Role as MenuRole,
 };
 use huterm_ui::components::number_field::{Format, NumberField};
 use huterm_ui::components::popover::{Anchor, Popover, place};
+use huterm_ui::components::radio_group::RadioGroup;
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::components::select::Select;
 use huterm_ui::components::slider::Slider;
 use huterm_ui::components::switch::Switch;
+use huterm_ui::components::tabs::{self, Tabs};
 use huterm_ui::components::toggle_group::ToggleGroup;
 use huterm_ui::components::tooltip::Tooltip;
 use huterm_ui::components::{kbd, separator, surface};
@@ -38,6 +48,7 @@ use huterm_ui::tokens::size;
 
 use super::key_hint::KeyHint;
 use super::overlay::{Swatch, tokens};
+use crate::assets::Icon;
 use crate::config::Theme;
 use crate::keymap::Platform;
 
@@ -83,6 +94,15 @@ struct Column {
     fields: Fields,
     /// The slider entry's value, a Quake width.
     slider: f64,
+    /// The scroll area's row that its Reveal button scrolls to, as last
+    /// painted.
+    revealed: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The layout entries' state: the selected tab, the checked density and
+    /// theme, and whether the collapsible is open.
+    section: usize,
+    density: usize,
+    theme: usize,
+    open: bool,
 }
 
 /// The text entry entries' fields, which hold their own editing state.
@@ -175,6 +195,15 @@ struct Controls {
     segments: [FocusHandle; 2],
     chips: [FocusHandle; 3],
     sliders: [FocusHandle; 2],
+    tabs: [FocusHandle; 3],
+    disabled_tabs: [FocusHandle; 2],
+    densities: [FocusHandle; 3],
+    disabled_radios: [FocusHandle; 2],
+    themes: [FocusHandle; 3],
+    /// The field entry's switches.
+    fields: [FocusHandle; 2],
+    /// An enabled collapsible and a disabled one.
+    collapsibles: [FocusHandle; 2],
 }
 
 impl Controls {
@@ -184,9 +213,28 @@ impl Controls {
             segments: std::array::from_fn(|_| cx.focus_handle()),
             chips: std::array::from_fn(|_| cx.focus_handle()),
             sliders: std::array::from_fn(|_| cx.focus_handle()),
+            tabs: std::array::from_fn(|_| cx.focus_handle()),
+            disabled_tabs: std::array::from_fn(|_| cx.focus_handle()),
+            densities: std::array::from_fn(|_| cx.focus_handle()),
+            disabled_radios: std::array::from_fn(|_| cx.focus_handle()),
+            themes: std::array::from_fn(|_| cx.focus_handle()),
+            fields: std::array::from_fn(|_| cx.focus_handle()),
+            collapsibles: std::array::from_fn(|_| cx.focus_handle()),
         }
     }
 }
+
+/// The tab entry's sections, with the count each shows.
+const SECTIONS: [(&str, usize); 3] =
+    [("General", 0), ("Appearance", 2), ("Keybindings", 14)];
+
+/// The radio group entry's theme cards: a name, its background, and its
+/// accent.
+const THEME_CARDS: [(&str, u32, u32); 3] = [
+    ("huterm-dark", 0x001a_1b26, 0x007a_a2f7),
+    ("tokyo-night-day", 0x00e1_e2e7, 0x002e_7de9),
+    ("solarized", 0x0000_2b36, 0x00b5_8900),
+];
 
 /// The select entry's options.
 const SIZES: [&str; 4] = ["Compact", "Comfortable", "Spacious", "Huge"];
@@ -246,6 +294,11 @@ impl Gallery {
                 controls: Controls::new(cx),
                 fields: Fields::new(index, swatch, window, cx),
                 slider: 0.6,
+                revealed: Rc::default(),
+                section: 0,
+                density: 1,
+                theme: 0,
+                open: true,
             }
         };
         Self {
@@ -275,11 +328,12 @@ impl Gallery {
         self.wake.arm(schedule, window, cx);
     }
 
-    fn column(
+    /// A scroll area of rows, and a button that reveals row 15 in it.
+    fn scroll_entry(
         &mut self,
         index: usize,
         cx: &mut Context<'_, Self>,
-    ) -> AnyElement {
+    ) -> Div {
         let view = cx.entity();
         let column = &mut self.columns[index];
         let swatch = column.tokens;
@@ -288,12 +342,71 @@ impl Gallery {
         } else {
             |gallery| &mut gallery.columns[1].scrollbar
         };
+        let revealed = column.revealed.clone();
         let rows = ScrollArea::new(("gallery-scroll", index), &column.scroll)
             .max_height(Some(px(96.0)))
             .children((1..=20).map(|row| {
-                div().px(px(8.0)).h(px(24.0)).child(format!("Row {row}"))
+                let probe = revealed.clone();
+                div()
+                    .relative()
+                    .px(px(8.0))
+                    .h(px(24.0))
+                    .child(format!("Row {row}"))
+                    .when(row == 15, |row| {
+                        row.child(
+                            canvas(
+                                |_, _, _| {},
+                                move |bounds, (), _, _| probe.set(Some(bounds)),
+                            )
+                            .absolute()
+                            .inset_0(),
+                        )
+                    })
             }))
             .render(&mut column.scrollbar, swatch.scrollbar, &view, get, cx);
+        let gallery = cx.entity().downgrade();
+        let reveal =
+            Button::new(("scroll-reveal", index), "Reveal row 15", swatch)
+                .on_click(move |_, cx| {
+                    let _ = gallery.update(cx, |gallery, cx| {
+                        let column = &mut gallery.columns[index];
+                        if let Some(bounds) = column.revealed.get()
+                            && ScrollArea::reveal(&column.scroll, bounds)
+                        {
+                            column.scrollbar.show();
+                            cx.notify();
+                        }
+                    });
+                });
+        entry(
+            "scroll_area",
+            "Scroll area",
+            swatch,
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .w(px(220.0))
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(swatch.line_strong)
+                        .child(rows),
+                )
+                .child(reveal),
+        )
+    }
+
+    fn column(
+        &mut self,
+        index: usize,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let scroll_area = self.scroll_entry(index, cx);
+        let column = &self.columns[index];
+        let swatch = column.tokens;
         div()
             .flex_1()
             .flex()
@@ -307,17 +420,7 @@ impl Gallery {
             .child(badges(index, swatch))
             .child(buttons(index, swatch))
             .child(key_caps(swatch))
-            .child(entry(
-                "scroll_area",
-                "Scroll area",
-                swatch,
-                div()
-                    .w(px(220.0))
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(swatch.line_strong)
-                    .child(rows),
-            ))
+            .child(scroll_area)
             .child(separators(swatch))
             .child(entry(
                 "surface",
@@ -350,7 +453,246 @@ impl Gallery {
                     .child(self.columns[index].fields.number.clone()),
             ))
             .child(self.slider_entry(index, cx))
+            .child(self.tabs_entry(index, cx))
+            .child(self.radio_entry(index, cx))
+            .child(self.columns[index].fields_entry(index))
+            .child(items(index, swatch))
+            .child(cards(index, swatch))
+            .child(self.collapsible_entry(index, cx))
+            .child(alerts(index, swatch))
+            .child(empties(index, swatch))
             .into_any_element()
+    }
+
+    /// Runs `update` on column `index` from a component callback.
+    fn on_column(
+        cx: &Context<'_, Self>,
+        index: usize,
+        update: impl Fn(&mut Column, SharedString) + 'static,
+    ) -> impl Fn(SharedString, &mut Window, &mut App) + 'static {
+        let gallery = cx.entity().downgrade();
+        move |value, _, cx| {
+            let _ = gallery.update(cx, |gallery, cx| {
+                update(&mut gallery.columns[index], value);
+                cx.notify();
+            });
+        }
+    }
+
+    /// Vertical tabs with counts beside their panel, and a disabled
+    /// horizontal list.
+    fn tabs_entry(&mut self, index: usize, cx: &mut Context<'_, Self>) -> Div {
+        let column = &self.columns[index];
+        let swatch = column.tokens;
+        let select = Self::on_column(cx, index, |column, value| {
+            if let Some(found) = SECTIONS
+                .iter()
+                .position(|(name, _)| *name == value.as_ref())
+            {
+                column.section = found;
+            }
+        });
+        let sidebar =
+            SECTIONS.iter().zip(&column.controls.tabs).enumerate().fold(
+                Tabs::new(("tabs", index), "Sections", swatch).vertical(),
+                |list, (at, ((name, count), focus))| {
+                    let selected = at == column.section;
+                    let list = list.tab(*name, *name, selected, focus);
+                    if *count == 0 {
+                        return list;
+                    }
+                    list.trailing(
+                        badge(
+                            SharedString::from(format!(
+                                "tab-count-{name}-{index}"
+                            )),
+                            count.to_string(),
+                            Tone::Neutral,
+                            swatch,
+                        )
+                        .bg(gpui::transparent_black())
+                        .text_color(if selected {
+                            swatch.muted_on(swatch.selection)
+                        } else {
+                            swatch.muted
+                        }),
+                    )
+                },
+            );
+        let (name, _) = SECTIONS[column.section];
+        let [top, bottom] = &column.controls.disabled_tabs;
+        entry(
+            "tabs",
+            "Tabs",
+            swatch,
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(
+                    row()
+                        .items_start()
+                        .child(
+                            div().w(px(160.0)).child(sidebar.on_select(select)),
+                        )
+                        .child(
+                            tabs::panel(("tab-panel", index), name)
+                                .text_color(swatch.muted)
+                                .child(format!("The {name} section")),
+                        ),
+                )
+                .child(
+                    Tabs::new(("tabs-disabled", index), "Position", swatch)
+                        .tab("top", "Top", true, top)
+                        .tab("bottom", "Bottom", false, bottom)
+                        .disabled(Some("The file is invalid".into())),
+                ),
+        )
+    }
+
+    /// A density group of rows, theme cards, and a disabled group.
+    fn radio_entry(&mut self, index: usize, cx: &mut Context<'_, Self>) -> Div {
+        let column = &self.columns[index];
+        let swatch = column.tokens;
+        let density = Self::on_column(cx, index, |column, value| {
+            if let Some(found) =
+                SIZES.iter().position(|size| *size == value.as_ref())
+            {
+                column.density = found;
+            }
+        });
+        let theme = Self::on_column(cx, index, |column, value| {
+            if let Some(found) = THEME_CARDS
+                .iter()
+                .position(|(name, _, _)| *name == value.as_ref())
+            {
+                column.theme = found;
+            }
+        });
+        let rows = SIZES
+            .iter()
+            .zip(&column.controls.densities)
+            .enumerate()
+            .fold(
+                RadioGroup::new(("radios", index), "Density", swatch),
+                |group, (at, (size, focus))| {
+                    group.option(*size, *size, at == column.density, focus)
+                },
+            )
+            .on_select(density);
+        let cards = THEME_CARDS
+            .iter()
+            .zip(&column.controls.themes)
+            .enumerate()
+            .fold(
+                RadioGroup::new(("radio-cards", index), "Theme", swatch)
+                    .card(px(116.0)),
+                |group, (at, ((name, background, accent), focus))| {
+                    group
+                        .option(*name, *name, at == column.theme, focus)
+                        .content(
+                            div()
+                                .h(px(40.0))
+                                .rounded(px(4.0))
+                                .p(px(6.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .bg(gpui::rgb(*background))
+                                .child(
+                                    div()
+                                        .w(px(50.0))
+                                        .h(px(4.0))
+                                        .rounded_full()
+                                        .bg(gpui::rgb(*accent)),
+                                ),
+                        )
+                },
+            )
+            .on_select(theme);
+        let [on, off] = &column.controls.disabled_radios;
+        let disabled =
+            RadioGroup::new(("radios-disabled", index), "Cursor", swatch)
+                .option("block", "Block", true, on)
+                .option("bar", "Bar", false, off)
+                .disabled(Some("The file is invalid".into()));
+        entry(
+            "radio_group",
+            "Radio group",
+            swatch,
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(div().w(px(220.0)).child(rows))
+                .child(cards)
+                .child(div().w(px(220.0)).child(disabled)),
+        )
+    }
+
+    /// An enabled collapsible, open with its rows, and a disabled one, in a
+    /// card.
+    fn collapsible_entry(
+        &mut self,
+        index: usize,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
+        let gallery = cx.entity().downgrade();
+        let column = &self.columns[index];
+        let swatch = column.tokens;
+        let [enabled, disabled] = &column.controls.collapsibles;
+        let open = column.open;
+        let path = Icon::ChevronRight.asset_path();
+        let glyphs = KeyHint::parse("cmd-c", Platform::current()).glyphs();
+        let copy = Collapsible::new(
+            ("collapsible", index),
+            "Copy",
+            open,
+            enabled,
+            swatch,
+        )
+        .trigger(
+            RowItem::new(("collapsible-copy", index), "Copy", swatch)
+                .description("Copy the selection to the clipboard")
+                .media(chevron(path, open, swatch))
+                .action(kbd::cap(&glyphs, swatch)),
+        )
+        .on_toggle(move |next, _, cx| {
+            let _ = gallery.update(cx, |gallery, cx| {
+                gallery.columns[index].open = next;
+                cx.notify();
+            });
+        })
+        .child(
+            div()
+                .pl(px(36.0))
+                .pr(px(14.0))
+                .py(px(8.0))
+                .text_color(swatch.muted)
+                .child("Shortcuts for Copy"),
+        );
+        let paste = Collapsible::new(
+            ("collapsible-disabled", index),
+            "Paste",
+            false,
+            disabled,
+            swatch,
+        )
+        .trigger(
+            RowItem::new(("collapsible-paste", index), "Paste", swatch)
+                .media(chevron(path, false, swatch)),
+        )
+        .disabled(Some("The file is invalid".into()));
+        entry(
+            "collapsible",
+            "Collapsible",
+            swatch,
+            div().w(px(320.0)).child(
+                Card::new(("collapsible-card", index), swatch)
+                    .child(copy)
+                    .child(paste),
+            ),
+        )
     }
 
     /// A button that opens a modal popover; an outside press closes it.
@@ -591,6 +933,179 @@ impl Gallery {
         }
         overlays
     }
+}
+
+impl Column {
+    /// A card of fields: one set in the file, with a description and a
+    /// Reset action, and one with an error.
+    fn fields_entry(&self, index: usize) -> Div {
+        let swatch = self.tokens;
+        let [copy, blink] = &self.controls.fields;
+        let dot = div()
+            .flex_none()
+            .size(px(6.0))
+            .rounded_full()
+            .bg(swatch.accent);
+        entry(
+            "field",
+            "Field",
+            swatch,
+            div().w(px(380.0)).child(
+                Card::new(("field-card", index), swatch)
+                    .child(
+                        Field::new(
+                            ("field-copy", index),
+                            "Copy on select",
+                            swatch,
+                        )
+                        .before_label(dot)
+                        .after_label(badge(
+                            ("field-advanced", index),
+                            "Advanced",
+                            Tone::Neutral,
+                            swatch,
+                        ))
+                        .description("Copies a selection as you make it.")
+                        .action(
+                            Button::new(
+                                ("field-reset", index),
+                                "Reset",
+                                swatch,
+                            )
+                            .variant(Variant::Ghost),
+                        )
+                        .control(Switch::new(
+                            ("field-switch", index),
+                            "Copy on select",
+                            true,
+                            copy,
+                            swatch,
+                        )),
+                    )
+                    .child(
+                        Field::new(("field-blink", index), "Blink", swatch)
+                            .description("The cursor blinks while focused.")
+                            .error(Some("Expected true or false.".into()))
+                            .control(Switch::new(
+                                ("field-invalid", index),
+                                "Blink",
+                                false,
+                                blink,
+                                swatch,
+                            )),
+                    ),
+            ),
+        )
+    }
+}
+
+/// Keybinding rows: one with a tag and key caps, one with a reset button.
+fn items(index: usize, swatch: Swatch) -> Div {
+    let glyphs = KeyHint::parse("cmd-shift-p", Platform::current()).glyphs();
+    entry(
+        "item",
+        "Item",
+        swatch,
+        div().w(px(380.0)).flex().flex_col().gap(px(8.0)).child(
+            RowItem::new(("item-palette", index), "Command Palette", swatch)
+                .description("Search every command by name")
+                .after_title(badge(
+                    ("item-default", index),
+                    "Default",
+                    Tone::Neutral,
+                    swatch,
+                ))
+                .action(kbd::cap(&glyphs, swatch)),
+        ),
+    )
+}
+
+/// A titled card of two rows.
+fn cards(index: usize, swatch: Swatch) -> Div {
+    let line = |text: &'static str| div().px(px(14.0)).py(px(10.0)).child(text);
+    entry(
+        "card",
+        "Card",
+        swatch,
+        div().w(px(320.0)).child(
+            Card::new(("card", index), swatch)
+                .title("WINDOW")
+                .child(line("First row"))
+                .child(line("Second row")),
+        ),
+    )
+}
+
+/// One alert of each tone; the danger one carries an error and an action.
+fn alerts(index: usize, swatch: Swatch) -> Div {
+    entry(
+        "alert",
+        "Alert",
+        swatch,
+        div()
+            .w(px(380.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(
+                Alert::new(
+                    ("alert-neutral", index),
+                    "Settings changed",
+                    swatch,
+                )
+                .description("Some changes apply to new windows only."),
+            )
+            .child(
+                Alert::new(
+                    ("alert-warning", index),
+                    "The file changed",
+                    swatch,
+                )
+                .tone(AlertTone::Warning)
+                .description("Choose your edit or the file's value."),
+            )
+            .child(
+                Alert::new(
+                    ("alert-danger", index),
+                    "config.toml has an error",
+                    swatch,
+                )
+                .tone(AlertTone::Danger)
+                .description(
+                    "Huterm keeps running with the last valid settings.",
+                )
+                .child(
+                    Button::new(
+                        ("alert-open", index),
+                        "Open config.toml",
+                        swatch,
+                    )
+                    .variant(Variant::Primary),
+                ),
+            ),
+    )
+}
+
+/// An empty card with an action.
+fn empties(index: usize, swatch: Swatch) -> Div {
+    entry(
+        "empty",
+        "Empty",
+        swatch,
+        div().w(px(320.0)).child(
+            Card::new(("empty-card", index), swatch).child(
+                Empty::new(("empty", index), "No global shortcuts", swatch)
+                    .description(
+                        "A global shortcut shows or hides a quake window.",
+                    )
+                    .child(Button::new(
+                        ("empty-add", index),
+                        "Add shortcut",
+                        swatch,
+                    )),
+            ),
+        ),
+    )
 }
 
 fn badges(index: usize, swatch: Swatch) -> Div {

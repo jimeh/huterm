@@ -9,10 +9,10 @@
 //! Primitives sit at the crate root: [`tokens`], [`focus`] visibility, the
 //! [`a11y`] state helper, the [`animation`] schedule, the [`scrollbar`]
 //! geometry with its [`list_scrollbar`] overlay, the [`steps`] grid that
-//! number fields and sliders move along, and the UTF-16 [`text`] ranges
-//! that native text input speaks. One file per component lives
-//! under [`components`], and each has an entry in `huterm-gpui`'s component
-//! gallery.
+//! number fields and sliders move along, [`roving`] focus for tabs and
+//! radio groups, and the UTF-16 [`text`] ranges that native text input
+//! speaks. One file per component lives under [`components`], and each has
+//! an entry in `huterm-gpui`'s component gallery.
 //!
 //! [`docs/plans/ui-components.md`]: https://github.com/jimeh/huterm/blob/main/docs/plans/ui-components.md
 
@@ -26,6 +26,7 @@ pub mod components;
 pub mod focus;
 pub mod list_scrollbar;
 pub mod listbox;
+pub mod roving;
 pub mod scrollbar;
 pub mod steps;
 pub mod text;

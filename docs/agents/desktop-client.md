@@ -691,7 +691,21 @@ removes the key.
 GPUI sends that implicit click only to the focused element: a test of the
 filter must focus the element that holds the listener, or it passes without it.
 A composite such as a single-choice `ToggleGroup` keeps focus on its container,
-so its items never receive the implicit click.
+so its items never receive the implicit click. GPUI clicks only on the key-up
+that follows the same key's key-down with focus unchanged, so a test of the
+filter sends both, for a key nothing binds there.
+
+`Tabs` and `RadioGroup` are roving groups instead: each item takes its own
+focus handle and draws its own ring, and only one item is a tab stop
+(`huterm_ui::roving::stop`). The owner routes its move commands through
+`roving::move_focus`, which focuses the target and returns its index, and
+selects that item, since both components activate on focus. A new
+`FocusHandle` is not a tab stop until it says so, so a test's plain
+focusable stand-in needs `tab_stop(true)` for `Window::focus_next` to reach
+it. `ScrollArea::reveal` takes bounds the owner recorded during paint, such
+as through a `canvas` probe in the focused row, because GPUI has no query for
+an element's bounds by focus handle; it only sets the offset, so the owner
+redraws when it returns true.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with
