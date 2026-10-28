@@ -18,9 +18,17 @@
 //! it and stops there: nothing under it takes focus or input, and a press
 //! on the trigger closes instead of reopening. Releases are never stopped,
 //! so a gesture that began before the popover opened still ends. A
-//! non-modal popover closes on an outside press and lets the press proceed.
-//! Escape, Tab, a pick, focus leaving, and window deactivation are the
-//! owner's to route; it calls [`Popover::close`] and moves focus.
+//! non-modal popover closes on an outside press and lets the press proceed,
+//! and on a wheel that moves outside its content, which still scrolls what
+//! it is over (a trackpad touch that has not moved yet leaves it open),
+//! as a browser's datalist and `NSComboBox`'s list do; a modal popover's
+//! backdrop takes those wheels. Escape, Tab, a pick, focus leaving, and
+//! window deactivation are the owner's to route; it calls
+//! [`Popover::close`] and moves focus.
+//!
+//! Placement: an open popover's trigger probe asks for another frame when
+//! the trigger paints somewhere new, as after a resize, so an owner that
+//! places the content from [`Popover::trigger_bounds`] follows it.
 //!
 //! Accessibility: the popover reports no node of its own; its content does,
 //! such as a menu or a listbox.
@@ -30,8 +38,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, IntoElement, MouseDownEvent,
-    Pixels, Point, Size, Window, anchored, canvas, deferred, div, point,
-    prelude::*, px,
+    Pixels, Point, ScrollDelta, ScrollWheelEvent, Size, Window, anchored,
+    canvas, deferred, div, point, prelude::*, px,
 };
 
 use crate::focus;
@@ -47,6 +55,8 @@ pub enum Dismissal {
     Pick,
     /// A press outside the content and the trigger.
     OutsidePress,
+    /// A wheel outside a non-modal popover's content.
+    OutsideWheel,
     /// A press on the trigger, which toggles the popover closed.
     TriggerPress,
     /// Focus left the popover and its trigger.
@@ -125,8 +135,9 @@ impl Popover {
         self.state.borrow().content
     }
 
-    /// An element that records the trigger's bounds as it paints. Mount it
-    /// inside the trigger, which must be relatively positioned. When
+    /// An element that records the trigger's bounds as it paints, and
+    /// asks for another frame when an open popover's trigger moved. Mount
+    /// it inside the trigger, which must be relatively positioned. When
     /// several triggers share one popover, mount it only in the open one:
     /// the last to paint is the trigger the guard knows.
     #[must_use]
@@ -134,8 +145,13 @@ impl Popover {
         let state = self.state.clone();
         canvas(
             |_, _, _| {},
-            move |bounds, (), _, _| {
-                state.borrow_mut().trigger = Some(bounds);
+            move |bounds, (), window, _| {
+                let mut state = state.borrow_mut();
+                let moved = state.trigger.replace(bounds) != Some(bounds);
+                // A refresh is ignored while drawing, so it waits a frame.
+                if moved && state.anchor.is_some() {
+                    window.on_next_frame(|window, _| window.refresh());
+                }
             },
         )
         .absolute()
@@ -183,9 +199,9 @@ impl Popover {
         )
     }
 
-    /// The capture-phase press guard. Mount it in the owner's root view on
-    /// every frame, open or not; `on_dismiss` receives the press's reason,
-    /// and the owner closes the popover and moves focus.
+    /// The capture-phase press and wheel guard. Mount it in the owner's
+    /// root view on every frame, open or not; `on_dismiss` receives the
+    /// reason, and the owner closes the popover and moves focus.
     #[must_use]
     pub fn guard<F>(&self, on_dismiss: F) -> impl IntoElement + use<F>
     where
@@ -196,6 +212,8 @@ impl Popover {
         canvas(
             |_, _, _| {},
             move |_, (), window, _| {
+                let (wheel_state, wheel_dismiss) =
+                    (state.clone(), on_dismiss.clone());
                 let state = state.clone();
                 let on_dismiss = on_dismiss.clone();
                 window.on_mouse_event(
@@ -216,6 +234,25 @@ impl Popover {
                             window.prevent_default();
                         }
                         on_dismiss(reason, window, cx);
+                    },
+                );
+                window.on_mouse_event(
+                    move |event: &ScrollWheelEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Capture {
+                            return;
+                        }
+                        let outside = {
+                            let state = wheel_state.borrow();
+                            moves(event.delta)
+                                && state.anchor.is_some()
+                                && !state.modal
+                                && !state.content.is_some_and(|content| {
+                                    content.contains(&event.position)
+                                })
+                        };
+                        if outside {
+                            wheel_dismiss(Dismissal::OutsideWheel, window, cx);
+                        }
                     },
                 );
             },
@@ -274,6 +311,15 @@ pub struct Placement {
 pub const MARGIN: Pixels = px(6.0);
 /// Gap between a button anchor and its menu.
 const ANCHOR_GAP: Pixels = px(4.0);
+
+/// Whether a wheel event scrolls anything: a trackpad reports a touch that
+/// has not moved yet, and the end of a gesture, with no delta.
+fn moves(delta: ScrollDelta) -> bool {
+    match delta {
+        ScrollDelta::Pixels(delta) => delta != Point::default(),
+        ScrollDelta::Lines(delta) => delta.x != 0.0 || delta.y != 0.0,
+    }
+}
 
 /// Places content of `menu` size in a window of `window` size. Trigger
 /// anchors open below, or above from the lower half, and right-align from
@@ -477,8 +523,9 @@ mod guard_tests {
     use std::rc::Rc;
 
     use gpui::{
-        Context, IntoElement, Modifiers, MouseButton, Render, TestAppContext,
-        VisualTestContext, Window, div, point, prelude::*, px,
+        Context, IntoElement, Modifiers, MouseButton, Render, ScrollDelta,
+        ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext,
+        Window, div, point, prelude::*, px,
     };
 
     use super::{Anchor, Placement, Popover};
@@ -610,6 +657,21 @@ mod guard_tests {
         click(cx, 50.0, 220.0);
         assert_eq!(taken(&log), ["dismissed:OutsidePress"]);
         assert!(!owner.read_with(cx, |owner, _| owner.popover.is_open()));
+    }
+
+    #[gpui::test]
+    fn a_wheel_outside_a_modal_popover_leaves_it_open(cx: &mut TestAppContext) {
+        let (owner, log, cx) = owner(cx);
+        open_and_draw(&owner, cx);
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(50.0), px(220.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-30.0))),
+            modifiers: Modifiers::none(),
+            touch_phase: TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+        assert_eq!(taken(&log), Vec::<String>::new());
+        assert!(owner.read_with(cx, |owner, _| owner.popover.is_open()));
     }
 
     #[gpui::test]

@@ -8,7 +8,9 @@
 //!
 //! Primitives sit at the crate root: [`tokens`], [`focus`] visibility, the
 //! [`a11y`] state helper, the [`animation`] schedule, the [`scrollbar`]
-//! geometry with its [`list_scrollbar`] overlay, the [`steps`] grid that
+//! geometry with its [`list_scrollbar`] overlay, the [`listbox`] model
+//! behind menus, the [`option_list`] behind suggestions and command lists,
+//! the [`steps`] grid that
 //! number fields and sliders move along, [`roving`] focus for tabs and
 //! radio groups, and the UTF-16 [`text`] ranges that native text input
 //! speaks. One file per component lives under [`components`], and each has
@@ -26,6 +28,7 @@ pub mod components;
 pub mod focus;
 pub mod list_scrollbar;
 pub mod listbox;
+pub mod option_list;
 pub mod roving;
 pub mod scrollbar;
 pub mod steps;

@@ -1,7 +1,7 @@
 # UI components
 
-Status: in progress. Step 1 (the foundation), the components of steps 2, 3,
-4, 6, and 7, and migrations 2a (Settings selects), 2b (terminal-window menus),
+Status: in progress. Step 1 (the foundation), the components of steps 2
+through 7, and migrations 2a (Settings selects), 2b (terminal-window menus),
 3a (Settings buttons, links, switches, segmented controls, tri-states,
 modifier chips, tags, and counts), 3b (terminal-window buttons and
 tooltips), 4a (Settings text, search, and number fields, units, the
@@ -33,6 +33,15 @@ on sliders alone (`settings_page_up`, `settings_page_down`,
 field pages through `palette_page_up` and `palette_page_down` and keeps Home
 and End for its text), and keybinding argument fields stay `Input`s with
 their own clamped stepping.
+Step 5's `Combobox` runs its owner's filter on every edit the user
+makes, which `Input`'s new `Edited` event tells from the owner's writes,
+so typing opens and refilters the list and putting back a value does not;
+`Command` takes the items its owner filters and ranks, because the
+palette and Licenses search differently, and its `HighlightFallback::Clear`
+lets the palette's identity pickers lose a highlight whose item vanished
+rather than move it. Both draw `option_list`'s rows,
+and both report their field as an `EditableComboBox` (see Accessibility);
+migrations 5a and 5b remain.
 Approved on 2026-10-27 after four Codex and Claude review rounds, then
 revised for a separate crate, the terminal window's adoption, and
 normalization against shadcn/ui, which three more review rounds checked.
@@ -601,7 +610,7 @@ helper in `huterm-ui`'s `a11y.rs`. Every row below also exposes disabled.
 | ToggleGroup, single; RadioGroup | `RadioGroup` with `RadioButton` items | `aria_toggled` per item (AccessKit's macOS and Linux adapters read radio state from `toggled`, not `selected`), position and size in set | Click per item |
 | Select trigger | `ComboBox` (select-only) | value label, `aria_expanded` | Click |
 | Listbox, Menu, Command list | `ListBox` and `ListBoxOption`; `Menu` and `MenuItem` | `aria_selected`, `aria_active_descendant`, size in set | Click per row |
-| Combobox | `TextInput` on the field | value, `aria_expanded`; the highlighted suggestion as the field's description | Focus |
+| Combobox, Command search | `EditableComboBox` on the field (planned as `TextInput`; step 5 took AccessKit's editable combobox role, which its consumer still treats as a text input) | value, `aria_expanded`; the highlighted suggestion as the field's description | Focus |
 | Input | `TextInput` | value, placeholder, read-only and invalid through the helper | Focus |
 | NumberField | `SpinButton` | numeric value, min, max, step | Increment, Decrement through `on_a11y_action` |
 | Slider | `Slider` | numeric value, min, max, step, the readout as its value text | Increment, Decrement through `on_a11y_action` |
@@ -617,7 +626,10 @@ Open risks, to settle in the foundation PR:
 - GPUI honors an active descendant only under the focused node, and a
   combobox's list renders deferred, outside the field. VoiceOver may not
   announce the highlighted suggestion; the description fallback above is the
-  plan, and a gap is accepted if it does not announce.
+  plan, and a gap is accepted if it does not announce. Step 5 found the same
+  for `Command`: its list is the field's sibling, so its rows' active
+  descendant claims are never honored, and the field's description carries
+  the highlight there too.
 - GPUI exposes no caret or selection ranges, so VoiceOver can read a field's
   value but may not move by character.
 - Footer status ("Saved") needs a live region, which only the raw-node helper

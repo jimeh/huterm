@@ -22,6 +22,8 @@ use huterm_ui::components::badge::{Tone, badge};
 use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::card::{self, Card};
 use huterm_ui::components::collapsible::{Collapsible, chevron};
+use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
+use huterm_ui::components::command::{Command, CommandEvent};
 use huterm_ui::components::dialog::{self, Dialog, Modal};
 use huterm_ui::components::empty::Empty;
 use huterm_ui::components::field::Field;
@@ -45,6 +47,7 @@ use huterm_ui::components::{kbd, separator, surface};
 use huterm_ui::focus;
 use huterm_ui::list_scrollbar::ListScrollbar;
 use huterm_ui::listbox::{Button as MenuButton, Item, Model, Row};
+use huterm_ui::option_list::ListOption;
 use huterm_ui::steps::Steps;
 use huterm_ui::tokens::size;
 
@@ -57,8 +60,11 @@ use crate::keymap::Platform;
 /// The light theme shown beside the built-in dark one.
 const LIGHT_THEME: &str = "tokyo-night-day";
 
-/// The rename field's key context, which Huterm's text fields carry.
+/// The text fields' key context, which Huterm's text fields carry.
 const FIELD_CONTEXT: &str = "Palette";
+
+/// The combobox and command entries' list keys, inside [`FIELD_CONTEXT`].
+const LIST_CONTEXT: &str = "GalleryList";
 
 gpui::actions!(
     gallery,
@@ -72,17 +78,25 @@ gpui::actions!(
         TextStart,
         TextEnd,
         TextDeleteBackward,
-        TextDeleteForward
+        TextDeleteForward,
+        ListNext,
+        ListPrevious,
+        ListPageDown,
+        ListPageUp,
+        ListConfirm,
+        ListClose
     ]
 );
 
 /// The gallery's own bindings, since it loads no keymap: the dialogs' keys
-/// as Huterm's defaults bind them under the dialog's context, and text
-/// editing under the rename field's. The field binds no Tab, Shift-Tab,
-/// Enter, or Escape of its own, so those reach the dialog's bindings.
+/// as Huterm's defaults bind them under the dialog's context, text editing
+/// under the fields', and the combobox and command lists' moves under
+/// theirs. The rename field binds no Tab, Shift-Tab, Enter, or Escape of
+/// its own, so those reach the dialog's bindings.
 fn bind_keys(cx: &mut App) {
     let dialog = Some(dialog::KEY_CONTEXT);
     let field = Some(FIELD_CONTEXT);
+    let list = Some(LIST_CONTEXT);
     cx.bind_keys([
         KeyBinding::new("tab", DialogNext, dialog),
         KeyBinding::new("right", DialogNext, dialog),
@@ -96,6 +110,12 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("end", TextEnd, field),
         KeyBinding::new("backspace", TextDeleteBackward, field),
         KeyBinding::new("delete", TextDeleteForward, field),
+        KeyBinding::new("down", ListNext, list),
+        KeyBinding::new("up", ListPrevious, list),
+        KeyBinding::new("pagedown", ListPageDown, list),
+        KeyBinding::new("pageup", ListPageUp, list),
+        KeyBinding::new("enter", ListConfirm, list),
+        KeyBinding::new("escape", ListClose, list),
     ]);
 }
 
@@ -137,6 +157,7 @@ struct Column {
     select_menu: Option<Entity<Menu>>,
     controls: Controls,
     fields: Fields,
+    lists: Lists,
     dialogs: Dialogs,
     /// The slider entry's value, a Quake width.
     slider: f64,
@@ -288,6 +309,189 @@ impl Fields {
     }
 }
 
+/// Font families for the combobox and command entries, with their
+/// foundries.
+const FONTS: [(&str, &str); 16] = [
+    ("Berkeley Mono", "U.S. Graphics"),
+    ("Cascadia Code", "Microsoft"),
+    ("Comic Mono", "dtinth"),
+    ("Fira Code", "Mozilla"),
+    ("Fira Mono", "Mozilla"),
+    ("Hack", "Source Foundry"),
+    ("IBM Plex Mono", "IBM"),
+    ("Inconsolata", "Raph Levien"),
+    ("Iosevka", "Belleve Invis"),
+    ("JetBrains Mono", "JetBrains"),
+    ("Menlo", "Apple"),
+    ("Monaco", "Apple"),
+    ("Mononoki", "Matthias Tellen"),
+    ("SF Mono", "Apple"),
+    ("Source Code Pro", "Adobe"),
+    ("Victor Mono", "Rune Bjørnerås"),
+];
+
+/// The families containing `text`, ignoring case, with their foundries
+/// under them when `described`.
+fn fonts_matching(text: &str, described: bool) -> Vec<ListOption> {
+    let text = text.to_lowercase();
+    FONTS
+        .iter()
+        .filter(|(name, _)| name.to_lowercase().contains(&text))
+        .map(|(name, foundry)| {
+            let option = ListOption::new(*name, *name);
+            if described {
+                option.description(*foundry)
+            } else {
+                option
+            }
+        })
+        .collect()
+}
+
+/// The search and suggestion entries: a font family combobox, a disabled
+/// one, and a command list of families under its search.
+struct Lists {
+    font: Entity<Input>,
+    combobox: Entity<Combobox>,
+    locked: Entity<Input>,
+    locked_combobox: Entity<Combobox>,
+    search: Entity<Input>,
+    command: Entity<Command>,
+    /// The command list's last pick.
+    picked: Option<SharedString>,
+}
+
+impl Lists {
+    fn new(
+        index: usize,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Gallery>,
+    ) -> Self {
+        let field = |id: &str, label: &'static str, cx: &mut App| {
+            let id = SharedString::from(format!("{id}-{index}"));
+            cx.new(|cx| Input::new(id, label, swatch, cx))
+        };
+        let font = field("combobox-field", "Font family", cx);
+        font.update(cx, |input, _| input.set_placeholder("Menlo"));
+        let locked = field("combobox-locked", "Bold font family", cx);
+        locked.update(cx, |input, cx| {
+            input.set_text("Menlo", cx);
+            input.set_disabled(true, Some("Set by the profile".into()), cx);
+        });
+        let mut combobox =
+            |id: &str, input: &Entity<Input>, cx: &mut Context<'_, Gallery>| {
+                let id = SharedString::from(format!("{id}-{index}"));
+                let combobox = cx.new(|cx| {
+                    Combobox::new(
+                        id,
+                        "Installed fonts",
+                        input,
+                        swatch,
+                        |input| fonts_matching(input.text(), false),
+                        window,
+                        cx,
+                    )
+                });
+                // A pick writes the family into the field.
+                let field = input.downgrade();
+                cx.subscribe(&combobox, move |_, combobox, event, cx| {
+                    let ComboboxEvent::Picked(id) = event;
+                    let label = combobox
+                        .read(cx)
+                        .options()
+                        .iter()
+                        .find(|option| &option.id == id)
+                        .map(|option| option.label.clone());
+                    if let Some(label) = label {
+                        let _ = field.update(cx, |input, cx| {
+                            input.set_text(label.to_string(), cx);
+                        });
+                    }
+                })
+                .detach();
+                combobox
+            };
+        let (combobox, locked_combobox) = (
+            combobox("combobox", &font, cx),
+            combobox("combobox-locked-list", &locked, cx),
+        );
+        let search = field("command-search", "Search fonts", cx);
+        search.update(cx, |input, _| input.set_placeholder("Search fonts"));
+        let command = cx.new(|cx| {
+            let mut command = Command::new(
+                SharedString::from(format!("command-{index}")),
+                "Fonts",
+                &search,
+                swatch,
+                cx,
+            );
+            command.set_max_height(Some(px(140.0)), cx);
+            command.set_options(fonts_matching("", true), cx);
+            command
+        });
+        cx.subscribe(&search, move |gallery, search, _: &Changed, cx| {
+            let query = search.read(cx).text().to_owned();
+            let options = fonts_matching(&query, true);
+            gallery.columns[index]
+                .lists
+                .command
+                .update(cx, |command, cx| {
+                    command.set_empty(format!("No fonts match “{query}”"), cx);
+                    command.set_options(options, cx);
+                });
+        })
+        .detach();
+        cx.subscribe(&command, move |gallery, _, event, cx| {
+            if let CommandEvent::Picked(id) = event {
+                gallery.columns[index].lists.picked = Some(id.clone());
+                cx.notify();
+            }
+        })
+        .detach();
+        Self {
+            font,
+            combobox,
+            locked,
+            locked_combobox,
+            search,
+            command,
+            picked: None,
+        }
+    }
+
+    /// The field among these that has focus, and its list.
+    fn focused(&self, window: &Window, cx: &App) -> Option<FocusedList> {
+        let focused = |input: &Entity<Input>| {
+            input.read(cx).focus_handle(cx).is_focused(window)
+        };
+        if focused(&self.font) {
+            Some(FocusedList::Combobox(self.combobox.clone()))
+        } else if focused(&self.search) {
+            Some(FocusedList::Command(self.command.clone()))
+        } else {
+            None
+        }
+    }
+}
+
+/// The list a focused field drives.
+enum FocusedList {
+    Combobox(Entity<Combobox>),
+    Command(Entity<Command>),
+}
+
+/// A list key, as the gallery binds it under [`LIST_CONTEXT`].
+#[derive(Clone, Copy)]
+enum ListKey {
+    Next,
+    Previous,
+    PageDown,
+    PageUp,
+    Confirm,
+    Close,
+}
+
 /// The handles the column's focusable controls take focus through.
 struct Controls {
     switches: [FocusHandle; 3],
@@ -392,6 +596,7 @@ impl Gallery {
                 select_menu: None,
                 controls: Controls::new(cx),
                 fields: Fields::new(index, swatch, window, cx),
+                lists: Lists::new(index, swatch, window, cx),
                 dialogs: Dialogs::new(index, swatch, cx),
                 slider: 0.6,
                 revealed: Rc::default(),
@@ -433,6 +638,15 @@ impl Gallery {
                 menu.update(cx, |menu, cx| menu.advance(now, cx));
                 schedule = schedule.merge(menu.read(cx).schedule(now));
             }
+            let lists = &column.lists;
+            for combobox in [&lists.combobox, &lists.locked_combobox] {
+                combobox.update(cx, |combobox, cx| combobox.advance(now, cx));
+                schedule = schedule.merge(combobox.read(cx).schedule(now));
+            }
+            lists
+                .command
+                .update(cx, |command, cx| command.advance(now, cx));
+            schedule = schedule.merge(lists.command.read(cx).schedule(now));
         }
         self.wake.arm(schedule, window, cx);
     }
@@ -558,6 +772,8 @@ impl Gallery {
             .child(self.select_entry(index, cx))
             .child(inputs(swatch, &self.columns[index].fields))
             .child(input_groups(index, swatch, &self.columns[index].fields))
+            .child(comboboxes(swatch, &self.columns[index].lists))
+            .child(command(swatch, &self.columns[index].lists))
             .child(entry(
                 "number_field",
                 "Number field",
@@ -988,14 +1204,67 @@ impl Gallery {
     }
 
     /// Applies a text-editing command to the open rename dialog's field,
-    /// the only field that carries [`FIELD_CONTEXT`].
+    /// or else to the focused combobox or command field, which carry
+    /// [`FIELD_CONTEXT`] too.
     fn edit_field(
         &mut self,
+        window: &Window,
         cx: &mut Context<'_, Self>,
         edit: impl FnOnce(&mut Input, &mut Context<'_, Input>),
     ) {
         if let Some((index, _)) = self.open_dialog() {
             self.columns[index].dialogs.field.update(cx, edit);
+            return;
+        }
+        let focused = self.columns.iter().find_map(|column| {
+            let lists = &column.lists;
+            [&lists.font, &lists.search]
+                .into_iter()
+                .find(|input| input.focus_handle(cx).is_focused(window))
+                .cloned()
+        });
+        if let Some(input) = focused {
+            input.update(cx, edit);
+        }
+    }
+
+    /// Routes a list key to the list the focused field drives.
+    fn list_key(
+        &mut self,
+        key: ListKey,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let focused = self
+            .columns
+            .iter()
+            .find_map(|column| column.lists.focused(window, cx));
+        match focused {
+            Some(FocusedList::Combobox(combobox)) => {
+                combobox.update(cx, |combobox, cx| {
+                    let _ = match key {
+                        ListKey::Next => combobox.select_next(cx),
+                        ListKey::Previous => combobox.select_previous(cx),
+                        ListKey::PageDown => combobox.select_page_down(cx),
+                        ListKey::PageUp => combobox.select_page_up(cx),
+                        ListKey::Confirm => combobox.confirm(cx),
+                        ListKey::Close => combobox.close(cx),
+                    };
+                });
+            }
+            Some(FocusedList::Command(command)) => {
+                command.update(cx, |command, cx| match key {
+                    ListKey::Next => command.select_next(cx),
+                    ListKey::Previous => command.select_previous(cx),
+                    ListKey::PageDown => command.select_page_down(cx),
+                    ListKey::PageUp => command.select_page_up(cx),
+                    ListKey::Confirm => {
+                        let _ = command.confirm(cx);
+                    }
+                    ListKey::Close => {}
+                });
+            }
+            None => {}
         }
     }
 
@@ -1773,6 +2042,71 @@ fn input_groups(index: usize, swatch: Swatch, fields: &Fields) -> Div {
     )
 }
 
+/// A font family combobox, and a disabled one; each wrapper is relative,
+/// so its combobox measures the field.
+fn comboboxes(swatch: Swatch, lists: &Lists) -> Div {
+    let field = |input: &Entity<Input>, combobox: &Entity<Combobox>| {
+        div()
+            .relative()
+            .child(input.clone())
+            .child(combobox.clone())
+    };
+    entry(
+        "combobox",
+        "Combobox",
+        swatch,
+        div().key_context(FIELD_CONTEXT).child(
+            div()
+                .key_context(LIST_CONTEXT)
+                .w(px(220.0))
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(field(&lists.font, &lists.combobox))
+                .child(field(&lists.locked, &lists.locked_combobox)),
+        ),
+    )
+}
+
+/// A command list of font families under its search, and its last pick.
+fn command(swatch: Swatch, lists: &Lists) -> Div {
+    let picked = lists.picked.as_ref().map_or_else(
+        || "Nothing picked".to_owned(),
+        |id| format!("Picked {id}"),
+    );
+    entry(
+        "command",
+        "Command",
+        swatch,
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(
+                div().key_context(FIELD_CONTEXT).child(
+                    div()
+                        .key_context(LIST_CONTEXT)
+                        .w(px(220.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .p(px(4.0))
+                        .rounded(px(size::PANEL_RADIUS))
+                        .border_1()
+                        .border_color(swatch.line_strong)
+                        .child(lists.search.clone())
+                        .child(lists.command.clone()),
+                ),
+            )
+            .child(
+                div()
+                    .text_size(size::TEXT_SMALL)
+                    .text_color(swatch.muted)
+                    .child(picked),
+            ),
+    )
+}
+
 fn tooltips(index: usize, swatch: Swatch, cx: &mut App) -> Div {
     entry(
         "tooltip",
@@ -1858,25 +2192,53 @@ impl Render for Gallery {
             .on_action(cx.listener(|gallery, _: &DialogCancel, window, cx| {
                 gallery.cancel_dialog(window, cx);
             }))
-            .on_action(cx.listener(|gallery, _: &TextLeft, _, cx| {
-                gallery.edit_field(cx, |field, cx| field.move_left(false, cx));
+            .on_action(cx.listener(|gallery, _: &TextLeft, window, cx| {
+                gallery.edit_field(window, cx, |field, cx| {
+                    field.move_left(false, cx);
+                });
             }))
-            .on_action(cx.listener(|gallery, _: &TextRight, _, cx| {
-                gallery.edit_field(cx, |field, cx| field.move_right(false, cx));
+            .on_action(cx.listener(|gallery, _: &TextRight, window, cx| {
+                gallery.edit_field(window, cx, |field, cx| {
+                    field.move_right(false, cx);
+                });
             }))
-            .on_action(cx.listener(|gallery, _: &TextStart, _, cx| {
-                gallery
-                    .edit_field(cx, |field, cx| field.move_to_start(false, cx));
+            .on_action(cx.listener(|gallery, _: &TextStart, window, cx| {
+                gallery.edit_field(window, cx, |field, cx| {
+                    field.move_to_start(false, cx);
+                });
             }))
-            .on_action(cx.listener(|gallery, _: &TextEnd, _, cx| {
-                gallery
-                    .edit_field(cx, |field, cx| field.move_to_end(false, cx));
+            .on_action(cx.listener(|gallery, _: &TextEnd, window, cx| {
+                gallery.edit_field(window, cx, |field, cx| {
+                    field.move_to_end(false, cx);
+                });
             }))
-            .on_action(cx.listener(|gallery, _: &TextDeleteBackward, _, cx| {
-                gallery.edit_field(cx, Input::delete_backward);
+            .on_action(cx.listener(
+                |gallery, _: &TextDeleteBackward, window, cx| {
+                    gallery.edit_field(window, cx, Input::delete_backward);
+                },
+            ))
+            .on_action(cx.listener(
+                |gallery, _: &TextDeleteForward, window, cx| {
+                    gallery.edit_field(window, cx, Input::delete_forward);
+                },
+            ))
+            .on_action(cx.listener(|gallery, _: &ListNext, window, cx| {
+                gallery.list_key(ListKey::Next, window, cx);
             }))
-            .on_action(cx.listener(|gallery, _: &TextDeleteForward, _, cx| {
-                gallery.edit_field(cx, Input::delete_forward);
+            .on_action(cx.listener(|gallery, _: &ListPrevious, window, cx| {
+                gallery.list_key(ListKey::Previous, window, cx);
+            }))
+            .on_action(cx.listener(|gallery, _: &ListPageDown, window, cx| {
+                gallery.list_key(ListKey::PageDown, window, cx);
+            }))
+            .on_action(cx.listener(|gallery, _: &ListPageUp, window, cx| {
+                gallery.list_key(ListKey::PageUp, window, cx);
+            }))
+            .on_action(cx.listener(|gallery, _: &ListConfirm, window, cx| {
+                gallery.list_key(ListKey::Confirm, window, cx);
+            }))
+            .on_action(cx.listener(|gallery, _: &ListClose, window, cx| {
+                gallery.list_key(ListKey::Close, window, cx);
             }))
             .child(focus::tracker())
             .child(

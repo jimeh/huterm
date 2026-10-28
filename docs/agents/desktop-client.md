@@ -679,6 +679,41 @@ through `show_text`, which keeps the field's value in step.
 GPUI sends focus and blur events only while a window is active, so a test of
 blur behavior, such as `NumberField`'s commit, activates its window first.
 
+`Combobox` and `Command` drive a list from a field that the owner keeps and
+draws with any chrome, and focus never leaves that field. Mount a `Combobox`
+entity as the last child of a relatively positioned wrapper around its
+field: it measures the wrapper and draws its suggestions in its own
+non-modal `Popover`, mounting that popover's guard itself, since a non-modal
+guard never stops a press. A non-modal guard also closes on a wheel outside
+the content and lets the wheel scroll what it is over, and an open
+popover's trigger probe asks for another frame when the trigger moves, so a
+list placed from the field's last paint follows it. GPUI's test mode
+delivers no frames, so a test of that follow, or of a list revealing its
+highlight after a parent resized it, pumps `Window::simulate_next_frame`,
+after first draining the frames already pending, or another request
+redraws in its place. The filter runs once per `Edited`, which `Input`
+emits before `Changed` for the user's edits alone, so an owner's `set_text`,
+such as Escape putting back a value, opens nothing. The filter reads its own
+data, never the owner's entity: it also runs inside `open`, `toggle`,
+`select_next` and `select_previous` on a closed list, and `refresh`, which
+an owner usually calls from its own action handler mid-update. `Command`
+takes the items its owner filters and ranks through `set_options`,
+typically from `Changed`, and draws them inline; turn off its pointer
+highlight where the highlight shows details, as Licenses does. A picker
+whose Enter must never reach another row, as the palette's identity
+pickers, takes `HighlightFallback::Clear`, and an owner that restarts at
+the first row on each query calls `select_first` after `set_options`. Route
+list commands to their methods: a combobox's return `false` when the key is
+the owner's, such as a second Escape or Enter with nothing highlighted. Both
+set their field's `ListState`, so it reports an `EditableComboBox` whose
+description is the highlight, because the list draws outside the focused
+field, where GPUI ignores an active descendant. A press on a row prevents
+the default focus change, and a combobox's list also occludes and stops it,
+so the field never blurs before a pick. Test such a press under a focusable
+root, as a window's root view is, or no blur could happen without them.
+GPUI blurs the focused field when its window deactivates, which closes a
+combobox's list.
+
 Open menus and selects in a `huterm_ui::components::popover::Popover` and
 mount its `guard` in the owner's root view on every frame, open or not. The
 guard's capture-phase press listener reads the live open state, so it also
