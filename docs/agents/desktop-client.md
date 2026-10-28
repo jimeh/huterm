@@ -549,9 +549,13 @@ and builds it with `tokens(theme)` and `overlay_colors(theme)`; the orphan
 rule rules out `from_theme` constructors on the crate's types.
 
 `Tokens` corrects arbitrary themes toward WCAG's minimums, and the `contrast`
-test in `desktop/overlay.rs` checks every bundled theme: draw text on an
-accent fill with `on_accent()`, never `bg`, and focus rings through
-`focus_ring()`.
+test in `desktop/overlay.rs` checks a table of the (text, fill) pairs Huterm
+draws in every bundled theme; add a pair there when a new one appears. Draw
+text on a solid fill with `on(fill)` or `on_accent()`, never `bg`, and shade
+its hover and pressed fills with `shade`; draw secondary text on a selected
+row with `muted_on(selection)`, colored text with `accent_text()` and its
+siblings, and focus rings through `focus_ring()`. `dim` is for disabled text
+and placeholders only.
 
 `pub` items of a library are always live, so `#[expect(dead_code)]` cannot
 mark a component that lands before its caller: the expectation is never met

@@ -436,7 +436,7 @@ impl SettingsView {
             .children(
                 apply_note(setting.apply)
                     .filter(|_| !foreign)
-                    .map(|note| small(note.to_owned(), swatch.dim)),
+                    .map(|note| small(note.to_owned(), swatch.muted)),
             )
             .children(message)
     }

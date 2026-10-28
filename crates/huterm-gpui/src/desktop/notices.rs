@@ -567,7 +567,7 @@ fn toast_body(
                 )))
                 .cursor_pointer()
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(swatch.accent)
+                .text_color(swatch.accent_text())
                 .active(|action| action.opacity(0.6))
                 .on_click(move |_: &ClickEvent, window, cx| {
                     run(id, command.clone(), window, cx);

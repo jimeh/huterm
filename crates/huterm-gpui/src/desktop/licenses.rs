@@ -529,7 +529,11 @@ impl LicensesView {
                         div()
                             .truncate()
                             .text_size(px(11.0))
-                            .text_color(swatch.muted)
+                            .text_color(if selected {
+                                swatch.muted_on(swatch.selection)
+                            } else {
+                                swatch.muted
+                            })
                             .child(component.license.clone()),
                     ),
             );
@@ -781,7 +785,7 @@ impl LicensesView {
             .py(px(10.0))
             .border_t_1()
             .border_color(swatch.line)
-            .bg(swatch.fg.opacity(0.03))
+            .bg(swatch.footer())
             .child(hints)
             .child(
                 self.ring(

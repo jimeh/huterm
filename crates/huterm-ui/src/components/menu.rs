@@ -379,8 +379,12 @@ impl Menu {
         } else {
             tokens.dim
         };
+        // Shortcuts stay opaque on the accent: any fade there falls below
+        // 4.5:1. An enabled item's shortcut is secondary text.
         let side_text = if selected {
-            tokens.on_accent().opacity(0.72)
+            tokens.on_accent()
+        } else if item.enabled {
+            tokens.muted
         } else {
             tokens.dim
         };

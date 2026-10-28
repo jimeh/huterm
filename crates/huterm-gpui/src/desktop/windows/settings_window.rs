@@ -1514,10 +1514,10 @@ fn apply_note(apply: Apply) -> Option<&'static str> {
 
 fn tone_color(tone: Tone, swatch: Swatch) -> Hsla {
     match tone {
-        Tone::Ok => swatch.accent,
-        Tone::Idle => swatch.dim,
-        Tone::Warning => swatch.warning,
-        Tone::Error => swatch.danger,
+        Tone::Ok => swatch.accent_text(),
+        Tone::Idle => swatch.muted,
+        Tone::Warning => swatch.warning_text(),
+        Tone::Error => swatch.danger_text(),
     }
 }
 
@@ -1543,7 +1543,7 @@ fn link(id: impl Into<SharedString>, swatch: Swatch) -> Stateful<gpui::Div> {
         .id(gpui::ElementId::Name(id.into()))
         .flex_none()
         .text_size(px(11.5))
-        .text_color(swatch.accent)
+        .text_color(swatch.accent_text())
         .hover(gpui::Styled::underline)
 }
 

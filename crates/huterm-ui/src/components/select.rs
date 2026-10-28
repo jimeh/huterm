@@ -195,7 +195,7 @@ impl RenderOnce for Select {
                 })
             })
             .child(div().flex_1().truncate().child(self.value))
-            .child(div().flex_none().text_color(tokens.dim).child("▾"))
+            .child(div().flex_none().text_color(tokens.muted).child("▾"))
             .children(self.popover.map(|popover| popover.trigger_probe()));
         let trigger = focus::ring(trigger, &focus, tokens, window, cx);
         States {

@@ -3139,7 +3139,7 @@ impl TerminalView {
                                 div()
                                     .mx(px(6.0))
                                     .font_weight(gpui::FontWeight::NORMAL)
-                                    .text_color(swatch.dim)
+                                    .text_color(swatch.muted)
                                     .child("×"),
                             )
                             .child(grid.rows.to_string()),

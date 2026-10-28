@@ -2061,7 +2061,7 @@ impl SettingsView {
                 KeyHint::parse(&listed.binding.key, Platform::current())
                     .element(
                         px(12.0),
-                        if active { swatch.fg } else { swatch.dim },
+                        if active { swatch.fg } else { swatch.muted },
                     )
                     .into_any_element()
             };
@@ -2142,18 +2142,21 @@ impl SettingsView {
         }
         let tag = {
             let (label, color) = match (&listed.state, user) {
-                (BindingState::Active, true) => ("Custom", swatch.accent),
-                (BindingState::Active, false) => ("Default", swatch.muted),
-                (BindingState::Replaced(_), _) => ("Replaced", swatch.dim),
-                (BindingState::Unbound(_), _) => ("Unbound", swatch.dim),
+                (BindingState::Active, true) => {
+                    ("Custom", swatch.accent_text())
+                }
+                (BindingState::Replaced(_), _) => ("Replaced", swatch.muted),
+                (BindingState::Unbound(_), _) => ("Unbound", swatch.muted),
                 (
                     BindingState::Disabled(_) | BindingState::SwitchedOff,
                     true,
-                ) => ("Custom", swatch.dim),
+                ) => ("Custom", swatch.muted),
                 (
-                    BindingState::Disabled(_) | BindingState::SwitchedOff,
+                    BindingState::Active
+                    | BindingState::Disabled(_)
+                    | BindingState::SwitchedOff,
                     false,
-                ) => ("Default", swatch.dim),
+                ) => ("Default", swatch.muted),
             };
             div()
                 .flex_none()
@@ -2526,7 +2529,7 @@ fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
                 .rounded(px(8.0))
                 .bg(swatch.chip)
                 .text_size(px(11.0))
-                .text_color(swatch.accent)
+                .text_color(swatch.accent_text())
                 .child("when"),
         );
     }

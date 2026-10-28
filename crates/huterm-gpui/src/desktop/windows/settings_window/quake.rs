@@ -877,7 +877,7 @@ impl SettingsView {
             .border_color(swatch.line);
         if self.quake.deleting {
             let yes = button("settings-qdelyes", swatch)
-                .text_color(swatch.danger)
+                .text_color(swatch.danger_text())
                 .child("Delete");
             let yes = self.actionable(yes, "qdelyes".to_owned(), swatch, cx);
             let no = button("settings-qdelno", swatch).child("Cancel");

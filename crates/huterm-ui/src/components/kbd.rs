@@ -75,13 +75,12 @@ pub fn cap(glyphs: &[Glyph], tokens: Tokens) -> Div {
         .border_color(tokens.line)
 }
 
-/// A key cap on a filled button, drawn in the button's text color `on`.
+/// A key cap on a filled button, drawn in the button's text color `on`. It
+/// outlines the keys without a fill of its own, so they keep the contrast
+/// `on` was chosen for against the button's fill.
 #[must_use]
 pub fn cap_on(glyphs: &[Glyph], on: Hsla) -> Div {
-    chip(glyphs, on)
-        .bg(on.opacity(0.18))
-        .border_1()
-        .border_color(on.opacity(0.35))
+    chip(glyphs, on).border_1().border_color(on.opacity(0.35))
 }
 
 /// The chip's own line height keeps it compact inside taller buttons.

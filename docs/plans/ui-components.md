@@ -588,7 +588,7 @@ has room for one more field at most:
   `hover`, `selection`, `accent`, `danger`, `warning`, `chip`, and
   `scrollbar`, as today.
 - **Methods:** `pressed`, `selection_pressed`, `accent_pressed`, `on_accent`
-  (the text color on an accent fill, `bg` today), `scrim`, `focus_ring`, and
+  (the text color on an accent fill), `scrim`, `focus_ring`, and
   the shadows. Derived shades stay methods, as the guide requires, and a
   contrast correction is applied inside a method, not stored.
 - **Sizes:** control height (24), menu row (28), radii (6 for controls, 9
@@ -596,17 +596,25 @@ has room for one more field at most:
   (11.5, 12, 12.5). These are constants in one place, not literals in every
   builder.
 - **Contrast:** the colors are computed from arbitrary user themes, so the
-  derivation corrects them and a test over the bundled themes checks the
-  result: secondary text (`muted`) and text on an accent fill (`on_accent`)
+  derivation corrects them, and a test over the bundled themes checks a table
+  of every enabled (text, fill) pair Huterm draws. Body text, secondary text
+  (`muted` on plain fills, `muted_on` on a selected row), text on solid fills
+  (`on` and `on_accent`, whose hover and pressed shades move away from the
+  text), and colored text (`accent_text`, `warning_text`, `danger_text`)
   reach WCAG's 4.5:1, and the focus ring reaches 1.4.11's 3:1 against the
-  background and the surface. On 2026-10-27, before the corrections,
-  `tokyo-night-day` measured 3.11:1 for text on the accent fill and the
-  45%-opacity focus ring 1.5:1 to 2.7:1 across all bundled themes. Borders of
-  controls whose text labels identify them are exempt, as WCAG's
-  understanding of 1.4.11 exempts them; raising `line_strong` (1.3:1 to 2:1)
-  to 3:1 would make every outline heavy. Disabled text is exempt as well. A
-  theme whose own foreground misses 4.5:1 on the surface, as
-  `tokyo-night-day`'s does at 4.14:1, gets its foreground for secondary text.
+  background and the surface, falling back to black or white. The surface,
+  selection, chip, and footer fills step down until body text passes on them,
+  and a foreground with too little headroom moves away from the background:
+  `tokyo-night-day`'s body text goes from `#3760bf` to `#3256ac`, and its
+  selection fill from 35% to 12%. On 2026-10-27, before the corrections, its
+  text on the accent fill measured 3.11:1, and the 45%-opacity focus ring
+  1.5:1 to 2.7:1 across all bundled themes. Borders of controls whose text
+  labels identify them are exempt, as WCAG's understanding of 1.4.11 exempts
+  them; raising `line_strong` (1.3:1 to 2:1) to 3:1 would make every outline
+  heavy. `line_strong` also draws a switch's off track and the modifier chips'
+  borders, which are state indicators rather than labelled outlines; step 3's
+  migrations owe them 3:1. Disabled text and placeholders (`dim`) are exempt
+  as well.
 
 ## Testing strategy
 

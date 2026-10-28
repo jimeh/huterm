@@ -1690,8 +1690,8 @@ fn band(message: String, swatch: Swatch, error: bool) -> gpui::AnyElement {
         .border_color(swatch.line)
         .text_size(px(12.5))
         .when(error, |band| {
-            band.text_color(swatch.accent)
-                .bg(swatch.accent.opacity(0.08))
+            band.text_color(swatch.accent_text())
+                .bg(swatch.accent.opacity(0.05))
         })
         .when(!error, |band| band.text_color(swatch.muted))
         .child(message)
@@ -1795,7 +1795,7 @@ impl CommandPalette {
             list = list.child(
                 div()
                     .p(px(18.0))
-                    .text_color(swatch.dim)
+                    .text_color(swatch.muted)
                     .text_size(px(13.0))
                     .child(format!("No commands match “{}”", search.query)),
             );
@@ -1846,7 +1846,7 @@ impl CommandPalette {
             meta = meta.child(
                 div()
                     .text_size(px(10.0))
-                    .text_color(swatch.dim)
+                    .text_color(swatch.muted)
                     .child(format!("{:?}", spec.scope).to_uppercase()),
             );
             let description = match &unavailable {
@@ -1900,7 +1900,9 @@ impl CommandPalette {
                                 .truncate()
                                 .text_size(px(11.5))
                                 .text_color(if unavailable.is_some() {
-                                    swatch.accent
+                                    swatch.accent_text()
+                                } else if selected {
+                                    swatch.muted_on(swatch.selection)
                                 } else {
                                     swatch.muted
                                 })
@@ -2005,10 +2007,10 @@ impl CommandPalette {
                         .rounded(px(3.0))
                         .border_1()
                         .border_color(swatch.dim)
-                        .text_color(swatch.dim)
+                        .text_color(swatch.muted)
                         .child(
                             KeyHint::keys(&["tab"], Platform::current())
-                                .element(px(9.0), swatch.dim),
+                                .element(px(9.0), swatch.muted),
                         ),
                 )
             });
@@ -2103,7 +2105,7 @@ impl CommandPalette {
                 list = list.child(
                     div()
                         .p(px(18.0))
-                        .text_color(swatch.dim)
+                        .text_color(swatch.muted)
                         .text_size(px(13.0))
                         .child(format!("No matching {}s", slot.spec.name)),
                 );
@@ -2291,14 +2293,14 @@ impl Render for CommandPalette {
                 let (list, below, hints) =
                     self.render_search(search, swatch, window, list_max, cx);
                 line = line
-                    .child(div().text_color(swatch.dim).child("›"))
+                    .child(div().text_color(swatch.muted).child("›"))
                     .child(self.input.clone())
                     .child(
                         div()
                             .ml_auto()
                             .flex_none()
                             .text_size(px(11.0))
-                            .text_color(swatch.dim)
+                            .text_color(swatch.muted)
                             .child(format!(
                                 "{} command{}",
                                 search.results.len(),

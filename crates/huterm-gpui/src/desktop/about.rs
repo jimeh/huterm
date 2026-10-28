@@ -333,7 +333,7 @@ fn footer(
         .py(px(10.0))
         .border_t_1()
         .border_color(swatch.line)
-        .bg(swatch.fg.opacity(0.03))
+        .bg(swatch.footer())
         .child(ring(
             footer_button("about-licenses", swatch, false, false)
                 .on_click(actions.licenses)

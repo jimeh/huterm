@@ -3,7 +3,7 @@
 //! raised panels, and the scrim.
 
 use gpui::{Div, Hsla, Pixels, SharedString, div, prelude::*, px};
-pub(crate) use huterm_ui::tokens::{OverlayColors, Tokens as Swatch, mix};
+pub(crate) use huterm_ui::tokens::{OverlayColors, Tokens as Swatch};
 
 use super::key_hint::KeyHint;
 use super::scrollbar_colors;
@@ -78,7 +78,7 @@ pub(crate) fn footer_hints(
         .py(px(6.0))
         .border_t_1()
         .border_color(swatch.line)
-        .bg(swatch.fg.opacity(0.03))
+        .bg(swatch.footer())
         .text_size(px(11.5))
         .text_color(swatch.muted);
     for (key, label) in hints {
@@ -125,7 +125,7 @@ pub(crate) fn severity_mark(glyph: &str, fill: Hsla, swatch: Swatch) -> Div {
         .justify_center()
         .text_size(px(11.0))
         .font_weight(gpui::FontWeight::BOLD)
-        .text_color(swatch.bg)
+        .text_color(swatch.on(fill))
         .child(glyph.to_owned())
 }
 
@@ -159,7 +159,10 @@ mod tests {
 
 #[cfg(test)]
 mod contrast {
+    use gpui::Hsla;
     use huterm_ui::tokens::{NON_TEXT_CONTRAST, TEXT_CONTRAST, contrast, over};
+
+    use super::Swatch;
 
     use super::tokens;
     use crate::config::Theme;
@@ -181,34 +184,64 @@ mod contrast {
             .collect()
     }
 
+    /// Every enabled text color with each fill it is drawn on, and the
+    /// focus ring with the surfaces it is drawn against, for one theme.
+    fn drawn_pairs(t: &Swatch) -> Vec<(&'static str, Hsla, Hsla, f32)> {
+        let selection = [over(t.selection, t.bg), over(t.selection, t.surface)];
+        let plain = [t.bg, t.surface];
+        let chips = [over(t.chip, t.bg), over(t.chip, t.surface)];
+        let footers = [over(t.footer(), t.bg), over(t.footer(), t.surface)];
+        let primary = [t.accent, t.accent_pressed()];
+        let danger = [t.danger_fill(), t.danger_hover(), t.danger_pressed()];
+        let close = t.on(t.danger_fill());
+        let band = over(t.accent.opacity(0.05), t.surface);
+        let mut pairs = Vec::new();
+        let mut text = |name, color: Hsla, unders: &[Hsla]| {
+            for under in unders {
+                pairs.push((name, color, *under, TEXT_CONTRAST));
+            }
+        };
+        text("fg", t.fg, &plain);
+        text("fg on selection", t.fg, &selection);
+        text("muted", t.muted, &plain);
+        text("muted on chips", t.muted, &chips);
+        text("muted on footers", t.muted, &footers);
+        text("muted on selection", t.muted_on(t.selection), &selection);
+        text("on_accent", t.on_accent(), &primary);
+        text("on warning", t.on(t.warning), &[t.warning]);
+        text("on danger", t.on(t.danger), &[t.danger]);
+        text("close button", close, &danger);
+        for (name, color) in [
+            ("accent text", t.accent_text()),
+            ("warning text", t.warning_text()),
+            ("danger text", t.danger_text()),
+        ] {
+            text(name, color, &plain);
+            text(name, color, &chips);
+        }
+        text("error band", t.accent_text(), &[band]);
+        let ring = t.focus_ring()[0].color;
+        for under in plain {
+            pairs.push(("focus ring", ring, under, NON_TEXT_CONTRAST));
+        }
+        pairs
+    }
+
     #[test]
     fn bundled_themes_meet_the_contrast_minimums() {
         let themes = bundled();
         assert!(themes.len() > 10, "{} themes", themes.len());
+        let mut failures = Vec::new();
         for (name, theme) in themes {
             let t = tokens(&theme);
-            for (under, surface) in
-                [(t.bg, "background"), (t.surface, "surface")]
-            {
-                let muted = contrast(over(t.muted, under), under);
-                println!("CONTRAST {name} muted/{surface} {muted:.2}");
-                assert!(
-                    muted >= TEXT_CONTRAST || t.muted == t.fg,
-                    "{name}: secondary text on the {surface} is {muted:.2}:1"
-                );
-                let ring = contrast(t.ring(), under);
-                println!("CONTRAST {name} ring/{surface} {ring:.2}");
-                assert!(
-                    ring >= NON_TEXT_CONTRAST,
-                    "{name}: the focus ring on the {surface} is {ring:.2}:1"
-                );
+            for (pair, color, under, minimum) in drawn_pairs(&t) {
+                // Translucent text shows composited over what it sits on.
+                let ratio = contrast(over(color, under), under);
+                if ratio < minimum {
+                    failures.push(format!("{name} {pair}: {ratio:.2}:1"));
+                }
             }
-            let on_accent = contrast(t.on_accent(), t.accent);
-            println!("CONTRAST {name} on_accent {on_accent:.2}");
-            assert!(
-                on_accent >= TEXT_CONTRAST,
-                "{name}: text on the accent is {on_accent:.2}:1"
-            );
         }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 }
