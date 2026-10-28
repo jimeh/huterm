@@ -260,7 +260,10 @@ its real release, as on macOS. GPUI's event reducer drops a release that a
 press of the same key follows within 20 ms, as a repeat's synthetic release;
 with the flag granted, every release is real, so the patch skips that filter
 there and a fast fresh press neither loses its `KeyUp` nor reads as held. A
-server that refuses the flag keeps the filter. `huterm-gpui`'s
+server that refuses the flag keeps the filter. The reducer also held only the
+batch's latest release, so a release that another followed, such as K's before
+Control's, was lost; the patch delivers it, since only a press makes a release
+synthetic. `huterm-gpui`'s
 `gpui_x11_key_repeat` test compiles the tracker and the reducer's release
 decision directly. An input method that consumes a release it
 was forwarded leaves its key marked down until the key's next release, so

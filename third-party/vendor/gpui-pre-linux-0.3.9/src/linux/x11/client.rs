@@ -711,7 +711,11 @@ impl X11Client {
                                     events.push(last_keymap_change_event);
                                 }
 
-                                last_key_release = Some(event);
+                                // Only a press can make a release synthetic, so one
+                                // that another release follows is real.
+                                if let Some(last_key_release) = last_key_release.replace(event) {
+                                    events.push(last_key_release);
+                                }
                             }
                             Event::KeyPress(key_press) => {
                                 if let Some(last_keymap_change_event) =

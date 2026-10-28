@@ -65,7 +65,7 @@
         {
           "name": "x11-key-repeat",
           "file": "patches/gpui-pre-linux/x11-key-repeat.patch",
-          "description": "Enable XKB detectable auto-repeat and mark an X11 key press whose key is still down as held, as macOS and Wayland already do."
+          "description": "Enable XKB detectable auto-repeat and mark an X11 key press whose key is still down as held, as macOS and Wayland already do. Keep the real releases that GPUI's event reducer would drop: with the flag granted, a release before a fast press of its key, and in any mode, a release that another release follows."
         }
       ]
     },

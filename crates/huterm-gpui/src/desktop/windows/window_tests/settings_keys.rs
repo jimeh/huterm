@@ -661,6 +661,40 @@ fn a_recorded_key_queued_behind_a_removal_keeps_the_condition_draft(
 }
 
 #[gpui::test]
+fn a_recorded_key_keeps_its_own_draft_when_another_editor_removes_a_twin(
+    cx: &mut TestAppContext,
+) {
+    // Two shortcuts that differ only in their keys.
+    let twins = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_window\"\n\n\
+                 [[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n";
+    let file = ScratchConfig::new("keys-record-twin", twins);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_window");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u0", "Terminal ||", window, cx);
+        view.enter_key("when:u0", cx);
+        view.type_key("when:u1", "Terminal &&", window, cx);
+        view.enter_key("when:u1", cx);
+        assert!(view.key_error("u1").is_some());
+        view.press("krec:u1", window, cx);
+    });
+    // Another editor removes the first shortcut before the key lands.
+    let shifted = twins.split_once("\n\n").unwrap().1.to_owned();
+    std::fs::write(file.path(), &shifted).unwrap();
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    saved(&mut harness, &file, |text| {
+        !text.contains("ctrl-alt-a") && text.contains("ctrl-alt-k")
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-k"), "u0");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal &&");
+    });
+}
+
+#[gpui::test]
 fn a_switched_off_shortcuts_key_cap_says_why_it_refuses(
     cx: &mut TestAppContext,
 ) {

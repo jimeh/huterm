@@ -15,6 +15,7 @@ use gpui::{
     AnyElement, App, Context, ElementId, Entity, EntityId, Focusable,
     KeystrokeEvent, SharedString, Window, div, prelude::*, px,
 };
+use huterm_config::document::Patch;
 use huterm_protocol::{
     ArgumentKind, ArgumentSpec, CommandId, CommandSpec, NamedLayout,
     Requirement, SIDES, catalog, lookup,
@@ -507,8 +508,8 @@ impl SettingsView {
     }
 
     /// Why a shortcut's key cap, condition, and argument fields refuse
-    /// edits: the section is read-only, or the shortcut is not active. `None` for an
-    /// active shortcut that can change.
+    /// edits: the section is read-only, or the shortcut is not active.
+    /// `None` for an active shortcut that can change.
     fn key_field_refusal(&self, active: bool) -> Option<SharedString> {
         self.keys_lock_reason().or_else(|| {
             (!active).then(|| "Only an active shortcut can change".into())
@@ -808,8 +809,9 @@ impl SettingsView {
         &mut self,
         edit: &Edit,
         row: Option<&str>,
+        patches: &[Patch],
     ) {
-        self.keep_drafts_for_new_key(edit, row);
+        self.keep_drafts_for_new_key(edit, row, patches);
         let (Edit::ChangeDefault { default, field, .. }, Some(row)) =
             (edit, row)
         else {
@@ -856,11 +858,16 @@ impl SettingsView {
     /// there. Nothing moves unless that row shows the recorded key for the
     /// same command, such as after a queued edit moved the entries.
     ///
-    /// A write that lands ahead of the recorded key, such as an entry's
-    /// removal, can move the user entry to another row after `changed` was
-    /// named, so the user entry is found as the one row whose binding only
-    /// changed its key, to the recorded one.
-    fn keep_drafts_for_new_key(&mut self, edit: &Edit, changed: Option<&str>) {
+    /// Entries can move between recording and the write: a removal queued
+    /// ahead of it, or another editor's change. The user entry's row before
+    /// the write is its locator's, which queued writes carry along, and its
+    /// row now is the one whose binding is that row's on the recorded key.
+    fn keep_drafts_for_new_key(
+        &mut self,
+        edit: &Edit,
+        changed: Option<&str>,
+        patches: &[Patch],
+    ) {
         let Some(inventory) = &self.keys.inventory else {
             return;
         };
@@ -870,20 +877,31 @@ impl SettingsView {
                 value: Some(Value::String(key)),
                 ..
             } => {
+                let Some(from) = patches.iter().find_map(|patch| match patch {
+                    Patch::SetEntryField { locator, field, .. }
+                        if field == "key" =>
+                    {
+                        Some(format!("u{}", locator.index()))
+                    }
+                    _ => None,
+                }) else {
+                    return;
+                };
+                let Some(before) = self.keys.identities.get(&from) else {
+                    return;
+                };
                 let rekeyed: Vec<String> = rows(inventory)
                     .into_iter()
-                    .filter(|(name, listed)| {
+                    .filter(|(_, listed)| {
                         listed.binding.key == *key
-                            && self.keys.identities.get(name).is_some_and(
-                                |before| before.rekeyed(&Identity::of(listed)),
-                            )
+                            && before.rekeyed(&Identity::of(listed))
                     })
                     .map(|(name, _)| name)
                     .collect();
-                let [row] = rekeyed.as_slice() else {
+                let [to] = rekeyed.as_slice() else {
                     return;
                 };
-                (row.clone(), row.clone(), key)
+                (from, to.clone(), key)
             }
             Edit::ChangeDefault {
                 field: Field::Key,
@@ -917,8 +935,25 @@ impl SettingsView {
         // `follow_moved_rows` keeps its fields where they now are.
         let identity = Identity::of(listed);
         self.keys.identities.insert(to.clone(), identity);
-        if to == from {
-            return;
+        if to != from {
+            self.move_row_fields(from, &to);
+        }
+    }
+
+    /// Moves a row's fields with their drafts, synced text, and errors to
+    /// another row, displacing any left there.
+    fn move_row_fields(&mut self, from: &str, to: &str) {
+        let displaced: Vec<String> = self
+            .keys
+            .fields
+            .keys()
+            .filter(|key| field_row(key) == Some(to))
+            .cloned()
+            .collect();
+        for key in displaced {
+            self.keys.fields.remove(&key);
+            self.keys.synced.remove(&key);
+            self.keys.errors.remove(&key);
         }
         let moved: Vec<String> = self
             .keys
@@ -928,7 +963,7 @@ impl SettingsView {
             .cloned()
             .collect();
         for key in moved {
-            let target = key.replacen(from, &to, 1);
+            let target = key.replacen(from, to, 1);
             if let Some(field) = self.keys.fields.remove(&key) {
                 self.keys.fields.insert(target.clone(), field);
             }
