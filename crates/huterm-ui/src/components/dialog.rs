@@ -31,9 +31,13 @@
 //! either end, so focus never reaches what the dialog covers; a press on
 //! the panel's background moves no focus. Each frame rereads which buttons
 //! are disabled, so a button leaves the cycle while disabled and rejoins it
-//! once enabled. [`Modal::close`] returns focus to the target given to
-//! [`Modal::open`]; an owner that wants focus elsewhere, such as after a
-//! delete removed the target, focuses it afterwards.
+//! once enabled. The modal remembers the control that last held focus,
+//! and [`Modal::last_focused`] gives it to an owner returning focus to the
+//! dialog from elsewhere in the window, such as a toast, which falls back
+//! to its initial control when that one has left the dialog.
+//! [`Modal::close`] returns focus to the target given to [`Modal::open`];
+//! an owner that wants focus elsewhere, such as after a delete removed the
+//! target, focuses it afterwards.
 //!
 //! Keyboard: the panel carries [`KEY_CONTEXT`] and nothing inside it adds a
 //! context, so a control keeps only the context its owner gives it. The
@@ -125,6 +129,8 @@ struct State {
     focus_pending: bool,
     /// The controls Tab cycles through, from the last frame.
     controls: Vec<FocusHandle>,
+    /// The control that last held focus since opening.
+    last_focused: Option<FocusHandle>,
     /// Whether the guard reports outside presses: a dialog's are, an alert
     /// dialog's never, and none before the first frame.
     reports_outside: bool,
@@ -166,6 +172,7 @@ impl Modal {
         state.open = true;
         state.return_to = Some(return_to.clone());
         state.focus_pending = true;
+        state.last_focused = None;
         state.reports_outside = false;
         state.panel = None;
         state.scrim = None;
@@ -182,6 +189,7 @@ impl Modal {
             state.open = false;
             state.focus_pending = false;
             state.controls.clear();
+            state.last_focused = None;
             state.panel = None;
             state.scrim = None;
             state.return_to.take()
@@ -203,6 +211,18 @@ impl Modal {
     #[must_use]
     pub fn panel_bounds(&self) -> Option<Bounds<Pixels>> {
         self.state.borrow().panel
+    }
+
+    /// The control that last held focus while the dialog was open, if it
+    /// is still one of the dialog's controls; `None` while closed or
+    /// before any control has held focus.
+    #[must_use]
+    pub fn last_focused(&self) -> Option<FocusHandle> {
+        let state = self.state.borrow();
+        state
+            .last_focused
+            .clone()
+            .filter(|focus| state.controls.contains(focus))
     }
 
     /// Moves focus to the next control, wrapping to the first; from outside
@@ -238,6 +258,7 @@ impl Modal {
         };
         if let Some(target) = target {
             target.focus(window, cx);
+            self.state.borrow_mut().last_focused = Some(target);
         }
     }
 
@@ -297,10 +318,21 @@ impl Modal {
         .size(px(0.0))
     }
 
-    /// Records a frame's controls and outside-press policy, and whether
-    /// this is the first frame since opening, which moves focus in.
-    fn frame(&self, controls: Vec<FocusHandle>, reports_outside: bool) -> bool {
+    /// Records a frame's controls, the one of them with focus, and the
+    /// outside-press policy, and whether this is the first frame since
+    /// opening, which moves focus in.
+    fn frame(
+        &self,
+        controls: Vec<FocusHandle>,
+        reports_outside: bool,
+        window: &Window,
+    ) -> bool {
         let mut state = self.state.borrow_mut();
+        if let Some(focused) =
+            controls.iter().find(|control| control.is_focused(window))
+        {
+            state.last_focused = Some(focused.clone());
+        }
         state.controls = controls;
         state.reports_outside = reports_outside;
         std::mem::take(&mut state.focus_pending)
@@ -464,7 +496,7 @@ impl Dialog {
             .filter(|chosen| controls.contains(chosen))
             .or_else(|| controls.first().cloned())
             .or_else(|| self.buttons.first().map(|(_, focus)| focus.clone()));
-        if self.modal.frame(controls, !self.alert)
+        if self.modal.frame(controls, !self.alert, window)
             && let Some(target) = initial
         {
             // Focus moves after the frame, as the guide requires for focus

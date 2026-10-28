@@ -7,7 +7,8 @@
 //! context, so the palette's list and text bindings apply whether the
 //! search field or a button has focus, and Tab and Shift-Tab
 //! (`palette_expand`, `palette_previous_slot`) move through the dialog's
-//! focus cycle.
+//! focus cycle. Typing and text editing on a button move focus to the
+//! search first, so the search shows what they change.
 
 // User input picks positions here, so a stale index must not panic.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
@@ -17,9 +18,9 @@ use std::time::Instant;
 
 use gpui::{
     App, ClipboardItem, Context, Corners, Entity, EventEmitter, FocusHandle,
-    Focusable, FontWeight, MouseButton, Pixels, Render, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, Subscription, Task, Window, div,
-    point, prelude::*, px, relative,
+    Focusable, FontWeight, KeyDownEvent, MouseButton, Pixels, Render,
+    ScrollHandle, ScrollWheelEvent, SharedString, Size, Subscription, Task,
+    Window, div, point, prelude::*, px, relative,
 };
 use huterm_protocol::{CommandError, CommandInvocation, CommandOutcome, ids};
 
@@ -135,6 +136,7 @@ impl LicensesView {
         colors: OverlayColors,
         hints: bool,
         load: impl FnOnce() -> Result<Catalog, LoadError> + Send + 'static,
+        window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
         let input = cx.new(|cx| {
@@ -147,14 +149,18 @@ impl LicensesView {
             .with_placeholder("Search licenses")
             .with_chrome(Chrome::Bare)
         });
-        let subscription =
-            cx.subscribe(&input, |view, input, _: &Changed, cx| {
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            |view, input, _: &Changed, window, cx| {
                 let query = input.read(cx).text().trim().to_lowercase();
                 if query != view.query {
                     view.query = query;
                     view.refilter(cx);
+                    view.keep_focus_available(window, cx);
                 }
-            });
+            },
+        );
         let task = cx.background_executor().spawn(async move { load() });
         let load = cx.spawn(async move |view, cx| {
             let result = task.await;
@@ -276,6 +282,7 @@ impl LicensesView {
             ids::PALETTE_CONFIRM => self.press_focused(window, cx),
             ids::PALETTE_POP => {}
             id if FORWARDED_TEXT_COMMANDS.contains(&id) => {
+                self.focus_search(window, cx);
                 self.input.update(cx, |field, cx| {
                     crate::ui::input::run(field, invocation, cx)
                 })?;
@@ -307,6 +314,46 @@ impl LicensesView {
     fn selected_component(&self) -> Option<&Component> {
         let index = *self.matches.get(self.selected)?;
         self.catalog()?.components.get(index)
+    }
+
+    /// Moves focus to the search from a button, so it shows the edit that
+    /// follows.
+    fn focus_search(&self, window: &mut Window, cx: &mut App) {
+        let search = self.focus_handle(cx);
+        if !search.is_focused(window) {
+            search.focus(window, cx);
+        }
+    }
+
+    /// Types a printable key pressed on a button into the search, which
+    /// takes focus; Space stays the button's, and shortcuts with Command or
+    /// Control pass by.
+    fn type_from_button(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let keystroke = &event.keystroke;
+        let Some(text) = keystroke.key_char.as_deref() else {
+            return;
+        };
+        if keystroke.modifiers.platform
+            || keystroke.modifiers.control
+            || keystroke.key == "space"
+            || text.is_empty()
+            || text.chars().any(char::is_control)
+            || self
+                .focus(window, cx)
+                .is_none_or(|focus| focus == LicensesFocus::Search)
+        {
+            return;
+        }
+        self.focus_search(window, cx);
+        self.input.update(cx, |input, cx| {
+            input.replace(input.selection(), text, cx);
+        });
+        cx.stop_propagation();
     }
 
     /// Recomputes the matches, keeping the selected component when it still
@@ -917,6 +964,7 @@ impl Render for LicensesView {
         .clamp(px(0.0), px(PANEL_HEIGHT));
         let content = div()
             .key_context("Palette")
+            .on_key_down(cx.listener(Self::type_from_button))
             .flex()
             .flex_col()
             .flex_1()
@@ -958,5 +1006,10 @@ impl LicensesView {
             self.text_scroll.max_offset().y,
             self.text_scroll.bounds(),
         )
+    }
+
+    /// Sets the search's text as an edit that arrives without moving focus.
+    pub(super) fn set_search(&self, text: &str, cx: &mut Context<'_, Self>) {
+        self.input.update(cx, |input, cx| input.set_text(text, cx));
     }
 }

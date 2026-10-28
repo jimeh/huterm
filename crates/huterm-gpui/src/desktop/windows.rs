@@ -8432,10 +8432,14 @@ impl WorkspaceView {
         }
     }
 
-    /// The control focus returns to in the showing dialog: the one it
-    /// opens on.
+    /// The control focus returns to in the showing dialog: the one that
+    /// last held focus while it still shows, or else the one it opens on.
     fn dialog_focus_target(&self, cx: &App) -> Option<FocusHandle> {
-        match self.top_dialog()? {
+        let top = self.top_dialog()?;
+        if let Some(last) = self.dialog.last_focused() {
+            return Some(last);
+        }
+        match top {
             ShownDialog::Close(_) => Some(self.close_buttons.primary.clone()),
             ShownDialog::Licenses => self
                 .licenses
@@ -8466,8 +8470,8 @@ impl WorkspaceView {
     }
 
     /// Returns focus to the showing dialog unless one of its controls has
-    /// it: to the control it opened on, or to the search as the Licenses
-    /// view replaces the About panel.
+    /// it: to the control that last held it, or else to the one it opened
+    /// on, or to the search as the Licenses view replaces the About panel.
     fn focus_dialog(&self, window: &mut Window, cx: &mut App) {
         if self.dialog_holds_focus(window, cx) {
             return;
@@ -8521,7 +8525,7 @@ impl WorkspaceView {
         let modal = self.dialog.clone();
         let licenses = cx.new(|cx| {
             self.frame_clock.observe(cx);
-            LicensesView::new(modal, colors, hints, load, cx)
+            LicensesView::new(modal, colors, hints, load, window, cx)
         });
         cx.subscribe_in(
             &licenses,
@@ -12976,8 +12980,9 @@ fn menu_items_state(model: &MenuModel) -> String {
     ids.join(",")
 }
 
-/// The control a showing dialog or About panel opens on, for handing focus
-/// back when something else takes it; `None` while neither shows.
+/// The control a showing dialog or About panel returns focus to, for
+/// handing focus back when something else takes it; `None` while neither
+/// shows.
 pub(super) fn modal_focus(window: &Window, cx: &App) -> Option<FocusHandle> {
     let root = window.root::<WorkspaceView>().flatten()?;
     root.read(cx).dialog_focus_target(cx)

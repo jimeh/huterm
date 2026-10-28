@@ -4662,10 +4662,17 @@ fn licenses_buttons_take_keyboard_focus_and_enter_presses_the_focused_one(
     });
     harness.press(window, "shift-tab");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
-    harness.press(window, "shift-tab");
-    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
-    // With no match, only Done follows the search.
+    // Typing on a button types into the search, which takes focus; with no
+    // match, only Done follows it.
     harness.press(window, "z");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    assert_eq!(
+        harness.cx.update(|cx| licenses_state(cx, window)),
+        Some(LicensesState::Ready {
+            matches: 0,
+            selected: None
+        })
+    );
     harness.press(window, "tab");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Done));
     harness.press(window, "enter");

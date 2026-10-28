@@ -454,16 +454,14 @@ fn focused_node_role(
     })
 }
 
-#[gpui::test]
-fn dismissing_a_toast_over_a_dialog_returns_focus_to_the_dialog(
-    cx: &mut TestAppContext,
+/// Shows a toast in `window`, focuses it, and dismisses it in one update,
+/// so no frame lets the terminal hand focus it receives back to the
+/// dialog, then asserts that `held` reports focus back in the dialog.
+fn dismiss_a_focused_toast(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    held: impl Fn(&WorkspaceView, &Window) -> bool,
 ) {
-    let mut harness = DesktopHarness::new(cx);
-    let tab = harness.open_tab(ECHO);
-    let window = harness.attach_window();
-    harness.wait_text(window, tab, "READY");
-    harness.activate(window, tab);
-    harness.invoke(window, ids::ABOUT).unwrap();
     harness.update_view(window, |view, _, cx| {
         view.notify(
             NoticeContent::diagnostic(
@@ -475,8 +473,6 @@ fn dismissing_a_toast_over_a_dialog_returns_focus_to_the_dialog(
             cx,
         );
     });
-    // One update, so no frame lets the terminal hand focus it receives
-    // back to the dialog.
     harness.update_view(window, |view, window, cx| {
         let focus = CommandInvocation::new(ids::FOCUS_NOTICES, vec![]);
         view.invoke_interactive(&focus, window, cx).unwrap();
@@ -484,15 +480,39 @@ fn dismissing_a_toast_over_a_dialog_returns_focus_to_the_dialog(
         let dismiss = CommandInvocation::new(ids::NOTICE_DISMISS, vec![]);
         view.invoke_interactive(&dismiss, window, cx).unwrap();
         assert!(view.notices.is_empty());
-        assert!(
-            view.about_buttons
-                .handle(AboutButton::Close)
-                .is_focused(window),
-            "focus left the dialog"
-        );
+        assert!(held(view, window), "focus left the dialog");
     });
     harness.cx.run_until_parked();
-    assert_eq!(harness.about_focus(window), Some(AboutButton::Close));
+}
+
+#[gpui::test]
+fn dismissing_a_toast_over_a_dialog_returns_focus_to_the_dialog(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.busy_window();
+    harness.invoke(window, ids::ABOUT).unwrap();
+    // Focus returns to the button that had it, not the one About opens on.
+    harness.press(window, "shift-tab");
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Copy));
+    dismiss_a_focused_toast(&mut harness, window, |view, window| {
+        view.about_buttons
+            .handle(AboutButton::Copy)
+            .is_focused(window)
+    });
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Copy));
+    harness.press(window, "escape");
+    assert_eq!(harness.about_focus(window), None);
+    // In the close confirmation, Cancel keeps focus, so Return afterwards
+    // cannot close the tab.
+    harness.press(window, CLOSE);
+    harness.wait_for("the confirmation", |cx| confirming(cx, window));
+    harness.press(window, "tab");
+    assert_eq!(harness.dialog_focus(window), Some("cancel"));
+    dismiss_a_focused_toast(&mut harness, window, |view, window| {
+        view.close_buttons.cancel.is_focused(window)
+    });
+    assert_eq!(harness.dialog_focus(window), Some("cancel"));
 }
 
 #[gpui::test]

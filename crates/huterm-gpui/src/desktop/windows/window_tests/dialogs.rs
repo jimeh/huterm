@@ -161,6 +161,125 @@ fn long_license(lines: usize) -> Catalog {
     }
 }
 
+/// A catalog of Alpha and Beta, each with a website.
+fn two_components() -> Catalog {
+    let component = |name: &str| Component {
+        name: name.to_owned(),
+        version: None,
+        kind: "Rust crate".to_owned(),
+        license: "MIT".to_owned(),
+        used: None,
+        url: Some(format!("https://example.com/{name}")),
+        texts: vec![LicenseText {
+            title: "LICENSE".to_owned(),
+            body: Arc::from("MIT License"),
+        }],
+    };
+    Catalog {
+        components: vec![component("Alpha"), component("Beta")],
+    }
+}
+
+/// Opens the Licenses view on [`two_components`] over About in a new
+/// window, its search focused.
+fn open_two_components(harness: &mut DesktopHarness) -> AnyWindowHandle {
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.update_view(window, |view, window, cx| {
+        view.open_licenses(|| Ok(two_components()), window, cx);
+    });
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    window
+}
+
+/// How many components match the Licenses search in `window`.
+fn license_matches(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> usize {
+    match harness.cx.update(|cx| licenses_state(cx, window)) {
+        Some(LicensesState::Ready { matches, .. }) => matches,
+        state => panic!("the view is not ready: {state:?}"),
+    }
+}
+
+#[gpui::test]
+fn editing_keys_on_a_licenses_button_move_to_the_search(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let window = open_two_components(&mut harness);
+    harness.press(window, "a l p h a z");
+    assert_eq!(license_matches(&mut harness, window), 0);
+    // Only Done follows a search with no match.
+    harness.press(window, "tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Done));
+    harness.press(window, "backspace");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    assert_eq!(license_matches(&mut harness, window), 1);
+    harness.press(window, "tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
+    // Space stays the button's: it types nothing.
+    harness.press(window, "space");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
+    assert_eq!(license_matches(&mut harness, window), 1);
+    harness.press(window, "left");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    harness.press(window, "tab tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Copy));
+    harness.press(window, "right");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+}
+
+#[gpui::test]
+fn a_search_with_no_match_from_a_licenses_button_keeps_keys_working(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let window = open_two_components(&mut harness);
+    harness.press(window, "a l p h a tab tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Copy));
+    harness.cx.update(|cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+            "zzz".to_owned(),
+        ));
+    });
+    harness.invoke(window, ids::TEXT_PASTE).unwrap();
+    assert_eq!(license_matches(&mut harness, window), 0);
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    harness.press(window, "escape");
+    assert_eq!(license_matches(&mut harness, window), 2);
+    harness.press(window, "tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
+    // An edit that reaches the search without moving focus, and hides the
+    // focused button, also returns focus to the search.
+    harness.press(window, "tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Copy));
+    harness.update_view(window, |view, _, cx| {
+        view.licenses
+            .clone()
+            .unwrap()
+            .update(cx, |licenses, cx| licenses.set_search("zzz", cx));
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(license_matches(&mut harness, window), 0);
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    harness.press(window, "escape");
+    assert_eq!(license_matches(&mut harness, window), 2);
+    harness.press(window, "escape");
+    assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
+}
+
 /// How many pages a test scrolls, more than its long license needs.
 const PAGES: u8 = 40;
 

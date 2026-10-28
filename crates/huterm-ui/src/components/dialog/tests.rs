@@ -561,6 +561,55 @@ fn tab_and_shift_tab_cycle_within_the_dialog(cx: &mut TestAppContext) {
     );
 }
 
+/// The name of the control the host's modal remembers as last focused.
+fn last_focused(
+    probe: &Probe,
+    cx: &mut VisualTestContext,
+) -> Option<&'static str> {
+    let last = probe
+        .owner
+        .read_with(cx, |owner, _| owner.modal.last_focused())?;
+    [
+        ("trigger", &probe.trigger),
+        ("field", &probe.field),
+        ("cancel", &probe.cancel),
+        ("confirm", &probe.confirm),
+    ]
+    .into_iter()
+    .find(|(_, handle)| **handle == last)
+    .map(|(name, _)| name)
+}
+
+#[gpui::test]
+fn the_modal_remembers_the_control_that_last_held_focus(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = rename(cx);
+    probe.open(cx);
+    press_tab(cx, false);
+    assert_eq!(focused(&probe, cx), Some("cancel"));
+    // Focus elsewhere in the window, as on a toast, leaves it remembered.
+    let trigger = probe.trigger.clone();
+    cx.update(|window, cx| trigger.focus(window, cx));
+    cx.run_until_parked();
+    assert_eq!(focused(&probe, cx), Some("trigger"));
+    assert_eq!(last_focused(&probe, cx), Some("cancel"));
+    // A control focused other than by Tab, as by a click, is remembered
+    // from the frame that draws it focused.
+    let confirm = probe.confirm.clone();
+    cx.update(|window, cx| confirm.focus(window, cx));
+    cx.run_until_parked();
+    assert_eq!(last_focused(&probe, cx), Some("confirm"));
+    // A control that leaves the dialog is not offered.
+    probe.disable(&["confirm"], cx);
+    assert_eq!(last_focused(&probe, cx), None);
+    probe.disable(&[], cx);
+    press_tab(cx, false);
+    assert_eq!(last_focused(&probe, cx), Some("field"));
+    probe.dismiss(Dismissal::Escape, cx);
+    assert_eq!(last_focused(&probe, cx), None);
+}
+
 #[gpui::test]
 fn every_dismissal_returns_focus_to_the_trigger(cx: &mut TestAppContext) {
     let (probe, cx) = rename(cx);

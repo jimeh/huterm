@@ -484,15 +484,23 @@ pub(crate) fn render_close_dialog(
                         .child(model.subtitle.clone()),
                 ),
         );
+    // The list shrinks and scrolls in a window too short for its full
+    // height, so the footer stays in view.
     let list = div()
         .id("close-dialog-list")
+        .debug_selector(|| "close-dialog-list".to_owned())
         .flex()
         .flex_col()
-        .flex_none()
+        .flex_shrink_1()
+        .min_h_0()
         .p(px(6.0))
         .max_h(px(LIST_MAX_HEIGHT))
         .overflow_y_scroll()
-        .children(model.rows.iter().map(|row| dialog_row(row, swatch)));
+        .children(model.rows.iter().enumerate().map(|(index, row)| {
+            dialog_row(row, swatch).when(index + 1 == model.rows.len(), |row| {
+                row.debug_selector(|| "close-dialog-last-row".to_owned())
+            })
+        }));
     let danger = swatch.danger_fill();
     let cancel =
         button("cancel-close", "Cancel", swatch, hints.then_some("escape"))
@@ -780,6 +788,101 @@ mod tests {
         assert_eq!(
             model.subtitle,
             "This ends 8 running processes in every window."
+        );
+    }
+
+    /// A window whose content is the close dialog for `model`, its modal
+    /// open.
+    #[cfg(feature = "test-support")]
+    struct Host {
+        model: CloseDialogModel,
+        modal: Modal,
+        buttons: CloseButtons,
+    }
+
+    #[cfg(feature = "test-support")]
+    impl gpui::Render for Host {
+        fn render(
+            &mut self,
+            window: &mut Window,
+            _: &mut gpui::Context<'_, Self>,
+        ) -> impl IntoElement {
+            let theme = crate::config::Theme::default();
+            div().size_full().relative().child(render_close_dialog(
+                &self.model,
+                &self.modal,
+                &self.buttons,
+                window.viewport_size(),
+                super::super::overlay::tokens(&theme),
+                false,
+                |_, _| {},
+                |_, _| {},
+            ))
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    #[gpui::test]
+    fn a_short_window_scrolls_the_list_and_keeps_the_footer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+
+        let model = build(
+            CloseDialogTarget::Application,
+            vec![
+                known(
+                    Some("busy"),
+                    (1..=5).map(|pid| process("job", pid, pid == 1)).collect(),
+                ),
+                known(
+                    Some("also busy"),
+                    vec![process("a", 10, true), process("b", 11, false)],
+                ),
+            ],
+        );
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            let slot = Modal::new();
+            slot.open(&cx.focus_handle());
+            Host {
+                model,
+                modal: slot,
+                buttons: CloseButtons::new(cx),
+            }
+        });
+        cx.simulate_resize(gpui::size(px(640.0), px(260.0)));
+        cx.run_until_parked();
+        let list = cx.debug_bounds("close-dialog-list").expect("the list");
+        let height = cx.update(|window, _| window.viewport_size().height);
+        let row = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("close-dialog-last-row")
+                .expect("the last row")
+        };
+        let confirm = cx.debug_bounds("confirm-close").expect("the button");
+        // The window is too short to show every row.
+        assert!(row(cx).bottom() > confirm.top(), "{:?}", row(cx));
+        for _ in 0..20 {
+            cx.simulate_event(ScrollWheelEvent {
+                position: list.center(),
+                delta: ScrollDelta::Pixels(gpui::point(px(0.0), px(-40.0))),
+                modifiers: Modifiers::none(),
+                touch_phase: TouchPhase::Moved,
+            });
+        }
+        cx.run_until_parked();
+        let end = row(cx);
+        let confirm = cx.debug_bounds("confirm-close").expect("the button");
+        assert!(
+            end.top() >= list.top()
+                && end.bottom() <= list.bottom()
+                && end.bottom() <= confirm.top(),
+            "the last row {end:?} scrolls into the list {list:?}, above \
+             the footer button {confirm:?}"
+        );
+        assert!(
+            confirm.bottom() <= height,
+            "the footer button {confirm:?} stays inside the window's \
+             {height:?}"
         );
     }
 }

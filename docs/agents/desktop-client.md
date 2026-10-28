@@ -791,9 +791,12 @@ top dialog draws in it: the close confirmation, else Licenses, else About.
 Every change of top dialog goes through `sync_dialog`, which opens the slot
 again for the new dialog, keyed by the confirmation's generation so each
 new confirmation opens on its primary button, and render calls it too
-before it mounts the guard, for a change that skipped it. Closing returns
-focus to the window's handle, unless focus already left the dialog, and the
-caller then focuses the terminal. The close confirmation is a bare
+before it mounts the guard, for a change that skipped it. Focus that
+returns to the dialog from elsewhere, such as a toast, goes to the control
+that last held it (`Modal::last_focused`), so Cancel stays Cancel, and else
+to the one it opens on. Closing returns focus to the window's handle,
+unless focus already left the dialog, and the caller then focuses the
+terminal. The close confirmation is a bare
 `AlertDialog` that opens on its primary button (`AlertDialog::initial_focus`);
 About and Licenses are bare `Dialog`s, whose content draws its own header
 and footer, and `LicensesView` draws its own with a clone of the slot's
@@ -803,7 +806,11 @@ the scrim covers only the content, rounded at its top corners
 closes on an outside press or on deactivation, so the guard's callback
 ignores the reason. In Licenses, a press that focuses nothing
 returns focus to the search, and so do Escape that clears the search and a
-selection that hides the focused Website or Copy button.
+selection or search change that hides the focused Website or Copy button.
+The `Palette` context wraps the buttons, so a printable key on a button
+(no Command or Control, not Space) types into the search through the
+content's key-down listener, and a forwarded text command focuses the
+search before it edits.
 Smoke state reads `dialog_focus`, `about_focus`, and `licenses_focus` from
 real focus.
 
