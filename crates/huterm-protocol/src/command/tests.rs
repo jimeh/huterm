@@ -24,6 +24,7 @@ fn catalog_entries_are_unique_and_described() {
                     "Palette"
                         | "Settings"
                         | "SettingsControl"
+                        | "SettingsGroup"
                         | "confirming"
                         | "menu"
                         | "notices"

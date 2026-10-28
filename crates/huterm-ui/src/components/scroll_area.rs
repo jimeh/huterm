@@ -16,8 +16,10 @@
 //! [`ContentBounds`], recorded as it painted, to [`ScrollArea::reveal`],
 //! which scrolls the smallest distance that shows the control and its focus
 //! ring fully, and nothing when they already show, even when called again
-//! before the area repaints. A control taller than the area shows from its
-//! top.
+//! before the area repaints. A control it scrolls to stops
+//! [`REVEAL_CLEARANCE`] from the edge, or as far as the area leaves room
+//! for, so a window's edge or hairline cannot cover the ring. A control
+//! taller than the area shows from its top.
 //!
 //! Accessibility: a `ScrollView` node; the content reports its own nodes.
 
@@ -155,11 +157,17 @@ impl ContentBounds {
     }
 }
 
+/// How far [`ScrollArea::reveal`] keeps a control it scrolls to, with its
+/// focus ring, from the viewport's edge.
+pub const REVEAL_CLEARANCE: Pixels = gpui::px(8.0);
+
 /// The vertical offset, from the current `offset` (zero or less, down to
 /// `-max`), that shows `target` with its focus ring inside `viewport` while
-/// moving it the least: its top to the viewport's top when it sits above,
-/// its bottom to the viewport's bottom when below, and its top to the top
-/// when it is taller than the viewport.
+/// moving it the least: its top near the viewport's top when it sits above,
+/// its bottom near the viewport's bottom when below, and its top to the top
+/// when it is taller than the viewport. A target whose ring already shows
+/// stays; one that moves keeps [`REVEAL_CLEARANCE`] from the edge, where a
+/// window's edge or hairline would otherwise cover its ring.
 #[must_use]
 pub fn reveal_offset(
     viewport: Bounds<Pixels>,
@@ -171,10 +179,14 @@ pub fn reveal_offset(
     let reach = size::FOCUS_RING + gpui::px(1.0);
     let top = target.top() - reach;
     let bottom = target.bottom() + reach;
+    // No more than the viewport leaves around the target, split between
+    // its edges, so the clearance never pushes the far edge's ring out.
+    let clearance = REVEAL_CLEARANCE
+        .min(((viewport.size.height - (bottom - top)) / 2.0).max(Pixels::ZERO));
     let shift = if top < viewport.top() || bottom - top > viewport.size.height {
-        viewport.top() - top
+        viewport.top() - (top - clearance)
     } else if bottom > viewport.bottom() {
-        viewport.bottom() - bottom
+        viewport.bottom() - (bottom + clearance)
     } else {
         Pixels::ZERO
     };
@@ -205,7 +217,7 @@ mod tests {
         div, point, prelude::*, px, size,
     };
 
-    use super::{ContentBounds, ScrollArea, reveal_offset};
+    use super::{ContentBounds, REVEAL_CLEARANCE, ScrollArea, reveal_offset};
     use crate::list_scrollbar::ListScrollbar;
     use crate::testing::{a11y_node, tokens};
 
@@ -330,12 +342,18 @@ mod tests {
 
     #[test]
     fn reveal_moves_the_least_that_shows_the_ring_too() {
-        // Inside, with room for the three-point ring: nothing moves.
+        // Inside, with room for the three-point ring: nothing moves, even
+        // nearer the edge than the clearance.
         assert_eq!(reveal(60.0, 20.0, -40.0, 300.0), -40.0);
-        // Below: its bottom and ring meet the viewport's bottom.
-        assert_eq!(reveal(140.0, 20.0, -40.0, 300.0), -53.0);
-        // Above: its top and ring meet the viewport's top.
-        assert_eq!(reveal(40.0, 20.0, -40.0, 300.0), -27.0);
+        assert_eq!(reveal(53.0, 20.0, -40.0, 300.0), -40.0);
+        // Below: its bottom and ring stop eight points above the
+        // viewport's bottom.
+        assert_eq!(reveal(140.0, 20.0, -40.0, 300.0), -61.0);
+        // Above: its top and ring stop eight points below the top.
+        assert_eq!(reveal(40.0, 20.0, -40.0, 300.0), -19.0);
+        // Nearly the viewport's height: the room left is split between
+        // the edges, so neither ring leaves the viewport.
+        assert_eq!(reveal(140.0, 90.0, -40.0, 300.0), -125.0);
         // Taller than the viewport: its top shows.
         assert_eq!(reveal(140.0, 150.0, -40.0, 300.0), -127.0);
         // The offset stays within the content.
@@ -361,8 +379,12 @@ mod tests {
         cx.run_until_parked();
         let painted = cx.debug_bounds("row-10").expect("row 10 painted");
         let viewport = scroll.bounds();
-        // Its bottom and ring meet the viewport's bottom.
-        assert_eq!(painted.bottom() + px(3.0), viewport.bottom());
+        // Its bottom and ring stop the clearance above the viewport's
+        // bottom.
+        assert_eq!(
+            painted.bottom() + px(3.0) + REVEAL_CLEARANCE,
+            viewport.bottom()
+        );
         let row = ContentBounds::record(&scroll, painted);
         assert!(
             !ScrollArea::reveal(&scroll, row),
@@ -385,7 +407,7 @@ mod tests {
         let row = ContentBounds::record(&scroll, painted);
         assert!(ScrollArea::reveal(&scroll, row));
         assert!(!ScrollArea::reveal(&scroll, row), "already revealed");
-        assert_eq!(scroll.offset().y, px(-123.0));
+        assert_eq!(scroll.offset().y, px(-131.0));
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
         let painted = cx.debug_bounds("row-10").expect("row 10 painted");

@@ -5,12 +5,21 @@ Status: in progress. Step 1 (the foundation), the components of steps 2, 3,
 3a (Settings buttons, links, switches, segmented controls, tri-states,
 modifier chips, tags, and counts), 3b (terminal-window buttons and
 tooltips), 4a (Settings text, search, and number fields, units, the
-Quake width and height sliders, and `text_cut`), 7a (the Settings
-delete-profile alert dialog, which fixes D17), and 7c (the New profile and
-Rename profile dialogs, a rename written in one save) are implemented; 2b removed
+Quake width and height sliders, and `text_cut`), 6a (the Settings layout:
+the sidebar as vertical tabs, theme cards as a radio group, `Field`,
+`Item`, `Collapsible`, `Card`, `Alert`, and `Empty` rows, and Tab scrolling
+the focused control into view), 7a (the Settings delete-profile alert
+dialog, which fixes D17), and 7c (the New profile and Rename profile
+dialogs, a rename written in one save) are implemented; 2b removed
 `desktop/menu.rs` and its menu host (D13). 3a also moved the Keybindings
-filter and shortcut switches; the key recorders, theme cards, and sidebar
-rows keep their GPUI focus styles until their own migrations. 7a checks
+filter and shortcut switches; since 6a only the key recorders and their
+Add buttons keep their GPUI focus styles, until step 8, and the command
+search results are link `Item`s. 6a adds `settings_next` and
+`settings_previous`, bound to the arrows under their own `SettingsGroup`
+context, which the sidebar's tabs, the theme cards, and the modifier chips
+nest inside their `SettingsControl` one, so Down and Right move forward and
+Up and Left back in each, wrapping, and rebinding the stepping commands
+never reaches them; the chips' Up and Down reversed. 7a checks
 whether a global shortcut uses the profile before asking, so Delete profile
 opens a refusal alert with only OK instead; a refusal found on Delete, such
 as a file that turned invalid meanwhile, takes the question's place.
@@ -143,7 +152,12 @@ list); theme cards show no focus despite the style at `controls.rs:467`,
 cause not yet diagnosed (radio cards and the focus ring token); a held key
 records a repeat and recording drops a shortcut's drafts (key recorder). The
 "Reloaded" footer after removing an `unbind` is Settings status logic, not a
-component.
+component. Migration 6a fixed the first three: keyboard focus scrolls the
+control it reaches into view through `ScrollArea::reveal`, the sidebar's
+arrows move between sections, and the theme cards draw `focus::ring`
+through `RadioGroup`. The cause of the missing `.focus()` ring was not
+diagnosed; the style is gone. The key recorder items wait for step 8, and
+the footer status for its own fix.
 
 From [#277][issue-277]: renaming a profile, like the New profile name
 field, is a `Field` and `InputGroup` composition, and the delete prompt
@@ -301,8 +315,8 @@ keyboard and focus, AppKit and GNOME for platform feel.
 | Settings buttons, links, dialog buttons, title-row icon buttons | Button (variants default, secondary, outline, ghost, destructive, and link; an icon size) | Adopt |
 | Switch | Switch | Adopt |
 | Segmented control, tri-state Default/On/Off | Toggle Group, single | Adopt one `ToggleGroup`; exposed to accessibility as a radio group. One tab stop; arrows move the selection and write, as a radio group does, which keeps today's stepping |
-| Modifier chips | Toggle Group, multiple | Adopt the same `ToggleGroup`. **Changes** the chips from one tab stop each to one roving tab stop, as Radix and Base UI toggle groups have: Left and Right move between chips, Space toggles one. The group keeps the `SettingsControl` context and its commands: on a multiple group, `settings_increase` and `settings_decrease` (Up, Right, Down, and Left) move focus between chips, wrapping at the ends as Radix's roving focus does, instead of stepping, and `settings_toggle` toggles the focused chip, so no context or command is added. Each chip keeps its own focus handle, and only the focused one is a tab stop |
-| Theme cards | Radio Group | Adopt `RadioGroup` with a card variant; the color preview stays custom |
+| Modifier chips | Toggle Group, multiple | Adopt the same `ToggleGroup`. **Changes** the chips from one tab stop each to one roving tab stop, as Radix and Base UI toggle groups have: Left and Right move between chips, Space toggles one. Migration 3a moved focus between chips with `settings_increase` and `settings_decrease`; since 6a the chips take the `SettingsGroup` context, as the sidebar and theme cards do, and `settings_next` (Down and Right) and `settings_previous` (Up and Left) move focus between them, wrapping at the ends as Radix's roving focus does, while `settings_toggle` toggles the focused chip. Each chip keeps its own focus handle, and only the focused one is a tab stop |
+| Theme cards | Radio Group | Adopt `RadioGroup` with a card variant; the color preview stays custom. One tab stop; `settings_next` and `settings_previous` move between cards and choose the theme they reach (6a) |
 | Select | Select | Adopt |
 | Window menu, tab and terminal context menus | Dropdown Menu, Context Menu | Adopt one `Menu` with both triggers |
 | Text field | Input | Adopt (`Input`, the hardened `TextField`) |
@@ -313,10 +327,10 @@ keyboard and focus, AppKit and GNOME for platform feel.
 | Quake `width` and `height` number fields (fractions, greater than 0 through 1) | Slider | **Change:** a percent slider from 5% to 100% in 5% steps with a value readout; the settings plan's PR 5 mockup already drew sliders. The schema's minimum is exclusive, so the slider's minimum is one step, and Home, a drag past the left edge, and stepping down all stop there, never writing 0. A file value off the grid shows as is, and the first step moves it to the next grid value in that direction; a value below 5%, such as 0.02, steps to 5% in either direction, since the floor is the nearest valid grid value. Settings picks the slider from schema metadata (`x-huterm-control = "slider"` with `x-huterm-step`), which the `Profile` fields carry, so the per-profile copies get it too. |
 | Key recorder | none | **Keep custom** `KeyRecorder`; its key caps use `Kbd` |
 | Key caps, shortcut hints | Kbd | Adopt `Kbd` |
-| Settings sidebar | Tabs, vertical (shadcn's Sidebar is an app shell) | **Change:** vertical `Tabs`, so Up and Down move between sections as Radix Tabs do (#276) |
+| Settings sidebar | Tabs, vertical (shadcn's Sidebar is an app shell) | **Change:** vertical `Tabs`, so the arrows move between sections and show them, as Radix Tabs do (#276): `settings_next` on Down and Right, `settings_previous` on Up and Left (6a). Tab from the sidebar enters the section, before the footer's links |
 | Keybinding command rows that expand | Collapsible, inside an Item | Adopt |
 | Setting rows (label, description, control, error) | Field | Adopt |
-| Keybinding, global shortcut, and profile rows | Item | Adopt |
+| Keybinding, global shortcut, and profile rows | Item | Adopt. In 6a the `unbind` rows, which draw their key caps through `Item::title_element`, and the search rows for keybindings, global shortcuts, and Quake profiles are `Item`s; the command search results are link `Item`s (`Item::link`), as shadcn/ui renders an Item as an anchor; the Quake section's global shortcut rows keep their layout, since every part of them is a control and an `Item` needs a title |
 | Groups of rows | Card | Adopt |
 | Default and Custom tags, sidebar counts, menu badges | Badge | Adopt |
 | Invalid-file banner, conflict notes | Alert | Adopt |
@@ -550,7 +564,12 @@ A modal popover's backdrop also takes wheel events, so the page does not
 scroll away from an open select, as in AppKit and Radix. Content scrolls
 within `max_height` with the existing list scrollbar. `ScrollArea` gains
 `reveal(bounds)`, which scrolls the smallest distance that shows a focused
-control fully; Tab and Shift-Tab call it (#276).
+control fully, with its ring, and leaves 8 points between it and the edge
+it scrolled toward so a window's edge cannot cover the ring; Tab and
+Shift-Tab call it (#276). In Settings (6a) every
+keyboard focus move in the pane calls it once the frame that drew the
+control's ring has painted, with the bounds `focus::ring` records as it
+paints (`focus::ring_bounds`); a pointer press scrolls nothing.
 
 ## Accessibility
 
@@ -693,10 +712,11 @@ has room for one more field at most:
     on blur, Escape puts back the value, Enter saves the typed name while no
     suggestion is highlighted, and picking a row writes once with no blur
     commit before it;
-  - `Tabs` moves between Settings sections with Up and Down; a multiple
+  - `Tabs` moves between Settings sections with the arrows; a multiple
     `ToggleGroup` moves focus with the arrow keys, wrapping, without writing,
-    toggles with Space, and refuses to turn off the last modifier, all
-    through the existing `SettingsControl` commands;
+    toggles with Space, and refuses to turn off the last modifier; since 6a
+    both, and the theme cards, move through `settings_next` and
+    `settings_previous`, which bind only under `SettingsGroup`;
   - Return in a condition field completes the highlighted context, while
     the font field, with `auto_highlight` off, saves the typed name;
   - a disabled or read-only control refuses pointer, keyboard, and

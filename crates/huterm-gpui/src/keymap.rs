@@ -1004,9 +1004,13 @@ fn notice_defaults() -> Vec<BindingEntry> {
 /// arrows still reach a focused text field, whose `Palette` context handles
 /// them. Page Up, Page Down, Home, and End match only on a slider: a number
 /// field's `Palette` context pages it and keeps Home and End for its text,
-/// and on any other control the keys stay unbound. The window also reads
-/// the close and tab-switching shortcuts, so they need no bindings of their
-/// own.
+/// and on any other control the keys stay unbound. A roving group's items
+/// nest a `SettingsGroup` context inside their `SettingsControl` one, where
+/// the arrows move between the items instead of stepping: Down and Right
+/// forward, Up and Left back. Those bindings match deeper than any
+/// `SettingsControl` one, so rebinding the stepping commands never reaches
+/// the groups, nor the reverse. The window also reads the close and
+/// tab-switching shortcuts, so they need no bindings of their own.
 fn settings_defaults(platform: Platform) -> Vec<BindingEntry> {
     let mut entries = vec![
         default("tab", ids::SETTINGS_FOCUS_NEXT, "Next Control"),
@@ -1025,6 +1029,10 @@ fn settings_defaults(platform: Platform) -> Vec<BindingEntry> {
         on_slider("pagedown", ids::SETTINGS_PAGE_DOWN, "Page Down"),
         on_slider("home", ids::SETTINGS_FIRST, "Minimum"),
         on_slider("end", ids::SETTINGS_LAST, "Maximum"),
+        default("down", ids::SETTINGS_NEXT, "Next Item"),
+        default("right", ids::SETTINGS_NEXT, "Next Item"),
+        default("up", ids::SETTINGS_PREVIOUS, "Previous Item"),
+        default("left", ids::SETTINGS_PREVIOUS, "Previous Item"),
     ];
     entries.extend(match platform {
         Platform::MacOs => [

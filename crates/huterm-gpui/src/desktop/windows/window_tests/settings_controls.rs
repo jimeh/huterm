@@ -312,14 +312,17 @@ fn arrows_move_between_modifier_chips_and_space_toggles_one(
         view.action_handle(&format!("{path}:{first}"))
             .focus(window, cx);
     });
-    // Right and Left move focus, wrapping at both ends, and write nothing.
+    // Down and Right move focus on, Up and Left back, wrapping at both
+    // ends, and write nothing.
     keys(&harness, "right");
     focused(&mut harness, "alt");
     keys(&harness, "left left");
     focused(&mut harness, "shift");
     keys(&harness, "down");
-    focused(&mut harness, "alt");
-    keys(&harness, "up up");
+    focused(&mut harness, first);
+    keys(&harness, "up");
+    focused(&mut harness, "shift");
+    keys(&harness, "down");
     focused(&mut harness, first);
     assert!(harness.cx.update(settled));
     assert_eq!(file.text(), "");

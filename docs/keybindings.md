@@ -167,7 +167,8 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `palette` | The window owns an open command palette. |
 | `Palette` | The command palette or the About panel's Licenses view is open and has focus, or a Settings text field has focus. |
 | `Settings` | The Settings window has focus. |
-| `SettingsControl` | A Settings switch, select, segmented control, slider, modifier chip, button, or section has focus. |
+| `SettingsControl` | A Settings switch, select, segmented control, slider, modifier chip, theme card, button, or section has focus. |
+| `SettingsGroup` | A Settings section, theme card, or modifier chip has focus. It sits inside that item's `SettingsControl`, so a binding under it matches deeper and wins over a `SettingsControl` binding on the same key. |
 | `control` | `slider` while a Settings slider has focus, so `SettingsControl && control == slider` matches sliders alone. |
 
 Most contexts are bare words for the state of the view or window, such as
@@ -220,7 +221,8 @@ palette prompts for them where a command needs one, and omitted targets
 default to the invoking window's active tab, workspace, or session.
 Palette-scope commands imply the `Palette` context, and dialog, menu, and
 notice commands imply `confirming`, `menu`, and `notices`. Settings commands
-imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
+imply `Settings`, `SettingsControl`, or `SettingsGroup`. User bindings for
+them need no `when`.
 
 | Command | Scope | Arguments |
 | --- | --- | --- |
@@ -308,12 +310,14 @@ imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 | `settings_focus_next` | Window | Bound only while `Settings`. |
 | `settings_focus_previous` | Window | Bound only while `Settings`. |
 | `settings_toggle` | Window | Bound only while `SettingsControl`. Toggles a switch or modifier chip, opens a select, presses a button, or shows the focused section. |
-| `settings_increase` | Window | Bound only while `SettingsControl`. Steps the focused control, or moves to the next modifier chip; a switch ignores it. |
-| `settings_decrease` | Window | Bound only while `SettingsControl`. Steps the focused control back, or moves to the previous modifier chip; a switch ignores it. |
+| `settings_increase` | Window | Bound only while `SettingsControl`. Steps the focused control; a switch, section, theme card, or modifier chip ignores it. |
+| `settings_decrease` | Window | Bound only while `SettingsControl`. Steps the focused control back; a switch, section, theme card, or modifier chip ignores it. |
 | `settings_page_up` | Window | Bound only while `SettingsControl`. Steps the focused slider up one page, a tenth of its range; other controls ignore it. |
 | `settings_page_down` | Window | Bound only while `SettingsControl`. Steps the focused slider down one page, a tenth of its range; other controls ignore it. |
 | `settings_first` | Window | Bound only while `SettingsControl`. Moves the focused slider to its minimum; other controls ignore it. |
 | `settings_last` | Window | Bound only while `SettingsControl`. Moves the focused slider to its maximum; other controls ignore it. |
+| `settings_next` | Window | Bound only while `SettingsGroup`. Moves to the next section, theme, or modifier chip of the focused group, wrapping from the last to the first; a section or theme it reaches is shown or chosen. Other controls ignore it. |
+| `settings_previous` | Window | Bound only while `SettingsGroup`. Moves to the previous section, theme, or modifier chip of the focused group, wrapping from the first to the last; a section or theme it reaches is shown or chosen. Other controls ignore it. |
 | `settings_reset` | Window | Bound only while `SettingsControl`. |
 | `palette_select_next` | Palette | Also steps a focused Settings number field down. |
 | `palette_select_previous` | Palette | Also steps a focused Settings number field up. |
@@ -533,12 +537,25 @@ the terminal.
 These bind only in the Settings window. `settings_toggle` turns a switch on or
 off; `settings_increase` and `settings_decrease` step a segmented control and
 leave a switch alone. They step a Default, On, Off control in that order and
-stop at the ends; stepping to Default removes the setting, as Reset does. The
-link modifier chips are one tab stop: the two step commands move between the
-chips, wrapping at the ends, and `settings_toggle` turns the focused one on or
-off. Enter and Space reach a switch, segmented control, chip, or button only
-through these bindings, so removing a binding removes its key there; the
-remaining Settings controls follow in later migrations.
+stop at the ends; stepping to Default removes the setting, as Reset does.
+
+The sidebar's sections, the theme cards, and the link modifier chips are
+roving groups: each is one tab stop, and its items take the `SettingsGroup`
+context. On a group, `settings_next` (Down and Right) and `settings_previous`
+(Up and Left) move between its items and wrap at the ends. They bind under
+`SettingsGroup`, so the arrows keep stepping every other control, and since
+that context sits inside the item's `SettingsControl`, they win over any
+`SettingsControl` binding on the same key: binding an arrow to a stepping
+command leaves the groups their arrows, and binding `settings_next` to
+another key leaves the stepping alone.
+Moving to a section shows it, and moving to a theme card chooses that theme.
+`settings_toggle` turns the focused modifier chip on or off. Tab from the
+sidebar moves into the shown section's first control, and Shift-Tab from that
+control returns to the sidebar; the footer's links come after the section.
+Moving focus with the keyboard scrolls the focused control into view; a click
+does not. Enter and Space reach a switch, segmented control, chip, theme card,
+section, or button only through these bindings, so removing a binding removes
+its key there; the key recorders follow in a later migration.
 
 The window's text fields take the `Palette` context, so the palette bindings
 edit them: `palette_confirm` saves a field, or from the search field moves to
@@ -573,4 +590,6 @@ also reads `close_window`, `close_tab`, and `close_pane` as closing it, and
 | `settings_page_down` | `pagedown` | `pagedown` |
 | `settings_first` | `home` | `home` |
 | `settings_last` | `end` | `end` |
+| `settings_next` | `down`, `right` | `down`, `right` |
+| `settings_previous` | `up`, `left` | `up`, `left` |
 | `settings_reset` | `cmd-backspace` | `ctrl-backspace` |

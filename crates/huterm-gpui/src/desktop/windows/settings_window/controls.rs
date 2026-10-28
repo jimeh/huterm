@@ -7,6 +7,7 @@ use gpui::{
 };
 use huterm_config::settings::{Choice, Control, Setting, SettingKind};
 use huterm_ui::components::number_field::Format;
+use huterm_ui::components::radio_group::RadioGroup;
 use huterm_ui::components::select::Select;
 use huterm_ui::components::slider::Slider;
 use huterm_ui::components::switch::Switch;
@@ -59,7 +60,7 @@ impl SettingsView {
         let locked = read_only.is_some();
         match special(&setting.path) {
             Some(Special::ThemePicker) => {
-                return self.render_themes(setting, locked, swatch, cx);
+                return self.render_themes(setting, read_only, swatch, cx);
             }
             // Search results lead to the section's editors.
             Some(Special::GlobalShortcuts | Special::QuakeProfiles) => {
@@ -502,9 +503,12 @@ impl SettingsView {
     }
 
     /// The link modifiers as a multiple toggle group: one roving tab stop,
-    /// whose arrows `SettingsView::run` routes between the chips. The chip
-    /// that would leave no modifier refuses, as a link needs one, and says
-    /// so; it stays focusable, as the roving stop may rest on it.
+    /// whose chips' `SettingsGroup` context, nested inside a
+    /// `SettingsControl` wrapper, binds the arrows to `settings_next` and
+    /// `settings_previous`, which `SettingsView::run` routes between the
+    /// chips. The chip that would leave no modifier refuses, as a link needs
+    /// one, and says so; it stays focusable, as the roving stop may rest on
+    /// it.
     fn render_modifiers(
         &mut self,
         setting: &'static Setting,
@@ -523,7 +527,7 @@ impl SettingsView {
             setting.label.clone(),
             swatch,
         )
-        .key_context("SettingsControl");
+        .key_context("SettingsGroup");
         for modifier in offered_modifiers() {
             let on = held.split('-').any(|token| token == *modifier);
             let handle =
@@ -538,7 +542,7 @@ impl SettingsView {
                 group = group.description("Keep at least one modifier");
             }
         }
-        group
+        let group = group
             .when_some(read_only, |group, reason| group.disabled(Some(reason)))
             .on_select(Self::listen(
                 cx,
@@ -549,42 +553,60 @@ impl SettingsView {
                     }
                     view.act(&key, window, cx);
                 },
-            ))
+            ));
+        // Sized as the group is, so the wrapper changes no layout.
+        div()
+            .key_context("SettingsControl")
+            .flex()
+            .flex_none()
+            .child(group)
             .into_any_element()
     }
 
-    /// Cards for every theme `[theme] name` can select, and a note on the
-    /// color overrides the file sets on top.
+    /// Cards for every theme `[theme] name` can select, as a radio group
+    /// whose cards' `SettingsGroup` context, nested inside the block's
+    /// `SettingsControl`, binds the arrows to `settings_next` and
+    /// `settings_previous`, which choose the theme they reach, and a note on
+    /// the color overrides the file sets on top. `read_only` says
+    /// why the cards cannot change, when they cannot.
     fn render_themes(
         &mut self,
         setting: &'static Setting,
-        read_only: bool,
+        read_only: Option<SharedString>,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let selected = self.selected_theme();
-        let mut cards = div().flex().flex_wrap().gap(px(8.0));
         let themes = self.themes.clone();
+        let mut cards =
+            RadioGroup::new("settings-themes", setting.label.clone(), swatch)
+                .card(px(116.0))
+                .key_context("SettingsGroup");
         for (name, preview) in &themes {
-            let on = *name == selected;
-            let key = format!("theme:{name}");
-            let handle = self.action_stop(key.clone(), cx).tab_stop(!read_only);
-            cards = cards.child(
-                theme_card(name, preview.as_ref(), on, read_only, swatch)
-                    .track_focus(&handle)
-                    .key_context("SettingsControl")
-                    .focus(|style| style.shadow(swatch.focus_ring()))
-                    .when(!read_only && !on, |card| {
-                        card.on_click(cx.listener(
-                            move |view, _, window, cx| {
-                                handle.focus(window, cx);
-                                view.act(&key, window, cx);
-                            },
-                        ))
-                    }),
+            let handle = self.action_stop(format!("theme:{name}"), cx);
+            cards = cards.option(
+                name.clone(),
+                name.clone(),
+                *name == selected,
+                &handle,
             );
+            if let Some(preview) = preview {
+                cards = cards.content(theme_preview(preview));
+            }
         }
-        let _ = setting;
+        let locked = read_only.is_some();
+        let cards = cards
+            .when_some(read_only, |cards, reason| cards.disabled(Some(reason)))
+            .on_select(Self::listen(
+                cx,
+                move |view, name: SharedString, window, cx| {
+                    let key = format!("theme:{name}");
+                    if let Some(handle) = view.actions.get(&key) {
+                        handle.clone().focus(window, cx);
+                    }
+                    view.act(&key, window, cx);
+                },
+            ));
         let overrides: Vec<String> = self
             .file
             .get("theme")
@@ -594,16 +616,17 @@ impl SettingsView {
             })
             .unwrap_or_default();
         div()
+            .key_context("SettingsControl")
             .flex()
             .flex_col()
             .gap(px(8.0))
             .w_full()
-            .when(read_only, |block| block.opacity(0.5))
             .when(!overrides.is_empty(), |block| {
                 block.child(
                     div()
                         .text_size(px(11.5))
                         .text_color(swatch.warning_text())
+                        .when(locked, |note| note.opacity(0.5))
                         .child(format!(
                             "Your [theme] sets {}, which applies on top of any theme.",
                             overrides.join(", ")
@@ -615,52 +638,22 @@ impl SettingsView {
     }
 }
 
-/// A theme's card: a strip of its colors over its background, and its
-/// name.
-fn theme_card(
-    name: &str,
-    preview: Option<&Theme>,
-    on: bool,
-    read_only: bool,
-    swatch: Swatch,
-) -> gpui::Stateful<gpui::Div> {
+/// A theme's preview: a strip of its colors over its background.
+fn theme_preview(theme: &Theme) -> gpui::Div {
     let bar = |width: f32, rgb| {
         div().w(px(width)).h(px(4.0)).rounded_full().bg(color(rgb))
     };
     div()
-        .id(id(format!("settings-theme-{name}")))
-        .w(px(116.0))
+        .h(px(40.0))
+        .rounded(px(4.0))
+        .p(px(6.0))
         .flex()
         .flex_col()
         .gap(px(4.0))
-        .p(px(4.0))
-        .rounded(px(7.0))
-        .border_1()
-        .border_color(if on { swatch.accent } else { swatch.line })
-        .when(!on && !read_only, |card| {
-            card.hover(|style| style.border_color(swatch.line_strong))
-        })
-        .children(preview.map(|theme| {
-            div()
-                .h(px(40.0))
-                .rounded(px(4.0))
-                .p(px(6.0))
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .bg(color(theme.background))
-                .child(bar(50.0, theme.ansi[2]))
-                .child(bar(80.0, theme.foreground))
-                .child(bar(36.0, theme.ansi[4]))
-        }))
-        .child(
-            div()
-                .px(px(2.0))
-                .text_size(px(11.5))
-                .text_color(swatch.fg)
-                .truncate()
-                .child(name.to_owned()),
-        )
+        .bg(color(theme.background))
+        .child(bar(50.0, theme.ansi[2]))
+        .child(bar(80.0, theme.foreground))
+        .child(bar(36.0, theme.ansi[4]))
 }
 
 /// A slider's readout: the value with its unit, or without one a percent,
