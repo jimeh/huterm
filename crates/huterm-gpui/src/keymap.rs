@@ -1079,6 +1079,7 @@ fn palette_defaults(platform: Platform) -> Vec<BindingEntry> {
     match platform {
         Platform::MacOs => entries.extend([
             default("cmd-a", ids::TEXT_SELECT_ALL, "Select All"),
+            default("cmd-x", ids::TEXT_CUT, "Cut"),
             default("cmd-c", ids::TEXT_COPY, "Copy"),
             default("cmd-v", ids::TEXT_PASTE, "Paste"),
             default("ctrl-a", ids::TEXT_LINE_START, "Line Start"),
@@ -1110,6 +1111,8 @@ fn palette_defaults(platform: Platform) -> Vec<BindingEntry> {
         ]),
         Platform::Linux => entries.extend([
             default("ctrl-a", ids::TEXT_SELECT_ALL, "Select All"),
+            default("ctrl-x", ids::TEXT_CUT, "Cut"),
+            default("ctrl-shift-x", ids::TEXT_CUT, "Cut"),
             default("ctrl-c", ids::TEXT_COPY, "Copy"),
             default("ctrl-shift-c", ids::TEXT_COPY, "Copy"),
             default("ctrl-v", ids::TEXT_PASTE, "Paste"),

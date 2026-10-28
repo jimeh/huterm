@@ -2,16 +2,21 @@
 //! controls the override table names.
 
 use gpui::{
-    AnyElement, Context, ElementId, Focusable as _, SharedString, Window,
-    canvas, div, prelude::*, px,
+    AnyElement, Context, ElementId, SharedString, Window, canvas, div,
+    prelude::*, px,
 };
-use huterm_config::settings::{Choice, Setting, SettingKind};
+use huterm_config::settings::{Choice, Control, Setting, SettingKind};
+use huterm_ui::components::number_field::Format;
 use huterm_ui::components::select::Select;
+use huterm_ui::components::slider::Slider;
 use huterm_ui::components::switch::Switch;
 use huterm_ui::components::toggle_group::ToggleGroup;
 use toml::Value;
 
 use super::super::super::overlay::Swatch;
+use super::super::super::settings::values::{
+    self, as_number, number, number_value,
+};
 use super::super::super::settings::{Special, special};
 use super::{
     SEGMENTED_MAX, SettingsView, TRI_STATES, modifier_label, offered_modifiers,
@@ -79,12 +84,16 @@ impl SettingsView {
                 return self.render_modifiers(setting, read_only, swatch, cx);
             }
             Some(Special::FontPicker) => {
-                return self.render_font(setting, locked, swatch, window, cx);
+                return self
+                    .render_font(setting, read_only, swatch, window, cx);
             }
             Some(Special::Size) => {
-                return self.render_field(setting, locked, swatch, window, cx);
+                return self.render_field(setting, read_only, window, cx);
             }
             None => {}
+        }
+        if setting.control == Some(Control::Slider) {
+            return self.render_slider(setting, read_only, swatch, cx);
         }
         match &setting.kind {
             SettingKind::Bool if self.has_default(setting) => {
@@ -102,7 +111,7 @@ impl SettingsView {
             SettingKind::Integer { .. }
             | SettingKind::Number { .. }
             | SettingKind::Text { .. } => {
-                self.render_field(setting, locked, swatch, window, cx)
+                self.render_field(setting, read_only, window, cx)
             }
             SettingKind::Compound => div().into_any_element(),
         }
@@ -362,56 +371,39 @@ impl SettingsView {
             .into_any_element()
     }
 
+    /// A setting's text or number field: a `huterm-ui` input, or a number
+    /// field with its unit and steppers. `read_only` disables it with that
+    /// reason, so a press takes no focus and typing does nothing.
     pub(super) fn render_field(
         &mut self,
         setting: &'static Setting,
-        read_only: bool,
-        swatch: Swatch,
+        read_only: Option<SharedString>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
         let field = self.field(setting, window, cx);
-        let _ = field.read(cx).focus_handle(cx).tab_stop(!read_only);
-        let width = match (&setting.kind, special(path)) {
-            (SettingKind::Text { .. }, _) => 180.0,
-            (_, Some(Special::Size)) => 120.0,
-            _ => 90.0,
-        };
         let invalid = self.errors.contains_key(path);
+        field.update(cx, |field, cx| {
+            field.set_disabled(read_only.is_some(), read_only, cx);
+            field.set_invalid(invalid, cx);
+        });
+        let (width, control) = match self.numbers.get(path) {
+            Some(number) => (150.0, number.clone().into_any_element()),
+            None => (
+                if special(path) == Some(Special::Size) {
+                    120.0
+                } else {
+                    180.0
+                },
+                field.into_any_element(),
+            ),
+        };
         div()
-            .flex()
             .flex_none()
-            .items_center()
-            .gap(px(6.0))
-            .child(
-                div()
-                    .w(px(width))
-                    .h(px(24.0))
-                    .px(px(6.0))
-                    .flex()
-                    .items_center()
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(if invalid {
-                        swatch.danger
-                    } else {
-                        swatch.line_strong
-                    })
-                    .bg(swatch.bg)
-                    .text_size(px(12.5))
-                    .key_context("Palette")
-                    .when(read_only, |control| control.opacity(0.5))
-                    .child(field),
-            )
-            .when_some(setting.unit.clone(), |row, unit| {
-                row.child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(swatch.muted)
-                        .child(unit),
-                )
-            })
+            .w(px(width))
+            .key_context("Palette")
+            .child(control)
             .into_any_element()
     }
 
@@ -419,20 +411,21 @@ impl SettingsView {
     fn render_font(
         &mut self,
         setting: &'static Setting,
-        read_only: bool,
+        read_only: Option<SharedString>,
         swatch: Swatch,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let path = setting.path.as_str();
-        let field = self.render_field(setting, read_only, swatch, window, cx);
+        let locked = read_only.is_some();
+        let field = self.render_field(setting, read_only, window, cx);
         let pick = self.select(
             format!("settings-fonts-{path}"),
             path,
             "Installed fonts".to_owned(),
             "Installed".to_owned(),
             Opener::Action(format!("fonts:{path}")),
-            read_only,
+            locked,
             px(0.0),
             swatch,
             cx,
@@ -445,6 +438,48 @@ impl SettingsView {
             .child(field)
             .child(pick)
             .into_any_element()
+    }
+
+    /// A slider for a setting whose schema asks for one, with its value as
+    /// a readout. A value off the grid shows as is; the arrows, as
+    /// `settings_increase` and `settings_decrease`, step it along the grid.
+    fn render_slider(
+        &mut self,
+        setting: &'static Setting,
+        read_only: Option<SharedString>,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let Some(steps) = values::steps(setting) else {
+            return div().into_any_element();
+        };
+        let path = setting.path.as_str();
+        let value = self
+            .value(setting)
+            .as_ref()
+            .and_then(as_number)
+            .unwrap_or_else(|| steps.min());
+        let handle = self.stop(path, cx);
+        let focus = handle.clone();
+        Slider::new(
+            id(format!("settings-slider-{path}")),
+            setting.label.clone(),
+            value,
+            steps,
+            &handle,
+            swatch,
+        )
+        .readout(readout(setting, value))
+        .key_context("SettingsControl")
+        .when_some(read_only, |slider, reason| slider.disabled(Some(reason)))
+        .on_change(Self::listen(cx, move |view, value: f64, window, cx| {
+            focus.focus(window, cx);
+            let value = number_value(setting, value);
+            if !view.holds(setting, &value) {
+                view.write(setting, Some(value), cx);
+            }
+        }))
+        .into_any_element()
     }
 
     /// The link modifiers as a multiple toggle group: one roving tab stop,
@@ -607,6 +642,19 @@ fn theme_card(
                 .truncate()
                 .child(name.to_owned()),
         )
+}
+
+/// A slider's readout: the value with its unit, or without one a percent,
+/// as the Quake window's fractions read.
+fn readout(setting: &Setting, value: f64) -> String {
+    if let Some(unit) = &setting.unit {
+        return format!("{} {unit}", number(value));
+    }
+    let percent = Format {
+        scale: 100.0,
+        decimals: 1,
+    };
+    format!("{}%", percent.text(value))
 }
 
 /// Whether a choice fits a segmented control.

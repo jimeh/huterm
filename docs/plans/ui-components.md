@@ -3,11 +3,15 @@
 Status: in progress. Step 1 (the foundation), the components of steps 2, 3,
 and 4, and migrations 2a (Settings selects), 2b (terminal-window menus),
 3a (Settings buttons, links, switches, segmented controls, tri-states,
-modifier chips, tags, and counts), and 3b (terminal-window buttons and
-tooltips) are implemented; 2b removed `desktop/menu.rs` and its menu host
-(D13). 3a also moved the Keybindings filter and shortcut switches; the key
-recorders, delete prompt, theme cards, and sidebar rows keep their GPUI
-focus styles until their own migrations.
+modifier chips, tags, and counts), 3b (terminal-window buttons and
+tooltips), and 4a (Settings text, search, and number fields, units, the
+Quake width and height sliders, and `text_cut`) are implemented; 2b removed
+`desktop/menu.rs` and its menu host (D13). 3a also moved the Keybindings
+filter and shortcut switches; the key recorders, delete prompt, theme cards,
+and sidebar rows keep their GPUI focus styles until their own migrations.
+4a leaves Page Up, Page Down, Home, and End without Settings commands until
+those are decided, and keybinding argument fields stay `Input`s with their
+own clamped stepping.
 Approved on 2026-10-27 after four Codex and Claude review rounds, then
 revised for a separate crate, the terminal window's adoption, and
 normalization against shadcn/ui, which three more review rounds checked.
@@ -816,6 +820,12 @@ after step 3. Step 2a's `keymap.rs` change is one line in `menu_defaults`;
 it rebases on #256 if #256 has merged. Each PR updates its components'
 contracts, the gallery, and the relevant agent guide, and closes the items
 from #276 or #277 that it covers.
+
+## Follow-ups
+
+- Space on a Default/On/Off control toggles between On and Off and never
+  selects Default; tri-states need radio-style activation (Space selects the
+  focused option).
 
 ## Non-goals
 

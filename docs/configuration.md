@@ -41,7 +41,11 @@ Tab moves between controls, Space or Return toggles a switch or opens a
 select, the arrow keys step a segmented control and move between the link
 modifier chips but leave a switch alone, Cmd+Backspace on macOS or
 Ctrl+Backspace on Linux resets the focused setting, and Return in the search
-field moves to the first match.
+field moves to the first match. Number fields keep to their setting's range:
+Up and Down and the + and − buttons step within it, and a typed number
+outside it saves as the nearest end. A Quake profile's width and height are
+sliders from 5% to 100% in 5% steps; a value the file sets off that grid
+shows as it is, and the first step moves it onto the grid.
 
 ## Schema
 

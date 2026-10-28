@@ -671,10 +671,12 @@
           "maximum": 1,
           "type": "number",
           "x-huterm-apply": "later_events",
+          "x-huterm-control": "slider",
           "x-huterm-group": "Profile",
           "x-huterm-label": "Height",
           "x-huterm-order": 30,
           "x-huterm-section": "quake",
+          "x-huterm-step": 0.05,
           "x-huterm-visible-when": {
             "equals": false,
             "setting": "fullscreen"
@@ -712,10 +714,12 @@
           "maximum": 1,
           "type": "number",
           "x-huterm-apply": "later_events",
+          "x-huterm-control": "slider",
           "x-huterm-group": "Profile",
           "x-huterm-label": "Width",
           "x-huterm-order": 20,
           "x-huterm-section": "quake",
+          "x-huterm-step": 0.05,
           "x-huterm-visible-when": {
             "equals": false,
             "setting": "fullscreen"
@@ -891,6 +895,7 @@
                 "text_line_start",
                 "text_line_end",
                 "text_select_all",
+                "text_cut",
                 "text_copy",
                 "text_paste",
                 "unbind"
@@ -7474,6 +7479,57 @@
               "command": {
                 "const": "text_select_all",
                 "description": "Select all text.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "text_cut"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Cut the selection to the clipboard.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "text_cut",
+                "description": "Cut the selection to the clipboard.",
                 "type": "string"
               },
               "description": {

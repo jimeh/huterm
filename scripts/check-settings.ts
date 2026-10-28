@@ -235,8 +235,9 @@ position = "top"
     await key("up");
     await saved((text) => /\[font\]\nsize = 15(\.0)?\n/.test(text), "font size stepped in config.toml");
 
-    // Search leads to the Quake windows section, where the default
-    // profile's height saves and a global shortcut records one stroke.
+    // Search leads to the Quake windows section, where Up steps the default
+    // profile's height slider by 5% and a global shortcut records one
+    // stroke.
     await key("search");
     await state("settings.focus=search");
     await key("select-all");
@@ -261,10 +262,8 @@ position = "top"
     await press(position);
     await state("settings.menu=false", "settings.focus=action:qprof");
     await tabTo("quake.profiles.default.height");
-    await key("select-all");
-    await typeText("0.4");
-    await key("enter");
-    await saved((text) => text.includes("[quake.profiles.default]\nheight = 0.4\n"), "default profile height in config.toml");
+    await key("up");
+    await saved((text) => text.includes("[quake.profiles.default]\nheight = 0.55\n"), "default profile height in config.toml");
     await tabTo("action:gadd");
     await key("space");
     await key("global");

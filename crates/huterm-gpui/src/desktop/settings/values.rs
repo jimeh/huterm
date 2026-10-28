@@ -4,6 +4,7 @@
 use huterm_config::RawConfig;
 use huterm_config::document::Patch;
 use huterm_config::settings::{Setting, SettingKind};
+use huterm_ui::steps::Steps;
 use toml::{Table, Value};
 
 /// The values one snapshot of the file sets.
@@ -142,7 +143,8 @@ pub(crate) fn check(setting: &Setting, value: &Value) -> Result<(), String> {
 }
 
 /// Reads a number field's text as the value its setting stores: an integer
-/// for `Integer`, a float for `Number`. An empty field is `None`.
+/// for `Integer`, a float for `Number`, clamped to the setting's range, as
+/// a number field clamps what is typed. An empty field is `None`.
 ///
 /// # Errors
 /// Returns the message shown under the row.
@@ -155,17 +157,86 @@ pub(crate) fn parse_number(
         return Ok(None);
     }
     let value = match setting.kind {
-        SettingKind::Integer { .. } => text
-            .parse::<i64>()
-            .map(Value::Integer)
-            .map_err(|_| "Must be a whole number".to_owned())?,
+        SettingKind::Integer { min, max } => {
+            text.parse::<i64>()
+                .map(|value| {
+                    Value::Integer(value.clamp(
+                        min.unwrap_or(i64::MIN),
+                        max.unwrap_or(i64::MAX),
+                    ))
+                })
+                .map_err(|_| "Must be a whole number".to_owned())?
+        }
         SettingKind::Number { .. } => text
             .parse::<f64>()
-            .map(Value::Float)
-            .map_err(|_| "Must be a number".to_owned())?,
+            .ok()
+            .filter(|value| value.is_finite())
+            .zip(steps(setting))
+            .map(|(value, steps)| Value::Float(steps.clamp(value)))
+            .ok_or_else(|| "Must be a number".to_owned())?,
         _ => return Err("Not a number setting".into()),
     };
     check(setting, &value).map(|()| Some(value))
+}
+
+/// How many steps from zero an unbounded end of a range lies.
+const UNBOUNDED_STEPS: f64 = 1_099_511_627_776.0;
+
+/// The range and grid a number setting steps along: its schema bounds, an
+/// exclusive minimum as the first grid value above it, and its
+/// `x-huterm-step`, else one. A missing bound lies far enough away to never
+/// be reached. `None` for any other kind.
+pub(crate) fn steps(setting: &Setting) -> Option<Steps> {
+    let step = setting.step.unwrap_or(1.0);
+    let (min, max) = match &setting.kind {
+        SettingKind::Integer { min, max } => {
+            (min.map(integer_number), max.map(integer_number))
+        }
+        SettingKind::Number {
+            min,
+            max,
+            exclusive_min,
+        } => (
+            (*min)
+                .into_iter()
+                .chain(exclusive_min.map(|bound| bound + step))
+                .reduce(f64::max),
+            *max,
+        ),
+        _ => return None,
+    };
+    let far = step * UNBOUNDED_STEPS;
+    Some(Steps::new(min.unwrap_or(-far), max.unwrap_or(far), step))
+}
+
+/// `value` as the setting stores it: rounded to an integer for `Integer`,
+/// else a float.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "setting values lie far inside the i64 range"
+)]
+pub(crate) fn number_value(setting: &Setting, value: f64) -> Value {
+    match setting.kind {
+        SettingKind::Integer { .. } => Value::Integer(value.round() as i64),
+        _ => Value::Float(value),
+    }
+}
+
+/// A stored number as a float, from either TOML form.
+pub(crate) fn as_number(value: &Value) -> Option<f64> {
+    match value {
+        Value::Float(value) => Some(*value),
+        Value::Integer(value) => Some(integer_number(*value)),
+        _ => None,
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "setting values are far below 2^52"
+)]
+fn integer_number(value: i64) -> f64 {
+    value as f64
 }
 
 /// A number as a field shows it: `14` rather than `14.0`.
@@ -238,21 +309,14 @@ mod tests {
     fn inputs_are_checked_against_their_kind_before_writing() {
         let size = setting("font.size");
         assert_eq!(parse_number(size, " 14 "), Ok(Some(Value::Float(14.0))));
-        assert_eq!(
-            parse_number(size, "200"),
-            Err("Must be at most 96 pt".into())
-        );
         assert_eq!(parse_number(size, "big"), Err("Must be a number".into()));
+        assert_eq!(parse_number(size, "inf"), Err("Must be a number".into()));
         assert_eq!(parse_number(size, ""), Ok(None));
         let rows = setting("terminal.scrollback_rows");
         assert_eq!(parse_number(rows, "2000"), Ok(Some(Value::Integer(2000))));
         assert_eq!(
             parse_number(rows, "1.5"),
             Err("Must be a whole number".into())
-        );
-        assert_eq!(
-            parse_number(rows, "-1"),
-            Err("Must be at least 0 rows".into())
         );
         assert_eq!(
             check(setting("tabs.style"), &Value::String("round".into())),
@@ -267,6 +331,36 @@ mod tests {
         );
         assert_eq!(number(14.0), "14");
         assert_eq!(number(0.5), "0.5");
+    }
+
+    #[test]
+    fn typed_numbers_clamp_to_the_range_as_a_number_field_does() {
+        // D7: a number setting never saves a value outside its range.
+        let size = setting("font.size");
+        assert_eq!(parse_number(size, "200"), Ok(Some(Value::Float(96.0))));
+        assert_eq!(parse_number(size, "1"), Ok(Some(Value::Float(6.0))));
+        let rows = setting("terminal.scrollback_rows");
+        assert_eq!(parse_number(rows, "-1"), Ok(Some(Value::Integer(0))));
+        let grid = steps(size).unwrap();
+        assert_eq!((grid.min(), grid.max(), grid.step()), (6.0, 96.0, 1.0));
+        // An exclusive minimum is the first step above it, so 0 is never
+        // written.
+        let width = SettingsModel::load()
+            .unwrap()
+            .profile_settings()
+            .iter()
+            .find(|setting| setting.path == "width")
+            .unwrap();
+        let grid = steps(width).unwrap();
+        assert_eq!((grid.min(), grid.max(), grid.step()), (0.05, 1.0, 0.05));
+        assert_eq!(parse_number(width, "0"), Ok(Some(Value::Float(0.05))));
+        // A missing bound is never reached.
+        let hours = steps(setting("updates.check_interval_hours")).unwrap();
+        assert_eq!(hours.increment(1_000_000.0), 1_000_001.0);
+        assert_eq!(
+            number_value(setting("updates.check_interval_hours"), 2.0),
+            Value::Integer(2)
+        );
     }
 
     #[test]

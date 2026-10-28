@@ -55,10 +55,19 @@ fn number(
     cx: &mut TestAppContext,
     value: f64,
 ) -> (Probe, &mut VisualTestContext) {
+    number_with(cx, value, |field| field)
+}
+
+/// A [`number`] field that `build` configures before it shows `value`.
+fn number_with(
+    cx: &mut TestAppContext,
+    value: f64,
+    build: impl FnOnce(NumberField) -> NumberField,
+) -> (Probe, &mut VisualTestContext) {
     let (steps, format) = quake();
     let (host, cx) = cx.add_window_view(|window, cx| Host {
         field: cx.new(|cx| {
-            let mut field = NumberField::new(
+            let mut field = build(NumberField::new(
                 "width",
                 "Width",
                 steps,
@@ -66,7 +75,7 @@ fn number(
                 tokens(),
                 window,
                 cx,
-            );
+            ));
             field.set_value(Some(value), cx);
             field
         }),
@@ -187,6 +196,18 @@ fn typed_text_commits_and_a_bad_entry_restores_the_value(
     cx.run_until_parked();
     assert_eq!(probe.value(cx), Some(0.3));
     assert_eq!(probe.changes(), [0.42, 1.0, 0.3]);
+}
+
+#[gpui::test]
+fn an_owner_that_commits_on_blur_keeps_the_typed_text(cx: &mut TestAppContext) {
+    let (probe, cx) =
+        number_with(cx, 0.3, |field| field.with_commit_on_blur(false));
+    probe.type_text("90", cx);
+    cx.update(|window, cx| probe.other.focus(window, cx));
+    cx.run_until_parked();
+    assert_eq!(probe.text(cx), "90");
+    assert_eq!(probe.value(cx), Some(0.3));
+    assert!(probe.changes().is_empty(), "leaving committed nothing");
 }
 
 #[gpui::test]

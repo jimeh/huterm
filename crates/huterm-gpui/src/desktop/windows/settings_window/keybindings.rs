@@ -178,7 +178,7 @@ impl Keys {
         let search = cx.new(|cx| {
             Input::new("keybindings-search", "Search keybindings", swatch, cx)
                 .with_placeholder("Search commands, shortcuts, or conditions")
-                .with_chrome(Chrome::Bare)
+                .with_chrome(Chrome::Grouped)
         });
         let _ = search.read(cx).focus_handle(cx).tab_stop(true);
         cx.subscribe(&search, |_, _, _: &Changed, cx| cx.notify())
@@ -412,6 +412,15 @@ impl SettingsView {
                 .inventory
                 .is_none()
                 .then(|| "Read-only until the keybindings load".into())
+        })
+    }
+
+    /// Why a shortcut's condition and argument fields refuse edits: the
+    /// section is read-only, or the shortcut is not active. `None` for an
+    /// active shortcut that can change.
+    fn key_field_refusal(&self, active: bool) -> Option<SharedString> {
+        self.keys_lock_reason().or_else(|| {
+            (!active).then(|| "Only an active shortcut can change".into())
         })
     }
 
@@ -962,8 +971,7 @@ impl SettingsView {
                 swatch,
                 cx,
             )
-            .with_placeholder(placeholder.to_owned())
-            .with_chrome(Chrome::Bare);
+            .with_placeholder(placeholder.to_owned());
             field.set_text(text.clone(), cx);
             field
         });
@@ -1805,7 +1813,12 @@ impl SettingsView {
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let search = self.keys.search.clone();
+        let search = Self::search_group(
+            "keybindings-search-group",
+            &self.keys.search,
+            swatch,
+            cx,
+        );
         self.drawn.insert("search".to_owned());
         // One tab stop whose arrows step the filter, as a segmented
         // control's do.
@@ -1843,15 +1856,6 @@ impl SettingsView {
                 div()
                     .flex_1()
                     .min_w(px(200.0))
-                    .h(px(26.0))
-                    .px(px(8.0))
-                    .flex()
-                    .items_center()
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(swatch.line_strong)
-                    .bg(swatch.bg)
-                    .text_size(px(12.5))
                     .key_context("Palette")
                     .child(search),
             )
@@ -2165,8 +2169,12 @@ impl SettingsView {
             window,
             cx,
         );
-        let _ = when.read(cx).focus_handle(cx).tab_stop(editable);
         let invalid = self.keys.errors.contains_key(&when_key);
+        let refusal = self.key_field_refusal(active);
+        when.update(cx, |field, cx| {
+            field.set_disabled(refusal.is_some(), refusal.clone(), cx);
+            field.set_invalid(invalid, cx);
+        });
         let completion =
             self.render_completion(&when_key, &when, swatch, window, cx);
         let when_box = div()
@@ -2176,23 +2184,8 @@ impl SettingsView {
             .flex_col()
             .child(
                 div()
-                    .h(px(24.0))
-                    .px(px(6.0))
-                    .flex()
-                    .items_center()
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(if invalid {
-                        swatch.danger
-                    } else {
-                        swatch.line_strong
-                    })
-                    .overflow_hidden()
-                    .bg(swatch.bg)
-                    .text_size(px(12.0))
                     .font_family(mono_font_family())
                     .key_context("Palette")
-                    .when(!editable, |field| field.opacity(0.6))
                     .child(when),
             )
             .children(completion);
@@ -2200,7 +2193,13 @@ impl SettingsView {
         let mut arguments = Vec::new();
         for argument in configurable(spec) {
             arguments.push(self.render_argument(
-                name, listed, argument, editable, swatch, window, cx,
+                name,
+                listed,
+                argument,
+                refusal.clone(),
+                swatch,
+                window,
+                cx,
             ));
         }
         let tag = {
@@ -2379,7 +2378,7 @@ impl SettingsView {
         name: &str,
         listed: &ListedBinding,
         argument: &'static ArgumentSpec,
-        editable: bool,
+        refusal: Option<SharedString>,
         swatch: Swatch,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
@@ -2394,7 +2393,6 @@ impl SettingsView {
                     window,
                     cx,
                 );
-                let _ = field.read(cx).focus_handle(cx).tab_stop(editable);
                 let width = if matches!(argument.kind, ArgumentKind::Text) {
                     120.0
                 } else {
@@ -2404,31 +2402,17 @@ impl SettingsView {
                     .keys
                     .errors
                     .contains_key(&format!("arg:{name}:{}", argument.name));
+                field.update(cx, |field, cx| {
+                    field.set_disabled(refusal.is_some(), refusal, cx);
+                    field.set_invalid(invalid, cx);
+                });
                 div()
                     .flex()
                     .items_center()
                     .gap(px(6.0))
                     .child(small(argument.name.to_owned(), swatch.muted))
                     .child(
-                        div()
-                            .w(px(width))
-                            .h(px(24.0))
-                            .px(px(6.0))
-                            .flex()
-                            .items_center()
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(if invalid {
-                                swatch.danger
-                            } else {
-                                swatch.line_strong
-                            })
-                            .overflow_hidden()
-                            .bg(swatch.bg)
-                            .text_size(px(12.0))
-                            .key_context("Palette")
-                            .when(!editable, |field| field.opacity(0.6))
-                            .child(field),
+                        div().w(px(width)).key_context("Palette").child(field),
                     )
                     .into_any_element()
             }
@@ -2450,7 +2434,7 @@ impl SettingsView {
                     argument.name.to_owned(),
                     label,
                     Opener::Action(key.clone()),
-                    !editable,
+                    refusal.is_some(),
                     px(0.0),
                     swatch,
                     cx,

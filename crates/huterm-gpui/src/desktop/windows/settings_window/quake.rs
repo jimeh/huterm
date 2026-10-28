@@ -20,7 +20,7 @@ use super::controls::Opener;
 use super::keybindings::{CAP_WIDTH, Target, card, group_block, small};
 use super::{MenuFor, SettingsView, button};
 use crate::keymap::Platform;
-use huterm_ui::components::input::{Chrome, Input};
+use huterm_ui::components::input::Input;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
@@ -766,6 +766,8 @@ impl SettingsView {
         );
         if let Some(field) = self.quake.naming.clone() {
             self.drawn.insert("qname".to_owned());
+            let invalid = self.quake.name_error.is_some();
+            field.update(cx, |field, cx| field.set_invalid(invalid, cx));
             let create = self
                 .action_button(
                     "settings-qcreate".to_owned(),
@@ -794,21 +796,6 @@ impl SettingsView {
                             div()
                                 .key_context("Palette")
                                 .w(px(220.0))
-                                .h(px(24.0))
-                                .px(px(8.0))
-                                .flex()
-                                .items_center()
-                                .rounded(px(6.0))
-                                .border_1()
-                                .border_color(
-                                    if self.quake.name_error.is_some() {
-                                        swatch.danger
-                                    } else {
-                                        swatch.line_strong
-                                    },
-                                )
-                                .bg(swatch.bg)
-                                .text_size(px(12.0))
                                 .child(field),
                         )
                         .child(create)
@@ -1261,7 +1248,6 @@ fn global_key_allowed(key: &str) -> bool {
 fn profile_name_field(swatch: Swatch, cx: &mut Context<'_, Input>) -> Input {
     Input::new("quake-profile-name", "Profile name", swatch, cx)
         .with_placeholder("Profile name")
-        .with_chrome(Chrome::Bare)
 }
 
 #[cfg(test)]

@@ -2,10 +2,10 @@
 //! after React Aria's and Base UI's number fields, GNOME's `AdwSpinRow`,
 //! and an `NSTextField` with an `NSStepper`.
 //!
-//! Anatomy: an [`InputGroup`] holding the number as text, then decrement
-//! and increment buttons, as `AdwSpinRow` places them. The value may be
-//! shown scaled, such as a fraction as a percent, rounded to a number of
-//! decimals; a unit is the owner's addon or label.
+//! Anatomy: an [`InputGroup`] holding the number as text, an optional unit
+//! as a text addon, then decrement and increment buttons, as `AdwSpinRow`
+//! places them. The value may be shown scaled, such as a fraction as a
+//! percent, rounded to a number of decimals.
 //!
 //! Keyboard: the field binds no keys. The owner routes text editing to
 //! [`NumberField::input`], and its commands to [`NumberField::increment`]
@@ -13,7 +13,10 @@
 //! and [`NumberField::page_down`] (Page Up and Page Down), and
 //! [`NumberField::to_min`] and [`NumberField::to_max`] (Home and End).
 //! Typed text commits on [`NumberField::commit`] (Enter) and when the field
-//! loses focus; [`NumberField::revert`] (Escape) puts back the value.
+//! loses focus, unless the owner commits on blur itself
+//! ([`NumberField::with_commit_on_blur`]), as an owner that keeps a draft
+//! across a press elsewhere does; [`NumberField::revert`] (Escape) puts
+//! back the value.
 //!
 //! Values: every change the user makes is clamped to the range, and steps
 //! move along its grid ([`Steps`]): a value off the grid steps to the next
@@ -126,6 +129,8 @@ pub struct NumberField {
     steps: Steps,
     format: Format,
     value: Option<f64>,
+    unit: Option<SharedString>,
+    commit_on_blur: bool,
     _blur: Subscription,
 }
 
@@ -162,8 +167,10 @@ impl NumberField {
         let focus = input.read(cx).focus_handle(cx);
         // Blur runs inside a draw, where a change would not show until the
         // next input; deferring lets the commit draw.
-        let blur = cx.on_blur(&focus, window, |_, window, cx| {
-            cx.defer_in(window, |field, _, cx| field.commit(cx));
+        let blur = cx.on_blur(&focus, window, |field, window, cx| {
+            if field.commit_on_blur {
+                cx.defer_in(window, |field, _, cx| field.commit(cx));
+            }
         });
         Self {
             id,
@@ -173,8 +180,25 @@ impl NumberField {
             steps,
             format,
             value: None,
+            unit: None,
+            commit_on_blur: true,
             _blur: blur,
         }
+    }
+
+    /// The field with `unit`, such as `pt`, after the number.
+    #[must_use]
+    pub fn with_unit(mut self, unit: impl Into<SharedString>) -> Self {
+        self.unit = Some(unit.into());
+        self
+    }
+
+    /// The field committing typed text when it loses focus, as it does by
+    /// default, or leaving that to the owner.
+    #[must_use]
+    pub fn with_commit_on_blur(mut self, commit: bool) -> Self {
+        self.commit_on_blur = commit;
+        self
     }
 
     /// The text field inside, for routing text editing to it and setting
@@ -426,6 +450,9 @@ impl Render for NumberField {
         let increment = stepper("increment", "Increase", "+", at_max, cx);
         let group =
             InputGroup::new(child_id(&self.id, "group"), &self.input, tokens)
+                .when_some(self.unit.clone(), |group, unit| {
+                    group.trailing(Addon::Text(unit))
+                })
                 .trailing(Addon::Button(decrement))
                 .trailing(Addon::Button(increment));
         let (to_increment, to_decrement) =

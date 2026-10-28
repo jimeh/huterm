@@ -22,7 +22,7 @@ use gpui::{
 };
 use huterm_config::document::Snapshot;
 use huterm_config::settings::{
-    Apply, Choice, Platform as SettingPlatform, SectionId, Setting,
+    Apply, Choice, Control, Platform as SettingPlatform, SectionId, Setting,
     SettingKind, SettingsModel,
 };
 use huterm_protocol::{ArgumentKind, CommandError, CommandInvocation, ids};
@@ -31,7 +31,7 @@ use toml::Value;
 use super::super::overlay::{Swatch, tokens};
 use super::super::settings::status::{FileStatus, Tone};
 use super::super::settings::values::{
-    self, Defaults, FileValues, number, parse_number, shown,
+    self, Defaults, FileValues, as_number, number, number_value, shown,
 };
 use super::super::settings::{Special, file_only, special};
 use super::Desktop;
@@ -42,6 +42,9 @@ use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::components::menu::{
     MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole,
+};
+use huterm_ui::components::number_field::{
+    self, Format as NumberFormat, NumberField,
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
 use huterm_ui::components::toggle_group::roving_target;
@@ -205,8 +208,11 @@ pub(super) struct SettingsView {
     section: SectionId,
     advanced: HashSet<SectionId>,
     search: Entity<Input>,
-    /// Number and text fields, by setting path.
+    /// Number and text fields, by setting path; a number field's entry is
+    /// the text field inside it.
     fields: HashMap<&'static str, Entity<Input>>,
+    /// Number fields, by setting path.
+    numbers: HashMap<&'static str, Entity<NumberField>>,
     /// The text each field last showed from the file; a field whose text
     /// differs holds an unsaved draft that a reload must not replace.
     synced: HashMap<&'static str, String>,
@@ -285,7 +291,7 @@ impl SettingsView {
         let search = cx.new(|cx| {
             Input::new("settings-search", "Search settings", swatch, cx)
                 .with_placeholder("Search settings")
-                .with_chrome(Chrome::Bare)
+                .with_chrome(Chrome::Grouped)
         });
         let _ = search.read(cx).focus_handle(cx).tab_stop(true);
         cx.subscribe(&search, |view, _, _: &Changed, cx| {
@@ -330,6 +336,7 @@ impl SettingsView {
             advanced: HashSet::new(),
             search,
             fields: HashMap::new(),
+            numbers: HashMap::new(),
             synced: HashMap::new(),
             stops: HashMap::new(),
             sections: HashMap::new(),
@@ -418,6 +425,9 @@ impl SettingsView {
         for field in fields {
             field.update(cx, |field, cx| field.set_tokens(swatch, cx));
         }
+        for number in self.numbers.values() {
+            number.update(cx, |number, cx| number.set_tokens(swatch, cx));
+        }
     }
 
     fn swatch(cx: &App) -> Swatch {
@@ -434,39 +444,107 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Entity<Input> {
-        if let Some(field) = self.fields.get(setting.path.as_str()) {
+        let path = setting.path.as_str();
+        if let Some(field) = self.fields.get(path) {
             return field.clone();
         }
         let swatch = Self::swatch(cx);
-        let text = field_text(shown(setting, &self.file, &self.defaults));
-        let placeholder = if setting.default.is_none()
-            && self.defaults.get(&setting.path).is_none()
-        {
-            "Default"
-        } else {
-            ""
+        let placeholder =
+            if setting.default.is_none() && self.defaults.get(path).is_none() {
+                "Default"
+            } else {
+                ""
+            };
+        let field = match values::steps(setting) {
+            Some(steps) => {
+                let number = self.number_field(setting, steps, window, cx);
+                number.read(cx).input().clone()
+            }
+            None => cx.new(|cx| {
+                Input::new(
+                    SharedString::from(format!("settings-field-{path}")),
+                    setting.label.clone(),
+                    swatch,
+                    cx,
+                )
+            }),
         };
-        let field = cx.new(|cx| {
-            let mut field = Input::new(
-                SharedString::from(format!("settings-field-{}", setting.path)),
-                setting.label.clone(),
-                swatch,
-                cx,
-            )
-            .with_placeholder(placeholder)
-            .with_chrome(Chrome::Bare);
-            field.set_text(text, cx);
-            field
-        });
+        field.update(cx, |field, _| field.set_placeholder(placeholder));
         let handle = field.read(cx).focus_handle(cx).tab_stop(true);
         cx.on_blur(&handle, window, move |view, _, cx| {
             view.field_blurred(setting, cx);
         })
         .detach();
-        self.fields.insert(setting.path.as_str(), field.clone());
-        self.synced
-            .insert(setting.path.as_str(), text_for(field.read(cx)));
+        self.fields.insert(path, field.clone());
+        self.show_text(
+            path,
+            field_text(shown(setting, &self.file, &self.defaults)),
+            cx,
+        );
+        self.synced.insert(path, text_for(field.read(cx)));
         field
+    }
+
+    /// A number field for `setting` along `steps`. Settings commits its
+    /// text on Enter and blur itself, so a conflicted draft survives focus
+    /// leaving it; a step or a stepper commits the number it shows.
+    fn number_field(
+        &mut self,
+        setting: &'static Setting,
+        steps: huterm_ui::steps::Steps,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Entity<NumberField> {
+        let path = setting.path.as_str();
+        let swatch = Self::swatch(cx);
+        let format = NumberFormat {
+            scale: 1.0,
+            decimals: match setting.kind {
+                SettingKind::Integer { .. } => 0,
+                _ => 6,
+            },
+        };
+        let number = cx.new(|cx| {
+            let number = NumberField::new(
+                SharedString::from(format!("settings-field-{path}")),
+                setting.label.clone(),
+                steps,
+                format,
+                swatch,
+                window,
+                cx,
+            )
+            .with_commit_on_blur(false);
+            match setting.unit.clone() {
+                Some(unit) => number.with_unit(unit),
+                None => number,
+            }
+        });
+        cx.subscribe(&number, move |view, _, _: &number_field::Changed, cx| {
+            view.commit_field(setting, cx);
+        })
+        .detach();
+        self.numbers.insert(path, number.clone());
+        number
+    }
+
+    /// Shows `text` in `path`'s field. A number field takes the number it
+    /// reads as its value, so its steps and steppers start from it.
+    pub(super) fn show_text(
+        &mut self,
+        path: &str,
+        text: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(number) = self.numbers.get(path).cloned() {
+            let value = text.trim().parse::<f64>().ok();
+            number.update(cx, |number, cx| number.set_value(value, cx));
+        }
+        if let Some(field) = self.fields.get(path).cloned()
+            && field.read(cx).text() != text
+        {
+            field.update(cx, |field, cx| field.set_text(text, cx));
+        }
     }
 
     fn stop(
@@ -687,6 +765,9 @@ impl SettingsView {
             }
             // Fields exist once their row renders.
             Some(Special::FontPicker | Special::Size) => return None,
+            None if setting.control == Some(Control::Slider) => {
+                return Some(self.stop(path, cx));
+            }
             None if matches!(
                 setting.kind,
                 SettingKind::Integer { .. }
@@ -787,8 +868,9 @@ impl SettingsView {
     }
 
     /// Steps the focused control: a tri-state or a choice to its
-    /// neighbour, a number by one unit. A number field steps from its
-    /// typed value. A read-only control refuses.
+    /// neighbour, a number or a slider along its grid, clamped to its
+    /// range. A number field steps from its typed value. A read-only
+    /// control refuses.
     fn step(
         &mut self,
         forward: bool,
@@ -855,26 +937,40 @@ impl SettingsView {
             }
             return;
         }
-        let field = self.fields.get(setting.path.as_str()).cloned();
-        let typed = field
-            .as_ref()
-            .map(|field| field.read(cx).text().to_owned())
-            .and_then(|text| parse_number(setting, &text).ok().flatten());
-        let current = typed.or_else(|| self.value(setting));
-        let Some(value) = stepped(setting, current.clone(), forward) else {
-            return;
-        };
-        if Some(&value) == current.as_ref() {
+        // A number field steps its own value, typed or shown; the change
+        // it reports commits through `commit_field`.
+        if let Some(number) = self.numbers.get(setting.path.as_str()).cloned() {
+            number.update(cx, |number, cx| {
+                if forward {
+                    number.increment(cx);
+                } else {
+                    number.decrement(cx);
+                }
+            });
             return;
         }
-        match field {
-            Some(field) => {
-                field.update(cx, |field, cx| {
-                    field.set_text(field_text(Some(value.clone())), cx);
-                });
-                self.commit_field(setting, cx);
+        let current = self.value(setting);
+        let next = match (&setting.kind, values::steps(setting)) {
+            (SettingKind::Choice(choices), _) => {
+                choice_stepped(choices, current.as_ref(), forward)
             }
-            None => self.write(setting, Some(value), cx),
+            (_, Some(steps)) => {
+                current.as_ref().and_then(as_number).map(|value| {
+                    let next = if forward {
+                        steps.increment(value)
+                    } else {
+                        steps.decrement(value)
+                    };
+                    number_value(setting, next)
+                })
+            }
+            _ => None,
+        };
+        let Some(value) = next else {
+            return;
+        };
+        if Some(&value) != current.as_ref() {
+            self.write(setting, Some(value), cx);
         }
     }
 
@@ -1527,49 +1623,24 @@ fn tri_stepped(current: Option<bool>, forward: bool) -> Option<bool> {
     TRI_STATES.get(next).map_or(current, |(_, state)| *state)
 }
 
-/// The value one step from `current`: a choice's neighbour, or a number
-/// one unit up or down. A `Number` written in integer form steps as a
-/// float.
-fn stepped(
-    setting: &Setting,
-    current: Option<Value>,
+/// The choice one step from `current`, stopping at the ends; the first
+/// when `current` is none of them.
+fn choice_stepped(
+    choices: &[Choice],
+    current: Option<&Value>,
     forward: bool,
 ) -> Option<Value> {
-    let delta: i64 = if forward { 1 } else { -1 };
-    match (&setting.kind, current) {
-        (SettingKind::Choice(choices), current) => {
-            let index = choices.iter().position(|choice| {
-                current.as_ref().and_then(Value::as_str)
-                    == Some(choice.value.as_str())
-            });
-            let next = match (index, forward) {
-                (Some(index), true) => (index + 1).min(choices.len() - 1),
-                (Some(index), false) => index.saturating_sub(1),
-                (None, _) => 0,
-            };
-            choices
-                .get(next)
-                .map(|choice| Value::String(choice.value.clone()))
-        }
-        (SettingKind::Integer { .. }, Some(Value::Integer(value))) => {
-            Some(Value::Integer(value + delta))
-        }
-        (SettingKind::Number { .. }, Some(Value::Float(value))) => {
-            Some(Value::Float(value + if forward { 1.0 } else { -1.0 }))
-        }
-        (SettingKind::Number { .. }, Some(Value::Integer(value))) => {
-            Some(Value::Float(number_from(value + delta)))
-        }
-        _ => None,
-    }
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "setting values are far below 2^52"
-)]
-fn number_from(value: i64) -> f64 {
-    value as f64
+    let index = choices.iter().position(|choice| {
+        current.and_then(Value::as_str) == Some(choice.value.as_str())
+    });
+    let next = match (index, forward) {
+        (Some(index), true) => (index + 1).min(choices.len() - 1),
+        (Some(index), false) => index.saturating_sub(1),
+        (None, _) => 0,
+    };
+    choices
+        .get(next)
+        .map(|choice| Value::String(choice.value.clone()))
 }
 
 /// Link modifiers with `modifier` switched, or `None` when that would leave
@@ -1815,6 +1886,35 @@ impl SettingsView {
     ) {
         let field = self.fields.get(path).expect("a rendered field").clone();
         field.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    /// The focus handle of the setting's text or number field.
+    pub(super) fn field_handle(&self, path: &str, cx: &App) -> FocusHandle {
+        self.fields
+            .get(path)
+            .expect("a rendered field")
+            .read(cx)
+            .focus_handle(cx)
+    }
+
+    /// Where the setting's field last painted its caret, and the bounds
+    /// its text shows in.
+    pub(super) fn field_caret(
+        &self,
+        path: &str,
+        cx: &App,
+    ) -> Option<(gpui::Pixels, gpui::Bounds<gpui::Pixels>)> {
+        self.fields.get(path)?.read(cx).painted_caret()
+    }
+
+    /// The message under the setting's row, if any.
+    pub(super) fn error(&self, path: &str) -> Option<String> {
+        self.errors.get(path).cloned()
+    }
+
+    /// The Settings search field's text.
+    pub(super) fn search_text(&self, cx: &App) -> String {
+        self.search.read(cx).text().to_owned()
     }
 
     /// Whether the last frame drew the control `key`.

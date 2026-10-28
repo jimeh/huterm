@@ -2,12 +2,14 @@
 //! grouped rows.
 
 use gpui::{
-    AnyElement, App, Context, Div, ElementId, SharedString, Stateful, Window,
-    div, prelude::*, px,
+    AnyElement, App, Context, Div, ElementId, Entity, SharedString, Stateful,
+    Window, div, prelude::*, px, svg,
 };
 use huterm_config::settings::{SectionId, Setting};
 use huterm_ui::components::badge::{Tone as BadgeTone, badge};
 use huterm_ui::components::button::{Button, Variant};
+use huterm_ui::components::input::Input;
+use huterm_ui::components::input_group::{Addon, InputGroup};
 
 use super::super::super::overlay::{Swatch, mono_font_family};
 use super::super::super::settings::status::Action;
@@ -16,6 +18,7 @@ use super::super::Desktop;
 use super::{
     SIDEBAR_WIDTH, SettingsView, apply_note, foreign_note, tone_color,
 };
+use crate::assets::Icon;
 
 fn id(name: String) -> ElementId {
     ElementId::Name(name.into())
@@ -86,7 +89,12 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let nav = self.render_nav(swatch, searching, cx);
-        let search = self.search.clone();
+        let search = Self::search_group(
+            "settings-search-group",
+            &self.search,
+            swatch,
+            cx,
+        );
         div()
             .flex()
             .flex_col()
@@ -97,24 +105,48 @@ impl SettingsView {
             .border_color(swatch.line)
             .bg(swatch.surface)
             .child(
-                div().p(px(10.0)).child(
-                    div()
-                        .h(px(28.0))
-                        .px(px(8.0))
-                        .flex()
-                        .items_center()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(swatch.line_strong)
-                        .bg(swatch.bg)
-                        .text_size(px(12.5))
-                        .key_context("Palette")
-                        .child(search),
-                ),
+                div()
+                    .p(px(10.0))
+                    .child(div().key_context("Palette").child(search)),
             )
             .child(div().flex_1().child(nav))
             .child(self.render_footer(swatch, cx))
             .into_any_element()
+    }
+
+    /// A search field: `input` after a search icon, with a button that
+    /// clears it while it has text.
+    pub(super) fn search_group(
+        id: &'static str,
+        input: &Entity<Input>,
+        swatch: Swatch,
+        cx: &App,
+    ) -> InputGroup {
+        let icon = |icon: Icon| {
+            svg()
+                .path(icon.asset_path())
+                .size(px(14.0))
+                .text_color(swatch.muted)
+        };
+        let clear = (!input.read(cx).is_empty()).then(|| {
+            let input = input.downgrade();
+            Button::new(
+                ElementId::Name(format!("{id}-clear").into()),
+                "Clear search",
+                swatch,
+            )
+            .variant(Variant::Ghost)
+            .icon(icon(Icon::X))
+            .icon_only()
+            .on_click(move |_, cx| {
+                let _ = input.update(cx, |input, cx| input.set_text("", cx));
+            })
+        });
+        InputGroup::new(id, input, swatch)
+            .leading(Addon::Icon(icon(Icon::Search).into_any_element()))
+            .when_some(clear, |group, clear| {
+                group.trailing(Addon::Button(clear))
+            })
     }
 
     fn render_nav(

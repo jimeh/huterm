@@ -332,6 +332,7 @@ imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 | `text_line_start` | Palette | Optional `select`. |
 | `text_line_end` | Palette | Optional `select`. |
 | `text_select_all` | Palette | |
+| `text_cut` | Palette | |
 | `text_copy` | Palette | |
 | `text_paste` | Palette | |
 
@@ -446,6 +447,7 @@ directions if you use them.
 | `text_line_start` / `text_line_end` | `home`, `ctrl-a`, `cmd-left` / `end`, `ctrl-e`, `cmd-right` | `home` / `end` |
 | movement with `select = true` | `shift-` plus each movement key above | `shift-` plus each movement key above |
 | `text_select_all` | `cmd-a` | `ctrl-a` |
+| `text_cut` | `cmd-x` | `ctrl-x`, `ctrl-shift-x` |
 | `text_copy` | `cmd-c` | `ctrl-c`, `ctrl-shift-c` |
 | `text_paste` | `cmd-v` | `ctrl-v`, `ctrl-shift-v` |
 
@@ -520,8 +522,11 @@ remaining Settings controls follow in later migrations.
 The window's text fields take the `Palette` context, so the palette bindings
 edit them: `palette_confirm` saves a field, or from the search field moves to
 the first match; `palette_expand` and `palette_previous_slot` move focus on and
-back; `palette_select_previous` and `palette_select_next` step a number; and
-`palette_back` clears the search. In a
+back; `palette_select_previous` and `palette_select_next` step a number within
+its range; and `palette_back` puts a field's value back or clears the search.
+`settings_increase` and `settings_decrease` step a Quake width or height
+slider by 5%, stopping at 5% and 100%. Page Up, Page Down, Home, and End have
+no Settings commands yet. In a
 shortcut's `when` field, `palette_select_next` and `palette_select_previous`
 move through the context suggestions and `palette_confirm` takes one; in an
 argument's number field they step it. In Keybindings, `settings_search`

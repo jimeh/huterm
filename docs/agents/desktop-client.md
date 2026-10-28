@@ -640,10 +640,20 @@ Text fields are `huterm_ui::components::input::Input` entities, and
 catalog's `text_*` commands onto `Input` methods; route a field's commands
 through `crate::ui::input::run`. `Input` refuses typing, composition, paste,
 cut, and deletion while read-only or disabled, but the owner's `set_text` and
-`replace` always apply. The palette, Licenses, and Settings draw their own
-frames around `Chrome::Bare` fields until their migrations; a field inside an
-`InputGroup` uses `Chrome::Grouped`. `NumberField` and `Slider` step along
+`replace` always apply. The palette and Licenses draw their own frames
+around `Chrome::Bare` fields until their migrations; Settings fields are
+`Chrome::Framed`, and a field inside an `InputGroup`, such as Settings'
+searches, uses `Chrome::Grouped`. `NumberField` and `Slider` step along
 `huterm_ui::steps::Steps`, whose grid clamps every user change to the range.
+Settings builds a number setting's `Steps` with `values::steps` from the
+schema's bounds, an exclusive minimum as the first grid value above it, and
+`x-huterm-step`; `x-huterm-control = "slider"` picks a `Slider` instead of a
+field. A locked Settings field is `Input`'s disabled state with the lock
+reason, not read-only, so a press takes no focus. Settings commits number
+fields itself (`with_commit_on_blur(false)`), so a conflicted draft survives
+focus moving to Use mine or Use file, and routes every `NumberField` change
+through `commit_field`; keep text that Settings shows in a number field going
+through `show_text`, which keeps the field's value in step.
 GPUI sends focus and blur events only while a window is active, so a test of
 blur behavior, such as `NumberField`'s commit, activates its window first.
 
@@ -839,7 +849,8 @@ optional in the schema, so its argument checks use constraints such as
 
 Constraints, descriptions, and Settings metadata live on the config types:
 `#[schemars(range(...))]`, `regex`, doc comments, and `extend` with the
-`x-huterm-*` keys that `huterm_config::settings` reads. `schema.rs` keeps only
+`x-huterm-*` keys that `huterm_config::settings` reads, including
+`x-huterm-step` and `x-huterm-control` for number settings. `schema.rs` keeps only
 what no single type owns. Every schema property needs `x-huterm-label` unless
 it is a namespace object, or `SettingsModel::load` fails, and the coverage
 test in `desktop/settings.rs` fails until a new setting has a generic control,

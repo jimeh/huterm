@@ -22,7 +22,7 @@ use toml::{Table, Value};
 
 use super::super::super::settings::keybindings::Edit;
 use super::super::super::settings::values::{
-    self, FileValues, parse_number, patch_at, shown,
+    self, FileValues, as_number, parse_number, patch_at, shown,
 };
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
@@ -366,9 +366,7 @@ impl SettingsView {
             }
             return;
         }
-        if current != text {
-            field.update(cx, |field, cx| field.set_text(text.clone(), cx));
-        }
+        self.show_text(path, text.clone(), cx);
         self.synced.insert(path, text);
     }
 
@@ -1167,10 +1165,8 @@ impl SettingsView {
             return;
         }
         // Reset discards whatever was typed into the field.
-        if let Some(text) = self.synced.get(path).cloned()
-            && let Some(field) = self.fields.get(path).cloned()
-        {
-            field.update(cx, |field, cx| field.set_text(text, cx));
+        if let Some(text) = self.synced.get(path).cloned() {
+            self.show_text(path, text, cx);
         }
         self.write(setting, None, cx);
     }
@@ -1217,6 +1213,18 @@ impl SettingsView {
             }
             _ if text.trim().is_empty() => Ok(None),
             _ => Ok(Some(Value::String(text.trim().to_owned()))),
+        };
+        // A number clamped to its range shows the value it saves.
+        let text = match &parsed {
+            Ok(Some(value))
+                if self.numbers.contains_key(path)
+                    && text.trim().parse::<f64>().ok() != as_number(value) =>
+            {
+                let clamped = self.display(setting, Some(value.clone()));
+                self.show_text(path, clamped.clone(), cx);
+                clamped
+            }
+            _ => text,
         };
         match parsed {
             Ok(value) => {
@@ -1295,10 +1303,8 @@ impl SettingsView {
             }
             _ => self.synced.get(path).cloned(),
         };
-        if let (Some(text), Some(field)) =
-            (text, self.fields.get(path).cloned())
-        {
-            field.update(cx, |field, cx| field.set_text(text, cx));
+        if let Some(text) = text {
+            self.show_text(path, text, cx);
         }
         cx.notify();
     }

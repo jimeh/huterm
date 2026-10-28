@@ -944,6 +944,8 @@ pub mod ids {
     pub const TEXT_LINE_END: CommandId = CommandId::new("text_line_end");
     /// Selects all text.
     pub const TEXT_SELECT_ALL: CommandId = CommandId::new("text_select_all");
+    /// Cuts the text selection.
+    pub const TEXT_CUT: CommandId = CommandId::new("text_cut");
     /// Copies the text selection.
     pub const TEXT_COPY: CommandId = CommandId::new("text_copy");
     /// Pastes text from the clipboard.
@@ -2043,6 +2045,14 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Palette,
         "Text: Select All",
         "Select all text.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_CUT,
+        CommandScope::Palette,
+        "Text: Cut",
+        "Cut the selection to the clipboard.",
         &[],
     ),
     spec_in(

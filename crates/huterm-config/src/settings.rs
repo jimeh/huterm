@@ -15,13 +15,15 @@ use serde_json::{Map, Value};
 pub const SCHEMA: &str = include_str!("../../../schemas/huterm.schema.json");
 
 const PREFIX: &str = "x-huterm-";
-const KEYS: [&str; 9] = [
+const KEYS: [&str; 11] = [
     "section",
     "group",
     "label",
     "order",
     "apply",
     "unit",
+    "step",
+    "control",
     "platform",
     "advanced",
     "visible-when",
@@ -171,6 +173,23 @@ pub enum SettingKind {
     Compound,
 }
 
+/// A control a setting asks for in place of its kind's generic one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Control {
+    /// A slider along the setting's range and step, for a number with both
+    /// bounds.
+    Slider,
+}
+
+impl Control {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "slider" => Some(Self::Slider),
+            _ => None,
+        }
+    }
+}
+
 /// Shows a setting only while another setting holds `equals`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VisibleWhen {
@@ -192,6 +211,11 @@ pub struct Setting {
     /// and optional settings, have none.
     pub default: Option<toml::Value>,
     pub unit: Option<String>,
+    /// The distance a number steps by, from `x-huterm-step`; `None` steps
+    /// by one.
+    pub step: Option<f64>,
+    /// The control `x-huterm-control` asks for, if any.
+    pub control: Option<Control>,
     pub apply: Apply,
     pub platform: Option<Platform>,
     pub advanced: bool,
@@ -457,6 +481,9 @@ fn setting(
         .map(|condition| visible_when(path, condition))
         .transpose()?;
     let field = |key: &str| property.get(key).or_else(|| target.get(key));
+    let kind = kind(path, property, target)?;
+    let step = step(path, property, &kind)?;
+    let control = control(path, property, &kind, step)?;
     Ok(Setting {
         path: path.into(),
         section,
@@ -464,17 +491,79 @@ fn setting(
         label: required("label")?,
         order,
         description: field("description").and_then(Value::as_str).map(prose),
-        kind: kind(path, property, target)?,
+        kind,
         default: property
             .get("default")
             .and_then(|default| toml::Value::try_from(default).ok()),
         unit: text("unit")?,
+        step,
+        control,
         apply,
         platform,
         advanced,
         visible_when,
         deprecated: field("deprecated") == Some(&Value::Bool(true)),
     })
+}
+
+/// The `x-huterm-step` of a number setting: positive, and whole for an
+/// integer.
+fn step(
+    path: &str,
+    property: &Value,
+    kind: &SettingKind,
+) -> Result<Option<f64>, ModelError> {
+    let Some(step) = property.get("x-huterm-step") else {
+        return Ok(None);
+    };
+    let step = step
+        .as_f64()
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .ok_or_else(|| {
+            error(path, "x-huterm-step must be a positive number")
+        })?;
+    match kind {
+        SettingKind::Number { .. } => Ok(Some(step)),
+        SettingKind::Integer { .. } if step.fract() == 0.0 => Ok(Some(step)),
+        SettingKind::Integer { .. } => Err(error(
+            path,
+            "x-huterm-step must be a whole number for an integer",
+        )),
+        _ => Err(error(path, "x-huterm-step needs a number setting")),
+    }
+}
+
+/// The `x-huterm-control` of a setting. A slider needs a number with both
+/// bounds, either minimum inclusive or exclusive, and a step.
+fn control(
+    path: &str,
+    property: &Value,
+    kind: &SettingKind,
+    step: Option<f64>,
+) -> Result<Option<Control>, ModelError> {
+    let Some(control) = property.get("x-huterm-control") else {
+        return Ok(None);
+    };
+    let control = control
+        .as_str()
+        .and_then(Control::parse)
+        .ok_or_else(|| error(path, "x-huterm-control must be \"slider\""))?;
+    let bounded = match kind {
+        SettingKind::Integer { min, max } => min.is_some() && max.is_some(),
+        SettingKind::Number {
+            min,
+            max,
+            exclusive_min,
+        } => (min.is_some() || exclusive_min.is_some()) && max.is_some(),
+        _ => false,
+    };
+    if !bounded || step.is_none() {
+        return Err(error(
+            path,
+            "a slider needs a number with both bounds and x-huterm-step",
+        ));
+    }
+    Ok(Some(control))
 }
 
 fn visible_when(
@@ -803,6 +892,11 @@ mod tests {
         }
         let width = &model.profile_settings()[1];
         assert_eq!(width.path, "width");
+        // Each profile's copy carries the template's slider.
+        assert_eq!(
+            (width.control, width.step),
+            (Some(Control::Slider), Some(0.05))
+        );
         assert_eq!(
             width.visible_when,
             Some(VisibleWhen {
@@ -995,5 +1089,59 @@ mod tests {
         })))
         .unwrap();
         assert_eq!(model.settings().count(), 2);
+    }
+
+    #[test]
+    fn malformed_step_and_control_metadata_names_the_setting() {
+        for (properties, path, message) in [
+            (
+                json!({"a": setting(&json!({
+                    "type": "number", "x-huterm-step": 0
+                }))}),
+                "a",
+                "x-huterm-step must be a positive number",
+            ),
+            (
+                json!({"a": setting(&json!({
+                    "type": "integer", "x-huterm-step": 0.5
+                }))}),
+                "a",
+                "x-huterm-step must be a whole number for an integer",
+            ),
+            (
+                json!({"a": setting(&json!({"x-huterm-step": 1}))}),
+                "a",
+                "x-huterm-step needs a number setting",
+            ),
+            (
+                json!({"a": setting(&json!({
+                    "type": "number", "maximum": 1,
+                    "x-huterm-step": 0.1, "x-huterm-control": "dial"
+                }))}),
+                "a",
+                "x-huterm-control must be \"slider\"",
+            ),
+            (
+                json!({"a": setting(&json!({
+                    "type": "number", "minimum": 0,
+                    "x-huterm-step": 0.1, "x-huterm-control": "slider"
+                }))}),
+                "a",
+                "a slider needs a number with both bounds and x-huterm-step",
+            ),
+            (
+                json!({"a": setting(&json!({
+                    "type": "number", "minimum": 0, "maximum": 1,
+                    "x-huterm-control": "slider"
+                }))}),
+                "a",
+                "a slider needs a number with both bounds and x-huterm-step",
+            ),
+        ] {
+            assert_eq!(
+                SettingsModel::from_schema(&schema(&properties)),
+                Err(error(path, message)),
+            );
+        }
     }
 }
