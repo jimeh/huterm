@@ -338,6 +338,19 @@ fn suggestions(field: &Input) -> Option<(usize, Vec<WhenContext>)> {
     (start < field.cursor() && !matches.is_empty()).then_some((start, matches))
 }
 
+/// Where the context name running through `caret` ends: past the name
+/// characters that follow it.
+fn name_end(text: &str, caret: usize) -> usize {
+    let after = text.get(caret..).unwrap_or_default();
+    caret
+        + after
+            .find(|character: char| {
+                !(character.is_ascii_alphanumeric()
+                    || matches!(character, '_' | '-'))
+            })
+            .unwrap_or(after.len())
+}
+
 /// A context suggestion's row: its name in the monospace font, and its
 /// description as secondary text in the interface font.
 fn condition_row(
@@ -1099,8 +1112,10 @@ impl SettingsView {
                         .iter()
                         .any(|context| context.name == name.as_ref())
                 {
-                    let caret = field.cursor();
-                    field.replace(start..caret, name, cx);
+                    // The whole name under the caret goes, so a completion
+                    // in the middle of a word keeps none of its tail.
+                    let end = name_end(field.text(), field.cursor());
+                    field.replace(start..end, name, cx);
                 }
             });
         })

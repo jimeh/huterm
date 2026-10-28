@@ -1146,3 +1146,33 @@ fn a_caret_move_refilters_a_list_that_shows(cx: &mut TestAppContext) {
     assert_eq!(probe.filtered(cx), 0, "a closed list filtered");
     assert!(!probe.open(cx));
 }
+
+#[gpui::test]
+fn a_caret_move_keeps_a_scrolled_list_where_it_was(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            many: true,
+            ..Setup::default()
+        },
+    );
+    type_text(cx, "font");
+    let combobox = probe.combobox(cx);
+    let shows = |cx: &mut VisualTestContext, row: usize| {
+        cx.read(|cx| combobox.read(cx).list.shows(row))
+    };
+    keys(cx, "down");
+    let list = probe.list_bounds(cx);
+    wheel(cx, list.center(), -100.0);
+    assert!(!shows(cx, 0), "the wheel scrolled the list");
+    let input = probe.input(cx);
+    cx.update(|_, cx| {
+        input.update(cx, |input, cx| input.move_left(false, cx));
+    });
+    cx.run_until_parked();
+    assert!(probe.open(cx));
+    assert!(
+        !shows(cx, 0),
+        "the caret move scrolled back to the highlight"
+    );
+}

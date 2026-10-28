@@ -32,11 +32,11 @@
 //!
 //! The filters must read only their own data, never the owner's entity.
 //! Besides the user's edits, and a caret move or an owner's write to the
-//! field while the list shows, they run inside [`Combobox::open`], [`Combobox::toggle`] on a
-//! closed list, [`Combobox::select_next`] and [`Combobox::select_previous`]
-//! on a closed list, and [`Combobox::refresh`] on an open one, which an
-//! owner usually calls from its own action handler, while its entity is
-//! being updated.
+//! field while the list shows, they run inside [`Combobox::open`],
+//! [`Combobox::toggle`], [`Combobox::select_next`], and
+//! [`Combobox::select_previous`] on a closed list, and in
+//! [`Combobox::refresh`] on an open one, which an owner usually calls from
+//! its own action handler, while its entity is being updated.
 //!
 //! Keyboard: focus stays in the field, which keeps every key, so typing
 //! continues while the list shows. The owner routes its commands to
@@ -58,7 +58,8 @@
 //! Pointer: a moving pointer highlights a suggestion, and a click picks it.
 //! A press on a suggestion prevents the field's blur, so a pick is reported
 //! once, with no blur before it. A click picks only the suggestion it
-//! pressed: one the list dropped before the release picks nothing. A press on the field leaves the list open.
+//! pressed: one the list dropped before the release picks nothing. A press
+//! on the field leaves the list open.
 //! A wheel over the list scrolls it.
 //!
 //! Dismissal: a pick, Confirm, and Close close the list. Escape is the
@@ -451,7 +452,10 @@ impl Combobox {
             _ => &self.filter,
         };
         let options = filter(self.input.read(cx));
-        self.list.set_options(options);
+        // Unchanged options keep the list where the user scrolled it.
+        if options != self.list.options() {
+            self.list.set_options(options);
+        }
     }
 
     /// The suggestion named as the field reads, ignoring case, while

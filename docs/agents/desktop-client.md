@@ -709,10 +709,12 @@ before the caret, as the condition field's, follow it. GPUI completes a
 click on whichever element holds the pressed element's id at the release,
 through that frame's listener, so `option_list` keys rows by option id,
 never by position, and a list that changes under a held press picks
-nothing in its place. The filter reads its own
-data, never the owner's entity: it also runs inside `open`, `toggle`,
-`select_next` and `select_previous` on a closed list, and `refresh`, which
-an owner usually calls from its own action handler mid-update. `Command`
+nothing in its place; option ids are unique within a list. A refilter
+that finds the same options leaves the list where the user scrolled it.
+The filter reads its own data, never the owner's entity: it also runs
+inside `open`, `toggle`, `select_next` and `select_previous` on a closed
+list, and `refresh`, which an owner usually calls from its own action
+handler mid-update. `Command`
 takes the items its owner filters and ranks through `set_options`,
 typically from `Changed`, and draws them inline; turn off its pointer
 highlight where the highlight shows details, as Licenses does. A picker

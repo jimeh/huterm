@@ -312,6 +312,22 @@ fn a_condition_suggestion_never_lands_where_the_caret_moved(
 }
 
 #[gpui::test]
+fn a_completion_in_the_middle_of_a_name_replaces_all_of_it(
+    cx: &mut TestAppContext,
+) {
+    // "Termin|a" completed to "Terminala": the name's tail stayed.
+    let file = ScratchConfig::new("lists-condition-mid-name", "");
+    let mut harness = DesktopHarness::new(cx);
+    let when = condition(&mut harness, &file, ids::NEXT_TAB, "ctrl-tab");
+    let list = with_view(&mut harness, |view, _| view.key_list(&when));
+    typed(&harness, "Termina");
+    keys(&harness, "left");
+    assert_eq!(shown(&mut harness, &list).2.as_deref(), Some("Terminal"));
+    keys(&harness, "enter");
+    assert_eq!(key_text(&mut harness, &when), "Terminal");
+}
+
+#[gpui::test]
 fn condition_suggestions_float_over_the_rows_below(cx: &mut TestAppContext) {
     // D6: the list laid out in the row's flow and pushed the rows below
     // it down.

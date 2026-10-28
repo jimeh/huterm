@@ -30,6 +30,7 @@ use crate::tokens::{Tokens, size};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListOption {
     /// What the owner receives when the option is highlighted or picked.
+    /// Unique within its list: rows, picks, and a kept highlight follow it.
     pub id: ItemId,
     /// The visible text, which is also the option's accessible name.
     pub label: SharedString,
