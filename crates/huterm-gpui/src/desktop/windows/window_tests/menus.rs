@@ -208,7 +208,10 @@ fn a_press_before_the_menus_first_frame_reaches_no_terminal(
 
 #[gpui::test]
 fn a_press_on_the_menu_button_closes_its_open_menu(cx: &mut TestAppContext) {
-    let mut harness = DesktopHarness::new(cx);
+    // A shown bar draws the button where no title strip does, as on Linux.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
     let (window, tab) = harness.menu_window(ECHO);
     harness.wait_for("the menu button to paint", |cx| {
         window
