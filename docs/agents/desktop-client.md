@@ -757,8 +757,27 @@ Cancel key. `run` routes the `dialog_*` commands to the slot and, while a
 dialog is open, ignores every other command except the window's close,
 minimize, zoom, and fullscreen. App commands such as Quit and Settings… go
 through the application's handler, not `run`, so they still work and need
-no gate. A dialog with a text field also routes that
-field's `palette_*` commands from `run_palette`, as above.
+no gate.
+
+A prompt with a text field opens with `open_field_dialog`, which gives the
+slot its `Input`, and its renderer draws the field inside a `Field`, wrapping
+the `InputGroup` in a `div` with the `Palette` context, declares the field's
+handle with `Dialog::focusable` and `initial_focus`, and names the key Enter
+runs in `Prompt::confirm`. `run_palette` calls `run_dialog_field` first: it
+routes `palette_expand` and `palette_previous_slot` to the modal's focus
+cycle, `palette_confirm` to the confirm key, `palette_back` to the prompt's
+Cancel, and every other palette command to the field, and while a dialog is
+open it takes them all. Route Shift-Tab to the modal, not the window: the
+field is the dialog's first control, so `window.focus_prev` leaves the
+dialog. The New profile and Rename profile dialogs (`quake.rs`,
+`render_name_dialog`) check the typed name on every frame, show the message
+under the field, and disable the primary button, which then leaves the Tab
+cycle. A save of several patches, such as a rename's, goes through
+`saving.rs`'s `Batch`: `submit_batch` queues it, its patches are built when
+its turn comes, from the file as the window last read or wrote it, and they
+go to `ConfigFile::apply` together, so a failed save writes nothing.
+`batch_outcome` lists the values `pending` shows meanwhile, and
+`batch_refused` says why it failed. Another rename adds a `Batch` variant.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with

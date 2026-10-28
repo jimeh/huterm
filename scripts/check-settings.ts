@@ -1,7 +1,8 @@
 /**
  * Drive the Settings window with native keys against the palette smoke
  * binary: open it, search, toggle and reset a switch, step a number, rebind
- * a command, edit a quake profile and record a global shortcut, and close it,
+ * a command, edit, rename, and delete a quake profile, record a global
+ * shortcut, and close it,
  * checking `config.toml` after each save and that keys reach the terminal
  * again afterwards.
  */
@@ -276,15 +277,28 @@ height = 0.3
       (text) => text.includes('[[global_keybinding]]\nkey = "ctrl-alt-shift-y"\ncommand = "toggle_quake"\n'),
       "global shortcut in config.toml",
     );
-    // Delete profile asks in an alert that opens on Cancel. Escape, which
-    // is `dialog_cancel`, returns focus to Delete profile; Delete removes
-    // the profile and focuses the profile select.
+    // Rename profile opens a dialog on the current name, selected, so typing
+    // replaces it; Enter in the field renames in one save and returns focus
+    // to Rename profile.
     await tabTo("action:qprof");
     await key("space");
     await state("settings.menu=true", "settings.focus=menu");
     await key("down");
     await key("enter");
     await state("settings.menu=false", "settings.focus=action:qprof");
+    await tabTo("action:qren");
+    await key("space");
+    await state("settings.dialog=rename", "settings.focus=dialog:field");
+    await typeText("work");
+    await key("enter");
+    await saved(
+      (text) => text.includes("[quake.profiles.work]\nheight = 0.3\n") && !text.includes("[quake.profiles.logs]"),
+      "logs profile renamed to work in config.toml",
+    );
+    await state("settings.dialog=none", "settings.focus=action:qren");
+    // Delete profile asks in an alert that opens on Cancel. Escape, which
+    // is `dialog_cancel`, returns focus to Delete profile; Delete removes
+    // the profile and focuses the profile select.
     await tabTo("action:qdel");
     await key("space");
     await state("settings.dialog=delete", "settings.focus=dialog:qdelno");
@@ -295,7 +309,7 @@ height = 0.3
     await key("tab");
     await state("settings.focus=dialog:qdelyes");
     await key("enter");
-    await saved((text) => !text.includes("[quake.profiles.logs]"), "logs profile removed from config.toml");
+    await saved((text) => !text.includes("[quake.profiles.work]"), "work profile removed from config.toml");
     await state("settings.dialog=none", "settings.focus=action:qprof");
 
     // Search finds a command; Space opens it in Keybindings.
@@ -344,7 +358,7 @@ height = 0.3
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded alert=dialog-commands close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

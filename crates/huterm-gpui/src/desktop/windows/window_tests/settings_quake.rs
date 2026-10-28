@@ -85,15 +85,15 @@ fn new_profiles_need_a_new_bare_name(cx: &mut TestAppContext) {
     for name in ["", "my logs", "logs", "default"] {
         with_window(&mut harness, |view, window, cx| {
             view.type_profile_name(name, window, cx);
-            view.press("qcreate", window, cx);
-            assert!(view.quake_message().is_some(), "{name:?} was accepted");
+            view.answer("qcreate", window, cx);
+            assert!(view.quake_message(cx).is_some(), "{name:?} was accepted");
         });
     }
     harness.cx.run_until_parked();
     assert_eq!(file.text(), LOGS);
     with_window(&mut harness, |view, window, cx| {
         view.type_profile_name("build-1", window, cx);
-        view.press("qcreate", window, cx);
+        view.answer("qcreate", window, cx);
     });
     saved(&mut harness, &file, |text| text.contains("build-1"));
     assert_eq!(file.text(), format!("{LOGS}\n[quake.profiles.build-1]\n"));
@@ -332,13 +332,13 @@ fn a_refused_profile_write_settles_and_keeps_the_name(cx: &mut TestAppContext) {
     std::fs::write(file.path(), &theirs).unwrap();
     with_window(&mut harness, |view, window, cx| {
         view.type_profile_name("build", window, cx);
-        view.press("qcreate", window, cx);
+        view.answer("qcreate", window, cx);
     });
     harness.wait_for("the refused create", |cx| {
         settled(cx)
             && settings(cx).is_some_and(|handle| {
                 handle
-                    .read_with(cx, |view, _| view.quake_message().is_some())
+                    .read_with(cx, |view, cx| view.quake_message(cx).is_some())
                     .unwrap_or(false)
             })
     });
@@ -403,10 +403,10 @@ fn a_create_on_an_invalid_file_keeps_the_name(cx: &mut TestAppContext) {
             })
     });
     with_window(&mut harness, |view, window, cx| {
-        view.press("qcreate", window, cx);
+        view.answer("qcreate", window, cx);
         assert_eq!(view.quake_prompts(), (true, false));
         assert_eq!(view.profile_name_text(cx), "build");
-        assert!(view.quake_message().is_some());
+        assert!(view.quake_message(cx).is_some());
     });
 }
 
@@ -470,7 +470,7 @@ fn a_refused_create_keeps_a_newer_name_and_drops_its_queued_edits(
     let duration = "quake.profiles.build.animation_ms";
     with_window(&mut harness, |view, window, cx| {
         view.type_profile_name("build", window, cx);
-        view.press("qcreate", window, cx);
+        view.answer("qcreate", window, cx);
         // Queued behind the creation, and a newer name in the field.
         view.type_into(duration, "400", window, cx);
         view.enter(duration, cx);
@@ -480,7 +480,7 @@ fn a_refused_create_keeps_a_newer_name_and_drops_its_queued_edits(
         settled(cx)
             && settings(cx).is_some_and(|handle| {
                 handle
-                    .read_with(cx, |view, _| view.quake_message().is_some())
+                    .read_with(cx, |view, cx| view.quake_message(cx).is_some())
                     .unwrap_or(false)
             })
     });
@@ -488,7 +488,7 @@ fn a_refused_create_keeps_a_newer_name_and_drops_its_queued_edits(
     assert_eq!(file.text(), theirs);
     with_window(&mut harness, |view, _, cx| {
         assert_eq!(view.profile_name_text(cx), "other");
-        assert!(view.quake_message().unwrap().starts_with("build: "));
+        assert!(view.quake_message(cx).unwrap().starts_with("build: "));
         // Leaving the field does not submit the dropped edit again.
         view.blur(duration, cx);
     });
@@ -507,7 +507,7 @@ fn a_queued_create_gives_its_name_back_when_the_file_turns_invalid(
     with_window(&mut harness, |view, window, cx| {
         view.set("font.size", Some(Value::Float(15.0)), cx);
         view.type_profile_name("build", window, cx);
-        view.press("qcreate", window, cx);
+        view.answer("qcreate", window, cx);
     });
     // The file turns invalid before the write ahead of the creation runs.
     std::fs::write(file.path(), format!("{LOGS}[window\n")).unwrap();
@@ -521,7 +521,7 @@ fn a_queued_create_gives_its_name_back_when_the_file_turns_invalid(
     });
     with_window(&mut harness, |view, _, cx| {
         assert_eq!(view.profile_name_text(cx), "build");
-        assert!(view.quake_message().is_some());
+        assert!(view.quake_message(cx).is_some());
     });
 }
 
@@ -569,5 +569,143 @@ fn a_delete_on_an_invalid_file_says_why(cx: &mut TestAppContext) {
     assert_eq!(
         alert["aria"]["description"],
         "config.toml has an error. Not saved."
+    );
+}
+
+/// Renames the profile shown to `to` from its Rename profile dialog.
+fn rename(harness: &mut DesktopHarness, from: &str, to: &str) {
+    with_window(harness, |view, window, cx| {
+        view.pick_profile(from);
+        view.press("qren", window, cx);
+        assert_eq!(view.dialog_name(), "rename");
+        view.type_dialog_name(to, cx);
+        view.answer("qrename", window, cx);
+        assert_eq!(view.dialog_name(), "none", "{:?}", view.quake_message(cx));
+    });
+}
+
+const SHORTCUTS: &str = "\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+                         command = \"toggle_quake\"\nargs = { profile = \"logs\" }\n\
+                         \n[[global_keybinding]]\nkey = \"ctrl-alt-shift-u\"\n\
+                         command = \"toggle_quake\"\n\
+                         \n[[keybinding]]\nkey = \"alt-l\"\ncommand = \"show_quake\"\n\
+                         args = { profile = \"logs\" } # mine\n\
+                         \n[[keybinding]]\nkey = \"alt-p\"\ncommand = \"new_tab\"\n";
+
+#[gpui::test]
+fn a_rename_moves_the_table_and_the_shortcuts_naming_it_in_one_save(
+    cx: &mut TestAppContext,
+) {
+    let original = format!("{LOGS}{SHORTCUTS}");
+    let file = ScratchConfig::new("quake-rename", &original);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    let before = with_view(&mut harness, |view, _| view.writes_finished());
+    rename(&mut harness, "logs", "work");
+    // The new name shows at once, while the save runs.
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.shown_profile_name(), "work");
+        assert_eq!(view.profile_names(), ["default", "work"]);
+    });
+    saved(&mut harness, &file, |text| text.contains("work"));
+    // The table's comments go with the old key.
+    assert_eq!(
+        file.text(),
+        format!(
+            "# Mine.\n\n[quake.profiles.work]\nheight = 0.3\n{}",
+            SHORTCUTS.replace("\"logs\"", "\"work\"")
+        )
+    );
+    let after = with_view(&mut harness, |view, _| view.writes_finished());
+    assert_eq!(after - before, 1, "one save");
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.shown_profile_name(), "work");
+        assert_eq!(view.dialog_name(), "none");
+    });
+}
+
+#[gpui::test]
+fn a_rename_that_fails_to_save_changes_nothing_and_says_why(
+    cx: &mut TestAppContext,
+) {
+    let original = format!("{LOGS}{SHORTCUTS}");
+    let file = ScratchConfig::new("quake-rename-conflict", &original);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    // Another editor changes the profile before Settings rereads.
+    let theirs = original.replace("0.3", "0.4");
+    std::fs::write(file.path(), &theirs).unwrap();
+    rename(&mut harness, "logs", "work");
+    harness.wait_for("the refused rename", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| {
+                        view.dialog_name() == "rename-refused"
+                    })
+                    .unwrap_or(false)
+            })
+    });
+    assert_eq!(file.text(), theirs);
+    visual(&harness).run_until_parked();
+    let alert = a11y_node(&mut harness, "settings-rename-refused");
+    let why = alert["aria"]["description"].as_str().unwrap_or_default();
+    assert!(why.starts_with("config.toml changed"), "{alert}");
+    keys(&harness, "enter");
+    with_window(&mut harness, |view, window, cx| {
+        assert_eq!(view.dialog_name(), "none");
+        assert_eq!(view.focus_name(window, cx), "action:qren");
+        assert_eq!(view.shown_profile_name(), "logs");
+        assert_eq!(view.profile_names(), ["default", "logs"]);
+    });
+}
+
+#[gpui::test]
+fn a_rename_refuses_a_shortcut_it_cannot_rewrite_and_names_it(
+    cx: &mut TestAppContext,
+) {
+    // An inline array of global shortcuts has no entry to edit in place.
+    let original = format!(
+        "global_keybinding = [{{ key = \"ctrl-alt-shift-y\", command = \
+         \"toggle_quake\", args = {{ profile = \"logs\" }} }}]\n\n{LOGS}"
+    );
+    let file = ScratchConfig::new("quake-rename-inline", &original);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    rename(&mut harness, "logs", "work");
+    harness.wait_for("the refused rename", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| {
+                        view.dialog_name() == "rename-refused"
+                    })
+                    .unwrap_or(false)
+            })
+    });
+    assert_eq!(file.text(), original);
+    visual(&harness).run_until_parked();
+    let alert = a11y_node(&mut harness, "settings-rename-refused");
+    let why = alert["aria"]["description"].as_str().unwrap_or_default();
+    assert!(why.contains("global_keybinding"), "{alert}");
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.shown_profile_name(), "logs");
+    });
+}
+
+#[gpui::test]
+fn a_queued_rename_carries_the_edit_saved_before_it(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-rename-queued", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    with_view(&mut harness, |view, cx| {
+        view.set("quake.profiles.logs.height", Some(Value::Float(0.5)), cx);
+    });
+    // The rename waits behind the height's write and builds on it.
+    rename(&mut harness, "logs", "work");
+    saved(&mut harness, &file, |text| text.contains("work"));
+    assert_eq!(
+        file.text(),
+        "# Mine.\n\n[quake.profiles.work]\nheight = 0.5\n"
     );
 }

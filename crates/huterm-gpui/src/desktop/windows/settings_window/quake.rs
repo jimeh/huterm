@@ -1,30 +1,36 @@
 //! The Quake windows section: a profile dropdown and the chosen profile's
-//! card, new and deleted profiles, and global shortcuts.
+//! card, new, renamed, and deleted profiles, and global shortcuts.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use gpui::{
     AnyElement, App, Context, Entity, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Styled, Window, div, prelude::*, px,
+    IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::*,
+    px,
 };
-use huterm_config::document::EntryLocator;
+use huterm_config::document::{EntryLocator, Patch};
 use huterm_config::settings::{Choice, Setting, SettingKind, SettingsModel};
 use huterm_protocol::{ids, lookup};
 use toml::{Table, Value};
 
 use super::super::super::key_hint::KeyHint;
 use super::super::super::overlay::Swatch;
-use super::super::super::settings::keybindings::Edit;
+use super::super::super::settings::keybindings::{
+    Edit, names_profile, rename_profile_references,
+};
 use super::controls::Opener;
 use super::dialog::Prompt;
 use super::keybindings::{CAP_WIDTH, Target, card, group_block, small};
+use super::saving::Batch;
 use super::{MenuFor, SettingsView, button};
 use crate::keymap::Platform;
 use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::button::Variant;
-use huterm_ui::components::dialog::Dismissal;
-use huterm_ui::components::input::Input;
+use huterm_ui::components::dialog::{Dialog, Dismissal};
+use huterm_ui::components::field::Field;
+use huterm_ui::components::input::{Chrome, Input};
+use huterm_ui::components::input_group::InputGroup;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
@@ -39,9 +45,9 @@ const COMMANDS: [huterm_protocol::CommandId; 3] =
 pub(super) struct Quake {
     /// The profile the card edits.
     pub(super) profile: String,
-    /// The New profile name field, while it is open.
-    pub(super) naming: Option<Entity<Input>>,
-    pub(super) name_error: Option<String>,
+    /// The text the New profile or Rename profile dialog's name was refused
+    /// for, and why; the message shows while the field still holds it.
+    pub(super) name_error: Option<(String, String)>,
     /// Why the write of a confirmed deletion was refused.
     pub(super) delete_error: Option<String>,
 }
@@ -50,11 +56,18 @@ impl Quake {
     pub(super) fn new() -> Self {
         Self {
             profile: DEFAULT.to_owned(),
-            naming: None,
             name_error: None,
             delete_error: None,
         }
     }
+}
+
+/// Why a typed name cannot name a new or renamed profile.
+struct NameProblem {
+    message: String,
+    /// Whether the dialog shows it before the user confirms; a blank or
+    /// unchanged name only disables the primary button.
+    shown: bool,
 }
 
 /// Whether Settings can edit a profile named `name`: a bare TOML key, so
@@ -287,10 +300,43 @@ impl SettingsView {
                 self.action_stop("qprof".to_owned(), cx).focus(window, cx);
             }
             "qprof" => self.open_profiles(window, cx),
-            "qnew" => self.start_naming(window, cx),
+            // Nothing that writes opens while the file is read-only.
+            "qnew" | "qren" | "qdel" if self.locked() => {}
+            "qnew" => {
+                self.quake.name_error = None;
+                let field = Self::name_field("", cx);
+                let new = self.action_stop("qnew".to_owned(), cx);
+                self.open_field_dialog(Prompt::NewProfile, field, &new);
+            }
             "qcreate" => self.create_profile(window, cx),
-            "qcancel" => self.stop_naming(window, cx),
-            "qdel" if self.locked() => {}
+            "qcancel" => {
+                self.quake.name_error = None;
+                self.close_dialog(window, cx);
+            }
+            "qren" => {
+                let profile = self.shown_profile();
+                if profile != DEFAULT && bare(&profile) {
+                    self.quake.name_error = None;
+                    let field = Self::name_field(&profile, cx);
+                    field.update(cx, Input::select_all);
+                    let rename = self.action_stop("qren".to_owned(), cx);
+                    self.open_field_dialog(
+                        Prompt::RenameProfile(profile),
+                        field,
+                        &rename,
+                    );
+                }
+            }
+            "qrename" => self.rename_profile(window, cx),
+            "qrenno" => {
+                self.quake.name_error = None;
+                self.close_dialog(window, cx);
+                // A profile removed meanwhile took its Rename profile with
+                // it.
+                if self.shown_profile() == DEFAULT {
+                    self.action_stop("qprof".to_owned(), cx).focus(window, cx);
+                }
+            }
             "qdel" => {
                 let profile = self.shown_profile();
                 let prompt = match self.delete_refusal(&profile) {
@@ -385,7 +431,8 @@ impl SettingsView {
     }
 
     /// Shows why a profile's creation or deletion was refused. A refused
-    /// creation reopens the name field with its name.
+    /// creation reopens the New profile dialog with its name; while another
+    /// dialog is open, the footer alone says why.
     pub(super) fn profile_failed(
         &mut self,
         path: &str,
@@ -396,32 +443,50 @@ impl SettingsView {
         let Some(name) = path.strip_prefix(PREFIX) else {
             return;
         };
-        if created {
-            // A name typed for another profile since stays in the field.
-            let typing = self.quake.naming.as_ref().is_some_and(|field| {
-                let text = field.read(cx).text().trim();
-                !text.is_empty() && text != name
-            });
-            if typing {
-                self.quake.name_error = Some(format!("{name}: {message}"));
-            } else if let Some(field) = &self.quake.naming {
-                // An open field keeps its focus and takes the name back.
-                field.update(cx, |field, cx| field.set_text(name, cx));
-                self.quake.name_error = Some(message);
-            } else {
-                let swatch = Self::swatch(cx);
-                let field = cx.new(|cx| {
-                    let mut field = profile_name_field(swatch, cx);
-                    field.set_text(name, cx);
-                    field
-                });
-                let _ = field.read(cx).focus_handle(cx).tab_stop(true);
-                self.quake.naming = Some(field);
-                self.quake.name_error = Some(message);
-            }
-        } else {
+        if !created {
             self.pick_profile(name);
             self.quake.delete_error = Some(message);
+        } else if self.dialog.prompt().is_none() {
+            let field = Self::name_field(name, cx);
+            self.quake.name_error = Some((name.to_owned(), message));
+            let new = self.action_stop("qnew".to_owned(), cx);
+            self.open_field_dialog(Prompt::NewProfile, field, &new);
+        } else if self.dialog.prompt() == Some(&Prompt::NewProfile)
+            && let Some(field) = self.dialog.field().cloned()
+        {
+            let text = field.read(cx).text().to_owned();
+            let typed = text.trim();
+            if !typed.is_empty() && typed != name {
+                // A name typed for another profile since stays in the field.
+                self.quake.name_error =
+                    Some((text, format!("{name}: {message}")));
+            } else {
+                // The open dialog keeps its focus and takes the name back.
+                field.update(cx, |field, cx| field.set_text(name, cx));
+                self.quake.name_error = Some((name.to_owned(), message));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Shows why a rename of `from` wrote nothing, in an alert, unless
+    /// another dialog is open, when the footer alone says why.
+    pub(super) fn rename_refused(
+        &mut self,
+        from: &str,
+        message: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.pick_profile(from);
+        if self.dialog.prompt().is_none() {
+            let rename = self.action_stop("qren".to_owned(), cx);
+            self.open_dialog(
+                Prompt::RenameRefused {
+                    profile: from.to_owned(),
+                    message,
+                },
+                &rename,
+            );
         }
         cx.notify();
     }
@@ -432,59 +497,96 @@ impl SettingsView {
         self.quake.delete_error = None;
     }
 
-    fn start_naming(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if self.locked() {
-            return;
-        }
+    /// A name field holding `text`, for the New profile and Rename profile
+    /// dialogs.
+    fn name_field(text: &str, cx: &mut Context<'_, Self>) -> Entity<Input> {
         let swatch = Self::swatch(cx);
-        let field = self
-            .quake
-            .naming
-            .get_or_insert_with(|| cx.new(|cx| profile_name_field(swatch, cx)));
-        let handle = field.read(cx).focus_handle(cx).tab_stop(true);
-        handle.focus(window, cx);
-        self.quake.name_error = None;
+        cx.new(|cx| {
+            let mut field =
+                Input::new("quake-profile-name", "Profile name", swatch, cx)
+                    .with_placeholder("Profile name")
+                    .with_chrome(Chrome::Grouped);
+            field.set_text(text, cx);
+            field
+        })
     }
 
-    fn stop_naming(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.quake.naming = None;
-        self.quake.name_error = None;
-        self.action_stop("qnew".to_owned(), cx).focus(window, cx);
-    }
-
-    /// Writes an empty table for the typed name and shows it.
-    pub(super) fn create_profile(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(field) = &self.quake.naming else {
-            return;
-        };
-        let name = field.read(cx).text().trim().to_owned();
-        let error = if self.locked() {
-            Some("config.toml has an error. Not saved.".to_owned())
+    /// Why `name` cannot name a new profile, or `from`'s new name when
+    /// renaming.
+    fn name_check(
+        &self,
+        name: &str,
+        from: Option<&str>,
+    ) -> Result<(), NameProblem> {
+        let (message, shown) = if self.locked() {
+            ("config.toml has an error. Not saved.".to_owned(), false)
         } else if name.is_empty() {
-            Some("Type a name for the profile.".to_owned())
-        } else if !bare(&name) {
-            Some(
+            ("Type a name for the profile.".to_owned(), false)
+        } else if from == Some(name) {
+            ("Type a new name for the profile.".to_owned(), false)
+        } else if !bare(name) {
+            (
                 "Use letters, digits, - and _ only; other names need \
                  quoting, so add them in config.toml."
                     .to_owned(),
+                true,
             )
-        } else if self.profiles().contains(&name) {
-            Some(format!("A profile named {name} exists."))
+        } else if self.profiles().iter().any(|known| known == name) {
+            (format!("A profile named {name} exists."), true)
         } else {
-            None
+            return Ok(());
         };
-        if let Some(error) = error {
-            self.quake.name_error = Some(error);
+        Err(NameProblem { message, shown })
+    }
+
+    /// The message under the open dialog's name field holding `text`: why
+    /// it was refused, or else what is wrong with it as typed.
+    fn name_message(
+        &self,
+        text: &str,
+        check: &Result<(), NameProblem>,
+    ) -> Option<String> {
+        self.quake
+            .name_error
+            .as_ref()
+            .filter(|(refused, _)| refused == text)
+            .map(|(_, message)| message.clone())
+            .or_else(|| {
+                check
+                    .as_ref()
+                    .err()
+                    .filter(|problem| problem.shown)
+                    .map(|problem| problem.message.clone())
+            })
+    }
+
+    /// The open name dialog's typed name, or why it cannot be used, which
+    /// then shows under the field.
+    fn checked_name(&mut self, from: Option<&str>, cx: &App) -> Option<String> {
+        let text = self.dialog.field()?.read(cx).text().to_owned();
+        let name = text.trim().to_owned();
+        match self.name_check(&name, from) {
+            Ok(()) => Some(name),
+            Err(problem) => {
+                self.quake.name_error = Some((text, problem.message));
+                None
+            }
+        }
+    }
+
+    /// Writes an empty table for the New profile dialog's name and shows
+    /// it.
+    fn create_profile(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.dialog.prompt() != Some(&Prompt::NewProfile) {
             return;
         }
+        let Some(name) = self.checked_name(None, cx) else {
+            return;
+        };
         let Some(setting) =
             profile_setting(self.model, &format!("{PREFIX}{name}"))
         else {
@@ -493,7 +595,7 @@ impl SettingsView {
         let table = Value::Table(Table::new());
         self.submit(
             setting,
-            huterm_config::document::Patch::Set {
+            Patch::Set {
                 path: vec!["quake".into(), "profiles".into(), name.clone()],
                 value: table.clone(),
             },
@@ -502,9 +604,92 @@ impl SettingsView {
             cx,
         );
         self.pick_profile(&name);
-        self.quake.naming = None;
         self.quake.name_error = None;
+        self.close_dialog(window, cx);
         self.action_stop("qprof".to_owned(), cx).focus(window, cx);
+    }
+
+    /// Renames the profile the open Rename profile dialog names to its
+    /// typed name, in one save with the shortcuts that name it, and keeps
+    /// showing it under the new name.
+    fn rename_profile(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(Prompt::RenameProfile(from)) = self.dialog.prompt().cloned()
+        else {
+            return;
+        };
+        let Some(to) = self.checked_name(Some(&from), cx) else {
+            return;
+        };
+        if !self.submit_batch(
+            Batch::RenameProfile {
+                from,
+                to: to.clone(),
+            },
+            cx,
+        ) {
+            return;
+        }
+        self.pick_profile(&to);
+        self.quake.name_error = None;
+        // Focus returns to Rename profile, now the renamed profile's.
+        self.close_dialog(window, cx);
+    }
+
+    /// What a rename shows until it lands: `from` gone and `to` there.
+    pub(super) fn rename_outcome(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> Vec<(&'static str, Option<Value>)> {
+        [(from, None), (to, Some(Value::Table(Table::new())))]
+            .into_iter()
+            .filter_map(|(name, value)| {
+                let setting =
+                    profile_setting(self.model, &format!("{PREFIX}{name}"))?;
+                Some((setting.path.as_str(), value))
+            })
+            .collect()
+    }
+
+    /// A rename's patches, built from the file as the window last saw it:
+    /// `to` set to `from`'s table, `from` removed, and every shortcut that
+    /// names `from` pointed at `to`.
+    pub(super) fn rename_patches(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<Patch>, String> {
+        let Some(Value::Table(table)) =
+            self.file.get(&format!("{PREFIX}{from}"))
+        else {
+            return Err(format!(
+                "config.toml no longer has a profile named {from}."
+            ));
+        };
+        if self.file.get(&format!("{PREFIX}{to}")).is_some() {
+            return Err(format!("A profile named {to} exists."));
+        }
+        let path = |name: &str| {
+            vec!["quake".to_owned(), "profiles".to_owned(), name.to_owned()]
+        };
+        let mut patches = vec![
+            Patch::Set {
+                path: path(to),
+                value: Value::Table(table.clone()),
+            },
+            Patch::Remove { path: path(from) },
+        ];
+        patches.extend(rename_profile_references(
+            &self.keys.entries,
+            &self.keys.globals,
+            from,
+            to,
+        ));
+        Ok(patches)
     }
 
     /// Why `profile` cannot be deleted now, if it cannot.
@@ -741,74 +926,25 @@ impl SettingsView {
             swatch,
             cx,
         );
-        let mut bar = div().flex().flex_col().gap(px(6.0)).mb(px(12.0)).child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(small("Profile".to_owned(), swatch.muted))
-                .child(dropdown)
-                .when(self.quake.naming.is_none(), |bar| {
-                    let new = self
-                        .action_button(
-                            "settings-qnew".to_owned(),
-                            "New profile",
-                            "qnew".to_owned(),
-                            swatch,
-                            cx,
-                        )
-                        .when_some(reason.clone(), |button, reason| {
-                            button.disabled(Some(reason))
-                        });
-                    bar.child(new)
-                }),
-        );
-        if let Some(field) = self.quake.naming.clone() {
-            self.drawn.insert("qname".to_owned());
-            let invalid = self.quake.name_error.is_some();
-            field.update(cx, |field, cx| field.set_invalid(invalid, cx));
-            let create = self
-                .action_button(
-                    "settings-qcreate".to_owned(),
-                    "Create",
-                    "qcreate".to_owned(),
-                    swatch,
-                    cx,
-                )
-                .when_some(reason, |button, reason| {
-                    button.disabled(Some(reason))
-                });
-            let cancel = self.action_button(
-                "settings-qcancel".to_owned(),
-                "Cancel",
-                "qcancel".to_owned(),
+        let new = self
+            .action_button(
+                "settings-qnew".to_owned(),
+                "New profile",
+                "qnew".to_owned(),
                 swatch,
                 cx,
-            );
-            bar = bar
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .key_context("Palette")
-                                .w(px(220.0))
-                                .child(field),
-                        )
-                        .child(create)
-                        .child(cancel),
-                )
-                .children(
-                    self.quake
-                        .name_error
-                        .clone()
-                        .map(|error| small(error, swatch.danger_text())),
-                );
-        }
+            )
+            .when_some(reason, |button, reason| button.disabled(Some(reason)));
         let _ = window;
-        bar.into_any_element()
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .mb(px(12.0))
+            .child(small("Profile".to_owned(), swatch.muted))
+            .child(dropdown)
+            .child(new)
+            .into_any_element()
     }
 
     fn render_profile(
@@ -854,17 +990,29 @@ impl SettingsView {
             );
         }
         if profile != DEFAULT && bare(&profile) {
-            body = body.child(self.render_delete(swatch, cx));
+            body = body.child(self.render_profile_actions(swatch, cx));
         }
         group_block(&title, body, swatch)
     }
 
-    fn render_delete(
+    /// A named profile's Rename profile and Delete profile.
+    fn render_profile_actions(
         &mut self,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let reason = self.lock_reason();
+        let rename = self
+            .action_button(
+                "settings-qren".to_owned(),
+                "Rename profile",
+                "qren".to_owned(),
+                swatch,
+                cx,
+            )
+            .when_some(reason.clone(), |button, reason| {
+                button.disabled(Some(reason))
+            });
         let delete = self
             .action_button(
                 "settings-qdel".to_owned(),
@@ -882,7 +1030,7 @@ impl SettingsView {
             .py(px(10.0))
             .border_t_1()
             .border_color(swatch.line)
-            .child(div().flex().child(delete))
+            .child(div().flex().gap(px(8.0)).child(rename).child(delete))
             .child(small(
                 "An open window of a deleted profile becomes an ordinary \
                  window and keeps its tabs."
@@ -910,7 +1058,10 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> Option<AnyElement> {
         let (Prompt::DeleteProfile(profile)
-        | Prompt::DeleteRefused { profile, .. }) = prompt;
+        | Prompt::DeleteRefused { profile, .. }) = prompt
+        else {
+            return None;
+        };
         if !self.profiles().iter().any(|name| name == profile) {
             cx.defer_in(window, |view, window, cx| {
                 view.dismiss_dialog(Dismissal::OwnerChanged, window, cx);
@@ -933,15 +1084,20 @@ impl SettingsView {
                     swatch,
                     cx,
                 );
+                let mut description = "Its settings and comments are removed \
+                                       from config.toml."
+                    .to_owned();
+                if let Some(note) = self.keybinding_note(profile) {
+                    description.push(' ');
+                    description.push_str(&note);
+                }
                 AlertDialog::new(
                     "settings-delete-profile",
                     format!("Delete the \u{201c}{profile}\u{201d} profile?"),
                     self.dialog.modal(),
                     swatch,
                 )
-                .description(
-                    "Its settings and comments are removed from config.toml.",
-                )
+                .description(description)
                 .cancel(cancel, &cancel_focus)
                 .action(delete.variant(Variant::Destructive), &delete_focus)
             }
@@ -965,8 +1121,162 @@ impl SettingsView {
                 .description(message.clone())
                 .cancel(ok.variant(Variant::Primary), &ok_focus)
             }
+            Prompt::NewProfile
+            | Prompt::RenameProfile(_)
+            | Prompt::RenameRefused { .. } => return None,
         };
         Some(alert.into_any_element())
+    }
+
+    /// What deleting `profile` does to the keybindings that run it, which
+    /// the file still accepts once it is gone: each fails when pressed.
+    fn keybinding_note(&self, profile: &str) -> Option<String> {
+        let keys: Vec<String> = self
+            .keys
+            .entries
+            .iter()
+            .map(EntryLocator::content)
+            .filter(|entry| {
+                names_profile(entry, profile)
+                    && entry.get("disabled").and_then(Value::as_bool)
+                        != Some(true)
+            })
+            .map(|entry| {
+                let key = entry.get("key").and_then(Value::as_str);
+                KeyHint::parse(key.unwrap_or_default(), Platform::current())
+                    .text()
+            })
+            .collect();
+        match keys.as_slice() {
+            [] => None,
+            [key] => Some(format!(
+                "The keybinding {key} runs this profile and will fail."
+            )),
+            keys => Some(format!(
+                "The keybindings {} run this profile and will fail.",
+                keys.join(", ")
+            )),
+        }
+    }
+
+    /// The New profile or Rename profile dialog: a name field with its
+    /// message, Cancel, and Create or Rename, which stays disabled while
+    /// the name cannot be used. A profile removed while its Rename profile
+    /// dialog is open, such as by another editor, closes the dialog.
+    pub(super) fn render_name_dialog(
+        &mut self,
+        prompt: &Prompt,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let field = self.dialog.field()?.clone();
+        let from = match prompt {
+            Prompt::RenameProfile(from) => Some(from.as_str()),
+            _ => None,
+        };
+        if let Some(from) = from
+            && !self.profiles().iter().any(|name| name == from)
+        {
+            cx.defer_in(window, |view, window, cx| {
+                view.dismiss_dialog(Dismissal::OwnerChanged, window, cx);
+            });
+            return None;
+        }
+        let text = field.read(cx).text().to_owned();
+        let check = self.name_check(text.trim(), from);
+        let message = self.name_message(&text, &check);
+        field.update(cx, |field, cx| field.set_invalid(message.is_some(), cx));
+        let refusal: Option<SharedString> = self
+            .lock_reason()
+            .or_else(|| check.err().map(|problem| problem.message.into()));
+        let (id, title, cancel, confirm, label) = match from {
+            None => (
+                "settings-new-profile",
+                "New profile".to_owned(),
+                "qcancel",
+                "qcreate",
+                "Create",
+            ),
+            Some(from) => (
+                "settings-rename-profile",
+                format!("Rename the \u{201c}{from}\u{201d} profile"),
+                "qrenno",
+                "qrename",
+                "Rename",
+            ),
+        };
+        let (cancel, cancel_focus) = self.dialog_button(
+            if from.is_none() {
+                "settings-qcancel"
+            } else {
+                "settings-qrenno"
+            },
+            "Cancel",
+            cancel,
+            swatch,
+            cx,
+        );
+        let (primary, primary_focus) = self.dialog_button(
+            if from.is_none() {
+                "settings-qcreate"
+            } else {
+                "settings-qrename"
+            },
+            label,
+            confirm,
+            swatch,
+            cx,
+        );
+        let primary = primary
+            .variant(Variant::Primary)
+            .when_some(refusal, |button, reason| button.disabled(Some(reason)));
+        let handle = field.read(cx).focus_handle(cx);
+        let name =
+            Field::new("settings-qname", "Name", swatch)
+                .vertical()
+                .error(message.map(SharedString::from))
+                .control(div().key_context("Palette").w_full().child(
+                    InputGroup::new("settings-qname-group", &field, swatch),
+                ))
+                .p_0();
+        Some(
+            Dialog::new(id, title, self.dialog.modal(), swatch)
+                .when(from.is_some(), |dialog| {
+                    dialog.description(
+                        "Shortcuts that use it follow the new name. Comments \
+                         in its table are removed from config.toml.",
+                    )
+                })
+                .focusable(&handle)
+                .initial_focus(&handle)
+                .child(name)
+                .button(cancel, &cancel_focus)
+                .button(primary, &primary_focus)
+                .into_any_element(),
+        )
+    }
+
+    /// The alert that says why a rename wrote nothing, with OK, which
+    /// returns focus to Rename profile.
+    pub(super) fn render_rename_refusal(
+        &mut self,
+        profile: &str,
+        message: String,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let (ok, ok_focus) =
+            self.dialog_button("settings-qrenno", "OK", "qrenno", swatch, cx);
+        AlertDialog::new(
+            "settings-rename-refused",
+            format!("The \u{201c}{profile}\u{201d} profile was not renamed"),
+            self.dialog.modal(),
+            swatch,
+        )
+        .description(message)
+        .cancel(ok.variant(Variant::Primary), &ok_focus)
+        .into_any_element()
     }
 
     fn render_globals(
@@ -1163,18 +1473,6 @@ impl SettingsView {
             cx,
         )
     }
-
-    /// The name field, when it has focus.
-    pub(super) fn focused_name_field(
-        &self,
-        window: &Window,
-        cx: &App,
-    ) -> Option<Entity<Input>> {
-        self.quake
-            .naming
-            .clone()
-            .filter(|field| field.read(cx).focus_handle(cx).is_focused(window))
-    }
 }
 
 /// Whether this session cannot register global shortcuts.
@@ -1185,19 +1483,39 @@ fn wayland() -> bool {
 /// What desktop tests drive and observe in the section.
 #[cfg(all(test, feature = "test-support"))]
 impl SettingsView {
-    /// Opens the New profile field and types `name` into it.
+    /// Opens the New profile dialog, unless it is open, and types `name`
+    /// into its field.
     pub(in crate::desktop::windows) fn type_profile_name(
         &mut self,
         name: &str,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.quake.naming.is_none() {
+        if self.dialog.prompt() != Some(&Prompt::NewProfile) {
             self.act("qnew", window, cx);
         }
-        if let Some(field) = &self.quake.naming {
+        self.type_dialog_name(name, cx);
+    }
+
+    /// Replaces the open dialog's name with `name`, as typing does.
+    pub(in crate::desktop::windows) fn type_dialog_name(
+        &mut self,
+        name: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(field) = self.dialog.field() {
             field.update(cx, |field, cx| field.set_text(name, cx));
         }
+    }
+
+    /// Runs a dialog button's action key, as a click on it does.
+    pub(in crate::desktop::windows) fn answer(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.act(key, window, cx);
     }
 
     pub(in crate::desktop::windows) fn shown_profile_name(&self) -> String {
@@ -1217,30 +1535,40 @@ impl SettingsView {
         profile_setting(self.model, &format!("{PREFIX}{profile}.{field}"))
     }
 
-    /// The name field's or Delete profile's message.
-    pub(in crate::desktop::windows) fn quake_message(&self) -> Option<String> {
-        self.quake
-            .name_error
-            .clone()
+    /// The message under the open dialog's name field, or Delete
+    /// profile's.
+    pub(in crate::desktop::windows) fn quake_message(
+        &self,
+        cx: &App,
+    ) -> Option<String> {
+        let from = match self.dialog.prompt() {
+            Some(Prompt::RenameProfile(from)) => Some(from.as_str()),
+            _ => None,
+        };
+        self.dialog
+            .field()
+            .and_then(|field| {
+                let text = field.read(cx).text();
+                self.name_message(text, &self.name_check(text.trim(), from))
+            })
             .or_else(|| self.quake.delete_error.clone())
     }
 
-    /// Whether the New profile field or the delete alert shows.
+    /// Whether the New profile dialog or the delete alert shows.
     pub(in crate::desktop::windows) fn quake_prompts(&self) -> (bool, bool) {
         (
-            self.quake.naming.is_some(),
+            self.dialog.prompt() == Some(&Prompt::NewProfile),
             matches!(self.dialog.prompt(), Some(Prompt::DeleteProfile(_))),
         )
     }
 
-    /// The New profile field's text.
+    /// The open dialog's name field's text.
     pub(in crate::desktop::windows) fn profile_name_text(
         &self,
         cx: &App,
     ) -> String {
-        self.quake
-            .naming
-            .as_ref()
+        self.dialog
+            .field()
             .map(|field| field.read(cx).text().to_owned())
             .unwrap_or_default()
     }
@@ -1295,12 +1623,6 @@ fn global_key_allowed(key: &str) -> bool {
             .strip_prefix('f')
             .and_then(|number| number.parse::<u8>().ok())
             .is_some_and(|number| (1..=maximum_function_key).contains(&number))
-}
-
-/// The field that names a new Quake profile.
-fn profile_name_field(swatch: Swatch, cx: &mut Context<'_, Input>) -> Input {
-    Input::new("quake-profile-name", "Profile name", swatch, cx)
-        .with_placeholder("Profile name")
 }
 
 #[cfg(test)]

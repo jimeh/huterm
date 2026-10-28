@@ -369,3 +369,53 @@ fn global_shortcut_edits_change_only_their_entry() {
     assert!(!text.contains("global_keybinding"), "{text}");
     assert!(text.starts_with(original), "{text}");
 }
+
+#[test]
+fn renaming_a_profile_rewrites_only_the_entries_that_run_it() {
+    let original = "[quake.profiles.logs]\nheight = 0.3\n\n\
+                    [quake.profiles.work]\n\n\
+                    [[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+                    command = \"hide_quake\"\nargs = { profile = \"logs\" }\n\n\
+                    [[global_keybinding]]\nkey = \"ctrl-alt-shift-u\"\n\
+                    command = \"toggle_quake\"\n\n\
+                    [[keybinding]]\nkey = \"alt-l\"\ncommand = \"show_quake\"\n\
+                    args = { profile = \"logs\" }\n\n\
+                    [[keybinding]]\nkey = \"alt-k\"\ncommand = \"toggle_quake\"\n\
+                    args = { profile = \"work\" }\n";
+    let file = Scratch::new("rename-profile", original);
+    let config = ConfigFile::new(file.path());
+    let base = config.load().unwrap();
+    let patches = rename_profile_references(
+        &base.entries(List::Keybinding),
+        &base.entries(List::GlobalKeybinding),
+        "logs",
+        "build",
+    );
+    assert_eq!(patches.len(), 2, "{patches:?}");
+    // The table moves in the same save, or the validator refuses the
+    // shortcut that names it.
+    let mut all = vec![
+        Patch::Set {
+            path: vec!["quake".into(), "profiles".into(), "build".into()],
+            value: Value::Table(Table::new()),
+        },
+        Patch::Remove {
+            path: vec!["quake".into(), "profiles".into(), "logs".into()],
+        },
+    ];
+    all.extend(patches);
+    config
+        .apply(&base, &all, &crate::config::validator(file.path()))
+        .unwrap();
+    let text = std::fs::read_to_string(file.path()).unwrap();
+    assert_eq!(
+        text,
+        original
+            .replace("[quake.profiles.logs]\nheight = 0.3\n\n", "")
+            .replace(
+                "[quake.profiles.work]\n",
+                "[quake.profiles.work]\n\n[quake.profiles.build]\n"
+            )
+            .replace("\"logs\"", "\"build\"")
+    );
+}

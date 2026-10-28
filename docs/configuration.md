@@ -454,11 +454,13 @@ command = "toggle_quake"
 
 The `default` profile exists without configuration. Add named tables, such as
 `[quake.profiles.logs]`, for independent windows. The Quake windows section of
-Settings picks a profile from a dropdown, adds and deletes named profiles, and
-records global shortcuts. It edits profiles whose names are bare TOML keys
-(letters, digits, `-`, and `_`); others stay in the file. `show_quake`, `hide_quake`,
-and `toggle_quake` accept an optional `profile` argument and also work in
-ordinary `[[keybinding]]` entries. A hidden window keeps its tabs, shells,
+Settings picks a profile from a dropdown, adds, renames, and deletes named
+profiles, and records global shortcuts. It edits profiles whose names are bare
+TOML keys (letters, digits, `-`, and `_`); others, such as
+`[quake.profiles."my logs"]`, are listed but stay in the file, where you edit,
+rename, or delete them. `show_quake`, `hide_quake`, and `toggle_quake` accept
+an optional `profile` argument and also work in ordinary `[[keybinding]]`
+entries. A hidden window keeps its tabs, shells,
 scrollback, and selection. Toggling a visible but unfocused window raises it.
 Toggling the focused window hides it and returns focus to the previous
 application. Auto-hide does not take focus back from an application you
@@ -474,6 +476,19 @@ ordinary visible window without closing jobs. Closing a quake window's last tab
 ends the association, so the next summon starts a new shell. Registered
 shortcuts keep Huterm running when all windows are closed, and Quit still
 assesses and closes every visible or hidden terminal.
+
+Renaming a profile in Settings writes one save: the profile's table under its
+new name, the old table removed, and the `profile` argument of every
+`[[global_keybinding]]`, and of every `[[keybinding]]` running a quake command,
+that named the old name changed to the new one. The table is written afresh,
+so comments on its lines and directly above its header are removed; a
+comment on a rewritten shortcut's line stays. When the save cannot be
+written, such as for a shortcut in an inline `global_keybinding = [...]`
+array, which Settings cannot edit in place, or for a file that changed
+meanwhile, Settings writes nothing and says why. Deleting a profile that a
+global shortcut uses is refused; deleting one that a `[[keybinding]]` runs
+warns first, since the file still accepts that binding and it fails only when
+pressed.
 
 Partial profiles are frameless and sized within the display's work area, with
 a usable minimum. Tabs follow the configured single-tab and fullscreen

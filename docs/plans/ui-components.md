@@ -5,8 +5,9 @@ Status: in progress. Step 1 (the foundation), the components of steps 2, 3,
 3a (Settings buttons, links, switches, segmented controls, tri-states,
 modifier chips, tags, and counts), 3b (terminal-window buttons and
 tooltips), 4a (Settings text, search, and number fields, units, the
-Quake width and height sliders, and `text_cut`), and 7a (the Settings
-delete-profile alert dialog, which fixes D17) are implemented; 2b removed
+Quake width and height sliders, and `text_cut`), 7a (the Settings
+delete-profile alert dialog, which fixes D17), and 7c (the New profile and
+Rename profile dialogs, a rename written in one save) are implemented; 2b removed
 `desktop/menu.rs` and its menu host (D13). 3a also moved the Keybindings
 filter and shortcut switches; the key recorders, theme cards, and sidebar
 rows keep their GPUI focus styles until their own migrations. 7a checks
@@ -811,7 +812,10 @@ still change. Siblings that share a shape land together.
    otherwise win for Enter, Space, Left, and Right. Migration 7b: the close
    confirmation, About, and Licenses shells. Migration 7c: the New profile
    name field and profile rename (#277) as `Field` and `InputGroup`
-   compositions.
+   compositions. 7c's settings queue carries a batch of patches applied in
+   one `ConfigFile::apply`, which a rename uses to move the table and
+   rewrite the shortcuts that name the profile; the delete alert also warns
+   of `[[keybinding]]` entries that run the profile.
 8. **KeyRecorder:** repeat detection and draft preservation (#276).
 
 ## PR split

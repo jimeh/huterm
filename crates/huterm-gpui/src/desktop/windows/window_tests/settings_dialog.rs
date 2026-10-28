@@ -283,3 +283,202 @@ fn the_alert_blocks_other_settings_commands_but_not_closing_the_window(
     });
     harness.wait_for("the window to close", |cx| settings(cx).is_none());
 }
+
+/// Presses Enter on the action button `key`, such as New profile.
+fn press_button(harness: &mut DesktopHarness, key: &str) {
+    with_window(harness, |view, window, cx| {
+        view.action_handle(key).focus(window, cx);
+    });
+    keys(harness, "enter");
+}
+
+fn caret(harness: &mut DesktopHarness) -> (usize, std::ops::Range<usize>) {
+    with_view(harness, |view, cx| view.dialog_caret(cx))
+        .expect("a dialog with a field is open")
+}
+
+#[gpui::test]
+fn the_name_dialogs_open_with_focus_in_their_field(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("dialog-name-open", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    press_button(&mut harness, "qnew");
+    assert_eq!(dialog(&mut harness), "new-profile");
+    assert_eq!(focus(&mut harness), "dialog:field");
+    let node = a11y_node(&mut harness, "settings-new-profile");
+    assert_eq!(node["aria"]["role"], "Dialog", "{node}");
+    assert_eq!(node["aria"]["label"], "New profile");
+    assert_eq!(caret(&mut harness), (0, 0..0));
+    keys(&harness, "escape");
+    // Rename starts on the current name, selected, so typing replaces it.
+    press_button(&mut harness, "qren");
+    assert_eq!(dialog(&mut harness), "rename");
+    assert_eq!(focus(&mut harness), "dialog:field");
+    let node = a11y_node(&mut harness, "settings-rename-profile");
+    assert_eq!(
+        node["aria"]["label"],
+        "Rename the \u{201c}logs\u{201d} profile"
+    );
+    assert_eq!(caret(&mut harness).1, 0..4);
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.profile_name_text(cx), "logs");
+    });
+    assert_eq!(file.text(), LOGS);
+}
+
+#[gpui::test]
+fn the_arrows_edit_the_name_while_tab_cycles_the_dialog(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("dialog-name-keys", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    press_button(&mut harness, "qnew");
+    with_view(&mut harness, |view, cx| view.type_dialog_name("build", cx));
+    visual(&harness).run_until_parked();
+    keys(&harness, "left left");
+    assert_eq!(caret(&mut harness).0, 3);
+    keys(&harness, "right");
+    assert_eq!(caret(&mut harness).0, 4);
+    assert_eq!(focus(&mut harness), "dialog:field");
+    for (key, expected) in [
+        ("tab", "dialog:qcancel"),
+        ("tab", "dialog:qcreate"),
+        ("tab", "dialog:field"),
+        ("shift-tab", "dialog:qcreate"),
+        ("shift-tab", "dialog:qcancel"),
+        ("shift-tab", "dialog:field"),
+    ] {
+        keys(&harness, key);
+        assert_eq!(focus(&mut harness), expected, "after {key}");
+    }
+    assert_eq!(dialog(&mut harness), "new-profile");
+    assert_eq!(file.text(), LOGS);
+}
+
+#[gpui::test]
+fn an_invalid_or_taken_name_says_why_and_disables_the_primary_button(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("dialog-name-invalid", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    for (opener, primary) in
+        [("qnew", "settings-qcreate"), ("qren", "settings-qrename")]
+    {
+        press_button(&mut harness, opener);
+        // A blank or unchanged name only disables the button.
+        let button = a11y_node(&mut harness, primary);
+        assert_eq!(button["aria"]["disabled"], true, "{button}");
+        let field = a11y_node(&mut harness, "settings-qname");
+        assert!(field["aria"]["description"].is_null(), "{field}");
+        for (name, why) in [
+            ("my logs", "Use letters, digits, - and _ only"),
+            ("default", "A profile named default exists."),
+        ] {
+            with_view(&mut harness, |view, cx| view.type_dialog_name(name, cx));
+            visual(&harness).run_until_parked();
+            let field = a11y_node(&mut harness, "settings-qname");
+            let message =
+                field["aria"]["description"].as_str().unwrap_or_default();
+            assert!(message.starts_with(why), "{name}: {field}");
+            let button = a11y_node(&mut harness, primary);
+            assert_eq!(button["aria"]["disabled"], true, "{name}: {button}");
+            // Enter in the field writes nothing.
+            keys(&harness, "enter");
+            assert_ne!(dialog(&mut harness), "none", "{name}");
+        }
+        with_view(&mut harness, |view, cx| view.type_dialog_name("build", cx));
+        visual(&harness).run_until_parked();
+        let button = a11y_node(&mut harness, primary);
+        assert!(button["aria"]["disabled"].is_null(), "{button}");
+        keys(&harness, "escape");
+    }
+    assert!(harness.cx.update(settled));
+    assert_eq!(file.text(), LOGS);
+}
+
+#[gpui::test]
+fn escape_cancels_the_name_dialogs_and_enter_creates_or_renames(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("dialog-name-answer", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    for opener in ["qnew", "qren"] {
+        press_button(&mut harness, opener);
+        keys(&harness, "escape");
+        assert_eq!(dialog(&mut harness), "none", "{opener}");
+        assert_eq!(focus(&mut harness), format!("action:{opener}"));
+    }
+    // An empty name says what it needs on Enter.
+    press_button(&mut harness, "qnew");
+    keys(&harness, "enter");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(
+            view.quake_message(cx).as_deref(),
+            Some("Type a name for the profile.")
+        );
+    });
+    keys(&harness, "b u i l d enter");
+    harness.wait_for("the create", |cx| {
+        settled(cx) && file.text().contains("[quake.profiles.build]")
+    });
+    assert_eq!(dialog(&mut harness), "none");
+    assert_eq!(focus(&mut harness), "action:qprof");
+    // Typing over the selected name renames the profile shown.
+    with_view(&mut harness, |view, _| view.pick_profile("logs"));
+    press_button(&mut harness, "qren");
+    keys(&harness, "w o r k enter");
+    harness.wait_for("the rename", |cx| {
+        settled(cx) && file.text().contains("[quake.profiles.work]")
+    });
+    assert_eq!(dialog(&mut harness), "none");
+    assert_eq!(focus(&mut harness), "action:qren");
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.shown_profile_name(), "work");
+        assert_eq!(view.profile_names(), ["default", "build", "work"]);
+    });
+}
+
+#[gpui::test]
+fn a_read_only_file_opens_neither_name_dialog(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("dialog-name-read-only", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    let broken = format!("{LOGS}[window\n");
+    break_file(&mut harness, &file, &broken);
+    for (opener, id) in [("qnew", "settings-qnew"), ("qren", "settings-qren")] {
+        let button = a11y_node(&mut harness, id);
+        assert_eq!(button["aria"]["disabled"], true, "{button}");
+        assert_eq!(
+            button["aria"]["description"],
+            "Read-only until config.toml is fixed"
+        );
+        press_button(&mut harness, opener);
+        assert_eq!(dialog(&mut harness), "none", "{opener}");
+        assert_eq!(focus(&mut harness), format!("action:{opener}"));
+    }
+    assert_eq!(file.text(), broken);
+}
+
+#[gpui::test]
+fn the_delete_alert_warns_of_keybindings_that_run_the_profile(
+    cx: &mut TestAppContext,
+) {
+    let original = format!(
+        "{LOGS}\n[[keybinding]]\nkey = \"alt-l\"\ncommand = \"toggle_quake\"\n\
+         args = {{ profile = \"logs\" }}\n"
+    );
+    let file = ScratchConfig::new("dialog-delete-keybinding", &original);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    open_alert(&mut harness);
+    let alert = a11y_node(&mut harness, "settings-delete-profile");
+    let description = alert["aria"]["description"].as_str().unwrap_or_default();
+    assert!(
+        description.ends_with("runs this profile and will fail."),
+        "{alert}"
+    );
+    assert_eq!(file.text(), original);
+}
