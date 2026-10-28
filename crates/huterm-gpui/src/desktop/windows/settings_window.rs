@@ -387,6 +387,21 @@ impl SettingsView {
         self.status.invalid() || self.base.is_none()
     }
 
+    /// Brings every text field to the current theme's colors, which a
+    /// live theme change would otherwise leave behind.
+    fn recolor_fields(&mut self, swatch: Swatch, cx: &mut Context<'_, Self>) {
+        let fields = std::iter::once(self.search.clone())
+            .chain(self.fields.values().cloned())
+            .chain(std::iter::once(self.keys.search.clone()))
+            .chain(self.keys.fields.values().cloned())
+            .chain(self.quake.naming.clone());
+        for field in fields {
+            field.update(cx, |field, cx| {
+                field.set_colors(swatch.fg, swatch.muted, cx);
+            });
+        }
+    }
+
     fn swatch(cx: &App) -> Swatch {
         tokens(&cx.global::<Desktop>().config.theme)
     }
@@ -1568,6 +1583,7 @@ impl Render for SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let swatch = Self::swatch(cx);
+        self.recolor_fields(swatch, cx);
         let query = self.query(cx);
         let searching = !query.is_empty();
         self.drawn.clear();
@@ -1658,6 +1674,11 @@ impl SettingsView {
 
     pub(super) fn selected(&self) -> String {
         self.selected_theme()
+    }
+
+    /// The search field's text and placeholder colors.
+    pub(super) fn search_colors(&self, cx: &App) -> (Hsla, Hsla) {
+        self.search.read(cx).colors()
     }
 
     /// What has keyboard focus, as smoke state names it.

@@ -5,9 +5,13 @@
 //! Themes are arbitrary, so the derivation corrects shades that would miss
 //! WCAG's minimums. Every enabled text color reaches 4.5:1 on the fills it
 //! is drawn on: [`Tokens::muted`] on the background, the surface, chips,
-//! and footers; [`Tokens::muted_on`] on a selected row's fill; [`Tokens::on`] and
-//! [`Tokens::on_accent`] on solid fills, at rest and pressed; and
-//! [`Tokens::accent_text`] and its siblings for colored text. The focus
+//! footers, and the strongest pressed fill; [`Tokens::muted_on`] on a
+//! selected row's fill; [`Tokens::on`] and [`Tokens::on_accent`] on solid
+//! fills, whose hover and pressed shades ([`Tokens::shade`]) move away from
+//! that text; and [`Tokens::accent_text`] and its siblings for colored text.
+//! The hover, pressed, selection, chip, and footer fills step down until
+//! their text reads. Chips are filled only on static fills: key caps and
+//! tags on rows and buttons, which hover and press, draw outlined. The focus
 //! ring reaches 3:1 against the background and the surface. Disabled text
 //! ([`Tokens::dim`]) is exempt, as WCAG exempts inactive controls, and so
 //! are the borders of controls whose text labels identify them.
@@ -138,16 +142,22 @@ impl Tokens {
             &[0.1, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04],
         );
         // Secondary text at the lightest opacity that stays readable on
-        // every plain fill it sits on, else the foreground itself.
-        let unders = [
-            bg,
-            surface,
-            over(chip, bg),
-            over(chip, surface),
-            over(footer, bg),
-            over(footer, surface),
-        ];
+        // every plain fill it sits on, the strongest hover or pressed fill
+        // over those included, else the foreground itself.
+        let interactive =
+            [bg, surface, over(footer, bg), over(footer, surface)];
+        let unders: Vec<Hsla> = [over(chip, bg), over(chip, surface)]
+            .into_iter()
+            .chain(interactive)
+            .chain(interactive.map(|under| over(strongest_press(fg), under)))
+            .collect();
         let muted = lightest(fg, &unders);
+        // Hovered rows and buttons keep body and secondary text readable on
+        // plain fills and footers. Key caps and tags on them draw outlined,
+        // so no chip fill stacks on top.
+        let hover = strongest(fg, &[0.08, 0.07, 0.06, 0.05, 0.04], |fill| {
+            reads_on(fill, &interactive, &[fg, muted], Hsla::default())
+        });
         Self {
             fg,
             bg: colors.background,
@@ -156,7 +166,7 @@ impl Tokens {
             dim: colors.foreground.opacity(0.38),
             line: colors.foreground.opacity(0.1),
             line_strong: colors.foreground.opacity(0.22),
-            hover: colors.foreground.opacity(0.08),
+            hover,
             selection,
             accent: colors.accent,
             danger: colors.danger,
@@ -166,36 +176,55 @@ impl Tokens {
         }
     }
 
-    /// Buttons while the pointer holds them down: up to twice the hover
-    /// overlay, as strong as their text on it allows.
+    /// Buttons and unselected rows while the pointer holds them down: up
+    /// to twice the hover overlay, as strong as every text drawn on them
+    /// allows over plain fills and footers. Key caps and tags on them draw
+    /// outlined, so no chip fill stacks on top.
     #[must_use]
     pub fn pressed(&self) -> Hsla {
         let a = self.hover.a;
-        gentlest(
-            Hsla {
-                a: 1.0,
-                ..self.hover
-            },
-            &[self.fg],
-            &[self.bg, self.surface],
+        let texts = [
+            self.fg,
+            self.muted,
+            self.accent_text(),
+            self.warning_text(),
+            self.danger_text(),
+        ];
+        let unders = self.interactive_unders();
+        strongest(
+            self.fg,
             &[a * 2.0, a * 1.75, a * 1.5, a * 1.25, a],
+            |fill| reads_on(fill, &unders, &texts, Hsla::default()),
         )
     }
 
     /// A selected row while the pointer holds it down: up to 1.6 times the
-    /// selection, as strong as its text allows, else the selection itself.
+    /// selection, as strong as its text allows. The selection itself always
+    /// qualifies, so it is the weakest this gets.
     #[must_use]
     pub fn selection_pressed(&self) -> Hsla {
         let a = self.selection.a;
-        gentlest(
-            Hsla {
-                a: 1.0,
-                ..self.selection
-            },
-            &[self.fg, self.muted_on(self.selection)],
-            &[self.bg, self.surface],
-            &[a * 1.6, a * 1.4, a * 1.2, a],
-        )
+        let texts =
+            [self.fg, self.muted_on(self.selection), self.accent_text()];
+        let color = Hsla {
+            a: 1.0,
+            ..self.selection
+        };
+        strongest(color, &[a * 1.6, a * 1.4, a * 1.2, a], |fill| {
+            reads_on(fill, &[self.bg, self.surface], &texts, Hsla::default())
+        })
+    }
+
+    /// The opaque backgrounds an interactive control sits on: the plain
+    /// background and surface, and a footer over either.
+    fn interactive_unders(&self) -> [Hsla; 4] {
+        let footer = self.footer();
+        [
+            self.bg,
+            self.surface,
+            over(footer, self.bg),
+            over(footer, self.surface),
+        ]
     }
 
     /// Accent-filled buttons and rows while held down.
@@ -297,7 +326,7 @@ impl Tokens {
 
     /// The accent as text, as in a link or an error band: moved toward the
     /// foreground until it reaches 4.5:1 on the background, the surface,
-    /// and chips on either.
+    /// footers, chips, selected rows, and the strongest pressed fill.
     #[must_use]
     pub fn accent_text(&self) -> Hsla {
         self.text_from(self.accent)
@@ -316,16 +345,28 @@ impl Tokens {
     }
 
     fn text_from(&self, color: Hsla) -> Hsla {
-        let unders = [
-            self.bg,
-            self.surface,
+        let interactive = self.interactive_unders();
+        // The fills colored text always sits on, then the strongest
+        // pressed fill as well, for headroom when a theme allows it.
+        let steady: Vec<Hsla> = [
             over(self.chip, self.bg),
             over(self.chip, self.surface),
             over(self.selection, self.bg),
             over(self.selection, self.surface),
-        ];
-        toward(color, self.fg, &unders, TEXT_CONTRAST)
-            .unwrap_or_else(|| self.on_all(&unders))
+        ]
+        .into_iter()
+        .chain(interactive)
+        .collect();
+        let pressed: Vec<Hsla> = steady
+            .iter()
+            .copied()
+            .chain(
+                interactive.map(|under| over(strongest_press(self.fg), under)),
+            )
+            .collect();
+        toward(color, self.fg, &pressed, TEXT_CONTRAST)
+            .or_else(|| toward(color, self.fg, &steady, TEXT_CONTRAST))
+            .unwrap_or_else(|| self.on_all(&steady))
     }
 
     /// The focus ring's color: the accent, moved toward the foreground in
@@ -391,7 +432,7 @@ impl Tokens {
     }
 
     /// A solid ring of [`Self::ring`], [`size::FOCUS_RING`] wide, outside a
-    /// one-point gap of background, around a focused control. Components
+    /// one-point gap of the surface, around a focused control. Components
     /// draw it through [`crate::focus::ring`], which shows it only for
     /// keyboard focus.
     #[must_use]
@@ -403,12 +444,13 @@ impl Tokens {
             spread_radius: spread,
             inset: false,
         };
-        // A gap of background inside the ring sets it apart from a control
-        // filled with the accent, and keeps a transparent control's own
-        // area from showing the ring's color behind its label.
+        // A gap of the surface, where most focusable controls sit, inside
+        // the ring sets it apart from a control filled with the accent, and
+        // keeps a transparent control's area from showing the ring's color
+        // behind its label.
         vec![
             shadow(self.ring(), size::FOCUS_RING + px(1.0)),
-            shadow(self.bg, px(1.0)),
+            shadow(self.surface, px(1.0)),
         ]
     }
 }
@@ -442,18 +484,44 @@ fn gentlest(
     unders: &[Hsla],
     alphas: &[f32],
 ) -> Hsla {
+    strongest(color, alphas, |fill| {
+        reads_on(fill, unders, texts, Hsla::default())
+    })
+}
+
+/// The strongest pressed fill: twice the hover overlay. Secondary and
+/// colored text are corrected to read on it, so pressing keeps its fill.
+fn strongest_press(fg: Hsla) -> Hsla {
+    fg.opacity(0.16)
+}
+
+/// `color` at the first of `alphas` whose fill `reads` accepts, else no
+/// fill at all.
+fn strongest(
+    color: Hsla,
+    alphas: &[f32],
+    reads: impl Fn(Hsla) -> bool,
+) -> Hsla {
     alphas
         .iter()
         .map(|alpha| color.opacity(*alpha))
-        .find(|fill| {
-            unders.iter().all(|under| {
-                let base = over(*fill, *under);
-                texts.iter().all(|text| {
-                    contrast(over(*text, base), base) >= TEXT_CONTRAST
-                })
-            })
-        })
+        .find(|fill| reads(*fill))
         .unwrap_or(color.opacity(0.0))
+}
+
+/// Whether every one of `texts` reaches 4.5:1 on `fill` over each of
+/// `unders`, and `texts`' first, the body text, also on a `chip` drawn on
+/// that fill, such as a key cap. A transparent `chip` adds nothing.
+fn reads_on(fill: Hsla, unders: &[Hsla], texts: &[Hsla], chip: Hsla) -> bool {
+    unders.iter().all(|under| {
+        let base = over(fill, *under);
+        let capped = over(chip, base);
+        let body = texts.first().copied();
+        texts
+            .iter()
+            .all(|text| contrast(over(*text, base), base) >= TEXT_CONTRAST)
+            && body.is_none_or(|text| contrast(text, capped) >= TEXT_CONTRAST)
+    })
 }
 
 /// `fg` at the lightest secondary-text opacity that reaches 4.5:1 on every

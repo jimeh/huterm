@@ -198,9 +198,18 @@ mod contrast {
         // draw outlined, on the selection itself.
         let nested_chips: Vec<Hsla> =
             footers.iter().map(|under| over(t.chip, *under)).collect();
-        let pressed = over_each(t.pressed(), &plain);
+        // Interactive controls also sit on footers.
+        let interactive: Vec<Hsla> =
+            plain.iter().chain(&footers).copied().collect();
+        let hovered = over_each(t.hover, &interactive);
+        let pressed = over_each(t.pressed(), &interactive);
+        // Key caps and tags on rows and buttons draw outlined, so no chip
+        // stacks on a hover or pressed fill.
+
         let selection_pressed = over_each(t.selection_pressed(), &plain);
-        let primary = [t.accent, t.accent_pressed()];
+        let primary = [t.accent, t.shade(t.accent, 0.1), t.accent_pressed()];
+        let destructive =
+            [t.danger, t.shade(t.danger, 0.1), t.shade(t.danger, 0.2)];
         let danger = [t.danger_fill(), t.danger_hover(), t.danger_pressed()];
         let close = t.on(t.danger_fill());
         let bands = over_each(t.accent.opacity(0.05), &plain);
@@ -215,7 +224,10 @@ mod contrast {
         text("fg on selection", t.fg, &selection);
         text("fg on chips", t.fg, &chips);
         text("fg on nested chips", t.fg, &nested_chips);
+        text("fg hovered", t.fg, &hovered);
+        text("muted hovered", t.muted, &hovered);
         text("fg pressed", t.fg, &pressed);
+        text("muted pressed", t.muted, &pressed);
         text("fg on selection pressed", t.fg, &selection_pressed);
         text("muted", t.muted, &plain);
         text("muted on chips", t.muted, &chips);
@@ -230,6 +242,7 @@ mod contrast {
         text("on warning", t.on(t.warning), &[t.warning]);
         text("on danger", t.on(t.danger), &[t.danger]);
         text("close button", close, &danger);
+        text("destructive button", t.on(t.danger), &destructive);
         for (name, color) in [
             ("accent text", t.accent_text()),
             ("warning text", t.warning_text()),
@@ -238,12 +251,16 @@ mod contrast {
             text(name, color, &plain);
             text(name, color, &chips);
             text(name, color, &selection);
+            text(name, color, &pressed);
         }
+        text("highlight held", t.accent_text(), &selection_pressed);
         text("error band", t.accent_text(), &bands);
         let ring = t.focus_ring()[0].color;
         for under in plain {
             pairs.push(("focus ring", ring, under, NON_TEXT_CONTRAST));
         }
+        // A switch's knob marks its state on the accent track.
+        pairs.push(("switch knob", t.on_accent(), t.accent, NON_TEXT_CONTRAST));
         pairs
     }
 

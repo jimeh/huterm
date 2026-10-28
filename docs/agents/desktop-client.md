@@ -557,7 +557,9 @@ still needs a reviewer. Draw
 text on a solid fill with `on(fill)` or `on_accent()`, never `bg`, and shade
 its hover and pressed fills with `shade`; draw secondary text on a selected
 row with `muted_on(selection)`, colored text with `accent_text()` and its
-siblings, and focus rings through `focus_ring()`. `dim` is for disabled text
+siblings, and focus rings through `focus_ring()`. Draw key caps and tags on a
+row or button, which hovers and presses, outlined with `cap_on` rather than
+filled, so no chip fill stacks on those fills. `dim` is for disabled text
 only; placeholders use `muted`.
 
 `pub` items of a library are always live, so `#[expect(dead_code)]` cannot

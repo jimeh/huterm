@@ -62,10 +62,10 @@ test("text draws with corrected tokens, never raw theme colors", () => {
   const raw = "(?:accent|warning|danger|bg|dim)";
   const owner = "(?:swatch|tokens|t)";
   const forbidden = [
-    new RegExp(`text_color\\(\\s*${owner}\\.${raw}\\s*\\)`, "g"),
-    new RegExp(`small\\([^;]*?,\\s*swatch\\.${raw}\\s*\\)`, "g"),
-    new RegExp(`color:\\s*Some\\(\\s*${owner}\\.${raw}\\s*\\)`, "g"),
-    new RegExp(`\\.element\\(\\s*px\\([^)]*\\),\\s*${owner}\\.${raw}\\s*\\)`, "g"),
+    new RegExp(`text_color\\(\\s*${owner}\\.${raw}\\s*,?\\s*\\)`, "g"),
+    new RegExp(`small\\([^;]*?,\\s*swatch\\.${raw}\\s*,?\\s*\\)`, "g"),
+    new RegExp(`color:\\s*Some\\(\\s*${owner}\\.${raw}\\s*,?\\s*\\)`, "g"),
+    new RegExp(`\\.element\\(\\s*px\\([^)]*\\),\\s*${owner}\\.${raw}\\s*,?\\s*\\)`, "g"),
   ];
   const offenders: string[] = [];
   for (const directory of ["crates/huterm-gpui/src", "crates/huterm-ui/src"]) {

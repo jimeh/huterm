@@ -10,8 +10,8 @@ use gpui::{App, ClickEvent, Div, Pixels, Size, Window, div, prelude::*, px};
 
 use super::key_hint::KeyHint;
 use super::overlay::{
-    Swatch, accent_bar, key_cap, key_cap_on, mono_font_family, raised_panel,
-    scrim, severity_mark,
+    Swatch, accent_bar, key_cap_on, mono_font_family, raised_panel, scrim,
+    severity_mark,
 };
 use crate::keymap::Platform;
 
@@ -457,9 +457,11 @@ fn dialog_footer(
                 .on_click(on_cancel)
                 .child("Cancel")
                 .when(hints, |button| {
-                    button.child(key_cap(
+                    // A cap on a button draws outlined, so it reads on the
+                    // button's hover and pressed fills too.
+                    button.child(key_cap_on(
                         &KeyHint::keys(&["escape"], Platform::current()),
-                        swatch,
+                        swatch.fg,
                     ))
                 }),
         )

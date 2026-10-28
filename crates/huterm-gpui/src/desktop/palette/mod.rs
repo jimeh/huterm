@@ -38,9 +38,7 @@ use slots::{
 
 use super::TerminalView;
 use super::key_hint::KeyHint;
-use super::overlay::{
-    OverlayColors, Swatch, footer_hints, key_cap, key_cap_on,
-};
+use super::overlay::{OverlayColors, Swatch, footer_hints, key_cap_on};
 use crate::keymap::{InstalledKeymap, Platform};
 use crate::ui::list_scrollbar::ListScrollbar;
 use crate::ui::text_field::{Changed, TextField};
@@ -1670,8 +1668,9 @@ impl EventEmitter<PaletteEvent> for CommandPalette {}
 // ---- presentation ---------------------------------------------------------
 
 /// A small label beside a row: `recent`, or an argument badge such as
-/// `⇥ options`, whose key draws as an icon.
-/// A small labelled tag in `text`, the row's secondary text color.
+/// `⇥ options`, whose key draws as an icon. It reads in `text`, the row's
+/// secondary color, and draws outlined, as the row's key caps do, since the
+/// row hovers, presses, and selects beneath it.
 fn tag(
     hint: &KeyHint,
     swatch: Swatch,
@@ -1687,10 +1686,7 @@ fn tag(
         .when(dashed, |tag| {
             tag.border_1().border_dashed().border_color(swatch.dim)
         })
-        // On a selected row, `text` is the row's corrected secondary text
-        // and the tag draws outlined in it rather than filled.
-        .when(!dashed && text == swatch.muted, |tag| tag.bg(swatch.chip))
-        .when(!dashed && text != swatch.muted, |tag| {
+        .when(!dashed, |tag| {
             tag.border_1().border_color(text.opacity(0.35))
         })
         .text_size(px(10.0))
@@ -1861,14 +1857,12 @@ impl CommandPalette {
                 meta = meta.child(tag(&hint, swatch, dashed, secondary));
             }
             for key in self.shortcut_keys(spec, None) {
-                let hint = KeyHint::parse(&key, Platform::current());
-                // On a selected row a cap draws outlined, with no fill of
-                // its own over the selection.
-                meta = meta.child(if selected {
-                    key_cap_on(&hint, swatch.fg)
-                } else {
-                    key_cap(&hint, swatch)
-                });
+                // A row hovers, presses, and selects, so its caps draw
+                // outlined, with no fill of their own on those fills.
+                meta = meta.child(key_cap_on(
+                    &KeyHint::parse(&key, Platform::current()),
+                    swatch.fg,
+                ));
             }
             meta = meta.child(
                 div()
@@ -1894,7 +1888,15 @@ impl CommandPalette {
                 .when(hovered && !selected, |item| {
                     item.bg(swatch.fg.opacity(0.05))
                 })
-                .active(|item| item.bg(swatch.selection_pressed()))
+                .active(move |item| {
+                    // A held row that is not yet selected keeps its own text,
+                    // so it takes the plain pressed fill.
+                    item.bg(if selected {
+                        swatch.selection_pressed()
+                    } else {
+                        swatch.pressed()
+                    })
+                })
                 .when(unavailable.is_some(), |item| item.opacity(0.55))
                 .on_hover(cx.listener(
                     move |palette, hovering: &bool, _, cx| {
@@ -2161,12 +2163,10 @@ impl CommandPalette {
                 let mut meta =
                     div().flex().flex_none().items_center().gap(px(6.0));
                 if let Some(key) = key {
-                    let hint = KeyHint::parse(&key, Platform::current());
-                    meta = meta.child(if selected {
-                        key_cap_on(&hint, swatch.fg)
-                    } else {
-                        key_cap(&hint, swatch)
-                    });
+                    meta = meta.child(key_cap_on(
+                        &KeyHint::parse(&key, Platform::current()),
+                        swatch.fg,
+                    ));
                 }
                 let element = div()
                     .id(("palette-picker", row))
@@ -2182,7 +2182,15 @@ impl CommandPalette {
                     .when(hovered && !selected, |item| {
                         item.bg(swatch.fg.opacity(0.05))
                     })
-                    .active(|item| item.bg(swatch.selection_pressed()))
+                    .active(move |item| {
+                        // A held row that is not yet selected keeps its own text,
+                        // so it takes the plain pressed fill.
+                        item.bg(if selected {
+                            swatch.selection_pressed()
+                        } else {
+                            swatch.pressed()
+                        })
+                    })
                     .on_hover(cx.listener(
                         move |palette, hovering: &bool, _, cx| {
                             palette.set_hover(row, *hovering, cx);

@@ -219,20 +219,21 @@ fn look(variant: Variant, tokens: Tokens) -> Look {
             fill: Some(tokens.accent),
             text: tokens.on_accent(),
             border: None,
-            hover: crate::tokens::mix(tokens.accent, tokens.bg, 0.12),
+            hover: tokens.shade(tokens.accent, 0.1),
             pressed: tokens.accent_pressed(),
         },
         Variant::Destructive => Look {
             fill: Some(tokens.danger),
-            text: tokens.bg,
+            text: tokens.on(tokens.danger),
             border: None,
-            hover: crate::tokens::mix(tokens.danger, tokens.bg, 0.15),
-            pressed: crate::tokens::mix(tokens.danger, tokens.bg, 0.22),
+            // Shades move away from the text, so it reads in every state.
+            hover: tokens.shade(tokens.danger, 0.1),
+            pressed: tokens.shade(tokens.danger, 0.2),
         },
         // A link underlines on hover instead of filling.
         Variant::Link => Look {
             fill: None,
-            text: tokens.accent,
+            text: tokens.accent_text(),
             border: None,
             hover: tokens.hover,
             pressed: tokens.pressed(),
