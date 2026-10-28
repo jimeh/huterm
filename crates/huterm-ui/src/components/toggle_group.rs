@@ -228,6 +228,10 @@ pub fn roving_target(
 }
 
 /// Where an item sits and how its group draws it.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one item, set together by its group"
+)]
 struct Shape {
     parent: Arc<ElementId>,
     single: bool,
@@ -235,6 +239,9 @@ struct Shape {
     index: usize,
     /// Whether a multiple group's item is its roving tab stop.
     stop: bool,
+    /// Whether this is the selection a focused single group names as the
+    /// node assistive technology follows.
+    followed: bool,
     key_context: Option<SharedString>,
 }
 
@@ -252,6 +259,7 @@ fn render_item(
         enabled,
         index,
         stop,
+        followed,
         key_context,
     } = shape;
     let id = ElementId::NamedChild(parent, item.value.clone());
@@ -274,10 +282,7 @@ fn render_item(
         .aria_position_in_set(index)
         // Focus stays on a single group, so its selection is what assistive
         // technology follows.
-        .when(
-            single && item.on,
-            StatefulInteractiveElement::aria_active_descendant,
-        )
+        .when(followed, StatefulInteractiveElement::aria_active_descendant)
         .when_some(focus.as_ref(), InteractiveElement::track_focus)
         .when_some(key_context, |element, context| {
             element.key_context(context.as_ref())
@@ -347,6 +352,18 @@ impl RenderOnce for ToggleGroup {
                 item.focus.as_ref().is_some_and(|f| f.is_focused(window))
             })
             .unwrap_or(0);
+        debug_assert!(
+            !single || self.items.iter().filter(|item| item.on).count() <= 1,
+            "a single toggle group selects at most one option"
+        );
+        // Only while the group itself has focus does its selection speak
+        // for it: a claim under any other focused ancestor would move
+        // assistive technology away from that focus.
+        let followed = self
+            .focus
+            .as_ref()
+            .filter(|focus| single && focus.is_focused(window))
+            .and_then(|_| self.items.iter().position(|item| item.on));
         let items = self
             .items
             .into_iter()
@@ -358,6 +375,7 @@ impl RenderOnce for ToggleGroup {
                     enabled,
                     index,
                     stop: index == roving,
+                    followed: followed == Some(index),
                     key_context: self.key_context.clone().filter(|_| !single),
                 };
                 let select = self.on_select.clone().filter(|_| enabled);
@@ -682,5 +700,39 @@ mod tests {
             window,
             cx
         )));
+    }
+
+    #[gpui::test]
+    fn a_group_without_focus_names_nothing_under_a_focused_ancestor(
+        cx: &mut TestAppContext,
+    ) {
+        let (outer, group) =
+            cx.update(|cx| (cx.focus_handle(), cx.focus_handle()));
+        let (drawn_outer, drawn_group) = (outer.clone(), group.clone());
+        let (_, cx) = host(cx, move |_, _| {
+            div()
+                .id("outer")
+                .role(gpui::Role::Group)
+                .aria_label("Outer")
+                .track_focus(&drawn_outer)
+                .child(
+                    ToggleGroup::single(
+                        "tabs",
+                        "Tab bar position",
+                        &drawn_group,
+                        tokens(),
+                    )
+                    .option("top", "Top", true)
+                    .option("bottom", "Bottom", false),
+                )
+                .into_any_element()
+        });
+        cx.simulate_keystrokes("a");
+        cx.update(|window, cx| outer.focus(window, cx));
+        cx.run_until_parked();
+        // Focus is on the ancestor, so the selection must not claim it.
+        cx.update(|window, _| {
+            assert!(a11y_active_descendant(window).is_none());
+        });
     }
 }

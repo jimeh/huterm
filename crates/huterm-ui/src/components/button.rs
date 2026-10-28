@@ -3,9 +3,10 @@
 //!
 //! Anatomy: an optional icon and a label, optionally followed by a key cap
 //! for its shortcut, in a control-height pill. An icon-only button, such as
-//! the title row's, is a square that shows its label as a tooltip. [`Variant`]s follow shadcn/ui's: outlined by
-//! default, a quiet secondary fill, a borderless ghost, an accent fill for
-//! the primary action, a danger fill for destructive actions, and a link.
+//! the title row's, is a square that shows its label as a tooltip and draws
+//! no key cap. [`Variant`]s follow shadcn/ui's: outlined by default, a quiet
+//! secondary fill, a borderless ghost, an accent fill for the primary
+//! action, a danger fill for destructive actions, and a link.
 //!
 //! Keyboard: a button the owner gives a focus handle takes focus; the owner
 //! runs its action on its activation command (Space and Return by default).
@@ -151,7 +152,9 @@ impl Button {
     }
 
     /// Draws the icon alone in a control-height square; the label stays
-    /// the accessible name and becomes the tooltip, unless one is set.
+    /// the accessible name and becomes the tooltip, unless one is set. The
+    /// shortcut stays accessible but draws no key cap, which the square has
+    /// no room for. It needs an icon, and a link has no icon-only form.
     #[must_use]
     pub fn icon_only(mut self) -> Self {
         self.icon_only = true;
@@ -275,7 +278,12 @@ impl RenderOnce for Button {
             .or(self.tooltip.clone());
         let filled =
             matches!(self.variant, Variant::Primary | Variant::Destructive);
-        let cap = (!self.shortcut.is_empty()).then(|| {
+        debug_assert!(
+            !self.icon_only
+                || (self.icon.is_some() && self.variant != Variant::Link),
+            "an icon-only button needs an icon and is not a link"
+        );
+        let cap = (!self.shortcut.is_empty() && !self.icon_only).then(|| {
             if filled {
                 kbd::cap_on(&self.shortcut, look.text)
             } else {
@@ -479,5 +487,29 @@ mod tests {
             // The label is its name, so it is not repeated as a description.
             assert!(aria["description"].is_null());
         });
+    }
+
+    #[gpui::test]
+    fn an_icon_only_button_keeps_its_icon_inside_and_its_shortcut_named(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, cx) = button(cx, |button| {
+            button
+                .icon(
+                    gpui::div()
+                        .size(px(14.0))
+                        .debug_selector(|| "icon".to_owned()),
+                )
+                .icon_only()
+                .shortcut(vec![Glyph::Text("N".into())])
+        });
+        cx.update(|window, _| {
+            let aria = &a11y_node(window, "reload")["aria"];
+            assert_eq!(aria["keyboard_shortcut"], "N");
+        });
+        // The square has no room for a key cap, so the icon stays inside.
+        let icon = cx.debug_bounds("icon").expect("the icon drew");
+        assert!(icon.origin.x >= px(0.0), "{icon:?}");
+        assert!(icon.origin.x + icon.size.width <= px(24.0), "{icon:?}");
     }
 }
