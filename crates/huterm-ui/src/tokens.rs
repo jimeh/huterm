@@ -44,7 +44,7 @@ pub struct OverlayColors {
 }
 
 /// Derived colors for one presentation.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
     /// Text and icons.
     pub fg: Hsla,
@@ -621,6 +621,8 @@ pub mod size {
 
     /// A control's height: buttons, fields, selects, and segments.
     pub const CONTROL_HEIGHT: Pixels = px(24.0);
+    /// A small control's height, such as a button inside an input group.
+    pub const SMALL_CONTROL_HEIGHT: Pixels = px(20.0);
     /// A menu or list row's height.
     pub const ROW_HEIGHT: Pixels = px(28.0);
     /// Corner radius of controls.

@@ -38,8 +38,8 @@ use super::Desktop;
 use crate::APP_ID;
 use crate::commands::{InvokePalette, InvokeWindow};
 use crate::config::Theme;
-use crate::ui::text_field::TextField;
 use huterm_ui::animation::{AnimationSchedule, Wake};
+use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::components::menu::{
     MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole,
 };
@@ -203,9 +203,9 @@ pub(super) struct SettingsView {
     status: FileStatus,
     section: SectionId,
     advanced: HashSet<SectionId>,
-    search: Entity<TextField>,
+    search: Entity<Input>,
     /// Number and text fields, by setting path.
-    fields: HashMap<&'static str, Entity<TextField>>,
+    fields: HashMap<&'static str, Entity<Input>>,
     /// The text each field last showed from the file; a field whose text
     /// differs holds an unsaved draft that a reload must not replace.
     synced: HashMap<&'static str, String>,
@@ -282,16 +282,15 @@ impl SettingsView {
         let watching = desktop.config.general.watch_config;
         let swatch = tokens(&desktop.config.theme);
         let search = cx.new(|cx| {
-            TextField::new("Search settings", swatch.fg, swatch.muted, cx)
+            Input::new("settings-search", "Search settings", swatch, cx)
+                .with_placeholder("Search settings")
+                .with_chrome(Chrome::Bare)
         });
         let _ = search.read(cx).focus_handle(cx).tab_stop(true);
-        cx.subscribe(
-            &search,
-            |view, _, _: &crate::ui::text_field::Changed, cx| {
-                view.scroll.set_offset(point(px(0.0), px(0.0)));
-                cx.notify();
-            },
-        )
+        cx.subscribe(&search, |view, _, _: &Changed, cx| {
+            view.scroll.set_offset(point(px(0.0), px(0.0)));
+            cx.notify();
+        })
         .detach();
         let keys = Keys::new(swatch, cx);
         // While a shortcut records, its keys reach no binding, menu, or
@@ -396,9 +395,7 @@ impl SettingsView {
             .chain(self.keys.fields.values().cloned())
             .chain(self.quake.naming.clone());
         for field in fields {
-            field.update(cx, |field, cx| {
-                field.set_colors(swatch.fg, swatch.muted, cx);
-            });
+            field.update(cx, |field, cx| field.set_tokens(swatch, cx));
         }
     }
 
@@ -415,7 +412,7 @@ impl SettingsView {
         setting: &'static Setting,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) -> Entity<TextField> {
+    ) -> Entity<Input> {
         if let Some(field) = self.fields.get(setting.path.as_str()) {
             return field.clone();
         }
@@ -429,8 +426,14 @@ impl SettingsView {
             ""
         };
         let field = cx.new(|cx| {
-            let mut field =
-                TextField::new(placeholder, swatch.fg, swatch.muted, cx);
+            let mut field = Input::new(
+                SharedString::from(format!("settings-field-{}", setting.path)),
+                setting.label.clone(),
+                swatch,
+                cx,
+            )
+            .with_placeholder(placeholder)
+            .with_chrome(Chrome::Bare);
             field.set_text(text, cx);
             field
         });
@@ -1146,7 +1149,7 @@ impl SettingsView {
                 ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
                 _ => {
                     let _ = field.update(cx, |field, cx| {
-                        field.run(invocation, window, cx)
+                        crate::ui::input::run(field, invocation, cx)
                     });
                 }
             }
@@ -1201,8 +1204,9 @@ impl SettingsView {
                 self.focus.focus(window, cx);
             }
             _ => {
-                let _ = field
-                    .update(cx, |field, cx| field.run(invocation, window, cx));
+                let _ = field.update(cx, |field, cx| {
+                    crate::ui::input::run(field, invocation, cx)
+                });
             }
         }
         cx.notify();
@@ -1216,7 +1220,7 @@ impl SettingsView {
     fn run_key_field(
         &mut self,
         key: &str,
-        field: &Entity<TextField>,
+        field: &Entity<Input>,
         invocation: &CommandInvocation,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
@@ -1265,8 +1269,9 @@ impl SettingsView {
             // Escape puts the saved text back and stays in the field.
             ids::PALETTE_BACK => self.cancel_key_field(key, cx),
             _ => {
-                let _ = field
-                    .update(cx, |field, cx| field.run(invocation, window, cx));
+                let _ = field.update(cx, |field, cx| {
+                    crate::ui::input::run(field, invocation, cx)
+                });
             }
         }
     }
@@ -1500,7 +1505,7 @@ fn current() -> SettingPlatform {
     }
 }
 
-fn text_for(field: &TextField) -> String {
+fn text_for(field: &Input) -> String {
     field.text().to_owned()
 }
 
@@ -1678,7 +1683,8 @@ impl SettingsView {
 
     /// The search field's text and placeholder colors.
     pub(super) fn search_colors(&self, cx: &App) -> (Hsla, Hsla) {
-        self.search.read(cx).colors()
+        let tokens = self.search.read(cx).tokens();
+        (tokens.fg, tokens.muted)
     }
 
     /// What has keyboard focus, as smoke state names it.

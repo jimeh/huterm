@@ -7,8 +7,10 @@
 //! [`docs/plans/ui-components.md`] records each component's contract.
 //!
 //! Primitives sit at the crate root: [`tokens`], [`focus`] visibility, the
-//! [`a11y`] state helper, the [`animation`] schedule, and the [`scrollbar`]
-//! geometry with its [`list_scrollbar`] overlay. One file per component lives
+//! [`a11y`] state helper, the [`animation`] schedule, the [`scrollbar`]
+//! geometry with its [`list_scrollbar`] overlay, the [`steps`] grid that
+//! number fields and sliders move along, and the UTF-16 [`text`] ranges
+//! that native text input speaks. One file per component lives
 //! under [`components`], and each has an entry in `huterm-gpui`'s component
 //! gallery.
 //!
@@ -25,6 +27,8 @@ pub mod focus;
 pub mod list_scrollbar;
 pub mod listbox;
 pub mod scrollbar;
+pub mod steps;
+pub mod text;
 pub mod tokens;
 
 #[cfg(all(test, feature = "test-support"))]

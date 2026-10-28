@@ -5,13 +5,13 @@ use std::ops::Range;
 use super::TerminalView;
 #[cfg(target_os = "macos")]
 use super::windows;
-#[cfg(any(target_os = "macos", test))]
-use crate::ui::text::{range_from_utf16, range_to_utf16, utf16_len};
 use gpui::Context;
 #[cfg(target_os = "macos")]
 use gpui::{App, Bounds, Pixels, Window, size};
 #[cfg(target_os = "macos")]
 use huterm_protocol::TerminalInput;
+#[cfg(any(target_os = "macos", test))]
+use huterm_ui::text::{range_from_utf16, range_to_utf16, utf16_len};
 
 #[derive(Default)]
 pub(super) struct Composition {

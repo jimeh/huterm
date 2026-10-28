@@ -2,7 +2,8 @@
 //! config.toml, or a dialog's Cancel and Delete.
 //!
 //! Anatomy: an optional icon and a label, optionally followed by a key cap
-//! for its shortcut, in a control-height pill. An icon-only button, such as
+//! for its shortcut, in a control-height pill, or a shorter one for a
+//! button inside another control, such as an input group's. An icon-only button, such as
 //! the title row's, is a square that shows its label as a tooltip and draws
 //! no key cap. [`Variant`]s follow shadcn/ui's: outlined by default, a quiet
 //! secondary fill, a borderless ghost, an accent fill for the primary
@@ -69,6 +70,7 @@ pub struct Button {
     shortcut: Vec<Glyph>,
     icon: Option<AnyElement>,
     icon_only: bool,
+    small: bool,
     key_context: Option<SharedString>,
     on_click: Option<Action>,
 }
@@ -103,6 +105,7 @@ impl Button {
             shortcut: Vec::new(),
             icon: None,
             icon_only: false,
+            small: false,
             key_context: None,
             on_click: None,
         }
@@ -158,6 +161,14 @@ impl Button {
     #[must_use]
     pub fn icon_only(mut self) -> Self {
         self.icon_only = true;
+        self
+    }
+
+    /// Draws the button at [`size::SMALL_CONTROL_HEIGHT`], to fit inside
+    /// another control such as an input group.
+    #[must_use]
+    pub fn small(mut self) -> Self {
+        self.small = true;
         self
     }
 
@@ -291,6 +302,11 @@ impl RenderOnce for Button {
             .clone()
             .or_else(|| self.icon_only.then(|| self.label.clone()));
         let icon_only = self.icon_only;
+        let height = if self.small {
+            size::SMALL_CONTROL_HEIGHT
+        } else {
+            size::CONTROL_HEIGHT
+        };
         let focus = self.focus.map(|focus| focus.tab_stop(enabled));
         let button = div()
             .id(self.id)
@@ -316,16 +332,14 @@ impl RenderOnce for Button {
             .flex_none()
             .items_center()
             .gap(px(8.0))
-            .h(size::CONTROL_HEIGHT)
+            .h(height)
             .when(self.variant != Variant::Link, |button| {
                 button.rounded(px(size::CONTROL_RADIUS))
             })
             .when(self.variant != Variant::Link && !icon_only, |button| {
-                button.px(px(10.0))
+                button.px(px(if self.small { 6.0 } else { 10.0 }))
             })
-            .when(icon_only, |button| {
-                button.w(size::CONTROL_HEIGHT).justify_center()
-            })
+            .when(icon_only, |button| button.w(height).justify_center())
             .text_size(size::TEXT_CONTROL)
             .text_color(look.text)
             .when_some(look.fill, Styled::bg)

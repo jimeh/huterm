@@ -33,7 +33,7 @@ use super::saving::Queued;
 use super::{MenuFor, SettingsView, button};
 use crate::assets::Icon;
 use crate::keymap::{BindingState, Inventory, ListedBinding, Origin, Platform};
-use crate::ui::text_field::{Changed, TextField};
+use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
@@ -96,10 +96,10 @@ pub(super) struct Keys {
     pub(super) inventory: Option<Inventory>,
     pub(super) open: HashSet<CommandId>,
     pub(super) filter: Filter,
-    pub(super) search: Entity<TextField>,
+    pub(super) search: Entity<Input>,
     /// `when` and argument fields, keyed `when:<row>` or
     /// `arg:<row>:<name>`.
-    pub(super) fields: HashMap<String, Entity<TextField>>,
+    pub(super) fields: HashMap<String, Entity<Input>>,
     /// Each field's text from the file; a focused field that differs
     /// holds a draft.
     pub(super) synced: HashMap<String, String>,
@@ -172,12 +172,9 @@ impl Keys {
         cx: &mut Context<'_, SettingsView>,
     ) -> Self {
         let search = cx.new(|cx| {
-            TextField::new(
-                "Search commands, shortcuts, or conditions",
-                swatch.fg,
-                swatch.muted,
-                cx,
-            )
+            Input::new("keybindings-search", "Search keybindings", swatch, cx)
+                .with_placeholder("Search commands, shortcuts, or conditions")
+                .with_chrome(Chrome::Bare)
         });
         let _ = search.read(cx).focus_handle(cx).tab_stop(true);
         cx.subscribe(&search, |_, _, _: &Changed, cx| cx.notify())
@@ -323,7 +320,7 @@ fn grouped() -> Vec<(&'static str, Vec<&'static CommandSpec>)> {
 
 /// The contexts completing the name typed before the caret, and where that
 /// name starts; `None` until a name has been started.
-fn suggestions(field: &TextField) -> Option<(usize, Vec<WhenContext>)> {
+fn suggestions(field: &Input) -> Option<(usize, Vec<WhenContext>)> {
     let (start, matches) = completions(field.text(), field.cursor());
     (start < field.cursor() && !matches.is_empty()).then_some((start, matches))
 }
@@ -908,15 +905,26 @@ impl SettingsView {
         placeholder: &str,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) -> Entity<TextField> {
+    ) -> Entity<Input> {
         self.drawn.insert(key.clone());
         if let Some(field) = self.keys.fields.get(&key) {
             return field.clone();
         }
         let swatch = Self::swatch(cx);
+        let label = match key.split(':').collect::<Vec<_>>().as_slice() {
+            ["when", ..] => "Condition".to_owned(),
+            ["arg", _, name] => (*name).to_owned(),
+            _ => key.clone(),
+        };
         let field = cx.new(|cx| {
-            let mut field =
-                TextField::new(placeholder, swatch.fg, swatch.muted, cx);
+            let mut field = Input::new(
+                gpui::SharedString::from(format!("keybinding-field-{key}")),
+                label,
+                swatch,
+                cx,
+            )
+            .with_placeholder(placeholder.to_owned())
+            .with_chrome(Chrome::Bare);
             field.set_text(text.clone(), cx);
             field
         });
@@ -977,7 +985,7 @@ impl SettingsView {
         key: &str,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) -> Entity<TextField> {
+    ) -> Entity<Input> {
         let text = self.key_field_text(key).unwrap_or_default();
         self.key_field(key.to_owned(), text, "", window, cx)
     }
@@ -1262,7 +1270,7 @@ impl SettingsView {
         &self,
         window: &Window,
         cx: &gpui::App,
-    ) -> Option<(String, Entity<TextField>)> {
+    ) -> Option<(String, Entity<Input>)> {
         if self
             .keys
             .search
@@ -2264,7 +2272,7 @@ impl SettingsView {
     fn render_completion(
         &mut self,
         key: &str,
-        field: &Entity<TextField>,
+        field: &Entity<Input>,
         swatch: Swatch,
         window: &Window,
         cx: &mut Context<'_, Self>,

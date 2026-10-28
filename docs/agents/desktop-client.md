@@ -460,7 +460,7 @@ Overlays share the palette's grammar: every keyboard action is a catalog
 command bound under a key context. The close dialog and the About panel use
 `confirming`, menus `menu`, and focused toasts `notices`; each binding is
 conditional, so it reserves no terminal key. The About panel's Licenses view
-takes the `Palette` context for its search field and list, so `TextField`
+takes the `Palette` context for its search field and list, so `Input`
 editing works without new commands; `WorkspaceView` sends Palette-scope
 commands to it before the palette while it is open. Its element is deeper than
 the workspace root, so its Escape and Enter bindings win over `confirming`'s.
@@ -542,11 +542,12 @@ an unrelated failure waiting there is dropped with it.
 Generic components live in `crates/huterm-ui`, one file per component under
 `src/components/`, each opening with its contract; primitives (tokens, focus,
 accessibility, scrollbars) sit at the crate root. The plan is
-[UI components](../plans/ui-components.md). The crate may depend only on GPUI,
-so it takes colors as `huterm_ui::tokens::Tokens` and exposes methods rather
-than catalog commands. `desktop/overlay.rs` re-exports `Tokens` as `Swatch`
-and builds it with `tokens(theme)` and `overlay_colors(theme)`; the orphan
-rule rules out `from_theme` constructors on the crate's types.
+[UI components](../plans/ui-components.md). The crate may depend only on GPUI
+and `unicode-segmentation`, so it takes colors as `huterm_ui::tokens::Tokens`
+and exposes methods rather than catalog commands. `desktop/overlay.rs`
+re-exports `Tokens` as `Swatch` and builds it with `tokens(theme)` and
+`overlay_colors(theme)`; the orphan rule rules out `from_theme` constructors on
+the crate's types.
 
 `Tokens` corrects arbitrary themes toward WCAG's minimums, and the `contrast`
 test in `desktop/overlay.rs` checks a table of the (text, fill) pairs Huterm
@@ -583,6 +584,19 @@ interceptor. It records during paint, after lists that render rows while
 prepainting. The same script test rejects those styles and `focus_ring`
 references in `huterm-ui` outside `focus.rs`; `huterm-gpui` keeps its own until
 the migrations replace them.
+
+Text fields are `huterm_ui::components::input::Input` entities, and
+`huterm_ui::text` holds the UTF-16 range conversions that `Input` and
+`desktop/composition.rs` share. `ui/input.rs` is the adapter that maps the
+catalog's `text_*` commands onto `Input` methods; route a field's commands
+through `crate::ui::input::run`. `Input` refuses typing, composition, paste,
+cut, and deletion while read-only or disabled, but the owner's `set_text` and
+`replace` always apply. The palette, Licenses, and Settings draw their own
+frames around `Chrome::Bare` fields until their migrations; a field inside an
+`InputGroup` uses `Chrome::Grouped`. `NumberField` and `Slider` step along
+`huterm_ui::steps::Steps`, whose grid clamps every user change to the range.
+GPUI sends focus and blur events only while a window is active, so a test of
+blur behavior, such as `NumberField`'s commit, activates its window first.
 
 Open menus and selects in a `huterm_ui::components::popover::Popover` and
 mount its `guard` in the owner's root view on every frame, open or not. The

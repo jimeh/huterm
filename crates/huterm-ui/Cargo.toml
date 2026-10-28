@@ -16,6 +16,7 @@ test-support = ["gpui/test-support"]
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 gpui.workspace = true
+unicode-segmentation.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dev-dependencies]
 serde_json = "=1.0.154"

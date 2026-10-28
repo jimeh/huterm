@@ -1,9 +1,14 @@
 //! UTF-8 and UTF-16 range conversion shared by native text handlers.
+//!
+//! Platform text input speaks UTF-16 offsets, while Rust strings index
+//! bytes. These conversions never split a UTF-8 sequence or a surrogate
+//! pair: a start rounds down and an end rounds up to a character boundary.
 
 use std::ops::Range;
 
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn utf16_len(text: &str) -> usize {
+/// The length of `text` in UTF-16 code units.
+#[must_use]
+pub fn utf16_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
@@ -41,10 +46,10 @@ fn offset_to_utf16(text: &str, offset: usize, round_up: bool) -> usize {
     units
 }
 
-pub(crate) fn range_from_utf16(
-    text: &str,
-    range: Range<usize>,
-) -> Range<usize> {
+/// The byte range of `text` that the UTF-16 `range` covers. A reversed
+/// range collapses at its start.
+#[must_use]
+pub fn range_from_utf16(text: &str, range: Range<usize>) -> Range<usize> {
     let start = offset_from_utf16(text, range.start, false);
     if range.end < range.start {
         return start..start;
@@ -52,7 +57,9 @@ pub(crate) fn range_from_utf16(
     start..offset_from_utf16(text, range.end, true)
 }
 
-pub(crate) fn range_to_utf16(text: &str, range: Range<usize>) -> Range<usize> {
+/// The UTF-16 range that the byte `range` of `text` covers.
+#[must_use]
+pub fn range_to_utf16(text: &str, range: Range<usize>) -> Range<usize> {
     offset_to_utf16(text, range.start, false)
         ..offset_to_utf16(text, range.end, true)
 }

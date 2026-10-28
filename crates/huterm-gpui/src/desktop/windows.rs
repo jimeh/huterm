@@ -6913,7 +6913,7 @@ impl WorkspaceView {
             CommandScope::Palette => {
                 if let Some(licenses) = self.licenses.clone() {
                     return licenses.update(cx, |licenses, cx| {
-                        licenses.run(invocation, window, cx)
+                        licenses.run(invocation, cx)
                     });
                 }
                 self.palette
@@ -6923,9 +6923,7 @@ impl WorkspaceView {
                             "command palette is not open".to_owned(),
                         )
                     })?
-                    .update(cx, |palette, cx| {
-                        palette.run(invocation, window, cx)
-                    })
+                    .update(cx, |palette, cx| palette.run(invocation, cx))
             }
             CommandScope::Terminal => Err(CommandError::ClientRequired),
         }
