@@ -15,7 +15,12 @@
 //! footer stays inside the panel, and a body that can outgrow it puts its
 //! long content in a [`ScrollArea`](super::scroll_area::ScrollArea) made
 //! with [`fill`](super::scroll_area::ScrollArea::fill), or another
-//! `flex_1().min_h_0()` child that scrolls.
+//! `flex_1().min_h_0()` child that scrolls. An owner whose content has its
+//! own header and footer, such as an About panel's hero or a footer with a
+//! button at its leading edge, makes the dialog [`Dialog::bare`]: the
+//! panel then draws neither the title and description nor body padding,
+//! and the owner's children fill the body, before the footer of any
+//! buttons added with [`Dialog::button`].
 //!
 //! Focus: the dialog's controls are the body controls the owner declares
 //! with [`Dialog::focusable`], then its enabled footer buttons. On its
@@ -298,6 +303,7 @@ pub struct Dialog {
     focusables: Vec<FocusHandle>,
     buttons: Vec<(Button, FocusHandle)>,
     initial_focus: Option<FocusHandle>,
+    bare: bool,
     style: StyleRefinement,
     children: Vec<AnyElement>,
 }
@@ -331,6 +337,7 @@ impl Dialog {
             focusables: Vec::new(),
             buttons: Vec::new(),
             initial_focus: None,
+            bare: false,
             style: StyleRefinement::default(),
             children: Vec::new(),
         }
@@ -373,6 +380,18 @@ impl Dialog {
     #[must_use]
     pub fn initial_focus(mut self, focus: &FocusHandle) -> Self {
         self.initial_focus = Some(focus.clone());
+        self
+    }
+
+    /// The owner draws the panel's content: the dialog draws no title,
+    /// description, or body padding, and the children fill the body
+    /// edge to edge. The title and description still name and describe
+    /// the dialog to assistive technology, so the owner shows them in its
+    /// own header. Buttons the owner draws in its content are declared
+    /// with [`Dialog::focusable`].
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
         self
     }
 }
@@ -502,6 +521,7 @@ impl RenderOnce for Dialog {
         .inset_0();
         // The body shrinks rather than pushing the footer past the panel's
         // bottom, where the guard would stop presses on its buttons.
+        let bare = self.bare;
         let body = (!self.children.is_empty()).then(|| {
             div()
                 .flex()
@@ -509,9 +529,7 @@ impl RenderOnce for Dialog {
                 .flex_1()
                 .min_h_0()
                 .overflow_hidden()
-                .gap(px(8.0))
-                .px(px(16.0))
-                .pb(px(14.0))
+                .when(!bare, |body| body.gap(px(8.0)).px(px(16.0)).pb(px(14.0)))
                 .children(self.children)
         });
         let mut panel = surface(tokens, size::PANEL_RADIUS)
@@ -535,7 +553,9 @@ impl RenderOnce for Dialog {
             .max_h_full()
             .text_size(size::TEXT_BODY)
             .text_color(tokens.fg)
-            .child(header(self.title, self.description, tokens))
+            .when(!bare, |panel| {
+                panel.child(header(self.title, self.description, tokens))
+            })
             .children(body)
             .children(footer(self.buttons, tokens))
             .child(probe);

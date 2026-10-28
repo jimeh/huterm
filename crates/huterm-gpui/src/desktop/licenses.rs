@@ -1,10 +1,13 @@
 //! The Licenses view the About panel opens: a searchable list of the open
 //! source components this build ships, beside the selected one's license
-//! texts. It replaces the About panel in the same modal layer, and Done or
-//! Escape returns to it. Every keyboard operation arrives as a
-//! `Palette`-scope catalog command through [`LicensesView::run`]: the view
-//! takes the `Palette` key context so the palette's list and text bindings
-//! apply.
+//! texts. It draws a `huterm-ui` dialog in the window's dialog slot, in
+//! the About panel's place, and Done or Escape returns to it. Every
+//! keyboard operation arrives as a `Palette`-scope catalog command through
+//! [`LicensesView::run`]: the dialog's content takes the `Palette` key
+//! context, so the palette's list and text bindings apply whether the
+//! search field or a button has focus, and Tab and Shift-Tab
+//! (`palette_expand`, `palette_previous_slot`) move through the dialog's
+//! focus cycle.
 
 // User input picks positions here, so a stale index must not panic.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
@@ -14,27 +17,29 @@ use std::time::Instant;
 
 use gpui::{
     App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, Render,
-    ScrollHandle, ScrollWheelEvent, SharedString, Subscription, Task, Window,
-    div, point, prelude::*, px, relative,
+    FontWeight, MouseButton, Pixels, Render, ScrollHandle, ScrollWheelEvent,
+    SharedString, Size, Subscription, Task, Window, div, point, prelude::*, px,
+    relative,
 };
 use huterm_protocol::{CommandError, CommandInvocation, CommandOutcome, ids};
 
 use super::about::footer_button;
 use super::key_hint::KeyHint;
-use super::overlay::{
-    OverlayColors, Swatch, key_cap, mono_font_family, raised_panel, scrim,
-};
+use super::overlay::{OverlayColors, Swatch, key_cap, mono_font_family};
 use super::palette::FORWARDED_TEXT_COMMANDS;
 use crate::keymap::Platform;
 use crate::licenses::{Catalog, Component, LoadError};
 use crate::ui::animation::AnimationSchedule;
 use crate::ui::list_scrollbar::ListScrollbar;
+use huterm_ui::components::dialog::{Dialog, Modal};
 use huterm_ui::components::input::{Changed, Chrome, Input};
 
 const PANEL_WIDTH: f32 = 860.0;
 const PANEL_HEIGHT: f32 = 600.0;
+/// The panel's top edge clears the macOS traffic lights in short windows.
 const PANEL_TOP_INSET: f32 = 40.0;
+/// The dialog's scrim keeps this margin around the panel.
+const SCRIM_MARGIN: f32 = 16.0;
 /// Fixed so the list scrolls by whole rows and smokes can address them.
 const ROW_HEIGHT: f32 = 44.0;
 /// How much of the visible text one Page Up or Page Down moves.
@@ -49,12 +54,12 @@ enum Load {
 /// Asks the owner to return to the About panel.
 pub(super) struct Done;
 
-/// Where keyboard focus is: the search field, which also takes typing and
-/// list navigation, or one of the buttons. Tab and Shift-Tab move it; Enter
-/// presses the focused button.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Where keyboard focus is: the search field, which also takes typing, or
+/// one of the buttons. Tab and Shift-Tab move it; Enter presses the focused
+/// button. The list's keys work from any of them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LicensesFocus {
-    #[default]
+    /// The search field, which takes focus on opening.
     Search,
     Website,
     Copy,
@@ -70,6 +75,13 @@ impl LicensesFocus {
             Self::Done => "done",
         }
     }
+}
+
+/// The buttons' focus handles; the search field has its own.
+struct Buttons {
+    website: FocusHandle,
+    copy: FocusHandle,
+    done: FocusHandle,
 }
 
 /// What the view shows, for smoke state and tests.
@@ -93,7 +105,11 @@ pub(super) struct LicensesView {
     /// The selected position in `matches`.
     selected: usize,
     hover: Option<usize>,
-    focus: LicensesFocus,
+    /// The window's dialog slot, which the view's dialog draws in.
+    modal: Modal,
+    buttons: Buttons,
+    /// The window's content size, which the panel fits.
+    viewport: Size<Pixels>,
     /// The `matches` position whose texts the Copy button last copied.
     copied: Option<usize>,
     colors: OverlayColors,
@@ -109,9 +125,11 @@ pub(super) struct LicensesView {
 impl EventEmitter<Done> for LicensesView {}
 
 impl LicensesView {
-    /// Opens the view and starts `load` off the UI thread. `hints` shows
-    /// key caps on the Done button and in the footer.
+    /// Opens the view in the window's dialog slot `modal` and starts `load`
+    /// off the UI thread. `hints` shows key caps on the Done button and in
+    /// the footer.
     pub(super) fn new(
+        modal: Modal,
         colors: OverlayColors,
         hints: bool,
         load: impl FnOnce() -> Result<Catalog, LoadError> + Send + 'static,
@@ -130,8 +148,6 @@ impl LicensesView {
         let subscription =
             cx.subscribe(&input, |view, input, _: &Changed, cx| {
                 let query = input.read(cx).text().trim().to_lowercase();
-                // Typing always goes to the search, so focus follows it.
-                view.focus = LicensesFocus::Search;
                 if query != view.query {
                     view.query = query;
                     view.refilter(cx);
@@ -151,7 +167,13 @@ impl LicensesView {
             matches: Vec::new(),
             selected: 0,
             hover: None,
-            focus: LicensesFocus::Search,
+            modal,
+            buttons: Buttons {
+                website: cx.focus_handle(),
+                copy: cx.focus_handle(),
+                done: cx.focus_handle(),
+            },
+            viewport: Size::default(),
             copied: None,
             colors,
             hints,
@@ -177,8 +199,27 @@ impl LicensesView {
         }
     }
 
-    pub(super) fn focus(&self) -> LicensesFocus {
-        self.focus
+    /// The control that has focus, if one of the view's does.
+    pub(super) fn focus(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<LicensesFocus> {
+        let search = self.focus_handle(cx);
+        [
+            (LicensesFocus::Search, &search),
+            (LicensesFocus::Website, &self.buttons.website),
+            (LicensesFocus::Copy, &self.buttons.copy),
+            (LicensesFocus::Done, &self.buttons.done),
+        ]
+        .into_iter()
+        .find(|(_, handle)| handle.is_focused(window))
+        .map(|(focus, _)| focus)
+    }
+
+    /// Sets the window content size the panel fits.
+    pub(super) fn set_viewport(&mut self, viewport: Size<Pixels>) {
+        self.viewport = viewport;
     }
 
     pub(super) fn set_presentation(
@@ -197,27 +238,33 @@ impl LicensesView {
 
     /// Runs one `Palette`-scope catalog command: Up and Down select, Page
     /// Up and Page Down scroll the license text, Tab and Shift-Tab move
-    /// focus between the search and the buttons, Enter presses the focused
-    /// button, and Escape clears the search before returning to About.
+    /// focus through the dialog's cycle of the search and the buttons, Enter
+    /// presses the focused button, and Escape clears the search before
+    /// returning to About.
     ///
     /// # Errors
     /// Reports `UnknownCommand` for anything outside that set.
     pub(super) fn run(
         &mut self,
         invocation: &CommandInvocation,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         match invocation.id {
-            ids::PALETTE_SELECT_NEXT => self.move_selection(1, cx),
-            ids::PALETTE_SELECT_PREVIOUS => self.move_selection(-1, cx),
+            ids::PALETTE_SELECT_NEXT => self.move_selection(1, window, cx),
+            ids::PALETTE_SELECT_PREVIOUS => {
+                self.move_selection(-1, window, cx);
+            }
             ids::PALETTE_PAGE_DOWN => self.scroll_text(1.0, cx),
             ids::PALETTE_PAGE_UP => self.scroll_text(-1.0, cx),
-            ids::PALETTE_BACK => self.back(cx),
+            ids::PALETTE_BACK => self.back(window, cx),
             ids::PALETTE_EXPAND | ids::PALETTE_NEXT_SLOT => {
-                self.move_focus(true, cx);
+                self.modal.focus_next(window, cx);
             }
-            ids::PALETTE_PREVIOUS_SLOT => self.move_focus(false, cx),
-            ids::PALETTE_CONFIRM => self.press_focused(cx),
+            ids::PALETTE_PREVIOUS_SLOT => {
+                self.modal.focus_previous(window, cx);
+            }
+            ids::PALETTE_CONFIRM => self.press_focused(window, cx),
             ids::PALETTE_POP => {}
             id if FORWARDED_TEXT_COMMANDS.contains(&id) => {
                 self.input.update(cx, |field, cx| {
@@ -275,94 +322,71 @@ impl LicensesView {
         }
         self.hover = None;
         self.copied = None;
-        self.keep_focus_available();
         self.list_scroll.scroll_to_item(self.selected);
         cx.notify();
     }
 
-    /// The focus stops in Tab order: the search, then the buttons the
-    /// current state shows.
-    fn focus_order(&self) -> Vec<LicensesFocus> {
-        let mut order = vec![LicensesFocus::Search];
-        if let Some(component) = self.selected_component() {
-            if component.url.is_some() {
-                order.push(LicensesFocus::Website);
-            }
-            order.push(LicensesFocus::Copy);
-        }
-        order.push(LicensesFocus::Done);
-        order
+    /// Whether the selected component shows the Website and Copy buttons.
+    fn shows_buttons(&self) -> (bool, bool) {
+        self.selected_component()
+            .map_or((false, false), |component| (component.url.is_some(), true))
     }
 
-    /// Returns focus to the search when its button no longer shows.
-    fn keep_focus_available(&mut self) {
-        if !self.focus_order().contains(&self.focus) {
-            self.focus = LicensesFocus::Search;
-        }
-    }
-
-    fn move_focus(&mut self, forward: bool, cx: &mut Context<'_, Self>) {
-        let order = self.focus_order();
-        let index = order
-            .iter()
-            .position(|focus| *focus == self.focus)
-            .unwrap_or(0);
-        let next = if forward {
-            index + 1
-        } else {
-            index + order.len().saturating_sub(1)
-        };
-        if let Some(focus) = next
-            .checked_rem(order.len())
-            .and_then(|next| order.get(next))
+    /// Returns focus to the search when the button that has it no longer
+    /// shows.
+    fn keep_focus_available(&self, window: &mut Window, cx: &mut App) {
+        let (website, copy) = self.shows_buttons();
+        if (!website && self.buttons.website.is_focused(window))
+            || (!copy && self.buttons.copy.is_focused(window))
         {
-            self.focus = *focus;
+            self.focus_handle(cx).focus(window, cx);
         }
-        cx.notify();
     }
 
-    /// Moves keyboard focus to the clicked `button`, as a browser moves
-    /// focus on a click, so Enter presses what was clicked. The press on
-    /// the panel moved it to the search first.
-    fn mark(&mut self, button: LicensesFocus, cx: &mut Context<'_, Self>) {
-        self.focus = button;
-        cx.notify();
-    }
-
-    fn press_focused(&mut self, cx: &mut Context<'_, Self>) {
-        match self.focus {
-            LicensesFocus::Search => {}
-            LicensesFocus::Website => {
+    fn press_focused(&mut self, window: &Window, cx: &mut Context<'_, Self>) {
+        match self.focus(window, cx) {
+            None | Some(LicensesFocus::Search) => {}
+            Some(LicensesFocus::Website) => {
                 if let Some(url) =
                     self.selected_component().and_then(|item| item.url.clone())
                 {
                     cx.open_url(&url);
                 }
             }
-            LicensesFocus::Copy => self.copy_selected(cx),
-            LicensesFocus::Done => cx.emit(Done),
+            Some(LicensesFocus::Copy) => self.copy_selected(cx),
+            Some(LicensesFocus::Done) => cx.emit(Done),
         }
     }
 
-    fn select(&mut self, position: usize, cx: &mut Context<'_, Self>) {
+    fn select(
+        &mut self,
+        position: usize,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if position >= self.matches.len() || position == self.selected {
             return;
         }
         self.selected = position;
         self.copied = None;
-        self.keep_focus_available();
+        self.keep_focus_available(window, cx);
         self.reset_text();
         self.list_scroll.scroll_to_item(position);
         self.list_scrollbar.show();
         cx.notify();
     }
 
-    fn move_selection(&mut self, delta: isize, cx: &mut Context<'_, Self>) {
+    fn move_selection(
+        &mut self,
+        delta: isize,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         let Some(last) = self.matches.len().checked_sub(1) else {
             return;
         };
         let target = self.selected.saturating_add_signed(delta).min(last);
-        self.select(target, cx);
+        self.select(target, window, cx);
     }
 
     fn reset_text(&mut self) {
@@ -380,12 +404,14 @@ impl LicensesView {
         cx.notify();
     }
 
-    /// Clears a search, or asks to return to About when there is none.
-    fn back(&mut self, cx: &mut Context<'_, Self>) {
+    /// Clears a search, focusing it so typing starts a new one, or asks to
+    /// return to About when there is none.
+    fn back(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.input.read(cx).is_empty() {
             cx.emit(Done);
         } else {
             self.input.update(cx, |input, cx| input.set_text("", cx));
+            self.focus_handle(cx).focus(window, cx);
         }
     }
 
@@ -528,8 +554,8 @@ impl LicensesView {
                     ))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |view, _: &MouseDownEvent, _, cx| {
-                            view.select(position, cx);
+                        cx.listener(move |view, _, window, cx| {
+                            view.select(position, window, cx);
                         }),
                     )
                     .child(
@@ -590,7 +616,6 @@ impl LicensesView {
         let mut actions = div().flex().flex_none().items_center().gap(px(8.0));
         let view = cx.entity().downgrade();
         if let Some(url) = component.url.clone() {
-            let view = view.clone();
             actions = actions.child(
                 footer_button(
                     "license-website",
@@ -599,13 +624,8 @@ impl LicensesView {
                     false,
                     None,
                 )
-                .current(self.focus == LicensesFocus::Website)
-                .on_click(move |_, cx| {
-                    let _ = view.update(cx, |view, cx| {
-                        view.mark(LicensesFocus::Website, cx);
-                    });
-                    cx.open_url(&url);
-                }),
+                .focus(&self.buttons.website)
+                .on_click(move |_, cx| cx.open_url(&url)),
             );
         }
         actions = actions.child(
@@ -616,12 +636,9 @@ impl LicensesView {
                 false,
                 None,
             )
-            .current(self.focus == LicensesFocus::Copy)
+            .focus(&self.buttons.copy)
             .on_click(move |_, cx| {
-                let _ = view.update(cx, |view, cx| {
-                    view.mark(LicensesFocus::Copy, cx);
-                    view.copy_selected(cx);
-                });
+                let _ = view.update(cx, LicensesView::copy_selected);
             }),
         );
         div()
@@ -813,7 +830,7 @@ impl LicensesView {
                     true,
                     escape.as_ref(),
                 )
-                .current(self.focus == LicensesFocus::Done)
+                .focus(&self.buttons.done)
                 .on_click(move |_, cx| {
                     let _ = view.update(cx, |_, cx| cx.emit(Done));
                 }),
@@ -824,7 +841,7 @@ impl LicensesView {
 impl Render for LicensesView {
     fn render(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let swatch = Swatch::new(self.colors);
@@ -845,6 +862,7 @@ impl Render for LicensesView {
                     .child(self.render_detail(swatch, cx))
             }
         };
+        let search = self.focus_handle(cx);
         let header = div()
             .flex()
             .flex_none()
@@ -874,59 +892,61 @@ impl Render for LicensesView {
                     .rounded(px(6.0))
                     .border_1()
                     .border_color(swatch.line_strong)
-                    .when(self.focus == LicensesFocus::Search, |field| {
+                    .when(search.is_focused(window), |field| {
                         field.shadow(swatch.focus_ring())
                     })
                     .bg(swatch.bg)
                     .text_size(px(12.5))
                     .child(self.input.clone()),
             );
-        let input_focus = self.focus_handle(cx);
-        scrim(swatch)
+        let (website, copy) = self.shows_buttons();
+        // The panel's top edge sits at the inset below the window's top, and
+        // its height leaves the scrim's margin at the bottom.
+        let top = px(PANEL_TOP_INSET - SCRIM_MARGIN);
+        let height = (self.viewport.height
+            - px(PANEL_TOP_INSET + SCRIM_MARGIN))
+        .clamp(px(0.0), px(PANEL_HEIGHT));
+        let content = div()
             .key_context("Palette")
             .flex()
-            .items_center()
-            .justify_center()
-            // The top inset clears the macOS traffic lights in short windows.
-            .pt(px(PANEL_TOP_INSET))
-            .pb(px(16.0))
-            .px(px(16.0))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .on_mouse_up(MouseButton::Left, |_: &MouseUpEvent, _, cx| {
-                cx.stop_propagation();
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            // A press in the panel that focuses nothing, such as on a row or
+            // the text, returns keys and keyboard focus to the search.
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                if !window.default_prevented() {
+                    search.focus(window, cx);
+                }
             })
-            .on_scroll_wheel(|_: &ScrollWheelEvent, _, cx| {
-                cx.stop_propagation();
-            })
-            .child(
-                raised_panel(swatch, 10.0)
-                    .id("licenses")
-                    .w_full()
-                    .max_w(px(PANEL_WIDTH))
-                    .h_full()
-                    .max_h(px(PANEL_HEIGHT))
-                    .flex()
-                    .flex_col()
-                    .text_color(swatch.fg)
-                    // A press anywhere in the panel returns keys and keyboard
-                    // focus to the search; a button's click then acts and
-                    // moves keyboard focus to that button.
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(
-                            move |view, _: &MouseDownEvent, window, cx| {
-                                input_focus.focus(window, cx);
-                                if view.focus != LicensesFocus::Search {
-                                    view.focus = LicensesFocus::Search;
-                                    cx.notify();
-                                }
-                            },
-                        ),
-                    )
-                    .child(header)
-                    .child(body)
-                    .child(self.render_footer(swatch, cx)),
-            )
+            .child(header)
+            .child(body)
+            .child(self.render_footer(swatch, cx));
+        Dialog::new("licenses", "Open Source Licenses", &self.modal, swatch)
+            .bare()
+            .focusable(&self.focus_handle(cx))
+            .when(website, |dialog| dialog.focusable(&self.buttons.website))
+            .when(copy, |dialog| dialog.focusable(&self.buttons.copy))
+            .focusable(&self.buttons.done)
+            .w_full()
+            .max_w(px(PANEL_WIDTH))
+            .h(height)
+            .mt(top)
+            .rounded(px(10.0))
+            .child(content)
+    }
+}
+
+/// What desktop tests observe of the license text's scrolling.
+#[cfg(all(test, feature = "test-support"))]
+impl LicensesView {
+    /// The text's vertical scroll offset, its furthest offset, and its
+    /// painted bounds.
+    pub(super) fn text_scroll(&self) -> (Pixels, Pixels, gpui::Bounds<Pixels>) {
+        (
+            self.text_scroll.offset().y,
+            self.text_scroll.max_offset().y,
+            self.text_scroll.bounds(),
+        )
     }
 }

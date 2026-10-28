@@ -49,6 +49,11 @@ pub(crate) enum Kind {
     /// A delete confirmation with Cancel and Delete, the action added
     /// first.
     Alert,
+    /// The delete confirmation opening on Delete rather than Cancel.
+    AlertOnAction,
+    /// A bare rename dialog: the owner's own heading and field, then the
+    /// footer's Cancel and Rename.
+    Bare,
 }
 
 type Log = Rc<RefCell<Vec<String>>>;
@@ -118,7 +123,7 @@ impl Owner {
                 });
             });
         let cancel = disable(cancel, "cancel");
-        if self.kind == Kind::Alert {
+        if matches!(self.kind, Kind::Alert | Kind::AlertOnAction) {
             let confirm = Button::new("confirm", "Delete", tokens())
                 .variant(Variant::Destructive)
                 .on_click(move |_, _| confirm_click());
@@ -132,12 +137,37 @@ impl Owner {
             .description("This cannot be undone.")
             .action(confirm, &self.confirm)
             .cancel(cancel, &self.cancel)
+            .when(self.kind == Kind::AlertOnAction, |alert| {
+                alert.initial_focus(&self.confirm)
+            })
             .into_any_element();
         }
         let confirm = Button::new("confirm", "Rename", tokens())
             .variant(Variant::Primary)
             .on_click(move |_, _| confirm_click());
         let confirm = disable(confirm, "confirm");
+        if self.kind == Kind::Bare {
+            return Dialog::new(
+                "dialog",
+                "Rename profile",
+                &self.modal,
+                tokens(),
+            )
+            .description("Profiles are listed by name.")
+            .bare()
+            .focusable(&self.field.focus_handle(cx))
+            .child(
+                div()
+                    .debug_selector(|| "content".to_owned())
+                    .child("Rename profile")
+                    .child(div().key_context(FIELD_CONTEXT).child(
+                        InputGroup::new("group", &self.field, tokens()),
+                    )),
+            )
+            .button(cancel, &self.cancel)
+            .button(confirm, &self.confirm)
+            .into_any_element();
+        }
         Dialog::new("dialog", "Rename profile", &self.modal, tokens())
             .description("Profiles are listed by name.")
             .focusable(&self.field.focus_handle(cx))
@@ -668,6 +698,30 @@ fn focus_enters_an_alert_whose_controls_are_all_disabled(
     probe.disable(&["cancel", "confirm"], cx);
     probe.open(cx);
     assert_eq!(focused(&probe, cx), Some("cancel"));
+}
+
+#[gpui::test]
+fn a_bare_dialog_draws_only_the_owners_content(cx: &mut TestAppContext) {
+    let (probe, cx) = owner(cx, Kind::Bare, &[]);
+    probe.open(cx);
+    let panel = probe
+        .owner
+        .read_with(cx, |owner, _| owner.modal.panel_bounds())
+        .expect("the panel painted");
+    let content = cx.debug_bounds("content").expect("the content drew");
+    // The panel's bounds are inside its border, where the content starts:
+    // no title and no body padding.
+    assert_eq!(content.origin, panel.origin);
+    assert_eq!(content.size.width, panel.size.width);
+    assert!(cx.debug_bounds("cancel").is_some(), "the footer drew");
+    assert_eq!(focused(&probe, cx), Some("field"));
+    cx.update(|window, _| {
+        let aria = &a11y_node(window, "dialog")["aria"];
+        assert_eq!(aria["role"], "Dialog");
+        assert_eq!(aria["label"], "Rename profile");
+        assert_eq!(aria["description"], "Profiles are listed by name.");
+        assert_eq!(aria["modal"], true);
+    });
 }
 
 #[gpui::test]

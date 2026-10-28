@@ -1,15 +1,18 @@
-//! The About panel: a centred raised panel with the application's version
-//! and a details list the user can copy. The details are pure text built by
-//! [`about_details`]; the panel renders them and the owner handles its
-//! buttons and keys. Its Licenses button opens the Licenses view.
+//! The About panel: a `huterm-ui` dialog with the application's version and
+//! a details list the user can copy. The details are pure text built by
+//! [`about_details`]; the panel renders them and the owner opens its
+//! [`Modal`] and handles its buttons and keys. Its Licenses button opens the
+//! Licenses view.
 
 use gpui::{
-    App, Div, Pixels, SharedString, Size, Window, div, img, prelude::*, px,
+    App, Div, FocusHandle, Pixels, SharedString, Size, Window, div, img,
+    prelude::*, px,
 };
 use huterm_ui::components::button::{Button, Variant};
+use huterm_ui::components::dialog::{Dialog, Modal};
 
 use super::key_hint::KeyHint;
-use super::overlay::{Swatch, mono_font_family, raised_panel, scrim};
+use super::overlay::{Swatch, mono_font_family};
 use crate::APP_ID;
 use crate::assets::APP_ICON;
 use crate::keymap::Platform;
@@ -43,30 +46,57 @@ impl AboutDetails {
     }
 }
 
-/// The About panel button that keyboard focus is on. Tab and the arrow keys
-/// move it; Enter presses it.
+/// An About panel button, in Tab order: Licenses, Copy Details, Close.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum AboutFocus {
+pub(crate) enum AboutButton {
     Licenses,
     Copy,
-    /// The default, so Enter closes the panel as it always has.
+    /// The one that takes focus on opening, so Enter closes the panel as it
+    /// always has.
     #[default]
     Close,
 }
 
-impl AboutFocus {
-    /// The next button in `direction`, wrapping: Licenses, Copy Details,
-    /// Close.
-    pub(crate) fn moved(self, forward: bool) -> Self {
-        const ORDER: [AboutFocus; 3] =
-            [AboutFocus::Licenses, AboutFocus::Copy, AboutFocus::Close];
-        let index = ORDER.iter().position(|focus| *focus == self).unwrap_or(2);
-        let next = if forward {
-            index + 1
-        } else {
-            index + ORDER.len() - 1
-        };
-        ORDER[next % ORDER.len()]
+impl AboutButton {
+    /// What smoke state calls it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Licenses => "licenses",
+            Self::Copy => "copy",
+            Self::Close => "close",
+        }
+    }
+}
+
+/// The About panel buttons' focus handles.
+pub(crate) struct AboutButtons {
+    licenses: FocusHandle,
+    copy: FocusHandle,
+    close: FocusHandle,
+}
+
+impl AboutButtons {
+    pub(crate) fn new(cx: &mut App) -> Self {
+        Self {
+            licenses: cx.focus_handle(),
+            copy: cx.focus_handle(),
+            close: cx.focus_handle(),
+        }
+    }
+
+    pub(crate) fn handle(&self, button: AboutButton) -> &FocusHandle {
+        match button {
+            AboutButton::Licenses => &self.licenses,
+            AboutButton::Copy => &self.copy,
+            AboutButton::Close => &self.close,
+        }
+    }
+
+    /// The button that has focus.
+    pub(crate) fn focused(&self, window: &Window) -> Option<AboutButton> {
+        [AboutButton::Licenses, AboutButton::Copy, AboutButton::Close]
+            .into_iter()
+            .find(|button| self.handle(*button).is_focused(window))
     }
 }
 
@@ -199,48 +229,40 @@ fn product_version(plist: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-/// The panel over its scrim, filling the parent. `actions` receive the
-/// clicks on `about-licenses`, `about-copy`, and `about-close`; `focus`
-/// marks the keyboard-focused button and `hints` shows the Close button's
-/// key.
+/// The panel over its scrim, as the last child of the area it covers, open
+/// while `modal` is. `actions` receive the clicks on `about-licenses`,
+/// `about-copy`, and `about-close`; `initial` takes focus on opening, and
+/// `hints` shows the Close button's key.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the details, the modal and its buttons, size, colors, hints, and actions"
+)]
 pub(crate) fn render_about(
     details: &AboutDetails,
+    modal: &Modal,
+    buttons: &AboutButtons,
+    initial: AboutButton,
     viewport: Size<Pixels>,
     swatch: Swatch,
     hints: bool,
-    focus: AboutFocus,
     actions: AboutActions<
         impl Fn(&mut Window, &mut App) + 'static,
         impl Fn(&mut Window, &mut App) + 'static,
         impl Fn(&mut Window, &mut App) + 'static,
     >,
-) -> Div {
+) -> Dialog {
     let width = (viewport.width - px(32.0)).clamp(px(0.0), px(PANEL_WIDTH));
-    scrim(swatch)
-        .flex()
-        .items_center()
-        .justify_center()
-        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .child(
-            raised_panel(swatch, 10.0)
-                .id("about")
-                .w(width)
-                .flex_none()
-                .flex()
-                .flex_col()
-                .text_color(swatch.fg)
-                .child(hero(&details.version, swatch))
-                .child(details_list(details, swatch))
-                .child(footer(swatch, hints, focus, actions)),
-        )
+    Dialog::new("about-dialog", "About Huterm", modal, swatch)
+        .bare()
+        .focusable(&buttons.licenses)
+        .focusable(&buttons.copy)
+        .focusable(&buttons.close)
+        .initial_focus(buttons.handle(initial))
+        .w(width)
+        .rounded(px(10.0))
+        .child(hero(&details.version, swatch))
+        .child(details_list(details, swatch))
+        .child(footer(swatch, hints, buttons, actions))
 }
 
 /// The icon, name, and version above the details.
@@ -313,7 +335,7 @@ fn details_list(details: &AboutDetails, swatch: Swatch) -> Div {
 fn footer(
     swatch: Swatch,
     hints: bool,
-    focus: AboutFocus,
+    buttons: &AboutButtons,
     actions: AboutActions<
         impl Fn(&mut Window, &mut App) + 'static,
         impl Fn(&mut Window, &mut App) + 'static,
@@ -333,25 +355,25 @@ fn footer(
         .bg(swatch.footer())
         .child(
             footer_button("about-licenses", "Licenses", swatch, false, None)
-                .current(focus == AboutFocus::Licenses)
+                .focus(&buttons.licenses)
                 .on_click(actions.licenses),
         )
         .child(div().flex_1())
         .child(
             footer_button("about-copy", "Copy Details", swatch, false, None)
-                .current(focus == AboutFocus::Copy)
+                .focus(&buttons.copy)
                 .on_click(actions.copy),
         )
         .child(
             footer_button("about-close", "Close", swatch, true, enter.as_ref())
-                .current(focus == AboutFocus::Close)
+                .focus(&buttons.close)
                 .on_click(actions.close),
         )
 }
 
 /// A 26-point footer button, outlined or, when `primary`, accent-filled;
-/// `shortcut` draws its key cap. The owner marks the keyboard's place with
-/// [`Button::current`].
+/// `shortcut` draws its key cap. The owner gives it the focus handle the
+/// dialog cycles through.
 pub(super) fn footer_button(
     id: &'static str,
     label: impl Into<SharedString>,
@@ -426,15 +448,6 @@ mod tests {
         });
         assert_eq!(mac.rows[1], ("Platform", "macOS 15.1, aarch64".to_owned()));
         assert_eq!(mac.rows[3], ("Build", "debug".to_owned()));
-    }
-
-    #[test]
-    fn about_focus_cycles_through_the_buttons_both_ways() {
-        assert_eq!(AboutFocus::default(), AboutFocus::Close);
-        assert_eq!(AboutFocus::Close.moved(true), AboutFocus::Licenses);
-        assert_eq!(AboutFocus::Licenses.moved(true), AboutFocus::Copy);
-        assert_eq!(AboutFocus::Licenses.moved(false), AboutFocus::Close);
-        assert_eq!(AboutFocus::Copy.moved(false), AboutFocus::Licenses);
     }
 
     #[test]

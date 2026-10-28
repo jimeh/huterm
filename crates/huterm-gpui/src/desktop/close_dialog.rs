@@ -1,18 +1,18 @@
 //! The close confirmation for a tab, several tabs, a window, or Quit.
 //!
 //! [`build_close_dialog`] turns the assessed processes into the exact copy
-//! and rows the dialog shows, and [`render_close_dialog`] draws that model.
-//! The owner keeps the focused button, routes the `dialog_*` catalog commands
-//! under its `confirming` context, and maps core's close assessment onto
-//! [`CloseDialogInput`].
+//! and rows the dialog shows, and [`render_close_dialog`] draws that model
+//! as a `huterm-ui` alert dialog. The owner opens its [`Modal`], routes the
+//! `dialog_*` catalog commands under its `confirming` context, and maps
+//! core's close assessment onto [`CloseDialogInput`].
 
-use gpui::{App, Div, Pixels, Size, Window, div, prelude::*, px};
+use gpui::{App, Div, FocusHandle, Pixels, Size, Window, div, prelude::*, px};
+use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::button::{Button, Colors};
+use huterm_ui::components::dialog::Modal;
 
 use super::key_hint::KeyHint;
-use super::overlay::{
-    Swatch, accent_bar, mono_font_family, raised_panel, scrim, severity_mark,
-};
+use super::overlay::{Swatch, accent_bar, mono_font_family, severity_mark};
 use crate::keymap::Platform;
 
 /// What the confirmation closes.
@@ -288,21 +288,29 @@ pub(crate) fn build_close_dialog(input: &CloseDialogInput) -> CloseDialogModel {
 
 // ---- presentation ---------------------------------------------------------
 
-/// Which footer button holds keyboard focus. The primary button has it when
+/// The footer buttons' focus handles. The primary button takes focus when
 /// a confirmation opens, so Enter confirms and Escape cancels.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum DialogFocus {
-    Cancel,
-    #[default]
-    Primary,
+pub(crate) struct CloseButtons {
+    pub(crate) cancel: FocusHandle,
+    pub(crate) primary: FocusHandle,
 }
 
-impl DialogFocus {
-    /// The other button: with two buttons, next and previous both wrap to it.
-    pub(crate) fn toggled(self) -> Self {
-        match self {
-            Self::Cancel => Self::Primary,
-            Self::Primary => Self::Cancel,
+impl CloseButtons {
+    pub(crate) fn new(cx: &mut App) -> Self {
+        Self {
+            cancel: cx.focus_handle(),
+            primary: cx.focus_handle(),
+        }
+    }
+
+    /// The focused button's smoke name: `primary`, `cancel`, or `none`.
+    pub(crate) fn focused(&self, window: &Window) -> &'static str {
+        if self.primary.is_focused(window) {
+            "primary"
+        } else if self.cancel.is_focused(window) {
+            "cancel"
+        } else {
+            "none"
         }
     }
 }
@@ -402,16 +410,14 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
 }
 
 /// A 28-point footer button reading `label`; with `hint`, its key cap
-/// follows. `focused` marks the keyboard's place.
+/// follows.
 fn button(
     id: &'static str,
     label: impl Into<gpui::SharedString>,
     swatch: Swatch,
-    focused: bool,
     hint: Option<&str>,
 ) -> Button {
     Button::new(id, label, swatch)
-        .current(focused)
         .when_some(hint, |button, key| {
             button.shortcut(KeyHint::keys(&[key], Platform::current()).glyphs())
         })
@@ -423,75 +429,27 @@ fn button(
         .cursor_pointer()
 }
 
-/// Cancel and the destructive primary button, nothing else. With `hints`,
-/// each carries its key: `esc` and Return.
-fn dialog_footer(
-    model: &CloseDialogModel,
-    focus: DialogFocus,
-    swatch: Swatch,
-    hints: bool,
-    on_cancel: impl Fn(&mut Window, &mut App) + 'static,
-    on_confirm: impl Fn(&mut Window, &mut App) + 'static,
-) -> Div {
-    let danger = swatch.danger_fill();
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_end()
-        .gap(px(8.0))
-        .pl(px(14.0))
-        .pr(px(10.0))
-        .py(px(8.0))
-        .border_t_1()
-        .border_color(swatch.line)
-        .bg(swatch.footer())
-        .child(
-            button(
-                "cancel-close",
-                "Cancel",
-                swatch,
-                focus == DialogFocus::Cancel,
-                hints.then_some("escape"),
-            )
-            .on_click(on_cancel),
-        )
-        .child(
-            button(
-                "confirm-close",
-                model.primary_label.clone(),
-                swatch,
-                focus == DialogFocus::Primary,
-                hints.then_some("enter"),
-            )
-            .debug_selector(|| "confirm-close".to_owned())
-            // Its hover and pressed shades move away from its text, so it
-            // reads on every fill the button shows.
-            .colors(Colors {
-                fill: Some(danger),
-                text: swatch.on(danger),
-                border: None,
-                hover: swatch.danger_hover(),
-                pressed: swatch.danger_pressed(),
-            })
-            .on_click(on_confirm),
-        )
-}
-
-/// The dialog over its scrim, filling the parent. The panel has an explicit
-/// viewport-clamped width, and its text and button containers do not
-/// shrink, so wrapped text measures correctly. `on_cancel` and
-/// `on_confirm` receive the clicks on `cancel-close` and `confirm-close`;
-/// `hints` shows the buttons' keys.
+/// The alert over its scrim, as the last child of the area it covers,
+/// open while `slot` is: the owner's header with its severity mark, the
+/// process rows, and Cancel and the destructive primary button, which takes
+/// focus. The panel has an explicit viewport-clamped width, and its text
+/// containers do not shrink, so wrapped text measures correctly.
+/// `on_cancel` and `on_confirm` receive the clicks on `cancel-close` and
+/// `confirm-close`; `hints` shows the buttons' keys: `esc` and Return.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the model, its modal and buttons, size, colors, hints, and both actions"
+)]
 pub(crate) fn render_close_dialog(
     model: &CloseDialogModel,
-    focus: DialogFocus,
+    slot: &Modal,
+    buttons: &CloseButtons,
     viewport: Size<Pixels>,
     swatch: Swatch,
     hints: bool,
     on_cancel: impl Fn(&mut Window, &mut App) + 'static,
     on_confirm: impl Fn(&mut Window, &mut App) + 'static,
-) -> Div {
+) -> AlertDialog {
     let width = (viewport.width - px(32.0)).clamp(px(0.0), px(PANEL_WIDTH));
     let (glyph, fill) = match model.mark {
         DialogMark::Exclamation => ("!", swatch.danger),
@@ -535,32 +493,37 @@ pub(crate) fn render_close_dialog(
         .max_h(px(LIST_MAX_HEIGHT))
         .overflow_y_scroll()
         .children(model.rows.iter().map(|row| dialog_row(row, swatch)));
-    scrim(swatch)
-        .flex()
-        .items_center()
-        .justify_center()
-        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .child(
-            raised_panel(swatch, 10.0)
-                .w(width)
-                .flex_none()
-                .flex()
-                .flex_col()
-                .text_color(swatch.fg)
-                .child(header)
-                .child(list)
-                .child(dialog_footer(
-                    model, focus, swatch, hints, on_cancel, on_confirm,
-                )),
-        )
+    let danger = swatch.danger_fill();
+    let cancel =
+        button("cancel-close", "Cancel", swatch, hints.then_some("escape"))
+            .on_click(on_cancel);
+    let primary = button(
+        "confirm-close",
+        model.primary_label.clone(),
+        swatch,
+        hints.then_some("enter"),
+    )
+    .debug_selector(|| "confirm-close".to_owned())
+    // Its hover and pressed shades move away from its text, so it reads on
+    // every fill the button shows.
+    .colors(Colors {
+        fill: Some(danger),
+        text: swatch.on(danger),
+        border: None,
+        hover: swatch.danger_hover(),
+        pressed: swatch.danger_pressed(),
+    })
+    .on_click(on_confirm);
+    AlertDialog::new("close-dialog", model.title.clone(), slot, swatch)
+        .description(model.subtitle.clone())
+        .bare()
+        .cancel(cancel, &buttons.cancel)
+        .action(primary, &buttons.primary)
+        .initial_focus(&buttons.primary)
+        .w(width)
+        .rounded(px(10.0))
+        .child(header)
+        .child(list)
 }
 
 #[cfg(test)]

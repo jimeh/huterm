@@ -1497,7 +1497,6 @@ fn tab_closes_are_refused_while_a_confirmation_is_pending() {
         close.checked(true),
         Some(CloseDecision::Confirm(CloseTarget::Tab(TabId::new(1))))
     );
-    assert_eq!(close.dialog_focus, DialogFocus::Primary);
     assert_eq!(
         close.check_tab_close_available(),
         Err(CommandError::Unavailable(
@@ -1540,17 +1539,11 @@ fn a_repeated_close_window_is_refused_while_its_confirmation_shows() {
         close.checked(true),
         Some(CloseDecision::Confirm(CloseTarget::Window))
     );
-    close.dialog_focus = DialogFocus::Cancel;
     assert_eq!(close.check_close_available(&CloseTarget::Window), pending);
     assert_eq!(
         close.check_close_available(&CloseTarget::Application),
         Ok(()),
         "Quit still widens a window confirmation"
-    );
-    assert_eq!(
-        close.dialog_focus,
-        DialogFocus::Cancel,
-        "the refused repeat leaves the focused button alone"
     );
     close.cancel();
     close.begin_check(CloseTarget::Application);

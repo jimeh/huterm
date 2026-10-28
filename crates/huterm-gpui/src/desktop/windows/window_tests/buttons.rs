@@ -1,32 +1,52 @@
-//! Terminal-window buttons on `huterm-ui`'s `Button`. Dialog buttons keep
-//! their `confirming` commands and focus return, show their ring only after
-//! keys, and ignore GPUI's implicit Enter click; title-row and tab-bar
-//! buttons are named buttons that leave focus on the terminal.
+//! Terminal-window buttons on `huterm-ui`'s `Button`. Dialog buttons take
+//! focus inside their dialog, keep their `confirming` commands and focus
+//! return, show their ring only after keys, and ignore GPUI's implicit
+//! Enter click; title-row and tab-bar buttons are named buttons that leave
+//! focus on the terminal.
 
 use gpui::{
     KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent,
 };
-use huterm_ui::focus::current_ring_drawn;
+use huterm_ui::focus::ring_drawn;
 use serde_json::Value;
 
-use super::super::close_dialog::DialogFocus;
 use super::menus::a11y_node;
 use super::*;
 
 /// The default that closes a pane, and so a one-pane tab.
-const CLOSE: &str = if cfg!(target_os = "macos") {
+pub(super) const CLOSE: &str = if cfg!(target_os = "macos") {
     "cmd-w"
 } else {
     "ctrl-shift-w"
 };
 
-/// Whether `window`'s last frame drew the ring of the dialog button named
-/// `id`.
-fn ringed(cx: &mut App, window: AnyWindowHandle, id: &'static str) -> bool {
+/// Whether `window`'s last frame drew the ring of the dialog button `pick`
+/// chooses.
+fn ringed(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    pick: impl Fn(&WorkspaceView) -> &FocusHandle,
+) -> bool {
     window
-        .update(cx, |_, window, cx| current_ring_drawn(id, window, cx))
+        .update(cx, |root, window, cx| {
+            let view = root.downcast::<WorkspaceView>().unwrap();
+            let handle = pick(view.read(cx)).clone();
+            ring_drawn(&handle, window, cx)
+        })
         .unwrap()
+}
+
+fn primary(view: &WorkspaceView) -> &FocusHandle {
+    &view.close_buttons.primary
+}
+
+fn cancel(view: &WorkspaceView) -> &FocusHandle {
+    &view.close_buttons.cancel
+}
+
+fn about(button: AboutButton) -> impl Fn(&WorkspaceView) -> &FocusHandle {
+    move |view| view.about_buttons.handle(button)
 }
 
 /// Clicks the element named `id` as an assistive technology does: GPUI
@@ -51,18 +71,6 @@ fn a11y_click(harness: &mut DesktopHarness, window: AnyWindowHandle, id: &str) {
             })
             .unwrap();
     });
-}
-
-/// The element id, in its `Debug` spelling, of the node assistive
-/// technology follows in `window`'s last frame, if any.
-fn active_descendant(cx: &mut App, window: AnyWindowHandle) -> Option<String> {
-    let json = window
-        .update(cx, |_, window, _| window.debug_a11y_tree_json())
-        .unwrap()
-        .expect("test windows report an accessibility tree for every frame");
-    let tree: Value = serde_json::from_str(&json).unwrap();
-    let key = tree["active_descendant_focus"].as_str()?;
-    tree["nodes"][key]["element_id"].as_str().map(str::to_owned)
 }
 
 /// The node holding `window`'s focus in its last frame.
@@ -123,7 +131,7 @@ fn drag_and_release(
 impl DesktopHarness {
     /// A window showing a tab with a background job beside an idle one,
     /// the busy tab focused, so closing it asks first.
-    fn busy_window(&mut self) -> (AnyWindowHandle, TabId) {
+    pub(super) fn busy_window(&mut self) -> (AnyWindowHandle, TabId) {
         let runs = self.open_tab(RUNS_JOB);
         let stays = self.open_tab(ECHO);
         let window = self.attach_showing(&[runs, stays]);
@@ -162,13 +170,17 @@ impl DesktopHarness {
             .center()
     }
 
-    /// The close confirmation's keyboard focus, or `None` while none shows.
-    fn dialog_focus(&mut self, window: AnyWindowHandle) -> Option<DialogFocus> {
-        self.update_view(window, |view, _, _| {
+    /// The close confirmation's focused button, `primary`, `cancel`, or
+    /// `none`, or `None` while no confirmation shows.
+    pub(super) fn dialog_focus(
+        &mut self,
+        window: AnyWindowHandle,
+    ) -> Option<&'static str> {
+        self.update_view(window, |view, window, _| {
             view.close
                 .confirmation
                 .is_some()
-                .then_some(view.close.dialog_focus)
+                .then(|| view.close_buttons.focused(window))
         })
     }
 }
@@ -183,25 +195,24 @@ fn the_close_dialogs_keys_outlast_a_repeated_close_and_return_focus(
     harness.wait_for("the confirmation", |cx| confirming(cx, window));
     // The shortcut was a key, so the primary button shows its ring.
     harness.wait_for("the ring on the primary button", |cx| {
-        ringed(cx, window, "confirm-close")
+        ringed(cx, window, primary)
     });
-    assert_eq!(harness.dialog_focus(window), Some(DialogFocus::Primary));
+    assert_eq!(harness.dialog_focus(window), Some("primary"));
     harness.press(window, "tab");
-    assert_eq!(harness.dialog_focus(window), Some(DialogFocus::Cancel));
+    assert_eq!(harness.dialog_focus(window), Some("cancel"));
     // The shortcut again neither confirms nor resets the dialog.
     harness.press(window, CLOSE);
     harness.cx.run_until_parked();
-    assert_eq!(harness.dialog_focus(window), Some(DialogFocus::Cancel));
+    assert_eq!(harness.dialog_focus(window), Some("cancel"));
     harness
         .cx
         .update(|cx| assert!(terminal(cx, window, runs).is_some()));
     harness.press(window, "left");
-    assert_eq!(harness.dialog_focus(window), Some(DialogFocus::Primary));
+    assert_eq!(harness.dialog_focus(window), Some("primary"));
     harness.press(window, "right");
-    assert_eq!(harness.dialog_focus(window), Some(DialogFocus::Cancel));
+    assert_eq!(harness.dialog_focus(window), Some("cancel"));
     harness.wait_for("the ring on Cancel", |cx| {
-        ringed(cx, window, "cancel-close")
-            && !ringed(cx, window, "confirm-close")
+        ringed(cx, window, cancel) && !ringed(cx, window, primary)
     });
     // Enter presses the focused button, Cancel.
     harness.press(window, "enter");
@@ -222,9 +233,9 @@ fn dialog_buttons_show_their_ring_after_keys_and_not_after_a_click(
     harness.activate(window, tab);
     harness.invoke(window, ids::ABOUT).unwrap();
     harness.press(window, "tab tab");
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Copy));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Copy));
     harness.wait_for("the ring on Copy Details", |cx| {
-        ringed(cx, window, "about-copy")
+        ringed(cx, window, about(AboutButton::Copy))
     });
     let details = harness
         .update_view(window, |view, _, _| view.about.clone().unwrap().text());
@@ -236,14 +247,19 @@ fn dialog_buttons_show_their_ring_after_keys_and_not_after_a_click(
             == Some(&details)
     });
     harness.cx.update(|cx| {
-        for id in ["about-licenses", "about-copy", "about-close"] {
-            assert!(!ringed(cx, window, id), "{id} shows a ring after a click");
+        for button in
+            [AboutButton::Licenses, AboutButton::Copy, AboutButton::Close]
+        {
+            assert!(
+                !ringed(cx, window, about(button)),
+                "{button:?} shows a ring after a click"
+            );
         }
     });
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Copy));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Copy));
     harness.press(window, "tab");
     harness.wait_for("the ring on Close after Tab", |cx| {
-        ringed(cx, window, "about-close")
+        ringed(cx, window, about(AboutButton::Close))
     });
 }
 
@@ -266,7 +282,7 @@ fn a_removed_enter_binding_does_not_press_the_focused_dialog_button(
     let (window, runs) = harness.busy_window();
     harness.press(window, CLOSE);
     harness.wait_for("the confirmation", |cx| confirming(cx, window));
-    assert_eq!(harness.dialog_focus(window), Some(DialogFocus::Primary));
+    assert_eq!(harness.dialog_focus(window), Some("primary"));
     // GPUI clicks a focused element on Enter's key-up, so send both.
     harness.press(window, "enter");
     VisualTestContext::from_window(window, &harness.cx).simulate_event(
@@ -318,16 +334,14 @@ fn title_row_and_tab_bar_buttons_are_named_and_leave_focus_on_the_terminal(
 }
 
 #[gpui::test]
-fn a_click_on_a_dialog_button_moves_the_keyboard_mark_to_it(
-    cx: &mut TestAppContext,
-) {
+fn a_click_on_a_dialog_button_focuses_it(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_window();
     harness.wait_text(window, tab, "READY");
     harness.activate(window, tab);
     harness.invoke(window, ids::ABOUT).unwrap();
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Close));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Close));
     let details = harness
         .update_view(window, |view, _, _| view.about.clone().unwrap().text());
     a11y_click(&mut harness, window, "about-copy");
@@ -348,13 +362,11 @@ fn a_click_on_a_dialog_button_moves_the_keyboard_mark_to_it(
         let copied = cx.read_from_clipboard().and_then(|item| item.text());
         assert_eq!(copied.as_ref(), Some(&details), "Enter copied again");
     });
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Copy));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Copy));
 }
 
 #[gpui::test]
-fn a_click_on_a_licenses_button_moves_the_keyboard_mark_to_it(
-    cx: &mut TestAppContext,
-) {
+fn a_click_on_a_licenses_button_focuses_it(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_window();
@@ -369,51 +381,77 @@ fn a_click_on_a_licenses_button_moves_the_keyboard_mark_to_it(
         )
     });
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
-    // The press on the panel first returns focus to the search; the click
-    // then moves it to the button.
+    // The press focuses the button, and the panel's return of focus to the
+    // search leaves a press that focused something alone.
     a11y_click(&mut harness, window, "license-copy");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Copy));
 }
 
 #[gpui::test]
-fn a_dialogs_current_button_is_its_accessible_active_descendant(
+fn dialogs_report_their_role_name_and_modal_state_and_focus_their_buttons(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let (window, _) = harness.busy_window();
     harness.invoke(window, ids::ABOUT).unwrap();
-    let followed = |harness: &mut DesktopHarness, id: &'static str| {
+    let focused_on = |harness: &mut DesktopHarness, id: &'static str| {
         harness.wait_for(id, |cx| {
-            active_descendant(cx, window) == Some(spelled(id))
+            focused_node(cx, window)["element_id"] == spelled(id)
         });
     };
-    // The dialog node holds focus, so its current button is followed.
-    let holds_focus =
-        |harness: &mut DesktopHarness, id: &'static str, role, label: &str| {
-            harness.wait_for(id, |cx| {
-                focused_node(cx, window)["element_id"] == spelled(id)
-            });
-            let node = harness.cx.update(|cx| focused_node(cx, window));
-            assert_eq!(node["aria"]["role"], role, "{id}");
-            assert_eq!(node["aria"]["label"], label, "{id}");
-        };
-    holds_focus(&mut harness, "about-dialog", "Dialog", "About Huterm");
-    followed(&mut harness, "about-close");
+    let dialog = |harness: &mut DesktopHarness, id: &'static str| {
+        harness
+            .cx
+            .update(|cx| a11y_node(cx, window, id)["aria"].clone())
+    };
+    // Assistive technology follows the focused button itself.
+    focused_on(&mut harness, "about-close");
+    assert_eq!(focused_node_role(&mut harness, window), "Button");
+    let about = dialog(&mut harness, "about-dialog");
+    assert_eq!(about["role"], "Dialog");
+    assert_eq!(about["label"], "About Huterm");
+    assert_eq!(about["modal"], true);
     harness.press(window, "tab");
-    followed(&mut harness, "about-licenses");
-    harness.press(window, "tab");
-    followed(&mut harness, "about-copy");
+    focused_on(&mut harness, "about-licenses");
+    harness.press(window, "enter");
+    harness.wait_for("the Licenses view", |cx| {
+        licenses_state(cx, window).is_some()
+    });
+    focused_on(&mut harness, "licenses-search");
+    let licenses = dialog(&mut harness, "licenses");
+    assert_eq!(licenses["role"], "Dialog");
+    assert_eq!(licenses["label"], "Open Source Licenses");
+    assert_eq!(licenses["modal"], true);
+    harness.press(window, "escape");
     harness.press(window, "escape");
     harness.press(window, CLOSE);
     harness.wait_for("the confirmation", |cx| confirming(cx, window));
-    let title = harness.update_view(window, |view, _, cx| {
+    let (title, subtitle) = harness.update_view(window, |view, _, cx| {
         let target = view.close.confirmation.as_ref().unwrap();
-        build_close_dialog(&view.close_dialog_input(target, cx)).title
+        let model = build_close_dialog(&view.close_dialog_input(target, cx));
+        (model.title, model.subtitle)
     });
-    holds_focus(&mut harness, "close-dialog", "AlertDialog", &title);
-    followed(&mut harness, "confirm-close");
+    focused_on(&mut harness, "confirm-close");
+    let alert = dialog(&mut harness, "close-dialog");
+    assert_eq!(alert["role"], "AlertDialog");
+    assert_eq!(alert["label"], title.as_str());
+    assert_eq!(alert["description"], subtitle.as_str());
+    assert_eq!(alert["modal"], true);
     harness.press(window, "tab");
-    followed(&mut harness, "cancel-close");
+    focused_on(&mut harness, "cancel-close");
+}
+
+/// The role of the node holding `window`'s focus in its last frame.
+fn focused_node_role(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> String {
+    harness.cx.update(|cx| {
+        focused_node(cx, window)["aria"]["role"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    })
 }
 
 #[gpui::test]
@@ -446,14 +484,15 @@ fn dismissing_a_toast_over_a_dialog_returns_focus_to_the_dialog(
         let dismiss = CommandInvocation::new(ids::NOTICE_DISMISS, vec![]);
         view.invoke_interactive(&dismiss, window, cx).unwrap();
         assert!(view.notices.is_empty());
-        assert!(view.focus.is_focused(window), "focus left the dialog");
+        assert!(
+            view.about_buttons
+                .handle(AboutButton::Close)
+                .is_focused(window),
+            "focus left the dialog"
+        );
     });
     harness.cx.run_until_parked();
-    assert!(
-        harness.update_view(window, |view, window, _| view
-            .focus
-            .is_focused(window))
-    );
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Close));
 }
 
 #[gpui::test]

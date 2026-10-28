@@ -10,11 +10,18 @@
 //!
 //! Focus: on opening, focus moves to Cancel, the least destructive answer,
 //! or to the first enabled action when there is no Cancel or it is
-//! disabled; Tab and Shift-Tab cycle through Cancel and the enabled
-//! actions, and closing returns focus as a [`Dialog`]'s does.
+//! disabled. An owner whose question expects the action, such as a close
+//! confirmation that Return confirms, focuses that action instead with
+//! [`AlertDialog::initial_focus`]. Tab and Shift-Tab cycle through Cancel
+//! and the enabled actions, and closing returns focus as a [`Dialog`]'s
+//! does.
 //!
 //! Keyboard: as a [`Dialog`]'s. The owner routes its cancel command
 //! (Escape) to the same answer as Cancel.
+//!
+//! An owner with its own header, such as one with a severity mark beside
+//! the title, makes the alert [`AlertDialog::bare`], as a [`Dialog`]; the
+//! footer still holds Cancel and the actions.
 //!
 //! Dismissal: as a [`Dialog`]'s, except that a press outside the panel is
 //! stopped and never reported, so only an answer, Escape, or the owner
@@ -92,6 +99,22 @@ impl AlertDialog {
         self.actions.push((button, focus.clone()));
         self
     }
+
+    /// The button that takes focus on opening instead of Cancel; skipped,
+    /// as Cancel is, while disabled.
+    #[must_use]
+    pub fn initial_focus(mut self, focus: &FocusHandle) -> Self {
+        self.dialog = self.dialog.initial_focus(focus);
+        self
+    }
+
+    /// The owner draws the header and body, as [`Dialog::bare`] describes;
+    /// the footer still holds Cancel and the actions.
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.dialog = self.dialog.bare();
+        self
+    }
 }
 
 impl Styled for AlertDialog {
@@ -138,6 +161,13 @@ mod tests {
         let (probe, cx) = alert(cx);
         probe.open(cx);
         assert_eq!(focused(&probe, cx), Some("cancel"));
+    }
+
+    #[gpui::test]
+    fn an_alert_opens_on_the_action_its_owner_chose(cx: &mut TestAppContext) {
+        let (probe, cx) = owner(cx, Kind::AlertOnAction, &[]);
+        probe.open(cx);
+        assert_eq!(focused(&probe, cx), Some("confirm"));
     }
 
     #[gpui::test]

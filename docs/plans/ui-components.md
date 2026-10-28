@@ -9,9 +9,13 @@ Quake width and height sliders, and `text_cut`), 6a (the Settings layout:
 the sidebar as vertical tabs, theme cards as a radio group, `Field`,
 `Item`, `Collapsible`, `Card`, `Alert`, and `Empty` rows, and Tab scrolling
 the focused control into view), 7a (the Settings delete-profile alert
-dialog, which fixes D17), and 7c (the New profile and Rename profile
-dialogs, a rename written in one save) are implemented; 2b removed
-`desktop/menu.rs` and its menu host (D13). 3a also moved the Keybindings
+dialog, which fixes D17), 7b (the terminal window's close confirmation,
+About, and Licenses in one dialog slot, their buttons taking real focus),
+and 7c (the New profile and Rename profile dialogs, a rename written in one
+save) are implemented; 2b removed `desktop/menu.rs` and its menu host
+(D13). 7b adds `Dialog::bare`, for content with its own header and footer,
+and `AlertDialog::initial_focus`, so the close confirmation still opens on
+its primary button. 3a also moved the Keybindings
 filter and shortcut switches; since 6a only the key recorders and their
 Add buttons keep their GPUI focus styles, until step 8, and the command
 search results are link `Item`s. 6a adds `settings_next` and
@@ -73,7 +77,7 @@ App-specific surfaces). Everything else in the table migrates.
 | Kind | Where | Shared | Keyboard | Pointer | Focus ring | Dismissal | Disabled or read-only |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Button (Settings) | `settings_window.rs` `button`, `render.rs` `actionable` | Settings | Space, Return (`settings_toggle`), plus GPUI's implicit Enter and Space click (D16) | Hover and pressed styles | `.focus()` ring, also on click | n/a | Opacity 0.5 |
-| Dialog buttons | `close_dialog.rs`, `about.rs` | Terminal window | `dialog_*` commands under `confirming`: Return, Escape, Tab, Shift-Tab, Left, Right | Hover, pressed | Accent fill on the focused button | n/a | n/a |
+| Dialog buttons (`Button`s that take focus in their dialog since 7b) | `close_dialog.rs`, `about.rs` | Terminal window | `dialog_*` commands under `confirming`: Return, Escape, Tab, Shift-Tab, Left, Right | Hover, pressed | Accent fill on the focused button | n/a | n/a |
 | Tab strip | `tab_strip.rs`, `tab_bar.rs` | Terminal window | Catalog tab commands; tabs are not tab stops | Click activates, drag reorders with edge auto-scroll, the close button closes, right press opens the tab menu | None | n/a | n/a |
 | Title-row and tab-bar buttons (menu, new tab) | `windows.rs` (the menu button, `new-tab`, `window_controls_element`) | Terminal window | `open_menu` and `new_tab` commands; not tab stops | `TabColors` hover and pressed, tooltips | None | Menu button toggles its menu | n/a |
 | Pane dividers and pane drags | `pane_geometry.rs`, `pane_drag.rs`, `windows.rs` | Terminal window | Resize and move commands | Divider drag resizes; pane-title drag moves a pane | None | Window deactivation cancels | n/a |
@@ -94,9 +98,9 @@ App-specific surfaces). Everything else in the table migrates.
 | Theme cards (radio cards) | `controls.rs` `render_themes` | Settings | One tab stop per card | Click | `.focus()` style set, but #276 reports none visible | n/a | Opacity |
 | Sidebar (navigation list) | `render.rs` `render_nav` | Settings | Tab stops; no arrows (#276) | Click | Ring | n/a | n/a |
 | Inline confirm (an `AlertDialog` since 7a) | `quake.rs` `render_delete`, `escape_delete` | Quake | Escape matched literally in the keystroke interceptor, only while a prompt button has focus (D17) | Buttons | Ring | Cancel, Escape | n/a |
-| Modal dialog | `close_dialog.rs`, About in `about.rs` | Terminal window | `dialog_*` and `confirming` commands | Buttons, scrim | Accent buttons | Escape, Cancel | n/a |
+| Modal dialog (an `AlertDialog` and a `Dialog` since 7b) | `close_dialog.rs`, About in `about.rs` | Terminal window | `dialog_*` and `confirming` commands | Buttons, scrim | Accent buttons | Escape, Cancel | n/a |
 | Command palette | `palette/` | Terminal window | Full catalog grammar | Hover, click | n/a | Escape, outside press | n/a |
-| Licenses view | `licenses.rs` | About panel | Search field and list under `Palette`; arrows select, PageUp and PageDown scroll the text, Tab and Shift-Tab move between the search and the buttons, Enter presses the focused button | Click selects, wheel scrolls, list scrollbar | Rings on the search field and buttons | Escape clears the search, then returns to About | n/a |
+| Licenses view (a `Dialog` since 7b) | `licenses.rs` | About panel | Search field and list under `Palette`; arrows select, PageUp and PageDown scroll the text, Tab and Shift-Tab move between the search and the buttons, Enter presses the focused button | Click selects, wheel scrolls, list scrollbar | Rings on the search field and buttons | Escape clears the search, then returns to About | n/a |
 | Scroll pill | `desktop.rs` `render_scroll_pill` | Terminal window | Scroll-to-bottom command | Click scrolls to bottom; stops presses, never releases | n/a | Hides at the bottom | n/a |
 | Toasts | `notices.rs` | Terminal window | `notice_*` commands | Hover pauses | n/a | Escape, Delete, timeout | n/a |
 | Tooltip | `overlay.rs` `TextTooltip` | Menu buttons, tab bar | None | GPUI hover delay | n/a | Pointer leaves | n/a |
@@ -337,7 +341,7 @@ keyboard and focus, AppKit and GNOME for platform feel.
 | "No global shortcuts" card | Empty | Adopt |
 | Hairlines, menu separators | Separator | Adopt |
 | Delete-profile inline confirmation | Alert Dialog | **Change:** a modal alert dialog with focus on Cancel, as AppKit's alert sheet and libadwaita's `AdwAlertDialog` do. It fixes D17 by construction: Escape and Tab are the dialog's catalog commands, and keeping Tab inside a modal is correct. |
-| Close confirmation, About, Licenses | Dialog, Alert Dialog | Adopt the shell (scrim, focus containment, Escape, focus return); their contents stay app-specific |
+| Close confirmation, About, Licenses | Dialog, Alert Dialog | Adopt the shell (scrim, focus containment, Escape, focus return); their contents stay app-specific. Since 7b they draw in the terminal window's one dialog slot: the close confirmation is a bare `AlertDialog` that opens on its primary button, so Return confirms as before, and About and Licenses are bare `Dialog`s. Their buttons take real focus; none closes on an outside press or window deactivation |
 | Tooltip | Tooltip | Adopt, with keyboard-focus display |
 | Menu and Settings popovers | Popover | Adopt |
 | Settings pane, lists | Scroll Area | Adopt, with both existing scrollbars |
@@ -807,7 +811,9 @@ still change. Siblings that share a shape land together.
    rather than taking focus, and a click moves the mark. The close dialog
    and About already hold focus on an `AlertDialog` or `Dialog` node, so
    the current button is its active descendant; Licenses keeps focus in its
-   search field until 7b, so its mark has no active descendant.
+   search field until 7b, so its mark has no active descendant. 7b replaced
+   the marks with real focus and removed that node: the components report
+   the dialogs' roles, and assistive technology follows the focused button.
 4. **Text entry:** `Input` (the moved `TextField`, hardened with a
    read-only state, horizontal scrolling, Cut, and an accessible value),
    `InputGroup`, `NumberField`, and `Slider`. `ui/text.rs` moves with
@@ -830,7 +836,8 @@ still change. Siblings that share a shape land together.
    gains `run` arms for the `dialog_*` commands under `confirming`, and the
    dialog's buttons carry no `SettingsControl` context, which would
    otherwise win for Enter, Space, Left, and Right. Migration 7b: the close
-   confirmation, About, and Licenses shells. Migration 7c: the New profile
+   confirmation, About, and Licenses shells, in one dialog slot that shows
+   the top dialog. Migration 7c: the New profile
    name field and profile rename (#277) as `Field` and `InputGroup`
    compositions. 7c's settings queue carries a batch of patches applied in
    one `ConfigFile::apply`, which a rename uses to move the table and
@@ -865,6 +872,15 @@ from #276 or #277 that it covers.
 - The slider's readout has no fixed width, so its track narrows by about a
   glyph when the readout grows from 5% to 10% or 95% to 100%; give the
   readout the width of its widest value.
+- `keymap.rs` `resolve_entries` subtracts past zero (`position - 1`, around
+  line 537) when two default bindings share the same keys and predicate,
+  since a default entry before any user entry has position 0. Only a
+  catalog mistake reaches it, and it should report the clash; use a
+  saturating subtract or a debug assertion, plus a test.
+- A dialog's guard stops every press outside its panel, so while a
+  terminal-window dialog shows, the resize edges of a client-drawn Linux
+  frame do not resize the window; before 7b, the dialogs' scrims covered
+  only the content.
 
 ## Non-goals
 
