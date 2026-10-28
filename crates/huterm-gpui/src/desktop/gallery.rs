@@ -10,22 +10,25 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, Entity, FocusHandle, Focusable as _,
-    IntoElement, Render, ScrollHandle, Window, WindowBounds, WindowOptions,
-    div, prelude::*, px, size,
+    IntoElement, Render, ScrollHandle, SharedString, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, size,
 };
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::badge::{Tone, badge};
+use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::menu::{
     MIN_WIDTH, Menu, MenuEvent, Role as MenuRole,
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::components::select::Select;
+use huterm_ui::components::switch::Switch;
+use huterm_ui::components::toggle_group::ToggleGroup;
 use huterm_ui::components::tooltip::Tooltip;
 use huterm_ui::components::{kbd, separator, surface};
 use huterm_ui::focus;
 use huterm_ui::list_scrollbar::ListScrollbar;
-use huterm_ui::listbox::{Button, Item, Model, Row};
+use huterm_ui::listbox::{Button as MenuButton, Item, Model, Row};
 use huterm_ui::tokens::size;
 
 use super::key_hint::KeyHint;
@@ -71,6 +74,24 @@ struct Column {
     select_focus: FocusHandle,
     select_popover: Popover,
     select_menu: Option<Entity<Menu>>,
+    controls: Controls,
+}
+
+/// The handles the column's focusable controls take focus through.
+struct Controls {
+    switches: [FocusHandle; 3],
+    segments: [FocusHandle; 2],
+    chips: [FocusHandle; 3],
+}
+
+impl Controls {
+    fn new(cx: &mut App) -> Self {
+        Self {
+            switches: std::array::from_fn(|_| cx.focus_handle()),
+            segments: std::array::from_fn(|_| cx.focus_handle()),
+            chips: std::array::from_fn(|_| cx.focus_handle()),
+        }
+    }
 }
 
 /// The select entry's options.
@@ -92,9 +113,9 @@ fn command_menu() -> Model {
         Row::Buttons {
             label: "Edit".to_owned(),
             buttons: vec![
-                Button::new("copy", "Copy")
+                MenuButton::new("copy", "Copy")
                     .disabled(Some("Nothing selected".to_owned())),
-                Button::new("paste", "Paste"),
+                MenuButton::new("paste", "Paste"),
             ],
         },
     ])
@@ -128,6 +149,7 @@ impl Gallery {
                 select_focus: cx.focus_handle(),
                 select_popover: Popover::new(),
                 select_menu: None,
+                controls: Controls::new(cx),
             }
         };
         Self {
@@ -187,6 +209,7 @@ impl Gallery {
             .text_size(px(12.5))
             .child(div().text_color(swatch.muted).child(column.name))
             .child(badges(index, swatch))
+            .child(buttons(index, swatch))
             .child(key_caps(swatch))
             .child(entry(
                 "scroll_area",
@@ -209,6 +232,8 @@ impl Gallery {
                     .p(px(12.0))
                     .child("A raised panel"),
             ))
+            .child(switches(index, swatch, &column.controls))
+            .child(toggle_groups(index, swatch, &column.controls))
             .child(tooltips(index, swatch, cx))
             .child(entry(
                 "menu",
@@ -431,6 +456,54 @@ fn badges(index: usize, swatch: Swatch) -> Div {
     )
 }
 
+fn buttons(index: usize, swatch: Swatch) -> Div {
+    let variants = [
+        ("Outline", Variant::Outline),
+        ("Secondary", Variant::Secondary),
+        ("Ghost", Variant::Ghost),
+        ("Primary", Variant::Primary),
+        ("Delete", Variant::Destructive),
+        ("Link", Variant::Link),
+    ];
+    let glyphs = KeyHint::parse("cmd-r", Platform::current()).glyphs();
+    entry(
+        "button",
+        "Button",
+        swatch,
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(row().children(variants.into_iter().map(
+                |(label, variant)| {
+                    let id = format!("button-{label}-{index}");
+                    Button::new(SharedString::from(id), label, swatch)
+                        .variant(variant)
+                },
+            )))
+            .child(
+                row()
+                    .child(
+                        Button::new(("button-reload", index), "Reload", swatch)
+                            .variant(Variant::Primary)
+                            .shortcut(glyphs.clone()),
+                    )
+                    .child(
+                        Button::new(("button-reset", index), "Reset", swatch)
+                            .shortcut(glyphs),
+                    )
+                    .child(
+                        Button::new(
+                            ("button-disabled", index),
+                            "Disabled",
+                            swatch,
+                        )
+                        .disabled(Some("Shown when unavailable".into())),
+                    ),
+            ),
+    )
+}
+
 fn key_caps(swatch: Swatch) -> Div {
     let glyphs = KeyHint::parse("cmd-shift-p", Platform::current()).glyphs();
     entry(
@@ -472,6 +545,78 @@ fn separators(swatch: Swatch) -> Div {
                     .child(separator::vertical(swatch))
                     .child("Right"),
             ),
+    )
+}
+
+fn switches(index: usize, swatch: Swatch, controls: &Controls) -> Div {
+    let [on, off, disabled] = &controls.switches;
+    entry(
+        "switch",
+        "Switch",
+        swatch,
+        row()
+            .child(Switch::new(("switch-on", index), "On", true, on, swatch))
+            .child(Switch::new(
+                ("switch-off", index),
+                "Off",
+                false,
+                off,
+                swatch,
+            ))
+            .child(
+                Switch::new(
+                    ("switch-disabled", index),
+                    "Disabled",
+                    true,
+                    disabled,
+                    swatch,
+                )
+                .disabled(None),
+            ),
+    )
+}
+
+fn toggle_groups(index: usize, swatch: Swatch, controls: &Controls) -> Div {
+    let [segments, disabled] = &controls.segments;
+    let chips = ["Cmd", "Alt", "Ctrl"].iter().zip(&controls.chips).fold(
+        ToggleGroup::multiple(("chips", index), "Modifiers", swatch),
+        |group, (label, focus)| {
+            group.toggle(*label, *label, *label != "Ctrl", focus)
+        },
+    );
+    entry(
+        "toggle_group",
+        "Toggle group",
+        swatch,
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(
+                row()
+                    .child(
+                        ToggleGroup::single(
+                            ("segments", index),
+                            "Position",
+                            segments,
+                            swatch,
+                        )
+                        .option("top", "Top", true)
+                        .option("bottom", "Bottom", false),
+                    )
+                    .child(
+                        ToggleGroup::single(
+                            ("segments-disabled", index),
+                            "Disabled",
+                            disabled,
+                            swatch,
+                        )
+                        .option("on", "On", false)
+                        .option("off", "Off", true)
+                        .disabled(None),
+                    ),
+            )
+            .child(chips),
     )
 }
 

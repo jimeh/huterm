@@ -4,6 +4,7 @@
 //! checks.
 
 pub mod badge;
+pub mod button;
 pub mod kbd;
 pub mod menu;
 pub mod popover;
@@ -11,4 +12,6 @@ pub mod scroll_area;
 pub mod select;
 pub mod separator;
 pub mod surface;
+pub mod switch;
+pub mod toggle_group;
 pub mod tooltip;

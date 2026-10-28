@@ -92,6 +92,19 @@ pub(crate) fn a11y_node(window: &Window, id: &str) -> Value {
         })
 }
 
+/// The node labelled `label`, for elements whose ids are child ids,
+/// panicking with the tree when no node carries that label.
+pub(crate) fn a11y_labelled(window: &Window, label: &str) -> Value {
+    let nodes = a11y_nodes(window);
+    nodes
+        .iter()
+        .find(|node| node["aria"]["label"].as_str() == Some(label))
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!("no accessibility node labelled `{label}` in {nodes:#?}")
+        })
+}
+
 /// Sends `action` to the node the element named `id` reported, as an
 /// assistive technology would, and lets the result settle.
 pub(crate) fn a11y_action(
@@ -99,8 +112,19 @@ pub(crate) fn a11y_action(
     id: &str,
     action: gpui::AccessibleAction,
 ) {
+    a11y_send(cx, |window| a11y_node(window, id), action);
+}
+
+/// Sends `action` to the node `find` returns from the last frame. GPUI
+/// performs a `Click` with no listener as a pointer press at the node's
+/// center.
+pub(crate) fn a11y_send(
+    cx: &mut VisualTestContext,
+    find: impl FnOnce(&Window) -> Value,
+    action: gpui::AccessibleAction,
+) {
     cx.update(|window, cx| {
-        let node = a11y_node(window, id);
+        let node = find(window);
         let target = node["accesskit_id"]
             .as_str()
             .and_then(|id| id.parse().ok())

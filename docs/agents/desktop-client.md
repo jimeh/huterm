@@ -579,6 +579,10 @@ is drawn yet. `huterm_ui::components::menu::Menu` and the terminal window's
 both when menu behavior changes. Component click listeners ignore
 `ClickEvent::Keyboard` through `huterm_ui::click::from_keyboard`, so a removed
 Enter or Space binding really removes the key.
+GPUI sends that implicit click only to the focused element: a test of the
+filter must focus the element that holds the listener, or it passes without it.
+A composite such as a single-choice `ToggleGroup` keeps focus on its container,
+so its items never receive the implicit click.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with
@@ -591,6 +595,10 @@ GPUI's `test-window-accessibility` patch activates accessibility in test
 windows: tests read `Window::debug_a11y_tree_json`, which spells element ids
 in their `Debug` form (`Name("id")`), and act through
 `Window::simulate_a11y_action`. A missing tree must fail a test, not skip it.
+GPUI performs an accessibility `Click` on a node with no action listener as a
+pointer press and release at the node's center, so it arrives as
+`ClickEvent::Mouse` and passes the keyboard filter; tests click child-id items
+that way through `testing::a11y_send`.
 
 ## Tab bar layout
 
