@@ -455,7 +455,8 @@ Focus listeners (`on_focus`, `on_blur`) run inside a draw, where a
 whose result must show, such as validating a field on blur, goes through
 `cx.defer_in`. Keys match only along the focus path of the drawn tree, so a
 focus left on a control that went away leaves every binding dead. The
-Settings window records each control it draws (`action_stop` marks it) and
+Settings window records each control it draws (`action_stop` marks it, and
+a pane layout's template field marks its path) and
 moves focus to the window when the focused control was not drawn, or when
 focus stays across a frame outside the view's tree. A pane layout or cycle
 row that went away hands focus to the same control of a neighbouring row
@@ -920,7 +921,16 @@ along the running and noted renames to the first name the file it read has,
 dropping the noted renames that read already shows. Another rename adds a
 `Batch` variant, as `RenameLayout` (`layouts.rs`) does for pane layouts;
 nothing outside the window follows a layout, so its `batch_started` records
-nothing. A user pane layout's template is an ordinary Settings text field
+nothing. A layout's deletion is a batch too (`DeleteLayout`): its
+`current_patches` refuses it, writing nothing, when an active keybinding or
+the cycle in the file as it is then names the layout, since one added
+elsewhere or pointed there by a rename queued ahead of it would otherwise
+name a missing layout; `Batch::fresh` applies it to that read. Every
+conflict and error must sit on a drawn row, since `request_close` refuses
+while any conflict exists and nothing else shows it: a rename clears the
+old name's, and `forget_gone_layouts` drops those of a layout a load or
+save shows gone, with its field's draft. A user pane layout's template is
+an ordinary Settings text field
 over a setting `layouts::template_setting` makes for its path, as a quake
 profile's fields are, so commits, Escape, conflicts, and a rename's
 baselines work unchanged. `commit_field` refuses a template that does not

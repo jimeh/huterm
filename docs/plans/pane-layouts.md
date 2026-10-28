@@ -801,7 +801,7 @@ components and the patterns the Quake profile editor uses
   name, with its template in an `Input` inside an `InputGroup`
   (`Chrome::Grouped`, in a `div` with the `Palette` context, as Settings'
   other text fields), and Rename and Delete buttons. A New layout button
-  ends the card.
+  ends the layout list.
 - **Template field.** It validates on every keystroke with
   `LayoutTemplate::parse`, and shows the parser's message under the field
   in `danger_text`, such as "expected `,` or `)` at column 18 of the
@@ -1412,16 +1412,36 @@ Recorded with PR 3b:
   the row's other button.
 - Delete counts only the keybindings that are not `disabled = true` as
   users of a layout, as the quake profile alert's keybinding note does.
+  It refuses from the file as the window last read it before asking, and
+  checks again when the deletion applies (`Batch::DeleteLayout`): a user
+  in the file as it is then, such as a binding added elsewhere or one a
+  rename queued ahead of it points at the layout, refuses it with the same
+  alert and writes nothing. The deletion applies to that read, so an edit
+  made elsewhere to the template does not conflict with it.
+- A rename's refusal says "Changes made meanwhile that name {to} were not
+  saved." when it drops a template or cycle edit made meanwhile.
 - A refused rename also drops a cycle change made meanwhile that names the
   new name, since written alone it would name a layout that does not exist.
 - Focus that a row leaves behind moves to the same control of the
   neighbouring row, the next one first, whenever the row goes, including
   when another editor removes the layout; a user layout's last row hands it
-  to New layout. While a dialog is opening, the window does not move focus
+  to New layout. A template field counts as drawn with its row, so focus
+  in it moves on the frame the row goes. While a dialog is opening, the
+  window does not move focus
   off a control that went away, since the dialog takes focus on its first
   frame.
 - New layout shows the 64-layout limit as soon as the dialog opens, before
   a name is typed.
+- No conflict or error is left without a row to show it, since the window
+  will not close while a conflict remains. A rename clears the old name's
+  as it is submitted, and a load or save that shows a user layout gone
+  drops its template's conflict, error, pending change, and draft. The
+  cycle's heading shows a failed save's error, or its conflict with Use
+  mine and Use file.
+- Reset does nothing in a template field: a template has no default, and
+  removing it would delete the layout without asking.
+- The parser's message under a template field is an accessibility label,
+  so assistive technology and tests read it.
 - The native Settings smoke types parentheses and `*`, so `macKeyEvents`
   in `scripts/macos-keys.ts` gained the shifted punctuation of a US layout.
 

@@ -6,8 +6,8 @@
 //! against, so a later write cannot silently overwrite an edit made
 //! elsewhere. It moves to a newer snapshot only when that snapshot still
 //! holds the value the edit expected at its path. Use mine and a profile's
-//! deletion read the file afresh instead: the user chose to replace or
-//! remove what is there.
+//! or a pane layout's deletion read the file afresh instead: the user chose
+//! to replace or remove what is there.
 //!
 //! A [`Batch`] is one save of several patches, such as a rename: the old
 //! key's removal, the new key, and the references rewritten. They go to
@@ -98,26 +98,55 @@ pub(super) enum Batch {
     /// Renames a pane layout, the keybindings that name it, and its place
     /// in the layout cycle.
     RenameLayout { from: String, to: String },
+    /// Deletes a pane layout, applied to the file as it is then, unless a
+    /// keybinding or the cycle there uses it.
+    DeleteLayout { name: String },
 }
 
 impl Batch {
     /// The patches built from `current`, the file as it is when the batch
-    /// applies: the entries a rename rewrites.
-    fn current_patches(&self, current: &Snapshot) -> Vec<Patch> {
+    /// applies: the entries a rename rewrites. `Err` says why `current`
+    /// refuses the batch, such as a keybinding naming a deleted layout.
+    fn current_patches(
+        &self,
+        current: &Snapshot,
+    ) -> Result<Vec<Patch>, String> {
         match self {
-            Self::RenameProfile { from, to } => rename_profile_references(
+            Self::RenameProfile { from, to } => Ok(rename_profile_references(
                 &current.entries(List::Keybinding),
                 &current.entries(List::GlobalKeybinding),
                 from,
                 to,
-            ),
-            Self::RenameLayout { from, to } => rename_layout_references(
+            )),
+            Self::RenameLayout { from, to } => Ok(rename_layout_references(
                 &current.entries(List::Keybinding),
                 from,
                 to,
-            ),
+            )),
+            Self::DeleteLayout { name } => {
+                match layouts::delete_refusal_in(current, name) {
+                    Some(refusal) => Err(refusal),
+                    None => Ok(Vec::new()),
+                }
+            }
         }
     }
+
+    /// Whether the batch applies to the file as it is rather than as the
+    /// window last saw it: the user confirmed deleting a layout as it is
+    /// now, so an edit to its template elsewhere does not conflict.
+    fn fresh(&self) -> bool {
+        matches!(self, Self::DeleteLayout { .. })
+    }
+}
+
+/// Why a batch did not save as asked.
+enum BatchError {
+    /// Applying it failed, or its write was not made durable.
+    Apply(ApplyError),
+    /// The file as it was when the batch applied refused it, for this
+    /// reason; nothing was written.
+    Refused(String),
 }
 
 /// The values a batch put in `pending` when it was submitted, which go
@@ -289,6 +318,7 @@ impl SettingsView {
                 }
                 self.base = Some(snapshot);
                 self.sync_fields(cx);
+                self.forget_gone_layouts(cx);
                 self.sync_key_fields(cx);
             }
             Err(error) => self.status.failed(error.to_string()),
@@ -674,6 +704,7 @@ impl SettingsView {
                     &change.edit,
                     change.row.as_deref(),
                 );
+                self.forget_gone_layouts(cx);
                 self.sync_key_fields(cx);
                 cx.defer(|cx| {
                     let _ = super::super::reload(cx);
@@ -747,6 +778,7 @@ impl SettingsView {
             Batch::RenameLayout { from, to } => {
                 self.layout_rename_outcome(from, to)
             }
+            Batch::DeleteLayout { name } => self.layout_delete_outcome(name),
         }
     }
 
@@ -770,6 +802,9 @@ impl SettingsView {
             Batch::RenameProfile { from, to } => self.rename_patches(from, to),
             Batch::RenameLayout { from, to } => {
                 self.layout_rename_patches(from, to)
+            }
+            Batch::DeleteLayout { name } => {
+                Ok(vec![patch_at(&layouts::template_path(name), None)])
             }
         };
         let patches = match built {
@@ -797,18 +832,23 @@ impl SettingsView {
             let mut patches = patches;
             let current = match file.load() {
                 Ok(current) => current,
-                Err(error) => return (patches, Err(error)),
+                Err(error) => return (patches, Err(BatchError::Apply(error))),
             };
-            patches.extend(rewrites.current_patches(&current));
-            let base = base.unwrap_or(current);
-            let written =
-                file.apply(&base, &patches, &validate).map(|snapshot| {
-                    Written {
-                        file: FileValues::parse(snapshot.text()),
-                        keys: listed(&snapshot, &config_path),
-                        snapshot,
-                    }
-                });
+            match rewrites.current_patches(&current) {
+                Ok(rewritten) => patches.extend(rewritten),
+                Err(refusal) => {
+                    return (patches, Err(BatchError::Refused(refusal)));
+                }
+            }
+            let base = base.filter(|_| !rewrites.fresh()).unwrap_or(current);
+            let written = file
+                .apply(&base, &patches, &validate)
+                .map(|snapshot| Written {
+                    file: FileValues::parse(snapshot.text()),
+                    keys: listed(&snapshot, &config_path),
+                    snapshot,
+                })
+                .map_err(BatchError::Apply);
             (patches, written)
         });
         cx.spawn(async move |view, cx| {
@@ -818,8 +858,11 @@ impl SettingsView {
                 let _ = gate.recv().await;
             }
             // Settled here, even if the window has closed meanwhile.
-            let landed =
-                matches!(result, Ok(_) | Err(ApplyError::WrittenNotDurable(_)));
+            let landed = matches!(
+                result,
+                Ok(_)
+                    | Err(BatchError::Apply(ApplyError::WrittenNotDurable(_)))
+            );
             cx.update(|cx| Self::batch_settled(started, landed, cx));
             let _ = view.update(cx, |view, cx| {
                 view.written_batch(&batch, &patches, result, cx);
@@ -832,7 +875,7 @@ impl SettingsView {
         &mut self,
         batch: &Batch,
         patches: &[Patch],
-        result: Result<Written, ApplyError>,
+        result: Result<Written, BatchError>,
         cx: &mut Context<'_, Self>,
     ) {
         self.writing = None;
@@ -853,13 +896,14 @@ impl SettingsView {
                 self.rebase_queued_keys(patches);
                 self.status.saved();
                 self.sync_fields(cx);
+                self.forget_gone_layouts(cx);
                 self.sync_key_fields(cx);
                 cx.defer(|cx| {
                     let _ = super::super::reload(cx);
                 });
                 false
             }
-            Err(ApplyError::WrittenNotDurable(error)) => {
+            Err(BatchError::Apply(ApplyError::WrittenNotDurable(error))) => {
                 // The write landed; queued edits move past it as after any
                 // other. With no snapshot of it, a queued change to a path
                 // it wrote reads the file afresh.
@@ -880,7 +924,7 @@ impl SettingsView {
                 });
                 true
             }
-            Err(ApplyError::InvalidFile(message)) => {
+            Err(BatchError::Apply(ApplyError::InvalidFile(message))) => {
                 self.status.invalid_file(message);
                 self.batch_refused(
                     batch,
@@ -892,7 +936,7 @@ impl SettingsView {
                 self.sync_fields(cx);
                 true
             }
-            Err(ApplyError::Conflict(changes)) => {
+            Err(BatchError::Apply(ApplyError::Conflict(changes))) => {
                 let message =
                     format!("config.toml changed: {}", changes.join("; "));
                 self.status.failed("config.toml changed on disk");
@@ -900,7 +944,14 @@ impl SettingsView {
                 self.load(cx);
                 true
             }
-            Err(error) => {
+            // The window's own read of what refused it may be stale.
+            Err(BatchError::Refused(message)) => {
+                self.status.failed(message.clone());
+                self.batch_refused(batch, message, cx);
+                self.load(cx);
+                true
+            }
+            Err(BatchError::Apply(error)) => {
                 let message = error.to_string();
                 self.status.failed(message.clone());
                 self.batch_refused(batch, message, cx);
@@ -915,7 +966,7 @@ impl SettingsView {
     /// settles here. A renamed profile's open Quake window takes the new
     /// name in the first reload that reads it, so no reload takes it for a
     /// removed profile's window and turns it into an ordinary one. Nothing
-    /// outside the window follows a renamed pane layout.
+    /// outside the window follows a renamed or deleted pane layout.
     fn batch_started(
         batch: &Batch,
         cx: &mut Context<'_, Self>,
@@ -926,7 +977,7 @@ impl SettingsView {
                     .windows
                     .quake_rename_started(from, to),
             ),
-            Batch::RenameLayout { .. } => None,
+            Batch::RenameLayout { .. } | Batch::DeleteLayout { .. } => None,
         }
     }
 
@@ -980,13 +1031,16 @@ impl SettingsView {
             Batch::RenameLayout { from, to } => {
                 let message = if self.drop_layout_edits(to, cx) {
                     format!(
-                        "{message} The changes made to {to} meanwhile were \
-                         not saved."
+                        "{message} Changes made meanwhile that name {to} \
+                         were not saved."
                     )
                 } else {
                     message
                 };
                 self.layout_rename_refused(from, message, cx);
+            }
+            Batch::DeleteLayout { name } => {
+                self.layout_delete_refused(name, message, cx);
             }
         }
     }
@@ -1183,6 +1237,7 @@ impl SettingsView {
                 ));
                 self.adopt_saved_field(key, change.typed.as_deref(), saved, cx);
                 self.sync_fields(cx);
+                self.forget_gone_layouts(cx);
                 reload(cx);
             }
             Err(ApplyError::Conflict(changes)) => {
@@ -1549,7 +1604,9 @@ impl SettingsView {
     }
 
     /// Whether Reset applies: the file sets the setting, and its row is not
-    /// an editor that later work adds. The theme resets its name only.
+    /// an editor that later work adds. The theme resets its name only. A
+    /// pane layout's template has no default: resetting it would delete
+    /// the layout without asking, so only Delete removes it.
     pub(super) fn resettable(&self, setting: &Setting) -> bool {
         match special(&setting.path) {
             Some(
@@ -1559,6 +1616,7 @@ impl SettingsView {
                 | Special::PaneLayouts
                 | Special::LayoutCycle,
             ) => false,
+            _ if layouts::is_template(&setting.path) => false,
             Some(Special::ThemePicker) => self.file.is_set("theme.name"),
             _ => self.file.is_set(&setting.path),
         }

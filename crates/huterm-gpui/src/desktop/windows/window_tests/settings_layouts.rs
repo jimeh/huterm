@@ -5,7 +5,7 @@ use huterm_config::settings::SectionId;
 
 use super::super::settings_window::SettingsView;
 use super::settings::{
-    ScratchConfig, settings, settled, with_view, with_window,
+    ScratchConfig, conflicted, settings, settled, with_view, with_window,
 };
 use super::settings_controls::{a11y_node, focus, keys, show, visual};
 use super::*;
@@ -14,6 +14,7 @@ use crate::keymap::Platform;
 
 const DEV: &str = "panes.layouts.dev";
 const WORK: &str = "panes.layouts.work";
+const CYCLE: &str = "panes.layout_cycle";
 
 /// Opens Settings on the Window and panes section.
 fn open_window_section(harness: &mut DesktopHarness, file: &ScratchConfig) {
@@ -176,17 +177,23 @@ fn a_template_saves_on_enter_or_blur_and_never_invalid(
     let file = ScratchConfig::new("layouts-template", PAIR);
     let mut harness = DesktopHarness::new(cx);
     open_window_section(&mut harness, &file);
+    // Focus events, such as the blur that saves, reach an active window.
+    with_window(&mut harness, |_, window, _| window.activate_window());
     // On its way to 55%, the template passes through 5%: typing writes
     // nothing, and the parser's message follows the text.
     with_window(&mut harness, |view, window, cx| {
+        view.focus_field(DEV, window, cx);
         view.type_into(DEV, "columns(pane, )", window, cx);
-        assert_eq!(
-            view.template_problem("dev", cx).as_deref(),
-            Some(
-                "expected `columns`, `rows`, `grid`, `pane`, or `*` at column \
-                 15 of the template"
-            )
-        );
+    });
+    visual(&harness).run_until_parked();
+    let message = a11y_node(&mut harness, "settings-ltemplate-message-dev");
+    assert_eq!(
+        message["aria"]["label"],
+        "expected `columns`, `rows`, `grid`, `pane`, or `*` at column 15 of \
+         the template",
+        "{message}"
+    );
+    with_window(&mut harness, |view, window, cx| {
         view.type_into(DEV, "columns(pane 5", window, cx);
         assert!(view.template_problem("dev", cx).is_some());
         view.type_into(DEV, "columns(pane 55%, rows(*))", window, cx);
@@ -202,22 +209,31 @@ fn a_template_saves_on_enter_or_blur_and_never_invalid(
         "[panes.layouts]\ndev = \"columns(pane 55%, rows(*))\" # mine\n"
     );
     // Leaving the field saves too.
+    let leave = |harness: &mut DesktopHarness| {
+        with_window(harness, |view, window, cx| {
+            view.action_handle("lren:dev").focus(window, cx);
+        });
+        visual(harness).run_until_parked();
+    };
     with_window(&mut harness, |view, window, cx| {
         view.type_into(DEV, "grid(*)", window, cx);
-        view.blur(DEV, cx);
     });
+    leave(&mut harness);
     saved(&mut harness, &file, |text| text.contains("grid"));
     // An invalid template stays a draft, with its message, and Enter or
-    // blur does not even try to save it.
+    // leaving the field does not even try to save it.
     let good = file.text();
     let before = with_view(&mut harness, |view, _| view.writes_finished());
     with_window(&mut harness, |view, window, cx| {
+        view.focus_field(DEV, window, cx);
         view.type_into(DEV, "rows(pane,)", window, cx);
         view.enter(DEV, cx);
-        view.blur(DEV, cx);
-        assert!(view.template_problem("dev", cx).is_some());
     });
     visual(&harness).run_until_parked();
+    leave(&mut harness);
+    with_view(&mut harness, |view, cx| {
+        assert!(view.template_problem("dev", cx).is_some());
+    });
     assert!(harness.cx.update(settled));
     assert_eq!(
         with_view(&mut harness, |view, _| view.writes_finished()),
@@ -419,7 +435,7 @@ fn a_refused_rename_drops_the_edits_made_under_the_new_name(
     let alert = a11y_node(&mut harness, "settings-rename-layout-refused");
     let why = alert["aria"]["description"].as_str().unwrap_or_default();
     assert!(
-        why.ends_with("The changes made to work meanwhile were not saved."),
+        why.ends_with("Changes made meanwhile that name work were not saved."),
         "{alert}"
     );
     // Leaving the field does not submit the dropped edit again.
@@ -500,6 +516,210 @@ fn deleting_a_layout_a_binding_or_the_cycle_uses_is_refused(
     assert_eq!(file.text(), USED);
 }
 
+/// A `[[keybinding]]` that runs `arrange_panes` with the layout `name`.
+fn binding(key: &str, name: &str) -> String {
+    format!(
+        "\n[[keybinding]]\nkey = \"{key}\"\ncommand = \"arrange_panes\"\n\
+         args = {{ layout = \"{name}\" }}\n"
+    )
+}
+
+#[gpui::test]
+fn a_delete_refuses_a_binding_added_since_settings_read_the_file(
+    cx: &mut TestAppContext,
+) {
+    let original = "[panes.layouts]\ndev = \"rows(*)\"\npair = \"grid(*)\"\n";
+    let file = ScratchConfig::new("layouts-delete-added", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    // Another editor binds the layout before Settings rereads, so the
+    // alert asks rather than refusing up front.
+    let theirs = format!("{original}{}", binding("alt-l", "dev"));
+    std::fs::write(file.path(), &theirs).unwrap();
+    with_window(&mut harness, |view, window, cx| {
+        view.press("ldel:dev", window, cx);
+        assert_eq!(view.dialog_name(), "delete-layout");
+        view.answer("ldelyes", window, cx);
+    });
+    dialog_shows(&mut harness, "delete-layout-refused");
+    assert_eq!(file.text(), theirs);
+    let alert = a11y_node(&mut harness, "settings-delete-layout");
+    let key = KeyHint::parse("alt-l", Platform::current()).text();
+    assert_eq!(
+        alert["aria"]["description"],
+        format!(
+            "The keybinding {key} uses this layout. Give the keybinding \
+             another layout, or remove it, first."
+        ),
+        "{alert}"
+    );
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.layout_names(), ["dev", "pair"]);
+    });
+}
+
+#[gpui::test]
+fn a_delete_behind_a_rename_to_its_name_is_refused(cx: &mut TestAppContext) {
+    let original = format!(
+        "[panes.layouts]\ndev = \"rows(*)\"\n{}",
+        binding("alt-l", "dev")
+    );
+    let file = ScratchConfig::new("layouts-delete-renamed", &original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    let release = with_view(&mut harness, |view, _| view.hold_batch());
+    rename(&mut harness, "dev", "work");
+    let renamed = original.replace("dev", "work");
+    harness.wait_for("the rename's write", |_| file.text() == renamed);
+    // The rename has not settled here, so the bindings Settings read still
+    // name dev, and the deletion waits behind it.
+    with_window(&mut harness, |view, window, cx| {
+        view.press("ldel:work", window, cx);
+        assert_eq!(view.dialog_name(), "delete-layout");
+        view.answer("ldelyes", window, cx);
+        assert_eq!(view.dialog_name(), "none");
+    });
+    drop(release);
+    dialog_shows(&mut harness, "delete-layout-refused");
+    assert_eq!(file.text(), renamed);
+    let alert = a11y_node(&mut harness, "settings-delete-layout");
+    let why = alert["aria"]["description"].as_str().unwrap_or_default();
+    assert!(why.starts_with("The keybinding "), "{alert}");
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.layout_names(), ["work"]);
+    });
+}
+
+#[gpui::test]
+fn a_rename_leaves_no_conflict_under_the_old_name(cx: &mut TestAppContext) {
+    let original = "[panes.layouts]\ndev = \"rows(*)\"\n";
+    let file = ScratchConfig::new("layouts-rename-conflicted", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    // A draft that another editor's change to the template conflicts with.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into(DEV, "grid(*)", window, cx);
+    });
+    let theirs = original.replace("rows", "columns");
+    std::fs::write(file.path(), &theirs).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the draft's conflict", |cx| {
+        settled(cx) && conflicted(cx, DEV)
+    });
+    // Closing while the rename saves waits for it, then closes: the old
+    // name has no row left to settle a conflict on.
+    let release = with_view(&mut harness, |view, _| view.hold_batch());
+    with_window(&mut harness, |view, window, cx| {
+        renaming(view, "dev", "work", window, cx);
+        view.command(ids::CLOSE_PANE, window, cx).unwrap();
+    });
+    drop(release);
+    harness.wait_for("Settings to close after the rename", |cx| {
+        settings(cx).is_none()
+    });
+    assert_eq!(file.text(), theirs.replace("dev", "work"));
+}
+
+#[gpui::test]
+fn a_draft_in_a_layout_deleted_elsewhere_leaves_nothing_to_settle(
+    cx: &mut TestAppContext,
+) {
+    let original = "[panes.layouts]\ndev = \"rows(*)\"\npair = \"grid(*)\"\n";
+    let file = ScratchConfig::new("layouts-draft-deleted", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        view.type_into(DEV, "columns(*)", window, cx);
+    });
+    let theirs = "[panes.layouts]\npair = \"grid(*)\"\n";
+    std::fs::write(file.path(), theirs).unwrap();
+    with_view(&mut harness, SettingsView::follow_reload);
+    harness.wait_for("the reload", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.layout_names() == ["pair"])
+                    .unwrap_or(false)
+            })
+    });
+    with_view(&mut harness, |view, cx| {
+        assert!(!view.conflicted(DEV));
+        assert_eq!(view.error(DEV), None);
+        assert_eq!(view.field_value(DEV, cx), "");
+    });
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::CLOSE_PANE, window, cx).unwrap();
+    });
+    harness.wait_for("Settings to close", |cx| settings(cx).is_none());
+    assert_eq!(file.text(), theirs);
+}
+
+#[gpui::test]
+fn focus_in_a_template_moves_to_a_neighbour_when_its_layout_goes(
+    cx: &mut TestAppContext,
+) {
+    let original = "[panes.layouts]\nalpha = \"rows(*)\"\ndev = \"grid(*)\"\n\
+                    pair = \"columns(*)\"\n";
+    let file = ScratchConfig::new("layouts-focus-gone", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field(DEV, window, cx);
+    });
+    visual(&harness).run_until_parked();
+    // Another editor deletes the layout whose template has focus.
+    let deleted = |harness: &mut DesktopHarness, text: &str, left: &[&str]| {
+        std::fs::write(file.path(), text).unwrap();
+        with_view(harness, SettingsView::follow_reload);
+        harness.wait_for("the reload", |cx| {
+            settled(cx)
+                && settings(cx).is_some_and(|handle| {
+                    handle
+                        .read_with(cx, |view, _| view.layout_names() == left)
+                        .unwrap_or(false)
+                })
+        });
+        visual(harness).run_until_parked();
+    };
+    // The next row's template takes it, else the previous row's, else New
+    // layout.
+    deleted(
+        &mut harness,
+        "[panes.layouts]\nalpha = \"rows(*)\"\npair = \"columns(*)\"\n",
+        &["alpha", "pair"],
+    );
+    assert_eq!(focus(&mut harness), "panes.layouts.pair");
+    deleted(
+        &mut harness,
+        "[panes.layouts]\nalpha = \"rows(*)\"\n",
+        &["alpha"],
+    );
+    assert_eq!(focus(&mut harness), "panes.layouts.alpha");
+    deleted(&mut harness, "", &[]);
+    assert_eq!(focus(&mut harness), "action:lnew");
+}
+
+#[gpui::test]
+fn reset_in_a_template_field_writes_nothing(cx: &mut TestAppContext) {
+    let original = "[panes.layouts]\ndev = \"grid(*)\"\n";
+    let file = ScratchConfig::new("layouts-reset", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    let before = with_view(&mut harness, |view, _| view.writes_finished());
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field(DEV, window, cx);
+        view.command(ids::SETTINGS_RESET, window, cx).unwrap();
+    });
+    visual(&harness).run_until_parked();
+    assert!(harness.cx.update(settled));
+    assert_eq!(file.text(), original);
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.writes_finished(), before);
+        assert_eq!(view.layout_names(), ["dev"]);
+        assert_eq!(view.field_value(DEV, cx), "grid(*)");
+    });
+}
+
 #[gpui::test]
 fn cycle_rows_turn_on_off_and_move_and_keep_one_layout(
     cx: &mut TestAppContext,
@@ -552,6 +772,56 @@ fn cycle_rows_turn_on_off_and_move_and_keep_one_layout(
     assert_eq!(focus(&mut harness), "action:lcyc:dev");
     assert!(harness.cx.update(settled));
     assert_eq!(cycle(&file.text()), "[\"dev\"]");
+}
+
+#[gpui::test]
+fn a_cycle_conflict_offers_use_mine_and_use_file(cx: &mut TestAppContext) {
+    let original = "[panes]\nlayout_cycle = [\"columns\", \"rows\"]\n";
+    let file = ScratchConfig::new("layouts-cycle-conflict", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    let theirs = "[panes]\nlayout_cycle = [\"rows\", \"columns\"]\n";
+    // Another editor reorders the cycle before a change made here saves.
+    let conflict = |harness: &mut DesktopHarness, row: &str| {
+        std::fs::write(file.path(), theirs).unwrap();
+        press(harness, &format!("lcyc:{row}"));
+        harness.wait_for("the conflict", |cx| {
+            settled(cx) && conflicted(cx, CYCLE)
+        });
+        visual(harness).run_until_parked();
+        let alert = a11y_node(harness, "settings-conflict-panes.layout_cycle");
+        assert!(
+            alert["aria"]["label"]
+                .as_str()
+                .is_some_and(|label| label.starts_with("config.toml changed")),
+            "{alert}"
+        );
+        for (id, label) in [
+            ("settings-mine-panes.layout_cycle", "Use mine"),
+            ("settings-file-panes.layout_cycle", "Use file"),
+        ] {
+            let button = a11y_node(harness, id);
+            assert_eq!(button["aria"]["label"], label, "{button}");
+        }
+    };
+    // Use mine saves the change over the file's.
+    conflict(&mut harness, "tiled");
+    press(&mut harness, "mine:panes.layout_cycle");
+    saved(&mut harness, &file, |text| text.contains("tiled"));
+    assert_eq!(
+        file.text(),
+        "[panes]\nlayout_cycle = [\"columns\", \"rows\", \"tiled\"]\n"
+    );
+    assert!(!harness.cx.update(|cx| conflicted(cx, CYCLE)));
+    // Use file keeps the file's.
+    conflict(&mut harness, "main_left");
+    press(&mut harness, "file:panes.layout_cycle");
+    assert!(!harness.cx.update(|cx| conflicted(cx, CYCLE)));
+    assert!(harness.cx.update(settled));
+    assert_eq!(file.text(), theirs);
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.cycle_names(), ["rows", "columns"]);
+    });
 }
 
 #[gpui::test]

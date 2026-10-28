@@ -15,7 +15,7 @@ use gpui::{
     InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
     Window, div, prelude::*, px, svg,
 };
-use huterm_config::document::EntryLocator;
+use huterm_config::document::{EntryLocator, List, Snapshot};
 use huterm_config::settings::{Setting, SettingKind, SettingsModel};
 use huterm_config::{MAX_LAYOUTS, PanesConfig, parse_layout_template};
 use huterm_protocol::{BUILT_IN_LAYOUTS, MAX_LAYOUT_NAME_LEN, NamedLayout};
@@ -29,12 +29,12 @@ use huterm_ui::components::item::Item;
 use huterm_ui::components::switch::Switch;
 use huterm_ui::components::toggle_group::roving_target;
 use huterm_ui::roving;
-use toml::Value;
+use toml::{Table, Value};
 
 use super::super::super::key_hint::KeyHint;
 use super::super::super::overlay::Swatch;
 use super::super::super::settings::keybindings::names_layout;
-use super::super::super::settings::values;
+use super::super::super::settings::values::{self, FileValues};
 use super::SettingsView;
 use super::dialog::Prompt;
 use super::keybindings::small;
@@ -97,7 +97,7 @@ struct NameProblem {
 }
 
 /// The dotted path of the user layout named `name`'s template.
-fn template_path(name: &str) -> String {
+pub(super) fn template_path(name: &str) -> String {
     format!("{PREFIX}{name}")
 }
 
@@ -160,6 +160,81 @@ fn id(name: String) -> ElementId {
 /// A cycle as the file writes it.
 fn cycle_value(cycle: &[String]) -> Value {
     Value::Array(cycle.iter().cloned().map(Value::String).collect())
+}
+
+/// Why `current`, the file as it is when a deletion of `layout` applies,
+/// keeps it: an active keybinding or the cycle there uses it.
+pub(super) fn delete_refusal_in(
+    current: &Snapshot,
+    layout: &str,
+) -> Option<String> {
+    let entries = current.entries(List::Keybinding);
+    let in_cycle = FileValues::parse(current.text())
+        .ok()
+        .and_then(|file| file.get(CYCLE).cloned())
+        .and_then(|cycle| match cycle {
+            Value::Array(names) => {
+                Some(names.iter().any(|name| name.as_str() == Some(layout)))
+            }
+            _ => None,
+        })
+        .unwrap_or(false);
+    delete_refusal(entries.iter().map(EntryLocator::content), in_cycle, layout)
+}
+
+/// Why `layout` cannot be deleted, naming each of `entries` that runs it
+/// and is not `disabled`, and the cycle when it holds it, if it cannot.
+fn delete_refusal<'a>(
+    entries: impl Iterator<Item = &'a Table>,
+    in_cycle: bool,
+    layout: &str,
+) -> Option<String> {
+    let keys: Vec<String> = entries
+        .filter(|entry| {
+            names_layout(entry, layout)
+                && entry.get("disabled").and_then(Value::as_bool) != Some(true)
+        })
+        .map(|entry| {
+            let key = entry.get("key").and_then(Value::as_str);
+            KeyHint::parse(key.unwrap_or_default(), Platform::current()).text()
+        })
+        .collect();
+    let mut users = Vec::new();
+    match keys.as_slice() {
+        [] => {}
+        [key] => users.push(format!("The keybinding {key}")),
+        keys => users.push(format!("The keybindings {}", keys.join(", "))),
+    }
+    if in_cycle {
+        users.push(if users.is_empty() {
+            "The layout cycle".to_owned()
+        } else {
+            "the layout cycle".to_owned()
+        });
+    }
+    let verb = match (keys.len(), in_cycle) {
+        (0, false) => return None,
+        (0, true) | (1, false) => "uses",
+        _ => "use",
+    };
+    let fix = match (keys.len(), in_cycle) {
+        (0, _) => "Remove it from the cycle first.",
+        (1, false) => {
+            "Give the keybinding another layout, or remove it, first."
+        }
+        (_, false) => {
+            "Give the keybindings another layout, or remove them, first."
+        }
+        (1, true) => {
+            "Remove it from the cycle, and give the keybinding another \
+             layout, first."
+        }
+        (_, true) => {
+            "Remove it from the cycle, and give the keybindings another \
+             layout, first."
+        }
+    };
+    Some(format!("{} {verb} this layout. {fix}", users.join(" and ")))
 }
 
 impl SettingsView {
@@ -442,6 +517,7 @@ impl SettingsView {
         let Some(to) = self.checked_layout_name(Some(&from), cx) else {
             return;
         };
+        let path = template_path(&from);
         if !self.submit_batch(
             Batch::RenameLayout {
                 from,
@@ -451,6 +527,10 @@ impl SettingsView {
         ) {
             return;
         }
+        // The old name's row has gone, and its template moves to the new
+        // one, so nothing is left to settle there.
+        self.errors.remove(path.as_str());
+        self.conflicts.remove(path.as_str());
         self.layouts.name_error = None;
         self.close_dialog(window, cx);
         self.action_stop(format!("lren:{to}"), cx).focus(window, cx);
@@ -558,94 +638,74 @@ impl SettingsView {
         went
     }
 
-    /// Shows why a rename of `from` wrote nothing, in an alert over the
-    /// card. While another dialog is open the footer says why instead,
-    /// unless the file's error already fills it.
+    /// Shows why a rename of `from` wrote nothing; see `layout_refused`.
     pub(super) fn layout_rename_refused(
         &mut self,
         from: &str,
         message: String,
         cx: &mut Context<'_, Self>,
     ) {
+        let prompt = Prompt::LayoutRenameRefused {
+            layout: from.to_owned(),
+            message: message.clone(),
+        };
+        self.layout_refused(format!("lren:{from}"), prompt, message, cx);
+    }
+
+    /// Shows why a deletion of `layout` wrote nothing; see
+    /// `layout_refused`.
+    pub(super) fn layout_delete_refused(
+        &mut self,
+        layout: &str,
+        message: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let prompt = Prompt::LayoutDeleteRefused {
+            layout: layout.to_owned(),
+            message: message.clone(),
+        };
+        self.layout_refused(format!("ldel:{layout}"), prompt, message, cx);
+    }
+
+    /// Shows why a write to a layout wrote nothing, in `prompt`'s alert over
+    /// the card, which gives focus back to the control `key`. While another
+    /// dialog is open the footer says why instead, unless the file's error
+    /// already fills it.
+    fn layout_refused(
+        &mut self,
+        key: String,
+        prompt: Prompt,
+        message: String,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.dialog.prompt().is_none() {
-            let rename = self.action_stop(format!("lren:{from}"), cx);
-            self.open_dialog(
-                Prompt::LayoutRenameRefused {
-                    layout: from.to_owned(),
-                    message,
-                },
-                &rename,
-            );
+            let control = self.action_stop(key, cx);
+            self.open_dialog(prompt, &control);
         } else if !self.status.invalid() {
             self.status.failed(message);
         }
         cx.notify();
     }
 
-    /// Why `layout` cannot be deleted now, naming each keybinding that runs
-    /// it and the cycle when it holds it, if it cannot.
+    /// Why `layout` cannot be deleted now, as the window last read the
+    /// file, if it cannot. The deletion checks again when it applies
+    /// (`delete_refusal_in`).
     fn layout_delete_refusal(&self, layout: &str) -> Option<String> {
         if self.locked() {
             return Some("config.toml has an error. Not saved.".to_owned());
         }
-        let keys: Vec<String> = self
-            .keys
-            .entries
-            .iter()
-            .map(EntryLocator::content)
-            .filter(|entry| {
-                names_layout(entry, layout)
-                    && entry.get("disabled").and_then(Value::as_bool)
-                        != Some(true)
-            })
-            .map(|entry| {
-                let key = entry.get("key").and_then(Value::as_str);
-                KeyHint::parse(key.unwrap_or_default(), Platform::current())
-                    .text()
-            })
-            .collect();
-        let cycle = self.cycle().iter().any(|name| name == layout);
-        let mut users = Vec::new();
-        match keys.as_slice() {
-            [] => {}
-            [key] => users.push(format!("The keybinding {key}")),
-            keys => users.push(format!("The keybindings {}", keys.join(", "))),
-        }
-        if cycle {
-            users.push(if users.is_empty() {
-                "The layout cycle".to_owned()
-            } else {
-                "the layout cycle".to_owned()
-            });
-        }
-        let verb = match (keys.len(), cycle) {
-            (0, false) => return None,
-            (0, true) | (1, false) => "uses",
-            _ => "use",
-        };
-        let fix = match (keys.len(), cycle) {
-            (0, _) => "Remove it from the cycle first.",
-            (1, false) => {
-                "Give the keybinding another layout, or remove it, first."
-            }
-            (_, false) => {
-                "Give the keybindings another layout, or remove them, first."
-            }
-            (1, true) => {
-                "Remove it from the cycle, and give the keybinding another \
-                 layout, first."
-            }
-            (_, true) => {
-                "Remove it from the cycle, and give the keybindings another \
-                 layout, first."
-            }
-        };
-        Some(format!("{} {verb} this layout. {fix}", users.join(" and ")))
+        delete_refusal(
+            self.keys.entries.iter().map(EntryLocator::content),
+            self.cycle().iter().any(|name| name == layout),
+            layout,
+        )
     }
 
     /// Deletes the layout the open alert asks about, or shows why it
     /// cannot in the alert's place. Focus moves to a neighbouring row once
-    /// the row has gone.
+    /// the row has gone. The deletion reads the file afresh when it
+    /// applies, and writes nothing if a keybinding or the cycle there uses
+    /// the layout, such as one added elsewhere or renamed to it meanwhile.
     fn delete_layout(
         &mut self,
         window: &mut Window,
@@ -664,20 +724,48 @@ impl SettingsView {
             return;
         }
         self.close_dialog(window, cx);
-        let setting = self
-            .user_layouts()
-            .contains(&layout)
-            .then(|| template_setting(self.model, &template_path(&layout)))
-            .flatten();
-        if let Some(setting) = setting {
-            let path = setting.path.as_str();
-            self.errors.remove(path);
+        if self.user_layouts().contains(&layout) {
+            let path = template_path(&layout);
+            self.errors.remove(path.as_str());
+            self.conflicts.remove(path.as_str());
+            self.submit_batch(Batch::DeleteLayout { name: layout }, cx);
+        }
+    }
+
+    /// What a deletion shows until it lands: the layout gone.
+    pub(super) fn layout_delete_outcome(&self, name: &str) -> Outcome {
+        template_setting(self.model, &template_path(name))
+            .map(|setting| vec![(setting.path.as_str(), None)])
+            .unwrap_or_default()
+    }
+
+    /// Forgets what is left of the user layouts the file no longer has,
+    /// such as one another editor deleted: a conflict, an error, or a
+    /// pending change at a template's path, and the draft in its field,
+    /// which shows the file's empty value again so leaving it writes
+    /// nothing. With the row gone nothing would show them, and a conflict
+    /// would keep the window from closing. It waits while writes are in
+    /// flight or queued, since one may still create the layout.
+    pub(super) fn forget_gone_layouts(&mut self, cx: &mut Context<'_, Self>) {
+        if self.busy() {
+            return;
+        }
+        let mut gone: Vec<&'static str> = self
+            .fields
+            .keys()
+            .chain(self.conflicts.keys())
+            .chain(self.errors.keys())
+            .chain(self.pending.keys())
+            .copied()
+            .filter(|path| is_template(path) && self.file.get(path).is_none())
+            .collect();
+        gone.sort_unstable();
+        gone.dedup();
+        for path in gone {
             self.conflicts.remove(path);
-            // The user confirmed deleting the layout as it is now, so the
-            // write reads the file afresh rather than conflicting with an
-            // edit to its template.
-            self.fresh = Some(path);
-            self.submit(setting, values::patch(setting, None), None, None, cx);
+            self.errors.remove(path);
+            self.pending.remove(path);
+            self.sync_field(path, true, cx);
         }
     }
 
@@ -911,6 +999,8 @@ impl SettingsView {
         };
         let path = setting.path.as_str();
         let field = self.field(setting, window, cx);
+        // Drawn, so focus left in it when the row goes moves on that frame.
+        self.drawn.insert(path.to_owned());
         let message = self.template_message(path, cx);
         field.update(cx, |field, cx| {
             field.set_disabled(reason.is_some(), reason.cloned(), cx);
@@ -963,9 +1053,12 @@ impl SettingsView {
                     .child(rename)
                     .child(delete),
             )
-            .children(
-                message.map(|message| small(message, swatch.danger_text())),
-            );
+            .children(message.map(|message| {
+                small(message.clone(), swatch.danger_text())
+                    .id(id(format!("settings-ltemplate-message-{name}")))
+                    .role(gpui::Role::Label)
+                    .aria_label(message)
+            }));
         let conflict = self.render_conflict(setting, swatch, cx);
         div()
             .relative()
@@ -986,9 +1079,10 @@ impl SettingsView {
             .into_any_element()
     }
 
-    /// The layout cycle's rows: a heading, then a row for every layout with
-    /// a switch that turns it on in the cycle and buttons that move it
-    /// among the layouts turned on. The switches' `SettingsGroup` context,
+    /// The layout cycle's rows: a heading, with a failed save's error or
+    /// conflict, then a row for every layout with a switch that turns it on
+    /// in the cycle and buttons that move it among the layouts turned on.
+    /// The switches' `SettingsGroup` context,
     /// nested inside each row's `SettingsControl` one, binds the arrows to
     /// `settings_next` and `settings_previous`, which move between them.
     pub(super) fn render_layout_cycle(
@@ -1001,17 +1095,31 @@ impl SettingsView {
         let cycle = self.cycle();
         let names = self.cycle_rows();
         self.layouts.cycle.draw(names.clone());
+        let conflict = self.render_conflict(setting, swatch, cx);
+        // A conflict's alert says what the error would, and more.
+        let error = self
+            .errors
+            .get(setting.path.as_str())
+            .filter(|_| conflict.is_none())
+            .cloned()
+            .map(SharedString::from);
+        let heading = Field::new(
+            id(format!("settings-row-{}", setting.path)),
+            setting.label.clone(),
+            swatch,
+        )
+        .description(
+            "Next Pane Layout and Previous Pane Layout step through the \
+             layouts turned on here, in this order.",
+        )
+        .error(error);
         let mut rows = vec![
-            Field::new(
-                id(format!("settings-row-{}", setting.path)),
-                setting.label.clone(),
-                swatch,
-            )
-            .description(
-                "Next Pane Layout and Previous Pane Layout step through the \
-                 layouts turned on here, in this order.",
-            )
-            .into_any_element(),
+            div()
+                .flex()
+                .flex_col()
+                .child(heading)
+                .children(conflict)
+                .into_any_element(),
         ];
         for name in names {
             let member = cycle.iter().position(|member| *member == name);

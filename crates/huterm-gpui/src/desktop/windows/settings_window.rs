@@ -285,8 +285,9 @@ pub(super) struct SettingsView {
     layouts: layouts::Layouts,
     /// The open dialog, if any.
     dialog: dialog::SettingsDialog,
-    /// The action and keybinding field keys the last frame drew, so focus
-    /// left on a control that went away can move on.
+    /// The action keys, keybinding field keys, and pane layout template
+    /// paths the last frame drew, so focus left on a control that went away
+    /// can move on.
     drawn: HashSet<String>,
     /// What had focus at the last render, to tell a control that left the
     /// tree from one that just took focus and has yet to draw.
@@ -2036,6 +2037,12 @@ impl Render for SettingsView {
         let stranded = self
             .focused_action(window)
             .or_else(|| self.focused_key_field(window, cx).map(|(key, _)| key))
+            .or_else(|| {
+                self.focused_field(window, cx)
+                    .map(|setting| setting.path.as_str())
+                    .filter(|path| layouts::is_template(path))
+                    .map(str::to_owned)
+            })
             .is_some_and(|key| !self.drawn.contains(&key))
             || std::mem::take(&mut self.keys.stranded)
             || orphaned;
