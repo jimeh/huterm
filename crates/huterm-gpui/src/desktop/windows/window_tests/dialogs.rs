@@ -344,8 +344,8 @@ fn editing_keys_on_a_licenses_button_move_to_the_search(
     assert_eq!(license_matches(&mut harness, window), 1);
     harness.press(window, "tab");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
-    // No binding claims Space on a button, so it types into the search, as
-    // it would with the search focused.
+    // No binding claims Space on a Licenses button, so it types into the
+    // search, as it would with the search focused.
     harness.press(window, "space");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
     assert_eq!(search_text(&mut harness, window), "alpha ");

@@ -697,12 +697,18 @@ fn a_default_replacing_another_default_is_reported_rather_than_panicking() {
             r#"default keybinding ("space"): replaces an earlier default with the same key and when"#
         ]
     );
-    let active: Vec<_> = items
+    // Neither default is credited to a user entry that does not exist.
+    let states: Vec<_> = items
         .iter()
-        .filter(|item| item.state == BindingState::Active)
-        .map(|item| item.resolved.effective.command)
+        .map(|item| (item.resolved.effective.command, item.state.clone()))
         .collect();
-    assert_eq!(active, [ids::DIALOG_CANCEL]);
+    assert_eq!(
+        states,
+        [
+            (ids::DIALOG_CONFIRM, BindingState::Active),
+            (ids::DIALOG_CANCEL, BindingState::Active),
+        ]
+    );
 }
 
 #[test]

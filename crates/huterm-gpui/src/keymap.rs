@@ -535,16 +535,21 @@ fn resolve_entries(
                 && item.resolved.predicate == resolved.predicate
         }) {
             // Defaults come before every user entry, so a default that
-            // replaces another is a catalog mistake with no user index to
-            // name: report it rather than underflow.
-            earlier.state = BindingState::Replaced(position.saturating_sub(1));
+            // replaces another is a catalog mistake with no user entry to
+            // name: report it, and leave the earlier default as it was
+            // rather than credit the clash to a user entry.
             if entry.origin == Origin::Default {
                 conflicts.push(format!(
                     "default keybinding ({:?}): replaces an earlier default \
                      with the same key and when",
                     entry.key
                 ));
-            } else if earlier.resolved.effective.origin == Origin::User {
+            } else {
+                earlier.state = BindingState::Replaced(position - 1);
+            }
+            if entry.origin == Origin::User
+                && earlier.resolved.effective.origin == Origin::User
+            {
                 conflicts.push(keybinding_diagnostic(
                     position,
                     &entry.key,
