@@ -15,14 +15,16 @@
 //!
 //! Pointer: a click selects an item (single) or toggles it (multiple). A
 //! disabled group takes no focus from a press, does not act, and shows its
-//! reason as a tooltip.
+//! reason as a tooltip. An item's own description, such as why it refuses
+//! to change, shows as its tooltip.
 //!
 //! Accessibility, single: a `RadioGroup` of `RadioButton`s whose toggled
 //! state marks the selection, with their position in the set; while the
 //! group has focus, the selected radio is its active descendant, which
 //! assistive technology follows. Multiple: a `Group` of `Button`s whose
 //! toggled state follows each item. Each item reports a disabled group's
-//! disabled state, since AccessKit states are per node.
+//! disabled state, since AccessKit states are per node, and its own
+//! description as its accessible description.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -55,6 +57,7 @@ struct Item {
     on: bool,
     /// The item's own handle in a multiple group.
     focus: Option<FocusHandle>,
+    description: Option<SharedString>,
 }
 
 type Select = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
@@ -151,6 +154,7 @@ impl ToggleGroup {
             label: label.into(),
             on,
             focus: None,
+            description: None,
         });
         self
     }
@@ -175,7 +179,20 @@ impl ToggleGroup {
             label: label.into(),
             on,
             focus: Some(focus.clone()),
+            description: None,
         });
+        self
+    }
+
+    /// Describes the item added last, as its tooltip and accessible
+    /// description: why it refuses to change, for example.
+    #[must_use]
+    pub fn description(mut self, text: impl Into<SharedString>) -> Self {
+        let item = self.items.last_mut();
+        debug_assert!(item.is_some(), "`description` follows an item");
+        if let Some(item) = item {
+            item.description = Some(text.into());
+        }
         self
     }
 
@@ -273,6 +290,11 @@ fn render_item(
             gpui::Role::Button
         })
         .aria_label(item.label.clone())
+        .when_some(item.description.clone(), |element, text| {
+            element
+                .aria_description(text.clone())
+                .tooltip(move |_, cx| Tooltip::view(text.clone(), tokens, cx))
+        })
         .aria_toggled(if item.on {
             Toggled::True
         } else {
@@ -550,7 +572,8 @@ mod tests {
         picks: Rc<RefCell<Vec<SharedString>>>,
     }
 
-    /// A multiple group of three chips with Alt on, then a focusable button.
+    /// A multiple group of three chips with Alt on and described, then a
+    /// focusable button.
     fn multiple(
         cx: &mut TestAppContext,
         disabled: bool,
@@ -568,7 +591,13 @@ mod tests {
                 .fold(
                     ToggleGroup::multiple("mods", "Link modifiers", tokens()),
                     |group, (label, focus)| {
-                        group.toggle(*label, *label, *label == "Alt", focus)
+                        let on = *label == "Alt";
+                        let group = group.toggle(*label, *label, on, focus);
+                        if on {
+                            group.description("Keep at least one")
+                        } else {
+                            group
+                        }
                     },
                 )
                 .on_select(move |value, _, _| seen.borrow_mut().push(value));
@@ -604,6 +633,7 @@ mod tests {
             let alt = &a11y_labelled(window, "Alt")["aria"];
             assert_eq!(alt["role"], "Button");
             assert_eq!(alt["toggled"], "True");
+            assert_eq!(alt["description"], "Keep at least one");
             assert_eq!(
                 a11y_labelled(window, "Cmd")["aria"]["toggled"],
                 "False"

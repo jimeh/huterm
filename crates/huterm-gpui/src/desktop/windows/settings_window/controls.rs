@@ -14,8 +14,8 @@ use toml::Value;
 use super::super::super::overlay::Swatch;
 use super::super::super::settings::{Special, special};
 use super::{
-    SEGMENTED_MAX, SettingsView, modifier_label, offered_modifiers,
-    option_label,
+    SEGMENTED_MAX, SettingsView, TRI_STATES, modifier_label, offered_modifiers,
+    option_label, toggled_modifiers,
 };
 use crate::config::Theme;
 use crate::renderer::rgb_color as color;
@@ -152,13 +152,11 @@ impl SettingsView {
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        const STATES: [(&str, Option<bool>); 3] =
-            [("Default", None), ("On", Some(true)), ("Off", Some(false))];
         let path = setting.path.as_str();
         let current = self.value(setting).and_then(|value| value.as_bool());
         let handle = self.stop(path, cx);
         let focus = handle.clone();
-        STATES
+        TRI_STATES
             .iter()
             .fold(
                 ToggleGroup::single(
@@ -177,7 +175,7 @@ impl SettingsView {
                 cx,
                 move |view, picked: SharedString, window, cx| {
                     focus.focus(window, cx);
-                    let Some((_, state)) = STATES
+                    let Some((_, state)) = TRI_STATES
                         .iter()
                         .find(|(label, _)| *label == picked.as_ref())
                     else {
@@ -451,7 +449,8 @@ impl SettingsView {
 
     /// The link modifiers as a multiple toggle group: one roving tab stop,
     /// whose arrows `SettingsView::run` routes between the chips. The chip
-    /// that would leave no modifier refuses, as a link needs one.
+    /// that would leave no modifier refuses, as a link needs one, and says
+    /// so; it stays focusable, as the roving stop may rest on it.
     fn render_modifiers(
         &mut self,
         setting: &'static Setting,
@@ -477,6 +476,13 @@ impl SettingsView {
                 self.action_stop(format!("chip:{path}:{modifier}"), cx);
             group =
                 group.toggle(*modifier, modifier_label(modifier), on, &handle);
+            // A read-only group's own reason speaks for every chip.
+            let refuses =
+                toggled_modifiers(Some(Value::String(held.clone())), modifier)
+                    .is_none();
+            if refuses && read_only.is_none() {
+                group = group.description("Keep at least one modifier");
+            }
         }
         group
             .when_some(read_only, |group, reason| group.disabled(Some(reason)))

@@ -758,7 +758,7 @@ impl SettingsView {
                             swatch,
                             cx,
                         )
-                        .when_some(reason, |button, reason| {
+                        .when_some(reason.clone(), |button, reason| {
                             button.disabled(Some(reason))
                         });
                     bar.child(new)
@@ -766,13 +766,17 @@ impl SettingsView {
         );
         if let Some(field) = self.quake.naming.clone() {
             self.drawn.insert("qname".to_owned());
-            let create = self.action_button(
-                "settings-qcreate".to_owned(),
-                "Create",
-                "qcreate".to_owned(),
-                swatch,
-                cx,
-            );
+            let create = self
+                .action_button(
+                    "settings-qcreate".to_owned(),
+                    "Create",
+                    "qcreate".to_owned(),
+                    swatch,
+                    cx,
+                )
+                .when_some(reason, |button, reason| {
+                    button.disabled(Some(reason))
+                });
             let cancel = self.action_button(
                 "settings-qcancel".to_owned(),
                 "Cancel",
@@ -1065,13 +1069,6 @@ impl SettingsView {
             swatch,
             cx,
         );
-        // A read-only row draws no remove button.
-        let remove = self.remove_button(
-            format!("settings-gdel-{index}"),
-            format!("gdel:{index}"),
-            swatch,
-            cx,
-        );
         let error = self.keys.errors.get(&format!("g{index}")).cloned();
         div()
             .flex()
@@ -1088,7 +1085,16 @@ impl SettingsView {
                     .child(command)
                     .child(profile)
                     .child(div().flex_1())
-                    .when(!read_only, |row| row.child(remove)),
+                    // A read-only row draws no remove button.
+                    .when(!read_only, |row| {
+                        row.child(self.remove_button(
+                            format!("settings-gdel-{index}"),
+                            format!("gdel:{index}"),
+                            &global.key,
+                            swatch,
+                            cx,
+                        ))
+                    }),
             )
             .when(recording, |row| row.child(self.recording_hint(swatch)))
             .children(error.map(|error| small(error, swatch.danger_text())))

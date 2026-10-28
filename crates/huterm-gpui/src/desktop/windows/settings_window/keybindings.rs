@@ -1029,6 +1029,15 @@ impl SettingsView {
         self.key_field(key.to_owned(), text, "", window, cx)
     }
 
+    /// The shortcut filter's segment, by its value.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(in crate::desktop::windows) fn key_filter(&self) -> &'static str {
+        Filter::ALL
+            .iter()
+            .find(|(filter, ..)| *filter == self.keys.filter)
+            .map_or("", |(_, name, _)| name)
+    }
+
     /// The file's text for a field key, or `None` when its row is gone.
     fn key_field_text(&self, key: &str) -> Option<String> {
         let inventory = self.keys.inventory.as_ref()?;
@@ -1752,12 +1761,17 @@ impl SettingsView {
         }
         let mut card = card(swatch);
         for (index, (entry, key)) in inventory.unbinds.iter().enumerate() {
-            let remove = self.remove_button(
-                format!("settings-kunbind-{entry}"),
-                format!("kunbind:{entry}"),
-                swatch,
-                cx,
-            );
+            let remove = self
+                .remove_button(
+                    format!("settings-kunbind-{entry}"),
+                    format!("kunbind:{entry}"),
+                    key,
+                    swatch,
+                    cx,
+                )
+                .when_some(self.keys_lock_reason(), |button, reason| {
+                    button.disabled(Some(reason))
+                });
             card = card.child(
                 div()
                     .flex()
@@ -2251,6 +2265,7 @@ impl SettingsView {
             self.remove_button(
                 format!("settings-kdel-{name}"),
                 format!("kdel:{name}"),
+                &listed.binding.key,
                 swatch,
                 cx,
             )
@@ -2584,16 +2599,18 @@ fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
 }
 
 impl SettingsView {
-    /// A small × that removes an entry from the file, by running the
-    /// action `key` names.
+    /// A small × that removes the entry for `shortcut` from the file, by
+    /// running the action `key` names. Its name includes the shortcut, so
+    /// each row's button reads differently.
     pub(super) fn remove_button(
         &mut self,
         name: String,
         key: String,
+        shortcut: &str,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> Button {
-        self.action_button(name, "Remove", key, swatch, cx)
+        self.action_button(name, format!("Remove {shortcut}"), key, swatch, cx)
             .variant(Variant::Ghost)
             .icon(
                 gpui::svg()

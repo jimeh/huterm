@@ -509,10 +509,13 @@ the terminal.
 
 These bind only in the Settings window. `settings_toggle` turns a switch on or
 off; `settings_increase` and `settings_decrease` step a segmented control and
-leave a switch alone. The link modifier chips are one tab stop: the two step
-commands move between the chips, wrapping at the ends, and `settings_toggle`
-turns the focused one on or off. Enter and Space reach a control only through
-these bindings, so removing a binding removes its key.
+leave a switch alone. They step a Default, On, Off control in that order and
+stop at the ends; stepping to Default removes the setting, as Reset does. The
+link modifier chips are one tab stop: the two step commands move between the
+chips, wrapping at the ends, and `settings_toggle` turns the focused one on or
+off. Enter and Space reach a switch, segmented control, chip, or button only
+through these bindings, so removing a binding removes its key there; the
+remaining Settings controls follow in later migrations.
 
 The window's text fields take the `Palette` context, so the palette bindings
 edit them: `palette_confirm` saves a field, or from the search field moves to

@@ -299,3 +299,190 @@ fn arrows_move_between_modifier_chips_and_space_toggles_one(
     );
     focused(&mut harness, "alt");
 }
+
+/// Breaks the file with `broken` and waits until Settings reads it and
+/// turns read-only, then draws the result.
+fn break_file(
+    harness: &mut DesktopHarness,
+    file: &ScratchConfig,
+    broken: &str,
+) {
+    std::fs::write(file.path(), broken).unwrap();
+    with_view(harness, SettingsView::follow_reload);
+    harness.wait_for("the invalid reread", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.read_only())
+                    .unwrap_or(false)
+            })
+    });
+    visual(harness).run_until_parked();
+}
+
+#[gpui::test]
+fn create_refuses_a_click_and_says_why_while_the_file_is_invalid(
+    cx: &mut TestAppContext,
+) {
+    let logs = "[quake.profiles.logs]\nheight = 0.3\n";
+    let file = ScratchConfig::new("controls-create", logs);
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Quake);
+    with_window(&mut harness, |view, window, cx| {
+        view.type_profile_name("build", window, cx);
+    });
+    let broken = format!("{logs}[window\n");
+    break_file(&mut harness, &file, &broken);
+    let create = a11y_node(&mut harness, "settings-qcreate");
+    assert_eq!(create["aria"]["disabled"], true, "{create}");
+    assert_eq!(
+        create["aria"]["description"],
+        "Read-only until config.toml is fixed"
+    );
+    let before = focus(&mut harness);
+    a11y_click(&mut harness, &create);
+    assert_eq!(focus(&mut harness), before, "the click took focus");
+    with_view(&mut harness, |view, _| {
+        // The command's own refusal would have said why in the prompt.
+        assert_eq!(view.quake_message(), None, "the click ran Create");
+        assert_eq!(view.quake_prompts(), (true, false));
+    });
+    assert!(harness.cx.update(settled));
+    assert_eq!(file.text(), broken);
+}
+
+#[gpui::test]
+fn removing_an_unbind_refuses_a_click_and_says_why_while_the_file_is_invalid(
+    cx: &mut TestAppContext,
+) {
+    let unbind = "[[keybinding]]\nkey = \"alt-q\"\ncommand = \"unbind\"\n";
+    let file = ScratchConfig::new("controls-unbind", unbind);
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Keybindings);
+    // Disabled shortcuts are few, so the unbind card below them is on
+    // screen for the click.
+    with_window(&mut harness, |view, window, cx| {
+        view.action_handle("kfilter").focus(window, cx);
+    });
+    keys(&harness, "right right right");
+    assert_eq!(with_view(&mut harness, |view, _| view.key_filter()), "off");
+    // The file still parses, so the shortcuts stay listed, but a global
+    // shortcut for a missing profile fails validation.
+    let broken = format!(
+        "{unbind}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+         command = \"toggle_quake\"\nargs = {{ profile = \"missing\" }}\n"
+    );
+    break_file(&mut harness, &file, &broken);
+    let remove = a11y_node(&mut harness, "settings-kunbind-0");
+    assert_eq!(remove["aria"]["label"], "Remove alt-q", "{remove}");
+    assert_eq!(remove["aria"]["disabled"], true, "{remove}");
+    assert_eq!(
+        remove["aria"]["description"],
+        "Read-only until config.toml is fixed"
+    );
+    let before = focus(&mut harness);
+    a11y_click(&mut harness, &remove);
+    assert_eq!(focus(&mut harness), before, "the click took focus");
+    assert!(harness.cx.update(settled), "the click queued a removal");
+    assert_eq!(file.text(), broken);
+}
+
+#[gpui::test]
+fn the_last_held_modifier_says_why_it_stays_on(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("controls-last-chip", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Terminal);
+    let (held, key, other) = if cfg!(target_os = "macos") {
+        ("⌘ Cmd", "cmd", "⌥ Option")
+    } else {
+        ("Ctrl", "ctrl", "Alt")
+    };
+    let chip = |harness: &mut DesktopHarness, label: &str| {
+        a11y_find(harness, |node| node["aria"]["label"] == label)
+            .unwrap_or_else(|| panic!("no chip labelled {label}"))
+    };
+    let last = chip(&mut harness, held);
+    assert_eq!(last["aria"]["toggled"], "True", "{last}");
+    assert_eq!(last["aria"]["description"], "Keep at least one modifier");
+    assert!(chip(&mut harness, other)["aria"]["description"].is_null());
+    // The chip stays focusable, so the click lands and is refused.
+    a11y_click(&mut harness, &last);
+    assert_eq!(
+        focus(&mut harness),
+        format!("action:chip:terminal.link_modifiers:{key}")
+    );
+    assert!(harness.cx.update(settled), "the click queued a write");
+    assert_eq!(file.text(), "");
+    assert_eq!(chip(&mut harness, held)["aria"]["toggled"], "True");
+}
+
+#[gpui::test]
+fn arrows_step_the_shortcut_filter_and_stop_at_its_ends(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("controls-filter", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Keybindings);
+    let filter = |harness: &mut DesktopHarness| {
+        with_view(harness, |view, _| view.key_filter())
+    };
+    with_window(&mut harness, |view, window, cx| {
+        view.action_handle("kfilter").focus(window, cx);
+    });
+    keys(&harness, "left");
+    assert_eq!(filter(&mut harness), "all");
+    keys(&harness, "right");
+    assert_eq!(filter(&mut harness), "custom");
+    keys(&harness, "right right");
+    assert_eq!(filter(&mut harness), "off");
+    keys(&harness, "right");
+    assert_eq!(filter(&mut harness), "off");
+    keys(&harness, "left");
+    assert_eq!(filter(&mut harness), "when");
+    assert_eq!(focus(&mut harness), "action:kfilter");
+    assert!(harness.cx.update(settled), "an arrow queued a write");
+    assert_eq!(file.text(), "");
+}
+
+/// The only tri-state, automatic update checks, applies on macOS alone;
+/// elsewhere it is read-only.
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn arrows_step_a_tri_state_in_its_drawn_order_and_stop_at_its_ends(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("controls-tri-state", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Updates);
+    let path = "updates.automatic_checks";
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_stop(path, window, cx);
+    });
+    // Default is first, so Left from it writes nothing.
+    keys(&harness, "left");
+    assert!(
+        harness.cx.update(settled),
+        "Left from Default queued a write"
+    );
+    assert_eq!(file.text(), "");
+    let step = |harness: &mut DesktopHarness, key: &str, expected: &str| {
+        keys(harness, key);
+        harness
+            .wait_for("the step", |cx| settled(cx) && file.text() == expected);
+    };
+    let on = "[updates]\nautomatic_checks = true\n";
+    let off = "[updates]\nautomatic_checks = false\n";
+    step(&mut harness, "right", on);
+    step(&mut harness, "right", off);
+    // Off is last.
+    keys(&harness, "right");
+    assert!(harness.cx.update(settled), "Right from Off queued a write");
+    assert_eq!(file.text(), off);
+    step(&mut harness, "left", on);
+    // Back to Default removes the key, as Reset does.
+    keys(&harness, "left");
+    harness.wait_for("the reset", |cx| {
+        settled(cx) && !file.text().contains("automatic_checks")
+    });
+    assert_eq!(focus(&mut harness), path);
+}

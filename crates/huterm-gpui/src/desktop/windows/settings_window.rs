@@ -786,7 +786,7 @@ impl SettingsView {
         }
     }
 
-    /// Steps the focused control: a tri-state on or off, a choice to its
+    /// Steps the focused control: a tri-state or a choice to its
     /// neighbour, a number by one unit. A number field steps from its
     /// typed value. A read-only control refuses.
     fn step(
@@ -841,11 +841,18 @@ impl SettingsView {
         forward: bool,
         cx: &mut Context<'_, Self>,
     ) {
-        // A switch has no steps: Space and Return toggle it, as WAI-ARIA's
-        // switch pattern has it, so moving through the form writes nothing.
-        if matches!(setting.kind, SettingKind::Bool)
-            && self.has_default(setting)
-        {
+        if matches!(setting.kind, SettingKind::Bool) {
+            // A switch has no steps: Space and Return toggle it, as
+            // WAI-ARIA's switch pattern has it, so moving through the form
+            // writes nothing. A tri-state steps as its radios read.
+            if !self.has_default(setting) {
+                let current =
+                    self.value(setting).and_then(|value| value.as_bool());
+                let next = tri_stepped(current, forward);
+                if next != current {
+                    self.write(setting, next.map(Value::Boolean), cx);
+                }
+            }
             return;
         }
         let field = self.fields.get(setting.path.as_str()).cloned();
@@ -1500,9 +1507,29 @@ fn size_value(text: &str) -> Option<Value> {
     }
 }
 
-/// The value one step from `current`: a tri-state on or off, a choice's
-/// neighbour, or a number one unit up or down. A `Number` written in
-/// integer form steps as a float.
+/// A tri-state's states in the order its control draws them; `None`
+/// leaves the choice to the setting's owner and removes the key.
+const TRI_STATES: [(&str, Option<bool>); 3] =
+    [("Default", None), ("On", Some(true)), ("Off", Some(false))];
+
+/// The tri-state one step from `current` in [`TRI_STATES`], stopping at
+/// the ends as a choice does.
+fn tri_stepped(current: Option<bool>, forward: bool) -> Option<bool> {
+    let index = TRI_STATES
+        .iter()
+        .position(|(_, state)| *state == current)
+        .unwrap_or(0);
+    let next = if forward {
+        (index + 1).min(TRI_STATES.len() - 1)
+    } else {
+        index.saturating_sub(1)
+    };
+    TRI_STATES.get(next).map_or(current, |(_, state)| *state)
+}
+
+/// The value one step from `current`: a choice's neighbour, or a number
+/// one unit up or down. A `Number` written in integer form steps as a
+/// float.
 fn stepped(
     setting: &Setting,
     current: Option<Value>,
@@ -1510,7 +1537,6 @@ fn stepped(
 ) -> Option<Value> {
     let delta: i64 = if forward { 1 } else { -1 };
     match (&setting.kind, current) {
-        (SettingKind::Bool, _) => Some(Value::Boolean(forward)),
         (SettingKind::Choice(choices), current) => {
             let index = choices.iter().position(|choice| {
                 current.as_ref().and_then(Value::as_str)
