@@ -873,6 +873,24 @@ fn a_wheel_outside_the_list_closes_it_and_still_scrolls(
 }
 
 #[gpui::test]
+fn a_trackpad_touch_that_has_not_moved_leaves_the_list_open(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(cx, Setup::default());
+    type_text(cx, "mo");
+    for touch_phase in [TouchPhase::Started, TouchPhase::Ended] {
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(350.0), px(420.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
+            modifiers: Modifiers::none(),
+            touch_phase,
+        });
+        cx.run_until_parked();
+        assert!(probe.open(cx), "{touch_phase:?} closed the list");
+    }
+}
+
+#[gpui::test]
 fn a_wheel_over_the_list_scrolls_it_and_keeps_it_open(cx: &mut TestAppContext) {
     let (probe, cx) = setup(
         cx,

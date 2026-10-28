@@ -19,7 +19,8 @@
 //! on the trigger closes instead of reopening. Releases are never stopped,
 //! so a gesture that began before the popover opened still ends. A
 //! non-modal popover closes on an outside press and lets the press proceed,
-//! and on a wheel outside its content, which still scrolls what it is over,
+//! and on a wheel that moves outside its content, which still scrolls what
+//! it is over (a trackpad touch that has not moved yet leaves it open),
 //! as a browser's datalist and `NSComboBox`'s list do; a modal popover's
 //! backdrop takes those wheels. Escape, Tab, a pick, focus leaving, and
 //! window deactivation are the owner's to route; it calls
@@ -37,8 +38,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, IntoElement, MouseDownEvent,
-    Pixels, Point, ScrollWheelEvent, Size, Window, anchored, canvas, deferred,
-    div, point, prelude::*, px,
+    Pixels, Point, ScrollDelta, ScrollWheelEvent, Size, Window, anchored,
+    canvas, deferred, div, point, prelude::*, px,
 };
 
 use crate::focus;
@@ -242,7 +243,8 @@ impl Popover {
                         }
                         let outside = {
                             let state = wheel_state.borrow();
-                            state.anchor.is_some()
+                            moves(event.delta)
+                                && state.anchor.is_some()
                                 && !state.modal
                                 && !state.content.is_some_and(|content| {
                                     content.contains(&event.position)
@@ -309,6 +311,15 @@ pub struct Placement {
 pub const MARGIN: Pixels = px(6.0);
 /// Gap between a button anchor and its menu.
 const ANCHOR_GAP: Pixels = px(4.0);
+
+/// Whether a wheel event scrolls anything: a trackpad reports a touch that
+/// has not moved yet, and the end of a gesture, with no delta.
+fn moves(delta: ScrollDelta) -> bool {
+    match delta {
+        ScrollDelta::Pixels(delta) => delta != Point::default(),
+        ScrollDelta::Lines(delta) => delta.x != 0.0 || delta.y != 0.0,
+    }
+}
 
 /// Places content of `menu` size in a window of `window` size. Trigger
 /// anchors open below, or above from the lower half, and right-align from
@@ -512,8 +523,9 @@ mod guard_tests {
     use std::rc::Rc;
 
     use gpui::{
-        Context, IntoElement, Modifiers, MouseButton, Render, TestAppContext,
-        VisualTestContext, Window, div, point, prelude::*, px,
+        Context, IntoElement, Modifiers, MouseButton, Render, ScrollDelta,
+        ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext,
+        Window, div, point, prelude::*, px,
     };
 
     use super::{Anchor, Placement, Popover};
@@ -645,6 +657,21 @@ mod guard_tests {
         click(cx, 50.0, 220.0);
         assert_eq!(taken(&log), ["dismissed:OutsidePress"]);
         assert!(!owner.read_with(cx, |owner, _| owner.popover.is_open()));
+    }
+
+    #[gpui::test]
+    fn a_wheel_outside_a_modal_popover_leaves_it_open(cx: &mut TestAppContext) {
+        let (owner, log, cx) = owner(cx);
+        open_and_draw(&owner, cx);
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(50.0), px(220.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-30.0))),
+            modifiers: Modifiers::none(),
+            touch_phase: TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+        assert_eq!(taken(&log), Vec::<String>::new());
+        assert!(owner.read_with(cx, |owner, _| owner.popover.is_open()));
     }
 
     #[gpui::test]
