@@ -35,6 +35,7 @@ pub struct ScrollArea {
     id: ElementId,
     scroll: ScrollHandle,
     max_height: Option<Pixels>,
+    fill: bool,
     children: Vec<AnyElement>,
 }
 
@@ -46,6 +47,7 @@ impl ScrollArea {
             id: id.into(),
             scroll: scroll.clone(),
             max_height: None,
+            fill: false,
             children: Vec::new(),
         }
     }
@@ -56,6 +58,15 @@ impl ScrollArea {
     #[must_use]
     pub fn max_height(mut self, max_height: Option<Pixels>) -> Self {
         self.max_height = max_height;
+        self
+    }
+
+    /// Makes the area fill the rest of a flex column and shrink with it,
+    /// as in a dialog body, so its content scrolls there instead of
+    /// stretching the area to its full height.
+    #[must_use]
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
         self
     }
 
@@ -95,16 +106,19 @@ impl ScrollArea {
         );
         let strip = scrollbar.elements(scrollbar_id, colors, view, get, cx);
         let wheel = view.clone();
+        let fill = self.fill;
         div()
             .relative()
             .flex()
             .flex_col()
+            .when(fill, |frame| frame.flex_1().min_h_0())
             .child(
                 div()
                     .id(self.id)
                     .role(gpui::Role::ScrollView)
                     .flex()
                     .flex_col()
+                    .when(fill, |area| area.flex_1().min_h_0())
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .when_some(self.max_height, Styled::max_h)
@@ -223,6 +237,56 @@ mod tests {
                     cx,
                 )
         }
+    }
+
+    /// A filled area under a header in a short flex column, as in a
+    /// dialog body.
+    struct Filled {
+        scroll: ScrollHandle,
+        scrollbar: ListScrollbar,
+    }
+
+    impl Render for Filled {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut Context<'_, Self>,
+        ) -> impl IntoElement {
+            let view = cx.entity();
+            div()
+                .h(px(100.0))
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .child(div().h(px(20.0)).flex_none())
+                .child(
+                    ScrollArea::new("area", &self.scroll)
+                        .fill()
+                        .children(
+                            (0..20).map(|_| div().h(px(20.0)).flex_none()),
+                        )
+                        .render(
+                            &mut self.scrollbar,
+                            tokens().scrollbar,
+                            &view,
+                            |view| &mut view.scrollbar,
+                            cx,
+                        ),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn a_filled_area_scrolls_in_the_space_left(cx: &mut TestAppContext) {
+        let scroll = ScrollHandle::new();
+        let handle = scroll.clone();
+        let (_, cx) = cx.add_window_view(move |_, _| Filled {
+            scrollbar: ListScrollbar::new(scroll.clone()),
+            scroll,
+        });
+        cx.run_until_parked();
+        // 400 points of rows in the 80 left under the header.
+        assert_eq!(handle.max_offset().y, px(320.0));
     }
 
     #[gpui::test]

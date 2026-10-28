@@ -735,11 +735,13 @@ binding when a deeper context's action has no handler, so an unhandled
 `palette_expand` still reaches the dialog's Tab, but a handler that consumes
 it without moving focus traps Tab in the field. Focus moves in on the
 dialog's first frame, and `Modal::close` returns it to the target given to
-`open`. Window
+`open`; with every control disabled it enters on the first button. Window
 deactivation and owner changes are the owner's to route; a dialog normally
 stays open while its window is inactive. A body that can outgrow the window
-puts its long content in a `ScrollArea`; the body shrinks and clips so the
-footer stays inside the panel, where the guard lets presses through. The
+puts its long content in a `ScrollArea` made with `fill()`, which shrinks
+with the body, since a plain `ScrollArea` grows to its content's height and
+never scrolls there; the body shrinks and clips so the footer stays inside
+the panel, where the guard lets presses through. The
 guard stops presses on anything outside the panel, so a popover opened from a
 dialog's body does not work yet. A simulated press in a GPUI test draws a
 notified window first, so a stale-frame test opens without notifying,

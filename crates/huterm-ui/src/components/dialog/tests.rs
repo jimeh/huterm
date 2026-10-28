@@ -660,6 +660,17 @@ fn opening_skips_a_disabled_first_button(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn focus_enters_an_alert_whose_controls_are_all_disabled(
+    cx: &mut TestAppContext,
+) {
+    // Keys must not reach what the scrim covers.
+    let (probe, cx) = owner(cx, Kind::Alert, &[]);
+    probe.disable(&["cancel", "confirm"], cx);
+    probe.open(cx);
+    assert_eq!(focused(&probe, cx), Some("cancel"));
+}
+
+#[gpui::test]
 fn opening_skips_a_disabled_chosen_button(cx: &mut TestAppContext) {
     let (probe, cx) = owner(cx, Kind::RenameOnButton, &[]);
     probe.disable(&["confirm"], cx);

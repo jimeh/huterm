@@ -13,8 +13,9 @@
 //! 420 points wide unless the owner restyles it through `Styled`. The panel
 //! is never taller than that area: a tall body shrinks and clips, so the
 //! footer stays inside the panel, and a body that can outgrow it puts its
-//! long content in a [`ScrollArea`](super::scroll_area::ScrollArea) or
-//! another `flex_1().min_h_0()` child that scrolls.
+//! long content in a [`ScrollArea`](super::scroll_area::ScrollArea) made
+//! with [`fill`](super::scroll_area::ScrollArea::fill), or another
+//! `flex_1().min_h_0()` child that scrolls.
 //!
 //! Focus: the dialog's controls are the body controls the owner declares
 //! with [`Dialog::focusable`], then its enabled footer buttons. On its
@@ -367,7 +368,8 @@ impl Dialog {
         self
     }
 
-    /// The control that takes focus on opening, instead of the first.
+    /// The control that takes focus on opening, instead of the first. It
+    /// must be a declared control: a body control or a footer button.
     #[must_use]
     pub fn initial_focus(mut self, focus: &FocusHandle) -> Self {
         self.initial_focus = Some(focus.clone());
@@ -408,11 +410,15 @@ impl Dialog {
             )
             .cloned()
             .collect();
+        // With every control disabled, focus still enters the dialog, on its
+        // first button, which tracks focus while disabled, so keys never
+        // reach what the scrim covers.
         let initial = self
             .initial_focus
             .clone()
             .filter(|chosen| controls.contains(chosen))
-            .or_else(|| controls.first().cloned());
+            .or_else(|| controls.first().cloned())
+            .or_else(|| self.buttons.first().map(|(_, focus)| focus.clone()));
         if self.modal.frame(controls, !self.alert)
             && let Some(target) = initial
         {
