@@ -464,7 +464,7 @@ fn dialog_footer(
                 focus == DialogFocus::Primary,
                 hints.then_some("enter"),
             )
-            .debug_selector("confirm-close")
+            .debug_selector(|| "confirm-close".to_owned())
             // Its hover and pressed shades move away from its text, so it
             // reads on every fill the button shows.
             .colors(Colors {

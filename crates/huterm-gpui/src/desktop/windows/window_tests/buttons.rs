@@ -65,6 +65,18 @@ fn active_descendant(cx: &mut App, window: AnyWindowHandle) -> Option<String> {
     tree["nodes"][key]["element_id"].as_str().map(str::to_owned)
 }
 
+/// The node holding `window`'s focus in its last frame.
+fn focused_node(cx: &mut App, window: AnyWindowHandle) -> Value {
+    let json = window
+        .update(cx, |_, window, _| window.debug_a11y_tree_json())
+        .unwrap()
+        .expect("test windows report an accessibility tree for every frame");
+    let tree: Value = serde_json::from_str(&json).unwrap();
+    tree["gpui_focus"]
+        .as_str()
+        .map_or(Value::Null, |key| tree["nodes"][key].clone())
+}
+
 /// `id` as the accessibility dump spells element ids.
 fn spelled(id: &str) -> String {
     format!("{:?}", gpui::ElementId::Name(id.to_owned().into()))
@@ -375,6 +387,17 @@ fn a_dialogs_current_button_is_its_accessible_active_descendant(
             active_descendant(cx, window) == Some(spelled(id))
         });
     };
+    // The dialog node holds focus, so its current button is followed.
+    let holds_focus =
+        |harness: &mut DesktopHarness, id: &'static str, role, label: &str| {
+            harness.wait_for(id, |cx| {
+                focused_node(cx, window)["element_id"] == spelled(id)
+            });
+            let node = harness.cx.update(|cx| focused_node(cx, window));
+            assert_eq!(node["aria"]["role"], role, "{id}");
+            assert_eq!(node["aria"]["label"], label, "{id}");
+        };
+    holds_focus(&mut harness, "about-dialog", "Dialog", "About Huterm");
     followed(&mut harness, "about-close");
     harness.press(window, "tab");
     followed(&mut harness, "about-licenses");
@@ -383,9 +406,54 @@ fn a_dialogs_current_button_is_its_accessible_active_descendant(
     harness.press(window, "escape");
     harness.press(window, CLOSE);
     harness.wait_for("the confirmation", |cx| confirming(cx, window));
+    let title = harness.update_view(window, |view, _, cx| {
+        let target = view.close.confirmation.as_ref().unwrap();
+        build_close_dialog(&view.close_dialog_input(target, cx)).title
+    });
+    holds_focus(&mut harness, "close-dialog", "AlertDialog", &title);
     followed(&mut harness, "confirm-close");
     harness.press(window, "tab");
     followed(&mut harness, "cancel-close");
+}
+
+#[gpui::test]
+fn dismissing_a_toast_over_a_dialog_returns_focus_to_the_dialog(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.update_view(window, |view, _, cx| {
+        view.notify(
+            NoticeContent::diagnostic(
+                super::super::notices::Severity::Error,
+                NoticeSource::Config,
+                "Config has errors",
+                "line 3",
+            ),
+            cx,
+        );
+    });
+    // One update, so no frame lets the terminal hand focus it receives
+    // back to the dialog.
+    harness.update_view(window, |view, window, cx| {
+        let focus = CommandInvocation::new(ids::FOCUS_NOTICES, vec![]);
+        view.invoke_interactive(&focus, window, cx).unwrap();
+        assert!(view.notice_focus.is_focused(window));
+        let dismiss = CommandInvocation::new(ids::NOTICE_DISMISS, vec![]);
+        view.invoke_interactive(&dismiss, window, cx).unwrap();
+        assert!(view.notices.is_empty());
+        assert!(view.focus.is_focused(window), "focus left the dialog");
+    });
+    harness.cx.run_until_parked();
+    assert!(
+        harness.update_view(window, |view, window, _| view
+            .focus
+            .is_focused(window))
+    );
 }
 
 #[gpui::test]
@@ -457,13 +525,11 @@ fn a_press_on_the_menu_button_starts_no_title_row_move(
     assert_eq!(harness.title_row(window), (true, 0));
 }
 
-/// The test platform does not implement a window move or zoom, so a press
-/// that reached the title row would fail there too.
+/// Huterm draws window controls only on Linux, under client-side
+/// decorations; the test forces both, so it runs on macOS too. The test
+/// platform does not implement a window move or Linux's zoom, so on Linux a
+/// press that reached the title row would fail there too.
 #[gpui::test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "Huterm draws its own window controls only on Linux"
-)]
 fn a_press_on_a_drawn_window_control_starts_no_title_row_gesture(
     cx: &mut TestAppContext,
 ) {
@@ -475,12 +541,13 @@ fn a_press_on_a_drawn_window_control_starts_no_title_row_gesture(
     harness.wait_text(window, tab, "READY");
     harness.activate(window, tab);
     // The test platform reports server-side decorations; take the client
-    // frame a desktop without a title bar would give.
+    // frame a desktop without a title bar would give, as GPUI reports a
+    // decoration change.
     harness.update_view(window, |view, window, cx| {
-        view.frame_state.decorations = gpui::Decorations::Client {
+        view.decorations_override = Some(gpui::Decorations::Client {
             tiling: gpui::Tiling::default(),
-        };
-        view.layout_pending = true;
+        });
+        assert!(view.sync_frame(window));
         view.refresh_tab_visibility(window, cx);
         view.sync_tab_layout(window, cx);
         cx.notify();
@@ -497,16 +564,18 @@ fn a_press_on_a_drawn_window_control_starts_no_title_row_gesture(
             })
             .unwrap_or(false)
     });
-    let minimize = harness
-        .update_view(window, |view, _, _| {
-            view.window_button_bounds[WindowButton::Minimize.index()].get()
-        })
-        .unwrap()
-        .center();
+    let [minimize, maximize, close] = WindowButton::ALL.map(|button| {
+        harness
+            .update_view(window, |view, _, _| {
+                view.window_button_bounds[button.index()].get()
+            })
+            .unwrap_or_else(|| panic!("{button:?} is not drawn"))
+            .center()
+    });
     let menu = harness.menu_button_centre(window);
     // Releasing over the terminal clicks nothing, so no control acts.
     let away = harness.terminal_centre(window);
-    for at in [minimize, menu] {
+    for at in [minimize, maximize, close, menu] {
         press_at(&mut harness, window, at, 1);
         assert_eq!(harness.title_row(window), (false, 0), "{at:?}");
         drag_and_release(&mut harness, window, away);

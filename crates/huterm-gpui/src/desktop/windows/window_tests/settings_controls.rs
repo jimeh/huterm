@@ -486,3 +486,22 @@ fn arrows_step_a_tri_state_in_its_drawn_order_and_stop_at_its_ends(
     });
     assert_eq!(focus(&mut harness), path);
 }
+
+#[gpui::test]
+fn link_look_footer_actions_report_as_buttons(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("controls-link-roles", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Tabs);
+    let open = a11y_node(&mut harness, "settings-footer-open");
+    assert_eq!(open["aria"]["role"], "Button", "{open}");
+    // An invalid file gives the footer a status action too.
+    break_file(&mut harness, &file, "[window\n");
+    let ids = ["settings-footer-reload", "settings-footer-open-error"]
+        .map(|id| format!("{:?}", gpui::ElementId::Name(id.into())));
+    let action = a11y_find(&mut harness, |node| {
+        ids.iter()
+            .any(|id| node["element_id"].as_str() == Some(id.as_str()))
+    })
+    .expect("the invalid file's status offers an action");
+    assert_eq!(action["aria"]["role"], "Button", "{action}");
+}

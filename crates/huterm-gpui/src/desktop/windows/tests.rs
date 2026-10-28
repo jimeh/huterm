@@ -2049,6 +2049,7 @@ fn framed(state: FrameState) -> WindowFrame {
 
 fn framed_with(state: FrameState, buttons: ButtonLayout) -> WindowFrame {
     WindowFrame::resolve(
+        Platform::current(),
         resolve_tab_position(
             TabPosition::Titlebar,
             TabHost {
@@ -2240,6 +2241,7 @@ fn tiled_maximized_and_fullscreen_frames_keep_the_row_but_no_border() {
     }
     // Fullscreen hides the row: the tabs become a top bar with no frame.
     let fullscreen = WindowFrame::resolve(
+        Platform::current(),
         resolve_tab_position(
             TabPosition::Titlebar,
             TabHost {

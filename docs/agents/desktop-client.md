@@ -469,6 +469,9 @@ the workspace root, so its Escape and Enter bindings win over `confirming`'s.
 A repeated close shortcut while `confirming` must not confirm. Menus and
 dialogs return focus to the terminal when they close; the menu button never
 keeps it, or terminal bindings stop matching until the user clicks back in.
+Focus a toast gives up while a dialog shows goes back to the dialog
+(`restore_tab_focus`), since the terminal's hand-back misses a change made
+between two frames.
 
 GPUI's `on_hover` also fires when a layout change puts an element under a
 resting pointer, so a menu that opens beneath the pointer would select the

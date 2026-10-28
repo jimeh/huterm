@@ -448,7 +448,7 @@ impl WorkspaceView {
                     )
                     .icon_only()
                     .group("close-tab")
-                    .debug_selector(format!("close-tab-{}", id.get()))
+                    .debug_selector(|| format!("close-tab-{}", id.get()))
                     .stop_presses()
                     .size(CLOSE_SIZE)
                     .rounded(px(4.0))

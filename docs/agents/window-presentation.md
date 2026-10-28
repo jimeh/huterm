@@ -253,7 +253,10 @@ also covers Wayland sessions; do not add a GSettings or portal reader unless
 that changes. Smoke state publishes the new layout order before the next paint
 moves `window_buttons` rects, so poll for settled geometry. Each drawn button
 is a `huterm_ui` `Button` that occludes and stops its press, so neither the
-title row's move gesture nor the tab strip sees it.
+title row's move gesture nor the tab strip sees it. GPUI's test window always
+reports server decorations and `sync_frame` resamples them on every frame, so
+window tests set `WorkspaceView::decorations_override`, which also draws the
+Linux row on macOS.
 
 Start a title-row move on the first drag motion, not the press: the window
 manager's move grab otherwise swallows the second click of a double-click.

@@ -2183,6 +2183,7 @@ fn open_window_with_profile(
             };
             let button_layout = cx.global::<Desktop>().button_layout;
             let frame = WindowFrame::resolve(
+                host.platform,
                 resolve_tab_position(config.tabs.position, host),
                 state,
                 button_layout,
@@ -2262,6 +2263,8 @@ fn open_window_with_profile(
                 native_fullscreen,
                 fullscreen_work,
                 frame_state: state,
+                #[cfg(test)]
+                decorations_override: None,
                 applied_frame: None,
                 button_layout,
                 tabs: Vec::new(),
@@ -3326,6 +3329,11 @@ struct WorkspaceView {
     /// The decorations, maximized, and fullscreen facts GPUI last
     /// reported; `sync_frame` samples them.
     frame_state: FrameState,
+    /// Decorations `sync_frame` takes in place of GPUI's: the test window
+    /// always reports server-side ones. While set, the frame also resolves
+    /// as on Linux, so the title row Huterm draws can be tested on macOS.
+    #[cfg(test)]
+    decorations_override: Option<gpui::Decorations>,
     /// The frame last pushed to GPUI as the client inset and background
     /// appearance; `None` before the first sample.
     applied_frame: Option<WindowFrame>,
@@ -5224,10 +5232,23 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
 }
 
 impl WorkspaceView {
+    /// The platform whose window frame this window draws.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "only tests override it")
+    )]
+    fn frame_platform(&self) -> Platform {
+        #[cfg(test)]
+        if self.decorations_override.is_some() {
+            return Platform::Linux;
+        }
+        Platform::current()
+    }
+
     /// The facts that decide whether this window has a title-bar row.
     fn tab_host(&self) -> TabHost {
         TabHost {
-            platform: Platform::current(),
+            platform: self.frame_platform(),
             fullscreen: self.fullscreen.chrome_hidden,
             quake: self.quake.is_some(),
             client_decorations: self.frame_state.client_decorations(),
@@ -5238,6 +5259,7 @@ impl WorkspaceView {
     /// and the decorations GPUI last reported.
     fn window_frame(&self) -> WindowFrame {
         WindowFrame::resolve(
+            self.frame_platform(),
             self.layout_tabs().position,
             self.frame_state,
             self.button_layout,
@@ -5256,6 +5278,11 @@ impl WorkspaceView {
     /// the caller relays out.
     fn sync_frame(&mut self, window: &mut Window) -> bool {
         let state = frame_state(window);
+        #[cfg(test)]
+        let state = FrameState {
+            decorations: self.decorations_override.unwrap_or(state.decorations),
+            ..state
+        };
         let state_changed = self.frame_state != state;
         self.frame_state = state;
         let frame = self.window_frame();
@@ -6070,8 +6097,11 @@ impl WorkspaceView {
         changed
     }
 
+    /// Focuses the active terminal, or the showing dialog.
     fn restore_tab_focus(&self, window: &mut Window, cx: &mut App) {
-        if let Some(tab) = self.active_view(cx) {
+        if self.dialog_showing() {
+            self.focus_dialog(window, cx);
+        } else if let Some(tab) = self.active_view(cx) {
             let focus = tab.read(cx).focus.clone();
             focus.focus(window, cx);
         }
@@ -8289,21 +8319,16 @@ fn close_dialog_input<'a>(
 impl WorkspaceView {
     /// Shows the About panel, or refocuses it, or the Licenses view over it,
     /// when it is already showing.
-    /// It takes the root focus so the `confirming` bindings close it, and
-    /// blocks terminal input while it is up.
+    /// Its dialog node holds the window's focus handle, so the
+    /// `confirming` bindings close it and terminal input is blocked while
+    /// it is up.
     fn show_about(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         if self.about.is_some() {
-            // The Licenses view replaces the panel; keep its search focused.
-            match &self.licenses {
-                Some(licenses) => {
-                    licenses.read(cx).focus_handle(cx).focus(window, cx);
-                }
-                None => self.focus.focus(window, cx),
-            }
+            self.focus_dialog(window, cx);
             cx.notify();
             return Ok(CommandOutcome::Completed);
         }
@@ -8320,6 +8345,17 @@ impl WorkspaceView {
         self.focus.focus(window, cx);
         cx.notify();
         Ok(CommandOutcome::Completed)
+    }
+
+    /// Focuses the showing dialog's holder: the window's focus handle, or
+    /// the Licenses search, as the Licenses view replaces the About panel.
+    fn focus_dialog(&self, window: &mut Window, cx: &mut App) {
+        match &self.licenses {
+            Some(licenses) => {
+                licenses.read(cx).focus_handle(cx).focus(window, cx);
+            }
+            None => self.focus.focus(window, cx),
+        }
     }
 
     /// Closes the About panel, and the Licenses view over it, and returns
@@ -9979,17 +10015,18 @@ pub(super) struct WindowFrame {
 }
 
 impl WindowFrame {
-    /// The frame for a window whose tabs resolved to `position`. Only a
-    /// Linux window drawing the merged row owns a border; its inset follows
-    /// the tiling, maximized, and fullscreen state GPUI reports, and its
-    /// row draws the desktop's `buttons`.
+    /// The frame for a `platform` window whose tabs resolved to
+    /// `position`. Only a Linux window drawing the merged row owns a
+    /// border; its inset follows the tiling, maximized, and fullscreen
+    /// state GPUI reports, and its row draws the desktop's `buttons`.
     fn resolve(
+        platform: Platform,
         position: TabPosition,
         state: FrameState,
         buttons: ButtonLayout,
     ) -> Self {
-        let controls = Platform::current() == Platform::Linux
-            && position == TabPosition::Titlebar;
+        let controls =
+            platform == Platform::Linux && position == TabPosition::Titlebar;
         if !controls {
             return Self::default();
         }

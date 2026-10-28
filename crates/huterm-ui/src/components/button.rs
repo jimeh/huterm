@@ -293,11 +293,15 @@ impl Button {
         self
     }
 
-    /// Names the button for GPUI's `debug_bounds` in tests; GPUI ignores it
-    /// elsewhere.
+    /// Names the button for GPUI's `debug_bounds` in tests. Like GPUI's own
+    /// `debug_selector`, it calls `selector` only where GPUI records
+    /// selectors: in debug builds with `test-support`, which also enables
+    /// GPUI's.
     #[must_use]
-    pub fn debug_selector(mut self, selector: impl Into<String>) -> Self {
-        self.debug_selector = Some(selector.into());
+    pub fn debug_selector(mut self, selector: impl FnOnce() -> String) -> Self {
+        if cfg!(any(test, all(debug_assertions, feature = "test-support"))) {
+            self.debug_selector = Some(selector());
+        }
         self
     }
 
@@ -779,7 +783,7 @@ mod tests {
                 .icon(gpui::div().size(px(14.0)))
                 .icon_only()
                 .expanded(true)
-                .debug_selector("reload")
+                .debug_selector(|| "reload".to_owned())
                 .w(px(30.0))
                 .h(px(30.0))
                 .child(
