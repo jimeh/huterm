@@ -689,7 +689,8 @@ has room for one more field at most:
   them; D9 gets the focus-ring test above; D7 gets its test in step 4 and
   D17 in step 7.
 - **Smokes.** `scripts/check-settings.ts` gains a pointer step on macOS
-  (through `hid-pointer`) and X11 (through `xdotool`): open a select by
+  (posting native mouse events to the window, which does not move the real
+  pointer) and X11 (through `xdotool`): open a select by
   click, close it by an outside click and by a second trigger click, and
   check focus. Smoke state reports the focused control and `settings.menu`
   as separate fields, plus the menu's drawn rect, so a stale open menu can

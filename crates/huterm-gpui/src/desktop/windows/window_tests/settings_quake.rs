@@ -444,6 +444,8 @@ fn another_editors_change_closes_an_open_global_menu(cx: &mut TestAppContext) {
                     .unwrap_or(false)
             })
     });
+    // Its popover closed too, so no invisible guard stops the next press.
+    with_view(&mut harness, |view, _| assert!(!view.menu_open()));
     assert_eq!(file.text(), two);
 }
 

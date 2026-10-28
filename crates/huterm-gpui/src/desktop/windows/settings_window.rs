@@ -714,6 +714,10 @@ impl SettingsView {
         section: SectionId,
         cx: &mut Context<'_, Self>,
     ) {
+        // The open menu's control may not be in the new section.
+        if self.drop_menu() {
+            self.keys.stranded = true;
+        }
         self.section = section;
         self.quake.deleting = false;
         self.search.update(cx, |search, cx| search.set_text("", cx));
@@ -903,7 +907,20 @@ impl SettingsView {
             view.close_menu(window, cx);
         })
         .detach();
-        menu.read(cx).focus_handle(cx).focus(window, cx);
+        // Focus leaving the menu, as search's shortcut moves it, closes the
+        // menu where focus went. The closes above move focus after the menu
+        // is gone, so this finds nothing to close then.
+        let menu_id = menu.entity_id();
+        let menu_focus = menu.read(cx).focus_handle(cx);
+        cx.on_blur(&menu_focus, window, move |view, _, cx| {
+            let current =
+                view.menu.as_ref().map(|(menu, _, _)| menu.entity_id());
+            if current == Some(menu_id) && view.drop_menu() {
+                cx.notify();
+            }
+        })
+        .detach();
+        menu_focus.focus(window, cx);
         // A trigger draws before it can be used, so its bounds are known;
         // the window's top left is only a fallback.
         let anchor =
@@ -973,6 +990,13 @@ impl SettingsView {
                 self.global_choice(*entry, field)
             }
         }
+    }
+
+    /// Closes the menu without moving focus, for when focus has already
+    /// gone elsewhere or the menu's control is gone. True when one was open.
+    fn drop_menu(&mut self) -> bool {
+        let _ = self.popover.close();
+        self.menu.take().is_some()
     }
 
     fn close_menu(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -1725,9 +1749,15 @@ impl SettingsView {
         triggers
     }
 
-    /// Whether a menu is open, and the popover holds it.
+    /// Whether a menu is open. The popover must agree: a menu dropped
+    /// without closing it would leave its guard stopping presses.
     pub(super) fn menu_open(&self) -> bool {
-        self.menu.is_some() && self.popover.is_open()
+        assert_eq!(
+            self.menu.is_some(),
+            self.popover.is_open(),
+            "the menu and its popover disagree"
+        );
+        self.menu.is_some()
     }
 
     /// The open menu's painted bounds, and whether its rows scroll.

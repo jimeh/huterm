@@ -2388,6 +2388,7 @@ impl SettingsView {
                     label,
                     Opener::Action(key.clone()),
                     !editable,
+                    px(0.0),
                     swatch,
                     cx,
                 );

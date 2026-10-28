@@ -265,13 +265,14 @@ impl SettingsView {
             label,
             Opener::Setting(setting),
             read_only,
+            px(150.0),
             swatch,
             cx,
         )
     }
 
     /// A select trigger for the menu `key`, showing `value` and named
-    /// `label`, that opens through `opener`. It is a `huterm-ui` select:
+    /// `label`, at least `min_width` wide, that opens through `opener`. It is a `huterm-ui` select:
     /// pointer presses toggle it, keys reach it only as `SettingsControl`
     /// commands, and its ring shows for keyboard focus alone.
     #[expect(
@@ -286,6 +287,7 @@ impl SettingsView {
         value: String,
         opener: Opener,
         read_only: bool,
+        min_width: gpui::Pixels,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
@@ -301,6 +303,7 @@ impl SettingsView {
         let opening = focus.clone();
         let select = Select::new(id, label, value, &focus, swatch)
             .key_context("SettingsControl")
+            .min_width(min_width)
             .open(open)
             .on_toggle(move |window, cx| {
                 let _ = weak.update(cx, |view, cx| {
@@ -426,6 +429,7 @@ impl SettingsView {
             "Installed".to_owned(),
             Opener::Action(format!("fonts:{path}")),
             read_only,
+            px(0.0),
             swatch,
             cx,
         );

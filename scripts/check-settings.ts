@@ -147,6 +147,11 @@ position = "top"
     }
     await state(`settings.focus=${name}`);
   }
+  /** Waits for the open menu's first painted frame, so a press tests the
+   * drawn menu rather than the guard's catch before any frame. */
+  async function menuPainted(): Promise<void> {
+    await waitFor(async () => (field(await current(), "menu_rect") ?? "none") !== "none", "the menu's painted bounds");
+  }
   /** The center of the select trigger `name` in window points. */
   async function selectCenter(name: string): Promise<[number, number]> {
     let rect: number[] | undefined;
@@ -247,10 +252,12 @@ position = "top"
     const position = await selectCenter("quake.profiles.default.position");
     await press(profile);
     await state("settings.menu=true", "settings.focus=menu");
+    await menuPainted();
     await press(profile);
     await state("settings.menu=false", "settings.focus=action:qprof");
     await press(profile);
     await state("settings.menu=true", "settings.focus=menu");
+    await menuPainted();
     await press(position);
     await state("settings.menu=false", "settings.focus=action:qprof");
     await tabTo("quake.profiles.default.height");

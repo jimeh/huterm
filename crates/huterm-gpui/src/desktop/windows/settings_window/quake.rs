@@ -244,7 +244,7 @@ impl SettingsView {
                 && moved(*entry)
             {
                 // Focus held by the menu goes to the window.
-                self.menu = None;
+                let _ = self.drop_menu();
                 self.keys.stranded = true;
             }
             self.keys.errors.retain(|row, _| {
@@ -731,13 +731,16 @@ impl SettingsView {
     ) -> AnyElement {
         let read_only = self.locked();
         let profile = self.shown_profile();
+        // Choosing which profile to show writes nothing, so it stays
+        // available while the file is read-only.
         let dropdown = self.select(
             "settings-qprof".to_owned(),
             "qprof",
             "Profile".to_owned(),
             profile,
             Opener::Action("qprof".to_owned()),
-            read_only,
+            false,
+            px(150.0),
             swatch,
             cx,
         );
@@ -1097,6 +1100,7 @@ impl SettingsView {
             label,
             Opener::Action(key.to_owned()),
             read_only,
+            px(150.0),
             swatch,
             cx,
         )
