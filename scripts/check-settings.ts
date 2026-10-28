@@ -147,12 +147,15 @@ args = { layout = "smoke" }
     }
     return text;
   }
-  /** Presses Tab until `name` has focus, waiting for each press to move it. */
+  /** Presses Tab until `name` has focus, waiting for each press to move it.
+   * A name ending in ":", such as `key:when:`, matches any control it
+   * starts, as `state` reads it. */
   async function tabTo(name: string): Promise<void> {
+    const reached = (focus: string) => focus === name || (name.endsWith(":") && focus.startsWith(name));
     for (let step = 0; step < 20; step++) {
       let focus: string | undefined;
       await waitFor(async () => (focus = field(await current(), "focus")) !== undefined, "a readable focus");
-      if (focus === name) return;
+      if (focus !== undefined && reached(focus)) return;
       await key("tab");
       await waitFor(async () => {
         const now = field(await current(), "focus");
@@ -447,9 +450,10 @@ args = { layout = "smoke" }
     await state("settings.focus=action:krec:");
     // The shortcut's condition field suggests contexts as you type, with the
     // first highlighted: Escape closes them, typing reopens them, Return
-    // completes the name, and the next Return saves it.
-    await key("tab");
-    await state("settings.focus=key:when:");
+    // completes the name, and the next Return saves it. The rebind's reload
+    // can add a row stop, such as the replaced default's switch, between
+    // the recorder and the field, so Tab until the field has focus.
+    await tabTo("key:when:");
     await typeText("Te");
     await state("settings.list=key:when:", 'settings.highlight="Terminal"');
     await key("escape");
