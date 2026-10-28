@@ -3,11 +3,11 @@ use std::rc::Rc;
 
 use gpui::{
     Action, Context, Div, Entity, FocusHandle, Focusable as _, KeyBinding,
-    Modifiers, Render, TestAppContext, VisualTestContext, Window, div, point,
-    prelude::*, px,
+    Modifiers, Pixels, Render, TestAppContext, VisualTestContext, Window, div,
+    point, prelude::*, px,
 };
 
-use super::{Command, CommandEvent};
+use super::{Command, CommandEvent, HighlightFallback};
 use crate::components::input::{Changed, Input};
 use crate::option_list::ListOption;
 use crate::testing::{a11y_labelled, a11y_node, a11y_nodes, a11y_send, tokens};
@@ -34,17 +34,24 @@ const FONTS: [&str; 8] = [
 /// How a test's owner is set up.
 #[derive(Clone, Copy)]
 struct Setup {
-    /// Forty numbered fonts in place of [`FONTS`], in a list at most 100
-    /// points tall.
+    /// Forty numbered fonts in place of [`FONTS`], in a list at most
+    /// `max_height` points tall.
     many: bool,
+    max_height: f32,
+    /// The height the owner gives the list, in place of its own.
+    height: Option<f32>,
     pointer_highlights: bool,
+    fallback: HighlightFallback,
 }
 
 impl Default for Setup {
     fn default() -> Self {
         Self {
             many: false,
+            max_height: 100.0,
+            height: None,
             pointer_highlights: true,
+            fallback: HighlightFallback::First,
         }
     }
 }
@@ -59,6 +66,7 @@ struct Owner {
     root: FocusHandle,
     log: Rc<RefCell<Vec<CommandEvent>>>,
     blurs: Rc<RefCell<usize>>,
+    height: Option<Pixels>,
 }
 
 impl Owner {
@@ -71,9 +79,10 @@ impl Owner {
         let command = cx.new(|cx| {
             let mut command =
                 Command::new("fonts", "Fonts", &input, tokens(), cx)
-                    .with_pointer_highlight(setup.pointer_highlights);
+                    .with_pointer_highlight(setup.pointer_highlights)
+                    .with_highlight_fallback(setup.fallback);
             if setup.many {
-                command.set_max_height(Some(px(100.0)), cx);
+                command.set_max_height(Some(px(setup.max_height)), cx);
             }
             command
         });
@@ -120,6 +129,7 @@ impl Owner {
             root: cx.focus_handle(),
             log,
             blurs,
+            height: setup.height.map(px),
         }
     }
 }
@@ -144,11 +154,20 @@ impl Render for Owner {
         let keys = route::<PageUp>(keys, Command::select_page_up, cx);
         let keys = route::<First>(keys, Command::select_first, cx);
         let keys = route::<Last>(keys, Command::select_last, cx);
+        let list = match self.height {
+            Some(height) => div()
+                .h(height)
+                .flex()
+                .flex_col()
+                .child(self.command.clone())
+                .into_any_element(),
+            None => self.command.clone().into_any_element(),
+        };
         div()
             .size_full()
             .track_focus(&self.root)
             .child(crate::focus::tracker())
-            .child(keys.child(self.input.clone()).child(self.command.clone()))
+            .child(keys.child(self.input.clone()).child(list))
     }
 }
 
@@ -173,6 +192,18 @@ fn type_text(cx: &mut VisualTestContext, text: &str) {
 fn keys(cx: &mut VisualTestContext, keys: &str) {
     cx.simulate_keystrokes(keys);
     cx.run_until_parked();
+}
+
+/// Delivers the frames the window asks for, as a platform's frame source
+/// would and GPUI's test mode does not, until it asks for none.
+fn deliver_frames(cx: &mut VisualTestContext) {
+    for _ in 0..10 {
+        cx.run_until_parked();
+        if cx.update(Window::simulate_next_frame) == 0 {
+            return;
+        }
+    }
+    panic!("the window kept asking for frames");
 }
 
 struct Probe {
@@ -247,6 +278,11 @@ impl Probe {
 
     fn blurs(&self, cx: &mut VisualTestContext) -> usize {
         cx.update(|_, cx| *self.owner.read(cx).blurs.borrow())
+    }
+
+    fn shows(&self, cx: &mut VisualTestContext, row: usize) -> bool {
+        let command = self.command(cx);
+        cx.read(|cx| command.read(cx).list.shows(row))
     }
 
     fn taken(&self, cx: &mut VisualTestContext) -> Vec<CommandEvent> {
@@ -357,6 +393,7 @@ fn no_matches_show_the_empty_state(cx: &mut TestAppContext) {
             "the list gives way to the empty state"
         );
         let field = &a11y_node(window, "search")["aria"];
+        assert_eq!(field["expanded"], false, "no list shows");
         assert!(field["description"].is_null(), "{field}");
     });
     // Clearing the query brings the list back.
@@ -365,6 +402,9 @@ fn no_matches_show_the_empty_state(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(probe.labels(cx).len(), 8);
     assert_eq!(probe.highlighted(cx).as_deref(), Some("Menlo"));
+    cx.update(|window, _| {
+        assert_eq!(a11y_node(window, "search")["aria"]["expanded"], true);
+    });
 }
 
 #[gpui::test]
@@ -465,4 +505,116 @@ fn a_long_list_scrolls_to_its_highlight(cx: &mut TestAppContext) {
     assert!(shows(cx, 3));
     keys(cx, "home");
     assert!(shows(cx, 0));
+}
+
+#[gpui::test]
+fn a_cleared_fallback_loses_a_vanished_highlight(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            fallback: HighlightFallback::Clear,
+            ..Setup::default()
+        },
+    );
+    assert_eq!(probe.highlighted(cx), None, "nothing was highlighted");
+    keys(cx, "down down down down down");
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Fira Mono"));
+    probe.taken(cx);
+    type_text(cx, "mono");
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Fira Mono"));
+    type_text(cx, "n");
+    assert_eq!(probe.labels(cx), ["Mononoki"]);
+    assert_eq!(probe.highlighted(cx), None, "Fira Mono no longer matches");
+    keys(cx, "enter");
+    assert_eq!(probe.taken(cx), Vec::<CommandEvent>::new());
+    let command = probe.command(cx);
+    let confirmed = cx.update(|_, cx| command.update(cx, Command::confirm));
+    assert!(!confirmed);
+    cx.update(|window, _| {
+        let field = &a11y_node(window, "search")["aria"];
+        assert!(field["description"].is_null(), "{field}");
+    });
+    // The owner restarts at the first item, and can clear it again.
+    cx.update(|_, cx| command.update(cx, Command::select_first));
+    assert_eq!(probe.taken(cx), [highlighted("mononoki")]);
+    cx.update(|_, cx| command.update(cx, Command::clear_highlight));
+    assert_eq!(probe.highlighted(cx), None);
+    assert_eq!(probe.taken(cx), Vec::<CommandEvent>::new());
+}
+
+#[gpui::test]
+fn a_list_held_below_its_maximum_moves_within_the_height_it_shows(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            many: true,
+            max_height: 140.0,
+            height: Some(80.0),
+            ..Setup::default()
+        },
+    );
+    keys(cx, "end");
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Font 39"));
+    assert!(probe.shows(cx, 39));
+    // An 80-point list shows two whole 28-point rows under its padding.
+    keys(cx, "home pagedown");
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Font 02"));
+    assert!(probe.shows(cx, 2));
+    // The owner shrinks the list, which reveals the highlight again.
+    keys(cx, "end");
+    deliver_frames(cx);
+    probe.owner.update(cx, |owner, cx| {
+        owner.height = Some(px(60.0));
+        cx.notify();
+    });
+    deliver_frames(cx);
+    assert!(probe.shows(cx, 39));
+}
+
+#[gpui::test]
+fn a_kept_highlight_stays_in_view_when_the_rows_shrink(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            many: true,
+            ..Setup::default()
+        },
+    );
+    let command = probe.command(cx);
+    let set = |cx: &mut VisualTestContext, options: Vec<ListOption>| {
+        cx.update(|_, cx| {
+            command.update(cx, |command, cx| command.set_options(options, cx));
+        });
+        cx.run_until_parked();
+    };
+    let fonts = |count: usize| -> Vec<ListOption> {
+        (0..count)
+            .map(|index| {
+                let option = ListOption::new(
+                    format!("font {index:02}"),
+                    format!("Font {index:02}"),
+                );
+                if index == 39 {
+                    option.description("Variable")
+                } else {
+                    option
+                }
+            })
+            .collect()
+    };
+    // The last font's description makes every row 40 points tall.
+    set(cx, fonts(40));
+    cx.update(|_, cx| {
+        command.update(cx, |command, cx| command.select("font 20", cx));
+    });
+    cx.run_until_parked();
+    assert!(probe.shows(cx, 20));
+    // Without it, rows are 28 points, and the highlight keeps its index.
+    set(cx, fonts(39));
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Font 20"));
+    assert!(probe.shows(cx, 20));
 }

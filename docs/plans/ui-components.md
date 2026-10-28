@@ -37,7 +37,9 @@ Step 5's `Combobox` runs its owner's filter on every edit the user
 makes, which `Input`'s new `Edited` event tells from the owner's writes,
 so typing opens and refilters the list and putting back a value does not;
 `Command` takes the items its owner filters and ranks, because the
-palette and Licenses search differently. Both draw `option_list`'s rows,
+palette and Licenses search differently, and its `HighlightFallback::Clear`
+lets the palette's identity pickers lose a highlight whose item vanished
+rather than move it. Both draw `option_list`'s rows,
 and both report their field as an `EditableComboBox` (see Accessibility);
 migrations 5a and 5b remain.
 Approved on 2026-10-27 after four Codex and Claude review rounds, then

@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Context, Div, MouseButton, MouseMoveEvent, Pixels, Point,
-    ScrollHandle, SharedString, Window, div, prelude::*, px,
+    ScrollHandle, SharedString, Window, canvas, div, prelude::*, px,
 };
 
 use crate::animation::AnimationSchedule;
@@ -158,6 +158,8 @@ pub(crate) struct OptionList {
     row_height: Option<Pixels>,
     /// The height beyond which the options scroll, padding included.
     max_height: Option<Pixels>,
+    /// The laid-out height the highlight was last revealed in.
+    viewport: Pixels,
     content: Option<RowContent>,
 }
 
@@ -171,6 +173,7 @@ impl OptionList {
             scroll,
             row_height: None,
             max_height: None,
+            viewport: px(0.0),
             content: None,
         }
     }
@@ -240,13 +243,16 @@ impl OptionList {
         self.row_height() * rows + px(PADDING * 2.0)
     }
 
-    /// The height the options show in: the maximum, else the last
-    /// layout's; `None` before any layout without a maximum.
+    /// The height the options show in: the last layout's, which a parent
+    /// may hold below the maximum, else the maximum; `None` before any
+    /// layout without a maximum.
     fn visible_height(&self) -> Option<Pixels> {
         let laid_out = self.scroll.bounds().size.height;
-        self.max_height
-            .map(|max| max.min(self.content_height()))
-            .or((laid_out > px(0.0)).then_some(laid_out))
+        if laid_out > px(0.0) {
+            Some(laid_out)
+        } else {
+            self.max_height.map(|max| max.min(self.content_height()))
+        }
     }
 
     /// How many whole options show at once, at least one.
@@ -265,12 +271,17 @@ impl OptionList {
     }
 
     /// Replaces the options, keeping the highlight on the same option
-    /// where it still is. Returns whether the highlighted option changed.
+    /// where it still is, and in view: the rows above it, or their height,
+    /// may have changed. Returns whether the highlighted option changed.
     pub(crate) fn set_options(&mut self, options: Vec<ListOption>) -> bool {
         let before = self.highlighted().map(|option| option.id.clone());
         let highlight = remap(&self.options, self.highlight, &options);
         self.options = options;
-        self.set_highlight(highlight);
+        if !self.set_highlight(highlight)
+            && let Some(row) = self.highlight
+        {
+            self.reveal(row);
+        }
         self.highlighted().map(|option| &option.id) != before.as_ref()
     }
 
@@ -364,6 +375,29 @@ impl OptionList {
         window: &mut Window,
         cx: &mut Context<'_, V>,
     ) -> Div {
+        // A parent may resize the list without a change here, so a frame
+        // whose layout differs from the last asks for another, which
+        // reveals the highlight in the new height.
+        let laid_out = self.scroll.bounds().size.height;
+        if laid_out > px(0.0) && laid_out != self.viewport {
+            self.viewport = laid_out;
+            if let Some(row) = self.highlight {
+                self.reveal(row);
+            }
+        }
+        let seen = self.viewport;
+        let scroll = self.scroll.clone();
+        let resized = canvas(
+            move |_, window, _| {
+                let laid_out = scroll.bounds().size.height;
+                if laid_out > px(0.0) && laid_out != seen {
+                    window.request_animation_frame();
+                }
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .size(px(0.0));
         let look = Look {
             tokens,
             pointer_highlights,
@@ -427,6 +461,7 @@ impl OptionList {
                     }))
                     .children(rows),
             )
+            .child(resized)
             .children(scrollbar)
     }
 }

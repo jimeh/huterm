@@ -5,17 +5,26 @@
 //!
 //! Anatomy: the owner's [`Input`], drawn by the owner with any chrome, and
 //! the suggestions in a non-modal [`Popover`] below the field, or above it
-//! from the window's lower half, at least as wide as the field. The list
-//! shows at most eight suggestions and scrolls the rest, within the window's
-//! margin. Mount the `Combobox` entity as the last child of a relatively
-//! positioned wrapper around the field: it draws nothing in flow, measures
-//! the wrapper as its anchor, and draws the list above everything else.
+//! from the window's lower half, at least as wide as the field and no wider
+//! than the window inside its margins. The list shows at most eight
+//! suggestions and scrolls the rest, within the window's margin, and
+//! follows its field when the field moves. Mount the `Combobox` entity as
+//! the last child of a relatively positioned wrapper around the field: it
+//! draws nothing in flow, measures the wrapper as its anchor, and draws the
+//! list above everything else.
 //!
 //! Suggestions: the owner's filter turns the field into suggestions
-//! whenever the user edits it. It runs synchronously, so the list,
-//! the highlight, and the open state always match the text; call
+//! whenever the user edits it, once per edit. It runs synchronously, so
+//! the list, the highlight, and the open state always match the text; call
 //! [`Combobox::refresh`] when the filter's own data changes. The field
 //! accepts any text, not only a suggestion.
+//!
+//! The filter must read only its own data, never the owner's entity. Besides
+//! the user's edits and an owner's write to the field while the list shows,
+//! it runs inside [`Combobox::open`], [`Combobox::toggle`] on a closed list,
+//! [`Combobox::select_next`] and [`Combobox::select_previous`] on a closed
+//! list, and [`Combobox::refresh`] on an open one, which an owner usually
+//! calls from its own action handler, while its entity is being updated.
 //!
 //! Keyboard: focus stays in the field, which keeps every key, so typing
 //! continues while the list shows. The owner routes its commands to
@@ -34,14 +43,16 @@
 //! Pointer: a moving pointer highlights a suggestion, and a click picks it.
 //! A press on a suggestion prevents the field's blur, so a pick is reported
 //! once, with no blur before it. A press on the field leaves the list open.
+//! A wheel over the list scrolls it.
 //!
 //! Dismissal: a pick, Confirm, and Close close the list. Escape is the
 //! owner's [`Combobox::close`]: the first closes the list and returns
 //! `true`, and a second, with the list closed, returns `false` and is the
 //! owner's to handle, such as by putting back the value. The list also
 //! closes on a press outside it and the field, which still reaches what it
-//! lands on, on blur, on window deactivation, and when its field turns
-//! disabled or read-only. Focus stays where it is.
+//! lands on, on a wheel outside it, which still scrolls what it is over, on
+//! blur, on window deactivation, and when its field turns disabled or
+//! read-only. Focus stays where it is.
 //!
 //! States: the combobox follows its field. A disabled or read-only field
 //! never opens the list.
@@ -68,7 +79,7 @@ use gpui::{
 
 use crate::animation::AnimationSchedule;
 use crate::components::input::{Changed, Edited, Input, ListState};
-use crate::components::popover::{Anchor, Popover, place};
+use crate::components::popover::{Anchor, MARGIN, Popover, place};
 use crate::components::surface::surface;
 use crate::listbox::ItemId;
 use crate::option_list::{
@@ -103,6 +114,9 @@ pub struct Combobox {
     filter: Filter,
     auto_highlight: bool,
     open: bool,
+    /// The user's edit was filtered, so the `Changed` that follows it is
+    /// not filtered again.
+    edit_filtered: bool,
     popover: Popover,
     list: OptionList,
     _subscriptions: [Subscription; 4],
@@ -139,11 +153,13 @@ impl Combobox {
         let subscriptions = [
             cx.subscribe(input, |combobox, _, _: &Edited, cx| {
                 combobox.edited(cx);
+                combobox.edit_filtered = true;
             }),
             // An owner's write refilters a list that shows; only the
             // user's edits open one.
             cx.subscribe(input, |combobox, _, _: &Changed, cx| {
-                if combobox.open {
+                if !std::mem::take(&mut combobox.edit_filtered) && combobox.open
+                {
                     combobox.refresh(cx);
                 }
             }),
@@ -170,6 +186,7 @@ impl Combobox {
             filter: Rc::new(filter),
             auto_highlight: false,
             open: false,
+            edit_filtered: false,
             popover: Popover::new(),
             list: OptionList::new(),
             _subscriptions: subscriptions,
@@ -481,7 +498,12 @@ impl Render for Combobox {
         let viewport = window.viewport_size();
         let list = match (self.open, self.popover.trigger_bounds()) {
             (true, Some(field)) => {
-                let width = field.size.width.max(MIN_WIDTH);
+                let width = field
+                    .size
+                    .width
+                    .max(MIN_WIDTH)
+                    .min(viewport.width - MARGIN * 2.0)
+                    .max(px(0.0));
                 let height =
                     self.list.content_height().min(self.max_height(None))
                         + px(BORDER * 2.0);

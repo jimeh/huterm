@@ -13,7 +13,12 @@
 //! event. Search rules differ: a command palette ranks fuzzy matches by
 //! use and marks the matched characters, and a license list matches a
 //! component's name, license, and kind. The highlight stays on the same
-//! item while it still matches, and otherwise moves to the first.
+//! item while it still matches. Otherwise it moves to the first item, or,
+//! with [`HighlightFallback::Clear`], to none, so that Confirm can never
+//! report an item other than the one the user highlighted. An owner that
+//! restarts at the first item on every query calls [`Command::select_first`]
+//! after [`Command::set_options`]; [`Command::clear_highlight`] removes the
+//! highlight.
 //!
 //! Keyboard: focus stays in the search field, which keeps every key. The
 //! owner routes its commands to [`Command::select_next`],
@@ -29,15 +34,17 @@
 //! highlights the item and reports it picked. A press on an item keeps
 //! focus in the search.
 //!
-//! Events: [`CommandEvent::Highlighted`] whenever the highlighted item
-//! changes, from any cause, and [`CommandEvent::Picked`] for Confirm or a
-//! click.
+//! Events: [`CommandEvent::Highlighted`] whenever another item becomes
+//! highlighted, from any cause, and [`CommandEvent::Picked`] for Confirm or
+//! a click. A highlight that clears reports nothing; Confirm then reports
+//! nothing and returns `false`.
 //!
 //! States: none of its own. A search field that is disabled takes no focus,
 //! so the owner's commands for it do not arrive.
 //!
 //! Accessibility: the search field is an `EditableComboBox` whose list
-//! always shows, with the highlighted item as its description. The list is
+//! shows while it has items, with the highlighted item as its description;
+//! the empty state reports the list collapsed. The list is
 //! a `ListBox` named by the command's label, of `ListBoxOption` rows whose
 //! highlighted one is selected and claims the active descendant. GPUI
 //! honors that only inside the focused node, which is the field, so
@@ -69,6 +76,17 @@ pub enum CommandEvent {
     Picked(ItemId),
 }
 
+/// Where the highlight goes when [`Command::set_options`] drops its item.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HighlightFallback {
+    /// The first item, also when nothing was highlighted.
+    #[default]
+    First,
+    /// No item, as a picker whose Confirm must never reach another item
+    /// needs. Nothing highlighted stays that way.
+    Clear,
+}
+
 /// A command list: the items, their highlight, and the search field they
 /// answer.
 pub struct Command {
@@ -77,6 +95,7 @@ pub struct Command {
     input: Entity<Input>,
     tokens: Tokens,
     pointer_highlights: bool,
+    fallback: HighlightFallback,
     empty: SharedString,
     list: OptionList,
 }
@@ -110,6 +129,7 @@ impl Command {
             input: input.clone(),
             tokens,
             pointer_highlights: true,
+            fallback: HighlightFallback::First,
             empty: "No results".into(),
             list: OptionList::new(),
         };
@@ -121,6 +141,17 @@ impl Command {
     #[must_use]
     pub fn with_pointer_highlight(mut self, highlights: bool) -> Self {
         self.pointer_highlights = highlights;
+        self
+    }
+
+    /// Where the highlight goes when its item leaves the list: the first
+    /// item by default.
+    #[must_use]
+    pub fn with_highlight_fallback(
+        mut self,
+        fallback: HighlightFallback,
+    ) -> Self {
+        self.fallback = fallback;
         self
     }
 
@@ -168,7 +199,7 @@ impl Command {
 
     /// Replaces the items with those matching the query, keeping the
     /// highlight on the same item while it is still there, and otherwise
-    /// highlighting the first.
+    /// moving it as the [`HighlightFallback`] says.
     pub fn set_options(
         &mut self,
         options: Vec<ListOption>,
@@ -176,7 +207,9 @@ impl Command {
     ) {
         let before = self.list.highlighted().map(|option| option.id.clone());
         self.list.set_options(options);
-        if self.list.highlight().is_none() {
+        if self.fallback == HighlightFallback::First
+            && self.list.highlight().is_none()
+        {
             self.list.set_highlight(Some(0));
         }
         self.changed(before.as_ref(), cx);
@@ -214,6 +247,11 @@ impl Command {
         if let Some(row) = self.list.position(id) {
             self.move_to(Some(row), cx);
         }
+    }
+
+    /// Highlights no item, so Confirm reports nothing.
+    pub fn clear_highlight(&mut self, cx: &mut Context<'_, Self>) {
+        self.move_to(None, cx);
     }
 
     /// Highlights the next item, stopping at the last.
@@ -297,7 +335,7 @@ impl Command {
     /// Tells the search field what to report about the list.
     fn sync_field(&self, cx: &mut Context<'_, Self>) {
         let state = ListState {
-            expanded: true,
+            expanded: !self.list.options().is_empty(),
             active: self.list.highlighted().map(|option| option.label.clone()),
         };
         self.input.update(cx, |input, cx| {

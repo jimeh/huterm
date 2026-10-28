@@ -684,13 +684,25 @@ draws with any chrome, and focus never leaves that field. Mount a `Combobox`
 entity as the last child of a relatively positioned wrapper around its
 field: it measures the wrapper and draws its suggestions in its own
 non-modal `Popover`, mounting that popover's guard itself, since a non-modal
-guard never stops a press. Its filter runs on each `Edited`, which `Input`
+guard never stops a press. A non-modal guard also closes on a wheel outside
+the content and lets the wheel scroll what it is over, and an open
+popover's trigger probe asks for another frame when the trigger moves, so a
+list placed from the field's last paint follows it. GPUI's test mode
+delivers no frames, so a test of that follow, or of a list revealing its
+highlight after a parent resized it, pumps `Window::simulate_next_frame`,
+after first draining the frames already pending, or another request
+redraws in its place. The filter runs once per `Edited`, which `Input`
 emits before `Changed` for the user's edits alone, so an owner's `set_text`,
 such as Escape putting back a value, opens nothing. The filter reads its own
-data, never the owner's entity, which may be mid-update when the owner calls
-`refresh`. `Command` takes the items its owner filters and ranks through
-`set_options`, typically from `Changed`, and draws them inline; turn off its
-pointer highlight where the highlight shows details, as Licenses does. Route
+data, never the owner's entity: it also runs inside `open`, `toggle`,
+`select_next` and `select_previous` on a closed list, and `refresh`, which
+an owner usually calls from its own action handler mid-update. `Command`
+takes the items its owner filters and ranks through `set_options`,
+typically from `Changed`, and draws them inline; turn off its pointer
+highlight where the highlight shows details, as Licenses does. A picker
+whose Enter must never reach another row, as the palette's identity
+pickers, takes `HighlightFallback::Clear`, and an owner that restarts at
+the first row on each query calls `select_first` after `set_options`. Route
 list commands to their methods: a combobox's return `false` when the key is
 the owner's, such as a second Escape or Enter with nothing highlighted. Both
 set their field's `ListState`, so it reports an `EditableComboBox` whose

@@ -1,14 +1,16 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, Context, Div, Entity, FocusHandle, Focusable as _, KeyBinding,
-    Modifiers, MouseButton, Render, TestAppContext, VisualTestContext, Window,
-    div, point, prelude::*, px,
+    Action, App, Bounds, Context, Div, Entity, FocusHandle, Focusable as _,
+    KeyBinding, Modifiers, MouseButton, Pixels, Point, Render, ScrollDelta,
+    ScrollHandle, ScrollWheelEvent, TestAppContext, TouchPhase,
+    VisualTestContext, Window, div, point, prelude::*, px, size,
 };
 
 use super::{Combobox, ComboboxEvent};
 use crate::components::input::Input;
+use crate::components::popover::MARGIN;
 use crate::option_list::ListOption;
 use crate::testing::{a11y_labelled, a11y_node, a11y_nodes, a11y_send, tokens};
 
@@ -36,11 +38,14 @@ const FONTS: [&str; 8] = [
 type Log = Rc<RefCell<Vec<String>>>;
 
 /// The suggestions in `fonts` that contain the field's text, ignoring
-/// case, as a font family field filters the installed families.
+/// case, as a font family field filters the installed families. Each run
+/// counts in `runs`.
 fn containing(
     fonts: Vec<String>,
+    runs: Rc<Cell<usize>>,
 ) -> impl Fn(&Input) -> Vec<ListOption> + 'static {
     move |input| {
+        runs.set(runs.get() + 1);
         let text = input.text().to_lowercase();
         fonts
             .iter()
@@ -56,8 +61,19 @@ struct Setup {
     auto_highlight: bool,
     /// Forty numbered fonts in place of [`FONTS`].
     many: bool,
-    /// The field sits at the window's bottom edge.
-    at_bottom: bool,
+    field: Field,
+}
+
+/// Where the field sits.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Field {
+    /// At the window's top left, 160 points wide.
+    #[default]
+    TopLeft,
+    /// At the window's bottom edge.
+    AtBottom,
+    /// Across the window's top.
+    FullWidth,
 }
 
 /// A font family field at the window's top left, or its bottom edge, whose
@@ -66,13 +82,19 @@ struct Setup {
 /// blur, and presses on a control at the right that takes no focus, as a
 /// disabled one does. Another control there takes focus, and the root
 /// takes it from presses nothing else takes, as a window's root view does.
+/// Below them, a scrolling area holds more than it shows.
 struct Owner {
     input: Entity<Input>,
     combobox: Entity<Combobox>,
     root: FocusHandle,
     other: FocusHandle,
     log: Log,
-    at_bottom: bool,
+    /// How many times the filter ran.
+    filtered: Rc<Cell<usize>>,
+    scroll: ScrollHandle,
+    field: Field,
+    /// How far right of the window's edge the field sits.
+    shift: Pixels,
 }
 
 impl Owner {
@@ -88,13 +110,15 @@ impl Owner {
         } else {
             FONTS.iter().map(|font| (*font).to_owned()).collect()
         };
+        let filtered = Rc::new(Cell::new(0));
+        let runs = filtered.clone();
         let combobox = cx.new(|cx| {
             Combobox::new(
                 "font-family",
                 "Font family",
                 &input,
                 tokens(),
-                containing(fonts),
+                containing(fonts, runs),
                 window,
                 cx,
             )
@@ -131,7 +155,10 @@ impl Owner {
             root: cx.focus_handle(),
             other: cx.focus_handle(),
             log,
-            at_bottom: setup.at_bottom,
+            filtered,
+            scroll: ScrollHandle::new(),
+            field: setup.field,
+            shift: px(0.0),
         }
     }
 
@@ -147,18 +174,23 @@ impl Render for Owner {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let viewport = window.viewport_size();
-        let top = if self.at_bottom {
+        let top = if self.field == Field::AtBottom {
             viewport.height - px(30.0)
         } else {
             px(0.0)
         };
         let inert_log = self.log.clone();
+        let width = if self.field == Field::FullWidth {
+            viewport.width
+        } else {
+            px(160.0)
+        };
         let keys = div()
             .key_context(KEYS)
             .absolute()
             .top(top)
-            .left(px(0.0))
-            .w(px(160.0))
+            .left(self.shift)
+            .w(width)
             .on_action(cx.listener(|owner, _: &Confirm, _, cx| {
                 let picked = owner.combobox.update(cx, Combobox::confirm);
                 if !picked {
@@ -212,6 +244,18 @@ impl Render for Owner {
                     .left(px(300.0))
                     .size(px(40.0))
                     .track_focus(&self.other),
+            )
+            .child(
+                div()
+                    .id("scroller")
+                    .absolute()
+                    .top(px(400.0))
+                    .left(px(300.0))
+                    .w(px(100.0))
+                    .h(px(50.0))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(div().h(px(300.0))),
             )
     }
 }
@@ -333,6 +377,50 @@ impl Probe {
             std::mem::take(&mut *self.owner.read(cx).log.borrow_mut())
         })
     }
+
+    /// How many times the filter ran since the last call.
+    fn filtered(&self, cx: &mut VisualTestContext) -> usize {
+        cx.update(|_, cx| self.owner.read(cx).filtered.replace(0))
+    }
+
+    fn list_bounds(&self, cx: &mut VisualTestContext) -> Bounds<Pixels> {
+        let combobox = self.combobox(cx);
+        cx.read(|cx| combobox.read(cx).list_bounds())
+            .expect("the list painted")
+    }
+}
+
+/// Delivers the frames the window asks for, as a platform's frame source
+/// would and GPUI's test mode does not, until it asks for none.
+fn deliver_frames(cx: &mut VisualTestContext) {
+    for _ in 0..10 {
+        cx.run_until_parked();
+        if cx.update(Window::simulate_next_frame) == 0 {
+            return;
+        }
+    }
+    panic!("the window kept asking for frames");
+}
+
+/// Turns the wheel `by` points over `position`.
+fn wheel(cx: &mut VisualTestContext, position: Point<Pixels>, by: f32) {
+    cx.simulate_event(ScrollWheelEvent {
+        position,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(by))),
+        modifiers: Modifiers::none(),
+        touch_phase: TouchPhase::Moved,
+    });
+    cx.run_until_parked();
+}
+
+/// Asserts that the list draws inside the window's margins.
+fn assert_inside_margins(probe: &Probe, cx: &mut VisualTestContext) {
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let list = probe.list_bounds(cx);
+    assert!(
+        list.left() >= MARGIN && list.right() <= viewport.width - MARGIN,
+        "{list:?} in {viewport:?}"
+    );
 }
 
 #[gpui::test]
@@ -677,7 +765,7 @@ fn a_long_list_scrolls_to_its_highlight_inside_the_window(
         cx,
         Setup {
             many: true,
-            at_bottom: true,
+            field: Field::AtBottom,
             ..Setup::default()
         },
     );
@@ -711,4 +799,96 @@ fn a_long_list_scrolls_to_its_highlight_inside_the_window(
     assert!(shows(cx, 8));
     keys(cx, "home");
     assert!(shows(cx, 0));
+}
+
+#[gpui::test]
+fn each_edit_filters_once(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(cx, Setup::default());
+    probe.filtered(cx);
+    type_text(cx, "m");
+    assert!(probe.open(cx));
+    assert_eq!(probe.filtered(cx), 1, "the edit that opens the list");
+    type_text(cx, "o");
+    assert_eq!(probe.filtered(cx), 1, "an edit while the list shows");
+    let input = probe.input(cx);
+    cx.update(|_, cx| {
+        input.update(cx, |input, cx| input.set_text("fira", cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(probe.labels(cx), ["Fira Code", "Fira Mono"]);
+    assert_eq!(probe.filtered(cx), 1, "an owner's write while it shows");
+}
+
+#[gpui::test]
+fn the_list_narrows_to_fit_a_narrow_window(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(cx, Setup::default());
+    cx.simulate_resize(size(px(180.0), px(400.0)));
+    cx.run_until_parked();
+    type_text(cx, "mo");
+    assert_inside_margins(&probe, cx);
+}
+
+#[gpui::test]
+fn a_full_width_field_keeps_its_list_inside_the_window(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            field: Field::FullWidth,
+            ..Setup::default()
+        },
+    );
+    type_text(cx, "mo");
+    assert_inside_margins(&probe, cx);
+}
+
+#[gpui::test]
+fn the_list_follows_its_field_when_the_field_moves(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(cx, Setup::default());
+    type_text(cx, "mo");
+    deliver_frames(cx);
+    assert_eq!(probe.list_bounds(cx).left(), MARGIN);
+    // One redraw of the owner moves the field.
+    probe.owner.update(cx, |owner, cx| {
+        owner.shift = px(50.0);
+        cx.notify();
+    });
+    deliver_frames(cx);
+    assert!(probe.open(cx));
+    assert_eq!(probe.list_bounds(cx).left(), px(50.0));
+}
+
+#[gpui::test]
+fn a_wheel_outside_the_list_closes_it_and_still_scrolls(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(cx, Setup::default());
+    type_text(cx, "mo");
+    wheel(cx, point(px(350.0), px(420.0)), -30.0);
+    assert!(!probe.open(cx));
+    let offset = cx.update(|_, cx| probe.owner.read(cx).scroll.offset());
+    assert_eq!(offset.y, px(-30.0), "the area under the wheel scrolled");
+    assert!(probe.field_focused(cx));
+}
+
+#[gpui::test]
+fn a_wheel_over_the_list_scrolls_it_and_keeps_it_open(cx: &mut TestAppContext) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            many: true,
+            ..Setup::default()
+        },
+    );
+    type_text(cx, "font");
+    let combobox = probe.combobox(cx);
+    let shows = |cx: &mut VisualTestContext, row: usize| {
+        cx.read(|cx| combobox.read(cx).list.shows(row))
+    };
+    assert!(shows(cx, 0));
+    let list = probe.list_bounds(cx);
+    wheel(cx, list.center(), -100.0);
+    assert!(probe.open(cx));
+    assert!(!shows(cx, 0), "the list scrolled");
 }
