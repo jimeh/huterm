@@ -378,9 +378,11 @@ lists.
   changes; the owner holds the truth. Settings values come from the file and
   a pending queue, so components never cache them. Builders are `RenderOnce`
   values: `Switch::new(id, label).on(value).disabled(reason).on_change(f)`.
-- **Entities only for transient state.** `TextField`, `Listbox` (selection,
-  scroll, type-ahead), `Popover` (open state, anchor bounds), and
-  `KeyRecorder` are entities. Everything else is a stateless builder.
+- **Entities only for transient state.** `TextField`, `Menu` (selection,
+  scroll, type-ahead, over the pure `listbox` model), and `KeyRecorder` are
+  entities. `Popover` is a cloneable handle on shared open state and anchor
+  bounds, so a `RenderOnce` trigger can hold it. Everything else is a
+  stateless builder.
 - **Stable identity.** Every component takes an `ElementId`. GPUI derives
   accessibility node identity and element state from it, so it must survive
   re-renders and be unique within the window.
@@ -435,7 +437,7 @@ pointer position), its placement, its layer, its focus policy, and its
 dismissal. Tooltips are separate: GPUI draws them in its own layer, and
 showing one never closes a popover.
 
-- **Placement.** Generalize the pure `place_menu` into `place_popover`: open
+- **Placement.** Generalize the pure `place_menu` into `popover::place`: open
   below the trigger, or above it from the lower half; align to the trigger's
   left edge, or its right edge from the right half; clamp to the window
   margin; and return a `max_height` that the content scrolls within. A select

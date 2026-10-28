@@ -16,7 +16,8 @@
 //! Pointer: a press opens the menu and a press on the open trigger closes
 //! it; the popover's guard turns that second press into
 //! [`crate::components::popover::Dismissal::TriggerPress`]. A disabled
-//! select takes no focus from a press and does not open.
+//! select takes no focus from a press and does not open, and shows its
+//! reason as a tooltip.
 //!
 //! Accessibility: a `ComboBox` named by its label, whose value is the shown
 //! label and whose expanded state follows the menu. A disabled select
@@ -32,6 +33,7 @@ use gpui::{
 use crate::a11y::States;
 use crate::click::from_keyboard;
 use crate::components::popover::Popover;
+use crate::components::tooltip::Tooltip;
 use crate::focus;
 use crate::tokens::{Tokens, size};
 
@@ -97,7 +99,8 @@ impl Select {
         self
     }
 
-    /// Disables the select; `reason` becomes its accessible description.
+    /// Disables the select; `reason` shows as its tooltip and becomes its
+    /// accessible description.
     #[must_use]
     pub fn disabled(mut self, reason: Option<SharedString>) -> Self {
         self.disabled = Some(reason.unwrap_or_default());
@@ -120,6 +123,9 @@ impl Select {
     }
 
     /// The popover the trigger anchors, so its guard knows the trigger.
+    /// Selects that share one popover pass it only to the trigger whose
+    /// menu is open, since the trigger that paints last is the one the
+    /// guard knows.
     #[must_use]
     pub fn popover(mut self, popover: &Popover) -> Self {
         self.popover = Some(popover.clone());
@@ -150,7 +156,9 @@ impl RenderOnce for Select {
             .aria_value(self.value.clone())
             .aria_expanded(self.open)
             .when_some(reason, |trigger, reason| {
-                trigger.aria_description(reason)
+                trigger.aria_description(reason.clone()).tooltip(
+                    move |_, cx| Tooltip::view(reason.clone(), tokens, cx),
+                )
             })
             .track_focus(&focus)
             .when_some(self.key_context, |trigger, context| {

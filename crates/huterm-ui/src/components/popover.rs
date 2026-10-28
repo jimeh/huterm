@@ -34,6 +34,8 @@ use gpui::{
     prelude::*, px,
 };
 
+use crate::focus;
+
 /// Why a popover closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dismissal {
@@ -117,7 +119,9 @@ impl Popover {
     }
 
     /// An element that records the trigger's bounds as it paints. Mount it
-    /// inside the trigger, which must be relatively positioned.
+    /// inside the trigger, which must be relatively positioned. When
+    /// several triggers share one popover, mount it only in the open one:
+    /// the last to paint is the trigger the guard knows.
     #[must_use]
     pub fn trigger_probe(&self) -> impl IntoElement + use<> {
         let state = self.state.clone();
@@ -199,6 +203,8 @@ impl Popover {
                         };
                         let modal = state.borrow().modal;
                         if modal {
+                            // The focus tracker would miss a stopped press.
+                            focus::note_pointer_press(window, cx);
                             cx.stop_propagation();
                             window.prevent_default();
                         }
@@ -657,5 +663,63 @@ mod guard_tests {
             taken(&log),
             ["dismissed:OutsidePress", "under-down", "under-click"]
         );
+    }
+
+    /// A guard mounted before the focus tracker, whose capture listener
+    /// then never sees a press the guard stops, and a focusable trigger.
+    struct Guarded {
+        popover: Popover,
+        focus: gpui::FocusHandle,
+    }
+
+    impl Render for Guarded {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            _: &mut Context<'_, Self>,
+        ) -> impl IntoElement {
+            let popover = self.popover.clone();
+            div()
+                .size(px(400.0))
+                .child(self.popover.guard(move |_, _, _| {
+                    let _ = popover.close();
+                }))
+                .child(crate::focus::tracker())
+                .child(
+                    div()
+                        .id("trigger")
+                        .track_focus(&self.focus)
+                        .w(px(100.0))
+                        .h(px(24.0)),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn a_stopped_press_still_hides_a_keyboard_focus_ring(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(|_, cx| Guarded {
+            popover: Popover::new(),
+            focus: cx.focus_handle(),
+        });
+        cx.run_until_parked();
+        let focus = view.read_with(cx, |view, _| view.focus.clone());
+        cx.simulate_keystrokes("a");
+        cx.update(|window, cx| focus.focus(window, cx));
+        cx.run_until_parked();
+        let visible = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| crate::focus::visible(&focus, window, cx))
+        };
+        assert!(visible(cx));
+        view.update(cx, |view, cx| {
+            view.popover
+                .open(Anchor::Pointer(point(px(0.0), px(30.0))), true);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click(cx, 50.0, 220.0);
+        assert!(!view.read_with(cx, |view, _| view.popover.is_open()));
+        assert!(!visible(cx));
     }
 }

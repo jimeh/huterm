@@ -288,12 +288,11 @@ impl Gallery {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let column = &mut self.columns[index];
-        if column.select_popover.close() {
-            column.select_menu = None;
-            cx.notify();
+        if self.columns[index].select_popover.is_open() {
+            self.close_select(index, window, cx);
             return;
         }
+        let column = &mut self.columns[index];
         let Some(bounds) = column.select_popover.trigger_bounds() else {
             return;
         };
@@ -309,20 +308,37 @@ impl Gallery {
         if let Some(value) = column.select {
             menu.update(cx, |menu, cx| menu.select_item(value, cx));
         }
-        cx.subscribe(&menu, move |gallery, _, event: &MenuEvent, cx| {
-            let column = &mut gallery.columns[index];
-            if let MenuEvent::Picked(value) = event {
-                column.select =
-                    SIZES.iter().copied().find(|size| *size == value.as_ref());
-            }
-            let _ = column.select_popover.close();
-            column.select_menu = None;
-            cx.notify();
-        })
+        cx.subscribe_in(
+            &menu,
+            window,
+            move |gallery, _, event: &MenuEvent, window, cx| {
+                if let MenuEvent::Picked(value) = event {
+                    gallery.columns[index].select = SIZES
+                        .iter()
+                        .copied()
+                        .find(|size| *size == value.as_ref());
+                }
+                gallery.close_select(index, window, cx);
+            },
+        )
         .detach();
         menu.read(cx).focus_handle(cx).focus(window, cx);
         column.select_popover.open(Anchor::Trigger(bounds), true);
         column.select_menu = Some(menu);
+        cx.notify();
+    }
+
+    /// Closes a column's select menu and returns focus to its trigger.
+    fn close_select(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let column = &mut self.columns[index];
+        let _ = column.select_popover.close();
+        column.select_menu = None;
+        column.select_focus.focus(window, cx);
         cx.notify();
     }
 

@@ -195,11 +195,16 @@ impl Menu {
         }
         self.selection = remap_selection(&self.model, self.selection, &model);
         self.model = model;
+        if let Some(selection) = self.selection {
+            self.reveal(selection.row);
+        }
         cx.notify();
     }
 
-    /// The height from [`MenuPlacement::max_height`], beyond which the list
+    /// The height from [`Placement::max_height`], beyond which the list
     /// scrolls.
+    ///
+    /// [`Placement::max_height`]: crate::components::popover::Placement::max_height
     pub fn set_max_height(
         &mut self,
         max_height: Option<Pixels>,
@@ -312,6 +317,15 @@ impl Menu {
         }
     }
 
+    /// Reports a pointer pick of `id` when the current rows still enable
+    /// it: the model may have changed since the frame the press landed on.
+    fn pick(&self, id: &ItemId, cx: &mut Context<'_, Self>) {
+        // `selection_of` resolves enabled targets only.
+        if self.model.selection_of(id).is_some() {
+            cx.emit(MenuEvent::Picked(id.clone()));
+        }
+    }
+
     /// When the scroll indicator next needs a frame or a wake.
     #[must_use]
     pub fn schedule(&self, now: Instant) -> AnimationSchedule {
@@ -341,10 +355,12 @@ impl Menu {
         }
     }
 
+    /// Renders `item` at `row`, the `position`th of `items` items.
     fn render_item(
         &self,
         row: usize,
         item: &Item,
+        (position, items): (usize, usize),
         cx: &mut Context<'_, Self>,
     ) -> gpui::AnyElement {
         let tokens = self.tokens;
@@ -397,6 +413,8 @@ impl Menu {
                 Role::ListBox => gpui::Role::ListBoxOption,
             })
             .aria_label(item.label.clone())
+            .aria_position_in_set(position)
+            .aria_size_of_set(items)
             .when(self.role == Role::ListBox, |row| {
                 row.aria_selected(selected)
             })
@@ -424,9 +442,9 @@ impl Menu {
                 },
             ))
             .when(enabled, |item| {
-                item.on_click(cx.listener(move |_, event, _, cx| {
+                item.on_click(cx.listener(move |menu, event, _, cx| {
                     if !from_keyboard(event) {
-                        cx.emit(MenuEvent::Picked(id.clone()));
+                        menu.pick(&id, cx);
                     }
                 }))
             })
@@ -515,9 +533,9 @@ impl Menu {
                         ))
                         .when(enabled, |button| {
                             button.on_click(cx.listener(
-                                move |_, event, _, cx| {
+                                move |menu, event, _, cx| {
                                     if !from_keyboard(event) {
-                                        cx.emit(MenuEvent::Picked(id.clone()));
+                                        menu.pick(&id, cx);
                                     }
                                 },
                             ))
@@ -636,6 +654,13 @@ impl Render for Menu {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let tokens = self.tokens;
+        let items = self
+            .model
+            .rows
+            .iter()
+            .filter(|row| matches!(row, Row::Item(_)))
+            .count();
+        let mut position = 0;
         let rows: Vec<gpui::AnyElement> = self
             .model
             .rows
@@ -643,7 +668,10 @@ impl Render for Menu {
             .iter()
             .enumerate()
             .map(|(row, model_row)| match model_row {
-                Row::Item(item) => self.render_item(row, item, cx),
+                Row::Item(item) => {
+                    position += 1;
+                    self.render_item(row, item, (position, items), cx)
+                }
                 Row::Separator => separator::horizontal(tokens)
                     .mx(px(4.0))
                     .my(px(4.0))
@@ -734,12 +762,16 @@ impl Render for Menu {
 #[cfg(all(test, feature = "test-support"))]
 mod tests {
     use gpui::{
-        Context, Entity, IntoElement, Modifiers, Render, TestAppContext,
-        Window, div, point, prelude::*, px,
+        Context, Entity, IntoElement, Modifiers, MouseButton, MouseUpEvent,
+        PlatformInput, Render, TestAppContext, Window, div, point, prelude::*,
+        px,
     };
 
-    use super::{Menu, Role};
-    use crate::listbox::{Item, Model, Row};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::{Menu, MenuEvent, Role};
+    use crate::listbox::{Button, Item, Model, Row};
     use crate::testing::{a11y_node, tokens};
 
     fn model() -> Model {
@@ -830,15 +862,28 @@ mod tests {
             let menu = &a11y_node(window, "menu")["aria"];
             assert_eq!(menu["role"], "Menu");
             assert_eq!(menu["label"], "Actions");
-            let items: Vec<_> = crate::testing::a11y_nodes(window)
+            let mut items: Vec<_> = crate::testing::a11y_nodes(window)
                 .into_iter()
                 .filter(|node| node["aria"]["role"] == "MenuItem")
-                .map(|node| node["aria"]["label"].clone())
+                .map(|node| {
+                    let aria = &node["aria"];
+                    (
+                        aria["position_in_set"].as_u64(),
+                        aria["label"].as_str().map(str::to_owned),
+                        aria["size_of_set"].as_u64(),
+                    )
+                })
                 .collect();
-            assert_eq!(
-                items,
-                ["Command Palette", "New Tab", "Copy Directory Path", "Quit"]
-            );
+            items.sort();
+            let labels =
+                ["Command Palette", "New Tab", "Copy Directory Path", "Quit"];
+            let expected: Vec<_> = (1..)
+                .zip(labels)
+                .map(|(position, label)| {
+                    (Some(position), Some(label.to_owned()), Some(4))
+                })
+                .collect();
+            assert_eq!(items, expected);
         });
     }
 
@@ -868,19 +913,23 @@ mod tests {
         });
     }
 
-    /// A host drawing a menu of `count` rows, at most 200 points tall, with
-    /// `id` selected before its first frame, as a select opens on its value.
-    fn long<'a>(
-        cx: &'a mut TestAppContext,
-        count: usize,
-        id: &str,
-    ) -> (Entity<Menu>, &'a mut gpui::VisualTestContext) {
-        let (host, cx) = cx.add_window_view(|_, _| Host { menu: None });
-        let rows = (0..count)
+    /// `count` items, `row-0` onwards.
+    fn items(count: usize) -> Vec<Row> {
+        (0..count)
             .map(|row| {
                 Row::Item(Item::new(format!("row-{row}"), format!("Row {row}")))
             })
-            .collect();
+            .collect()
+    }
+
+    /// A host drawing a menu of `rows`, at most 200 points tall, with `id`
+    /// selected before its first frame, as a select opens on its value.
+    fn long<'a>(
+        cx: &'a mut TestAppContext,
+        rows: Vec<Row>,
+        id: &str,
+    ) -> (Entity<Menu>, &'a mut gpui::VisualTestContext) {
+        let (host, cx) = cx.add_window_view(|_, _| Host { menu: None });
         let id = id.to_owned();
         let menu = cx.update(|_, cx| {
             let menu = cx.new(|cx| {
@@ -913,7 +962,7 @@ mod tests {
 
     #[gpui::test]
     fn a_menu_opens_scrolled_to_its_selection(cx: &mut TestAppContext) {
-        let (menu, cx) = long(cx, 40, "row-30");
+        let (menu, cx) = long(cx, items(40), "row-30");
         cx.read(|cx| {
             let menu = menu.read(cx);
             assert_eq!(menu.selection().map(|s| s.row), Some(30));
@@ -925,7 +974,7 @@ mod tests {
     fn a_keyboard_step_scrolls_before_the_frame_draws_the_thumb(
         cx: &mut TestAppContext,
     ) {
-        let (menu, cx) = long(cx, 40, "row-0");
+        let (menu, cx) = long(cx, items(40), "row-0");
         // The scrollbar's thumb comes from the offset as the menu renders,
         // so a step must not leave the scroll to the frame's layout.
         let stepped = menu.update(cx, |menu, cx| {
@@ -938,5 +987,93 @@ mod tests {
             assert_eq!(menu.scroll.offset(), stepped);
             assert!(shows(menu, 39), "offset {stepped:?}");
         });
+    }
+
+    #[gpui::test]
+    fn the_reveal_follows_drawn_rows_of_every_height_both_ways(
+        cx: &mut TestAppContext,
+    ) {
+        let mut rows = Vec::new();
+        for (index, row) in items(30).into_iter().enumerate() {
+            rows.push(row);
+            if index % 5 == 4 {
+                rows.push(Row::Separator);
+            }
+            if index == 12 {
+                rows.push(Row::Buttons {
+                    label: "Zoom".to_owned(),
+                    buttons: vec![Button::new("zoom-in", "In")],
+                });
+            }
+        }
+        let (menu, cx) = long(cx, rows, "row-0");
+        // Down past separators and the button row, back up to rows above
+        // the view, then the ends, where the scroll limits would mask a
+        // wrong height.
+        for id in ["row-20", "row-8", "row-29", "row-0"] {
+            menu.update(cx, |menu, cx| menu.select_item(id, cx));
+            cx.run_until_parked();
+            cx.read(|cx| {
+                let menu = menu.read(cx);
+                let row = menu.selection().expect("a selection").row;
+                let offset = menu.scroll.offset();
+                assert!(shows(menu, row), "{id} at offset {offset:?}");
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn a_replaced_model_reveals_the_moved_selection(cx: &mut TestAppContext) {
+        let (menu, cx) = long(cx, items(40), "row-0");
+        // The selected item moves to the end.
+        let mut rows = items(40);
+        rows.rotate_left(1);
+        menu.update(cx, |menu, cx| menu.set_model(Model::new(rows), cx));
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let menu = menu.read(cx);
+            assert_eq!(menu.selection().map(|s| s.row), Some(39));
+            assert!(shows(menu, 39), "offset {:?}", menu.scroll.offset());
+        });
+    }
+
+    #[gpui::test]
+    fn a_pick_checks_the_rows_at_release(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, Role::Menu);
+        let picks = Rc::new(RefCell::new(Vec::new()));
+        let seen = picks.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&menu, move |_, event: &MenuEvent, _| {
+                seen.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+        // Command Palette is the first row, under the panel's inset.
+        let palette = point(px(40.0), px(20.0));
+        cx.simulate_click(palette, Modifiers::none());
+        assert_eq!(*picks.borrow(), [MenuEvent::Picked("palette".into())]);
+        // A row disabled between the press and the release ignores the
+        // release, even before a frame redraws it.
+        cx.simulate_mouse_down(palette, MouseButton::Left, Modifiers::none());
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                let mut rows = model().rows;
+                rows[0] = Row::Item(
+                    Item::new("palette", "Command Palette").disabled(None),
+                );
+                menu.set_model(Model::new(rows), cx);
+            });
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    position: palette,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::none(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(picks.borrow().len(), 1);
     }
 }
