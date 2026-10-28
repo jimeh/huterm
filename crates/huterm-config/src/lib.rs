@@ -815,7 +815,7 @@ pub struct PanesConfig {
     /// layout's name.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "window",
-        "x-huterm-group" = "Panes",
+        "x-huterm-group" = "Pane layouts",
         "x-huterm-label" = "Pane layouts",
         "x-huterm-order" = 50,
         "x-huterm-apply" = "live",
@@ -829,7 +829,7 @@ pub struct PanesConfig {
     /// `main_top`, and `tiled`) or names from `[panes.layouts]`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "window",
-        "x-huterm-group" = "Panes",
+        "x-huterm-group" = "Pane layouts",
         "x-huterm-label" = "Layout cycle",
         "x-huterm-order" = 60,
         "x-huterm-apply" = "live",
@@ -877,12 +877,8 @@ impl PanesConfig {
                     "panes.layouts.{name}: `{name}` is a built-in layout"
                 ));
             }
-            LayoutTemplate::parse(source).map_err(|error| {
-                format!(
-                    "panes.layouts.{name}: {} at {}",
-                    error.kind,
-                    template_position(source, error.offset)
-                )
+            parse_layout_template(source).map_err(|message| {
+                format!("panes.layouts.{name}: {message}")
             })?;
         }
         if self.layout_cycle.is_empty() {
@@ -940,6 +936,22 @@ impl PanesConfig {
             .filter_map(|name| self.layout(name))
             .collect()
     }
+}
+
+/// Parses a layout template, or says where it goes wrong, as a config
+/// error and the Settings window word it: "expected `,` or `)` at column
+/// 18 of the template".
+///
+/// # Errors
+/// Returns the parser's message with the position at fault.
+pub fn parse_layout_template(source: &str) -> Result<LayoutTemplate, String> {
+    LayoutTemplate::parse(source).map_err(|error| {
+        format!(
+            "{} at {}",
+            error.kind,
+            template_position(source, error.offset)
+        )
+    })
 }
 
 /// Where byte `offset` falls in a template, as an editor counts it: a

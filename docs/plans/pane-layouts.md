@@ -1,11 +1,11 @@
 # Pane layouts
 
-Status: in progress. Approved on 2026-10-27, after five Codex and five Claude
+Status: implemented. Approved on 2026-10-27, after five Codex and five Claude
 review rounds; Jim settled every open question that day (see "Settled
 decisions"), adding default cycle bindings and user-defined layouts. PR 1,
 runtime arrangements (#284), and PR 2, commands (#286), are implemented. On
 2026-10-28 Jim split PR 3: PR 3a, user-defined layouts from the config file
-(#298), is implemented, and PR 3b, their Settings editor, is in progress.
+(#298), and PR 3b, their Settings editor, are implemented.
 Plans [issue #30][issue-30] within [epic #12][issue-12].
 Builds on [the split panes plan](split-panes.md) (#28) and
 [the pane moves plan](pane-moves.md) (#29), both implemented. Layout undo,
@@ -1400,6 +1400,30 @@ Recorded with PR 3a:
 - The schema also rejects built-in names as `[panes.layouts]` keys and
   bounds each template at 1 KiB and the table at 64 entries, so an editor
   flags them before a reload does.
+
+Recorded with PR 3b:
+
+- The cycle's switches are each a tab stop, rather than one roving stop,
+  because `huterm-ui`'s `Switch` makes its handle one whenever it is
+  enabled. The arrows still move between them as `settings_next` and
+  `settings_previous`, and Tab reaches every switch and every enabled Move
+  up and Move down. Those buttons are disabled for a layout outside the
+  cycle and at either end of it; a move that reaches an end hands focus to
+  the row's other button.
+- Delete counts only the keybindings that are not `disabled = true` as
+  users of a layout, as the quake profile alert's keybinding note does.
+- A refused rename also drops a cycle change made meanwhile that names the
+  new name, since written alone it would name a layout that does not exist.
+- Focus that a row leaves behind moves to the same control of the
+  neighbouring row, the next one first, whenever the row goes, including
+  when another editor removes the layout; a user layout's last row hands it
+  to New layout. While a dialog is opening, the window does not move focus
+  off a control that went away, since the dialog takes focus on its first
+  frame.
+- New layout shows the 64-layout limit as soon as the dialog opens, before
+  a name is typed.
+- The native Settings smoke types parentheses and `*`, so `macKeyEvents`
+  in `scripts/macos-keys.ts` gained the shifted punctuation of a US layout.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-30]: https://github.com/jimeh/huterm/issues/30

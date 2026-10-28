@@ -26,7 +26,7 @@ use huterm_config::settings::{
 use toml::{Table, Value};
 
 use super::super::super::settings::keybindings::{
-    Edit, rename_profile_references,
+    Edit, rename_layout_references, rename_profile_references,
 };
 use super::super::super::settings::values::{
     self, FileValues, as_number, parse_number, patch_at, shown,
@@ -34,7 +34,9 @@ use super::super::super::settings::values::{
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
 use super::super::model::QuakeRenameId;
-use super::{SettingsView, current, field_text, quake, size_value, themes};
+use super::{
+    SettingsView, current, field_text, layouts, quake, size_value, themes,
+};
 use crate::keymap::{Inventory, Platform, inventory};
 
 /// A change the file changed under, kept until the user picks theirs or
@@ -93,6 +95,9 @@ pub(super) struct KeyChange {
 pub(super) enum Batch {
     /// Renames a Quake profile and the shortcuts that name it.
     RenameProfile { from: String, to: String },
+    /// Renames a pane layout, the keybindings that name it, and its place
+    /// in the layout cycle.
+    RenameLayout { from: String, to: String },
 }
 
 impl Batch {
@@ -103,6 +108,11 @@ impl Batch {
             Self::RenameProfile { from, to } => rename_profile_references(
                 &current.entries(List::Keybinding),
                 &current.entries(List::GlobalKeybinding),
+                from,
+                to,
+            ),
+            Self::RenameLayout { from, to } => rename_layout_references(
+                &current.entries(List::Keybinding),
                 from,
                 to,
             ),
@@ -734,6 +744,9 @@ impl SettingsView {
     fn batch_outcome(&self, batch: &Batch) -> Outcome {
         match batch {
             Batch::RenameProfile { from, to } => self.rename_outcome(from, to),
+            Batch::RenameLayout { from, to } => {
+                self.layout_rename_outcome(from, to)
+            }
         }
     }
 
@@ -755,6 +768,9 @@ impl SettingsView {
     ) {
         let built = match &batch {
             Batch::RenameProfile { from, to } => self.rename_patches(from, to),
+            Batch::RenameLayout { from, to } => {
+                self.layout_rename_patches(from, to)
+            }
         };
         let patches = match built {
             Ok(patches) => patches,
@@ -898,16 +914,19 @@ impl SettingsView {
     /// write can replace the file, and a reload read it, before the save
     /// settles here. A renamed profile's open Quake window takes the new
     /// name in the first reload that reads it, so no reload takes it for a
-    /// removed profile's window and turns it into an ordinary one.
+    /// removed profile's window and turns it into an ordinary one. Nothing
+    /// outside the window follows a renamed pane layout.
     fn batch_started(
         batch: &Batch,
         cx: &mut Context<'_, Self>,
-    ) -> QuakeRenameId {
+    ) -> Option<QuakeRenameId> {
         match batch {
-            Batch::RenameProfile { from, to } => cx
-                .global_mut::<Desktop>()
-                .windows
-                .quake_rename_started(from, to),
+            Batch::RenameProfile { from, to } => Some(
+                cx.global_mut::<Desktop>()
+                    .windows
+                    .quake_rename_started(from, to),
+            ),
+            Batch::RenameLayout { .. } => None,
         }
     }
 
@@ -924,10 +943,16 @@ impl SettingsView {
 
     /// Settles what `batch_started` began once the write `landed` in the
     /// file or wrote nothing.
-    fn batch_settled(started: QuakeRenameId, landed: bool, cx: &mut App) {
-        cx.global_mut::<Desktop>()
-            .windows
-            .quake_rename_settled(started, landed);
+    fn batch_settled(
+        started: Option<QuakeRenameId>,
+        landed: bool,
+        cx: &mut App,
+    ) {
+        if let Some(started) = started {
+            cx.global_mut::<Desktop>()
+                .windows
+                .quake_rename_settled(started, landed);
+        }
     }
 
     /// Says why `batch` wrote nothing, after the footer has said how the
@@ -952,6 +977,17 @@ impl SettingsView {
                 };
                 self.rename_refused(from, to, message, cx);
             }
+            Batch::RenameLayout { from, to } => {
+                let message = if self.drop_layout_edits(to, cx) {
+                    format!(
+                        "{message} The changes made to {to} meanwhile were \
+                         not saved."
+                    )
+                } else {
+                    message
+                };
+                self.layout_rename_refused(from, message, cx);
+            }
         }
     }
 
@@ -965,25 +1001,36 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> bool {
         let prefix = format!("{table}.");
+        self.drop_edits(|path| path.starts_with(&prefix), cx)
+    }
+
+    /// Drops the queued and pending changes to the settings whose paths
+    /// `dropped` matches, and puts their fields back to the file's values,
+    /// so leaving a field does not submit its change again. Returns whether
+    /// a change went.
+    pub(super) fn drop_edits(
+        &mut self,
+        dropped: impl Fn(&str) -> bool,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
         let (queued, pending) = (self.queued.len(), self.pending.len());
         self.queued.retain(|queued| {
-            !matches!(queued, Queued::Setting(queued) if queued.path.starts_with(&prefix))
+            !matches!(queued, Queued::Setting(queued) if dropped(queued.path))
         });
-        self.pending.retain(|path, _| !path.starts_with(&prefix));
-        let dropped =
-            self.queued.len() != queued || self.pending.len() != pending;
-        self.errors.retain(|path, _| !path.starts_with(&prefix));
-        self.conflicts.retain(|path, _| !path.starts_with(&prefix));
+        self.pending.retain(|path, _| !dropped(path));
+        let went = self.queued.len() != queued || self.pending.len() != pending;
+        self.errors.retain(|path, _| !dropped(path));
+        self.conflicts.retain(|path, _| !dropped(path));
         let fields: Vec<&'static str> = self
             .fields
             .keys()
             .copied()
-            .filter(|path| path.starts_with(&prefix))
+            .filter(|path| dropped(path))
             .collect();
         for path in fields {
             self.sync_field(path, true, cx);
         }
-        dropped
+        went
     }
 
     /// Moves each queued setting change whose path still holds what it
@@ -1508,7 +1555,9 @@ impl SettingsView {
             Some(
                 Special::Keybindings
                 | Special::GlobalShortcuts
-                | Special::QuakeProfiles,
+                | Special::QuakeProfiles
+                | Special::PaneLayouts
+                | Special::LayoutCycle,
             ) => false,
             Some(Special::ThemePicker) => self.file.is_set("theme.name"),
             _ => self.file.is_set(&setting.path),
@@ -1573,6 +1622,8 @@ impl SettingsView {
         let resolving = self.conflicts.contains_key(path);
         let parsed = match &setting.kind {
             _ if special(path) == Some(Special::Size) => Ok(size_value(&text)),
+            // A template that does not parse is never saved.
+            _ if layouts::is_template(path) => layouts::template_value(&text),
             SettingKind::Integer { .. } | SettingKind::Number { .. } => {
                 parse_number(setting, &text)
             }

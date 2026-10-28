@@ -3,7 +3,8 @@
  * binary: open it, move between sidebar sections, search, toggle and reset
  * a switch, step a number, rebind
  * a command, edit, rename, and delete a quake profile, record a global
- * shortcut, and close it,
+ * shortcut, create, edit, and rename a pane layout and add it to the
+ * layout cycle, and close it,
  * checking `config.toml` after each save and that keys reach the terminal
  * again afterwards.
  */
@@ -79,6 +80,11 @@ position = "top"
 
 [quake.profiles.logs]
 height = 0.3
+
+[[keybinding]]
+key = "ctrl-alt-shift-l"
+command = "arrange_panes"
+args = { layout = "smoke" }
 `;
   await writeFile(config, original);
   const app = Bun.spawn([executable], {
@@ -330,6 +336,56 @@ height = 0.3
     await saved((text) => !text.includes("[quake.profiles.work]"), "work profile removed from config.toml");
     await state("settings.dialog=none", "settings.focus=action:qprof");
 
+    // Search leads to the Pane layouts card. New layout asks for a name and
+    // moves focus to the new layout's template, selected, so typing
+    // replaces it, and Enter saves it. Rename rewrites the keybinding that
+    // names the layout in the same save. In the cycle's rows, Up wraps
+    // from the first to the new layout, and Space adds it to the cycle.
+    await key("search");
+    await state("settings.focus=search");
+    await key("select-all");
+    await typeText("pane layouts");
+    await state('settings.query="pane layouts"');
+    await key("enter");
+    await state("settings.focus=action:lnew");
+    await key("space");
+    await state("settings.dialog=new-layout", "settings.focus=dialog:field");
+    await typeText("smoke");
+    await key("enter");
+    await saved((text) => text.includes('[panes.layouts]\nsmoke = "columns(*)"\n'), "new layout in config.toml");
+    await state("settings.dialog=none", "settings.focus=panes.layouts.smoke");
+    await typeText("rows(*)");
+    await key("enter");
+    await saved((text) => text.includes('smoke = "rows(*)"\n'), "layout template in config.toml");
+    await tabTo("action:lren:smoke");
+    await key("space");
+    await state("settings.dialog=rename-layout", "settings.focus=dialog:field");
+    await typeText("work");
+    await key("enter");
+    await saved(
+      (text) =>
+        text.includes('work = "rows(*)"\n') &&
+        !text.includes('smoke = "') &&
+        !text.includes('layout = "smoke"') &&
+        text.includes('command = "arrange_panes"\nargs = { layout = "work" }'),
+      "layout and its keybinding renamed in config.toml",
+    );
+    await state("settings.dialog=none", "settings.focus=action:lren:work");
+    await key("search");
+    await state("settings.focus=search");
+    await key("select-all");
+    await typeText("layout cycle");
+    await state('settings.query="layout cycle"');
+    await key("enter");
+    await state("settings.focus=action:lcyc:columns");
+    await key("up");
+    await state("settings.focus=action:lcyc:work");
+    await key("space");
+    await saved(
+      (text) => text.includes('layout_cycle = ["columns", "rows", "main_left", "main_top", "tiled", "work"]'),
+      "layout added to the cycle in config.toml",
+    );
+
     // Search finds a command; Space opens it in Keybindings.
     await key("search");
     await state("settings.focus=search");
@@ -376,7 +432,7 @@ height = 0.3
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} sidebar=arrows search=focus-first toggle=saved reset=removed tab=round-trip step=saved reveal=in-view select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} sidebar=arrows search=focus-first toggle=saved reset=removed tab=round-trip step=saved reveal=in-view select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands layouts=saved close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

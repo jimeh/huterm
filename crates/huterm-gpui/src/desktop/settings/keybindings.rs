@@ -775,6 +775,37 @@ pub(crate) fn rename_profile_references(
         .collect()
 }
 
+/// Whether an entry runs `arrange_panes` with the pane layout named
+/// `layout` as its `layout` argument.
+pub(crate) fn names_layout(content: &Table, layout: &str) -> bool {
+    content
+        .get("command")
+        .and_then(Value::as_str)
+        .and_then(lookup)
+        .is_some_and(|spec| spec.id == ids::ARRANGE_PANES)
+        && content
+            .get("args")
+            .and_then(|args| args.get("layout"))
+            .and_then(Value::as_str)
+            == Some(layout)
+}
+
+/// The patches that point every `[[keybinding]]` entry naming the pane
+/// layout `from` at `to` instead, for which [`names_layout`] holds. The
+/// entries' other fields and arguments stay as they are.
+pub(crate) fn rename_layout_references(
+    entries: &[EntryLocator],
+    from: &str,
+    to: &str,
+) -> Vec<Patch> {
+    let to = Value::String(to.to_owned());
+    entries
+        .iter()
+        .filter(|locator| names_layout(locator.content(), from))
+        .map(|locator| argument_patch(locator.clone(), "layout", Some(&to)))
+        .collect()
+}
+
 /// Sets or clears one argument of an entry, rewriting its `args` table and
 /// removing it when the last argument goes.
 fn argument_patch(

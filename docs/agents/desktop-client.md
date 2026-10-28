@@ -396,9 +396,10 @@ calls the handler directly still passes. Settings binds Space and the arrows
 under `SettingsControl`, which only its controls and section rows carry: a
 binding under `Settings` matched inside a focused text field too, because the
 field's `Palette` context binds no Space, and ate the space. The roving
-groups (the sidebar's sections, the theme cards, and the modifier chips)
-give each item a `SettingsGroup` context nested inside a `SettingsControl`
-wrapper around the group, and the catalog puts `settings_next` and
+groups (the sidebar's sections, the theme cards, the modifier chips, and
+the layout cycle's switches) give each item a `SettingsGroup` context nested
+inside a `SettingsControl` wrapper around the group, or around each cycle
+row, and the catalog puts `settings_next` and
 `settings_previous` under `SettingsGroup`, where the arrows bind to them.
 GPUI ranks a binding by the depth its predicate matches, then by later
 index, so the group bindings win over any `SettingsControl` binding on the
@@ -456,7 +457,12 @@ whose result must show, such as validating a field on blur, goes through
 focus left on a control that went away leaves every binding dead. The
 Settings window records each control it draws (`action_stop` marks it) and
 moves focus to the window when the focused control was not drawn, or when
-focus stays across a frame outside the view's tree.
+focus stays across a frame outside the view's tree. A pane layout or cycle
+row that went away hands focus to the same control of a neighbouring row
+instead (`layout_neighbour`, from the rows the last two frames drew). No
+recovery runs while a dialog is open: a dialog opening over a control that
+just went away takes focus on its first frame, after the recovery was
+scheduled, and the recovery would take it back out of the dialog.
 
 GPUI dispatches input against the last drawn frame. A press that lands before
 the frame showing a dialog's scrim still reaches the covered terminal, whose
@@ -909,7 +915,14 @@ landed, dropped when it wrote nothing. Each reload takes
 `quake_renames_noted` before it reads, and `reconcile_quake` moves a window
 along the running and noted renames to the first name the file it read has,
 dropping the noted renames that read already shows. Another rename adds a
-`Batch` variant.
+`Batch` variant, as `RenameLayout` (`layouts.rs`) does for pane layouts;
+nothing outside the window follows a layout, so its `batch_started` records
+nothing. A user pane layout's template is an ordinary Settings text field
+over a setting `layouts::template_setting` makes for its path, as a quake
+profile's fields are, so commits, Escape, conflicts, and a rename's
+baselines work unchanged. `commit_field` refuses a template that does not
+parse before any write, so the message under the field is the parser's,
+not the validator's.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with

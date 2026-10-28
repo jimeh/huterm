@@ -4737,5 +4737,6 @@ mod settings_dialog;
 mod settings_fields;
 mod settings_keys;
 mod settings_layout;
+mod settings_layouts;
 mod settings_quake;
 mod settings_selects;

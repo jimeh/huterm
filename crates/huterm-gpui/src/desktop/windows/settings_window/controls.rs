@@ -95,6 +95,10 @@ impl SettingsView {
             Some(Special::Size) => {
                 return self.render_field(setting, read_only, window, cx);
             }
+            // `render_groups` draws their rows instead.
+            Some(Special::PaneLayouts | Special::LayoutCycle) => {
+                return div().into_any_element();
+            }
             None => {}
         }
         if setting.control == Some(Control::Slider) {
