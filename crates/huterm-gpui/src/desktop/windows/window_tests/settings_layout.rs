@@ -290,19 +290,21 @@ fn the_theme_cards_are_one_tab_stop_of_radio_buttons(cx: &mut TestAppContext) {
 fn group_bindings_leave_a_select_a_switch_and_a_slider_their_arrows(
     cx: &mut TestAppContext,
 ) {
+    // The select starts on a value with one before it on every platform:
+    // its default is the last choice on macOS and the first on Linux.
     let file = ScratchConfig::new(
         "layout-group-scope",
-        "[quake.profiles.logs]\nwidth = 0.5\n",
+        "[tabs]\nposition = \"bottom\"\n\n[quake.profiles.logs]\nwidth = 0.5\n",
     );
     let mut harness = DesktopHarness::new(cx);
     show(&mut harness, &file, SectionId::Tabs);
-    // A select steps to the next choice, as before.
+    // A select steps between its choices, as before.
     with_window(&mut harness, |view, window, cx| {
         view.focus_stop("tabs.position", window, cx);
     });
     keys(&harness, "down");
     harness.wait_for("the select's step", |cx| {
-        settled(cx) && file.text().contains("position")
+        settled(cx) && file.text().contains("position = \"top\"")
     });
     assert_eq!(focus(&mut harness), "tabs.position");
     // A switch ignores the arrows.
