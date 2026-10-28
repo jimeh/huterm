@@ -492,6 +492,24 @@
     "theme": false
   },
   {
+    "name": "arrange_panes { layout = \"main_left\" }",
+    "toml": "[[keybinding]]\nkey = \"cmd-alt-1\"\ncommand = \"arrange_panes\"\nargs = { layout = \"main_left\" }",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "arrange_panes { layout = \"Main Left\" }",
+    "toml": "[[keybinding]]\nkey = \"cmd-alt-1\"\ncommand = \"arrange_panes\"\nargs = { layout = \"Main Left\" }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "arrange_panes args omitted",
+    "toml": "[[keybinding]]\nkey = \"cmd-alt-1\"\ncommand = \"arrange_panes\"",
+    "valid": true,
+    "theme": false
+  },
+  {
     "name": "select_tab args omitted",
     "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"",
     "valid": true,

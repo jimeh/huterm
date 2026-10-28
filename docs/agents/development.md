@@ -316,8 +316,10 @@ named exactly `tests` with no later module.
 
 ### GPUI view tests
 
-`crates/huterm-gpui/src/desktop/view_tests.rs` drives a real `TerminalView` as
-the root of a GPUI test window over a standalone `TerminalRuntime`. It compiles
+`crates/huterm-gpui/src/desktop/view_tests.rs` drives a real `TerminalView`
+that fills a GPUI test window over a standalone `TerminalRuntime`; a small host
+root places it at the bounds its geometry names, as the workspace places a
+pane, so a test can move its origin. It compiles
 only with `huterm-gpui`'s `test-support` feature (see
 [the dependencies guide](dependencies.md#gpui-and-nix)). The `lint`,
 `typecheck`, and `test:rust` tasks pass `--features huterm-gpui/test-support`,

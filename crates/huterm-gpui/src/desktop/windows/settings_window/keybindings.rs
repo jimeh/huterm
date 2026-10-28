@@ -16,8 +16,8 @@ use gpui::{
     Subscription, Window, div, prelude::*, px,
 };
 use huterm_protocol::{
-    ArgumentKind, ArgumentSpec, CommandId, CommandSpec, Requirement, SIDES,
-    catalog, lookup,
+    ArgumentKind, ArgumentSpec, BUILT_IN_LAYOUTS, CommandId, CommandSpec,
+    Requirement, SIDES, catalog, lookup,
 };
 use toml::Value;
 
@@ -336,6 +336,7 @@ fn configurable(
                 | ArgumentKind::Text
                 | ArgumentKind::QuakeProfile
                 | ArgumentKind::Side
+                | ArgumentKind::Layout
         )
     })
 }
@@ -1415,7 +1416,7 @@ impl SettingsView {
     }
 
     /// Opens the menu of values for a select argument.
-    fn open_argument_menu(
+    pub(super) fn open_argument_menu(
         &mut self,
         name: &str,
         argument: &str,
@@ -1455,6 +1456,12 @@ impl SettingsView {
                         .iter()
                         .map(|side| MenuRow::Item(MenuItem::new(side, *side))),
                 );
+            }
+            ArgumentKind::Layout => {
+                rows.extend(BUILT_IN_LAYOUTS.iter().map(|layout| {
+                    let name = layout.name.as_str();
+                    MenuRow::Item(MenuItem::new(name, name))
+                }));
             }
             ArgumentKind::QuakeProfile => {
                 let profiles: Vec<String> = cx

@@ -9,7 +9,7 @@ import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverX11Window } from "./check-desktop-integration";
-import { commandFlag, macKeyEvents, optionFlag, shiftFlag } from "./macos-keys";
+import { commandFlag, controlFlag, macKeyEvents, optionFlag, shiftFlag } from "./macos-keys";
 
 type X11Process = Pick<Bun.Subprocess, "pid" | "exitCode" | "signalCode">;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -31,7 +31,7 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
 type OverlayKey =
   | "enter" | "escape" | "tab" | "shift-tab" | "left" | "right" | "up" | "down" | "end" | "page-up"
   | "new-tab" | "close-tab" | "select-1" | "select-2" | "select-3"
-  | "split-right" | "focus-next-pane" | "focus-pane-left" | "undo";
+  | "split-right" | "focus-next-pane" | "focus-pane-left" | "undo" | "next-layout" | "balance";
 type PointerButton = "left" | "middle" | "right";
 
 /** Native input for one platform, positioned in the window's logical points. */
@@ -66,7 +66,7 @@ const x11Keys: Record<OverlayKey, string> = {
   // Openbox grabs Ctrl+Alt+arrows for desktop switching, so the X11 run
   // invokes focus_pane_left instead of sending this key.
   "split-right": "ctrl+shift+o", "focus-next-pane": "ctrl+super+bracketright", "focus-pane-left": "ctrl+alt+Left",
-  undo: "ctrl+shift+z",
+  undo: "ctrl+shift+z", "next-layout": "ctrl+super+alt+bracketright", balance: "ctrl+super+equal",
 };
 
 /** xdotool input; X11 positions are physical pixels. */
@@ -116,6 +116,7 @@ const macKeys: Record<OverlayKey, [number, number, string]> = {
   "split-right": [2, commandFlag, "d"], "focus-next-pane": [30, commandFlag, "]"],
   "focus-pane-left": [123, commandFlag | optionFlag, "\uF702"],
   undo: [6, commandFlag, "z"],
+  "next-layout": [30, commandFlag | controlFlag, "]"], balance: [24, commandFlag | controlFlag, "="],
 };
 
 /**
@@ -217,6 +218,7 @@ while IFS= read -r line; do
     link) printf '\\033[2J\\033[Hhttps://example.test/huterm\\nLINKED\\n';;
     ack*) printf 'ACK:%s\\n' "$line";;
     pid*) printf 'PID:%s:%s\\n' "\${line#pid }" "$$";;
+    size*) printf 'SIZE:%s:%s\\n' "\${line#size }" "$(stty size)";;
     mouse) stty raw -echo; printf '\\033[?1000h\\033[?1006hMOUSE-ON\\r\\n'
       report=$(dd bs=1 count=18 2>/dev/null); stty sane
       printf '\\033[?1000l\\033[?1006lMOUSE:%s\\n' "$(printf %s "$report" | tr -d '\\033')";;
@@ -476,8 +478,9 @@ label = "title"
     const button = rectCentre(field(barState, "menu_button"));
     await click(button.x, button.y);
     await state("w0.menu=true", "w0.menu_kind=window", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=none", "w0.menu_button_open=true");
+    // Type-ahead selects the first item starting with the letter.
     await typeText("a");
-    await state("w0.menu=true", "w0.menu_selection=about");
+    await state("w0.menu=true", "w0.menu_selection=arrange_panes");
     await typeText("ckmenux");
     await state("w0.menu=true");
     await key("escape");
@@ -517,7 +520,8 @@ label = "title"
     await assertBlocked("ackaboutx", "ackafteraboutx");
     await click(button.x, button.y);
     await state("w0.menu=true", "w0.menu_selection=none");
-    await typeText("a");
+    // A repeated letter moves on to the next item starting with it.
+    await typeText("aa");
     await state("w0.menu_selection=about");
     await key("enter");
     await state("w0.menu=false", "w0.about=true");
@@ -828,6 +832,97 @@ label = "title"
     await state(`w0.active_index=${tabsBefore}`, "w0.panes=1");
     if (await shellPid("hostback") !== hostPid) throw new Error(`${engine}: undo restarted the receiving tab's shell`);
 
+    // Pane layouts: three panes arranged through catalog commands, each
+    // shell sized as its view requests, a pane whose origin moves with its
+    // grid unchanged still mapping clicks to its own cells, the layout keys
+    // reaching no shell, and a window resize settling every pane again.
+    const layoutOf = (text: string) => field(text, "pane_layout");
+    const settledLayout = (expected: string, label: string) =>
+      stateWhere((text) => layoutOf(text) === expected && field(text, "arranging") === "0", label);
+    const arrange = async (layout: string, expected: string) => {
+      await invoke(`arrange_panes\tlayout=${layout}`);
+      return settledLayout(expected, `the ${layout} layout`);
+    };
+    const focusPane = async (index: number) => {
+      const centre = rectCentre(field(await current(), "pane_rects").split(";")[index]!);
+      await click(centre.x, centre.y);
+      await state(`w0.pane_focus=${index}`);
+    };
+    /** Each pane's `stty size` matches the grid its view requests. */
+    const sizesMatch = async (label: string) => {
+      const panes = Number(field(await current(), "panes"));
+      for (let index = 0; index < panes; index++) {
+        await focusPane(index);
+        const token = `${label}${index}`;
+        await typeText(`size ${token}`);
+        await key("enter");
+        const pattern = new RegExp(`SIZE:${token}:(\\d+) (\\d+)`);
+        const text = await stateWhere((value) => pattern.test(value), `stty size of pane ${index} (${label})`);
+        const [, rows, columns] = pattern.exec(text)!;
+        const grid = field(text, "pane_grids").split(";")[index];
+        if (grid !== `${columns},${rows}`) throw new Error(`${engine}: pane ${index}'s stty size ${columns},${rows} differs from its grid ${grid} (${label})`);
+      }
+    };
+    /** Turns on mouse reporting in the focused pane and clicks cell (2, 1). */
+    const clickReported = async () => {
+      await typeText("mouse");
+      await key("enter");
+      const tracking = await state("MOUSE-ON", "w0.mouse=Buttons");
+      const cellGrid = parseRect(field(tracking, "grid_bounds"));
+      const [cellW, cellH] = field(tracking, "cell").split(",").map(Number);
+      await click(cellGrid.x + cellW! * 2.5, cellGrid.y + cellH! * 1.5);
+      await state("MOUSE:[<0;3;2M[<0;3;2m");
+    };
+    const COLUMNS = "C[333334:0,333333:1,333333:2]";
+    await key("split-right");
+    await stateWhere((text) => field(text, "panes") === "2" && field(text, "pane_focus") === "1"
+      && (quoted(text, "w0.text") ?? "").includes("READY"), "the second layout pane's shell");
+    await key("split-right");
+    await stateWhere((text) => field(text, "panes") === "3" && field(text, "pane_focus") === "2"
+      && (quoted(text, "w0.text") ?? "").includes("READY"), "the third layout pane's shell");
+    await arrange("main_left", "C[600000:0,400000:R[500000:1,500000:2]]");
+    await sizesMatch("left");
+    await arrange("tiled", "R[500000:C[500000:0,500000:1],500000:2]");
+    await sizesMatch("tiled");
+    // Both dividers move right by the same cells, so the middle pane keeps
+    // its grid and moves; balancing moves it back left with that grid.
+    await arrange("columns", COLUMNS);
+    await focusPane(0);
+    await invoke("resize_pane_right");
+    const once = await stateWhere((text) => layoutOf(text) !== COLUMNS, "the first divider to move");
+    await focusPane(1);
+    await invoke("resize_pane_right");
+    const moved = await stateWhere((text) => layoutOf(text) !== layoutOf(once) && field(text, "arranging") === "0", "the second divider to move");
+    const middlePane = (text: string) => ({ grid: field(text, "pane_grids").split(";")[1]!, rect: parseRect(field(text, "pane_rects").split(";")[1]!) });
+    await invoke("balance_panes");
+    const balanced = await settledLayout(COLUMNS, "the balanced columns");
+    if (middlePane(balanced).grid !== middlePane(moved).grid) {
+      throw new Error(`${engine}: balancing changed the moved middle pane's grid from ${middlePane(moved).grid} to ${middlePane(balanced).grid}; the origin-only check needs an unchanged grid`);
+    }
+    if (!(middlePane(balanced).rect.x < middlePane(moved).rect.x)) throw new Error(`${engine}: balancing did not move the middle pane left: ${field(balanced, "pane_rects")}`);
+    await state("w0.pane_focus=1");
+    await clickReported();
+    // A click in another pane focuses it, and its shell answers.
+    await focusPane(2);
+    await ack("acklayoutfocus");
+    // The cycle and balance keys reach no shell: the line typed around them
+    // arrives whole. The cycle key steps columns to rows; balancing rows
+    // changes nothing.
+    await typeText("acklayoutkeys");
+    await key("next-layout");
+    await settledLayout("R[333334:0,333333:1,333333:2]", "the cycle key's rows layout");
+    await key("balance");
+    await typeText("x");
+    await key("enter");
+    await state("ACK:acklayoutkeysx");
+    // After a native window resize, every shell follows its pane again and
+    // clicks still map onto the focused pane's cells.
+    const layoutContent = parseRect(field(await current(), "content"));
+    await resizeContent(layoutContent.w - 120, layoutContent.h - 80);
+    await sizesMatch("resized");
+    await clickReported();
+    await resizeContent(layoutContent.w, layoutContent.h);
+
     // 10. Quit's confirmation names a sibling window's busy tab by the title
     // the window model published. Window 0 hosts the dialog, so the title can
     // only come from window 1's record. Titles follow OSC 0 under
@@ -893,7 +988,7 @@ label = "title"
     }
     await reloadedTitles(configDocument);
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard pane-drags=edge-centre-escape-spring-back-drop undo=tab-drop`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard pane-drags=edge-centre-escape-spring-back-drop undo=tab-drop layouts=arrange-sizes-moved-origin-keys-resize`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

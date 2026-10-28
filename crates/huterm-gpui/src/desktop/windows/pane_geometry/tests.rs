@@ -351,3 +351,201 @@ fn a_zone_previews_the_half_an_edge_drop_takes_or_the_whole_frame() {
         Bounds::new(point(px(100.0), px(50.0)), size(px(400.0), px(100.0)))
     );
 }
+
+/// Cell metrics as a 12-point monospace font measures them, aligned to
+/// physical pixels at `scale` as the window aligns them.
+fn metrics(scale: f32, padding: (f32, f32)) -> PaneMetrics {
+    let grid = crate::renderer::GridMetrics::fixed(7.25, 14.6).at_scale(scale);
+    PaneMetrics {
+        cell: size(grid.cell_width, grid.cell_height),
+        window: WindowConfig {
+            padding_x: padding.0,
+            padding_y: padding.1,
+            ..WindowConfig::default()
+        },
+    }
+}
+
+/// Each pane's grid in `content`, as the window computes it for a split
+/// preflight.
+fn grids(
+    layout: &PaneLayout,
+    content: Bounds<Pixels>,
+    scale: f32,
+    metrics: PaneMetrics,
+) -> Vec<(PaneId, huterm_protocol::GridSize)> {
+    layout_panes(layout, content, scale, None)
+        .panes
+        .iter()
+        .map(|rect| (rect.pane, metrics.grid(rect.terminal.size)))
+        .collect()
+}
+
+/// The layout `fit` committed, for asserting through the real grids.
+fn placed(layout: &PaneLayout, fitted: &Fit) -> PaneLayout {
+    let (Fit::Fits(arrangement) | Fit::Short(arrangement)) = fitted;
+    layout.arranged(arrangement, probe_splits()).unwrap()
+}
+
+fn weights_of(arrangement: &Arrangement) -> Vec<u32> {
+    match arrangement {
+        Arrangement::Pane(_) => Vec::new(),
+        Arrangement::Split { children, .. } => children
+            .iter()
+            .flat_map(|(weight, child)| {
+                std::iter::once(*weight).chain(weights_of(child))
+            })
+            .collect(),
+    }
+}
+
+/// `[p1 | (p2 over p3)]` with the main pane at `main` of the width.
+fn main_left(main: u32) -> PaneLayout {
+    PaneLayout::new(split(
+        10,
+        SplitAxis::Columns,
+        vec![
+            (main, pane(1)),
+            (
+                SPLIT_TOTAL - main,
+                split(
+                    11,
+                    SplitAxis::Rows,
+                    vec![(500_000, pane(2)), (500_000, pane(3))],
+                ),
+            ),
+        ],
+    ))
+    .unwrap()
+}
+
+/// `layout`'s own tree as an arrangement, weights included.
+fn arrangement_of(layout: &PaneLayout) -> Arrangement {
+    fn of(node: &PaneNode) -> Arrangement {
+        match node {
+            PaneNode::Pane(pane) => Arrangement::Pane(pane.id),
+            PaneNode::Split(split) => Arrangement::Split {
+                axis: split.axis,
+                children: split
+                    .children
+                    .iter()
+                    .map(|child| (child.weight, of(&child.node)))
+                    .collect(),
+            },
+        }
+    }
+    of(layout.root())
+}
+
+#[test]
+fn a_large_window_fits_the_ideal_arrangement_unchanged() {
+    let layout = main_left(600_000);
+    let ideal = arrangement_of(&layout);
+    for scale in [1.0, 2.0] {
+        let fitted = fit(
+            &layout,
+            &ideal,
+            rect(0.0, 28.0, 1600.0, 900.0),
+            scale,
+            metrics(scale, (4.0, 2.0)),
+        );
+        assert_eq!(fitted, Fit::Fits(ideal.clone()), "at {scale}x");
+    }
+}
+
+#[test]
+fn a_main_share_that_starves_the_stack_shrinks_main_just_enough() {
+    let scale = 2.0;
+    let metrics = metrics(scale, (4.0, 2.0));
+    let layout = main_left(600_000);
+    // Wide enough for both minimums, too narrow for the stack's 40 %.
+    let content = rect(0.0, 28.0, 90.0, 600.0);
+    let ideal = arrangement_of(&layout);
+    let before = grids(&layout, content, scale, metrics);
+    assert!(!fits_minimum(&before), "the ideal already fits: {before:?}");
+    let fitted = fit(&layout, &ideal, content, scale, metrics);
+    let Fit::Fits(arrangement) = &fitted else {
+        panic!("the minimums fit, yet {fitted:?}");
+    };
+    let after = grids(&placed(&layout, &fitted), content, scale, metrics);
+    assert!(fits_minimum(&after), "{after:?}");
+    // The stack takes exactly its minimum, and main keeps the rest.
+    let columns = |pane: u64| {
+        after
+            .iter()
+            .find(|(placed, _)| *placed == id(pane))
+            .unwrap()
+            .1
+            .columns
+    };
+    assert_eq!(
+        (columns(2), columns(3)),
+        (MIN_PANE_COLUMNS, MIN_PANE_COLUMNS)
+    );
+    assert!(columns(1) > MIN_PANE_COLUMNS, "{after:?}");
+    // The stack's own rows keep their ideal halves.
+    assert_eq!(weights_of(arrangement)[2..], [500_000, 500_000]);
+}
+
+#[test]
+fn two_columns_fit_exactly_where_a_split_preflight_accepts_them() {
+    for scale in [1.0_f32, 2.0] {
+        for padding in [(0.0, 0.0), (6.0, 4.0)] {
+            let metrics = metrics(scale, padding);
+            let single = PaneLayout::single(info(1));
+            let split = single
+                .with_split(
+                    id(1),
+                    SplitDirection::Right,
+                    info(2),
+                    SplitId::in_runtime(RUNTIME, 20),
+                )
+                .unwrap();
+            let content = |width: f32| rect(0.0, 28.0, width, 400.0);
+            let pixel = 1.0 / scale;
+            // The smallest width the preflight accepts, in physical pixels.
+            let mut width = pixel;
+            while !fits_minimum(&grids(&split, content(width), scale, metrics))
+            {
+                width += pixel;
+            }
+            let ideal = split.balanced();
+            let at = |width: f32| {
+                fit(&split, &ideal, content(width), scale, metrics)
+            };
+            let label = format!("{scale}x, padding {padding:?}, {width}");
+            assert_eq!(at(width), Fit::Fits(ideal.clone()), "{label}");
+            assert!(matches!(at(width - pixel), Fit::Short(_)), "{label}");
+        }
+    }
+}
+
+#[test]
+fn a_tree_that_cannot_fit_shares_space_in_proportion_to_its_minimums() {
+    let scale = 1.0;
+    let metrics = metrics(scale, (0.0, 0.0));
+    let layout = main_left(600_000);
+    // Narrower than one pane's minimum beside the stack's.
+    let content = rect(0.0, 28.0, 40.0, 600.0);
+    let fitted =
+        fit(&layout, &arrangement_of(&layout), content, scale, metrics);
+    let Fit::Short(arrangement) = &fitted else {
+        panic!("a window this narrow fit: {fitted:?}");
+    };
+    let after = grids(&placed(&layout, &fitted), content, scale, metrics);
+    assert!(!fits_minimum(&after));
+    // Main and the stack need the same width, so they share it equally.
+    assert_eq!(weights_of(arrangement)[..2], [500_000, 500_000]);
+}
+
+#[test]
+fn balancing_twice_at_one_size_fits_the_same_weights() {
+    let scale = 2.0;
+    let metrics = metrics(scale, (4.0, 2.0));
+    let content = rect(0.0, 28.0, 140.0, 600.0);
+    let layout = main_left(830_000);
+    let once = fit(&layout, &layout.balanced(), content, scale, metrics);
+    let balanced = placed(&layout, &once);
+    let twice = fit(&balanced, &balanced.balanced(), content, scale, metrics);
+    assert_eq!(once, twice);
+}

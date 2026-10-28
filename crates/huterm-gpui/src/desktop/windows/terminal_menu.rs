@@ -42,8 +42,8 @@ pub(super) struct TerminalMenuInput {
     pub(super) exited: bool,
     /// The view shows history rather than live output.
     pub(super) scrolled_back: bool,
-    /// The tab holds more than one pane, so its pane can move to a tab of
-    /// its own.
+    /// The tab holds more than one pane, so its panes can balance and its
+    /// pane can move to a tab of its own.
     pub(super) split: bool,
     pub(super) directory: DirectoryState,
 }
@@ -126,7 +126,10 @@ pub(super) fn terminal_menu_model(
         MenuRow::Item(item(ids::CLOSE_PANE)),
     ]);
     if input.split {
-        rows.push(MenuRow::Item(item(ids::MOVE_PANE_TO_NEW_TAB)));
+        rows.extend([
+            MenuRow::Item(item(ids::BALANCE_PANES)),
+            MenuRow::Item(item(ids::MOVE_PANE_TO_NEW_TAB)),
+        ]);
     }
     rows.extend([
         MenuRow::Separator,
@@ -203,6 +206,19 @@ mod tests {
                 "rename_tab",
                 "close_tab",
             ]
+        );
+    }
+
+    #[test]
+    fn a_split_tab_adds_balance_and_move_after_close_pane() {
+        let rows = rows(TerminalMenuInput {
+            split: true,
+            ..input()
+        });
+        let close = rows.iter().position(|row| row == "close_pane").unwrap();
+        assert_eq!(
+            rows[close..close + 4],
+            ["close_pane", "balance_panes", "move_pane_to_new_tab", "-"]
         );
     }
 

@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use crate::{PaneId, SessionId, TabId, WorkspaceId};
+use crate::{NamedLayout, PaneId, SessionId, TabId, WorkspaceId};
 
 /// Stable identifier of a catalog command, such as `select_tab`.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -75,6 +75,11 @@ pub enum ArgumentKind {
     /// A side of a pane: `left`, `right`, `up`, or `down`; carried as
     /// [`CommandValue::Text`].
     Side,
+    /// Name of a pane layout, built in or configured, resolved by the
+    /// client when the command runs; carried as [`CommandValue::Text`].
+    /// Validation checks only the name's syntax
+    /// ([`NamedLayout::valid_name`]).
+    Layout,
 }
 
 /// The names a [`ArgumentKind::Side`] value accepts, in picker order.
@@ -233,6 +238,9 @@ impl CommandValue {
         ) || matches!(
             (self, kind),
             (Self::Text(side), ArgumentKind::Side) if SIDES.contains(&side.as_str())
+        ) || matches!(
+            (self, kind),
+            (Self::Text(name), ArgumentKind::Layout) if NamedLayout::valid_name(name)
         )
     }
 }
@@ -497,6 +505,7 @@ fn describe_kind(kind: ArgumentKind) -> &'static str {
         ArgumentKind::Session => "a session",
         ArgumentKind::Pane => "a pane",
         ArgumentKind::Side => "left, right, up, or down",
+        ArgumentKind::Layout => "a pane layout name",
     }
 }
 
@@ -790,6 +799,16 @@ pub mod ids {
         CommandId::new("move_pane_to_new_tab");
     /// Moves a whole tab beside a chosen pane of another tab.
     pub const MOVE_TAB_TO_PANE: CommandId = CommandId::new("move_tab_to_pane");
+    /// Arranges the active tab's panes into a named layout.
+    pub const ARRANGE_PANES: CommandId = CommandId::new("arrange_panes");
+    /// Arranges the active tab's panes into the next layout of the cycle.
+    pub const NEXT_PANE_LAYOUT: CommandId = CommandId::new("next_pane_layout");
+    /// Arranges the active tab's panes into the previous layout of the
+    /// cycle.
+    pub const PREVIOUS_PANE_LAYOUT: CommandId =
+        CommandId::new("previous_pane_layout");
+    /// Gives every split of the active tab equal weights, keeping its shape.
+    pub const BALANCE_PANES: CommandId = CommandId::new("balance_panes");
     /// Undoes the last layout change this window made.
     pub const UNDO: CommandId = CommandId::new("undo");
     /// Redoes the layout change this window undid last.
@@ -1560,10 +1579,45 @@ const CATALOG: &[CommandSpec] = &[
         ],
     ),
     spec(
+        ids::ARRANGE_PANES,
+        CommandScope::Window,
+        "Arrange Panes",
+        "Arrange the active tab's panes into a named layout, keeping every \
+         terminal running.",
+        &[ArgumentSpec {
+            name: "layout",
+            kind: ArgumentKind::Layout,
+            required: Requirement::Always,
+            prompt: true,
+        }],
+    ),
+    spec(
+        ids::NEXT_PANE_LAYOUT,
+        CommandScope::Window,
+        "Next Pane Layout",
+        "Arrange the active tab's panes into the next layout of the cycle.",
+        &[],
+    ),
+    spec(
+        ids::PREVIOUS_PANE_LAYOUT,
+        CommandScope::Window,
+        "Previous Pane Layout",
+        "Arrange the active tab's panes into the previous layout of the \
+         cycle.",
+        &[],
+    ),
+    spec(
+        ids::BALANCE_PANES,
+        CommandScope::Window,
+        "Balance Panes",
+        "Give every split of the active tab equal sizes, keeping its shape.",
+        &[],
+    ),
+    spec(
         ids::UNDO,
         CommandScope::Window,
         "Undo",
-        "Undo this window's last pane move, swap, or tab drop.",
+        "Undo this window's last pane move, swap, tab drop, or layout change.",
         &[],
     ),
     spec(

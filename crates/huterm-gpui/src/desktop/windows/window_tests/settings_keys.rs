@@ -1000,3 +1000,49 @@ fn a_read_dropped_behind_a_failed_write_is_read_again(cx: &mut TestAppContext) {
         assert!(view.key_row(ids::NEW_TAB, "ctrl-alt-d").is_some());
     });
 }
+
+#[gpui::test]
+fn an_arrange_panes_shortcut_picks_its_layout_from_the_built_ins(
+    cx: &mut TestAppContext,
+) {
+    let original =
+        "[[keybinding]]\nkey = \"ctrl-alt-l\"\ncommand = \"arrange_panes\"\n";
+    let file = ScratchConfig::new("keys-layouts", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // The row offers the argument as a select, not hidden as an unknown
+    // kind.
+    press(&mut harness, "kgo:arrange_panes");
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert!(view.drew("karg:u0:layout"));
+    });
+    with_window(&mut harness, |view, window, cx| {
+        view.open_key_argument("u0", "layout", window, cx);
+    });
+    with_view(&mut harness, |view, cx| {
+        // Unset, the palette asks for the layout.
+        assert_eq!(
+            view.menu_labels(cx),
+            ["Ask", "columns", "rows", "main_left", "main_top", "tiled"]
+        );
+    });
+    with_window(&mut harness, |view, window, cx| {
+        view.dismiss_menu(window, cx);
+    });
+    with_view(&mut harness, |view, cx| {
+        view.pick_key_argument(
+            "u0",
+            "layout",
+            huterm_protocol::ArgumentKind::Layout,
+            "main_top",
+            cx,
+        );
+    });
+    saved(&mut harness, &file, |text| text.contains("layout"));
+    assert_eq!(
+        file.text(),
+        "[[keybinding]]\nkey = \"ctrl-alt-l\"\ncommand = \"arrange_panes\"\n\
+         args = { layout = \"main_top\" }\n"
+    );
+}

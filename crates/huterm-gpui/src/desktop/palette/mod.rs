@@ -26,9 +26,10 @@ use gpui::{
 };
 use huterm_config::PalettePlacement;
 use huterm_protocol::{
-    ArgumentKind, CommandArgument, CommandError, CommandId, CommandInvocation,
-    CommandOutcome, CommandScope, CommandSpec, CommandValue, HierarchyState,
-    SIDES, SessionId, TabId, TerminalId, WorkspaceId, catalog, ids,
+    ArgumentKind, BUILT_IN_LAYOUTS, CommandArgument, CommandError, CommandId,
+    CommandInvocation, CommandOutcome, CommandScope, CommandSpec, CommandValue,
+    HierarchyState, SIDES, SessionId, TabId, TerminalId, WorkspaceId, catalog,
+    ids,
 };
 use search::{CommandHistory, CommandMatch, CommandSearch, PickerMatcher};
 use slots::{
@@ -238,6 +239,27 @@ fn side_rows() -> Vec<IdentityRow> {
         .collect()
 }
 
+/// The rows a layout picker offers: the built-in layouts in cycle order,
+/// by title, with their templates as detail.
+static LAYOUT_ROWS: std::sync::LazyLock<Vec<IdentityRow>> =
+    std::sync::LazyLock::new(layout_rows);
+
+fn layout_rows() -> Vec<IdentityRow> {
+    BUILT_IN_LAYOUTS
+        .iter()
+        .map(|layout| IdentityRow {
+            value: CommandValue::Text(layout.name.clone()),
+            label: layout.title.clone(),
+            detail: layout.template.to_string(),
+            position: None,
+            workspace: None,
+            terminal: None,
+            tab: None,
+            custom_name: false,
+        })
+        .collect()
+}
+
 /// Session, workspace, tab, and pane rows for identity pickers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct PaletteHierarchy {
@@ -414,6 +436,7 @@ impl DomainView<'_> {
         match kind {
             ArgumentKind::QuakeProfile => self.profiles.iter().collect(),
             ArgumentKind::Side => SIDE_ROWS.iter().collect(),
+            ArgumentKind::Layout => LAYOUT_ROWS.iter().collect(),
             // A pane is never moved beside itself, nor a tab into one of
             // its own panes.
             ArgumentKind::Pane => self
@@ -476,6 +499,7 @@ impl SlotDomain for DomainView<'_> {
             }
             ArgumentKind::Pane
             | ArgumentKind::Side
+            | ArgumentKind::Layout
             | ArgumentKind::Bool
             | ArgumentKind::Integer { .. }
             | ArgumentKind::Text => None,
@@ -1354,6 +1378,7 @@ impl CommandPalette {
             ArgumentKind::QuakeProfile => "Filter profiles…".to_owned(),
             ArgumentKind::Pane => "Filter panes…".to_owned(),
             ArgumentKind::Side => "Choose a side…".to_owned(),
+            ArgumentKind::Layout => "Filter layouts…".to_owned(),
             ArgumentKind::Integer { min, max } => format!("{min} to {max}"),
             ArgumentKind::Bool => "true or false".to_owned(),
             ArgumentKind::Text => match self.rename_target(editor) {

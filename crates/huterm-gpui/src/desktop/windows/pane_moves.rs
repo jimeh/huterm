@@ -186,6 +186,18 @@ fn probe_split() -> SplitId {
     SplitId::in_runtime(RuntimeId::new(u64::MAX), u64::MAX)
 }
 
+/// Distinct placeholder split identities in [`probe_split`]'s runtime,
+/// counting down from its value, for a candidate whose splits all take
+/// new identities: a layout rejects a repeated one.
+pub(super) fn probe_splits() -> impl FnMut() -> SplitId {
+    let mut next = u64::MAX;
+    move || {
+        let id = SplitId::in_runtime(RuntimeId::new(u64::MAX), next);
+        next = next.saturating_sub(1);
+        id
+    }
+}
+
 impl WorkspaceView {
     /// Whether a pane move command can run now: no structural operation,
     /// confirmation, or quit in progress, and an active tab; the commands

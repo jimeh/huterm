@@ -121,6 +121,9 @@ pub(super) struct TerminalRenderer {
     stats: Option<RendererStats>,
     scroll_benchmark: Option<ScrollBenchmarkStats>,
     last_prepare: PrepareOutcome,
+    /// The grid origin and snapshot the last paint drew, for tests.
+    #[cfg(all(test, feature = "test-support"))]
+    painted: Option<(Point<Pixels>, Arc<TerminalSnapshot>)>,
 }
 
 /// Work done by the most recent `prepare` call.
@@ -181,6 +184,8 @@ impl TerminalRenderer {
             stats,
             scroll_benchmark,
             last_prepare: PrepareOutcome::default(),
+            #[cfg(all(test, feature = "test-support"))]
+            painted: None,
         }
     }
 
@@ -285,6 +290,14 @@ impl TerminalRenderer {
         self.cursor_outline
     }
 
+    /// The grid origin and snapshot the last paint drew.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) fn painted(
+        &self,
+    ) -> Option<(Point<Pixels>, Arc<TerminalSnapshot>)> {
+        self.painted.clone()
+    }
+
     pub(super) fn prepare(
         &mut self,
         snapshot: Option<&Arc<TerminalSnapshot>>,
@@ -354,6 +367,10 @@ impl TerminalRenderer {
             return;
         };
 
+        #[cfg(all(test, feature = "test-support"))]
+        {
+            self.painted = Some((bounds.origin, Arc::clone(snapshot)));
+        }
         let metrics = self.metrics;
         let grid = Bounds::new(
             bounds.origin,

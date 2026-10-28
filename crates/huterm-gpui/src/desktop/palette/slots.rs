@@ -84,6 +84,7 @@ pub(super) fn is_identity(kind: ArgumentKind) -> bool {
             | ArgumentKind::Pane
             | ArgumentKind::Side
             | ArgumentKind::QuakeProfile
+            | ArgumentKind::Layout
     )
 }
 
@@ -569,7 +570,8 @@ fn parse_scalar(
         | ArgumentKind::Workspace
         | ArgumentKind::Session
         | ArgumentKind::Pane
-        | ArgumentKind::Side => {
+        | ArgumentKind::Side
+        | ArgumentKind::Layout => {
             Err(format!("{label} must be chosen from the list"))
         }
     }

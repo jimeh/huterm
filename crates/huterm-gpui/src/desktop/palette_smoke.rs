@@ -687,16 +687,30 @@ fn report_terminal_failure(
 
 /// `invoke\t<command id>` runs any argument-free catalog command through
 /// the production router, as a binding or menu pick would.
+/// Runs `<id>[\t<name>=<text>…]`, each argument carried as text.
 fn invoke_catalog(
     cx: &mut App,
     handle: gpui::AnyWindowHandle,
-    id: &str,
+    command: &str,
 ) -> anyhow::Result<String> {
+    let mut parts = command.split('\t');
+    let id = parts.next().unwrap_or_default();
     let spec = huterm_protocol::catalog()
         .iter()
         .find(|spec| spec.id.as_str() == id)
         .with_context(|| format!("unknown catalog command {id:?}"))?;
-    let invocation = CommandInvocation::new(spec.id, vec![]);
+    let args = parts
+        .map(|argument| {
+            let (name, value) = argument
+                .split_once('=')
+                .with_context(|| format!("argument {argument:?}"))?;
+            Ok(huterm_protocol::CommandArgument::new(
+                name,
+                huterm_protocol::CommandValue::Text(value.to_owned()),
+            ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let invocation = CommandInvocation::new(spec.id, args);
     Ok(format!(
         "{:?}",
         Desktop::invoke(cx, &invocation, Some(handle))

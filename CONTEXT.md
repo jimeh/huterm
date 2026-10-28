@@ -37,6 +37,18 @@ A view showing one pane of a split tab across the whole tab, without changing
 the shared layout. Zoom is view-local unless a client shares it through the
 runtime.
 
+**Named layout**:
+A built-in or user-defined layout, such as main left, that arranges a tab's
+existing panes into a new split tree. It keeps every pane, its terminal, and
+the panes' order; only the tree and its weights change.
+
+**Layout template**:
+The text that describes a named layout for any number of panes, such as
+`columns(pane 60%, rows(*))`.
+
+**Balance**:
+Equal weights among the children of every split of a tab, keeping its shape.
+
 **Layout history**:
 A window's record of the pane rearrangements it made, which undo and redo
 restore without starting or stopping a terminal. It holds the last change each

@@ -1,7 +1,8 @@
 # Pane layouts
 
 Status: approved on 2026-10-27, after five Codex and five Claude review
-rounds; PR 1, runtime arrangements, is in progress. Jim settled every open
+rounds; PR 1, runtime arrangements, is implemented and pending merge, and
+PR 2, commands, is in progress. Jim settled every open
 question that day (see "Settled decisions"), adding default cycle bindings
 and user-defined layouts. Plans [issue #30][issue-30] within
 [epic #12][issue-12].
@@ -1266,6 +1267,46 @@ alternatives he considered.
 ## Open questions
 
 None.
+
+## Deviations
+
+Recorded with PR 2:
+
+- Notices name a built-in layout by its name in prose, underscores read as
+  spaces: "Window too small for the main left layout" and "The columns
+  layout holds at most 256 panes". The two examples above disagree on
+  whether "columns" is the title ("Equal Columns") or the name; the name
+  satisfies both. Menus, the palette, and undo labels still use titles.
+- A layout key pressed while this window's last arrangement is in flight
+  does nothing, as `undo` does while busy, so a held cycle key repeats
+  quietly instead of raising a notice per repeat. The palette and menus
+  still show the commands unavailable through `check_available`.
+- Resize commands from bindings never called `check_available`, so
+  `resize_pane` refuses on its own while an arrangement is in flight, which
+  the race in "Desktop flow" needs.
+- The keybinding schema gives the `layout` argument the name's syntax as a
+  `pattern` as well as a description naming the built-ins, kept aligned with
+  the catalog through three new `schemas/fixtures.json` cases.
+- The tier 2 reflow test asserts the shrunk pane's one new grid, the
+  wrapped and unwrapped rows read from the runtime's snapshots, and that the
+  unchanged pane keeps its grid and snapshot. It does not pin the interval
+  in which the old snapshot shows clipped: the runtime can answer before
+  any frame, so that rule stays with
+  `a_larger_canonical_grid_is_clipped_and_owned_gestures_survive_it`.
+- The tier 1 harness gained a host root that places the view at the bounds
+  its geometry names, as the workspace places a pane, so the origin test
+  can move where it paints.
+- The completion-order test commits its earlier drop through
+  `commit_pane_move` directly, the path a released pane drag takes, rather
+  than simulating the drag's pointer events.
+- Smoke state gained `pane_layout` and `arranging` fields, and the fixture's
+  `invoke` command takes text arguments, which the native layout steps use.
+  In the in-window window menu, type-ahead on `a` now reaches Arrange Panes…
+  before About, so the overlay smoke types `aa` to reach About.
+- Checking the Linux keys against GNOME and KWin defaults found no conflict
+  for the layout and balance keys, but found that KWin's
+  `ctrl-super-shift-` arrows, which move a window to another desktop, take
+  the existing Linux resize keys; `docs/keybindings.md` notes it.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-30]: https://github.com/jimeh/huterm/issues/30

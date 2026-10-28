@@ -262,7 +262,10 @@ imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 | `move_pane_to_pane` | Window | `pane` and `side` (`left`, `right`, `up`, or `down`). Moves the focused pane beside a pane in any tab, workspace, or session. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `move_pane_to_new_tab` | Window | Optional `workspace`; defaults to the window's, where the new tab opens after the pane's tab. A tab's only pane moves its whole tab to another workspace. |
 | `move_tab_to_pane` | Window | `pane` and `side`; `tab` defaults to the active tab. Moves the whole tab beside a pane of another tab, keeping its layout. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
-| `undo` | Window | Undoes this window's last pane swap, move, extraction, or tab drop, putting the same panes and terminals back where they were, with the earlier divider positions. A tab the change removed comes back with its name, at its old position. Renames, reorders, and zooms made since survive. Splits, closes, resizes, and zoom are not recorded, and only the last change can be undone. Once a tab the change touched has another shape, or has moved to another session, the change is dropped and undo does nothing; if the runtime refuses an undo the window could not yet see was stale, a notice says so. With nothing to undo, or while the window is busy, the key does nothing. |
+| `arrange_panes` | Window | `layout`: `columns`, `rows`, `main_left`, `main_top`, or `tiled` (see [pane layouts](#pane-layouts)). Rearranges the active tab's panes into that layout, keeping every terminal and the pane order. A binding may set `layout`; the palette and the Arrange Panes… menu items prompt for it. |
+| `next_pane_layout` / `previous_pane_layout` | Window | Arranges the active tab's panes into the next or previous layout of the cycle, skipping a layout that does not fit the window or would change nothing. |
+| `balance_panes` | Window | Gives every split of the active tab equal sizes, keeping its shape. |
+| `undo` | Window | Undoes this window's last pane swap, move, extraction, tab drop, arrangement, or balance, putting the same panes and terminals back where they were, with the earlier divider positions. A tab the change removed comes back with its name, at its old position. Renames, reorders, and zooms made since survive. Splits, closes, resizes, and zoom are not recorded, and only the last change can be undone. Once a tab the change touched has another shape, or has moved to another session, the change is dropped and undo does nothing; if the runtime refuses an undo the window could not yet see was stale, a notice says so. With nothing to undo, or while the window is busy, the key does nothing. |
 | `redo` | Window | Reapplies the change `undo` last undid. A new layout change replaces it. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enters native mode, or exits any active fullscreen mode. |
@@ -350,6 +353,8 @@ menus, or your own bindings.
 | `focus_pane_left` and the other directions | `cmd-alt-` plus an arrow | `ctrl-alt-` plus an arrow |
 | `resize_pane_left` and the other directions | `cmd-ctrl-` plus an arrow | `ctrl-super-shift-` plus an arrow |
 | `toggle_pane_zoom` | `cmd-shift-enter` | `ctrl-shift-enter` |
+| `next_pane_layout` / `previous_pane_layout` | `cmd-ctrl-]` / `cmd-ctrl-[` | `ctrl-super-alt-]` / `ctrl-super-alt-[` |
+| `balance_panes` | `cmd-ctrl-=` | `ctrl-super-=` |
 | `close_window` | `cmd-shift-w` | `ctrl-shift-q` |
 | `next_tab` / `previous_tab` | `ctrl-tab` / `ctrl-shift-tab` | `ctrl-tab` / `ctrl-shift-tab` |
 | `select_tab` 1 to 9 | `cmd-1` to `cmd-9` | `alt-1` to `alt-9` |
@@ -370,6 +375,47 @@ The undo keys never reach the terminal, even with nothing to undo. On Linux,
 plain `ctrl-z` stays with the shell for job control. Legacy terminal encoding
 sends `ctrl-shift-z` to programs as plain `ctrl-z`, so taking it hides nothing
 a shell relies on.
+
+### Pane layouts
+
+`arrange_panes` takes one of five built-in layouts, which fill their places
+with the tab's panes in layout order, so no layout reorders them. Swap or move
+a pane first to make it the main pane.
+
+| Layout | Name | Arrangement |
+| --- | --- | --- |
+| Equal Columns | `columns` | Every pane side by side, at equal widths. |
+| Equal Rows | `rows` | Every pane stacked, at equal heights. |
+| Main Left | `main_left` | The first pane on the left at 60 %, the others stacked on the right. |
+| Main Top | `main_top` | The first pane on top at 60 %, the others side by side below. |
+| Tiled | `tiled` | A grid of `ceil(sqrt(n))` columns, filled row by row; the last row's panes share its width. |
+
+Bind a layout by name:
+
+```toml
+[[keybinding]]
+key = "cmd-alt-1"
+command = "arrange_panes"
+args = { layout = "main_left" }
+```
+
+The cycle visits the layouts in the table's order. It continues from the
+layout the tab matches, so resizing a divider keeps the place, and after a
+split or a move that matches none it starts from the beginning. Layouts and
+balancing keep every pane at least 4 columns by 2 rows in the window that runs
+them, moving sizes from their ideal shares only as far as that needs. A layout
+that cannot fit is refused with a notice, or skipped by the cycle. Balancing
+never refuses: in a window too small for the tab's panes, they share the space
+in proportion to what each needs. Each change is one undo step, a zoomed tab
+unzooms, and a change that would leave the tab as it is does nothing. The
+layout keys never reach the terminal.
+
+No GNOME (Mutter, Shell, or settings daemon) or KDE KWin default uses the
+Linux layout or balance keys. The nearest, GNOME's magnifier at `alt-super-=`
+and KWin's zoom at `super-=`, need other modifiers. KWin binds
+`ctrl-super-shift-` plus an arrow to moving a window to another desktop, which
+takes the Linux resize keys there; rebind `resize_pane_left` and the other
+directions if you use them.
 
 ### Palette
 

@@ -1,8 +1,8 @@
 //! Test-only control over the desktop's workers: counts close assessments,
-//! close commits, and viewer subscriptions, holds any stage until the test
-//! releases it, and injects close failures. Tier 2 tests use it to place
-//! window events between a worker's start and its completion; production
-//! builds compile none of it.
+//! close commits, viewer subscriptions, and layout commits, holds any
+//! stage until the test releases it, and injects close failures. Tier 2
+//! tests use it to place window events between a worker's start and its
+//! completion; production builds compile none of it.
 
 use std::sync::Mutex;
 
@@ -16,10 +16,16 @@ pub(super) enum Stage {
     Commit,
     /// Subscribing viewers for installs and replacements.
     Subscribe,
+    /// A layout commit queue job, a resize or an arrangement, before its
+    /// runtime call.
+    Layout,
+    /// A layout commit queue job whose runtime call returned, before its
+    /// completion waits for the projection and records history.
+    LayoutCommitted,
 }
 
 #[derive(Default)]
-pub(super) struct WorkerHooks(Mutex<[StageHooks; 4]>);
+pub(super) struct WorkerHooks(Mutex<[StageHooks; 6]>);
 
 #[derive(Default)]
 struct StageHooks {
