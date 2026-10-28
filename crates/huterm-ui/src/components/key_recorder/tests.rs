@@ -204,15 +204,22 @@ fn a_fast_double_press_of_the_same_key_records_a_chord(
 fn a_held_cmd_chord_then_a_fresh_press_of_it_records_both_strokes(
     cx: &mut TestAppContext,
 ) {
+    // The platform names its own Command key, "super" on Linux.
+    let chord = Keystroke::parse("cmd-k")
+        .expect("a valid keystroke")
+        .unparse();
     let (probe, cx) = recorder(cx, 2, false);
     probe.start(cx);
     key_down(cx, "cmd-k", false);
     key_down(cx, "cmd-k", true);
     key_down(cx, "cmd-k", true);
     key_up(cx, "cmd-k");
-    assert_eq!(probe.strokes(cx), ["cmd-k"]);
+    assert_eq!(probe.strokes(cx), std::slice::from_ref(&chord));
     key_down(cx, "cmd-k", false);
-    assert_eq!(probe.log(), ["started", "recorded cmd-k cmd-k"]);
+    assert_eq!(
+        probe.log(),
+        ["started".to_owned(), format!("recorded {chord} {chord}")]
+    );
     assert_eq!(probe.bound.get(), 0);
 }
 
