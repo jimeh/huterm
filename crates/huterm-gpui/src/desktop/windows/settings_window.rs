@@ -28,7 +28,7 @@ use toml::Value;
 use super::super::menu::{
     Menu as MenuView, MenuEvent, MenuItem, MenuModel, MenuRow,
 };
-use super::super::overlay::Swatch;
+use super::super::overlay::{Swatch, tokens};
 use super::super::settings::status::{FileStatus, Tone};
 use super::super::settings::values::{
     self, Defaults, FileValues, number, parse_number, shown,
@@ -262,7 +262,7 @@ impl SettingsView {
         let desktop = cx.global::<Desktop>();
         let path = desktop.config_path.clone();
         let watching = desktop.config.general.watch_config;
-        let swatch = Swatch::from_theme(&desktop.config.theme);
+        let swatch = tokens(&desktop.config.theme);
         let search =
             cx.new(|cx| TextField::new("Search settings", swatch.fg, cx));
         let _ = search.read(cx).focus_handle(cx).tab_stop(true);
@@ -361,7 +361,7 @@ impl SettingsView {
     }
 
     fn swatch(cx: &App) -> Swatch {
-        Swatch::from_theme(&cx.global::<Desktop>().config.theme)
+        tokens(&cx.global::<Desktop>().config.theme)
     }
 
     fn query(&self, cx: &App) -> String {

@@ -42,7 +42,7 @@ use super::notices::{
     Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
     ToastHandlers, render_notice_stack,
 };
-use super::overlay::{OverlayColors, Swatch, TextTooltip};
+use super::overlay::{OverlayColors, TextTooltip, overlay_colors, tokens};
 use super::palette::{
     CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
     PaletteHierarchy, PaletteOpen, PaletteScope, PaletteTarget,
@@ -2851,7 +2851,7 @@ impl WorkspaceView {
                     self.focused_notice,
                     &self.notice_focus,
                     bottom,
-                    Swatch::from_theme(&self.config.theme),
+                    tokens(&self.config.theme),
                     &handlers,
                 )),
         )
@@ -7301,7 +7301,7 @@ impl WorkspaceView {
     }
 
     fn palette_colors(&self) -> OverlayColors {
-        OverlayColors::from_theme(&self.config.theme)
+        overlay_colors(&self.config.theme)
     }
 
     #[expect(
@@ -10449,7 +10449,7 @@ impl Render for WorkspaceView {
         let foreground = color(self.config.theme.foreground);
         let background = color(self.config.theme.background);
         let colors = TabColors::new(&self.config.theme);
-        let swatch = Swatch::from_theme(&self.config.theme);
+        let swatch = tokens(&self.config.theme);
         let menu_placement = self.menu_button_placement();
         if menu_placement == MenuButtonPlacement::Hidden {
             // A hidden button anchors nothing; `open_menu` falls back.
@@ -11404,7 +11404,7 @@ impl Render for WorkspaceView {
             let about = render_about(
                 details,
                 content.size,
-                Swatch::from_theme(&self.config.theme),
+                tokens(&self.config.theme),
                 self.config.window.shortcut_hints,
                 self.about_focus,
                 AboutActions {
@@ -11431,7 +11431,7 @@ impl Render for WorkspaceView {
                 &model,
                 self.close.dialog_focus,
                 content.size,
-                Swatch::from_theme(&self.config.theme),
+                tokens(&self.config.theme),
                 self.config.window.shortcut_hints,
                 cx.listener(|view, _, window, cx| {
                     view.cancel_confirmation(window, cx);
@@ -11872,7 +11872,7 @@ impl WorkspaceView {
         // An opening menu ends a tab or pane drag; the menu then takes focus.
         self.cancel_reorder(window, cx);
         self.cancel_pane_drag(window, cx);
-        let swatch = Swatch::from_theme(&self.config.theme);
+        let swatch = tokens(&self.config.theme);
         let clock = Rc::clone(&self.frame_clock);
         let view = cx.new(|cx| {
             clock.observe(cx);
@@ -12121,7 +12121,7 @@ impl WorkspaceView {
         let bounds_cell = Rc::clone(&self.menu_button_bounds);
         let open = self.menu_button_open();
         let dot = !open && !self.notices.is_empty();
-        let swatch = Swatch::from_theme(&self.config.theme);
+        let swatch = tokens(&self.config.theme);
         div()
             .id("window-menu")
             .group("window-menu")
@@ -12235,7 +12235,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> gpui::Div {
         let maximized = window.is_maximized();
-        let swatch = Swatch::from_theme(&self.config.theme);
+        let swatch = tokens(&self.config.theme);
         let (outer, inner) =
             (WINDOW_CONTROLS_PADDING_OUTER, WINDOW_CONTROLS_PADDING_INNER);
         let mut controls = div()

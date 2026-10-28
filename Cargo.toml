@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/huterm-config", "crates/huterm-core", "crates/huterm-ghostty", "crates/huterm-ghostty/bindgen", "crates/huterm-gpui", "crates/huterm-procinfo", "crates/huterm-protocol"]
+members = ["crates/huterm-config", "crates/huterm-core", "crates/huterm-ghostty", "crates/huterm-ghostty/bindgen", "crates/huterm-gpui", "crates/huterm-procinfo", "crates/huterm-protocol", "crates/huterm-ui"]
 exclude = ["third-party/vendor/global-hotkey-0.9.0", "third-party/vendor/gpui-pre-0.3.9", "third-party/vendor/gpui-pre-linux-0.3.9", "third-party/vendor/gpui-pre-macos-0.3.9", "third-party/vendor/portable-pty-0.9.0"]
 resolver = "2"
 
@@ -20,6 +20,7 @@ huterm-ghostty = { path = "crates/huterm-ghostty", version = "=0.22.0" } # x-rel
 huterm-gpui = { path = "crates/huterm-gpui", version = "=0.22.0" } # x-release-please-version
 huterm-procinfo = { path = "crates/huterm-procinfo", version = "=0.22.0" } # x-release-please-version
 huterm-protocol = { path = "crates/huterm-protocol", version = "=0.22.0" } # x-release-please-version
+huterm-ui = { path = "crates/huterm-ui", version = "=0.22.0" } # x-release-please-version
 filedescriptor = "=0.8.3"
 memchr = "=2.8.3"
 portable-pty = "=0.9.0"

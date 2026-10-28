@@ -1314,7 +1314,8 @@ mod tests {
         let resting = point(px(60.0), px(70.0));
         cx.simulate_mouse_move(resting, None, Modifiers::none());
         let menu = cx.update(|_, cx| {
-            let swatch = Swatch::from_theme(&huterm_config::Theme::default());
+            let swatch =
+                super::super::overlay::tokens(&huterm_config::Theme::default());
             let menu = cx.new(|cx| Menu::new(model(), swatch, true, cx));
             host.update(cx, |host, cx| {
                 host.menu = Some(menu.clone());

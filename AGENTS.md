@@ -65,6 +65,10 @@ when this file exceeds its line budget or a guide link breaks.
   terminal-view code.
 - `huterm-procinfo` reports operating-system process facts and depends on no
   Huterm crate (`mise run architecture` checks this).
+- `huterm-ui` holds the generic GPUI components and depends only on GPUI
+  (`mise run architecture` checks this): no catalog commands, configuration,
+  or theme types. `huterm-gpui` maps commands onto component methods and
+  builds the tokens. See [the desktop client guide](docs/agents/desktop-client.md#ui-components).
 - Every binary that hosts terminals calls `huterm_core::raise_open_file_limit()`
   first at startup; the GPUI bootstrap already does.
 - Treat child exit, client detachment, and explicit terminal close as distinct

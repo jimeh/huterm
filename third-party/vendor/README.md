@@ -6,9 +6,9 @@
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI's core crate has hidden-window creation,
-file-drop pointer-modality, and scene sprite-order patches, its Linux crate has
-X11 file-drop and fullscreen-state patches, and its macOS crate has
-offscreen-screen and per-window frame-constraint patches.
+file-drop pointer-modality, scene sprite-order, and test-window accessibility
+patches, its Linux crate has X11 file-drop and fullscreen-state patches, and its
+macOS crate has offscreen-screen and per-window frame-constraint patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:

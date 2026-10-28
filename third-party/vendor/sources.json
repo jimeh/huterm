@@ -27,6 +27,11 @@
           "name": "scene-sprite-texture-order",
           "file": "patches/gpui-pre/scene-sprite-texture-order.patch",
           "description": "Sort sprites by draw order and atlas texture, the key that batching uses, so sprites already grouped by texture skip a full reorder every frame."
+        },
+        {
+          "name": "test-window-accessibility",
+          "file": "patches/gpui-pre/test-window-accessibility.patch",
+          "description": "Activate accessibility in test-support windows, let tests send an AccessKit action request, and report disabled, read-only, invalid, modal, and live states in the debug tree dump, so accessibility trees and actions can be asserted."
         }
       ]
     },

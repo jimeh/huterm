@@ -1,7 +1,6 @@
-//! Private GPUI controls owned by the desktop client.
+//! Private GPUI controls owned by the desktop client, and the generic
+//! `huterm-ui` modules re-exported under their former paths.
 
-pub(crate) mod animation;
-pub(crate) mod list_scrollbar;
-pub(crate) mod scrollbar;
+pub(crate) use huterm_ui::{animation, list_scrollbar, scrollbar};
 pub(crate) mod text;
 pub(crate) mod text_field;

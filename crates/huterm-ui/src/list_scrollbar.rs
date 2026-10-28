@@ -6,12 +6,13 @@
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, Context, Entity, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ScrollHandle, canvas, div, point, prelude::*, px,
+    AnyElement, Context, ElementId, Entity, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ScrollHandle, canvas, div, point, prelude::*,
+    px,
 };
 
-use super::animation::AnimationSchedule;
-use super::scrollbar::{
+use crate::animation::AnimationSchedule;
+use crate::scrollbar::{
     Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarColors,
     ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions, Scrollbars,
     ThumbSize, TrackMargins, TrackPress,
@@ -35,14 +36,17 @@ const OPTIONS: ScrollbarOptions = ScrollbarOptions {
     hold: INDICATOR_HOLD,
 };
 
-pub(crate) struct ListScrollbar {
+/// The overlay scrollbar's state for one list.
+#[derive(Debug)]
+pub struct ListScrollbar {
     scrollbars: Scrollbars,
     scroll: ScrollHandle,
 }
 
 impl ListScrollbar {
     /// A vertical scrollbar over the list `scroll` tracks.
-    pub(crate) fn new(scroll: ScrollHandle) -> Self {
+    #[must_use]
+    pub fn new(scroll: ScrollHandle) -> Self {
         Self {
             scrollbars: Scrollbars::vertical(OPTIONS),
             scroll,
@@ -51,30 +55,36 @@ impl ListScrollbar {
 
     /// Reveals the indicator; [`Self::advance`] fades it later. It only
     /// draws while the list overflows.
-    pub(crate) fn show(&mut self) {
+    pub fn show(&mut self) {
         self.scrollbars.show(Axis::Vertical, Instant::now());
     }
 
-    pub(crate) fn schedule(&self, now: Instant) -> AnimationSchedule {
+    /// When the indicator next needs a frame or a wake.
+    #[must_use]
+    pub fn schedule(&self, now: Instant) -> AnimationSchedule {
         self.scrollbars.schedule(now)
     }
 
     /// Advances the fade and hover expansion; true when a redraw is needed.
-    pub(crate) fn advance(&mut self, now: Instant) -> bool {
+    pub fn advance(&mut self, now: Instant) -> bool {
         self.scrollbars.advance(now)
     }
 
     /// Whether the indicator is drawn: showing over a list that overflows.
-    pub(crate) fn indicator_visible(&self) -> bool {
+    #[must_use]
+    pub fn indicator_visible(&self) -> bool {
         self.scrollbars.visible(Axis::Vertical) && self.geometry().is_some()
     }
 
-    pub(crate) fn dragging(&self) -> bool {
+    /// Whether a thumb drag is in progress.
+    #[must_use]
+    pub fn dragging(&self) -> bool {
         self.scrollbars.dragging()
     }
 
     /// The indicator geometry for the list's current overflow, if any.
-    pub(crate) fn geometry(&self) -> Option<ScrollbarGeometry> {
+    #[must_use]
+    pub fn geometry(&self) -> Option<ScrollbarGeometry> {
         let viewport = f32::from(self.scroll.bounds().size.height);
         let overflow = f32::from(self.scroll.max_offset().y);
         ScrollbarGeometry::new(
@@ -155,9 +165,9 @@ impl ListScrollbar {
     /// The pointer strip at the list's right edge and a window-level drag
     /// capture, both absolute: mount them in a relative frame that shares
     /// the list's bounds. `view` owns this scrollbar, reached through `get`.
-    pub(crate) fn elements<V: 'static>(
+    pub fn elements<V: 'static>(
         &mut self,
-        id: &'static str,
+        id: impl Into<ElementId>,
         colors: ScrollbarColors,
         view: &Entity<V>,
         get: fn(&mut V) -> &mut Self,
@@ -178,7 +188,13 @@ impl ListScrollbar {
         }
         let mut elements = Vec::with_capacity(2);
         if show_strip {
-            elements.push(self.strip(id, colors, &geometries, view, get));
+            elements.push(self.strip(
+                id.into(),
+                colors,
+                &geometries,
+                view,
+                get,
+            ));
         }
         elements.push(drag_capture(view, get));
         elements
@@ -186,7 +202,7 @@ impl ListScrollbar {
 
     fn strip<V: 'static>(
         &self,
-        id: &'static str,
+        id: ElementId,
         colors: ScrollbarColors,
         geometries: &ScrollbarGeometries,
         view: &Entity<V>,

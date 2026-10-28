@@ -4,7 +4,8 @@
 //! (`Ctrl+Shift+P`). Return, Tab, Backspace, and the arrows draw as icons
 //! on both, so no font has to supply those symbols.
 
-use gpui::{Div, Hsla, Keystroke, Pixels, div, prelude::*, px, svg};
+use gpui::{Div, Hsla, Keystroke, Pixels};
+use huterm_ui::components::kbd::{self, Glyph};
 
 use crate::assets::Icon;
 use crate::keymap::Platform;
@@ -81,25 +82,21 @@ impl KeyHint {
 
     /// The hint as a row of icons and words in `color`, icons at `size`.
     pub(crate) fn element(&self, size: Pixels, color: Hsla) -> Div {
-        let mut row = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(1.0))
-            .text_color(color);
-        for token in &self.tokens {
-            row = match token.icon {
-                Some(icon) => row.child(
-                    svg()
-                        .path(icon.asset_path())
-                        .size(size)
-                        .flex_none()
-                        .text_color(color),
-                ),
-                None => row.child(token.text.clone()),
-            };
-        }
-        row
+        kbd::glyphs(&self.glyphs(), size, color)
+    }
+
+    /// The hint as `huterm-ui` key-cap glyphs.
+    pub(crate) fn glyphs(&self) -> Vec<Glyph> {
+        self.tokens
+            .iter()
+            .map(|token| match token.icon {
+                Some(icon) => Glyph::Icon {
+                    path: icon.asset_path().into(),
+                    text: token.text.clone().into(),
+                },
+                None => Glyph::Text(token.text.clone().into()),
+            })
+            .collect()
     }
 }
 

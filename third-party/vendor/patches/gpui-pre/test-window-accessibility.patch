@@ -1,0 +1,70 @@
+diff --git a/src/platform/test/window.rs b/src/platform/test/window.rs
+index 5692b1e7cb81a80f5cf9393c68bab3f56448e3e3..5cb367ae779e82246866bd1ec75441cca027163c 100644
+--- a/src/platform/test/window.rs
++++ b/src/platform/test/window.rs
+@@ -1,5 +1,5 @@
+ use crate::{
+-    AnyWindowHandle, Bounds, DevicePixels, DispatchEventResult, DisplayId, GpuSpecs, HeadlessAtlas,
++    A11yCallbacks, AnyWindowHandle, Bounds, DevicePixels, DispatchEventResult, DisplayId, GpuSpecs, HeadlessAtlas,
+     Pixels, PlatformAtlas, PlatformDisplay, PlatformHeadlessRenderer, PlatformInput,
+     PlatformInputHandler, PlatformWindow, Point, PromptButton, RequestFrameOptions, Scene, Size,
+     TestDisplay, TestPlatform, TextInputConfiguration, TextInputStateChange, WindowAppearance,
+@@ -325,6 +325,13 @@ impl PlatformWindow for TestWindow {
+         self.0.lock().insets_callback = Some(callback);
+     }
+ 
++    /// Activates accessibility at once, as if an assistive technology had
++    /// connected, so tests can read the tree and send actions through
++    /// `Window::simulate_a11y_action`.
++    fn a11y_init(&self, callbacks: A11yCallbacks) {
++        let _ = (callbacks.activation)();
++    }
++
+     fn show_soft_keyboard(&self) {
+         self.0.lock().virtual_keyboard_requests += 1;
+     }
+diff --git a/src/window.rs b/src/window.rs
+index 380cd0afea2c2b35e6dbc2a014242d5914c18a1c..7ffd348ea183c89ab2889c0dd26dc4f7298955db 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -7039,6 +7039,14 @@ impl Window {
+             .push((action, Box::new(listener)));
+     }
+ 
++    /// Handles `request` as if an assistive technology had sent it. Test
++    /// windows activate accessibility when they open, so a test can find a
++    /// node in [`Window::debug_a11y_tree_json`] and act on it.
++    #[cfg(all(not(target_family = "wasm"), any(test, feature = "test-support")))]
++    pub fn simulate_a11y_action(&mut self, request: accesskit::ActionRequest, cx: &mut App) {
++        self.handle_a11y_action(request, cx);
++    }
++
+     #[cfg(not(target_family = "wasm"))]
+     pub(crate) fn handle_a11y_action(&mut self, request: accesskit::ActionRequest, cx: &mut App) {
+         // Take listeners out temporarily so the closures can borrow Window
+diff --git a/src/window/a11y/debug.rs b/src/window/a11y/debug.rs
+index ae98aa52837b11b7183601dcbf70d6503a14f598..a141455207f3e6a6832aa7039708d3ba2891e268 100644
+--- a/src/window/a11y/debug.rs
++++ b/src/window/a11y/debug.rs
+@@ -271,6 +271,21 @@ fn node_to_json(
+     if let Some(v) = node.orientation() {
+         aria.insert("orientation".into(), json!(format!("{v:?}")));
+     }
++    if node.is_disabled() {
++        aria.insert("disabled".into(), json!(true));
++    }
++    if node.is_read_only() {
++        aria.insert("read_only".into(), json!(true));
++    }
++    if let Some(v) = node.invalid() {
++        aria.insert("invalid".into(), json!(format!("{v:?}")));
++    }
++    if node.is_modal() {
++        aria.insert("modal".into(), json!(true));
++    }
++    if let Some(v) = node.live() {
++        aria.insert("live".into(), json!(format!("{v:?}")));
++    }
+ 
+     // Numeric properties.
+     if let Some(v) = node.numeric_value() {

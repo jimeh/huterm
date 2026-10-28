@@ -56,7 +56,7 @@ use huterm_protocol::{
 };
 use key_hint::KeyHint;
 use notices::Severity;
-use overlay::{Swatch, key_cap, mono_font_family, raised_panel};
+use overlay::{key_cap, mono_font_family, raised_panel, tokens};
 
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
@@ -93,6 +93,7 @@ mod about;
 mod close_dialog;
 mod composition;
 mod config_watch;
+pub(crate) mod gallery;
 mod grid_geometry;
 mod key_bench;
 mod key_hint;
@@ -2917,7 +2918,7 @@ impl TerminalView {
         terminal_bounds: Bounds<Pixels>,
         viewport_height: Pixels,
     ) -> impl IntoElement {
-        let swatch = Swatch::from_theme(&self.theme);
+        let swatch = tokens(&self.theme);
         let inset = px(8.0);
         div()
             .absolute()
@@ -2962,7 +2963,7 @@ impl TerminalView {
         viewport_height: Pixels,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let swatch = Swatch::from_theme(&self.theme);
+        let swatch = tokens(&self.theme);
         let hints = self.window_config.shortcut_hints;
         let bottom = viewport_height
             - (terminal_bounds.origin.y + terminal_bounds.size.height)
@@ -3047,7 +3048,7 @@ impl TerminalView {
     /// The centred `columns × rows` panel while the grid size changes. The
     /// surface stays opaque; the fade applies to the whole panel.
     fn render_size_panel(&self) -> impl IntoElement {
-        let swatch = Swatch::from_theme(&self.theme);
+        let swatch = tokens(&self.theme);
         let grid = self.displayed_grid().unwrap_or(self.requested_grid);
         div()
             .absolute()
