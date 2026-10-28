@@ -38,7 +38,9 @@
 //! recorder swallows the repeats of a key still held until a fresh press,
 //! so a held shortcut acts nowhere else. A Return or Space pressed just
 //! after the timeout saved, meant to save, is swallowed too rather than
-//! starting another recording.
+//! starting another recording, but only as the first key after it: once
+//! the user has pressed another, such as Tab to a field, Return and Space
+//! reach whatever has focus.
 //!
 //! Dismissal: Escape, focus leaving the button, window deactivation, which
 //! GPUI reports as focus leaving, and a press outside the button cancel,
@@ -295,7 +297,8 @@ impl KeyRecorder {
 
     /// Takes a keystroke while not recording: the repeats of a key held
     /// since the last recording ended, and a Return or Space meant to save
-    /// that lands just after the chord timeout saved.
+    /// that lands just after the chord timeout saved, as the first key
+    /// pressed since.
     fn intercept_idle(
         &mut self,
         event: &KeystrokeEvent,
@@ -312,9 +315,8 @@ impl KeyRecorder {
                 cx.background_executor().now().duration_since(at)
                     < CHORD_TIMEOUT / 2
             });
-        if meant_to_save {
-            self.timed_out_at = None;
-        }
+        // Any key ends the window: only the first one can be meant to save.
+        self.timed_out_at = None;
         meant_to_save
     }
 

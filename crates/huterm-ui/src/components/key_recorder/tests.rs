@@ -312,6 +312,28 @@ fn the_chord_timeout_ends_a_recording_after_its_latest_stroke(
 }
 
 #[gpui::test]
+fn a_return_after_another_key_reaches_the_control_that_has_focus(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = recorder(cx, 2, false);
+    cx.update(|_, cx| cx.bind_keys([KeyBinding::new("enter", Bound, None)]));
+    probe.start(cx);
+    key_down(cx, "ctrl-j", false);
+    cx.executor().advance_clock(CHORD_TIMEOUT);
+    cx.run_until_parked();
+    assert_eq!(probe.log(), ["started", "recorded ctrl-j"]);
+    // The user pressed another key first, as Tab to a field, so the Return
+    // that follows was not meant for the recorder and reaches what is
+    // focused.
+    cx.simulate_keystrokes("a");
+    cx.update(|window, cx| probe.other.focus(window, cx));
+    cx.run_until_parked();
+    let before = probe.bound.get();
+    cx.simulate_keystrokes("enter");
+    assert_eq!(probe.bound.get(), before + 1, "the recorder swallowed it");
+}
+
+#[gpui::test]
 fn focus_leaving_the_button_cancels(cx: &mut TestAppContext) {
     let (probe, cx) = recorder(cx, 2, false);
     probe.start(cx);
