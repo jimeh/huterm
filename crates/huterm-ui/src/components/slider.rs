@@ -21,7 +21,8 @@
 //! position snaps to the grid, and the owner hears only changes.
 //!
 //! States: disabled takes no focus from a press, drops the tab stop, does
-//! not move, dims the slider, and shows its reason as a tooltip.
+//! not move, dims the slider, and shows its reason as a tooltip. Disabling
+//! ends a drag in progress; re-enabling does not resume it.
 //!
 //! Accessibility: a horizontal `Slider` named by its label, reporting its
 //! numeric value, minimum, maximum, and step, the readout as its value, and
@@ -185,6 +186,17 @@ fn moved(from: f64, to: f64) -> bool {
     from != to
 }
 
+/// Ends the drag in progress, if any.
+fn release(drag: &Entity<Drag>, cx: &mut App) {
+    drag.update(cx, |drag, cx| {
+        if drag.dragging || drag.reported.is_some() {
+            drag.dragging = false;
+            drag.reported = None;
+            cx.notify();
+        }
+    });
+}
+
 /// The canvas that records the track's painted bounds and, while a drag is
 /// in progress, follows the pointer beyond the slider until the release,
 /// as a scrollbar thumb does.
@@ -201,7 +213,16 @@ fn drag_tracker(
                 drag.track = Some(bounds);
                 drag.dragging
             });
-            let Some(change) = change.clone().filter(|_| dragging) else {
+            if !dragging {
+                return;
+            }
+            let ended = drag.clone();
+            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                if phase.bubble() {
+                    release(&ended, cx);
+                }
+            });
+            let Some(change) = change.clone() else {
                 return;
             };
             let follow = drag.clone();
@@ -216,16 +237,6 @@ fn drag_tracker(
                     }
                 },
             );
-            let release = drag.clone();
-            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                if phase.bubble() {
-                    release.update(cx, |drag, cx| {
-                        drag.dragging = false;
-                        drag.reported = None;
-                        cx.notify();
-                    });
-                }
-            });
         },
     )
     .absolute()
@@ -281,6 +292,12 @@ impl Slider {
             .items_center()
             .px(px(THUMB / 2.0))
             .child(track)
+            // A press and release within one frame ends before the
+            // window-level release listener exists.
+            .on_mouse_up(MouseButton::Left, {
+                let drag = drag.clone();
+                move |_: &MouseUpEvent, _, cx| release(&drag, cx)
+            })
             .when_some(change, |area, change| {
                 let drag = drag.clone();
                 area.on_mouse_down(
@@ -317,6 +334,13 @@ impl RenderOnce for Slider {
             cx,
             |_, _| Drag::default(),
         );
+        // Disabling ends a drag, so re-enabling does not resume it.
+        if !enabled {
+            drag.update(cx, |drag, _| {
+                drag.dragging = false;
+                drag.reported = None;
+            });
+        }
         let change = self.on_change.clone().filter(|_| enabled);
         let area = self.area(&drag, change.clone(), &focus, window, cx);
         let slider =

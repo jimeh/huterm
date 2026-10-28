@@ -223,6 +223,55 @@ fn the_steppers_step_and_disable_at_their_bound(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_steppers_follow_the_typed_number(cx: &mut TestAppContext) {
+    let press = |cx: &mut VisualTestContext, label: &'static str| {
+        a11y_send(
+            cx,
+            move |window| a11y_labelled(window, label),
+            AccessibleAction::Click,
+        );
+    };
+    let disabled = |cx: &mut VisualTestContext, label: &'static str| {
+        cx.update(|window, _| {
+            a11y_labelled(window, label)["aria"]["disabled"] == true
+        })
+    };
+    // At the maximum, typing a number below it enables Increase, which
+    // steps from the typed number.
+    let (probe, cx) = number(cx, 1.0);
+    assert!(disabled(cx, "Increase"));
+    probe.type_text("50", cx);
+    assert!(!disabled(cx, "Increase"));
+    press(cx, "Increase");
+    assert_eq!(probe.value(cx), Some(0.55));
+    // Typing the maximum disables it again before any commit.
+    probe.type_text("100", cx);
+    assert!(disabled(cx, "Increase"));
+    assert_eq!(probe.value(cx), Some(0.55));
+    // The same at the minimum, for Decrease. Stepping to it commits the
+    // typed maximum first.
+    probe.act(cx, NumberField::to_min);
+    assert!(disabled(cx, "Decrease"));
+    probe.type_text("50", cx);
+    assert!(!disabled(cx, "Decrease"));
+    press(cx, "Decrease");
+    assert_eq!(probe.value(cx), Some(0.45));
+    assert_eq!(probe.changes(), [0.5, 0.55, 1.0, 0.05, 0.5, 0.45]);
+}
+
+#[gpui::test]
+fn a_typed_number_commits_as_it_shows(cx: &mut TestAppContext) {
+    let (probe, cx) = number(cx, 0.5);
+    probe.type_text("33.4", cx);
+    probe.act(cx, NumberField::commit);
+    assert_eq!(probe.value(cx), Some(0.33));
+    assert_eq!(probe.text(cx), "33");
+    probe.type_text("33.6", cx);
+    probe.act(cx, NumberField::commit);
+    assert_eq!(probe.value(cx), Some(0.34));
+}
+
+#[gpui::test]
 fn disabled_and_read_only_fields_refuse_every_change(cx: &mut TestAppContext) {
     for read_only in [false, true] {
         let (probe, cx) = number(cx, 0.5);
@@ -279,6 +328,10 @@ fn the_field_reports_a_spin_button(cx: &mut TestAppContext) {
     });
     a11y_action(cx, "width", AccessibleAction::Increment);
     assert_eq!(probe.value(cx), Some(0.55));
+    cx.update(|window, _| {
+        // 0.55 * 100 is 55.00000000000001 before rounding.
+        assert_eq!(a11y_node(window, "width")["aria"]["numeric_value"], 55.0);
+    });
     a11y_action(cx, "width", AccessibleAction::Decrement);
     a11y_action(cx, "width", AccessibleAction::Decrement);
     assert_eq!(probe.value(cx), Some(0.45));
@@ -292,6 +345,7 @@ fn formats_scale_round_and_parse_numbers() {
     let (_, percent) = quake();
     assert_eq!(percent.text(0.33), "33");
     assert_eq!(percent.parse(" 33 "), Some(0.33));
+    assert_eq!(percent.parse("33.4"), Some(0.33));
     assert_eq!(percent.parse("abc"), None);
     assert_eq!(percent.parse("inf"), None);
     let plain = Format::default();

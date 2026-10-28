@@ -3,11 +3,12 @@
 //!
 //! Anatomy: an optional icon and a label, optionally followed by a key cap
 //! for its shortcut, in a control-height pill, or a shorter one for a
-//! button inside another control, such as an input group's. An icon-only button, such as
-//! the title row's, is a square that shows its label as a tooltip and draws
-//! no key cap. [`Variant`]s follow shadcn/ui's: outlined by default, a quiet
-//! secondary fill, a borderless ghost, an accent fill for the primary
-//! action, a danger fill for destructive actions, and a link.
+//! button inside another control, such as an input group's. An icon-only
+//! button, such as the title row's, is a square that shows its label as a
+//! tooltip and draws no key cap. [`Variant`]s follow shadcn/ui's: outlined
+//! by default, a quiet secondary fill, a borderless ghost, an accent fill
+//! for the primary action, a danger fill for destructive actions, and a
+//! link.
 //!
 //! Keyboard: a button the owner gives a focus handle takes focus; the owner
 //! runs its action on its activation command (Space and Return by default).

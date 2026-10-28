@@ -2,8 +2,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    AccessibleAction, FocusHandle, Modifiers, MouseButton, TestAppContext,
-    VisualTestContext, div, point, prelude::*, px,
+    AccessibleAction, FocusHandle, Modifiers, MouseButton, MouseDownEvent,
+    MouseUpEvent, PlatformInput, TestAppContext, VisualTestContext, div, point,
+    prelude::*, px,
 };
 
 use super::Slider;
@@ -48,6 +49,17 @@ fn along(fraction: f32) -> gpui::Point<gpui::Pixels> {
     point(px(7.0 + 206.0 * fraction), px(12.0))
 }
 
+/// A move to `fraction` along the track with the left button held, as a
+/// drag sends.
+fn drag_to(cx: &mut VisualTestContext, fraction: f32) {
+    cx.simulate_mouse_move(
+        along(fraction),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+}
+
 impl Probe {
     fn changes(&self) -> Vec<f64> {
         self.changes.borrow().clone()
@@ -77,10 +89,80 @@ fn a_press_and_a_drag_pick_grid_values_in_the_range(cx: &mut TestAppContext) {
         Modifiers::none(),
     );
     cx.run_until_parked();
-    // After the release, the pointer no longer moves it.
-    cx.simulate_mouse_move(along(0.9), None, Modifiers::none());
-    cx.run_until_parked();
+    // After the release, the pointer no longer moves it, even with the
+    // button held.
+    drag_to(cx, 0.9);
     assert_eq!(probe.changes(), [0.3, 1.0, 0.05]);
+}
+
+#[gpui::test]
+fn disabling_a_slider_ends_its_drag(cx: &mut TestAppContext) {
+    let disabled = Rc::new(Cell::new(false));
+    let off = disabled.clone();
+    let (probe, cx) = slider(cx, 0.5, move |slider| {
+        if off.get() {
+            slider.disabled(None)
+        } else {
+            slider
+        }
+    });
+    let set_disabled = |cx: &mut VisualTestContext, value: bool| {
+        disabled.set(value);
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    };
+    // Released while disabled, then re-enabled.
+    cx.simulate_mouse_down(along(0.25), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    set_disabled(cx, true);
+    cx.simulate_mouse_up(
+        point(px(-50.0), px(30.0)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.run_until_parked();
+    set_disabled(cx, false);
+    drag_to(cx, 0.9);
+    assert_eq!(probe.changes(), [0.3]);
+    // Re-enabled before the release.
+    cx.simulate_mouse_down(along(0.25), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    set_disabled(cx, true);
+    set_disabled(cx, false);
+    drag_to(cx, 0.9);
+    assert_eq!(probe.changes(), [0.3]);
+}
+
+#[gpui::test]
+fn a_press_and_release_in_one_frame_ends_the_drag(cx: &mut TestAppContext) {
+    let (probe, cx) = slider(cx, 0.5, |slider| slider);
+    // Both events dispatch before a frame paints the window-level release
+    // listener.
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: along(0.25),
+                modifiers: Modifiers::none(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: along(0.25),
+                modifiers: Modifiers::none(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(probe.changes(), [0.3]);
+    drag_to(cx, 0.9);
+    assert_eq!(probe.changes(), [0.3]);
 }
 
 #[gpui::test]

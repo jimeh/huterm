@@ -202,6 +202,77 @@ fn cut_copies_the_selection_then_deletes_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn an_owner_write_ends_a_composition(cx: &mut TestAppContext) {
+    let compose = |cx: &mut VisualTestContext, probe: &Probe| {
+        cx.update(|window, cx| {
+            probe.input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(
+                    None, "かな", None, window, cx,
+                );
+            });
+        });
+    };
+    let commit = |cx: &mut VisualTestContext, probe: &Probe| {
+        let marked = cx.update(|window, cx| {
+            probe
+                .input
+                .update(cx, |input, cx| input.marked_text_range(window, cx))
+        });
+        assert_eq!(marked, None, "the owner's write ended the composition");
+        cx.update(|window, cx| {
+            probe.input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "!", window, cx);
+            });
+        });
+        cx.run_until_parked();
+    };
+    let (probe, cx) = field(cx, 200.0, |input| input);
+    probe.update(cx, |input, cx| input.set_text("hello", cx));
+    // A stale composition range would index past the shorter text.
+    compose(cx, &probe);
+    probe.update(cx, |input, cx| input.set_text("x", cx));
+    commit(cx, &probe);
+    assert_eq!(probe.text(cx), "x!");
+    compose(cx, &probe);
+    probe.update(cx, |input, cx| input.replace(0..usize::MAX, "y", cx));
+    commit(cx, &probe);
+    assert_eq!(probe.text(cx), "y!");
+}
+
+#[gpui::test]
+fn an_owner_replacement_is_one_line_of_whole_characters(
+    cx: &mut TestAppContext,
+) {
+    // Never painted, so a line break fails here rather than in the text
+    // shaper.
+    let input = cx.new(|cx| Input::new("unpainted", "Unpainted", tokens(), cx));
+    // 2..3 is inside "é", so the range widens to it.
+    let (text, cursor) = cx.update(|cx| {
+        input.update(cx, |input, cx| {
+            input.set_text("aéb", cx);
+            input.replace(2..3, "1\n2", cx);
+            (input.text().to_owned(), input.cursor())
+        })
+    });
+    assert_eq!((text.as_str(), cursor), ("a1 2b", 4));
+}
+
+#[gpui::test]
+fn a_read_only_field_draws_no_caret(cx: &mut TestAppContext) {
+    let (probe, cx) = field(cx, 200.0, |input| input);
+    probe.update(cx, |input, cx| {
+        input.set_text("keep this", cx);
+        input.set_read_only(true, cx);
+    });
+    cx.simulate_click(point(px(20.0), px(12.0)), Modifiers::none());
+    cx.run_until_parked();
+    assert!(probe.focused(cx));
+    assert!(!probe.update(cx, |input, _| input.caret_drawn()));
+    probe.update(cx, |input, cx| input.set_read_only(false, cx));
+    assert!(probe.update(cx, |input, _| input.caret_drawn()));
+}
+
+#[gpui::test]
 fn the_field_reports_its_role_value_and_states(cx: &mut TestAppContext) {
     let (probe, cx) =
         field(cx, 200.0, |input| input.with_placeholder("Default"));

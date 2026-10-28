@@ -26,7 +26,8 @@
 //! field shows the focus ring for keyboard focus.
 //!
 //! States: read-only keeps the field focusable, selectable, and copyable,
-//! and refuses typing, composition, paste, cut, and deletion. Disabled
+//! draws no caret, as a selectable `NSTextField` does not, and refuses
+//! typing, composition, paste, cut, and deletion. Disabled
 //! takes no focus from a press, drops the tab stop, refuses every edit and
 //! selection, dims the field, and shows its reason as a tooltip. Invalid
 //! draws a framed field's border in the danger color. Both refusals are
@@ -207,6 +208,9 @@ struct Layout {
     line: ShapedLine,
     /// How far the text is scrolled left, in points.
     scroll: Pixels,
+    /// Whether the caret was drawn.
+    #[cfg(feature = "test-support")]
+    caret: bool,
 }
 
 /// A single-line text field.
@@ -401,29 +405,35 @@ impl Input {
     }
 
     /// Replaces `range` with `text` and puts the caret after it, as typing
-    /// over a selection does. The owner's edit, so it applies even when the
-    /// field refuses the user's.
+    /// over a selection does. The range widens to the characters it
+    /// touches, and ends a composition in progress. The owner's edit, so it
+    /// applies even when the field refuses the user's.
     pub fn replace(
         &mut self,
         range: Range<usize>,
         text: &str,
         cx: &mut Context<'_, Self>,
     ) {
-        let end = self.buffer.content.len();
-        let range = range.start.min(end)..range.end.min(end);
-        self.buffer.content.replace_range(range.clone(), text);
-        self.buffer.move_to(range.start + text.len());
+        let content = &self.buffer.content;
+        let start = content.floor_char_boundary(range.start);
+        let end = content.ceil_char_boundary(range.end).max(start);
+        let text = text.replace(['\r', '\n'], " ");
+        self.buffer.content.replace_range(start..end, &text);
+        self.buffer.marked = None;
+        self.buffer.move_to(start + text.len());
         Self::changed(cx);
     }
 
-    /// Replaces the text and puts the caret at its end. The owner's edit,
-    /// so it applies even when the field refuses the user's.
+    /// Replaces the text and puts the caret at its end, ending a
+    /// composition in progress. The owner's edit, so it applies even when
+    /// the field refuses the user's.
     pub fn set_text(
         &mut self,
         text: impl Into<String>,
         cx: &mut Context<'_, Self>,
     ) {
         self.buffer.content = text.into().replace(['\r', '\n'], " ");
+        self.buffer.marked = None;
         let end = self.buffer.content.len();
         self.buffer.move_to(end);
         Self::changed(cx);
@@ -569,6 +579,13 @@ impl Input {
         let x = visible.left() + layout.line.x_for_index(self.buffer.cursor())
             - layout.scroll;
         Some((x, visible))
+    }
+
+    /// Whether the last paint drew the caret.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn caret_drawn(&self) -> bool {
+        self.layout.as_ref().is_some_and(|layout| layout.caret)
     }
 
     /// Whether the user may change the text.
@@ -798,7 +815,7 @@ impl Input {
             text: self.buffer.content.clone().into(),
             selection: self.buffer.selection.clone(),
             cursor: self.buffer.cursor(),
-            caret: focused,
+            caret: focused && !self.read_only,
             marked: self
                 .buffer
                 .marked
@@ -820,6 +837,8 @@ impl Input {
                         bounds,
                         line: shaped.line.clone(),
                         scroll: shaped.scroll,
+                        #[cfg(feature = "test-support")]
+                        caret: shaped.caret,
                     });
                 });
                 if dragging {
@@ -1001,7 +1020,7 @@ struct Overlay {
     text: SharedString,
     selection: Range<usize>,
     cursor: usize,
-    /// Whether the field has focus, which shows the caret.
+    /// Whether to draw the caret: the field has focus and is editable.
     caret: bool,
     /// The composition range, underlined unless the chrome marks it.
     marked: Option<Range<usize>>,

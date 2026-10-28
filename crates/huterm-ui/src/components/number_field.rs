@@ -19,13 +19,16 @@
 //! move along its grid ([`Steps`]): a value off the grid steps to the next
 //! grid value first. Committed text that does not parse as a number
 //! restores the last valid value; a number out of range is clamped. Typed
-//! numbers inside the range are kept as typed, not snapped. A value the
-//! owner sets is shown as is, even off the grid or out of range. An empty
+//! numbers are rounded to the shown decimals, so the value is the number
+//! the field shows, and are not snapped to the grid. A value the owner
+//! sets is shown as is, even off the grid or out of range. An empty
 //! field steps to the minimum going up and the maximum going down, as
 //! React Aria's does.
 //!
 //! Pointer: the steppers step once per click, committing typed text
-//! first, and keep focus in the field. A stepper at its bound is disabled.
+//! first, and keep focus in the field. A stepper at its bound is disabled,
+//! judged by the typed number while it parses, so typing 50 into a field at
+//! its maximum of 100 enables the increment stepper.
 //!
 //! States: disabled and read-only follow [`Input`]'s and refuse every
 //! change, from the keyboard, the steppers, and assistive technology; both
@@ -97,11 +100,20 @@ impl Format {
         }
     }
 
-    /// The value `text` shows, if it is a finite number.
+    /// The value `text` shows, if it is a finite number, rounded to the
+    /// decimals shown so it shows as typed.
     #[must_use]
     pub fn parse(self, text: &str) -> Option<f64> {
         let number: f64 = text.trim().parse().ok()?;
-        (number.is_finite() && self.scale != 0.0).then(|| number / self.scale)
+        (number.is_finite() && self.scale != 0.0)
+            .then(|| self.round(number) / self.scale)
+    }
+
+    /// `number`, in shown units, rounded to the decimals shown.
+    fn round(self, number: f64) -> f64 {
+        let factor = 10_f64.powi(i32::from(self.decimals));
+        let rounded = (number * factor).round() / factor;
+        if rounded.is_finite() { rounded } else { number }
     }
 }
 
@@ -269,10 +281,10 @@ impl NumberField {
         self.step(|steps, _| steps.max(), Steps::max, cx);
     }
 
-    /// Takes the typed number as the value, clamped to the range, or puts
-    /// back the last valid value when the text is not a number. Text that
-    /// still shows the value changes nothing, so a value rounded for
-    /// display keeps its precision.
+    /// Takes the typed number as the value, rounded to the shown decimals
+    /// and clamped to the range, or puts back the last valid value when the
+    /// text is not a number. Text that still shows the value changes
+    /// nothing, so a value rounded for display keeps its precision.
     pub fn commit(&mut self, cx: &mut Context<'_, Self>) {
         if !self.editable(cx) {
             return;
@@ -295,6 +307,21 @@ impl NumberField {
         if self.input.read(cx).text() != shown {
             self.show_value(cx);
         }
+    }
+
+    /// The value a step starts from: the typed number, clamped, while it
+    /// parses and differs from the value's text, or else the value.
+    fn draft(&self, cx: &App) -> Option<f64> {
+        let text = self.input.read(cx).text().trim();
+        if self.value.map(|value| self.format.text(value)).as_deref()
+            == Some(text)
+        {
+            return self.value;
+        }
+        self.format
+            .parse(text)
+            .map(|value| self.steps.clamp(value))
+            .or(self.value)
     }
 
     /// Whether the user may change the value.
@@ -367,8 +394,11 @@ impl Render for NumberField {
         };
         let scale = self.format.scale;
         let steps = self.steps;
-        let at_min = self.value.is_some_and(|value| value <= steps.min());
-        let at_max = self.value.is_some_and(|value| value >= steps.max());
+        // The input is a view inside this one, so typing redraws the field
+        // and the steppers follow the typed number.
+        let draft = self.draft(cx);
+        let at_min = draft.is_some_and(|value| value <= steps.min());
+        let at_max = draft.is_some_and(|value| value >= steps.max());
         let stepper = |id: &'static str,
                        label: &'static str,
                        glyph: &'static str,
@@ -409,7 +439,7 @@ impl Render for NumberField {
             .aria_max_numeric_value(steps.max() * scale)
             .aria_numeric_value_step(steps.step() * scale)
             .when_some(self.value, |spin, value| {
-                spin.aria_numeric_value(value * scale)
+                spin.aria_numeric_value(self.format.round(value * scale))
             })
             .w_full()
             .when(editable, |spin| {

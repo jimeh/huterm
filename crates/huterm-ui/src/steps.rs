@@ -24,13 +24,15 @@ const PRECISION: f64 = 1e9;
 
 impl Steps {
     /// The range `min..=max` in steps of `step`, paging by ten steps.
+    /// Bounds given the wrong way round are swapped, so the range is never
+    /// empty.
     ///
     /// # Panics
-    /// In debug builds, when `min` exceeds `max` or `step` is not positive.
+    /// In debug builds, when `step` is not positive.
     #[must_use]
     pub fn new(min: f64, max: f64, step: f64) -> Self {
-        debug_assert!(min <= max, "an empty range: {min} > {max}");
         debug_assert!(step > 0.0, "a step must be positive: {step}");
+        let (min, max) = if min > max { (max, min) } else { (min, max) };
         Self {
             min,
             max,
@@ -70,11 +72,18 @@ impl Steps {
         value.clamp(self.min, self.max)
     }
 
-    /// The grid value nearest to `value`, inside the range.
+    /// The grid value nearest to `value`, inside the range. Both bounds
+    /// are grid values, so the maximum wins when it is nearer than the
+    /// last step below it.
     #[must_use]
     pub fn snap(self, value: f64) -> f64 {
-        let index = ((self.clamp(value) - self.min) / self.step).round();
-        self.at_index(index)
+        let value = self.clamp(value);
+        let nearest = self.at_index(((value - self.min) / self.step).round());
+        if self.max - value < (nearest - value).abs() {
+            self.max
+        } else {
+            nearest
+        }
     }
 
     /// `value` moved `steps` grid steps, up for a positive count. A value
@@ -199,6 +208,20 @@ mod tests {
         let steps = Steps::new(0.0, 1.0, 0.3);
         assert_eq!(steps.increment(0.9), 1.0);
         assert_eq!(steps.decrement(1.0), 0.9);
+        // A pointer at either end of a slider's track picks that bound.
+        assert_eq!(steps.at_fraction(1.0), 1.0);
+        assert_eq!(steps.at_fraction(0.0), 0.0);
+        assert_eq!(steps.snap(0.98), 1.0);
+        assert_eq!(steps.snap(0.94), 0.9);
+    }
+
+    #[test]
+    fn inverted_bounds_are_swapped() {
+        // `f64::clamp` panics on an empty range, in release builds too.
+        let steps = Steps::new(1.0, 0.05, 0.05);
+        assert_eq!((steps.min(), steps.max()), (0.05, 1.0));
+        assert_eq!(steps.clamp(2.0), 1.0);
+        assert_eq!(steps.increment(0.5), 0.55);
     }
 
     #[test]
