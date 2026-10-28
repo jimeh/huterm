@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.23.0](https://github.com/jimeh/huterm/compare/v0.22.0...v0.23.0) (2026-10-28)
+
+
+### Features
+
+* arrange, cycle, and balance pane layouts ([#286](https://github.com/jimeh/huterm/issues/286)) ([745c98a](https://github.com/jimeh/huterm/commit/745c98a397b95b56f98d3fb9b834e7a16bff1734))
+* compress idle scrollback history ([#288](https://github.com/jimeh/huterm/issues/288)) ([1a9af85](https://github.com/jimeh/huterm/commit/1a9af856288dc18e1412330b1eb5be2d77d2e6ce))
+
 ## [0.22.0](https://github.com/jimeh/huterm/compare/v0.21.0...v0.22.0) (2026-10-27)
 
 
