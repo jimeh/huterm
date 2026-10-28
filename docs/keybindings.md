@@ -315,8 +315,8 @@ imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 | `settings_first` | Window | Bound only while `SettingsControl`. Moves the focused slider to its minimum; other controls ignore it. |
 | `settings_last` | Window | Bound only while `SettingsControl`. Moves the focused slider to its maximum; other controls ignore it. |
 | `settings_reset` | Window | Bound only while `SettingsControl`. |
-| `palette_select_next` | Palette | Also steps a focused Settings number field up. |
-| `palette_select_previous` | Palette | Also steps a focused Settings number field down. |
+| `palette_select_next` | Palette | Also steps a focused Settings number field down. |
+| `palette_select_previous` | Palette | Also steps a focused Settings number field up. |
 | `palette_page_down` | Palette | Also pages a focused Settings number field down. |
 | `palette_page_up` | Palette | Also pages a focused Settings number field up. |
 | `palette_confirm` | Palette | |
