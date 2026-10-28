@@ -1,7 +1,8 @@
 //! The terminal window's dialogs in its `huterm-ui` dialog slot, migration
 //! 7b of `docs/plans/ui-components.md`: the close confirmation, About, and
 //! Licenses stay open through outside presses and window deactivation,
-//! keep Tab inside, and return focus to the terminal; text typed or
+//! keep Tab inside, and return focus to the terminal; Space presses the
+//! close confirmation's and About's focused button; text typed or
 //! composed on a Licenses button reaches its search; a long license
 //! scrolls to its end.
 
@@ -101,6 +102,40 @@ fn escape_cancels_the_close_confirmation_and_tab_stays_inside_it(
     harness
         .cx
         .update(|cx| assert!(terminal(cx, window, runs).is_some()));
+}
+
+#[gpui::test]
+fn space_on_the_close_confirmations_cancel_cancels(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, runs) = harness.busy_window();
+    harness.press(window, CLOSE);
+    harness.wait_for("the confirmation", |cx| confirming(cx, window));
+    harness.press(window, "tab");
+    assert_eq!(harness.dialog_focus(window), Some("cancel"));
+    harness.press(window, "space");
+    assert_eq!(harness.dialog_focus(window), None);
+    harness.wait_for("the terminal to take focus back", |cx| {
+        !confirming(cx, window) && focused(cx, window, runs)
+    });
+    harness
+        .cx
+        .update(|cx| assert!(terminal(cx, window, runs).is_some()));
+}
+
+#[gpui::test]
+fn space_on_abouts_close_closes_it(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Close));
+    harness.press(window, "space");
+    assert_eq!(harness.about_focus(window), None);
+    harness.wait_for("the terminal to take focus back", |cx| {
+        focused(cx, window, tab)
+    });
 }
 
 #[gpui::test]
@@ -309,8 +344,8 @@ fn editing_keys_on_a_licenses_button_move_to_the_search(
     assert_eq!(license_matches(&mut harness, window), 1);
     harness.press(window, "tab");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
-    // No binding claims Space on a button, so it types into the search, as
-    // it would with the search focused.
+    // No binding claims Space on a Licenses button, so it types into the
+    // search, as it would with the search focused.
     harness.press(window, "space");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
     assert_eq!(search_text(&mut harness, window), "alpha ");

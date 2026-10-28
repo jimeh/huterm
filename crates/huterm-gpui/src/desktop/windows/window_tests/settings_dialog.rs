@@ -9,7 +9,8 @@ use super::settings::{
     ScratchConfig, settings, settled, with_view, with_window,
 };
 use super::settings_controls::{
-    a11y_find, a11y_node, break_file, focus, keys, show, visual,
+    a11y_find, a11y_node, break_file, focus, keys, press_and_release, show,
+    visual,
 };
 use super::*;
 use crate::config::KeybindingEntry;
@@ -171,6 +172,59 @@ fn enter_on_delete_removes_the_profile_and_focuses_the_profile_select(
     with_view(&mut harness, |view, _| {
         assert_eq!(view.shown_profile_name(), "default");
     });
+}
+
+#[gpui::test]
+fn space_on_delete_removes_the_profile_once(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("dialog-space-delete", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    open_alert(&mut harness);
+    keys(&harness, "tab");
+    assert_eq!(focus(&mut harness), "dialog:qdelyes");
+    let before = with_view(&mut harness, |view, _| view.writes_finished());
+    // The release would carry GPUI's implicit click, a second press.
+    press_and_release(&harness, "space");
+    harness.wait_for("the delete", |cx| {
+        settled(cx) && !file.text().contains("logs")
+    });
+    assert_eq!(file.text(), "# Mine.\n");
+    assert_eq!(dialog(&mut harness), "none");
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.writes_finished()),
+        before + 1
+    );
+}
+
+#[gpui::test]
+fn a_dialog_confirm_rebound_off_space_leaves_space_off_the_buttons(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("dialog-space-rebound", LOGS);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        for (key, when, disabled) in [
+            ("space", Some("control == button"), Some(true)),
+            ("ctrl-j", None, None),
+        ] {
+            config.keybindings.push(KeybindingEntry {
+                key: key.into(),
+                command: "dialog_confirm".into(),
+                when: when.map(Into::into),
+                args: None,
+                description: None,
+                disabled,
+            });
+        }
+    });
+    show_logs(&mut harness, &file);
+    open_alert(&mut harness);
+    keys(&harness, "space");
+    assert_eq!(dialog(&mut harness), "delete");
+    assert_eq!(focus(&mut harness), "dialog:qdelno");
+    keys(&harness, "ctrl-j");
+    assert_eq!(dialog(&mut harness), "none");
+    assert_eq!(focus(&mut harness), "action:qdel");
+    assert_eq!(file.text(), LOGS);
 }
 
 #[gpui::test]
@@ -439,6 +493,52 @@ fn escape_cancels_the_name_dialogs_and_enter_creates_or_renames(
         assert_eq!(view.shown_profile_name(), "work");
         assert_eq!(view.profile_names(), ["default", "build", "work"]);
     });
+}
+
+#[gpui::test]
+fn space_presses_the_focused_name_dialog_button(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("dialog-name-space", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    press_button(&mut harness, "qnew");
+    with_view(&mut harness, |view, cx| view.type_dialog_name("build", cx));
+    visual(&harness).run_until_parked();
+    // Cancel is not the primary button, so Space presses what has focus.
+    keys(&harness, "tab");
+    assert_eq!(focus(&mut harness), "dialog:qcancel");
+    keys(&harness, "space");
+    assert_eq!(dialog(&mut harness), "none");
+    assert_eq!(focus(&mut harness), "action:qnew");
+    assert!(harness.cx.update(settled));
+    assert_eq!(file.text(), LOGS);
+    press_button(&mut harness, "qnew");
+    with_view(&mut harness, |view, cx| view.type_dialog_name("build", cx));
+    visual(&harness).run_until_parked();
+    keys(&harness, "tab tab");
+    assert_eq!(focus(&mut harness), "dialog:qcreate");
+    keys(&harness, "space");
+    harness.wait_for("the create", |cx| {
+        settled(cx) && file.text().contains("[quake.profiles.build]")
+    });
+    assert_eq!(dialog(&mut harness), "none");
+}
+
+#[gpui::test]
+fn space_in_a_name_field_types_a_space_and_confirms_nothing(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("dialog-name-field-space", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    press_button(&mut harness, "qnew");
+    keys(&harness, "b u i l d space");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.profile_name_text(cx), "build ");
+    });
+    assert_eq!(dialog(&mut harness), "new-profile");
+    assert_eq!(focus(&mut harness), "dialog:field");
+    assert!(harness.cx.update(settled));
+    assert_eq!(file.text(), LOGS);
 }
 
 #[gpui::test]

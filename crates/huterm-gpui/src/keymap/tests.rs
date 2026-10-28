@@ -638,6 +638,80 @@ fn dialog_defaults_match_only_while_confirming() {
 }
 
 #[test]
+fn space_presses_only_a_focused_dialog_button() {
+    for platform in [Platform::MacOs, Platform::Linux] {
+        let compiled = compile(platform, &[]).unwrap();
+        let space = bound_to(&compiled, "space")
+            .into_iter()
+            .find(|binding| binding.command == ids::DIALOG_CONFIRM)
+            .expect("a Space default for dialog_confirm");
+        assert_eq!(space.when.as_deref(), Some("control == button"));
+        assert_eq!(space.description, "Press Button");
+        assert!(!compiled.reserved.is_reserved(&keystroke("space")));
+        let keymap = Keymap::new(compiled.bindings);
+        let contexts = |focused: &[&str]| {
+            focused
+                .iter()
+                .map(|context| KeyContext::parse(context).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let matched = |contexts: &[KeyContext]| {
+            let (bindings, pending) =
+                keymap.bindings_for_input(&[keystroke("space")], contexts);
+            assert!(!pending, "{platform:?}: space left a pending chord");
+            bindings.iter().map(command_of).collect::<Vec<_>>()
+        };
+        // The terminal window's dialogs sit under a `confirming` root, and
+        // the Settings window's inside its `Settings` root.
+        for root in ["Workspace confirming", "Settings"] {
+            let button = contexts(&[root, "confirming", DIALOG_BUTTON_CONTEXT]);
+            assert_eq!(
+                matched(&button),
+                vec![ids::DIALOG_CONFIRM],
+                "{platform:?}: space on a dialog button under {root}"
+            );
+            for focused in
+                [&[root, "confirming"][..], &[root, "confirming", "Palette"]]
+            {
+                assert!(
+                    !matched(&contexts(focused)).contains(&ids::DIALOG_CONFIRM),
+                    "{platform:?}: space confirmed in {focused:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_default_replacing_another_default_is_reported_rather_than_panicking() {
+    let clash = [
+        default("space", ids::DIALOG_CONFIRM, "Press Button"),
+        default("space", ids::DIALOG_CANCEL, "Cancel"),
+    ];
+    let Resolution {
+        items, conflicts, ..
+    } = resolve_entries(&clash).unwrap();
+    assert_eq!(
+        conflicts,
+        [
+            r#"default keybinding ("space"): replaces an earlier default with the same key and when"#
+        ]
+    );
+    // Neither default is credited to a user entry that does not exist.
+    let states: Vec<_> = items
+        .iter()
+        .map(|item| (item.resolved.effective.command, item.state.clone()))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            (ids::DIALOG_CONFIRM, BindingState::Active),
+            (ids::DIALOG_CANCEL, BindingState::Active),
+        ]
+    );
+}
+
+#[test]
 fn settings_page_home_and_end_keys_match_only_on_a_slider() {
     for platform in [Platform::MacOs, Platform::Linux] {
         let keymap = Keymap::new(compile(platform, &[]).unwrap().bindings);

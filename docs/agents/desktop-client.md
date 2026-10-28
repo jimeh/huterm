@@ -784,6 +784,12 @@ carries the `confirming` context: route `dialog_focus_next` and
 cycle through the dialog's
 declared controls and its enabled buttons, and give its buttons no
 `SettingsControl` context, which would win for Enter, Space, and the arrows.
+Give each button `keymap::DIALOG_BUTTON_CONTEXT` (`confirming control=button`)
+instead: Space's `dialog_confirm` default has `when = "control == button"`,
+and a binding's command context and `when` must match on one context node, so
+both names sit on the button and Space never reaches a field in the dialog.
+The Licenses buttons carry no such context, since Space there types into the
+search.
 A text field in a dialog carries the `Palette` context, as Settings' fields
 do, so Left and Right edit it rather than run `dialog_focus_*`. Its owner
 then routes `palette_expand` and `palette_previous_slot` (Tab and Shift-Tab

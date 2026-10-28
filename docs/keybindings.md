@@ -169,7 +169,7 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `Settings` | The Settings window has focus. |
 | `SettingsControl` | A Settings switch, select, segmented control, slider, modifier chip, theme card, button, or section has focus. |
 | `SettingsGroup` | A Settings section, theme card, or modifier chip has focus. It sits inside that item's `SettingsControl`, so a binding under it matches deeper and wins over a `SettingsControl` binding on the same key. |
-| `control` | `slider` while a Settings slider has focus, so `SettingsControl && control == slider` matches sliders alone. |
+| `control` | `slider` while a Settings slider has focus, so `SettingsControl && control == slider` matches sliders alone. `button` while a dialog button has focus, on the same element as its `confirming`, so `confirming && control == button` matches the button and never a text field in the dialog. |
 
 Most contexts are bare words for the state of the view or window, such as
 `selection` and `pane_zoomed`. The `has_` prefix marks a context that says
@@ -465,13 +465,16 @@ directions if you use them.
 These bind only while a close confirmation, the About panel, or a Settings
 dialog is showing (`confirming`), so they take nothing from terminal input. The
 primary button has focus when the dialog opens, and a repeated close shortcut
-never confirms. In the About panel, the focus commands move between its
+never confirms. `dialog_confirm` presses the focused button, so Enter or Space
+on Cancel cancels. Its Space default carries `when = "control == button"`, so
+Space presses only a focused dialog button and still types a space in a
+dialog's text field. In the About panel, the focus commands move between its
 Licenses, Copy Details, and Close buttons, `dialog_confirm` presses the focused
 one, and `dialog_cancel` closes it. Focus starts on Close.
 
 In Settings, Delete profile asks in a dialog whose Cancel has focus. The focus
 commands move between Cancel and Delete, `dialog_confirm` presses the focused
-one, and `dialog_cancel` cancels, as Cancel does. Space presses neither. When
+one, and `dialog_cancel` cancels, as Cancel does. When
 a global shortcut uses the profile, the dialog says why and offers only OK.
 While the dialog is open, other Settings commands do nothing; closing the
 window and app commands such as Quit still work.
@@ -495,7 +498,7 @@ panel.
 
 | Command | macOS | Linux |
 | --- | --- | --- |
-| `dialog_confirm` | `enter` | `enter` |
+| `dialog_confirm` | `enter`, `space` | `enter`, `space` |
 | `dialog_cancel` | `escape` | `escape` |
 | `dialog_focus_next` | `tab`, `right` | `tab`, `right` |
 | `dialog_focus_previous` | `shift-tab`, `left` | `shift-tab`, `left` |

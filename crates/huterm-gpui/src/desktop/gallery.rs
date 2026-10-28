@@ -89,7 +89,8 @@ gpui::actions!(
 );
 
 /// The gallery's own bindings, since it loads no keymap: the dialogs' keys
-/// as Huterm's defaults bind them under the dialog's context, text editing
+/// as Huterm's defaults bind them under the dialog's context, except Space,
+/// which the app binds on dialog buttons alone, text editing
 /// under the fields', and the combobox and command lists' moves under
 /// theirs. The rename field binds no Tab, Shift-Tab, Enter, or Escape of
 /// its own, so those reach the dialog's bindings.

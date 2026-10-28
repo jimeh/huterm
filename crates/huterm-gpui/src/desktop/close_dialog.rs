@@ -13,7 +13,7 @@ use huterm_ui::components::dialog::Modal;
 
 use super::key_hint::KeyHint;
 use super::overlay::{Swatch, accent_bar, mono_font_family, severity_mark};
-use crate::keymap::Platform;
+use crate::keymap::{DIALOG_BUTTON_CONTEXT, Platform};
 
 /// What the confirmation closes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -409,8 +409,8 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
     }
 }
 
-/// A 28-point footer button reading `label`; with `hint`, its key cap
-/// follows.
+/// A 28-point footer button reading `label`, in the dialog button context
+/// that Space presses it under; with `hint`, its key cap follows.
 fn button(
     id: &'static str,
     label: impl Into<gpui::SharedString>,
@@ -418,6 +418,7 @@ fn button(
     hint: Option<&str>,
 ) -> Button {
     Button::new(id, label, swatch)
+        .key_context(DIALOG_BUTTON_CONTEXT)
         .when_some(hint, |button, key| {
             button.shortcut(KeyHint::keys(&[key], Platform::current()).glyphs())
         })

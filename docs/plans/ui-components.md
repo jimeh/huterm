@@ -33,6 +33,11 @@ on sliders alone (`settings_page_up`, `settings_page_down`,
 field pages through `palette_page_up` and `palette_page_down` and keeps Home
 and End for its text), and keybinding argument fields stay `Input`s with
 their own clamped stepping.
+Space presses the focused button of every Settings dialog, the close
+confirmation, and About: its `dialog_confirm` default binds under
+`control == button`, which each of those buttons sets beside `confirming`,
+so a dialog's text field still types a space. The Licenses buttons leave
+Space to the search.
 Step 5's `Combobox` runs its owner's filter on every edit the user
 makes, which `Input`'s new `Edited` event tells from the owner's writes,
 so typing opens and refilters the list and putting back a value does not;
@@ -86,7 +91,7 @@ App-specific surfaces). Everything else in the table migrates.
 | Kind | Where | Shared | Keyboard | Pointer | Focus ring | Dismissal | Disabled or read-only |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Button (Settings) | `settings_window.rs` `button`, `render.rs` `actionable` | Settings | Space, Return (`settings_toggle`), plus GPUI's implicit Enter and Space click (D16) | Hover and pressed styles | `.focus()` ring, also on click | n/a | Opacity 0.5 |
-| Dialog buttons (`Button`s that take focus in their dialog since 7b) | `close_dialog.rs`, `about.rs` | Terminal window | `dialog_*` commands under `confirming`: Return, Escape, Tab, Shift-Tab, Left, Right | Hover, pressed | The shared focus ring, shown after keys | n/a | n/a |
+| Dialog buttons (`Button`s that take focus in their dialog since 7b) | `close_dialog.rs`, `about.rs` | Terminal window | `dialog_*` commands under `confirming`: Return, Escape, Tab, Shift-Tab, Left, Right; Space on a button (`control == button`) | Hover, pressed | The shared focus ring, shown after keys | n/a | n/a |
 | Tab strip | `tab_strip.rs`, `tab_bar.rs` | Terminal window | Catalog tab commands; tabs are not tab stops | Click activates, drag reorders with edge auto-scroll, the close button closes, right press opens the tab menu | None | n/a | n/a |
 | Title-row and tab-bar buttons (menu, new tab) | `windows.rs` (the menu button, `new-tab`, `window_controls_element`) | Terminal window | `open_menu` and `new_tab` commands; not tab stops | `TabColors` hover and pressed, tooltips | None | Menu button toggles its menu | n/a |
 | Pane dividers and pane drags | `pane_geometry.rs`, `pane_drag.rs`, `windows.rs` | Terminal window | Resize and move commands | Divider drag resizes; pane-title drag moves a pane | None | Window deactivation cancels | n/a |
@@ -884,11 +889,6 @@ from #276 or #277 that it covers.
 - The slider's readout has no fixed width, so its track narrows by about a
   glyph when the readout grows from 5% to 10% or 95% to 100%; give the
   readout the width of its widest value.
-- `keymap.rs` `resolve_entries` subtracts past zero (`position - 1`, around
-  line 537) when two default bindings share the same keys and predicate,
-  since a default entry before any user entry has position 0. Only a
-  catalog mistake reaches it, and it should report the clash; use a
-  saturating subtract or a debug assertion, plus a test.
 
 ## Non-goals
 

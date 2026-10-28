@@ -15,7 +15,7 @@ use super::key_hint::KeyHint;
 use super::overlay::{Swatch, mono_font_family};
 use crate::APP_ID;
 use crate::assets::APP_ICON;
-use crate::keymap::Platform;
+use crate::keymap::{DIALOG_BUTTON_CONTEXT, Platform};
 
 /// The terminal engine, identified by the native revision `huterm-core` pins.
 const ENGINE: &str = "libghostty-vt";
@@ -330,8 +330,9 @@ fn details_list(details: &AboutDetails, swatch: Swatch) -> Div {
     list
 }
 
-/// The Licenses button at the left, Copy Details and Close at the right.
-/// Enter presses the focused button and Escape closes the panel.
+/// The Licenses button at the left, Copy Details and Close at the right,
+/// each in the dialog button context. Enter and Space press the focused
+/// button and Escape closes the panel.
 fn footer(
     swatch: Swatch,
     hints: bool,
@@ -356,17 +357,20 @@ fn footer(
         .child(
             footer_button("about-licenses", "Licenses", swatch, false, None)
                 .focus(&buttons.licenses)
+                .key_context(DIALOG_BUTTON_CONTEXT)
                 .on_click(actions.licenses),
         )
         .child(div().flex_1())
         .child(
             footer_button("about-copy", "Copy Details", swatch, false, None)
                 .focus(&buttons.copy)
+                .key_context(DIALOG_BUTTON_CONTEXT)
                 .on_click(actions.copy),
         )
         .child(
             footer_button("about-close", "Close", swatch, true, enter.as_ref())
                 .focus(&buttons.close)
+                .key_context(DIALOG_BUTTON_CONTEXT)
                 .on_click(actions.close),
         )
 }
