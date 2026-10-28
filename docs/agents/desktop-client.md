@@ -824,8 +824,11 @@ the title); the invalid-file banner is a danger `Alert`; and an empty global
 shortcut list is an `Empty`. `render` notes a focus that moved since the last
 frame and defers `reveal_focused`, which scrolls the pane only when the ring
 shows (`focus::visible`, so a pointer press scrolls nothing), the ring
-painted inside the pane's columns, and no dialog or menu is open. Smoke state
-reports `settings.scroll` and `settings.in_view` for it.
+painted inside the pane's columns, and no dialog or menu is open. A row whose
+label sits apart from its controls, such as a user layout's name above its
+template, Rename, and Delete, draws `reveal_group` over itself with their
+handles, and the reveal shows the row with the ring. Smoke state reports
+`settings.scroll` and `settings.in_view` for it.
 
 The terminal window has one dialog slot too, `WorkspaceView::dialog`. The
 top dialog draws in it: the close confirmation, else Licenses, else About.

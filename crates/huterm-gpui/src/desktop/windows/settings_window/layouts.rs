@@ -933,6 +933,13 @@ impl SettingsView {
         };
         let rename = button(self, "lren", "Rename", cx);
         let delete = button(self, "ldel", "Delete", cx);
+        // Focus on any of the row's controls reveals its name above them.
+        let handles = [
+            field.read(cx).focus_handle(cx),
+            self.action_stop(format!("lren:{name}"), cx),
+            self.action_stop(format!("ldel:{name}"), cx),
+        ];
+        let group = self.reveal_group(&handles);
         let control = div()
             .flex()
             .flex_col()
@@ -961,8 +968,10 @@ impl SettingsView {
             );
         let conflict = self.render_conflict(setting, swatch, cx);
         div()
+            .relative()
             .flex()
             .flex_col()
+            .child(group)
             .child(
                 Field::new(
                     id(format!("settings-layout-{name}")),
@@ -970,7 +979,8 @@ impl SettingsView {
                     swatch,
                 )
                 .vertical()
-                .control(control),
+                .control(control)
+                .label_debug_selector(|| format!("settings-label-{path}")),
             )
             .children(conflict)
             .into_any_element()

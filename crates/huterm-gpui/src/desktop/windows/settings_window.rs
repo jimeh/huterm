@@ -269,6 +269,10 @@ pub(super) struct SettingsView {
     /// Every select trigger's painted bounds, by menu key, so a menu opened
     /// from the keyboard anchors to its trigger.
     triggers: Rc<RefCell<HashMap<String, gpui::Bounds<gpui::Pixels>>>>,
+    /// The focused control and the painted bounds of the group around it
+    /// that a keyboard reveal shows with it, such as a user layout's row
+    /// with its name, recorded by `reveal_group`.
+    focus_group: Rc<RefCell<Option<FocusGroup>>>,
     /// Wakes the window for the open menu's scroll indicator.
     menu_wake: Wake,
     /// The window size the open menu was placed for.
@@ -374,6 +378,7 @@ impl SettingsView {
             menu: None,
             popover: Popover::new(),
             triggers: Rc::default(),
+            focus_group: Rc::default(),
             menu_wake: Wake::default(),
             menu_viewport: None,
             scroll: ScrollHandle::new(),
@@ -1055,9 +1060,10 @@ impl SettingsView {
     }
 
     /// Scrolls the pane the least that shows the control the keyboard just
-    /// moved focus to, with its ring, once the frame that drew the ring has
-    /// painted. A pointer press, a control outside the pane, such as the
-    /// sidebar's, and a dialog or menu over the pane scroll nothing.
+    /// moved focus to, with its ring and any group `reveal_group` drew
+    /// around it, once the frame that drew the ring has painted. A pointer
+    /// press, a control outside the pane, such as the sidebar's, and a
+    /// dialog or menu over the pane scroll nothing.
     fn reveal_focused(
         &mut self,
         window: &mut Window,
@@ -1082,6 +1088,10 @@ impl SettingsView {
         {
             return;
         }
+        let painted = match &*self.focus_group.borrow() {
+            Some((handle, group)) if *handle == focused => painted.union(group),
+            _ => painted,
+        };
         // The pane has not scrolled since the ring painted.
         let target = ContentBounds::record(&self.scroll, painted);
         if ScrollArea::reveal(&self.scroll, target) {
@@ -1820,6 +1830,9 @@ fn tri_stepped(current: Option<bool>, forward: bool) -> Option<bool> {
     TRI_STATES.get(next).map_or(current, |(_, state)| *state)
 }
 
+/// A focused control and the painted bounds of the group it belongs to.
+type FocusGroup = (gpui::WeakFocusHandle, gpui::Bounds<gpui::Pixels>);
+
 /// How a Settings command moves a number or slider. A tri-state or a
 /// choice moves only by `Step`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2002,6 +2015,7 @@ impl Render for SettingsView {
         // Triggers record their bounds as they paint, so the map holds only
         // this frame's by the time an event reads it.
         self.triggers.borrow_mut().clear();
+        self.focus_group.borrow_mut().take();
         let sidebar = self.render_sidebar(swatch, searching, cx);
         let main = self.render_main(swatch, &query, window, cx);
         // A followed control, or focus stranded on a control this frame did

@@ -2,8 +2,8 @@
 //! controls the override table names.
 
 use gpui::{
-    AnyElement, Context, ElementId, SharedString, Window, canvas, div,
-    prelude::*, px,
+    AnyElement, Context, ElementId, FocusHandle, SharedString, Window, canvas,
+    div, prelude::*, px,
 };
 use huterm_config::settings::{Choice, Control, Setting, SettingKind};
 use huterm_ui::components::number_field::Format;
@@ -378,6 +378,31 @@ impl SettingsView {
             )
             .when(open, |trigger| trigger.child(self.popover.trigger_probe()))
             .into_any_element()
+    }
+
+    /// A probe over a group of controls, such as a user layout's row, that
+    /// records the group's bounds while one of `handles` has focus, so a
+    /// keyboard reveal shows the whole group, not only that control.
+    pub(super) fn reveal_group(&self, handles: &[FocusHandle]) -> AnyElement {
+        let group = self.focus_group.clone();
+        let handles: Vec<_> =
+            handles.iter().map(FocusHandle::downgrade).collect();
+        canvas(
+            |_, _, _| {},
+            move |bounds, (), window, _| {
+                let focused = handles.iter().find(|handle| {
+                    handle
+                        .upgrade()
+                        .is_some_and(|handle| handle.is_focused(window))
+                });
+                if let Some(focused) = focused {
+                    *group.borrow_mut() = Some((focused.clone(), bounds));
+                }
+            },
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
     }
 
     /// A setting's text or number field: a `huterm-ui` input, or a number

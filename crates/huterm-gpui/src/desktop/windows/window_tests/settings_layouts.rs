@@ -619,6 +619,53 @@ fn tab_reaches_every_control_and_the_arrows_move_along_the_cycle(
 }
 
 #[gpui::test]
+fn keyboard_focus_on_a_layouts_template_reveals_its_name(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "layouts-reveal-name",
+        "[panes.layouts]\ndev = \"grid(*)\"\nsides = \"columns(*)\"\n\
+         spare = \"rows(*)\"\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    visual(&harness).simulate_resize(gpui::size(px(860.0), px(420.0)));
+    visual(&harness).run_until_parked();
+    let label = |harness: &mut DesktopHarness| {
+        visual(harness)
+            .debug_bounds("settings-label-panes.layouts.dev")
+            .expect("dev's name drew")
+    };
+    // From the bottom, the keyboard reaches spare's template, then backs up
+    // through sides' row to dev's template.
+    with_view(&mut harness, |view, cx| {
+        view.scroll_pane_to(px(100_000.0));
+        cx.notify();
+    });
+    visual(&harness).run_until_parked();
+    // F13, which nothing binds, makes the focus move the keyboard's.
+    keys(&harness, "f13");
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field("panes.layouts.spare", window, cx);
+    });
+    visual(&harness).run_until_parked();
+    let viewport = with_view(&mut harness, |view, _| view.pane_viewport());
+    assert!(
+        label(&mut harness).top() < viewport.top(),
+        "dev's name already showed"
+    );
+    for _ in 0..6 {
+        keys(&harness, "shift-tab");
+    }
+    assert_eq!(focus(&mut harness), DEV);
+    let shown = label(&mut harness);
+    assert!(
+        shown.top() >= viewport.top() && shown.bottom() <= viewport.bottom(),
+        "dev's name at {shown:?} sits outside the pane at {viewport:?}"
+    );
+}
+
+#[gpui::test]
 fn the_name_dialogs_follow_the_dialog_keys(cx: &mut TestAppContext) {
     let original = "[panes.layouts]\ndev = \"grid(*)\"\n";
     let file = ScratchConfig::new("layouts-dialog-keys", original);
