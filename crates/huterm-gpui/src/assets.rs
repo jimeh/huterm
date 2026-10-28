@@ -5,7 +5,7 @@ use gpui::{Application, AssetSource, QuitMode, SharedString};
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
 
-const ASSETS: [(&str, &[u8]); 26] = [
+const ASSETS: [(&str, &[u8]); 27] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -88,6 +88,10 @@ const ASSETS: [(&str, &[u8]); 26] = [
         "icons/search.svg",
         include_bytes!("../assets/icons/search.svg"),
     ),
+    (
+        "icons/rotate-ccw.svg",
+        include_bytes!("../assets/icons/rotate-ccw.svg"),
+    ),
     (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
 
@@ -118,11 +122,12 @@ pub(crate) enum Icon {
     Maximize,
     Minimize,
     Search,
+    RotateCcw,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 25] = [
+    const ALL: [Self; 26] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -148,6 +153,7 @@ impl Icon {
         Self::Maximize,
         Self::Minimize,
         Self::Search,
+        Self::RotateCcw,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -177,6 +183,7 @@ impl Icon {
             Self::Maximize => "icons/maximize-2.svg",
             Self::Minimize => "icons/minimize-2.svg",
             Self::Search => "icons/search.svg",
+            Self::RotateCcw => "icons/rotate-ccw.svg",
         }
     }
 }

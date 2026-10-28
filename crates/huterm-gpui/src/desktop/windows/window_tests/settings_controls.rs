@@ -221,6 +221,35 @@ fn a_read_only_control_refuses_a_click_and_keys_and_says_why(
 }
 
 #[gpui::test]
+fn a_changed_settings_reset_is_a_named_icon_button_that_resets_it(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "controls-reset-icon",
+        "[terminal.bell]\nvisual = false\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Terminal);
+    // The window grows to keep the bell rows on it, for the click.
+    visual(&harness).simulate_resize(gpui::size(px(860.0), px(1600.0)));
+    visual(&harness).run_until_parked();
+    let id = "settings-reset-terminal.bell.visual";
+    let node = a11y_node(&mut harness, id);
+    let aria = &node["aria"];
+    assert_eq!(aria["role"], "Button", "{aria}");
+    assert_eq!(aria["label"], "Reset Visual bell", "{aria}");
+    assert_eq!(aria["description"], "Reset to default", "{aria}");
+    // Icon-only: a square, with no room for the label.
+    let bounds = visual(&harness)
+        .debug_bounds(id)
+        .unwrap_or_else(|| panic!("{id} was drawn"));
+    assert_eq!(bounds.size.width, bounds.size.height, "{bounds:?}");
+    a11y_click(&mut harness, &node);
+    harness.wait_for("the reset", |cx| settled(cx) && file.text().is_empty());
+    assert_eq!(file.text(), "");
+}
+
+#[gpui::test]
 fn a_removed_enter_binding_activates_no_switch_chip_or_button(
     cx: &mut TestAppContext,
 ) {

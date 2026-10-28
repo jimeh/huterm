@@ -345,16 +345,26 @@ impl SettingsView {
         let path = setting.path.as_str();
         let read_only = self.read_only_reason(setting);
         let label = self.render_label(setting, swatch, cx);
+        // Each row's reset is named for its setting, so the buttons read
+        // differently.
         let reset =
             (self.resettable(setting) && read_only.is_none()).then(|| {
                 self.action_button(
                     format!("settings-reset-{path}"),
-                    "Reset",
+                    format!("Reset {}", setting.label),
                     format!("reset:{path}"),
                     swatch,
                     cx,
                 )
                 .variant(Variant::Ghost)
+                .tooltip("Reset to default")
+                .icon(
+                    svg()
+                        .path(Icon::RotateCcw.asset_path())
+                        .size(px(12.0))
+                        .text_color(swatch.muted),
+                )
+                .icon_only()
             });
         let reset = reset.map(|reset| {
             div()
