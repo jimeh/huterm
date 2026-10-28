@@ -17,6 +17,12 @@ const MIN_THUMB_SIZE: f32 = 24.0;
 pub const INDICATOR_HOLD: Duration = Duration::from_secs(2);
 const INDICATOR_FADE: Duration = Duration::from_millis(400);
 const SCROLLBAR_EXPAND: Duration = Duration::from_millis(180);
+/// How long the pointer must rest on a scrollbar before it widens, so a
+/// pointer crossing it on the way elsewhere leaves it thin. Crossing the
+/// strip takes well under 50 ms; 200 ms still feels immediate when the
+/// pointer stops on it, and with the widening keeps the deliberate case under
+/// half a second. A press or drag widens it at once.
+const HOVER_INTENT: Duration = Duration::from_millis(200);
 const SCROLLBAR_EXPANDED_HOLD: Duration = Duration::from_secs(4);
 /// Resting thumb thickness of a full-size scrollbar.
 const THUMB_THICKNESS: f32 = 6.0;
@@ -347,14 +353,14 @@ impl ScrollbarExpansion {
 
     /// Advances the widening to `now`: it grows while `interacting` and
     /// collapses after a hold once not, or at once when not `visible`. True
-    /// when the progress changed.
+    /// when the progress or its direction changed.
     pub fn update(
         &mut self,
         now: Instant,
         visible: bool,
         interacting: bool,
     ) -> bool {
-        let previous = self.progress;
+        let (previous, previous_target) = (self.progress, self.target);
         if visible {
             if interacting {
                 self.activate(now);
@@ -371,7 +377,10 @@ impl ScrollbarExpansion {
         } else {
             *self = Self::default();
         }
+        // A widening that starts this instant has not moved yet, but its
+        // owner must still draw and keep asking for frames.
         (previous - self.progress).abs() > f32::EPSILON
+            || (previous_target - self.target).abs() > f32::EPSILON
     }
 
     fn schedule(&self, now: Instant, interacting: bool) -> AnimationSchedule {
@@ -466,6 +475,8 @@ struct AxisScrollbar {
     visibility: IndicatorVisibility,
     expansion: ScrollbarExpansion,
     hovering: bool,
+    /// When the pointer last came to rest over the strip.
+    hovered_at: Option<Instant>,
     /// Pointer distance from the thumb's start while dragging it.
     drag: Option<f32>,
 }
@@ -477,12 +488,35 @@ impl AxisScrollbar {
             visibility: IndicatorVisibility::with_hold(options.hold),
             expansion: ScrollbarExpansion::default(),
             hovering: false,
+            hovered_at: None,
             drag: None,
         }
     }
 
     fn interacting(&self) -> bool {
         self.hovering || self.drag.is_some()
+    }
+
+    /// Whether the scrollbar is widened, widening, or still partly wide as
+    /// it collapses: a pointer arriving then keeps it wide with no dwell.
+    fn expanded(&self) -> bool {
+        self.expansion.target > 0.0 || self.expansion.progress > 0.0
+    }
+
+    /// When a hover that has not widened the scrollbar yet will.
+    fn hover_deadline(&self) -> Option<Instant> {
+        self.hovered_at
+            .filter(|_| self.hovering && !self.expanded())
+            .map(|at| at + HOVER_INTENT)
+    }
+
+    /// Whether interaction holds the scrollbar widened at `now`: a drag, or
+    /// a hover that has rested long enough or found it already widened.
+    fn holds_expansion(&self, now: Instant) -> bool {
+        self.drag.is_some()
+            || (self.hovering
+                && (self.expanded()
+                    || self.hover_deadline().is_some_and(|at| now >= at)))
     }
 
     fn expand(&mut self, now: Instant) {
@@ -552,7 +586,7 @@ impl AxisScrollbar {
         changed |= self.expansion.update(
             now,
             self.visibility.opacity > 0.0,
-            interacting && self.options.expand_on_hover,
+            self.holds_expansion(now) && self.options.expand_on_hover,
         );
         changed
     }
@@ -564,7 +598,20 @@ impl AxisScrollbar {
         } else {
             self.visibility.schedule(now)
         };
-        visibility.merge(self.expansion.schedule(now, interacting))
+        // A resting hover widens the scrollbar at its deadline.
+        let intent = self
+            .hover_deadline()
+            .filter(|_| self.options.expand_on_hover)
+            .map_or(AnimationSchedule::IDLE, |at| {
+                if now >= at {
+                    AnimationSchedule::FRAME
+                } else {
+                    AnimationSchedule::at(at)
+                }
+            });
+        visibility
+            .merge(intent)
+            .merge(self.expansion.schedule(now, self.holds_expansion(now)))
     }
 
     fn layers(
@@ -805,12 +852,27 @@ impl Scrollbars {
         for (axis, scrollbar) in self.enabled_mut() {
             let hovering = hit == Some(axis);
             if hovering {
-                scrollbar.expand(now);
+                if !scrollbar.hovering {
+                    scrollbar.hovered_at = Some(now);
+                }
+                // A widened scrollbar stays so; a thin one widens only once
+                // the pointer has rested on it.
+                let rested = scrollbar
+                    .hovered_at
+                    .is_some_and(|at| now >= at + HOVER_INTENT);
+                if scrollbar.expanded() || rested {
+                    scrollbar.expand(now);
+                }
                 scrollbar.visibility.activate(now);
             }
             if !hovering && scrollbar.hovering {
                 scrollbar.visibility.activate(now);
-                scrollbar.expand(now);
+                // Leaving restarts a widened scrollbar's hold and cancels a
+                // pending widening.
+                if scrollbar.expanded() {
+                    scrollbar.expand(now);
+                }
+                scrollbar.hovered_at = None;
             }
             if hovering != scrollbar.hovering {
                 scrollbar.hovering = hovering;
@@ -827,11 +889,12 @@ impl Scrollbars {
             changed |= scrollbar.hovering;
             if scrollbar.hovering {
                 scrollbar.visibility.activate(now);
-                if scrollbar.options.expand_on_hover {
-                    scrollbar.expansion.activate(now);
+                if scrollbar.expanded() {
+                    scrollbar.expand(now);
                 }
             }
             scrollbar.hovering = false;
+            scrollbar.hovered_at = None;
         }
         changed
     }

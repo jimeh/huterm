@@ -184,9 +184,14 @@ fn unmounted_strip_cancels_hover_drag_and_animation_until_reactivated() {
             point(px(95.0), px(200.0)),
             remounted,
         ));
-        assert!(bars.schedule(remounted).frame);
+        // The hover widens it once the pointer has rested.
+        assert_eq!(
+            bars.schedule(remounted).deadline,
+            Some(remounted + HOVER_INTENT)
+        );
         let resting_extent = bars.strip_extent(Axis::Vertical);
-        bars.advance(remounted + SCROLLBAR_EXPAND);
+        bars.advance(remounted + HOVER_INTENT);
+        bars.advance(remounted + HOVER_INTENT + SCROLLBAR_EXPAND);
         assert!(bars.strip_extent(Axis::Vertical) > resting_extent);
     }
 }
@@ -253,7 +258,8 @@ fn slim_halves_the_strip_and_edge_inset_moves_it_inboard() {
         point(px(97.0), px(200.0)),
         now
     ));
-    growing.advance(now + SCROLLBAR_EXPAND);
+    growing.advance(now + HOVER_INTENT);
+    growing.advance(now + HOVER_INTENT + SCROLLBAR_EXPAND);
     assert!((growing.strip_extent(Axis::Vertical) - 18.0).abs() < 0.001);
     assert_eq!(
         growing
@@ -431,7 +437,9 @@ fn expansion_animates_then_collapses_after_four_seconds_without_hover() {
     assert!((expansion.progress - 0.875).abs() < f32::EPSILON);
     expansion.update(now + SCROLLBAR_EXPAND, true, false);
     assert!((expansion.progress - 1.0).abs() < f32::EPSILON);
-    assert!(!expansion.update(now + SCROLLBAR_EXPANDED_HOLD, true, false));
+    // The collapse starts at the hold's end: no movement yet, but a change
+    // its owner must draw.
+    assert!(expansion.update(now + SCROLLBAR_EXPANDED_HOLD, true, false));
     assert!(expansion.active());
     expansion.update(
         now + SCROLLBAR_EXPANDED_HOLD + SCROLLBAR_EXPAND / 2,
@@ -651,7 +659,8 @@ fn hover_target_expands_only_while_visible() {
         now
     ));
     // Expanding widens the target: 4 inset, 10 thumb, 4 inward.
-    scrollbars.advance(now + SCROLLBAR_EXPAND);
+    scrollbars.advance(now + HOVER_INTENT);
+    scrollbars.advance(now + HOVER_INTENT + SCROLLBAR_EXPAND);
     assert!((scrollbars.strip_extent(Axis::Vertical) - 18.0).abs() < 0.01);
     assert_eq!(
         scrollbars.hit(&geometries, bounds, position),
@@ -819,4 +828,138 @@ fn horizontal_and_vertical_share_bounds_with_vertical_winning_corners() {
             .hit(&geometries, bounds, point(px(200.0), px(395.0)))
             .is_none()
     );
+}
+
+/// A shown vertical scrollbar that widens on hover, the bounds and geometry
+/// it sits in, a point on its strip, and a point beside it.
+fn hover_fixture(
+    now: Instant,
+) -> (
+    Scrollbars,
+    Bounds<Pixels>,
+    ScrollbarGeometries,
+    gpui::Point<Pixels>,
+    gpui::Point<Pixels>,
+) {
+    let bounds =
+        Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(400.0)));
+    let geometries =
+        ScrollbarGeometries::vertical(rows(400.0, 32.0, 100.0, 0.0));
+    let mut scrollbars = vertical(true, TrackPress::Page);
+    scrollbars.show(Axis::Vertical, now);
+    (
+        scrollbars,
+        bounds,
+        geometries,
+        point(px(95.0), px(200.0)),
+        point(px(40.0), px(200.0)),
+    )
+}
+
+/// Whether the scrollbar has widened beyond its resting strip.
+fn widened(scrollbars: &Scrollbars) -> bool {
+    scrollbars.strip_extent(Axis::Vertical) > 14.0
+}
+
+#[test]
+fn a_pointer_passing_over_the_strip_leaves_it_thin() {
+    let now = Instant::now();
+    let (mut bars, bounds, geometries, on, beside) = hover_fixture(now);
+    bars.pointer_moved(&geometries, bounds, on, now);
+    let off = now + Duration::from_millis(40);
+    bars.pointer_moved(&geometries, bounds, beside, off);
+    // Only the indicator's fade remains scheduled, and no widening comes.
+    assert_eq!(
+        bars.schedule(off),
+        AnimationSchedule::at(off + INDICATOR_HOLD)
+    );
+    bars.advance(now + HOVER_INTENT + SCROLLBAR_EXPAND);
+    assert!(!widened(&bars));
+}
+
+#[test]
+fn a_resting_pointer_widens_the_strip_after_the_dwell() {
+    let now = Instant::now();
+    let (mut bars, bounds, geometries, on, _) = hover_fixture(now);
+    bars.pointer_moved(&geometries, bounds, on, now);
+    assert_eq!(bars.schedule(now).deadline, Some(now + HOVER_INTENT));
+    // Just short of the dwell, it is still thin.
+    let early = now + HOVER_INTENT.saturating_sub(Duration::from_millis(1));
+    assert!(!bars.advance(early));
+    assert!(!widened(&bars));
+    // The widening starts at the deadline, which its owner must draw.
+    assert!(bars.advance(now + HOVER_INTENT));
+    bars.advance(now + HOVER_INTENT + SCROLLBAR_EXPAND);
+    assert!(widened(&bars));
+}
+
+#[test]
+fn a_press_widens_the_strip_at_once() {
+    let now = Instant::now();
+    let (mut bars, bounds, geometries, on, _) = hover_fixture(now);
+    // No hover first: the press alone widens it, already partway within
+    // the first frames, long before any dwell could.
+    assert!(bars.press(&geometries, bounds, on, now).is_some());
+    bars.advance(now + SCROLLBAR_EXPAND / 3);
+    assert!(
+        bars.strip_extent(Axis::Vertical) > 12.0,
+        "{}",
+        bars.strip_extent(Axis::Vertical)
+    );
+}
+
+#[test]
+fn leaving_before_the_dwell_cancels_the_widening() {
+    let now = Instant::now();
+    let (mut bars, bounds, geometries, on, _) = hover_fixture(now);
+    bars.pointer_moved(&geometries, bounds, on, now);
+    let left = now + Duration::from_millis(100);
+    assert!(bars.pointer_left(left));
+    bars.advance(now + HOVER_INTENT + SCROLLBAR_EXPAND);
+    assert!(!widened(&bars));
+    // Coming back starts a fresh dwell rather than finishing the old one.
+    let back = now + Duration::from_secs(1);
+    bars.pointer_moved(&geometries, bounds, on, back);
+    bars.advance(back + Duration::from_millis(150));
+    assert!(!widened(&bars));
+}
+
+#[test]
+fn a_widened_strip_stays_wide_while_the_pointer_is_on_it() {
+    let now = Instant::now();
+    let (mut bars, bounds, geometries, on, beside) = hover_fixture(now);
+    bars.pointer_moved(&geometries, bounds, on, now);
+    bars.advance(now + HOVER_INTENT);
+    bars.advance(now + HOVER_INTENT + SCROLLBAR_EXPAND);
+    assert!(widened(&bars));
+    // A brief exit and return keeps it wide with no new dwell.
+    let out = now + Duration::from_secs(1);
+    bars.pointer_moved(&geometries, bounds, beside, out);
+    let back = out + Duration::from_millis(20);
+    bars.pointer_moved(&geometries, bounds, on, back);
+    assert_ne!(bars.schedule(back).deadline, Some(back + HOVER_INTENT));
+    // Resting there outlasts the expanded hold.
+    let later = back + SCROLLBAR_EXPANDED_HOLD + SCROLLBAR_EXPAND;
+    bars.advance(later);
+    assert!(widened(&bars));
+}
+
+#[test]
+fn a_pointer_returning_as_the_strip_collapses_keeps_it_wide() {
+    let now = Instant::now();
+    let (mut bars, bounds, geometries, on, beside) = hover_fixture(now);
+    bars.pointer_moved(&geometries, bounds, on, now);
+    bars.advance(now + HOVER_INTENT);
+    bars.advance(now + HOVER_INTENT + SCROLLBAR_EXPAND);
+    let out = now + Duration::from_secs(1);
+    bars.pointer_moved(&geometries, bounds, beside, out);
+    // Scroll activity keeps the indicator shown through the hold.
+    let collapsing = out + SCROLLBAR_EXPANDED_HOLD + SCROLLBAR_EXPAND / 2;
+    bars.show(Axis::Vertical, collapsing);
+    bars.advance(collapsing);
+    assert!(bars.strip_extent(Axis::Vertical) < 18.0);
+    // Returning mid-collapse reverses it at once, with no new dwell.
+    bars.pointer_moved(&geometries, bounds, on, collapsing);
+    bars.advance(collapsing + SCROLLBAR_EXPAND);
+    assert!(widened(&bars));
 }
