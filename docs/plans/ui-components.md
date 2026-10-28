@@ -562,7 +562,9 @@ A modal popover's backdrop also takes wheel events, so the page does not
 scroll away from an open select, as in AppKit and Radix. Content scrolls
 within `max_height` with the existing list scrollbar. `ScrollArea` gains
 `reveal(bounds)`, which scrolls the smallest distance that shows a focused
-control fully; Tab and Shift-Tab call it (#276). In Settings (6a) every
+control fully, with its ring, and leaves 8 points between it and the edge
+it scrolled toward so a window's edge cannot cover the ring; Tab and
+Shift-Tab call it (#276). In Settings (6a) every
 keyboard focus move in the pane calls it once the frame that drew the
 control's ring has painted, with the bounds `focus::ring` records as it
 paints (`focus::ring_bounds`); a pointer press scrolls nothing.
