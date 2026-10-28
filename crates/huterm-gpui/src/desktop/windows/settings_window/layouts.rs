@@ -747,12 +747,18 @@ impl SettingsView {
     }
 
     /// Drops the deletions queued behind a failed write to the template at
-    /// `path` when the file as the window read it has no such layout: that
-    /// write was creating it, and a deletion applied to the file as it is
-    /// then would remove a layout of that name made elsewhere.
-    pub(super) fn drop_deletes_of_failed_create(&mut self, path: &str) {
-        if is_template(path)
-            && self.file.get(path).is_none()
+    /// `path` when that write was `creating` the layout: a deletion applied
+    /// to the file as it is then would remove a layout of that name made
+    /// elsewhere. Whether it was a creation comes from the change itself,
+    /// since an earlier save in the queue can have brought another editor's
+    /// layout of that name into the window's read.
+    pub(super) fn drop_deletes_of_failed_create(
+        &mut self,
+        path: &str,
+        creating: bool,
+    ) {
+        if creating
+            && is_template(path)
             && let Some(name) = path.strip_prefix(PREFIX)
         {
             self.drop_queued_deletes(name);

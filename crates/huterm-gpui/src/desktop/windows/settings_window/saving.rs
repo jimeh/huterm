@@ -1261,6 +1261,8 @@ impl SettingsView {
             }
             Err(ApplyError::Conflict(changes)) => {
                 failed = true;
+                let creating =
+                    change.expected.is_none() && change.value.is_some();
                 // The control keeps showing the refused value.
                 self.conflicts.insert(
                     key,
@@ -1274,7 +1276,7 @@ impl SettingsView {
                     },
                 );
                 self.status.failed("config.toml changed on disk");
-                self.drop_deletes_of_failed_create(key);
+                self.drop_deletes_of_failed_create(key, creating);
                 self.load(cx);
             }
             Err(ApplyError::InvalidFile(message)) => {
@@ -1309,7 +1311,10 @@ impl SettingsView {
                 failed = true;
                 let message = error.to_string();
                 settle(self);
-                self.drop_deletes_of_failed_create(key);
+                self.drop_deletes_of_failed_create(
+                    key,
+                    change.expected.is_none() && change.value.is_some(),
+                );
                 self.errors.insert(key, message.clone());
                 self.status.failed(message);
                 self.sync_fields(cx);

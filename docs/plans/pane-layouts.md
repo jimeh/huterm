@@ -1425,7 +1425,9 @@ Recorded with PR 3b:
   and a deletion of the new name queued behind it, since applied to the
   file as it is then it would delete a layout of that name made elsewhere.
   A creation that conflicts or fails drops a queued deletion of its name
-  the same way, when the file as the window read it has no such layout.
+  the same way. Whether the failed write was a creation comes from the
+  change itself, since an earlier save in the queue can bring another
+  editor's layout of that name into the window's read.
 - Focus that a row leaves behind moves to the same control of another row
   whenever the row goes, including when another editor removes the layout.
   A user layout's row (its template field, Rename, or Delete) follows

@@ -519,6 +519,48 @@ fn a_conflicted_create_drops_a_deletion_of_its_name(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_create_conflicting_after_an_earlier_save_still_drops_its_deletion(
+    cx: &mut TestAppContext,
+) {
+    let original = "[panes.layouts]\ndev = \"rows(*)\"\npair = \"grid(*)\"\n";
+    let file = ScratchConfig::new("layouts-create-after-save", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    // Another editor makes a work of its own. The deletion of pair reads
+    // the file afresh, so once it lands the window's read holds their work
+    // too, and only the creation itself says it was a creation.
+    std::fs::write(file.path(), format!("{original}work = \"grid(*)\"\n"))
+        .unwrap();
+    let before = with_view(&mut harness, |view, _| view.writes_finished());
+    with_window(&mut harness, |view, window, cx| {
+        view.press("ldel:pair", window, cx);
+        view.answer("ldelyes", window, cx);
+        view.press("lnew", window, cx);
+        view.type_dialog_name("work", cx);
+        view.answer("lcreate", window, cx);
+        view.press("ldel:work", window, cx);
+        assert_eq!(view.dialog_name(), "delete-layout");
+        view.answer("ldelyes", window, cx);
+        assert_eq!(view.dialog_name(), "none");
+    });
+    harness.wait_for("the creation's save", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| {
+                        view.writes_finished() > before + 1
+                    })
+                    .unwrap_or(false)
+            })
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(
+        file.text(),
+        "[panes.layouts]\ndev = \"rows(*)\"\nwork = \"grid(*)\"\n"
+    );
+}
+
+#[gpui::test]
 fn delete_asks_first_and_focus_moves_to_the_next_row(cx: &mut TestAppContext) {
     let original = "[panes.layouts]\ndev = \"rows(*)\"\npair = \"grid(*)\"\n";
     let file = ScratchConfig::new("layouts-delete", original);
