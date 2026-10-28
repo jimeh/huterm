@@ -44,7 +44,7 @@ pub(super) fn keys(harness: &DesktopHarness, keys: &str) {
 
 /// Sends `key`'s press and release; GPUI's implicit click on the focused
 /// element fires on the release, which `simulate_keystrokes` never sends.
-fn press_and_release(harness: &DesktopHarness, key: &str) {
+pub(super) fn press_and_release(harness: &DesktopHarness, key: &str) {
     let mut visual = visual(harness);
     visual.simulate_keystrokes(key);
     visual.simulate_event(KeyUpEvent {

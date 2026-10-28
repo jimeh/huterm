@@ -534,8 +534,17 @@ fn resolve_entries(
                 )
                 && item.resolved.predicate == resolved.predicate
         }) {
-            earlier.state = BindingState::Replaced(position - 1);
-            if earlier.resolved.effective.origin == Origin::User {
+            // Defaults come before every user entry, so a default that
+            // replaces another is a catalog mistake with no user index to
+            // name: report it rather than underflow.
+            earlier.state = BindingState::Replaced(position.saturating_sub(1));
+            if entry.origin == Origin::Default {
+                conflicts.push(format!(
+                    "default keybinding ({:?}): replaces an earlier default \
+                     with the same key and when",
+                    entry.key
+                ));
+            } else if earlier.resolved.effective.origin == Origin::User {
                 conflicts.push(keybinding_diagnostic(
                     position,
                     &entry.key,
@@ -720,6 +729,21 @@ fn default(key: &str, command: CommandId, description: &str) -> BindingEntry {
 fn on_slider(key: &str, command: CommandId, description: &str) -> BindingEntry {
     BindingEntry {
         when: Some("control == slider".to_owned()),
+        ..default(key, command, description)
+    }
+}
+
+/// The key context a dialog's button carries: the dialog's own
+/// `confirming`, with `control = button` on the same node, so a binding
+/// under both matches the button alone and never a text field in the
+/// dialog.
+pub(crate) const DIALOG_BUTTON_CONTEXT: &str = "confirming control=button";
+
+/// A dialog binding that matches only while a dialog button, whose context
+/// is [`DIALOG_BUTTON_CONTEXT`], has focus.
+fn on_button(key: &str, command: CommandId, description: &str) -> BindingEntry {
+    BindingEntry {
+        when: Some("control == button".to_owned()),
         ..default(key, command, description)
     }
 }
@@ -954,11 +978,13 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     entries
 }
 
-/// Close confirmation bindings, identical on both platforms. Their commands
-/// carry the `confirming` context, so they reserve nothing from terminals.
+/// Dialog bindings, identical on both platforms. Their commands carry the
+/// `confirming` context, so they reserve nothing from terminals. Space
+/// presses only a focused button, so it still types in a dialog's field.
 fn dialog_defaults() -> Vec<BindingEntry> {
     vec![
         default("enter", ids::DIALOG_CONFIRM, "Confirm"),
+        on_button("space", ids::DIALOG_CONFIRM, "Press Button"),
         default("escape", ids::DIALOG_CANCEL, "Cancel"),
         default("tab", ids::DIALOG_FOCUS_NEXT, "Next Button"),
         default("right", ids::DIALOG_FOCUS_NEXT, "Next Button"),

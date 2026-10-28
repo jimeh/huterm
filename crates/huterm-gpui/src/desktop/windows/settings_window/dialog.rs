@@ -8,7 +8,9 @@
 //! `act` runs as it runs the window's other buttons. They carry no
 //! `SettingsControl` context, which would win over `confirming` for Enter,
 //! Space, and the arrows, and their focus handles stay out of the window's
-//! action stops, so no Settings command finds them. `dialog_confirm`
+//! action stops, so no Settings command finds them. Each carries
+//! [`DIALOG_BUTTON_CONTEXT`] instead, so Space's `dialog_confirm` binding
+//! matches on a button and never in the dialog's field. `dialog_confirm`
 //! answers with the focused button and `dialog_cancel` answers as the
 //! prompt's Cancel does. While a dialog is open, the window runs no other
 //! command except its own close, minimize, zoom, and fullscreen. A dialog
@@ -35,6 +37,7 @@ use huterm_ui::components::input::Input;
 
 use super::super::super::overlay::Swatch;
 use super::SettingsView;
+use crate::keymap::DIALOG_BUTTON_CONTEXT;
 
 /// What the open dialog asks.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -217,6 +220,7 @@ impl SettingsView {
             view.act(key, window, cx);
         });
         let button = Button::new(ElementId::Name(id.into()), label, swatch)
+            .key_context(DIALOG_BUTTON_CONTEXT)
             .on_click(move |window, cx| act((), window, cx));
         (button, focus)
     }
