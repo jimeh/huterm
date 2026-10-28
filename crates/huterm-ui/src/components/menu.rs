@@ -373,14 +373,14 @@ impl Menu {
         let tokens = self.tokens;
         let selected = self.selection == Some(Selection { row, button: None });
         let text = if selected {
-            tokens.bg
+            tokens.on_accent()
         } else if item.enabled {
             tokens.fg
         } else {
             tokens.dim
         };
         let side_text = if selected {
-            tokens.bg.opacity(0.72)
+            tokens.on_accent().opacity(0.72)
         } else {
             tokens.dim
         };
@@ -522,7 +522,7 @@ impl Menu {
                         .text_size(px(12.0))
                         .line_height(px(22.0))
                         .text_color(if selected {
-                            tokens.bg
+                            tokens.on_accent()
                         } else if enabled {
                             tokens.fg
                         } else {
@@ -533,7 +533,7 @@ impl Menu {
                             button.active(|style| {
                                 style
                                     .bg(tokens.accent_pressed())
-                                    .text_color(tokens.bg)
+                                    .text_color(tokens.on_accent())
                             })
                         })
                         .on_mouse_move(cx.listener(
