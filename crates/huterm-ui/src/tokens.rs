@@ -5,7 +5,7 @@
 //! Themes are arbitrary, so the derivation corrects shades that would miss
 //! WCAG's minimums. Every enabled text color reaches 4.5:1 on the fills it
 //! is drawn on: [`Tokens::muted`] on the background, the surface, chips,
-//! footers, and the strongest pressed fill; [`Tokens::muted_on`] on a
+//! footers, and hover and pressed fills; [`Tokens::muted_on`] on a
 //! selected row's fill; [`Tokens::on`] and [`Tokens::on_accent`] on solid
 //! fills, whose hover and pressed shades ([`Tokens::shade`]) move away from
 //! that text; and [`Tokens::accent_text`] and its siblings for colored text.
@@ -53,8 +53,8 @@ pub struct Tokens {
     /// The raised panel surface: the background mixed toward the foreground,
     /// less where the foreground would fall below 4.5:1 on it.
     pub surface: Hsla,
-    /// Secondary text, readable on the background, the surface, chips, and
-    /// footers.
+    /// Secondary text, readable on the background, the surface, chips,
+    /// footers, and the pressed headroom over each.
     pub muted: Hsla,
     /// Disabled text only: enabled text, placeholders included, uses
     /// `muted`.
@@ -142,21 +142,27 @@ impl Tokens {
             &[0.1, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04],
         );
         // Secondary text at the lightest opacity that stays readable on
-        // every plain fill it sits on, the strongest hover or pressed fill
-        // over those included, else the foreground itself.
+        // every plain fill it sits on, and the pressed headroom over those,
+        // else the foreground itself.
         let interactive =
             [bg, surface, over(footer, bg), over(footer, surface)];
+        let press = press_headroom(fg, &interactive);
         let unders: Vec<Hsla> = [over(chip, bg), over(chip, surface)]
             .into_iter()
             .chain(interactive)
-            .chain(interactive.map(|under| over(strongest_press(fg), under)))
+            .chain(interactive.map(|under| over(press, under)))
             .collect();
         let muted = lightest(fg, &unders);
         // Hovered rows and buttons keep body and secondary text readable on
-        // plain fills and footers. Key caps and tags on them draw outlined,
-        // so no chip fill stacks on top.
-        let hover = strongest(fg, &[0.08, 0.07, 0.06, 0.05, 0.04], |fill| {
-            reads_on(fill, &interactive, &[fg, muted], Hsla::default())
+        // plain fills and footers, and stay below the pressed headroom, so
+        // pressing still shows. Key caps and tags on them draw outlined, so
+        // no chip fill stacks on top.
+        let hovers: Vec<f32> = [0.08, 0.07, 0.06, 0.05, 0.04]
+            .into_iter()
+            .filter(|alpha| *alpha < press.a - f32::EPSILON)
+            .collect();
+        let hover = strongest(fg, &hovers, |fill| {
+            reads_on(fill, &interactive, &[fg, muted])
         });
         Self {
             fg,
@@ -177,9 +183,10 @@ impl Tokens {
     }
 
     /// Buttons and unselected rows while the pointer holds them down: up
-    /// to twice the hover overlay, as strong as every text drawn on them
-    /// allows over plain fills and footers. Key caps and tags on them draw
-    /// outlined, so no chip fill stacks on top.
+    /// to twice the hover overlay and stronger than it, as strong as every
+    /// text drawn on them allows over plain fills and footers, else the
+    /// hover overlay. Key caps and tags on them draw outlined, so no chip
+    /// fill stacks on top.
     #[must_use]
     pub fn pressed(&self) -> Hsla {
         let a = self.hover.a;
@@ -191,16 +198,32 @@ impl Tokens {
             self.danger_text(),
         ];
         let unders = self.interactive_unders();
-        strongest(
-            self.fg,
-            &[a * 2.0, a * 1.75, a * 1.5, a * 1.25, a],
-            |fill| reads_on(fill, &unders, &texts, Hsla::default()),
-        )
+        let alphas: Vec<f32> = PRESSES
+            .into_iter()
+            .filter(|alpha| {
+                *alpha > a + f32::EPSILON && *alpha <= 2.0 * a + f32::EPSILON
+            })
+            .chain([a])
+            .collect();
+        strongest(self.fg, &alphas, |fill| reads_on(fill, &unders, &texts))
+    }
+
+    /// Chip-filled buttons while hovered: halfway from the chip to
+    /// [`Self::pressed`], so hovering and pressing each show and body text
+    /// reads on both, else the pressed fill where the chip is already as
+    /// strong as a press may be.
+    #[must_use]
+    pub fn chip_hover(&self) -> Hsla {
+        let pressed = self.pressed();
+        if pressed.a > self.chip.a {
+            self.fg.opacity(self.chip.a.midpoint(pressed.a))
+        } else {
+            pressed
+        }
     }
 
     /// A selected row while the pointer holds it down: up to 1.6 times the
-    /// selection, as strong as its text allows. The selection itself always
-    /// qualifies, so it is the weakest this gets.
+    /// selection, as strong as its text allows, else the selection itself.
     #[must_use]
     pub fn selection_pressed(&self) -> Hsla {
         let a = self.selection.a;
@@ -210,9 +233,10 @@ impl Tokens {
             a: 1.0,
             ..self.selection
         };
-        strongest(color, &[a * 1.6, a * 1.4, a * 1.2, a], |fill| {
-            reads_on(fill, &[self.bg, self.surface], &texts, Hsla::default())
-        })
+        let held = strongest(color, &[a * 1.6, a * 1.4, a * 1.2], |fill| {
+            reads_on(fill, &[self.bg, self.surface], &texts)
+        });
+        if held.a > 0.0 { held } else { self.selection }
     }
 
     /// The opaque backgrounds an interactive control sits on: the plain
@@ -326,7 +350,7 @@ impl Tokens {
 
     /// The accent as text, as in a link or an error band: moved toward the
     /// foreground until it reaches 4.5:1 on the background, the surface,
-    /// footers, chips, selected rows, and the strongest pressed fill.
+    /// footers, chips, selected rows, and the pressed headroom.
     #[must_use]
     pub fn accent_text(&self) -> Hsla {
         self.text_from(self.accent)
@@ -346,8 +370,8 @@ impl Tokens {
 
     fn text_from(&self, color: Hsla) -> Hsla {
         let interactive = self.interactive_unders();
-        // The fills colored text always sits on, then the strongest
-        // pressed fill as well, for headroom when a theme allows it.
+        // The fills colored text always sits on, then the pressed headroom
+        // as well, when a theme allows it.
         let steady: Vec<Hsla> = [
             over(self.chip, self.bg),
             over(self.chip, self.surface),
@@ -357,12 +381,11 @@ impl Tokens {
         .into_iter()
         .chain(interactive)
         .collect();
+        let press = press_headroom(self.fg, &interactive);
         let pressed: Vec<Hsla> = steady
             .iter()
             .copied()
-            .chain(
-                interactive.map(|under| over(strongest_press(self.fg), under)),
-            )
+            .chain(interactive.map(|under| over(press, under)))
             .collect();
         toward(color, self.fg, &pressed, TEXT_CONTRAST)
             .or_else(|| toward(color, self.fg, &steady, TEXT_CONTRAST))
@@ -484,15 +507,21 @@ fn gentlest(
     unders: &[Hsla],
     alphas: &[f32],
 ) -> Hsla {
-    strongest(color, alphas, |fill| {
-        reads_on(fill, unders, texts, Hsla::default())
-    })
+    strongest(color, alphas, |fill| reads_on(fill, unders, texts))
 }
 
-/// The strongest pressed fill: twice the hover overlay. Secondary and
-/// colored text are corrected to read on it, so pressing keeps its fill.
-fn strongest_press(fg: Hsla) -> Hsla {
-    fg.opacity(0.16)
+/// Pressed overlay opacities, strongest first.
+const PRESSES: [f32; 10] =
+    [0.16, 0.14, 0.12, 0.1, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04];
+
+/// The pressed fill secondary and colored text are corrected to read on:
+/// up to 1.5 times the strongest hover, as strong as body text allows over
+/// every one of `unders`. Stronger presses are taken only where every text
+/// already reads on them, so the headroom costs little hierarchy.
+fn press_headroom(fg: Hsla, unders: &[Hsla]) -> Hsla {
+    let alphas: Vec<f32> =
+        PRESSES.into_iter().filter(|alpha| *alpha <= 0.12).collect();
+    strongest(fg, &alphas, |fill| reads_on(fill, unders, &[fg]))
 }
 
 /// `color` at the first of `alphas` whose fill `reads` accepts, else no
@@ -510,17 +539,13 @@ fn strongest(
 }
 
 /// Whether every one of `texts` reaches 4.5:1 on `fill` over each of
-/// `unders`, and `texts`' first, the body text, also on a `chip` drawn on
-/// that fill, such as a key cap. A transparent `chip` adds nothing.
-fn reads_on(fill: Hsla, unders: &[Hsla], texts: &[Hsla], chip: Hsla) -> bool {
+/// `unders`.
+fn reads_on(fill: Hsla, unders: &[Hsla], texts: &[Hsla]) -> bool {
     unders.iter().all(|under| {
         let base = over(fill, *under);
-        let capped = over(chip, base);
-        let body = texts.first().copied();
         texts
             .iter()
             .all(|text| contrast(over(*text, base), base) >= TEXT_CONTRAST)
-            && body.is_none_or(|text| contrast(text, capped) >= TEXT_CONTRAST)
     })
 }
 
@@ -658,15 +683,27 @@ mod tests {
             theme(0.0, 0.47, 0.47, 0.5),
         ] {
             let plain = [t.bg, t.surface];
-            let fills: Vec<Hsla> =
-                [t.chip, t.selection, t.footer(), t.pressed()]
-                    .into_iter()
-                    .flat_map(|fill| plain.map(|under| over(fill, under)))
-                    .collect();
+            let over_plain = |fills: &[Hsla]| -> Vec<Hsla> {
+                fills
+                    .iter()
+                    .flat_map(|fill| plain.map(|under| over(*fill, under)))
+                    .collect()
+            };
+            let interactive = over_plain(&[
+                t.chip,
+                t.footer(),
+                t.hover,
+                t.chip_hover(),
+                t.pressed(),
+            ]);
+            let fills =
+                [interactive.clone(), over_plain(&[t.selection])].concat();
             assert!(reads(t.fg, &plain, TEXT_CONTRAST));
             assert!(reads(t.fg, &fills, TEXT_CONTRAST), "{t:?}");
             assert!(reads(t.muted, &plain, TEXT_CONTRAST));
+            assert!(reads(t.muted, &interactive, TEXT_CONTRAST), "{t:?}");
             assert!(reads(t.accent_text(), &plain, TEXT_CONTRAST));
+            assert!(reads(t.accent_text(), &fills, TEXT_CONTRAST), "{t:?}");
             assert!(reads(
                 t.on_accent(),
                 &[t.accent, t.accent_pressed()],

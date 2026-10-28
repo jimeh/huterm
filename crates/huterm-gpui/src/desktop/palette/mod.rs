@@ -1885,9 +1885,7 @@ impl CommandPalette {
                 .rounded(px(6.0))
                 .cursor_pointer()
                 .when(selected, |item| item.bg(swatch.selection))
-                .when(hovered && !selected, |item| {
-                    item.bg(swatch.fg.opacity(0.05))
-                })
+                .when(hovered && !selected, |item| item.bg(swatch.hover))
                 .active(move |item| {
                     // A held row that is not yet selected keeps its own text,
                     // so it takes the plain pressed fill.
@@ -2179,9 +2177,7 @@ impl CommandPalette {
                     .rounded(px(6.0))
                     .cursor_pointer()
                     .when(selected, |item| item.bg(swatch.selection))
-                    .when(hovered && !selected, |item| {
-                        item.bg(swatch.fg.opacity(0.05))
-                    })
+                    .when(hovered && !selected, |item| item.bg(swatch.hover))
                     .active(move |item| {
                         // A held row that is not yet selected keeps its own text,
                         // so it takes the plain pressed fill.

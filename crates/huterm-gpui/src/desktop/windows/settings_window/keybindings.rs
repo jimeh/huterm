@@ -2509,7 +2509,8 @@ impl SettingsView {
 }
 
 /// A collapsed command's shortcuts: up to two active keys, a count of the
-/// rest, a "when" chip when one has a condition, or "No shortcut".
+/// rest, a "when" tag when one has a condition, or "No shortcut". The tag
+/// draws outlined, since the rows it sits in hover.
 fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
     let mut summary = div().flex().flex_none().items_center().gap(px(6.0));
     for listed in active.iter().take(2) {
@@ -2528,7 +2529,8 @@ fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
             div()
                 .px(px(6.0))
                 .rounded(px(8.0))
-                .bg(swatch.chip)
+                .border_1()
+                .border_color(swatch.accent_text().opacity(0.35))
                 .text_size(px(11.0))
                 .text_color(swatch.accent_text())
                 .child("when"),

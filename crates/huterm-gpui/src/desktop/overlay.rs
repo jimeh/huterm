@@ -203,6 +203,9 @@ mod contrast {
             plain.iter().chain(&footers).copied().collect();
         let hovered = over_each(t.hover, &interactive);
         let pressed = over_each(t.pressed(), &interactive);
+        // A Secondary button rests on the chip, hovers on `chip_hover`, and
+        // presses on `pressed`.
+        let chip_hovered = over_each(t.chip_hover(), &interactive);
         // Key caps and tags on rows and buttons draw outlined, so no chip
         // stacks on a hover or pressed fill.
 
@@ -226,6 +229,7 @@ mod contrast {
         text("fg on nested chips", t.fg, &nested_chips);
         text("fg hovered", t.fg, &hovered);
         text("muted hovered", t.muted, &hovered);
+        text("fg on chip hover", t.fg, &chip_hovered);
         text("fg pressed", t.fg, &pressed);
         text("muted pressed", t.muted, &pressed);
         text("fg on selection pressed", t.fg, &selection_pressed);
@@ -251,6 +255,7 @@ mod contrast {
             text(name, color, &plain);
             text(name, color, &chips);
             text(name, color, &selection);
+            text(name, color, &hovered);
             text(name, color, &pressed);
         }
         text("highlight held", t.accent_text(), &selection_pressed);
@@ -280,5 +285,14 @@ mod contrast {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn bundled_themes_press_harder_than_they_hover() {
+        for (name, theme) in bundled() {
+            let t = tokens(&theme);
+            assert!(t.hover.a > 0.0, "{name} hovers");
+            assert!(t.pressed().a > t.hover.a, "{name} shows a press");
+        }
     }
 }
