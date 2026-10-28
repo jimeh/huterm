@@ -5,7 +5,10 @@
 
 pub mod badge;
 pub mod kbd;
+pub mod menu;
+pub mod popover;
 pub mod scroll_area;
+pub mod select;
 pub mod separator;
 pub mod surface;
 pub mod tooltip;

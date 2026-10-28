@@ -157,21 +157,27 @@ pub fn tracker() -> impl IntoElement {
             }
             // Capture runs before any handler moves focus for this press.
             window.on_mouse_event(|_: &MouseDownEvent, phase, window, cx| {
-                if phase != DispatchPhase::Capture {
-                    return;
-                }
-                let hid = with_record(window, cx, |record| {
-                    record.last_press_was_key = false;
-                    std::mem::take(&mut record.keyboard)
-                });
-                if hid {
-                    window.refresh();
+                if phase == DispatchPhase::Capture {
+                    note_pointer_press(window, cx);
                 }
             });
         },
     )
     .absolute()
     .size(gpui::px(0.0))
+}
+
+/// Records a pointer press in `window`, hiding a keyboard focus ring. A
+/// capture-phase listener that stops a press, such as a popover's guard,
+/// calls this first, since the tracker's own listener may come after it.
+pub(crate) fn note_pointer_press(window: &mut Window, cx: &mut App) {
+    let hid = with_record(window, cx, |record| {
+        record.last_press_was_key = false;
+        std::mem::take(&mut record.keyboard)
+    });
+    if hid {
+        window.refresh();
+    }
 }
 
 fn with_record<T: Default>(
