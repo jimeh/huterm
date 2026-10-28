@@ -25,15 +25,17 @@ pub(crate) mod refresh_smoke;
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
 use super::about::{
-    AboutActions, AboutDetails, AboutFocus, BuildFacts, about_details,
-    render_about,
+    AboutActions, AboutButton, AboutButtons, AboutDetails, BuildFacts,
+    about_details, render_about,
 };
 use super::close_dialog::{
-    CloseDialogInput, CloseDialogTarget, DialogFocus, ProcessGroup,
+    CloseButtons, CloseDialogInput, CloseDialogTarget, ProcessGroup,
     ProcessGroupState, ProcessRow, build_close_dialog, render_close_dialog,
 };
 use super::config_watch::ReloadKind;
-use super::licenses::{Done as LicensesDone, LicensesState, LicensesView};
+use super::licenses::{
+    Done as LicensesDone, LicensesFocus, LicensesState, LicensesView,
+};
 use super::notices::{
     Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
     ToastHandlers, render_notice_stack,
@@ -68,6 +70,7 @@ use huterm_protocol::{
     validate_supplied,
 };
 use huterm_ui::components::button::{Button, Colors as ButtonColors};
+use huterm_ui::components::dialog::Modal;
 use huterm_ui::components::menu::{
     MIN_WIDTH as MENU_MIN_WIDTH, Menu as MenuView, MenuEvent,
 };
@@ -2315,8 +2318,12 @@ fn open_window_with_profile(
                 title_row_press: Rc::new(Cell::new(false)),
                 title_row_moves: Rc::new(Cell::new(0)),
                 about: None,
-                about_focus: AboutFocus::default(),
+                about_buttons: AboutButtons::new(cx),
+                about_initial: AboutButton::default(),
                 licenses: None,
+                close_buttons: CloseButtons::new(cx),
+                dialog: Modal::new(),
+                dialog_shown: None,
                 // The window opened with this title. Writing it again from
                 // the first render costs GPUI's X11 backend a blocking round
                 // trip that can queue the window's MapNotify where the event
@@ -3434,10 +3441,19 @@ struct WorkspaceView {
     title_row_moves: Rc<Cell<u32>>,
     /// The About panel's details while it is showing.
     about: Option<AboutDetails>,
-    /// The About panel button keyboard focus is on.
-    about_focus: AboutFocus,
+    about_buttons: AboutButtons,
+    /// The About panel button that takes focus when the panel shows: Close,
+    /// or Licenses after returning from the Licenses view.
+    about_initial: AboutButton,
     /// The Licenses view, open over the About panel it returns to.
     licenses: Option<Entity<LicensesView>>,
+    close_buttons: CloseButtons,
+    /// The window's dialog slot, which the top dialog draws in: the close
+    /// confirmation, the Licenses view, or the About panel.
+    dialog: Modal,
+    /// The dialog the slot was last opened for, so a change of top dialog
+    /// opens it again and moves focus into the new one.
+    dialog_shown: Option<ShownDialog>,
     /// The native window title last set, so unchanged titles are not reset.
     window_title: String,
     /// The close dialog's group headings as the last render drew them, for
@@ -3494,6 +3510,17 @@ impl refresh::Animated for MenuView {
     ) {
         self.advance(now, cx);
     }
+}
+
+/// The dialog the window's dialog slot shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShownDialog {
+    /// The close confirmation of this [`CloseState::generation`]: a new
+    /// confirmation moves the generation, so it opens on its primary
+    /// button again.
+    Close(u64),
+    Licenses,
+    About,
 }
 
 /// Where focus goes when the window menu closes.
@@ -3806,9 +3833,6 @@ struct CloseState {
     pending: Option<CloseTarget>,
     confirmation: Option<CloseTarget>,
     assessment: Option<CloseAssessment>,
-    /// The confirmation button holding keyboard focus; reset to the primary
-    /// button whenever a confirmation opens.
-    dialog_focus: DialogFocus,
     generation: u64,
     emptied: EmptiedClose,
     /// Clicks the Confirm button's listener received, stale or not.
@@ -3877,7 +3901,6 @@ impl CloseState {
         }
         if foreground {
             self.confirmation = Some(target.clone());
-            self.dialog_focus = DialogFocus::Primary;
             Some(CloseDecision::Confirm(target))
         } else {
             Some(CloseDecision::Close(target))
@@ -6944,7 +6967,7 @@ impl WorkspaceView {
             CommandScope::Palette => {
                 if let Some(licenses) = self.licenses.clone() {
                     return licenses.update(cx, |licenses, cx| {
-                        licenses.run(invocation, cx)
+                        licenses.run(invocation, window, cx)
                     });
                 }
                 self.palette
@@ -7777,49 +7800,74 @@ impl WorkspaceView {
         Ok(CommandOutcome::Accepted)
     }
 
-    /// Runs a `dialog_*` command against the showing confirmation. Confirm
-    /// presses the focused button, so Enter on Cancel cancels. The About
-    /// panel shares these bindings: Tab and the arrows move its button
-    /// focus, Enter presses the focused button, and Escape closes it.
+    /// Runs a `dialog_*` command against the top dialog. The focus
+    /// commands cycle through its buttons in the window's dialog slot, and
+    /// confirm presses the focused button, so Enter on Cancel cancels. In
+    /// the close confirmation, cancel cancels; in the About panel, it
+    /// closes the panel. The Licenses view takes its keys as `Palette`
+    /// commands, so these reach it only through a binding the user moved:
+    /// confirm presses its focused button and cancel steps back as Escape
+    /// does there.
     fn run_dialog_command(
         &mut self,
         command: huterm_protocol::CommandId,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        if self.about.is_some() {
-            match command {
-                ids::DIALOG_CONFIRM => match self.about_focus {
-                    AboutFocus::Licenses => self.show_licenses(window, cx),
-                    AboutFocus::Copy => self.copy_about_details(cx),
-                    AboutFocus::Close => self.close_about(window, cx),
-                },
-                ids::DIALOG_CANCEL => self.close_about(window, cx),
-                ids::DIALOG_FOCUS_NEXT | ids::DIALOG_FOCUS_PREVIOUS => {
-                    self.about_focus = self
-                        .about_focus
-                        .moved(command == ids::DIALOG_FOCUS_NEXT);
-                    cx.notify();
-                }
-                other => return Err(CommandError::UnknownCommand(other)),
+        if !self.dialog_showing() {
+            self.confirming_target()?;
+        }
+        match command {
+            ids::DIALOG_FOCUS_NEXT => self.dialog.focus_next(window, cx),
+            ids::DIALOG_FOCUS_PREVIOUS => {
+                self.dialog.focus_previous(window, cx);
             }
-            return Ok(CommandOutcome::Completed);
+            ids::DIALOG_CONFIRM | ids::DIALOG_CANCEL => {
+                self.answer_dialog(command == ids::DIALOG_CONFIRM, window, cx)?;
+            }
+            other => return Err(CommandError::UnknownCommand(other)),
+        }
+        cx.notify();
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Presses the top dialog's focused button for `dialog_confirm`, or
+    /// answers `dialog_cancel`, as [`Self::run_dialog_command`] describes.
+    fn answer_dialog(
+        &mut self,
+        confirm: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<(), CommandError> {
+        if let Some(licenses) = self.licenses.clone() {
+            let id = if confirm {
+                ids::PALETTE_CONFIRM
+            } else {
+                ids::PALETTE_BACK
+            };
+            let invocation = CommandInvocation::new(id, vec![]);
+            licenses.update(cx, |licenses, cx| {
+                licenses.run(&invocation, window, cx)
+            })?;
+            return Ok(());
+        }
+        if self.about.is_some() {
+            match self.about_buttons.focused(window) {
+                _ if !confirm => self.close_about(window, cx),
+                Some(AboutButton::Licenses) => self.show_licenses(window, cx),
+                Some(AboutButton::Copy) => self.copy_about_details(cx),
+                Some(AboutButton::Close) => self.close_about(window, cx),
+                None => {}
+            }
+            return Ok(());
         }
         let target = self.confirming_target()?;
-        match (command, self.close.dialog_focus) {
-            (ids::DIALOG_CONFIRM, DialogFocus::Primary) => {
-                self.finish_close(target, window, cx);
-            }
-            (ids::DIALOG_CONFIRM | ids::DIALOG_CANCEL, _) => {
-                self.cancel_confirmation(window, cx);
-            }
-            (ids::DIALOG_FOCUS_NEXT | ids::DIALOG_FOCUS_PREVIOUS, focus) => {
-                self.close.dialog_focus = focus.toggled();
-                cx.notify();
-            }
-            (other, _) => return Err(CommandError::UnknownCommand(other)),
+        if !confirm || self.close_buttons.cancel.is_focused(window) {
+            self.cancel_confirmation(window, cx);
+        } else if self.close_buttons.primary.is_focused(window) {
+            self.finish_close(target, window, cx);
         }
-        Ok(CommandOutcome::Completed)
+        Ok(())
     }
 
     fn confirming_target(&self) -> Result<CloseTarget, CommandError> {
@@ -8318,9 +8366,8 @@ fn close_dialog_input<'a>(
 
 impl WorkspaceView {
     /// Shows the About panel, or refocuses it, or the Licenses view over it,
-    /// when it is already showing.
-    /// Its dialog node holds the window's focus handle, so the
-    /// `confirming` bindings close it and terminal input is blocked while
+    /// when it is already showing. Its buttons hold focus, so the
+    /// `confirming` bindings reach it and terminal input is blocked while
     /// it is up.
     fn show_about(
         &mut self,
@@ -8341,20 +8388,96 @@ impl WorkspaceView {
         }
         let facts = BuildFacts::current(display_backend(window));
         self.about = Some(about_details(&facts));
-        self.about_focus = AboutFocus::default();
-        self.focus.focus(window, cx);
+        self.about_initial = AboutButton::default();
+        self.sync_dialog(window, cx);
         cx.notify();
         Ok(CommandOutcome::Completed)
     }
 
-    /// Focuses the showing dialog's holder: the window's focus handle, or
-    /// the Licenses search, as the Licenses view replaces the About panel.
-    fn focus_dialog(&self, window: &mut Window, cx: &mut App) {
-        match &self.licenses {
-            Some(licenses) => {
-                licenses.read(cx).focus_handle(cx).focus(window, cx);
+    /// The top dialog, which the window's dialog slot shows.
+    fn top_dialog(&self) -> Option<ShownDialog> {
+        if self.close.confirmation.is_some() {
+            Some(ShownDialog::Close(self.close.generation))
+        } else if self.licenses.is_some() {
+            Some(ShownDialog::Licenses)
+        } else {
+            self.about.is_some().then_some(ShownDialog::About)
+        }
+    }
+
+    /// Opens the dialog slot for the top dialog, which moves focus into it
+    /// on its first frame, or closes it when none shows. Focus left in the
+    /// closed dialog returns to the window's focus handle, and the caller
+    /// then focuses the terminal where it should; focus already elsewhere,
+    /// such as on a terminal, stays. Every change of top dialog comes here,
+    /// and each frame checks it.
+    fn sync_dialog(&mut self, window: &mut Window, cx: &mut App) {
+        let top = self.top_dialog();
+        if top == self.dialog_shown {
+            return;
+        }
+        self.dialog_shown = top;
+        if top.is_some() {
+            self.dialog.open(&self.focus);
+            return;
+        }
+        let elsewhere = window.focused(cx).filter(|focus| {
+            self.close_buttons.focused(window) == "none"
+                && self.about_buttons.focused(window).is_none()
+                && *focus != self.focus
+        });
+        let _ = self.dialog.close(window, cx);
+        if let Some(focus) = elsewhere {
+            focus.focus(window, cx);
+        }
+    }
+
+    /// The control focus returns to in the showing dialog: the one that
+    /// last held focus while it still shows, or else the one it opens on.
+    fn dialog_focus_target(&self, cx: &App) -> Option<FocusHandle> {
+        let top = self.top_dialog()?;
+        if let Some(last) = self.dialog.last_focused() {
+            return Some(last);
+        }
+        match top {
+            ShownDialog::Close(_) => Some(self.close_buttons.primary.clone()),
+            ShownDialog::Licenses => self
+                .licenses
+                .as_ref()
+                .map(|licenses| licenses.read(cx).focus_handle(cx)),
+            ShownDialog::About => {
+                Some(self.about_buttons.handle(self.about_initial).clone())
             }
-            None => self.focus.focus(window, cx),
+        }
+    }
+
+    /// Whether one of the showing dialog's controls has focus.
+    fn dialog_holds_focus(&self, window: &Window, cx: &App) -> bool {
+        match self.top_dialog() {
+            Some(ShownDialog::Close(_)) => {
+                self.close_buttons.focused(window) != "none"
+            }
+            Some(ShownDialog::Licenses) => {
+                self.licenses.as_ref().is_some_and(|licenses| {
+                    licenses.read(cx).focus(window, cx).is_some()
+                })
+            }
+            Some(ShownDialog::About) => {
+                self.about_buttons.focused(window).is_some()
+            }
+            None => false,
+        }
+    }
+
+    /// Returns focus to the showing dialog unless one of its controls has
+    /// it: to the control that last held it, or else to the one it opened
+    /// on, or to the search as the Licenses view replaces the About panel.
+    fn focus_dialog(&self, window: &mut Window, cx: &mut App) {
+        if self.dialog_holds_focus(window, cx) {
+            return;
+        }
+        if let Some(target) = self.dialog_focus_target(cx) {
+            target.focus(window, cx);
         }
     }
 
@@ -8365,6 +8488,7 @@ impl WorkspaceView {
         if self.about.take().is_none() {
             return;
         }
+        self.sync_dialog(window, cx);
         self.focus_terminal(window, cx);
         cx.notify();
     }
@@ -8392,15 +8516,16 @@ impl WorkspaceView {
         if self.about.is_none() {
             return;
         }
-        if let Some(licenses) = &self.licenses {
-            licenses.read(cx).focus_handle(cx).focus(window, cx);
+        if self.licenses.is_some() {
+            self.focus_dialog(window, cx);
             return;
         }
         let colors = self.palette_colors();
         let hints = self.config.window.shortcut_hints;
+        let modal = self.dialog.clone();
         let licenses = cx.new(|cx| {
             self.frame_clock.observe(cx);
-            LicensesView::new(colors, hints, load, cx)
+            LicensesView::new(modal, colors, hints, load, window, cx)
         });
         cx.subscribe_in(
             &licenses,
@@ -8410,8 +8535,8 @@ impl WorkspaceView {
             },
         )
         .detach();
-        licenses.read(cx).focus_handle(cx).focus(window, cx);
         self.licenses = Some(licenses);
+        self.sync_dialog(window, cx);
         cx.notify();
     }
 
@@ -8425,8 +8550,8 @@ impl WorkspaceView {
         if self.licenses.take().is_none() {
             return;
         }
-        self.about_focus = AboutFocus::Licenses;
-        self.focus.focus(window, cx);
+        self.about_initial = AboutButton::Licenses;
+        self.sync_dialog(window, cx);
         cx.notify();
     }
 
@@ -9029,6 +9154,7 @@ impl WorkspaceView {
             return;
         }
         let target = self.close.begin_check(target);
+        self.sync_dialog(window, cx);
         let Some(request) = self.close_request(&target, window, cx) else {
             self.release_exit_close_if_idle(cx);
             return;
@@ -9097,6 +9223,7 @@ impl WorkspaceView {
                         view.about = None;
                         view.licenses = None;
                         view.focus.focus(window, cx);
+                        view.sync_dialog(window, cx);
                         cx.notify();
                     }
                     Some(CloseDecision::Close(target)) => {
@@ -9367,6 +9494,7 @@ impl WorkspaceView {
             native_quit::cancel_request();
             cx.global_mut::<Desktop>().quitting = false;
         }
+        self.sync_dialog(window, cx);
         if let Some(tab) = self.active_view(cx) {
             let focus = tab.read(cx).focus.clone();
             focus.focus(window, cx);
@@ -9401,6 +9529,7 @@ impl WorkspaceView {
             // Every tab or pane it asks about left the window, so its commit
             // could only go stale. Queued closes stay queued and run below.
             self.close.dismiss_confirmation();
+            self.sync_dialog(window, cx);
             self.release_exit_close_if_idle(cx);
             self.restore_tab_focus(window, cx);
             cx.notify();
@@ -9458,6 +9587,7 @@ impl WorkspaceView {
             self.request_close(target, window, cx);
             return;
         };
+        self.sync_dialog(window, cx);
         self.busy = true;
         let generation = self.close.generation;
         // From here the commit's result decides the exit-close, even if
@@ -10543,12 +10673,9 @@ impl Render for WorkspaceView {
                 self.window_button_bounds[button.index()].set(None);
             }
         }
-        // The top dialog holds the window's focus on its own node, so
-        // assistive technology follows its current button, the node's
-        // active descendant. Licenses keeps focus in its search field.
-        let confirming = self.close.confirmation.is_some();
-        let about_holds_focus =
-            !confirming && self.licenses.is_none() && self.about.is_some();
+        // A dialog change that skipped `sync_dialog` still opens or closes
+        // the slot before its guard reads it.
+        self.sync_dialog(window, cx);
         let mut root = div()
             .size_full()
             .relative()
@@ -10556,9 +10683,7 @@ impl Render for WorkspaceView {
             .text_color(foreground)
             .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
-            .when(!confirming && !about_holds_focus, |root| {
-                root.track_focus(&self.focus)
-            })
+            .track_focus(&self.focus)
             .on_drag_move::<gpui::ExternalPaths>(|_, window, cx| {
                 // GPUI owns one app-wide drag. Closing another window must
                 // not cancel the external payload delivered to this one.
@@ -10766,6 +10891,11 @@ impl Render for WorkspaceView {
                 view.close_menu(MenuFocusReturn::Terminal, window, cx);
             });
         }));
+        // A dialog's guard stops every press and wheel event on its scrim
+        // outside its panel, and anywhere before its first frame. None of
+        // the window's dialogs closes on an outside press, so the reason it
+        // reports is ignored.
+        root = root.child(self.dialog.guard(|_, _, _| {}));
         let titlebar = self.title_row();
         let top_chrome = titlebar + self.fullscreen_insets.top.max(px(0.0));
         let bar_drawn = self.bar_drawn();
@@ -11475,44 +11605,9 @@ impl Render for WorkspaceView {
         if let Some(menu) = self.render_menu(&layout, window, cx) {
             root = root.child(menu);
         }
-        if let Some(licenses) = &self.licenses {
-            root = root.child(modal_layer(
-                div().absolute().inset_0().child(licenses.clone()),
-                &layout,
-            ));
-        } else if let Some(details) = &self.about {
-            let about = render_about(
-                details,
-                content.size,
-                tokens(&self.config.theme),
-                self.config.window.shortcut_hints,
-                self.about_focus,
-                AboutActions {
-                    licenses: Self::button_action(cx, |view, window, cx| {
-                        view.show_licenses(window, cx);
-                    }),
-                    copy: Self::button_action(cx, |view, _, cx| {
-                        // A click moves the keyboard's place, as a browser
-                        // moves focus, so Enter repeats what was clicked.
-                        view.about_focus = AboutFocus::Copy;
-                        view.copy_about_details(cx);
-                        cx.notify();
-                    }),
-                    close: Self::button_action(cx, |view, window, cx| {
-                        view.close_about(window, cx);
-                    }),
-                },
-            );
-            let about = dialog_node(
-                about,
-                "about-dialog",
-                gpui::Role::Dialog,
-                "About Huterm".into(),
-                about_holds_focus.then_some(&self.focus),
-            );
-            root = root.child(modal_layer(about, &layout));
-        }
+        // The window's one dialog slot shows the top dialog.
         self.drawn_dialog_groups = None;
+        let scrim_corners = modal_corners(&layout);
         if let Some(target) = self.close.confirmation.clone() {
             let generation = self.close.generation;
             let input = self.close_dialog_input(&target, cx);
@@ -11520,7 +11615,8 @@ impl Render for WorkspaceView {
             let model = build_close_dialog(&input);
             let dialog = render_close_dialog(
                 &model,
-                self.close.dialog_focus,
+                &self.dialog,
+                &self.close_buttons,
                 content.size,
                 tokens(&self.config.theme),
                 self.config.window.shortcut_hints,
@@ -11535,15 +11631,40 @@ impl Render for WorkspaceView {
                         cx,
                     );
                 }),
-            );
-            let dialog = dialog_node(
-                dialog,
-                "close-dialog",
-                gpui::Role::AlertDialog,
-                model.title.clone().into(),
-                Some(&self.focus),
-            );
+            )
+            .scrim_corners(scrim_corners);
             root = root.child(modal_layer(dialog, &layout));
+        } else if let Some(licenses) = &self.licenses {
+            licenses.update(cx, |licenses, _| {
+                licenses.set_viewport(content.size, scrim_corners);
+            });
+            root = root.child(modal_layer(
+                div().absolute().inset_0().child(licenses.clone()),
+                &layout,
+            ));
+        } else if let Some(details) = &self.about {
+            let about = render_about(
+                details,
+                &self.dialog,
+                &self.about_buttons,
+                self.about_initial,
+                content.size,
+                tokens(&self.config.theme),
+                self.config.window.shortcut_hints,
+                AboutActions {
+                    licenses: Self::button_action(cx, |view, window, cx| {
+                        view.show_licenses(window, cx);
+                    }),
+                    copy: Self::button_action(cx, |view, _, cx| {
+                        view.copy_about_details(cx);
+                    }),
+                    close: Self::button_action(cx, |view, window, cx| {
+                        view.close_about(window, cx);
+                    }),
+                },
+            )
+            .scrim_corners(scrim_corners);
+            root = root.child(modal_layer(about, &layout));
         }
         if let Some(palette) = &self.palette {
             root = root.child(palette.clone());
@@ -11582,15 +11703,30 @@ impl Render for WorkspaceView {
     }
 }
 
-/// Hosts a modal `overlay` that fills its parent: the whole window, or the
+/// The corners a dialog's scrim rounds: a drawn client frame's rounded top
+/// corners, or none.
+fn modal_corners(layout: &ChromeLayout) -> gpui::Corners<Pixels> {
+    if !layout.frame.decorated() {
+        return gpui::Corners::default();
+    }
+    gpui::Corners {
+        top_left: FRAME_RADIUS,
+        top_right: FRAME_RADIUS,
+        ..gpui::Corners::default()
+    }
+}
+
+/// Hosts a dialog, whose scrim fills its parent: the whole window, or the
 /// content inside a drawn client frame, so the transparent border around
-/// the frame's shadow stays untinted and its rounded top corners hold.
+/// the frame's shadow stays untinted and the frame's resize edges, outside
+/// the scrim, still take presses. The dialog rounds its scrim with
+/// [`modal_corners`].
 fn modal_layer(
-    overlay: impl IntoElement + Styled,
+    dialog: impl IntoElement,
     layout: &ChromeLayout,
 ) -> gpui::AnyElement {
     if !layout.frame.decorated() {
-        return overlay.into_any_element();
+        return dialog.into_any_element();
     }
     let content = layout.content;
     div()
@@ -11599,26 +11735,8 @@ fn modal_layer(
         .top(content.origin.y)
         .w(content.size.width)
         .h(content.size.height)
-        .child(overlay.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS))
+        .child(dialog)
         .into_any_element()
-}
-
-/// Makes a dialog's `overlay` its accessibility node, `role` named `label`,
-/// holding the window's `focus` while it is the top dialog. Its current
-/// button then reports as the node's active descendant, which GPUI honors
-/// only under the focused node.
-fn dialog_node(
-    overlay: gpui::Div,
-    id: &'static str,
-    role: gpui::Role,
-    label: gpui::SharedString,
-    focus: Option<&FocusHandle>,
-) -> gpui::Stateful<gpui::Div> {
-    overlay
-        .id(id)
-        .role(role)
-        .aria_label(label)
-        .when_some(focus, InteractiveElement::track_focus)
 }
 
 /// The split, close, and focus commands for panes.
@@ -12673,12 +12791,14 @@ impl WorkspaceView {
     fn licenses_smoke_state(
         &self,
         prefix: &str,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> String {
         let licenses_focus = self
             .licenses
             .as_ref()
-            .map_or("none", |view| view.read(cx).focus().name());
+            .and_then(|view| view.read(cx).focus(window, cx))
+            .map_or("none", LicensesFocus::name);
         let (licenses, licenses_selected) =
             match self.licenses.as_ref().map(|view| view.read(cx).state()) {
                 None => ("closed".to_owned(), None),
@@ -12722,17 +12842,13 @@ impl WorkspaceView {
             })
             .map_or_else(|| "none".to_owned(), |index| index.to_string());
         let about = self.about.is_some();
-        let about_focus = match self.about_focus {
-            AboutFocus::Licenses => "licenses",
-            AboutFocus::Copy => "copy",
-            AboutFocus::Close => "close",
-        };
-        let licenses = self.licenses_smoke_state(prefix, cx);
+        let about_focus = self
+            .about_buttons
+            .focused(window)
+            .map_or("none", AboutButton::name);
+        let licenses = self.licenses_smoke_state(prefix, window, cx);
         let menu = self.menu_smoke_state(prefix, window, cx);
-        let dialog_focus = match self.close.dialog_focus {
-            DialogFocus::Primary => "primary",
-            DialogFocus::Cancel => "cancel",
-        };
+        let dialog_focus = self.close_buttons.focused(window);
         let (dialog_title, dialog_groups) = self.dialog_smoke_fields(cx);
         let painted = |cell: &Cell<Option<Bounds<Pixels>>>| {
             cell.get().map_or_else(
@@ -12864,15 +12980,12 @@ fn menu_items_state(model: &MenuModel) -> String {
     ids.join(",")
 }
 
-/// The focus a showing dialog or About panel holds, for handing it back
-/// when something else takes it; `None` while neither shows.
+/// The control a showing dialog or About panel returns focus to, for
+/// handing focus back when something else takes it; `None` while neither
+/// shows.
 pub(super) fn modal_focus(window: &Window, cx: &App) -> Option<FocusHandle> {
     let root = window.root::<WorkspaceView>().flatten()?;
-    let view = root.read(cx);
-    if let Some(licenses) = &view.licenses {
-        return Some(licenses.read(cx).focus_handle(cx));
-    }
-    view.dialog_showing().then(|| view.focus.clone())
+    root.read(cx).dialog_focus_target(cx)
 }
 
 pub(super) fn modal_showing(window: &Window, cx: &App) -> bool {

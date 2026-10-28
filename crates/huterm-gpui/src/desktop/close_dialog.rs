@@ -1,18 +1,18 @@
 //! The close confirmation for a tab, several tabs, a window, or Quit.
 //!
 //! [`build_close_dialog`] turns the assessed processes into the exact copy
-//! and rows the dialog shows, and [`render_close_dialog`] draws that model.
-//! The owner keeps the focused button, routes the `dialog_*` catalog commands
-//! under its `confirming` context, and maps core's close assessment onto
-//! [`CloseDialogInput`].
+//! and rows the dialog shows, and [`render_close_dialog`] draws that model
+//! as a `huterm-ui` alert dialog. The owner opens its [`Modal`], routes the
+//! `dialog_*` catalog commands under its `confirming` context, and maps
+//! core's close assessment onto [`CloseDialogInput`].
 
-use gpui::{App, Div, Pixels, Size, Window, div, prelude::*, px};
+use gpui::{App, Div, FocusHandle, Pixels, Size, Window, div, prelude::*, px};
+use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::button::{Button, Colors};
+use huterm_ui::components::dialog::Modal;
 
 use super::key_hint::KeyHint;
-use super::overlay::{
-    Swatch, accent_bar, mono_font_family, raised_panel, scrim, severity_mark,
-};
+use super::overlay::{Swatch, accent_bar, mono_font_family, severity_mark};
 use crate::keymap::Platform;
 
 /// What the confirmation closes.
@@ -288,21 +288,29 @@ pub(crate) fn build_close_dialog(input: &CloseDialogInput) -> CloseDialogModel {
 
 // ---- presentation ---------------------------------------------------------
 
-/// Which footer button holds keyboard focus. The primary button has it when
+/// The footer buttons' focus handles. The primary button takes focus when
 /// a confirmation opens, so Enter confirms and Escape cancels.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum DialogFocus {
-    Cancel,
-    #[default]
-    Primary,
+pub(crate) struct CloseButtons {
+    pub(crate) cancel: FocusHandle,
+    pub(crate) primary: FocusHandle,
 }
 
-impl DialogFocus {
-    /// The other button: with two buttons, next and previous both wrap to it.
-    pub(crate) fn toggled(self) -> Self {
-        match self {
-            Self::Cancel => Self::Primary,
-            Self::Primary => Self::Cancel,
+impl CloseButtons {
+    pub(crate) fn new(cx: &mut App) -> Self {
+        Self {
+            cancel: cx.focus_handle(),
+            primary: cx.focus_handle(),
+        }
+    }
+
+    /// The focused button's smoke name: `primary`, `cancel`, or `none`.
+    pub(crate) fn focused(&self, window: &Window) -> &'static str {
+        if self.primary.is_focused(window) {
+            "primary"
+        } else if self.cancel.is_focused(window) {
+            "cancel"
+        } else {
+            "none"
         }
     }
 }
@@ -402,16 +410,14 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
 }
 
 /// A 28-point footer button reading `label`; with `hint`, its key cap
-/// follows. `focused` marks the keyboard's place.
+/// follows.
 fn button(
     id: &'static str,
     label: impl Into<gpui::SharedString>,
     swatch: Swatch,
-    focused: bool,
     hint: Option<&str>,
 ) -> Button {
     Button::new(id, label, swatch)
-        .current(focused)
         .when_some(hint, |button, key| {
             button.shortcut(KeyHint::keys(&[key], Platform::current()).glyphs())
         })
@@ -423,75 +429,27 @@ fn button(
         .cursor_pointer()
 }
 
-/// Cancel and the destructive primary button, nothing else. With `hints`,
-/// each carries its key: `esc` and Return.
-fn dialog_footer(
-    model: &CloseDialogModel,
-    focus: DialogFocus,
-    swatch: Swatch,
-    hints: bool,
-    on_cancel: impl Fn(&mut Window, &mut App) + 'static,
-    on_confirm: impl Fn(&mut Window, &mut App) + 'static,
-) -> Div {
-    let danger = swatch.danger_fill();
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_end()
-        .gap(px(8.0))
-        .pl(px(14.0))
-        .pr(px(10.0))
-        .py(px(8.0))
-        .border_t_1()
-        .border_color(swatch.line)
-        .bg(swatch.footer())
-        .child(
-            button(
-                "cancel-close",
-                "Cancel",
-                swatch,
-                focus == DialogFocus::Cancel,
-                hints.then_some("escape"),
-            )
-            .on_click(on_cancel),
-        )
-        .child(
-            button(
-                "confirm-close",
-                model.primary_label.clone(),
-                swatch,
-                focus == DialogFocus::Primary,
-                hints.then_some("enter"),
-            )
-            .debug_selector(|| "confirm-close".to_owned())
-            // Its hover and pressed shades move away from its text, so it
-            // reads on every fill the button shows.
-            .colors(Colors {
-                fill: Some(danger),
-                text: swatch.on(danger),
-                border: None,
-                hover: swatch.danger_hover(),
-                pressed: swatch.danger_pressed(),
-            })
-            .on_click(on_confirm),
-        )
-}
-
-/// The dialog over its scrim, filling the parent. The panel has an explicit
-/// viewport-clamped width, and its text and button containers do not
-/// shrink, so wrapped text measures correctly. `on_cancel` and
-/// `on_confirm` receive the clicks on `cancel-close` and `confirm-close`;
-/// `hints` shows the buttons' keys.
+/// The alert over its scrim, as the last child of the area it covers,
+/// open while `slot` is: the owner's header with its severity mark, the
+/// process rows, and Cancel and the destructive primary button, which takes
+/// focus. The panel has an explicit viewport-clamped width, and its text
+/// containers do not shrink, so wrapped text measures correctly.
+/// `on_cancel` and `on_confirm` receive the clicks on `cancel-close` and
+/// `confirm-close`; `hints` shows the buttons' keys: `esc` and Return.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the model, its modal and buttons, size, colors, hints, and both actions"
+)]
 pub(crate) fn render_close_dialog(
     model: &CloseDialogModel,
-    focus: DialogFocus,
+    slot: &Modal,
+    buttons: &CloseButtons,
     viewport: Size<Pixels>,
     swatch: Swatch,
     hints: bool,
     on_cancel: impl Fn(&mut Window, &mut App) + 'static,
     on_confirm: impl Fn(&mut Window, &mut App) + 'static,
-) -> Div {
+) -> AlertDialog {
     let width = (viewport.width - px(32.0)).clamp(px(0.0), px(PANEL_WIDTH));
     let (glyph, fill) = match model.mark {
         DialogMark::Exclamation => ("!", swatch.danger),
@@ -526,41 +484,54 @@ pub(crate) fn render_close_dialog(
                         .child(model.subtitle.clone()),
                 ),
         );
+    // The list shrinks and scrolls in a window too short for its full
+    // height, so the footer stays in view.
     let list = div()
         .id("close-dialog-list")
+        .debug_selector(|| "close-dialog-list".to_owned())
         .flex()
         .flex_col()
-        .flex_none()
+        .flex_shrink_1()
+        .min_h_0()
         .p(px(6.0))
         .max_h(px(LIST_MAX_HEIGHT))
         .overflow_y_scroll()
-        .children(model.rows.iter().map(|row| dialog_row(row, swatch)));
-    scrim(swatch)
-        .flex()
-        .items_center()
-        .justify_center()
-        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .child(
-            raised_panel(swatch, 10.0)
-                .w(width)
-                .flex_none()
-                .flex()
-                .flex_col()
-                .text_color(swatch.fg)
-                .child(header)
-                .child(list)
-                .child(dialog_footer(
-                    model, focus, swatch, hints, on_cancel, on_confirm,
-                )),
-        )
+        .children(model.rows.iter().enumerate().map(|(index, row)| {
+            dialog_row(row, swatch).when(index + 1 == model.rows.len(), |row| {
+                row.debug_selector(|| "close-dialog-last-row".to_owned())
+            })
+        }));
+    let danger = swatch.danger_fill();
+    let cancel =
+        button("cancel-close", "Cancel", swatch, hints.then_some("escape"))
+            .on_click(on_cancel);
+    let primary = button(
+        "confirm-close",
+        model.primary_label.clone(),
+        swatch,
+        hints.then_some("enter"),
+    )
+    .debug_selector(|| "confirm-close".to_owned())
+    // Its hover and pressed shades move away from its text, so it reads on
+    // every fill the button shows.
+    .colors(Colors {
+        fill: Some(danger),
+        text: swatch.on(danger),
+        border: None,
+        hover: swatch.danger_hover(),
+        pressed: swatch.danger_pressed(),
+    })
+    .on_click(on_confirm);
+    AlertDialog::new("close-dialog", model.title.clone(), slot, swatch)
+        .description(model.subtitle.clone())
+        .bare()
+        .cancel(cancel, &buttons.cancel)
+        .action(primary, &buttons.primary)
+        .initial_focus(&buttons.primary)
+        .w(width)
+        .rounded(px(10.0))
+        .child(header)
+        .child(list)
 }
 
 #[cfg(test)]
@@ -817,6 +788,101 @@ mod tests {
         assert_eq!(
             model.subtitle,
             "This ends 8 running processes in every window."
+        );
+    }
+
+    /// A window whose content is the close dialog for `model`, its modal
+    /// open.
+    #[cfg(feature = "test-support")]
+    struct Host {
+        model: CloseDialogModel,
+        modal: Modal,
+        buttons: CloseButtons,
+    }
+
+    #[cfg(feature = "test-support")]
+    impl gpui::Render for Host {
+        fn render(
+            &mut self,
+            window: &mut Window,
+            _: &mut gpui::Context<'_, Self>,
+        ) -> impl IntoElement {
+            let theme = crate::config::Theme::default();
+            div().size_full().relative().child(render_close_dialog(
+                &self.model,
+                &self.modal,
+                &self.buttons,
+                window.viewport_size(),
+                super::super::overlay::tokens(&theme),
+                false,
+                |_, _| {},
+                |_, _| {},
+            ))
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    #[gpui::test]
+    fn a_short_window_scrolls_the_list_and_keeps_the_footer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+
+        let model = build(
+            CloseDialogTarget::Application,
+            vec![
+                known(
+                    Some("busy"),
+                    (1..=5).map(|pid| process("job", pid, pid == 1)).collect(),
+                ),
+                known(
+                    Some("also busy"),
+                    vec![process("a", 10, true), process("b", 11, false)],
+                ),
+            ],
+        );
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            let slot = Modal::new();
+            slot.open(&cx.focus_handle());
+            Host {
+                model,
+                modal: slot,
+                buttons: CloseButtons::new(cx),
+            }
+        });
+        cx.simulate_resize(gpui::size(px(640.0), px(260.0)));
+        cx.run_until_parked();
+        let list = cx.debug_bounds("close-dialog-list").expect("the list");
+        let height = cx.update(|window, _| window.viewport_size().height);
+        let row = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("close-dialog-last-row")
+                .expect("the last row")
+        };
+        let confirm = cx.debug_bounds("confirm-close").expect("the button");
+        // The window is too short to show every row.
+        assert!(row(cx).bottom() > confirm.top(), "{:?}", row(cx));
+        for _ in 0..20 {
+            cx.simulate_event(ScrollWheelEvent {
+                position: list.center(),
+                delta: ScrollDelta::Pixels(gpui::point(px(0.0), px(-40.0))),
+                modifiers: Modifiers::none(),
+                touch_phase: TouchPhase::Moved,
+            });
+        }
+        cx.run_until_parked();
+        let end = row(cx);
+        let confirm = cx.debug_bounds("confirm-close").expect("the button");
+        assert!(
+            end.top() >= list.top()
+                && end.bottom() <= list.bottom()
+                && end.bottom() <= confirm.top(),
+            "the last row {end:?} scrolls into the list {list:?}, above \
+             the footer button {confirm:?}"
+        );
+        assert!(
+            confirm.bottom() <= height,
+            "the footer button {confirm:?} stays inside the window's \
+             {height:?}"
         );
     }
 }

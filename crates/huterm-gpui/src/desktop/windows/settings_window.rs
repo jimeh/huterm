@@ -2010,8 +2010,8 @@ impl Render for SettingsView {
             let _ = weak.update(cx, |view, cx| view.close_menu(window, cx));
         });
         let popover = self.render_popover(window, cx);
-        // The dialog's guard stops every press outside an open dialog, even
-        // before its first frame.
+        // The dialog's guard stops every press on an open dialog's scrim
+        // outside its panel, and anywhere before its first frame.
         let dialog_guard = self.dialog_guard(cx);
         let dialog = self.render_dialog(swatch, window, cx);
         let mut context = KeyContext::default();

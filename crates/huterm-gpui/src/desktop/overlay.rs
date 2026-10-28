@@ -99,14 +99,6 @@ pub(crate) fn raised_panel(swatch: Swatch, radius: f32) -> Div {
     huterm_ui::components::surface::surface(swatch, radius)
 }
 
-/// The dimming layer beneath a modal panel, filling its parent. It occludes
-/// what it covers: GPUI hit-tests every hitbox under the pointer until one
-/// blocks, so without this the terminal beneath still receives the presses
-/// and wheel events the panel does not stop itself.
-pub(crate) fn scrim(swatch: Swatch) -> Div {
-    div().absolute().inset_0().occlude().bg(swatch.scrim())
-}
-
 /// A severity mark: a filled circle with a single glyph.
 pub(crate) fn severity_mark(glyph: &str, fill: Hsla, swatch: Swatch) -> Div {
     div()

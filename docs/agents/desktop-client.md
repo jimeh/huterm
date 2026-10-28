@@ -483,16 +483,17 @@ Overlays share the palette's grammar: every keyboard action is a catalog
 command bound under a key context. The close dialog and the About panel use
 `confirming`, menus `menu`, and focused toasts `notices`; each binding is
 conditional, so it reserves no terminal key. The About panel's Licenses view
-takes the `Palette` context for its search field and list, so `Input`
-editing works without new commands; `WorkspaceView` sends Palette-scope
-commands to it before the palette while it is open. Its element is deeper than
-the workspace root, so its Escape and Enter bindings win over `confirming`'s.
+wraps its dialog content, the search field, list, and buttons, in the
+`Palette` context, so `Input` editing and the list's keys work from any of
+them without new commands; `WorkspaceView` sends Palette-scope commands to
+it before the palette while it is open. That wrapper is deeper than the
+dialog panel's `confirming`, so its Escape, Enter, and Tab bindings win.
 A repeated close shortcut while `confirming` must not confirm. Menus and
 dialogs return focus to the terminal when they close; the menu button never
 keeps it, or terminal bindings stop matching until the user clicks back in.
-Focus a toast gives up while a dialog shows goes back to the dialog
-(`restore_tab_focus`), since the terminal's hand-back misses a change made
-between two frames.
+Focus a toast gives up while a dialog shows goes back to the control the
+dialog opened on (`restore_tab_focus`), since the terminal's hand-back
+misses a change made between two frames.
 
 GPUI's `on_hover` also fires when a layout change puts an element under a
 resting pointer, so a menu that opens beneath the pointer would select the
@@ -637,20 +638,14 @@ palette its own `Colors`. Its click action takes no event, so
 `WorkspaceView::button_action` adapts a view method. Chrome buttons take no
 focus handle, so they never hold focus, and `stop_presses` keeps their
 presses from the title row's move gesture and the tab strip. The close
-dialog, About, and Licenses keep GPUI focus on the window's focus handle or
-the search field and move a view-state focus with their own commands; their
-buttons mark it with `Button::current`, whose ring shows after a key and hides
-on a pointer press (`focus::current_visible`), so the terminal window mounts
-`focus::tracker()` too. A click on a button that leaves its dialog open moves
-the mark to it, as a browser moves focus. Licenses moves between its buttons
-with Tab and Shift-Tab only, because the arrows stay with its list and
-search. The top close dialog or About panel tracks the window's focus handle
-on its own `AlertDialog` or `Dialog` node (`dialog_node`) rather than the
-root, because GPUI honors the current button's active descendant only under
-the focused node; Licenses keeps focus in its search field, which does not
-contain its buttons, so assistive technology does not follow its mark. A
-dialog opened from the native app menu right after a key press can show its
-ring at once, because AppKit menu clicks reach GPUI as no pointer event. A
+dialog, About, and Licenses buttons take focus inside their dialog's
+`Modal` cycle, so their ring follows `focus::ring` and the terminal window
+mounts `focus::tracker()` too; no terminal-window button uses
+`Button::current` any more. A click on a button focuses it, as a browser
+does. Licenses moves between its buttons with Tab and Shift-Tab only,
+because the arrows stay with its list and search. A dialog opened from the
+native app menu right after a key press can show its ring at once, because
+AppKit menu clicks reach GPUI as no pointer event. A
 button with a tooltip shows it below itself while its ring shows and it is
 not clipped (`tooltip::focused`), an expanded button shows none, and an
 icon-only button's label is its tooltip.
@@ -736,10 +731,14 @@ recorders, adds `focus::probe` itself, or Tab to it never scrolls.
 Open a dialog in a `huterm_ui::components::dialog::Modal`, draw its `Dialog`
 or `AlertDialog` as the last child of the area it covers while it is open, and
 mount `Modal::guard` on every frame, as for a popover. The guard stops presses
-and wheel events outside the panel, including before its first frame, and
-reports an outside press to the owner, never for an alert. The panel carries
-the `confirming` context: route `dialog_focus_next` and `dialog_focus_previous`
-to `Modal::focus_next` and `focus_previous`, which cycle through the dialog's
+and wheel events on the scrim outside the panel, and reports such a press to
+the owner, never for an alert. It lets presses and wheel events outside the
+scrim through unreported, so what lies around the dialog's area, such as a
+client-drawn frame's resize edges, keeps working. Before the dialog's first
+frame no scrim has painted, so the guard stops a press anywhere. The panel
+carries the `confirming` context: route `dialog_focus_next` and
+`dialog_focus_previous` to `Modal::focus_next` and `focus_previous`, which
+cycle through the dialog's
 declared controls and its enabled buttons, and give its buttons no
 `SettingsControl` context, which would win for Enter, Space, and the arrows.
 A text field in a dialog carries the `Palette` context, as Settings' fields
@@ -759,7 +758,7 @@ puts its long content in a `ScrollArea` made with `fill()`, which shrinks
 with the body, since a plain `ScrollArea` grows to its content's height and
 never scrolls there; the body shrinks and clips so the footer stays inside
 the panel, where the guard lets presses through. The
-guard stops presses on anything outside the panel, so a popover opened from a
+guard stops presses on the scrim outside the panel, so a popover opened from a
 dialog's body does not work yet. A simulated press in a GPUI test draws a
 notified window first, so a stale-frame test opens without notifying,
 presses, and notifies afterwards. In the desktop harness, `simulate_click`
@@ -786,6 +785,43 @@ frame and defers `reveal_focused`, which scrolls the pane only when the ring
 shows (`focus::visible`, so a pointer press scrolls nothing), the ring
 painted inside the pane's columns, and no dialog or menu is open. Smoke state
 reports `settings.scroll` and `settings.in_view` for it.
+
+The terminal window has one dialog slot too, `WorkspaceView::dialog`. The
+top dialog draws in it: the close confirmation, else Licenses, else About.
+Every change of top dialog goes through `sync_dialog`, which opens the slot
+again for the new dialog, keyed by the confirmation's generation so each
+new confirmation opens on its primary button, and render calls it too
+before it mounts the guard, for a change that skipped it. Focus that
+returns to the dialog from elsewhere, such as a toast, goes to the control
+that last held it (`Modal::last_focused`), so Cancel stays Cancel, and else
+to the one it opens on. Closing returns focus to the window's handle,
+unless focus already left the dialog, and the caller then focuses the
+terminal. The close confirmation is a bare
+`AlertDialog` that opens on its primary button (`AlertDialog::initial_focus`);
+About and Licenses are bare `Dialog`s, whose content draws its own header
+and footer, and `LicensesView` draws its own with a clone of the slot's
+`Modal`. The slot draws through `modal_layer`, so inside a client-drawn frame
+the scrim covers only the content, rounded at its top corners
+(`Dialog::scrim_corners`), and the frame's resize edges still work. None
+closes on an outside press or on deactivation, so the guard's callback
+ignores the reason. In Licenses, a press that focuses nothing
+returns focus to the search, and so do Escape that clears the search and a
+selection or search change that hides the focused Website or Copy button.
+The `Palette` context wraps the buttons, so the list keys and text commands
+work from a button. While Website, Copy, or Done has focus, a canvas over
+the search field registers the search `Input`'s handler for that button with
+`window.handle_input`, wrapped in `SearchFromButton`. Unbound keys then reach
+the search through the platform's ordinary text input, so dead keys, IME
+composition, and Linux's Shift-only rule behave as on the focused search,
+and Space, which no `Palette` binding claims, types a space. The wrapper
+focuses the search before text, marked text, or a paste applies, and the
+composition continues there under the search's own handler, because the
+`Input` holds the marked text. GPUI's tests cannot send marked text through
+the window, so the composition test calls the view's handler directly. A
+forwarded text command focuses the search before it edits, except Copy,
+which changes nothing to show.
+Smoke state reads `dialog_focus`, `about_focus`, and `licenses_focus` from
+real focus.
 
 The Settings window has one dialog slot, in `settings_window/dialog.rs`. A
 section adds a `Prompt` variant, opens it with `open_dialog`, and draws it

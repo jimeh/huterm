@@ -4,7 +4,8 @@
 //! a question that interrupts, such as a delete confirmation.
 //!
 //! Anatomy: a scrim filling the area the owner mounts it in, dimming it and
-//! occluding hover, presses, and wheel events beneath, with a raised panel
+//! occluding hover, presses, and wheel events beneath, and rounded with
+//! [`Dialog::scrim_corners`] when that area is, with a raised panel
 //! centered on it: a title, an optional description, a body of the owner's
 //! children (such as an input group and an inline error), and a footer of
 //! [`Button`]s, right-aligned in the order given. The owner mounts the
@@ -15,7 +16,12 @@
 //! footer stays inside the panel, and a body that can outgrow it puts its
 //! long content in a [`ScrollArea`](super::scroll_area::ScrollArea) made
 //! with [`fill`](super::scroll_area::ScrollArea::fill), or another
-//! `flex_1().min_h_0()` child that scrolls.
+//! `flex_1().min_h_0()` child that scrolls. An owner whose content has its
+//! own header and footer, such as an About panel's hero or a footer with a
+//! button at its leading edge, makes the dialog [`Dialog::bare`]: the
+//! panel then draws neither the title and description nor body padding,
+//! and the owner's children fill the body, before the footer of any
+//! buttons added with [`Dialog::button`].
 //!
 //! Focus: the dialog's controls are the body controls the owner declares
 //! with [`Dialog::focusable`], then its enabled footer buttons. On its
@@ -25,9 +31,13 @@
 //! either end, so focus never reaches what the dialog covers; a press on
 //! the panel's background moves no focus. Each frame rereads which buttons
 //! are disabled, so a button leaves the cycle while disabled and rejoins it
-//! once enabled. [`Modal::close`] returns focus to the target given to
-//! [`Modal::open`]; an owner that wants focus elsewhere, such as after a
-//! delete removed the target, focuses it afterwards.
+//! once enabled. The modal remembers the control that last held focus,
+//! and [`Modal::last_focused`] gives it to an owner returning focus to the
+//! dialog from elsewhere in the window, such as a toast, which falls back
+//! to its initial control when that one has left the dialog.
+//! [`Modal::close`] returns focus to the target given to [`Modal::open`];
+//! an owner that wants focus elsewhere, such as after a delete removed the
+//! target, focuses it afterwards.
 //!
 //! Keyboard: the panel carries [`KEY_CONTEXT`] and nothing inside it adds a
 //! context, so a control keeps only the context its owner gives it. The
@@ -49,20 +59,25 @@
 //! whether to close and where focus goes. The owner mounts
 //! [`Modal::guard`] in its root view on every frame, open or not, as it
 //! mounts a popover's guard. While the dialog is open, its capture-phase
-//! listeners stop every press and wheel event outside the panel's last
-//! painted bounds, so nothing beneath acts or takes focus, and report an
-//! outside press as [`Dismissal::OutsidePress`]: the owner may close or
-//! keep the dialog. A press before the panel's first frame is stopped but
-//! not reported, since nothing was shown to dismiss. Releases are never
-//! stopped, so a gesture that began before the dialog opened still ends.
+//! listeners stop every press and wheel event on the scrim outside the
+//! panel, by their last painted bounds, so nothing beneath acts or takes
+//! focus, and report such a press as [`Dismissal::OutsidePress`]: the
+//! owner may close or keep the dialog. A press or wheel event outside the
+//! scrim, such as on a window frame around the area the dialog covers, is
+//! not the dialog's: it passes through, and nothing is reported. Before
+//! the dialog's first frame, the guard stops a press anywhere in the
+//! window but reports none, since nothing was shown to dismiss. Releases
+//! are never stopped, so a gesture that began before the dialog opened
+//! still ends.
 //! The owner routes window deactivation and its own state changes, as for
 //! a popover; a dialog normally stays open while its window is inactive,
 //! as `AppKit`'s sheets and libadwaita's dialogs do, and keeps its focus
 //! for the window's return.
 //!
-//! Limitation: the guard stops every press outside the panel's bounds, so
-//! a popover opened from the body, such as a select's menu, takes no
-//! presses where it extends past the panel. No dialog holds one yet.
+//! Limitation: the guard stops every press on the scrim outside the
+//! panel's bounds, so a popover opened from the body, such as a select's
+//! menu, takes no presses where it extends past the panel. No dialog holds
+//! one yet.
 //!
 //! Accessibility: a modal `Dialog` named by its title and described by its
 //! description; its controls report themselves.
@@ -73,10 +88,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Bounds, DispatchPhase, Div, ElementId, Empty, FocusHandle,
-    IntoElement, MouseDownEvent, Pixels, Point, Refineable, RenderOnce,
-    ScrollWheelEvent, SharedString, StyleRefinement, Window, canvas, div,
-    prelude::*, px,
+    AnyElement, App, Bounds, Corners, DispatchPhase, Div, ElementId, Empty,
+    FocusHandle, IntoElement, MouseDownEvent, Pixels, Point, Refineable,
+    RenderOnce, ScrollWheelEvent, SharedString, StyleRefinement, Window,
+    canvas, div, prelude::*, px,
 };
 
 use crate::a11y::States;
@@ -96,7 +111,8 @@ const WIDTH: Pixels = px(420.0);
 pub enum Dismissal {
     /// The owner's cancel command, Escape by default.
     Escape,
-    /// A press outside the panel. An alert dialog never reports one.
+    /// A press on the scrim outside the panel. An alert dialog never
+    /// reports one.
     OutsidePress,
     /// The window deactivated.
     Deactivated,
@@ -113,18 +129,25 @@ struct State {
     focus_pending: bool,
     /// The controls Tab cycles through, from the last frame.
     controls: Vec<FocusHandle>,
+    /// The control that last held focus since opening.
+    last_focused: Option<FocusHandle>,
     /// Whether the guard reports outside presses: a dialog's are, an alert
     /// dialog's never, and none before the first frame.
     reports_outside: bool,
     /// The panel's bounds from its last paint.
     panel: Option<Bounds<Pixels>>,
+    /// The scrim's bounds from its last paint.
+    scrim: Option<Bounds<Pixels>>,
 }
 
 impl State {
-    /// Whether a press or wheel event at `position` falls outside an open
-    /// dialog's panel, or arrives before the panel first paints.
-    fn outside(&self, position: Point<Pixels>) -> bool {
-        self.open && !self.panel.is_some_and(|panel| panel.contains(&position))
+    /// Whether the guard stops a press or wheel event at `position`: one
+    /// on an open dialog's scrim outside its panel, or anywhere before the
+    /// dialog first paints.
+    fn guards(&self, position: Point<Pixels>) -> bool {
+        self.open
+            && self.scrim.is_none_or(|scrim| scrim.contains(&position))
+            && !self.panel.is_some_and(|panel| panel.contains(&position))
     }
 }
 
@@ -149,8 +172,10 @@ impl Modal {
         state.open = true;
         state.return_to = Some(return_to.clone());
         state.focus_pending = true;
+        state.last_focused = None;
         state.reports_outside = false;
         state.panel = None;
+        state.scrim = None;
     }
 
     /// Closes the dialog and focuses the return target; `false` when it was
@@ -164,7 +189,9 @@ impl Modal {
             state.open = false;
             state.focus_pending = false;
             state.controls.clear();
+            state.last_focused = None;
             state.panel = None;
+            state.scrim = None;
             state.return_to.take()
         };
         if let Some(target) = return_to {
@@ -184,6 +211,18 @@ impl Modal {
     #[must_use]
     pub fn panel_bounds(&self) -> Option<Bounds<Pixels>> {
         self.state.borrow().panel
+    }
+
+    /// The control that last held focus while the dialog was open, if it
+    /// is still one of the dialog's controls; `None` while closed or
+    /// before any control has held focus.
+    #[must_use]
+    pub fn last_focused(&self) -> Option<FocusHandle> {
+        let state = self.state.borrow();
+        state
+            .last_focused
+            .clone()
+            .filter(|focus| state.controls.contains(focus))
     }
 
     /// Moves focus to the next control, wrapping to the first; from outside
@@ -219,14 +258,17 @@ impl Modal {
         };
         if let Some(target) = target {
             target.focus(window, cx);
+            self.state.borrow_mut().last_focused = Some(target);
         }
     }
 
-    /// The capture-phase press and wheel guard. Mount it in the owner's
-    /// root view on every frame, open or not, after the window-level
-    /// listeners every press must reach; `on_dismiss` receives
-    /// [`Dismissal::OutsidePress`], and the owner closes the dialog or
-    /// keeps it.
+    /// The capture-phase press and wheel guard, which stops presses and
+    /// wheel events on the scrim outside the panel, and anywhere before the
+    /// dialog's first frame, and lets those outside the scrim through.
+    /// Mount it in the owner's root view on every frame, open or not, after
+    /// the window-level listeners every press must reach; `on_dismiss`
+    /// receives [`Dismissal::OutsidePress`] for a press on the scrim, and
+    /// the owner closes the dialog or keeps it.
     #[must_use]
     pub fn guard<F>(&self, on_dismiss: F) -> impl IntoElement + use<F>
     where
@@ -246,7 +288,7 @@ impl Modal {
                         }
                         let reports = {
                             let state = presses.borrow();
-                            if !state.outside(event.position) {
+                            if !state.guards(event.position) {
                                 return;
                             }
                             state.reports_outside
@@ -264,7 +306,7 @@ impl Modal {
                 window.on_mouse_event(
                     move |event: &ScrollWheelEvent, phase, _, cx| {
                         if phase == DispatchPhase::Capture
-                            && wheels.borrow().outside(event.position)
+                            && wheels.borrow().guards(event.position)
                         {
                             cx.stop_propagation();
                         }
@@ -276,10 +318,21 @@ impl Modal {
         .size(px(0.0))
     }
 
-    /// Records a frame's controls and outside-press policy, and whether
-    /// this is the first frame since opening, which moves focus in.
-    fn frame(&self, controls: Vec<FocusHandle>, reports_outside: bool) -> bool {
+    /// Records a frame's controls, the one of them with focus, and the
+    /// outside-press policy, and whether this is the first frame since
+    /// opening, which moves focus in.
+    fn frame(
+        &self,
+        controls: Vec<FocusHandle>,
+        reports_outside: bool,
+        window: &Window,
+    ) -> bool {
         let mut state = self.state.borrow_mut();
+        if let Some(focused) =
+            controls.iter().find(|control| control.is_focused(window))
+        {
+            state.last_focused = Some(focused.clone());
+        }
         state.controls = controls;
         state.reports_outside = reports_outside;
         std::mem::take(&mut state.focus_pending)
@@ -298,6 +351,8 @@ pub struct Dialog {
     focusables: Vec<FocusHandle>,
     buttons: Vec<(Button, FocusHandle)>,
     initial_focus: Option<FocusHandle>,
+    bare: bool,
+    scrim_corners: Corners<Pixels>,
     style: StyleRefinement,
     children: Vec<AnyElement>,
 }
@@ -331,6 +386,8 @@ impl Dialog {
             focusables: Vec::new(),
             buttons: Vec::new(),
             initial_focus: None,
+            bare: false,
+            scrim_corners: Corners::default(),
             style: StyleRefinement::default(),
             children: Vec::new(),
         }
@@ -373,6 +430,26 @@ impl Dialog {
     #[must_use]
     pub fn initial_focus(mut self, focus: &FocusHandle) -> Self {
         self.initial_focus = Some(focus.clone());
+        self
+    }
+
+    /// The owner draws the panel's content: the dialog draws no title,
+    /// description, or body padding, and the children fill the body
+    /// edge to edge. The title and description still name and describe
+    /// the dialog to assistive technology, so the owner shows them in its
+    /// own header. Buttons the owner draws in its content are declared
+    /// with [`Dialog::focusable`].
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+
+    /// Rounds the scrim's corners to match an area with rounded corners,
+    /// so the scrim tints nothing outside it.
+    #[must_use]
+    pub fn scrim_corners(mut self, corners: Corners<Pixels>) -> Self {
+        self.scrim_corners = corners;
         self
     }
 }
@@ -419,7 +496,7 @@ impl Dialog {
             .filter(|chosen| controls.contains(chosen))
             .or_else(|| controls.first().cloned())
             .or_else(|| self.buttons.first().map(|(_, focus)| focus.clone()));
-        if self.modal.frame(controls, !self.alert)
+        if self.modal.frame(controls, !self.alert, window)
             && let Some(target) = initial
         {
             // Focus moves after the frame, as the guide requires for focus
@@ -500,8 +577,19 @@ impl RenderOnce for Dialog {
         )
         .absolute()
         .inset_0();
+        let modal = self.modal.clone();
+        let scrim_probe = canvas(
+            |_, _, _| {},
+            move |bounds, (), _, _| {
+                modal.state.borrow_mut().scrim = Some(bounds);
+            },
+        )
+        .absolute()
+        .inset_0();
+        let corners = self.scrim_corners;
         // The body shrinks rather than pushing the footer past the panel's
         // bottom, where the guard would stop presses on its buttons.
+        let bare = self.bare;
         let body = (!self.children.is_empty()).then(|| {
             div()
                 .flex()
@@ -509,9 +597,7 @@ impl RenderOnce for Dialog {
                 .flex_1()
                 .min_h_0()
                 .overflow_hidden()
-                .gap(px(8.0))
-                .px(px(16.0))
-                .pb(px(14.0))
+                .when(!bare, |body| body.gap(px(8.0)).px(px(16.0)).pb(px(14.0)))
                 .children(self.children)
         });
         let mut panel = surface(tokens, size::PANEL_RADIUS)
@@ -535,7 +621,9 @@ impl RenderOnce for Dialog {
             .max_h_full()
             .text_size(size::TEXT_BODY)
             .text_color(tokens.fg)
-            .child(header(self.title, self.description, tokens))
+            .when(!bare, |panel| {
+                panel.child(header(self.title, self.description, tokens))
+            })
             .children(body)
             .children(footer(self.buttons, tokens))
             .child(probe);
@@ -551,10 +639,15 @@ impl RenderOnce for Dialog {
             .inset_0()
             .occlude()
             .bg(tokens.scrim())
+            .rounded_tl(corners.top_left)
+            .rounded_tr(corners.top_right)
+            .rounded_br(corners.bottom_right)
+            .rounded_bl(corners.bottom_left)
             .flex()
             .items_center()
             .justify_center()
             .p(px(16.0))
+            .child(scrim_probe)
             .child(panel)
             .into_any_element()
     }

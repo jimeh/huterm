@@ -49,7 +49,19 @@ pub(crate) enum Kind {
     /// A delete confirmation with Cancel and Delete, the action added
     /// first.
     Alert,
+    /// The delete confirmation opening on Delete rather than Cancel.
+    AlertOnAction,
+    /// A bare rename dialog: the owner's own heading and field, then the
+    /// footer's Cancel and Rename.
+    Bare,
+    /// The rename dialog in an area [`INSET`] points inside the host's
+    /// edges, as a client-drawn frame's content is, with an edge strip in
+    /// the margin below it, as a frame's resize edge is.
+    RenameInset,
 }
+
+/// How far [`Kind::RenameInset`]'s dialog area sits inside the host.
+const INSET: Pixels = px(40.0);
 
 type Log = Rc<RefCell<Vec<String>>>;
 
@@ -118,7 +130,7 @@ impl Owner {
                 });
             });
         let cancel = disable(cancel, "cancel");
-        if self.kind == Kind::Alert {
+        if matches!(self.kind, Kind::Alert | Kind::AlertOnAction) {
             let confirm = Button::new("confirm", "Delete", tokens())
                 .variant(Variant::Destructive)
                 .on_click(move |_, _| confirm_click());
@@ -132,12 +144,37 @@ impl Owner {
             .description("This cannot be undone.")
             .action(confirm, &self.confirm)
             .cancel(cancel, &self.cancel)
+            .when(self.kind == Kind::AlertOnAction, |alert| {
+                alert.initial_focus(&self.confirm)
+            })
             .into_any_element();
         }
         let confirm = Button::new("confirm", "Rename", tokens())
             .variant(Variant::Primary)
             .on_click(move |_, _| confirm_click());
         let confirm = disable(confirm, "confirm");
+        if self.kind == Kind::Bare {
+            return Dialog::new(
+                "dialog",
+                "Rename profile",
+                &self.modal,
+                tokens(),
+            )
+            .description("Profiles are listed by name.")
+            .bare()
+            .focusable(&self.field.focus_handle(cx))
+            .child(
+                div()
+                    .debug_selector(|| "content".to_owned())
+                    .child("Rename profile")
+                    .child(div().key_context(FIELD_CONTEXT).child(
+                        InputGroup::new("group", &self.field, tokens()),
+                    )),
+            )
+            .button(cancel, &self.cancel)
+            .button(confirm, &self.confirm)
+            .into_any_element();
+        }
         Dialog::new("dialog", "Rename profile", &self.modal, tokens())
             .description("Profiles are listed by name.")
             .focusable(&self.field.focus_handle(cx))
@@ -156,6 +193,40 @@ impl Owner {
                 dialog.initial_focus(&self.confirm)
             })
             .into_any_element()
+    }
+
+    /// The dialog in the area it covers: the host, or for
+    /// [`Kind::RenameInset`], the area inside the edge strip's margin.
+    fn mounted(&self, cx: &mut Context<'_, Self>) -> gpui::AnyElement {
+        let dialog = self.dialog(cx);
+        if self.kind == Kind::RenameInset {
+            div()
+                .absolute()
+                .inset(INSET)
+                .child(dialog)
+                .into_any_element()
+        } else {
+            dialog
+        }
+    }
+
+    /// [`Kind::RenameInset`]'s edge strip along the host's bottom, in the
+    /// margin outside the dialog's area.
+    fn edge(&self) -> impl IntoElement {
+        let (down, wheel) = (self.log.clone(), self.log.clone());
+        div()
+            .id("edge")
+            .absolute()
+            .left_0()
+            .bottom_0()
+            .w_full()
+            .h(INSET)
+            .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                down.borrow_mut().push("edge-down".to_owned());
+            })
+            .on_scroll_wheel(move |_, _, _| {
+                wheel.borrow_mut().push("edge-wheel".to_owned());
+            })
     }
 }
 
@@ -251,7 +322,10 @@ impl Render for Owner {
                         cx.notify();
                     })),
             )
-            .when(self.modal.is_open(), |root| root.child(self.dialog(cx)))
+            .when(self.kind == Kind::RenameInset, |root| {
+                root.child(self.edge())
+            })
+            .when(self.modal.is_open(), |root| root.child(self.mounted(cx)))
     }
 }
 
@@ -411,6 +485,23 @@ fn rename(cx: &mut TestAppContext) -> (Probe, &mut VisualTestContext) {
     owner(cx, Kind::Rename, &[])
 }
 
+/// A point on [`Kind::RenameInset`]'s edge strip, outside the scrim.
+fn on_the_edge() -> Point<Pixels> {
+    point(px(200.0), px(380.0))
+}
+
+/// Opens [`Kind::RenameInset`] and checks that its scrim painted where its
+/// area is, inside the edge strip.
+fn open_inset(probe: &Probe, cx: &mut VisualTestContext) {
+    probe.open(cx);
+    let scrim = probe
+        .owner
+        .read_with(cx, |owner, _| owner.modal.state.borrow().scrim)
+        .expect("the scrim painted");
+    assert_eq!(scrim.origin, point(INSET, INSET));
+    assert!(!scrim.contains(&on_the_edge()));
+}
+
 /// A wheel tick over `position`.
 fn wheel(cx: &mut VisualTestContext, position: Point<Pixels>) {
     cx.simulate_event(ScrollWheelEvent {
@@ -468,6 +559,55 @@ fn tab_and_shift_tab_cycle_within_the_dialog(cx: &mut TestAppContext) {
             Some("field")
         ]
     );
+}
+
+/// The name of the control the host's modal remembers as last focused.
+fn last_focused(
+    probe: &Probe,
+    cx: &mut VisualTestContext,
+) -> Option<&'static str> {
+    let last = probe
+        .owner
+        .read_with(cx, |owner, _| owner.modal.last_focused())?;
+    [
+        ("trigger", &probe.trigger),
+        ("field", &probe.field),
+        ("cancel", &probe.cancel),
+        ("confirm", &probe.confirm),
+    ]
+    .into_iter()
+    .find(|(_, handle)| **handle == last)
+    .map(|(name, _)| name)
+}
+
+#[gpui::test]
+fn the_modal_remembers_the_control_that_last_held_focus(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = rename(cx);
+    probe.open(cx);
+    press_tab(cx, false);
+    assert_eq!(focused(&probe, cx), Some("cancel"));
+    // Focus elsewhere in the window, as on a toast, leaves it remembered.
+    let trigger = probe.trigger.clone();
+    cx.update(|window, cx| trigger.focus(window, cx));
+    cx.run_until_parked();
+    assert_eq!(focused(&probe, cx), Some("trigger"));
+    assert_eq!(last_focused(&probe, cx), Some("cancel"));
+    // A control focused other than by Tab, as by a click, is remembered
+    // from the frame that draws it focused.
+    let confirm = probe.confirm.clone();
+    cx.update(|window, cx| confirm.focus(window, cx));
+    cx.run_until_parked();
+    assert_eq!(last_focused(&probe, cx), Some("confirm"));
+    // A control that leaves the dialog is not offered.
+    probe.disable(&["confirm"], cx);
+    assert_eq!(last_focused(&probe, cx), None);
+    probe.disable(&[], cx);
+    press_tab(cx, false);
+    assert_eq!(last_focused(&probe, cx), Some("field"));
+    probe.dismiss(Dismissal::Escape, cx);
+    assert_eq!(last_focused(&probe, cx), None);
 }
 
 #[gpui::test]
@@ -671,9 +811,69 @@ fn focus_enters_an_alert_whose_controls_are_all_disabled(
 }
 
 #[gpui::test]
+fn a_bare_dialog_draws_only_the_owners_content(cx: &mut TestAppContext) {
+    let (probe, cx) = owner(cx, Kind::Bare, &[]);
+    probe.open(cx);
+    let panel = probe
+        .owner
+        .read_with(cx, |owner, _| owner.modal.panel_bounds())
+        .expect("the panel painted");
+    let content = cx.debug_bounds("content").expect("the content drew");
+    // The panel's bounds are inside its border, where the content starts:
+    // no title and no body padding.
+    assert_eq!(content.origin, panel.origin);
+    assert_eq!(content.size.width, panel.size.width);
+    assert!(cx.debug_bounds("cancel").is_some(), "the footer drew");
+    assert_eq!(focused(&probe, cx), Some("field"));
+    cx.update(|window, _| {
+        let aria = &a11y_node(window, "dialog")["aria"];
+        assert_eq!(aria["role"], "Dialog");
+        assert_eq!(aria["label"], "Rename profile");
+        assert_eq!(aria["description"], "Profiles are listed by name.");
+        assert_eq!(aria["modal"], true);
+    });
+}
+
+#[gpui::test]
 fn opening_skips_a_disabled_chosen_button(cx: &mut TestAppContext) {
     let (probe, cx) = owner(cx, Kind::RenameOnButton, &[]);
     probe.disable(&["confirm"], cx);
     probe.open(cx);
     assert_eq!(focused(&probe, cx), Some("field"));
+}
+
+#[gpui::test]
+fn a_press_outside_the_scrim_reaches_what_is_there(cx: &mut TestAppContext) {
+    let (probe, cx) = owner(cx, Kind::RenameInset, &[]);
+    open_inset(&probe, cx);
+    click(cx, on_the_edge());
+    // The dialog has no say: it hears of no press and stays open.
+    assert_eq!(probe.log(), ["edge-down", "window-down"]);
+    assert!(probe.is_open(cx));
+}
+
+#[gpui::test]
+fn a_press_on_an_inset_scrim_is_stopped_and_reported(cx: &mut TestAppContext) {
+    let (probe, cx) = owner(cx, Kind::RenameInset, &[Dismissal::OutsidePress]);
+    open_inset(&probe, cx);
+    let panel = probe
+        .owner
+        .read_with(cx, |owner, _| owner.modal.panel_bounds())
+        .expect("the panel painted");
+    // On the scrim's margin, beside the panel.
+    let on_scrim = point(INSET + px(8.0), panel.center().y);
+    assert!(!panel.contains(&on_scrim));
+    click(cx, on_scrim);
+    assert_eq!(probe.log(), ["OutsidePress"]);
+    assert_eq!(focused(&probe, cx), Some("field"));
+}
+
+#[gpui::test]
+fn a_wheel_event_outside_the_scrim_reaches_what_is_there(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = owner(cx, Kind::RenameInset, &[]);
+    open_inset(&probe, cx);
+    wheel(cx, on_the_edge());
+    assert_eq!(probe.log(), ["edge-wheel", "window-wheel"]);
 }

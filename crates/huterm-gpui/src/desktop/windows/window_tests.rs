@@ -4478,23 +4478,26 @@ fn licenses_state(
 }
 
 impl DesktopHarness {
-    /// Whether `window`'s About panel shows with keyboard focus on `focus`.
-    fn about_focus(&mut self, window: AnyWindowHandle) -> Option<AboutFocus> {
-        self.update_view(window, |view, _, _| {
-            view.about.is_some().then_some(view.about_focus)
+    /// The About panel button that has focus in `window`, or `None` while
+    /// the panel is closed or none of its buttons has focus.
+    fn about_focus(&mut self, window: AnyWindowHandle) -> Option<AboutButton> {
+        self.update_view(window, |view, window, _| {
+            view.about
+                .as_ref()
+                .and_then(|_| view.about_buttons.focused(window))
         })
     }
 
-    /// The keyboard focus in `window`'s Licenses view, or `None` while it
-    /// is closed.
+    /// The control that has focus in `window`'s Licenses view, or `None`
+    /// while it is closed or none of its controls has focus.
     fn licenses_focus(
         &mut self,
         window: AnyWindowHandle,
     ) -> Option<LicensesFocus> {
-        self.update_view(window, |view, _, cx| {
+        self.update_view(window, |view, window, cx| {
             view.licenses
                 .as_ref()
-                .map(|licenses| licenses.read(cx).focus())
+                .and_then(|licenses| licenses.read(cx).focus(window, cx))
         })
     }
 }
@@ -4509,9 +4512,9 @@ fn about_buttons_take_keyboard_focus_and_enter_presses_the_focused_one(
     harness.wait_text(window, tab, "READY");
     harness.activate(window, tab);
     harness.invoke(window, ids::ABOUT).unwrap();
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Close));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Close));
     harness.press(window, "tab tab");
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Copy));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Copy));
     harness.press(window, "enter");
     let details = harness
         .update_view(window, |view, _, _| view.about.clone().unwrap().text());
@@ -4521,9 +4524,9 @@ fn about_buttons_take_keyboard_focus_and_enter_presses_the_focused_one(
             Some(details)
         );
     });
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Copy));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Copy));
     harness.press(window, "shift-tab shift-tab");
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Close));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Close));
     harness.press(window, "enter");
     assert_eq!(harness.about_focus(window), None);
     harness.wait_for("the terminal to take focus back", |cx| {
@@ -4580,7 +4583,7 @@ fn the_licenses_view_filters_selects_and_returns_to_about_without_terminal_input
     );
     harness.press(window, "escape");
     assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Licenses));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Licenses));
     harness.press(window, "escape");
     assert_eq!(harness.about_focus(window), None);
     harness.wait_for("the terminal to take focus back", |cx| {
@@ -4620,7 +4623,7 @@ fn the_licenses_view_says_when_this_build_has_no_notices(
     });
     harness.press(window, "escape");
     assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Licenses));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Licenses));
 }
 
 #[gpui::test]
@@ -4659,14 +4662,22 @@ fn licenses_buttons_take_keyboard_focus_and_enter_presses_the_focused_one(
     });
     harness.press(window, "shift-tab");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Website));
-    // Typing returns focus to the search; with no match, only Done follows.
+    // Typing on a button types into the search, which takes focus; with no
+    // match, only Done follows it.
     harness.press(window, "z");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
+    assert_eq!(
+        harness.cx.update(|cx| licenses_state(cx, window)),
+        Some(LicensesState::Ready {
+            matches: 0,
+            selected: None
+        })
+    );
     harness.press(window, "tab");
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Done));
     harness.press(window, "enter");
     assert_eq!(harness.cx.update(|cx| licenses_state(cx, window)), None);
-    assert_eq!(harness.about_focus(window), Some(AboutFocus::Licenses));
+    assert_eq!(harness.about_focus(window), Some(AboutButton::Licenses));
 }
 
 #[gpui::test]
@@ -4714,6 +4725,7 @@ fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
 }
 
 mod buttons;
+mod dialogs;
 mod layout_undo;
 mod menus;
 mod pane_drags;
