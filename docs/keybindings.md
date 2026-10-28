@@ -579,8 +579,9 @@ they are closed, `palette_page_up` and `palette_page_down` page through
 them, `palette_confirm` takes the highlighted one, and `palette_back`, like
 `palette_expand` in a `when` field, closes them before it acts on the field.
 The font field highlights nothing until you move, so `palette_confirm` saves
-the typed name. In an argument's number field, `palette_select_next` and
-`palette_select_previous` step it. In Keybindings, `settings_search`
+the typed name. Until you type in it, the font field's list shows every
+installed family, on the one it holds. In an argument's number field,
+`palette_select_next` and `palette_select_previous` step it. In Keybindings, `settings_search`
 focuses the section's own search, where `palette_confirm` moves to the first
 command, and `settings_reset` on a command restores its defaults. The window
 also reads `close_window`, `close_tab`, and `close_pane` as closing it, and

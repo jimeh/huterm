@@ -311,13 +311,12 @@ pub(super) struct SettingsView {
 }
 
 impl SettingsView {
-    fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
-        let model = SettingsModel::load()
-            .expect("tests keep the committed schema valid");
-        let desktop = cx.global::<Desktop>();
-        let path = desktop.config_path.clone();
-        let watching = desktop.config.general.watch_config;
-        let swatch = tokens(&desktop.config.theme);
+    /// The sidebar's search field: a tab stop whose every change scrolls
+    /// the pane back to its top.
+    fn search_field(
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Entity<Input> {
         let search = cx.new(|cx| {
             Input::new("settings-search", "Search settings", swatch, cx)
                 .with_placeholder("Search settings")
@@ -329,6 +328,17 @@ impl SettingsView {
             cx.notify();
         })
         .detach();
+        search
+    }
+
+    fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
+        let model = SettingsModel::load()
+            .expect("tests keep the committed schema valid");
+        let desktop = cx.global::<Desktop>();
+        let path = desktop.config_path.clone();
+        let watching = desktop.config.general.watch_config;
+        let swatch = tokens(&desktop.config.theme);
+        let search = Self::search_field(swatch, cx);
         let keys = Keys::new(swatch, cx);
         // While a shortcut records, its keys reach no binding, menu, or
         // field: the interceptor runs before GPUI matches the keymap.
@@ -514,8 +524,9 @@ impl SettingsView {
                     swatch,
                     cx,
                 );
-                // A template field sits in an input group.
-                if template {
+                // A template field, and the font family field with its
+                // chevron, sit in an input group.
+                if template || special(path) == Some(Special::FontPicker) {
                     input.with_chrome(Chrome::Grouped)
                 } else {
                     input
@@ -596,9 +607,10 @@ impl SettingsView {
         number
     }
 
-    /// The installed families under a font family field. Typing filters
-    /// them, and any name still saves; a pick saves the family as Enter
-    /// does.
+    /// The installed families under a font family field. Until the user
+    /// edits the field, the list shows every family on the one the field
+    /// shows; typing filters them, and any name still saves. A pick saves
+    /// the family as Enter does.
     pub(super) fn font_list(
         &mut self,
         setting: &'static Setting,
@@ -625,6 +637,7 @@ impl SettingsView {
                 window,
                 cx,
             )
+            .with_browse(move |_: &Input| families_matching(families, ""))
         });
         cx.subscribe(&list, move |view, _, event: &ComboboxEvent, cx| {
             let ComboboxEvent::Picked(family) = event;

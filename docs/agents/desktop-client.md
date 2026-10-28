@@ -727,9 +727,14 @@ rendering, as Settings does; it checks its field when it draws instead.
 Settings has two comboboxes. A keybinding's `when` field suggests context
 names with `with_auto_highlight(true)`, so Return completes the name before
 the caret; `Keys::completions` holds each list by its field's entity, which
-keeps it as the field moves between rows. The font family field suggests
-the installed families with no highlight, so Enter saves the typed name, and
-a pick saves the family through `commit_field`, as Enter does. The GPUI test
+keeps it as the field moves between rows; its rows draw names in the
+monospace font through `with_content`. The font family field suggests the
+installed families with no highlight, so Enter saves the typed name, and a
+pick saves the family through `commit_field`, as Enter does. Its
+`with_browse` list shows every family on the shown one until the user edits
+the field, and the chevron addon calls `toggle_browsing`; the chevron has no
+focus handle, so it is no tab stop, and carries the read-only reason itself,
+since a disabled `InputGroup` keeps a button's own reason. The GPUI test
 platform lists no installed fonts, so font tests set `set_families` before
 the Appearance section first draws. `run_list` routes the `Palette` field
 commands to the focused field's list first; the field's own behavior gets

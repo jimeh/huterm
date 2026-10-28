@@ -101,3 +101,32 @@ fn the_group_rings_for_its_fields_keyboard_focus(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.update(|window, cx| ring_drawn(&handle, window, cx)));
 }
+
+#[gpui::test]
+fn a_disabled_group_keeps_the_reason_its_owner_gave_a_button(
+    cx: &mut TestAppContext,
+) {
+    let input = cx.update(|cx| {
+        cx.new(|cx| {
+            let mut input = Input::new("size", "Size", tokens(), cx)
+                .with_chrome(Chrome::Grouped);
+            input.set_disabled(true, None, cx);
+            input
+        })
+    });
+    let (_, cx) = host(cx, move |_, _| {
+        InputGroup::new("group", &input, tokens())
+            .trailing(Addon::Button(
+                Button::new("open", "Open", tokens())
+                    .disabled(Some("Read-only".into())),
+            ))
+            .trailing(Addon::Button(Button::new("clear", "Clear", tokens())))
+            .into_any_element()
+    });
+    cx.update(|window, _| {
+        let open = &a11y_labelled(window, "Open")["aria"];
+        assert_eq!(open["disabled"], true);
+        assert_eq!(open["description"], "Read-only", "{open}");
+        assert_eq!(a11y_labelled(window, "Clear")["aria"]["disabled"], true);
+    });
+}

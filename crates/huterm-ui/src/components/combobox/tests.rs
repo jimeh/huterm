@@ -17,7 +17,8 @@ use crate::testing::{a11y_labelled, a11y_node, a11y_nodes, a11y_send, tokens};
 gpui::actions!(
     combobox_test,
     [
-        Next, Previous, PageDown, PageUp, First, Last, Confirm, Escape, Toggle
+        Next, Previous, PageDown, PageUp, First, Last, Confirm, Escape, Toggle,
+        Browse
     ]
 );
 
@@ -55,10 +56,23 @@ fn containing(
     }
 }
 
+/// Every one of `fonts`, as a font family field browses the installed
+/// families.
+fn every(fonts: Vec<String>) -> impl Fn(&Input) -> Vec<ListOption> + 'static {
+    move |_| {
+        fonts
+            .iter()
+            .map(|font| ListOption::new(font.to_lowercase(), font.clone()))
+            .collect()
+    }
+}
+
 /// How a test's owner is set up.
 #[derive(Clone, Copy, Default)]
 struct Setup {
     auto_highlight: bool,
+    /// Browses every font while the field holds a value.
+    browse: bool,
     /// Forty numbered fonts in place of [`FONTS`].
     many: bool,
     field: Field,
@@ -116,16 +130,21 @@ impl Owner {
         let filtered = Rc::new(Cell::new(0));
         let runs = filtered.clone();
         let combobox = cx.new(|cx| {
-            Combobox::new(
+            let combobox = Combobox::new(
                 "font-family",
                 "Font family",
                 &input,
                 tokens(),
-                containing(fonts, runs),
+                containing(fonts.clone(), runs),
                 window,
                 cx,
             )
-            .with_auto_highlight(setup.auto_highlight)
+            .with_auto_highlight(setup.auto_highlight);
+            if setup.browse {
+                combobox.with_browse(every(fonts))
+            } else {
+                combobox
+            }
         });
         let log = Log::default();
         let picks = log.clone();
@@ -219,6 +238,7 @@ impl Render for Owner {
         let keys = route::<First>(keys, Combobox::select_first, cx);
         let keys = route::<Last>(keys, Combobox::select_last, cx);
         let keys = route::<Toggle>(keys, Combobox::toggle, cx);
+        let keys = route::<Browse>(keys, Combobox::toggle_browsing, cx);
         div()
             .size_full()
             .relative()
@@ -315,6 +335,7 @@ fn setup(
             KeyBinding::new("enter", Confirm, context),
             KeyBinding::new("escape", Escape, context),
             KeyBinding::new("alt-down", Toggle, context),
+            KeyBinding::new("alt-up", Browse, context),
         ]);
     });
     // Blur reaches focus listeners only in an active window.
@@ -371,6 +392,16 @@ impl Probe {
 
     fn text(&self, cx: &mut VisualTestContext) -> String {
         cx.update(|_, cx| self.owner.read(cx).text(cx))
+    }
+
+    /// Writes `text` into the field as its owner does, such as a value it
+    /// shows.
+    fn write(&self, cx: &mut VisualTestContext, text: &'static str) {
+        let input = self.input(cx);
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| input.set_text(text, cx));
+        });
+        cx.run_until_parked();
     }
 
     fn field_focused(&self, cx: &mut VisualTestContext) -> bool {
@@ -942,4 +973,101 @@ fn a_wheel_over_the_list_scrolls_it_and_keeps_it_open(cx: &mut TestAppContext) {
     wheel(cx, list.center(), -100.0);
     assert!(probe.open(cx));
     assert!(!shows(cx, 0), "the list scrolled");
+}
+
+#[gpui::test]
+fn a_browsing_list_opens_on_every_suggestion_with_the_value_in_view(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            browse: true,
+            many: true,
+            ..Setup::default()
+        },
+    );
+    probe.write(cx, "Font 30");
+    let combobox = probe.combobox(cx);
+    let shows = |cx: &mut VisualTestContext, row: usize| {
+        cx.read(|cx| combobox.read(cx).list.shows(row))
+    };
+    for open in ["down", "up", "alt-down"] {
+        keys(cx, open);
+        deliver_frames(cx);
+        assert_eq!(probe.labels(cx).len(), 40, "{open} filtered the list");
+        assert_eq!(
+            probe.highlighted(cx).as_deref(),
+            Some("Font 30"),
+            "{open} missed the value"
+        );
+        assert!(shows(cx, 30), "{open} left the value out of view");
+        keys(cx, "escape");
+    }
+    // A value no suggestion has opens on the ends, as a filtered list does.
+    probe.write(cx, "Comic");
+    keys(cx, "down");
+    assert_eq!(probe.labels(cx).len(), 40);
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Font 00"));
+}
+
+#[gpui::test]
+fn an_edit_filters_a_browsing_list_until_a_pick_or_a_blur(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            browse: true,
+            ..Setup::default()
+        },
+    );
+    probe.write(cx, "");
+    type_text(cx, "mo");
+    assert_eq!(probe.labels(cx), probe_labels());
+    keys(cx, "escape down");
+    assert_eq!(probe.labels(cx), probe_labels(), "the edit was forgotten");
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Monaco"));
+    // The pick leaves a value in the field, which browses again.
+    keys(cx, "enter");
+    assert_eq!(probe.text(cx), "Monaco");
+    keys(cx, "down");
+    assert_eq!(probe.labels(cx), FONTS);
+    assert_eq!(probe.highlighted(cx).as_deref(), Some("Monaco"));
+    // So does the field taking focus again after an edit.
+    keys(cx, "escape");
+    type_text(cx, "x");
+    let other = cx.update(|_, cx| probe.owner.read(cx).other.clone());
+    cx.update(|window, cx| other.focus(window, cx));
+    cx.run_until_parked();
+    probe.focus_field(cx);
+    keys(cx, "down");
+    assert_eq!(probe.labels(cx), FONTS);
+}
+
+#[gpui::test]
+fn toggle_browsing_lists_every_suggestion_whatever_was_typed(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = setup(
+        cx,
+        Setup {
+            browse: true,
+            ..Setup::default()
+        },
+    );
+    probe.write(cx, "");
+    // Typing that matches nothing still browses.
+    type_text(cx, "zz");
+    assert!(!probe.open(cx));
+    keys(cx, "alt-up");
+    assert_eq!(probe.labels(cx), FONTS);
+    assert_eq!(probe.highlighted(cx), None);
+    keys(cx, "alt-up");
+    assert!(!probe.open(cx));
+    // The typed text counts as a value until the next edit.
+    keys(cx, "down");
+    assert_eq!(probe.labels(cx), FONTS);
+    type_text(cx, "x");
+    assert!(!probe.open(cx), "the edit browsed");
 }

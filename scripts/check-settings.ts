@@ -260,10 +260,12 @@ args = { layout = "smoke" }
     await key("up");
     await saved((text) => /\[font\]\nsize = 15(\.0)?\n/.test(text), "font size stepped in config.toml");
 
-    // The font family field saves a name no installed family has. Emptied,
-    // it suggests every installed family, highlighting none until Down; the
-    // first Escape closes the list and keeps focus, and the second puts back
-    // the saved name and leaves the field.
+    // The font family field saves a name no installed family has. Before an
+    // edit, Down lists every installed family on the one the field shows,
+    // which is macOS's default, Menlo. Emptied, it suggests every installed
+    // family, highlighting none until Down; the first Escape closes the list
+    // and keeps focus, and the second puts back the saved name and leaves the
+    // field.
     await key("search");
     await state("settings.focus=search");
     await key("select-all");
@@ -271,6 +273,11 @@ args = { layout = "smoke" }
     await state('settings.query="font family"');
     await key("enter");
     await state("settings.focus=font.family");
+    await key("down");
+    await state("settings.list=font.family", "settings.focus=font.family");
+    if (process.platform === "darwin") await state('settings.highlight="Menlo"');
+    await key("escape");
+    await state("settings.list=none", "settings.focus=font.family");
     await key("select-all");
     await typeText("Huterm Smoke Mono");
     await state("settings.list=none");

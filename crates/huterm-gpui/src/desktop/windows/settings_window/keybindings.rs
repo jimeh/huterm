@@ -8,12 +8,14 @@
 //! across reads while the file keeps its entries.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, Context, ElementId, Entity, EntityId, FocusHandle, Focusable,
-    Keystroke, SharedString, Subscription, Window, div, prelude::*, px,
+    AnyElement, App, Context, ElementId, Entity, EntityId, FocusHandle,
+    Focusable, Keystroke, SharedString, Subscription, Window, div, prelude::*,
+    px,
 };
 use huterm_protocol::{
     ArgumentKind, ArgumentSpec, CommandId, CommandSpec, NamedLayout,
@@ -22,7 +24,7 @@ use huterm_protocol::{
 use toml::Value;
 
 use super::super::super::key_hint::KeyHint;
-use super::super::super::overlay::{Swatch, mono_font_family};
+use super::super::super::overlay::{Swatch, mono_font_family, tokens};
 use super::super::super::settings::keybindings::{
     Binding, Context as WhenContext, Edit, Field, GROUPS, OVERLAYS,
     check_condition, completions, notes,
@@ -47,6 +49,7 @@ use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
 use huterm_ui::option_list::ListOption;
+use huterm_ui::tokens::size;
 
 /// How long the recorder waits for a chord's second stroke: GPUI's own
 /// chord timeout.
@@ -337,6 +340,42 @@ fn suggestions(field: &Input) -> Option<(usize, Vec<WhenContext>)> {
 
 /// A `when` field's suggestions: the contexts completing the name before
 /// the caret, each with its description.
+/// A context suggestion's row: its name in the monospace font, and its
+/// description as secondary text in the interface font.
+fn condition_row(
+    option: &ListOption,
+    highlighted: bool,
+    _: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let swatch = tokens(&cx.global::<Desktop>().config.theme);
+    let secondary = if highlighted {
+        swatch.muted_on(swatch.selection)
+    } else {
+        swatch.muted
+    };
+    div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .child(
+            div()
+                .truncate()
+                .font_family(mono_font_family())
+                .child(option.label.clone()),
+        )
+        .when_some(option.description.clone(), |row, description| {
+            row.child(
+                div()
+                    .truncate()
+                    .text_size(size::TEXT_SMALL)
+                    .text_color(secondary)
+                    .child(description),
+            )
+        })
+        .into_any_element()
+}
+
 fn condition_suggestions(field: &Input) -> Vec<ListOption> {
     suggestions(field).map_or_else(Vec::new, |(_, matches)| {
         matches
@@ -1027,7 +1066,8 @@ impl SettingsView {
 
     /// The context suggestions under a `when` field. The first match is
     /// highlighted as the user types, so Return completes it; a pick
-    /// replaces the name before the caret.
+    /// replaces the name before the caret. Names draw in the monospace font
+    /// the field takes them in.
     fn condition_list(
         &mut self,
         field: &Entity<Input>,
@@ -1047,6 +1087,7 @@ impl SettingsView {
                 cx,
             )
             .with_auto_highlight(true)
+            .with_content(Rc::new(condition_row))
         });
         let field = field.downgrade();
         cx.subscribe(&list, move |_, _, event: &ComboboxEvent, cx| {

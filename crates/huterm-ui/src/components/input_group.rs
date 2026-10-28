@@ -20,9 +20,10 @@
 //!
 //! States: the group follows its field. A disabled field dims the whole
 //! group and disables every addon button, and a press anywhere in it
-//! takes no focus; an invalid field draws the group's border in the danger
-//! color. A read-only field leaves its addons to the owner, which disables
-//! the buttons that would edit it.
+//! takes no focus, keeping the reason an owner gave a button it disabled
+//! itself; an invalid field draws the group's border in the danger color. A
+//! read-only field leaves its addons to the owner, which disables the
+//! buttons that would edit it.
 //!
 //! Accessibility: the field reports itself; text and icon addons are
 //! presentation, so a unit belongs in the field's label or description,
@@ -164,7 +165,8 @@ fn addon(
             .into_any_element(),
         Addon::Button(button) => {
             let button = button.small();
-            let button = if enabled {
+            // A button its owner disabled keeps its own reason.
+            let button = if enabled || button.is_disabled() {
                 button
             } else {
                 button.disabled(None)

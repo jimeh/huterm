@@ -13,7 +13,7 @@ use super::settings::{
     ScratchConfig, open_settings, settled, with_view, with_window,
 };
 use super::settings_controls::{
-    a11y_find, a11y_node, break_file, focus, keys, visual,
+    a11y_click, a11y_find, a11y_node, break_file, focus, keys, visual,
 };
 use super::*;
 
@@ -22,6 +22,9 @@ use super::*;
 const FAMILIES: &[&str] = &["Fira Code", "Fira Mono", "Menlo", "Monaco"];
 
 const FAMILY: &str = "font.family";
+
+/// The font family field's chevron.
+const CHEVRON: &str = "settings-fonts-font.family";
 
 /// The platform's select-all key, as the default keymap binds it in fields.
 const SELECT_ALL: &str = if cfg!(target_os = "macos") {
@@ -338,6 +341,12 @@ fn type_over(harness: &DesktopHarness, text: &str) {
     typed(harness, text);
 }
 
+/// Presses the font family field's chevron, as a pointer does.
+fn press_chevron(harness: &mut DesktopHarness) {
+    let chevron = a11y_node(harness, CHEVRON);
+    a11y_click(harness, &chevron);
+}
+
 fn saved(harness: &mut DesktopHarness, file: &ScratchConfig, family: &str) {
     let expected = format!("[font]\nfamily = \"{family}\"\n");
     harness.wait_for("the family save", |cx| {
@@ -452,11 +461,14 @@ fn the_font_field_is_one_combobox_without_an_installed_select(
     let file = ScratchConfig::new("lists-font-one", "");
     let mut harness = DesktopHarness::new(cx);
     font_field(&mut harness, &file);
-    let labelled = |harness: &mut DesktopHarness, label: &str| {
-        a11y_find(harness, |node| node["aria"]["label"] == label)
+    let labelled = |harness: &mut DesktopHarness, role: &str| {
+        a11y_find(harness, |node| {
+            node["aria"]["label"] == "Installed fonts"
+                && node["aria"]["role"] == role
+        })
     };
     assert!(
-        labelled(&mut harness, "Installed fonts").is_none(),
+        labelled(&mut harness, "ComboBox").is_none(),
         "the Installed select still shows"
     );
     let id = format!("settings-field-{FAMILY}");
@@ -468,9 +480,10 @@ fn the_font_field_is_one_combobox_without_an_installed_select(
     let field = aria(&mut harness, &id);
     assert_eq!(field["expanded"], true, "{field}");
     assert_eq!(field["description"], "Fira Code", "{field}");
-    let suggestions = labelled(&mut harness, "Installed fonts")
-        .expect("the suggestions' list");
-    assert_eq!(suggestions["aria"]["role"], "ListBox", "{suggestions}");
+    assert!(
+        labelled(&mut harness, "ListBox").is_some(),
+        "the suggestions' list"
+    );
     let list = font_list(&mut harness);
     assert_eq!(shown(&mut harness, &list).1, FAMILIES);
 }
@@ -496,6 +509,123 @@ fn a_read_only_font_field_shows_no_suggestions(cx: &mut TestAppContext) {
     assert!(!shown(&mut harness, &list).0, "a read-only field opened it");
     let field = aria(&mut harness, &format!("settings-field-{FAMILY}"));
     assert_eq!(field["expanded"], false, "{field}");
+    // The chevron is disabled with the field's reason, and opens nothing.
+    let chevron = aria(&mut harness, CHEVRON);
+    assert_eq!(chevron["disabled"], true, "{chevron}");
+    assert_eq!(
+        chevron["description"], "Read-only until config.toml is fixed",
+        "{chevron}"
+    );
+    press_chevron(&mut harness);
+    assert!(!shown(&mut harness, &list).0, "the chevron opened it");
     assert!(harness.cx.update(settled));
     assert_eq!(file.text(), broken);
+}
+
+#[gpui::test]
+fn down_lists_every_font_on_the_current_one_before_an_edit(
+    cx: &mut TestAppContext,
+) {
+    let file =
+        ScratchConfig::new("lists-font-browse", "[font]\nfamily = \"Menlo\"\n");
+    let mut harness = DesktopHarness::new(cx);
+    font_field(&mut harness, &file);
+    let list = font_list(&mut harness);
+    let every = || FAMILIES.iter().map(|family| (*family).to_owned()).collect();
+    keys(&harness, "down");
+    assert_eq!(
+        shown(&mut harness, &list),
+        (true, every(), Some("Menlo".into()))
+    );
+    keys(&harness, "escape up");
+    assert_eq!(
+        shown(&mut harness, &list),
+        (true, every(), Some("Menlo".into()))
+    );
+    assert_eq!(field_text(&mut harness), "Menlo");
+}
+
+#[gpui::test]
+fn typing_filters_the_fonts_until_a_pick_shows_a_value_again(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("lists-font-filter", "");
+    let mut harness = DesktopHarness::new(cx);
+    font_field(&mut harness, &file);
+    let list = font_list(&mut harness);
+    let fira = vec!["Fira Code".to_owned(), "Fira Mono".to_owned()];
+    type_over(&harness, "Fira");
+    assert_eq!(shown(&mut harness, &list), (true, fira.clone(), None));
+    // Reopening keeps the typed filter.
+    keys(&harness, "escape down");
+    assert_eq!(
+        shown(&mut harness, &list),
+        (true, fira, Some("Fira Code".into()))
+    );
+    keys(&harness, "down enter");
+    saved(&mut harness, &file, "Fira Mono");
+    // The picked family is a value, so Down lists every family again.
+    keys(&harness, "down");
+    let (open, labels, highlight) = shown(&mut harness, &list);
+    assert!(open);
+    assert_eq!(labels, FAMILIES);
+    assert_eq!(highlight.as_deref(), Some("Fira Mono"));
+}
+
+#[gpui::test]
+fn the_font_chevron_toggles_every_font_and_keeps_focus_in_the_field(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "lists-font-chevron",
+        "[font]\nfamily = \"Menlo\"\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    font_field(&mut harness, &file);
+    let list = font_list(&mut harness);
+    let blurs = count_blurs(&mut harness);
+    let every: Vec<String> =
+        FAMILIES.iter().map(|family| (*family).to_owned()).collect();
+    press_chevron(&mut harness);
+    assert_eq!(
+        shown(&mut harness, &list),
+        (true, every.clone(), Some("Menlo".into()))
+    );
+    assert_eq!(aria(&mut harness, CHEVRON)["expanded"], true);
+    assert_eq!(blurs.get(), 0, "the chevron blurred the field");
+    assert_eq!(focus(&mut harness), FAMILY);
+    press_chevron(&mut harness);
+    assert!(!shown(&mut harness, &list).0, "a second press left it open");
+    // The chevron lists every family whatever the user typed.
+    type_over(&harness, "Fira");
+    keys(&harness, "escape");
+    press_chevron(&mut harness);
+    assert_eq!(shown(&mut harness, &list), (true, every.clone(), None));
+    press_chevron(&mut harness);
+    assert_eq!(blurs.get(), 0, "the chevron blurred the field");
+    assert_eq!(focus(&mut harness), FAMILY);
+    // Escape puts back the value and leaves the field; from elsewhere, the
+    // chevron focuses the field again.
+    keys(&harness, "escape");
+    assert_ne!(focus(&mut harness), FAMILY);
+    press_chevron(&mut harness);
+    assert_eq!(focus(&mut harness), FAMILY);
+    assert_eq!(
+        shown(&mut harness, &list),
+        (true, every, Some("Menlo".into()))
+    );
+    assert!(harness.cx.update(settled));
+    assert_eq!(file.text(), "[font]\nfamily = \"Menlo\"\n");
+}
+
+#[gpui::test]
+fn the_font_chevron_is_not_a_tab_stop(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("lists-font-tab", "");
+    let mut harness = DesktopHarness::new(cx);
+    font_field(&mut harness, &file);
+    // Tab passes the chevron for the next setting, and back.
+    keys(&harness, "tab");
+    assert_eq!(focus(&mut harness), "font.size");
+    keys(&harness, "shift-tab");
+    assert_eq!(focus(&mut harness), FAMILY);
 }
