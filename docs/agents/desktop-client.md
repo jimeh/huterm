@@ -110,10 +110,17 @@ clears a shared zoom inside the arrangement's own event, so undo keeps it.
 Arrangements never set `busy`, which would drop keystrokes and make reconcile
 defer membership changes an arrangement does not make. A per-window count of
 arrangements in flight instead makes `check_available` refuse, as `busy`
-does, refuses divider presses and resize commands, and leaves terminal input
-and reconcile alone; a repeated layout key while one is in flight does
-nothing. Each completion waits for the projection to reach its commit's
-sequence before recording through `record_layout_change`, which ignores a
+does and refuses divider presses and pane drags, and leaves terminal input
+and reconcile alone. Binding paths that skip `check_available` check the
+count themselves: a layout, undo, resize, pane focus, or zoom key, or a
+title bar zoom, pressed while one is in flight does nothing, quietly, so a
+held key raises no notices. A commit the runtime refuses or finds empty
+gives the view back the zoom it cleared, unless focus or the zoom moved
+meanwhile. The real grids decide `fit`: an ideal arrangement that passes
+is kept, and minimum extents are exact rather than whole physical pixels,
+because a fractional scale leaves dividers off the pixel grid. Each
+completion waits for the projection to reach its commit's sequence before
+recording through `record_layout_change`, which ignores a
 completion older than the window's newest entry, because a drop from a drag
 that started earlier can complete first. Tier 2 tests order other work
 against `worker_hooks::Stage::Layout`, before each queue job's runtime call,

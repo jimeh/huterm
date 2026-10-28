@@ -1272,6 +1272,18 @@ None.
 
 Recorded with PR 2:
 
+- `fit` keeps an ideal arrangement whose real grids already pass, computes
+  each pane's minimum extent exactly by bisection against the real grid
+  instead of in whole physical pixels, and calls `Fits` whatever the real
+  grids accept. Its nudge moves a short child's boundary in quarter
+  physical pixels, up to three, rather than one whole pixel once: at 1.25×
+  and 1.5× the single valid boundary position lies between whole-pixel
+  steps, and the review reproduced refusals of layouts that fit.
+- The in-flight gate also covers the binding paths that never call
+  `check_available`: layout, undo, resize, pane focus, and zoom keys, and
+  the title bar zoom, are taken quietly while an arrangement is in flight,
+  and pane drags do not start. A refused or empty commit restores the
+  cleared zoom only while focus is still on that pane.
 - Notices name a built-in layout by its title in lower case: "Window too
   small for the main left layout" and "The equal columns layout holds at
   most 256 panes", where the plan's example said "the columns layout". The

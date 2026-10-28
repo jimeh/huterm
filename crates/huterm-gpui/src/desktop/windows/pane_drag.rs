@@ -191,6 +191,7 @@ impl WorkspaceView {
     fn can_drag_panes(&self, cx: &App) -> bool {
         let desktop = cx.global::<Desktop>();
         !self.busy
+            && self.arrangements == 0
             && !self.overlay_holds_focus()
             && !desktop.quitting
             && !desktop.quit_pending

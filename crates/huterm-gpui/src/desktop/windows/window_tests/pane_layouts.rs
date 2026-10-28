@@ -495,13 +495,31 @@ fn an_arrangement_in_flight_refuses_structure_but_not_typing(
             "{command}: {refused:?}"
         );
     }
-    // A binding's resize is refused too; a repeated cycle key is taken
-    // quietly and queues nothing.
-    assert!(harness.invoke(window, ids::RESIZE_PANE_RIGHT).is_err());
-    assert!(matches!(
-        harness.invoke(window, ids::NEXT_PANE_LAYOUT),
-        Ok(CommandOutcome::Completed)
-    ));
+    // Keys that would act on the layout being replaced are taken quietly
+    // and change nothing: a repeated cycle key, undo, a resize, a focus
+    // move, and a zoom, from a binding or the title bar.
+    for command in [
+        ids::NEXT_PANE_LAYOUT,
+        ids::UNDO,
+        ids::RESIZE_PANE_RIGHT,
+        ids::FOCUS_NEXT_PANE,
+        ids::FOCUS_PANE_RIGHT,
+        ids::TOGGLE_PANE_ZOOM,
+    ] {
+        assert!(
+            matches!(
+                harness.invoke(window, command),
+                Ok(CommandOutcome::Completed)
+            ),
+            "{command}"
+        );
+    }
+    harness.toggle_zoom(window, tab, panes[1]);
+    harness.cx.update(|cx| {
+        assert!(pane_focused(cx, window, tab, panes[0]));
+        assert_eq!(shown_zoom(cx, window, tab), None);
+        assert_eq!(notices(cx, window), Vec::<String>::new());
+    });
     // A divider press starts no drag.
     let start = harness.divider_center(window);
     let mut visual = VisualTestContext::from_window(window, &harness.cx);

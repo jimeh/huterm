@@ -161,18 +161,6 @@ impl Refusal {
 }
 
 impl WorkspaceView {
-    /// Refuses a command that would compute from a layout an arrangement
-    /// of this window is about to replace.
-    pub(super) fn check_no_arrangement(&self) -> Result<(), CommandError> {
-        if self.arrangements > 0 {
-            Err(CommandError::Unavailable(
-                "pane arrangement in progress".to_owned(),
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
     /// Whether a layout command can run now: nothing structural, no
     /// confirmation, and no arrangement in flight, on a tab of two or more
     /// panes.
@@ -301,8 +289,9 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         let Some(workspace) = self.workspace_id(cx) else {
-            if matches!(commit, LayoutCommit::Arrange(_)) {
+            if let LayoutCommit::Arrange(arrange) = commit {
                 self.arrangements = self.arrangements.saturating_sub(1);
+                self.restore_zoom(arrange.tab, arrange.zoomed, window, cx);
             }
             return;
         };
@@ -412,7 +401,8 @@ impl WorkspaceView {
 
 impl WorkspaceView {
     /// Zooms `pane` in `tab` again after an arrangement that changed
-    /// nothing, unless the pane left the tab or the view zoomed meanwhile.
+    /// nothing, unless the pane left the tab, the view zoomed meanwhile, or
+    /// focus moved to another pane, which the zoom would pull it back from.
     fn restore_zoom(
         &mut self,
         tab: TabId,
@@ -430,6 +420,7 @@ impl WorkspaceView {
         if view.zoomed.is_none()
             && view.panes.len() > 1
             && view.pane(pane).is_some()
+            && view.focused().pane == pane
         {
             view.zoomed = Some(pane);
             self.sync_zoom(window, cx);

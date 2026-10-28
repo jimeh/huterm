@@ -1033,6 +1033,11 @@ fn an_arrange_panes_shortcut_picks_its_layout_from_the_built_ins(
                 "Tiled"
             ]
         );
+        // The titles are labels only: each item writes the layout's name.
+        assert_eq!(
+            view.menu_ids(cx)[1..],
+            ["columns", "rows", "main_left", "main_top", "tiled"]
+        );
     });
     with_window(&mut harness, |view, window, cx| {
         view.dismiss_menu(window, cx);

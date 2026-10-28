@@ -398,9 +398,10 @@ impl PaneMetrics {
 /// short. A child that boundary snapping leaves a physical pixel short
 /// moves its boundary one physical pixel toward the neighbour with the
 /// most room, at most once per boundary. When the minimums do not fit,
-/// the children share the space in proportion to them and the result is
-/// [`Fit::Short`]. The real geometry decides: the fitted layout's grids
-/// must pass the check a split preflight uses.
+/// the children share the space in proportion to them. The real geometry
+/// decides: an arrangement whose grids pass the check a split preflight
+/// uses is [`Fit::Fits`], the ideal one unchanged when it already passes,
+/// and any other is [`Fit::Short`].
 pub(super) fn fit(
     layout: &PaneLayout,
     arrangement: &Arrangement,
@@ -408,36 +409,40 @@ pub(super) fn fit(
     scale: f32,
     metrics: PaneMetrics,
 ) -> Fit {
-    let minimums = Minimums::new(metrics, scale);
-    let mut short = false;
-    let fitted = fit_node(arrangement, content, scale, &minimums, &mut short);
-    let fits = layout
-        .arranged(&fitted, probe_splits())
-        .is_ok_and(|placed| {
-            let grids: Vec<_> = layout_panes(&placed, content, scale, None)
-                .panes
-                .iter()
-                .map(|rect| (rect.pane, metrics.grid(rect.terminal.size)))
-                .collect();
-            fits_minimum(&grids)
-        });
-    if fits && !short {
+    let holds = |arrangement: &Arrangement| {
+        layout
+            .arranged(arrangement, probe_splits())
+            .is_ok_and(|placed| {
+                let grids: Vec<_> = layout_panes(&placed, content, scale, None)
+                    .panes
+                    .iter()
+                    .map(|rect| (rect.pane, metrics.grid(rect.terminal.size)))
+                    .collect();
+                fits_minimum(&grids)
+            })
+    };
+    if holds(arrangement) {
+        return Fit::Fits(arrangement.clone());
+    }
+    let minimums = Minimums::new(metrics);
+    let fitted = fit_node(arrangement, content, scale, &minimums);
+    if holds(&fitted) {
         Fit::Fits(fitted)
     } else {
         Fit::Short(fitted)
     }
 }
 
-/// The smallest pane frame that holds the minimum grid on each axis, in
-/// whole physical pixels, title bar included.
+/// The smallest pane frame that holds the minimum grid on each axis, title
+/// bar included, exactly rather than rounded to physical pixels: at a
+/// fractional scale the dividers leave child extents off the pixel grid.
 struct Minimums {
     width: Pixels,
     height: Pixels,
 }
 
 impl Minimums {
-    fn new(metrics: PaneMetrics, scale: f32) -> Self {
-        let pixel = px(1.0 / if scale > 0.0 { scale } else { 1.0 });
+    fn new(metrics: PaneMetrics) -> Self {
         let large = px(1_000_000.0);
         let columns = |width: Pixels| {
             metrics.grid(size(width, large)).columns >= MIN_PANE_COLUMNS
@@ -451,16 +456,12 @@ impl Minimums {
             width: smallest(
                 padding(metrics.window.padding_x)
                     + metrics.cell.width * f32::from(MIN_PANE_COLUMNS),
-                scale,
-                pixel,
                 columns,
             ),
             height: smallest(
                 TITLE_BAR_HEIGHT
                     + padding(metrics.window.padding_y)
                     + metrics.cell.height * f32::from(MIN_PANE_ROWS),
-                scale,
-                pixel,
                 rows,
             ),
         }
@@ -493,22 +494,23 @@ impl Minimums {
     }
 }
 
-/// The smallest whole-physical-pixel extent near `estimate` for which
-/// `holds` is true, checked against the real grid rather than trusted.
-fn smallest(
-    estimate: Pixels,
-    scale: f32,
-    pixel: Pixels,
-    holds: impl Fn(Pixels) -> bool,
-) -> Pixels {
-    let mut extent = px((f32::from(estimate) * scale).ceil() / scale.max(1e-3));
-    while !holds(extent) {
-        extent += pixel;
+/// The smallest extent for which `holds` is true, found by bisection
+/// against the real grid from `estimate` rather than trusted.
+fn smallest(estimate: Pixels, holds: impl Fn(Pixels) -> bool) -> Pixels {
+    let mut high = estimate.max(px(1.0));
+    while !holds(high) {
+        high *= 2.0;
     }
-    while extent > pixel && holds(extent - pixel) {
-        extent -= pixel;
+    let mut low = px(0.0);
+    for _ in 0..32 {
+        let middle = (low + high) / 2.0;
+        if holds(middle) {
+            high = middle;
+        } else {
+            low = middle;
+        }
     }
-    extent
+    high
 }
 
 fn fit_node(
@@ -516,7 +518,6 @@ fn fit_node(
     bounds: Bounds<Pixels>,
     scale: f32,
     minimums: &Minimums,
-    short: &mut bool,
 ) -> Arrangement {
     let Arrangement::Split { axis, children } = node else {
         return node.clone();
@@ -549,7 +550,6 @@ fn fit_node(
         let weights = water_fill(&ideal, &needs, available);
         nudge(weights, &needs, scale, available, extents)
     } else {
-        *short = true;
         let parts: Vec<f64> = needs
             .iter()
             .map(|need| f64::from(f32::from(*need)))
@@ -563,7 +563,7 @@ fn fit_node(
             .into_iter()
             .zip(children.iter().zip(spans))
             .map(|(weight, ((_, child), span))| {
-                (weight, fit_node(child, span, scale, minimums, short))
+                (weight, fit_node(child, span, scale, minimums))
             })
             .collect(),
     }
@@ -616,9 +616,11 @@ fn water_fill(ideal: &[u32], needs: &[Pixels], available: Pixels) -> Vec<u32> {
     }
 }
 
-/// Moves each boundary beside a child that snapping left under its
-/// minimum one physical pixel toward the neighbour with the most room
-/// above its own, at most once per boundary.
+/// Moves the boundary beside each child that snapping left under its
+/// minimum toward the neighbour with the most room above its own, in
+/// quarter physical pixels and at most three pixels, until the child holds
+/// its minimum. A move that would leave the neighbour under its own
+/// minimum is not made, and each boundary moves for one child only.
 fn nudge(
     mut weights: Vec<u32>,
     needs: &[Pixels],
@@ -633,20 +635,21 @@ fn nudge(
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "one physical pixel of a positive extent is a small share"
+        reason = "a quarter physical pixel of a positive extent is a small share"
     )]
-    let step = (pixel / f64::from(f32::from(available))
+    let step = ((pixel / 4.0) / f64::from(f32::from(available))
         * f64::from(SPLIT_TOTAL))
-    .ceil() as u32;
+    .ceil()
+    .max(1.0) as u32;
+    let room = |weights: &[u32], index: usize| {
+        extents(weights)
+            .get(index)
+            .zip(needs.get(index))
+            .map(|(have, need)| f32::from(*have - *need))
+    };
     let mut moved = vec![false; weights.len().saturating_sub(1)];
     for child in 0..weights.len() {
-        let have = extents(&weights);
-        let room = |index: usize| {
-            have.get(index)
-                .zip(needs.get(index))
-                .map(|(have, need)| f32::from(*have - *need))
-        };
-        if room(child).is_none_or(|room| room >= 0.0) {
+        if room(&weights, child).is_none_or(|room| room >= 0.0) {
             continue;
         }
         // The boundary before the child gives way toward its previous
@@ -655,9 +658,13 @@ fn nudge(
         let before = child
             .checked_sub(1)
             .filter(|boundary| open(*boundary))
-            .and_then(|boundary| Some((boundary, boundary, room(boundary)?)));
+            .and_then(|boundary| {
+                Some((boundary, boundary, room(&weights, boundary)?))
+            });
         let after = Some(child).filter(|boundary| open(*boundary)).and_then(
-            |boundary| Some((boundary, boundary + 1, room(boundary + 1)?)),
+            |boundary| {
+                Some((boundary, boundary + 1, room(&weights, boundary + 1)?))
+            },
         );
         let Some((boundary, giver, _)) = [before, after]
             .into_iter()
@@ -666,14 +673,27 @@ fn nudge(
         else {
             continue;
         };
-        let spare = weights.get(giver).is_some_and(|weight| *weight > step);
-        if spare && let Some(slot) = moved.get_mut(boundary) {
+        if let Some(slot) = moved.get_mut(boundary) {
             *slot = true;
-            if let Some(weight) = weights.get_mut(giver) {
+        }
+        let mut trial = weights.clone();
+        for _ in 0..12 {
+            let spare = trial.get(giver).is_some_and(|weight| *weight > step);
+            if !spare {
+                break;
+            }
+            if let Some(weight) = trial.get_mut(giver) {
                 *weight -= step;
             }
-            if let Some(weight) = weights.get_mut(child) {
+            if let Some(weight) = trial.get_mut(child) {
                 *weight += step;
+            }
+            if room(&trial, giver).is_some_and(|room| room < 0.0) {
+                break;
+            }
+            if room(&trial, child).is_some_and(|room| room >= 0.0) {
+                weights = trial;
+                break;
             }
         }
     }

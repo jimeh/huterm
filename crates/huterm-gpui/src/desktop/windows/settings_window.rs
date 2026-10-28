@@ -1537,6 +1537,21 @@ impl SettingsView {
         })
     }
 
+    /// The open menu's item identities, in order: what a pick writes.
+    pub(super) fn menu_ids(&self, cx: &App) -> Vec<&'static str> {
+        self.menu.as_ref().map_or_else(Vec::new, |(menu, _, _)| {
+            menu.read(cx)
+                .model()
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    MenuRow::Item(item) => Some(item.id),
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
     /// Opens a shortcut argument's menu, as a press on its control does.
     pub(super) fn open_key_argument(
         &mut self,

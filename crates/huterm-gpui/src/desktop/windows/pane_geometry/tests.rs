@@ -549,3 +549,65 @@ fn balancing_twice_at_one_size_fits_the_same_weights() {
     let twice = fit(&balanced, &balanced.balanced(), content, scale, metrics);
     assert_eq!(once, twice);
 }
+
+#[test]
+fn fractional_scales_fit_whenever_some_weights_hold_the_minimums() {
+    // Two panes on each axis, at extents around where they stop fitting,
+    // checked against every weight a coarse sweep can reach through the
+    // real grids: if any holds the minimum, `fit` must find one, and what
+    // it calls fitting must hold it.
+    for scale in [1.25_f32, 1.5] {
+        for padding in [(0.0, 0.0), (3.3, 1.7)] {
+            let metrics = metrics(scale, padding);
+            for axis in [SplitAxis::Columns, SplitAxis::Rows] {
+                let layout = PaneLayout::new(split(
+                    10,
+                    axis,
+                    vec![(500_000, pane(1)), (500_000, pane(2))],
+                ))
+                .unwrap();
+                let ideal = layout.balanced();
+                let start = match axis {
+                    SplitAxis::Columns => 56.0,
+                    SplitAxis::Rows => 104.0,
+                };
+                for step in 0..60_u16 {
+                    let extent = start + f32::from(step) * 0.2;
+                    let content = match axis {
+                        SplitAxis::Columns => rect(0.0, 28.0, extent, 400.0),
+                        SplitAxis::Rows => rect(0.0, 28.0, 400.0, extent),
+                    };
+                    let holds = |first: u32| {
+                        let candidate = layout
+                            .with_weights(
+                                SplitId::in_runtime(RUNTIME, 10),
+                                &node_ids(root_split(&layout)),
+                                &[first, SPLIT_TOTAL - first],
+                            )
+                            .unwrap();
+                        fits_minimum(&grids(
+                            &candidate, content, scale, metrics,
+                        ))
+                    };
+                    let possible = (1..1_000).any(|n| holds(n * 1_000));
+                    let fitted = fit(&layout, &ideal, content, scale, metrics);
+                    let label = format!(
+                        "{scale}x, padding {padding:?}, {axis:?} {extent}"
+                    );
+                    if possible {
+                        assert!(matches!(fitted, Fit::Fits(_)), "{label}");
+                    }
+                    if matches!(fitted, Fit::Fits(_)) {
+                        let after = grids(
+                            &placed(&layout, &fitted),
+                            content,
+                            scale,
+                            metrics,
+                        );
+                        assert!(fits_minimum(&after), "{label}");
+                    }
+                }
+            }
+        }
+    }
+}

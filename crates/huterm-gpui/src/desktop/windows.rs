@@ -4418,6 +4418,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // A zoom set while an arrangement is in flight would hide the
+        // layout it lands, or, shared, could land first and be cleared.
+        if self.arrangements > 0 {
+            return;
+        }
         let zoomed = self
             .tabs
             .iter()
@@ -4799,7 +4804,9 @@ impl WorkspaceView {
     ) -> Result<CommandOutcome, CommandError> {
         // Its weights would come from the layout the arrangement replaces
         // and land after it.
-        self.check_no_arrangement()?;
+        if self.arrangements > 0 {
+            return Ok(CommandOutcome::Completed);
+        }
         let (tab, pane) = self.focused_pane(cx)?;
         self.cancel_divider_drag(cx);
         let (axis, leading) = match direction {
@@ -7888,6 +7895,26 @@ impl WorkspaceView {
             .integer("amount")
             .and_then(|amount| u16::try_from(amount).ok())
             .map_or(5.0, f32::from);
+        // Focus, resize, and zoom would act on the layout an arrangement of
+        // this window is about to replace. A key pressed meanwhile does
+        // nothing, as a layout key does, so a held key stays quiet.
+        let follows_layout = matches!(
+            invocation.id,
+            ids::FOCUS_NEXT_PANE
+                | ids::FOCUS_PREVIOUS_PANE
+                | ids::FOCUS_PANE_LEFT
+                | ids::FOCUS_PANE_RIGHT
+                | ids::FOCUS_PANE_UP
+                | ids::FOCUS_PANE_DOWN
+                | ids::RESIZE_PANE_LEFT
+                | ids::RESIZE_PANE_RIGHT
+                | ids::RESIZE_PANE_UP
+                | ids::RESIZE_PANE_DOWN
+                | ids::TOGGLE_PANE_ZOOM
+        );
+        if follows_layout && self.arrangements > 0 {
+            return Ok(CommandOutcome::Completed);
+        }
         match invocation.id {
             ids::SPLIT_RIGHT => self.split_pane(Right, window, cx),
             ids::SPLIT_DOWN => self.split_pane(Down, window, cx),
