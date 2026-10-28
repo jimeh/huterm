@@ -1,7 +1,7 @@
 # UI components
 
 Status: in progress. Step 1 (the foundation), the components of steps 2, 3,
-4, and 6, and migrations 2a (Settings selects), 2b (terminal-window menus),
+4, 6, and 7, and migrations 2a (Settings selects), 2b (terminal-window menus),
 3a (Settings buttons, links, switches, segmented controls, tri-states,
 modifier chips, tags, and counts), 3b (terminal-window buttons and
 tooltips), and 4a (Settings text, search, and number fields, units, the
@@ -493,6 +493,11 @@ needed:
 | Opening a dialog, the palette, or another popover | Closes | Closes | The new surface |
 | Owner state change (reload, row removed) | Closes | Closes | Return target, or the owner's fallback |
 
+A modal dialog stays open while its window is inactive, as `AppKit`'s sheets
+and libadwaita's dialogs do, unlike a popover, whose row above closes it.
+Migrations 7a and 7b follow that: the window's return finds the dialog and its
+focus as they were.
+
 The backdrop answers D1, D2, and D5 at once. A press anywhere outside the
 content, including on the trigger, lands on the backdrop, which closes the
 popover and stops the press. That matches AppKit, GTK's autohide popovers, and
@@ -829,6 +834,9 @@ from #276 or #277 that it covers.
 - Space on a Default/On/Off control toggles between On and Off and never
   selects Default; tri-states need radio-style activation (Space selects the
   focused option).
+- The slider's readout has no fixed width, so its track narrows by about a
+  glyph when the readout grows from 5% to 10% or 95% to 100%; give the
+  readout the width of its widest value.
 
 ## Non-goals
 

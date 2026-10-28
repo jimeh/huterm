@@ -12,18 +12,20 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, Entity, FocusHandle, Focusable as _,
-    IntoElement, Render, ScrollHandle, SharedString, Window, WindowBounds,
-    WindowOptions, canvas, div, prelude::*, px, size,
+    IntoElement, KeyBinding, Render, ScrollHandle, SharedString, Window,
+    WindowBounds, WindowOptions, canvas, div, prelude::*, px, size,
 };
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::alert::{Alert, Tone as AlertTone};
+use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::badge::{Tone, badge};
 use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::card::{self, Card};
 use huterm_ui::components::collapsible::{Collapsible, chevron};
+use huterm_ui::components::dialog::{self, Dialog, Modal};
 use huterm_ui::components::empty::Empty;
 use huterm_ui::components::field::Field;
-use huterm_ui::components::input::{Chrome, Input};
+use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::components::input_group::{Addon, InputGroup};
 use huterm_ui::components::item::Item as RowItem;
 use huterm_ui::components::menu::{
@@ -55,8 +57,51 @@ use crate::keymap::Platform;
 /// The light theme shown beside the built-in dark one.
 const LIGHT_THEME: &str = "tokyo-night-day";
 
+/// The rename field's key context, which Huterm's text fields carry.
+const FIELD_CONTEXT: &str = "Palette";
+
+gpui::actions!(
+    gallery,
+    [
+        DialogNext,
+        DialogPrevious,
+        DialogConfirm,
+        DialogCancel,
+        TextLeft,
+        TextRight,
+        TextStart,
+        TextEnd,
+        TextDeleteBackward,
+        TextDeleteForward
+    ]
+);
+
+/// The gallery's own bindings, since it loads no keymap: the dialogs' keys
+/// as Huterm's defaults bind them under the dialog's context, and text
+/// editing under the rename field's. The field binds no Tab, Shift-Tab,
+/// Enter, or Escape of its own, so those reach the dialog's bindings.
+fn bind_keys(cx: &mut App) {
+    let dialog = Some(dialog::KEY_CONTEXT);
+    let field = Some(FIELD_CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("tab", DialogNext, dialog),
+        KeyBinding::new("right", DialogNext, dialog),
+        KeyBinding::new("shift-tab", DialogPrevious, dialog),
+        KeyBinding::new("left", DialogPrevious, dialog),
+        KeyBinding::new("enter", DialogConfirm, dialog),
+        KeyBinding::new("escape", DialogCancel, dialog),
+        KeyBinding::new("left", TextLeft, field),
+        KeyBinding::new("right", TextRight, field),
+        KeyBinding::new("home", TextStart, field),
+        KeyBinding::new("end", TextEnd, field),
+        KeyBinding::new("backspace", TextDeleteBackward, field),
+        KeyBinding::new("delete", TextDeleteForward, field),
+    ]);
+}
+
 pub(crate) fn run() {
     crate::assets::application().run(|cx| {
+        bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(960.0), px(720.0)), cx);
         let opened = cx.open_window(
             WindowOptions {
@@ -92,6 +137,7 @@ struct Column {
     select_menu: Option<Entity<Menu>>,
     controls: Controls,
     fields: Fields,
+    dialogs: Dialogs,
     /// The slider entry's value, a Quake width.
     slider: f64,
     /// The scroll area's row that its Reveal button scrolls to, as last
@@ -103,6 +149,59 @@ struct Column {
     density: usize,
     theme: usize,
     open: bool,
+}
+
+/// The dialog entries' state: a rename dialog, and an alert that confirms
+/// or refuses a profile's deletion.
+struct Dialogs {
+    rename: Modal,
+    rename_trigger: FocusHandle,
+    /// The new name, in an input group.
+    field: Entity<Input>,
+    rename_cancel: FocusHandle,
+    rename_confirm: FocusHandle,
+    alert: Modal,
+    /// The alert refuses the deletion rather than confirming it.
+    refusal: bool,
+    /// The confirmation's and the refusal's triggers.
+    alert_triggers: [FocusHandle; 2],
+    alert_cancel: FocusHandle,
+    alert_action: FocusHandle,
+}
+
+impl Dialogs {
+    fn new(index: usize, swatch: Swatch, cx: &mut App) -> Self {
+        let field = cx.new(|cx| {
+            let id = SharedString::from(format!("rename-field-{index}"));
+            let mut input = Input::new(id, "Profile name", swatch, cx)
+                .with_chrome(Chrome::Grouped);
+            // An existing name, so the dialog opens showing its error.
+            input.set_text("Default", cx);
+            input.set_invalid(true, cx);
+            input
+        });
+        Self {
+            rename: Modal::new(),
+            rename_trigger: cx.focus_handle(),
+            field,
+            rename_cancel: cx.focus_handle(),
+            rename_confirm: cx.focus_handle(),
+            alert: Modal::new(),
+            refusal: false,
+            alert_triggers: std::array::from_fn(|_| cx.focus_handle()),
+            alert_cancel: cx.focus_handle(),
+            alert_action: cx.focus_handle(),
+        }
+    }
+}
+
+/// Why a profile name cannot be used, shown under the rename field.
+fn rename_error(name: &str) -> Option<&'static str> {
+    match name.trim() {
+        "" => Some("Enter a name."),
+        "Default" => Some("A profile named Default already exists."),
+        _ => None,
+    }
 }
 
 /// The text entry entries' fields, which hold their own editing state.
@@ -293,6 +392,7 @@ impl Gallery {
                 select_menu: None,
                 controls: Controls::new(cx),
                 fields: Fields::new(index, swatch, window, cx),
+                dialogs: Dialogs::new(index, swatch, cx),
                 slider: 0.6,
                 revealed: Rc::default(),
                 section: 0,
@@ -301,11 +401,20 @@ impl Gallery {
                 open: true,
             }
         };
+        let columns = [
+            column(0, "huterm-dark", &Theme::huterm_dark()),
+            column(1, LIGHT_THEME, &light),
+        ];
+        for column in &columns {
+            cx.subscribe(&column.dialogs.field, |_, field, _: &Changed, cx| {
+                let invalid = rename_error(field.read(cx).text()).is_some();
+                field.update(cx, |field, cx| field.set_invalid(invalid, cx));
+                cx.notify();
+            })
+            .detach();
+        }
         Self {
-            columns: [
-                column(0, "huterm-dark", &Theme::huterm_dark()),
-                column(1, LIGHT_THEME, &light),
-            ],
+            columns,
             focus: cx.focus_handle(),
             wake: Wake::default(),
         }
@@ -466,6 +575,8 @@ impl Gallery {
             .child(self.collapsible_entry(index, cx))
             .child(alerts(index, swatch))
             .child(empties(index, swatch))
+            .child(self.dialog_entry(index, cx))
+            .child(self.alert_dialog_entry(index, cx))
             .into_any_element()
     }
 
@@ -700,6 +811,192 @@ impl Gallery {
                     .child(paste),
             ),
         )
+    }
+
+    /// A button that opens the rename dialog.
+    fn dialog_entry(
+        &mut self,
+        index: usize,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
+        let gallery = cx.entity().downgrade();
+        let column = &self.columns[index];
+        let swatch = column.tokens;
+        let open =
+            Button::new(("rename-open", index), "Rename profile…", swatch)
+                .focus(&column.dialogs.rename_trigger)
+                .on_click(move |_, cx| {
+                    let _ = gallery.update(cx, |gallery, cx| {
+                        let dialogs = &gallery.columns[index].dialogs;
+                        dialogs.rename.open(&dialogs.rename_trigger);
+                        cx.notify();
+                    });
+                });
+        entry("dialog", "Dialog", swatch, row().child(open))
+    }
+
+    /// Buttons that open a delete confirmation and a refusal.
+    fn alert_dialog_entry(
+        &mut self,
+        index: usize,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
+        let column = &self.columns[index];
+        let swatch = column.tokens;
+        let opener = |id: &'static str, label: &'static str, refusal: bool| {
+            let gallery = cx.entity().downgrade();
+            let trigger = &column.dialogs.alert_triggers[usize::from(refusal)];
+            Button::new((id, index), label, swatch)
+                .focus(trigger)
+                .on_click(move |_, cx| {
+                    let _ = gallery.update(cx, |gallery, cx| {
+                        let dialogs = &mut gallery.columns[index].dialogs;
+                        dialogs.refusal = refusal;
+                        let trigger =
+                            &dialogs.alert_triggers[usize::from(refusal)];
+                        dialogs.alert.open(trigger);
+                        cx.notify();
+                    });
+                })
+        };
+        entry(
+            "alert_dialog",
+            "Alert dialog",
+            swatch,
+            row()
+                .child(opener("alert-delete", "Delete profile…", false))
+                .child(opener(
+                    "alert-refuse",
+                    "Delete the last profile…",
+                    true,
+                )),
+        )
+    }
+
+    /// Every column's open dialogs over the window, and the guards that
+    /// stop presses and wheel events beneath them.
+    fn dialogs(&mut self, cx: &mut Context<'_, Self>) -> Vec<AnyElement> {
+        let mut layers = Vec::new();
+        for index in 0..self.columns.len() {
+            let gallery = cx.entity().downgrade();
+            let close = move |alert: bool| {
+                let gallery = gallery.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    let _ = gallery.update(cx, |gallery, cx| {
+                        let dialogs = &gallery.columns[index].dialogs;
+                        let modal = if alert {
+                            &dialogs.alert
+                        } else {
+                            &dialogs.rename
+                        };
+                        let _ = modal.close(window, cx);
+                        cx.notify();
+                    });
+                }
+            };
+            let dialogs = &self.columns[index].dialogs;
+            let swatch = self.columns[index].tokens;
+            // Only the rename dialog reports outside presses, which close it.
+            let close_rename = close(false);
+            layers.push(
+                dialogs
+                    .rename
+                    .guard(move |_, window, cx| close_rename(window, cx))
+                    .into_any_element(),
+            );
+            layers.push(dialogs.alert.guard(|_, _, _| {}).into_any_element());
+            if dialogs.rename.is_open() {
+                layers.push(rename_dialog(
+                    index,
+                    swatch,
+                    dialogs,
+                    close(false),
+                    cx,
+                ));
+            }
+            if dialogs.alert.is_open() {
+                layers.push(alert_dialog(index, swatch, dialogs, close(true)));
+            }
+        }
+        layers
+    }
+
+    /// The column whose dialog is open, and its modal: the alert's, or the
+    /// rename dialog's.
+    fn open_dialog(&self) -> Option<(usize, Modal)> {
+        self.columns.iter().enumerate().find_map(|(index, column)| {
+            let dialogs = &column.dialogs;
+            [&dialogs.alert, &dialogs.rename]
+                .into_iter()
+                .find(|modal| modal.is_open())
+                .map(|modal| (index, modal.clone()))
+        })
+    }
+
+    fn cycle_dialog(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some((_, modal)) = self.open_dialog() {
+            if forward {
+                modal.focus_next(window, cx);
+            } else {
+                modal.focus_previous(window, cx);
+            }
+        }
+    }
+
+    fn cancel_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some((_, modal)) = self.open_dialog() {
+            let _ = modal.close(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Runs the focused button's action, as a press on it does; from the
+    /// rename field, Rename's.
+    fn confirm_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some((index, modal)) = self.open_dialog() else {
+            return;
+        };
+        let dialogs = &self.columns[index].dialogs;
+        let closes = if dialogs.alert.is_open() {
+            // Every alert button closes it.
+            dialogs.alert_cancel.is_focused(window)
+                || dialogs.alert_action.is_focused(window)
+        } else if dialogs.rename_cancel.is_focused(window) {
+            true
+        } else {
+            (dialogs.rename_confirm.is_focused(window)
+                || dialogs.field.focus_handle(cx).is_focused(window))
+                && rename_error(dialogs.field.read(cx).text()).is_none()
+        };
+        if closes {
+            let _ = modal.close(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Applies a text-editing command to the open rename dialog's field,
+    /// the only field that carries [`FIELD_CONTEXT`].
+    fn edit_field(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+        edit: impl FnOnce(&mut Input, &mut Context<'_, Input>),
+    ) {
+        if let Some((index, _)) = self.open_dialog() {
+            self.columns[index].dialogs.field.update(cx, edit);
+        }
     }
 
     /// A button that opens a modal popover; an outside press closes it.
@@ -1123,6 +1420,102 @@ fn empties(index: usize, swatch: Swatch) -> Div {
     )
 }
 
+/// The rename dialog: a field in an input group, its inline error, and
+/// Cancel and Rename, which renames only a valid name.
+fn rename_dialog(
+    index: usize,
+    swatch: Swatch,
+    dialogs: &Dialogs,
+    close: impl Fn(&mut Window, &mut App) + Clone + 'static,
+    cx: &mut App,
+) -> AnyElement {
+    let field = dialogs.field.clone();
+    let error = rename_error(field.read(cx).text());
+    let rename = {
+        let close = close.clone();
+        move |window: &mut Window, cx: &mut App| {
+            if rename_error(field.read(cx).text()).is_none() {
+                close(window, cx);
+            }
+        }
+    };
+    Dialog::new(
+        ("rename-dialog", index),
+        "Rename profile",
+        &dialogs.rename,
+        swatch,
+    )
+    .description("Profiles are listed by name in the menu and in Settings.")
+    .focusable(&dialogs.field.focus_handle(cx))
+    .child(div().key_context(FIELD_CONTEXT).child(InputGroup::new(
+        ("rename-group", index),
+        &dialogs.field,
+        swatch,
+    )))
+    .when_some(error, |dialog, error| {
+        dialog.child(
+            div()
+                .text_size(size::TEXT_SMALL)
+                .text_color(swatch.danger_text())
+                .child(error),
+        )
+    })
+    .button(
+        Button::new(("rename-cancel", index), "Cancel", swatch).on_click(close),
+        &dialogs.rename_cancel,
+    )
+    .button(
+        Button::new(("rename-confirm", index), "Rename", swatch)
+            .variant(Variant::Primary)
+            .on_click(rename),
+        &dialogs.rename_confirm,
+    )
+    .into_any_element()
+}
+
+/// A delete confirmation, or a refusal with one button that acknowledges
+/// it.
+fn alert_dialog(
+    index: usize,
+    swatch: Swatch,
+    dialogs: &Dialogs,
+    close: impl Fn(&mut Window, &mut App) + Clone + 'static,
+) -> AnyElement {
+    let id = ("alert-dialog", index);
+    if dialogs.refusal {
+        return AlertDialog::new(
+            id,
+            "The last profile cannot be deleted",
+            &dialogs.alert,
+            swatch,
+        )
+        .description("Create another profile before deleting this one.")
+        .cancel(
+            Button::new(("alert-ok", index), "OK", swatch)
+                .variant(Variant::Primary)
+                .on_click(close),
+            &dialogs.alert_cancel,
+        )
+        .into_any_element();
+    }
+    AlertDialog::new(id, "Delete profile \"Work\"?", &dialogs.alert, swatch)
+        .description(
+            "Its settings are removed from config.toml. This cannot be undone.",
+        )
+        .cancel(
+            Button::new(("alert-cancel", index), "Cancel", swatch)
+                .on_click(close.clone()),
+            &dialogs.alert_cancel,
+        )
+        .action(
+            Button::new(("alert-delete", index), "Delete", swatch)
+                .variant(Variant::Destructive)
+                .on_click(close),
+            &dialogs.alert_action,
+        )
+        .into_any_element()
+}
+
 fn badges(index: usize, swatch: Swatch) -> Div {
     entry(
         "badge",
@@ -1444,15 +1837,58 @@ impl Render for Gallery {
         let dark = self.column(0, cx);
         let light = self.column(1, cx);
         let overlays = self.overlays(window, cx);
+        let dialogs = self.dialogs(cx);
+        // Dialogs cover the window, so they sit outside the scrolling
+        // columns.
         div()
-            .id("gallery")
             .size_full()
-            .flex()
-            .overflow_y_scroll()
+            .relative()
             .track_focus(&self.focus)
+            .on_action(cx.listener(|gallery, _: &DialogNext, window, cx| {
+                gallery.cycle_dialog(true, window, cx);
+            }))
+            .on_action(cx.listener(
+                |gallery, _: &DialogPrevious, window, cx| {
+                    gallery.cycle_dialog(false, window, cx);
+                },
+            ))
+            .on_action(cx.listener(|gallery, _: &DialogConfirm, window, cx| {
+                gallery.confirm_dialog(window, cx);
+            }))
+            .on_action(cx.listener(|gallery, _: &DialogCancel, window, cx| {
+                gallery.cancel_dialog(window, cx);
+            }))
+            .on_action(cx.listener(|gallery, _: &TextLeft, _, cx| {
+                gallery.edit_field(cx, |field, cx| field.move_left(false, cx));
+            }))
+            .on_action(cx.listener(|gallery, _: &TextRight, _, cx| {
+                gallery.edit_field(cx, |field, cx| field.move_right(false, cx));
+            }))
+            .on_action(cx.listener(|gallery, _: &TextStart, _, cx| {
+                gallery
+                    .edit_field(cx, |field, cx| field.move_to_start(false, cx));
+            }))
+            .on_action(cx.listener(|gallery, _: &TextEnd, _, cx| {
+                gallery
+                    .edit_field(cx, |field, cx| field.move_to_end(false, cx));
+            }))
+            .on_action(cx.listener(|gallery, _: &TextDeleteBackward, _, cx| {
+                gallery.edit_field(cx, Input::delete_backward);
+            }))
+            .on_action(cx.listener(|gallery, _: &TextDeleteForward, _, cx| {
+                gallery.edit_field(cx, Input::delete_forward);
+            }))
             .child(focus::tracker())
-            .child(dark)
-            .child(light)
+            .child(
+                div()
+                    .id("gallery")
+                    .size_full()
+                    .flex()
+                    .overflow_y_scroll()
+                    .child(dark)
+                    .child(light),
+            )
             .children(overlays)
+            .children(dialogs)
     }
 }

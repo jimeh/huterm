@@ -207,6 +207,12 @@ impl Button {
         self
     }
 
+    /// Whether the button is disabled, so a dialog leaves it out of its
+    /// focus order.
+    pub(crate) fn is_disabled(&self) -> bool {
+        self.disabled.is_some()
+    }
+
     /// A word of explanation shown on hover, such as an icon button's name.
     #[must_use]
     pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {

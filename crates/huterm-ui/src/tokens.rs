@@ -676,6 +676,8 @@ pub mod size {
     pub const TEXT_CONTROL: Pixels = px(12.0);
     /// Body text in menus and rows.
     pub const TEXT_BODY: Pixels = px(12.5);
+    /// Dialog titles.
+    pub const TEXT_TITLE: Pixels = px(14.0);
 }
 
 #[cfg(test)]

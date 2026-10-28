@@ -716,6 +716,37 @@ has no query for an element's bounds by focus handle. They are in content
 coordinates, so a second reveal before the repaint moves nothing; reveal
 only sets the offset, so the owner redraws when it returns true.
 
+Open a dialog in a `huterm_ui::components::dialog::Modal`, draw its `Dialog`
+or `AlertDialog` as the last child of the area it covers while it is open, and
+mount `Modal::guard` on every frame, as for a popover. The guard stops presses
+and wheel events outside the panel, including before its first frame, and
+reports an outside press to the owner, never for an alert. The panel carries
+the `confirming` context: route `dialog_focus_next` and `dialog_focus_previous`
+to `Modal::focus_next` and `focus_previous`, which cycle through the dialog's
+declared controls and its enabled buttons, and give its buttons no
+`SettingsControl` context, which would win for Enter, Space, and the arrows.
+A text field in a dialog carries the `Palette` context, as Settings' fields
+do, so Left and Right edit it rather than run `dialog_focus_*`. Its owner
+then routes `palette_expand` and `palette_previous_slot` (Tab and Shift-Tab
+in the field) to `Modal::focus_next` and `focus_previous`, `palette_confirm`
+to the dialog's confirm action, and `palette_back` to `Dismissal::Escape`,
+so Tab never leaves the dialog. GPUI falls through to an outer context's
+binding when a deeper context's action has no handler, so an unhandled
+`palette_expand` still reaches the dialog's Tab, but a handler that consumes
+it without moving focus traps Tab in the field. Focus moves in on the
+dialog's first frame, and `Modal::close` returns it to the target given to
+`open`; with every control disabled it enters on the first button. Window
+deactivation and owner changes are the owner's to route; a dialog normally
+stays open while its window is inactive. A body that can outgrow the window
+puts its long content in a `ScrollArea` made with `fill()`, which shrinks
+with the body, since a plain `ScrollArea` grows to its content's height and
+never scrolls there; the body shrinks and clips so the footer stays inside
+the panel, where the guard lets presses through. The
+guard stops presses on anything outside the panel, so a popover opened from a
+dialog's body does not work yet. A simulated press in a GPUI test draws a
+notified window first, so a stale-frame test opens without notifying,
+presses, and notifies afterwards.
+
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with
 `huterm_ui::a11y::States`, since GPUI has no setters for them. GPUI's
