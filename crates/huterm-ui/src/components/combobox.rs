@@ -446,10 +446,10 @@ impl Combobox {
 
     /// Replaces the suggestions with the filter's, or the browse ones while
     /// browsing, keeping the highlight on the same suggestion.
-    /// Runs the filter. With `keep_scroll`, as after a caret move or an
-    /// owner's write, options that come back unchanged leave the list
-    /// where the user scrolled it; opening and editing reveal the
-    /// highlight.
+    ///
+    /// With `keep_scroll`, as after a caret move or an owner's write,
+    /// options that come back unchanged leave the list where the user
+    /// scrolled it; opening and editing reveal the highlight.
     fn filter(&mut self, cx: &App, keep_scroll: bool) {
         let filter = match &self.browse {
             Some(browse) if !browse.typed => &browse.filter,

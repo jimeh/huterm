@@ -346,6 +346,31 @@ fn a_completion_typed_in_front_of_a_name_keeps_that_name(
 }
 
 #[gpui::test]
+fn a_sibling_picked_inside_a_known_name_replaces_it(cx: &mut TestAppContext) {
+    // Keeping the tail glued the two names: "SettingsGroupControl".
+    let file = ScratchConfig::new("lists-condition-sibling", "");
+    let mut harness = DesktopHarness::new(cx);
+    let when = condition(&mut harness, &file, ids::NEXT_TAB, "ctrl-tab");
+    let list = with_view(&mut harness, |view, _| view.key_list(&when));
+    typed(&harness, "SettingsControl");
+    for _ in 0.."Control".len() {
+        keys(&harness, "left");
+    }
+    keys(&harness, "down");
+    let (open, labels, _) = shown(&mut harness, &list);
+    assert!(open, "Down opened no suggestions for \"Settings\"");
+    assert!(
+        labels.iter().any(|label| label == "SettingsGroup"),
+        "{labels:?}"
+    );
+    while shown(&mut harness, &list).2.as_deref() != Some("SettingsGroup") {
+        keys(&harness, "down");
+    }
+    keys(&harness, "enter");
+    assert_eq!(key_text(&mut harness, &when), "SettingsGroup");
+}
+
+#[gpui::test]
 fn condition_suggestions_float_over_the_rows_below(cx: &mut TestAppContext) {
     // D6: the list laid out in the row's flow and pushed the rows below
     // it down.

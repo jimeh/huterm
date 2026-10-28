@@ -26,7 +26,7 @@ use toml::Value;
 use super::super::super::key_hint::KeyHint;
 use super::super::super::overlay::{Swatch, mono_font_family, tokens};
 use super::super::super::settings::keybindings::{
-    Binding, Context as WhenContext, Edit, Field, GROUPS, OVERLAYS,
+    Binding, CONTEXTS, Context as WhenContext, Edit, Field, GROUPS, OVERLAYS,
     check_condition, completions, notes,
 };
 use super::super::Desktop;
@@ -1113,10 +1113,11 @@ impl SettingsView {
                         .any(|context| context.name == name.as_ref())
                 {
                     // A name the caret sits inside goes whole when the pick
-                    // completes all of it, so "Termin|a" keeps no tail;
-                    // otherwise the pick goes in before the caret, so a
-                    // name typed in front of another keeps it: "sel|split"
-                    // becomes "selection|split".
+                    // completes all of it, so "Termin|a" keeps no tail, or
+                    // when it is already a context, so "Settings|Control"
+                    // becomes "SettingsGroup"; otherwise the pick goes in
+                    // before the caret, so a name typed in front of another
+                    // keeps it: "sel|split" becomes "selection|split".
                     let caret = field.cursor();
                     let end = name_end(field.text(), caret);
                     let whole =
@@ -1124,7 +1125,9 @@ impl SettingsView {
                     let end = if name
                         .to_lowercase()
                         .starts_with(&whole.to_lowercase())
-                    {
+                        || CONTEXTS.iter().any(|context| {
+                            context.name.eq_ignore_ascii_case(whole)
+                        }) {
                         end
                     } else {
                         caret
