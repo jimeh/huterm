@@ -15,7 +15,7 @@ use huterm_protocol::{HierarchyState, LayoutChange, PaneId};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HistoryEntry {
     /// The operation's name, such as "Move Pane".
-    pub(super) label: &'static str,
+    pub(super) label: gpui::SharedString,
     /// The pane the window focused after the operation.
     pub(super) focus: Option<PaneId>,
     /// What the operation did, as the runtime returned it.

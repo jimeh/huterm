@@ -262,7 +262,7 @@ imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 | `move_pane_to_pane` | Window | `pane` and `side` (`left`, `right`, `up`, or `down`). Moves the focused pane beside a pane in any tab, workspace, or session. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `move_pane_to_new_tab` | Window | Optional `workspace`; defaults to the window's, where the new tab opens after the pane's tab. A tab's only pane moves its whole tab to another workspace. |
 | `move_tab_to_pane` | Window | `pane` and `side`; `tab` defaults to the active tab. Moves the whole tab beside a pane of another tab, keeping its layout. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
-| `arrange_panes` | Window | `layout`: `columns`, `rows`, `main_left`, `main_top`, or `tiled` (see [pane layouts](#pane-layouts)). Rearranges the active tab's panes into that layout, keeping every terminal and the pane order. A binding may set `layout`; the palette and the Arrange Panes… menu items prompt for it. |
+| `arrange_panes` | Window | `layout`: `columns`, `rows`, `main_left`, `main_top`, `tiled`, or a name from `[panes.layouts]` (see [pane layouts](#pane-layouts)). Rearranges the active tab's panes into that layout, keeping every terminal and the pane order. A binding may set `layout`; the palette and the Arrange Panes… menu items prompt for it. |
 | `next_pane_layout` / `previous_pane_layout` | Window | Arranges the active tab's panes into the next or previous layout of the cycle, skipping a layout that does not fit the window or would change nothing. |
 | `balance_panes` | Window | Gives every split of the active tab equal sizes, keeping its shape. |
 | `undo` | Window | Undoes this window's last pane swap, move, extraction, tab drop, arrangement, or balance, putting the same panes and terminals back where they were, with the earlier divider positions. A tab the change removed comes back with its name, at its old position. Renames, reorders, and zooms made since survive. Splits, closes, resizes, and zoom are not recorded, and only the last change can be undone. Once a tab the change touched has another shape, or has moved to another session, the change is dropped and undo does nothing; if the runtime refuses an undo the window could not yet see was stale, a notice says so. With nothing to undo, or while the window is busy, the key does nothing. |
@@ -378,9 +378,10 @@ a shell relies on.
 
 ### Pane layouts
 
-`arrange_panes` takes one of five built-in layouts, which fill their places
-with the tab's panes in layout order, so no layout reorders them. Swap or move
-a pane first to make it the main pane.
+`arrange_panes` takes one of five built-in layouts, or a layout you define in
+[the configuration file](configuration.md#pane-layouts). Layouts fill their
+places with the tab's panes in layout order, so no layout reorders them. Swap
+or move a pane first to make it the main pane.
 
 | Layout | Name | Arrangement |
 | --- | --- | --- |
@@ -397,9 +398,16 @@ Bind a layout by name:
 key = "cmd-alt-1"
 command = "arrange_panes"
 args = { layout = "main_left" }
+
+[[keybinding]]
+key = "cmd-alt-2"
+command = "arrange_panes"
+args = { layout = "dev" } # from [panes.layouts]
 ```
 
-The cycle visits the layouts in the table's order. It continues from the
+The cycle visits the layouts in the table's order, or the order of
+`[panes] layout_cycle`, which can add your own layouts and leave built-ins
+out. It continues from the
 layout the tab matches, so resizing a divider keeps the place, and after a
 split or a move that matches none it starts from the beginning. Layouts and
 balancing keep every pane at least 4 columns by 2 rows in the window that runs

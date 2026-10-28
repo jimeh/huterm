@@ -12,9 +12,9 @@
 // User input picks positions here, so a stale index must not panic.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
+use gpui::SharedString;
 use huterm_protocol::{
-    Arrangement, BUILT_IN_LAYOUTS, LayoutChange, LayoutError, NamedLayout,
-    PaneNode,
+    Arrangement, LayoutChange, LayoutError, NamedLayout, PaneNode,
 };
 
 use std::fmt::Write as _;
@@ -42,7 +42,7 @@ pub(super) struct Arrange {
     expected: PaneLayout,
     arrangement: Arrangement,
     /// The undo entry's name.
-    label: &'static str,
+    label: SharedString,
     /// The pane this window focused, which undo and redo focus again.
     focus: PaneId,
     /// The view's own zoom the commit cleared, which a refused or empty
@@ -99,16 +99,10 @@ pub(super) fn is_layout_command(command: huterm_protocol::CommandId) -> bool {
     )
 }
 
-/// The undo entry's name for arranging into `layout`.
-fn arrange_label(layout: &NamedLayout) -> &'static str {
-    match layout.name.as_str() {
-        "columns" => "Arrange Panes: Equal Columns",
-        "rows" => "Arrange Panes: Equal Rows",
-        "main_left" => "Arrange Panes: Main Left",
-        "main_top" => "Arrange Panes: Main Top",
-        "tiled" => "Arrange Panes: Tiled",
-        _ => "Arrange Panes",
-    }
+/// The undo entry's name for arranging into `layout`, such as "Arrange
+/// Panes: Main Left" or "Arrange Panes: dev".
+fn arrange_label(layout: &NamedLayout) -> SharedString {
+    format!("Arrange Panes: {}", layout.title).into()
 }
 
 /// How a notice names `layout` in a sentence: its title in lower case,
@@ -216,18 +210,19 @@ impl WorkspaceView {
                 let name = invocation
                     .text("layout")
                     .ok_or(CommandError::StaleTarget)?;
-                arrange(&committed, name, fitted)
+                arrange(&committed, &self.config.panes, name, fitted)
             }
             ids::NEXT_PANE_LAYOUT | ids::PREVIOUS_PANE_LAYOUT => {
                 let forward = invocation.id == ids::NEXT_PANE_LAYOUT;
-                step(&committed, forward, fitted)
+                let cycle = self.config.panes.cycle();
+                step(&committed, &cycle, forward, fitted)
             }
             ids::BALANCE_PANES => {
                 // Balancing never refuses: a window too small for the
                 // tab's tree takes the proportional fallback.
                 let (Fit::Fits(arrangement) | Fit::Short(arrangement)) =
                     fitted(&committed.balanced());
-                Ok(("Balance Panes", arrangement))
+                Ok(("Balance Panes".into(), arrangement))
             }
             other => return Err(CommandError::UnknownCommand(other)),
         };
@@ -481,13 +476,16 @@ fn smoke_layout(layout: &PaneLayout) -> String {
     out
 }
 
-/// `arrange_panes` into the layout called `name`, fitted by `fitted`.
+/// `arrange_panes` into the layout `layouts` calls `name`, fitted by
+/// `fitted`.
 fn arrange(
     committed: &PaneLayout,
+    layouts: &huterm_config::PanesConfig,
     name: &str,
     fitted: impl Fn(&Arrangement) -> Fit,
-) -> Result<(&'static str, Arrangement), Refusal> {
-    let layout = NamedLayout::built_in(name)
+) -> Result<(SharedString, Arrangement), Refusal> {
+    let layout = layouts
+        .layout(name)
         .ok_or_else(|| Refusal::UnknownLayout(name.to_owned()))?;
     let panes: Vec<PaneId> =
         committed.panes().into_iter().map(|pane| pane.id).collect();
@@ -496,23 +494,23 @@ fn arrange(
             .template
             .expand(&panes)
             .map_err(|_| Refusal::TooManyPanes {
-                layout: prose(layout),
-                most: capacity(layout, panes.len()).unwrap_or(1),
+                layout: prose(&layout),
+                most: capacity(&layout, panes.len()).unwrap_or(1),
             })?;
     match fitted(&ideal) {
-        Fit::Fits(arrangement) => Ok((arrange_label(layout), arrangement)),
-        Fit::Short(_) => Err(Refusal::TooSmall(prose(layout))),
+        Fit::Fits(arrangement) => Ok((arrange_label(&layout), arrangement)),
+        Fit::Short(_) => Err(Refusal::TooSmall(prose(&layout))),
     }
 }
 
-/// The next or previous layout of the cycle that fits this window and
+/// The next or previous layout of `cycle` that fits this window and
 /// changes the tab.
 fn step(
     committed: &PaneLayout,
+    cycle: &[NamedLayout],
     forward: bool,
     fitted: impl Fn(&Arrangement) -> Fit,
-) -> Result<(&'static str, Arrangement), Refusal> {
-    let cycle = &*BUILT_IN_LAYOUTS;
+) -> Result<(SharedString, Arrangement), Refusal> {
     let mut short = false;
     let stepped =
         committed.step_layout(cycle, forward, |_, ideal| {
@@ -592,45 +590,73 @@ mod tests {
         Fit::Short(arrangement.clone())
     }
 
+    /// The defaults plus a `pair` layout of two panes.
+    fn with_pair() -> huterm_config::PanesConfig {
+        huterm_config::PanesConfig {
+            layouts: [("pair".to_owned(), "columns(pane, pane)".to_owned())]
+                .into(),
+            ..huterm_config::PanesConfig::default()
+        }
+    }
+
     #[test]
-    fn arranging_names_built_in_layouts_in_prose_and_their_limits() {
+    fn arranging_names_layouts_in_prose_and_their_limits() {
+        let layouts = with_pair();
         let three = built_in("columns", 3);
         assert_eq!(
-            arrange(&three, "main_left", short).unwrap_err().message(),
+            arrange(&three, &layouts, "main_left", short)
+                .unwrap_err()
+                .message(),
             "Window too small for the main left layout"
         );
         assert_eq!(
-            arrange(&three, "dev", fits).unwrap_err().message(),
+            arrange(&three, &layouts, "dev", fits)
+                .unwrap_err()
+                .message(),
             "No pane layout named `dev`"
+        );
+        assert_eq!(
+            arrange(&three, &layouts, "pair", fits)
+                .unwrap_err()
+                .message(),
+            "The pair layout holds at most 2 panes"
         );
         let many = built_in("tiled", 258);
         assert_eq!(
-            arrange(&many, "columns", fits).unwrap_err().message(),
+            arrange(&many, &layouts, "columns", fits)
+                .unwrap_err()
+                .message(),
             "The equal columns layout holds at most 256 panes"
         );
         assert_eq!(
-            arrange(&many, "main_top", fits).unwrap_err().message(),
+            arrange(&many, &layouts, "main_top", fits)
+                .unwrap_err()
+                .message(),
             "The main top layout holds at most 257 panes"
         );
-        let (label, _) = arrange(&three, "columns", fits).unwrap();
+        let (label, _) = arrange(&three, &layouts, "columns", fits).unwrap();
         assert_eq!(label, "Arrange Panes: Equal Columns");
+        let (label, _) =
+            arrange(&built_in("rows", 2), &layouts, "pair", fits).unwrap();
+        assert_eq!(label, "Arrange Panes: pair");
     }
 
     #[test]
     fn a_step_names_why_no_layout_applies() {
+        let cycle = huterm_config::PanesConfig::default().cycle();
         let three = built_in("columns", 3);
         assert_eq!(
-            step(&three, true, short).unwrap_err().message(),
+            step(&three, &cycle, true, short).unwrap_err().message(),
             "No other pane layout fits this window"
         );
         // At 258 panes only tiled is available, and the tab is tiled.
         assert_eq!(
-            step(&built_in("tiled", 258), false, fits)
+            step(&built_in("tiled", 258), &cycle, false, fits)
                 .unwrap_err()
                 .message(),
             "No other pane layout in the cycle changes these panes"
         );
-        let (label, _) = step(&three, true, fits).unwrap();
+        let (label, _) = step(&three, &cycle, true, fits).unwrap();
         assert_eq!(label, "Arrange Panes: Equal Rows");
     }
 }

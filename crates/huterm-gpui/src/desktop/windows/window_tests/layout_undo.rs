@@ -13,7 +13,7 @@ fn next_label(
     cx: &mut App,
     window: AnyWindowHandle,
     direction: RestoreDirection,
-) -> Option<&'static str> {
+) -> Option<gpui::SharedString> {
     window
         .update(cx, |root, _, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
@@ -83,7 +83,7 @@ fn undoing_a_tab_drop_reopens_the_tab_with_its_views(cx: &mut TestAppContext) {
                 .is_some_and(|(panes, _)| panes == [lone, left, right])
     });
     harness.wait_for("the drop to become undoable", |cx| {
-        next_label(cx, window, RestoreDirection::Undo)
+        next_label(cx, window, RestoreDirection::Undo).as_deref()
             == Some("Move Tab into Pane")
     });
 
@@ -118,9 +118,12 @@ fn undoing_a_tab_drop_reopens_the_tab_with_its_views(cx: &mut TestAppContext) {
         Some("dropped")
     );
     harness.cx.update(|cx| {
-        assert_eq!(next_label(cx, window, RestoreDirection::Undo), None);
         assert_eq!(
-            next_label(cx, window, RestoreDirection::Redo),
+            next_label(cx, window, RestoreDirection::Undo).as_deref(),
+            None
+        );
+        assert_eq!(
+            next_label(cx, window, RestoreDirection::Redo).as_deref(),
             Some("Move Tab into Pane")
         );
     });
@@ -136,10 +139,15 @@ fn undoing_a_tab_drop_reopens_the_tab_with_its_views(cx: &mut TestAppContext) {
         !projected(cx, dropped)
             && panes_shown(cx, window, target)
                 .is_some_and(|(panes, _)| panes == [lone, left, right])
-            && next_label(cx, window, RestoreDirection::Undo).is_some()
+            && next_label(cx, window, RestoreDirection::Undo)
+                .as_deref()
+                .is_some()
     });
     harness.cx.update(|cx| {
-        assert_eq!(next_label(cx, window, RestoreDirection::Redo), None);
+        assert_eq!(
+            next_label(cx, window, RestoreDirection::Redo).as_deref(),
+            None
+        );
         assert_eq!(notices(cx, window), Vec::<String>::new());
     });
 }
@@ -159,7 +167,8 @@ fn swapped(
     harness.focus(window, tab, left);
     harness.invoke(window, ids::SWAP_PANE_NEXT).unwrap();
     harness.wait_for("the swap to become undoable", |cx| {
-        next_label(cx, window, RestoreDirection::Undo) == Some("Swap Panes")
+        next_label(cx, window, RestoreDirection::Undo).as_deref()
+            == Some("Swap Panes")
     });
     (window, tab, left, right)
 }
@@ -196,8 +205,14 @@ fn an_undo_the_runtime_refuses_shows_one_notice_and_drops_the_entry(
             shown[0].contains("Cannot undo: the layout changed"),
             "{shown:?}"
         );
-        assert_eq!(next_label(cx, window, RestoreDirection::Undo), None);
-        assert_eq!(next_label(cx, window, RestoreDirection::Redo), None);
+        assert_eq!(
+            next_label(cx, window, RestoreDirection::Undo).as_deref(),
+            None
+        );
+        assert_eq!(
+            next_label(cx, window, RestoreDirection::Redo).as_deref(),
+            None
+        );
     });
     // Nothing is left to undo, so the key does nothing.
     assert!(matches!(
@@ -253,7 +268,7 @@ fn the_undo_key_in_the_palette_does_nothing_and_the_palette_follows_pruning(
     harness.cx.update(|cx| {
         assert_eq!(notices(cx, window), Vec::<String>::new());
         assert_eq!(
-            next_label(cx, window, RestoreDirection::Undo),
+            next_label(cx, window, RestoreDirection::Undo).as_deref(),
             Some("Swap Panes")
         );
     });
@@ -306,7 +321,9 @@ fn undo_focuses_a_pane_whose_view_has_to_install_again(
         .unwrap();
     harness.wait_for("the pane to leave and the move to record", |cx| {
         panes_shown(cx, window, tab) == Some((vec![kept], kept))
-            && next_label(cx, window, RestoreDirection::Undo).is_some()
+            && next_label(cx, window, RestoreDirection::Undo)
+                .as_deref()
+                .is_some()
     });
     // Undo brings it back through a new view, which takes the focus once
     // it installs.
@@ -356,7 +373,8 @@ fn a_change_to_a_tab_the_window_does_not_show_prunes_its_entry(
         )
         .unwrap();
     harness.wait_for("the move to become undoable", |cx| {
-        next_label(cx, window, RestoreDirection::Undo) == Some("Move Pane")
+        next_label(cx, window, RestoreDirection::Undo).as_deref()
+            == Some("Move Pane")
     });
     let moved = harness.runtime.lock().select_pane(moving).unwrap().tab;
     let moved = moved.unwrap();
@@ -377,7 +395,9 @@ fn a_change_to_a_tab_the_window_does_not_show_prunes_its_entry(
         )
         .unwrap();
     harness.wait_for("the entry to be pruned", |cx| {
-        next_label(cx, window, RestoreDirection::Undo).is_none()
+        next_label(cx, window, RestoreDirection::Undo)
+            .as_deref()
+            .is_none()
     });
     harness.update_view(window, |view, _, cx| {
         assert_eq!(
@@ -431,7 +451,9 @@ fn a_palette_opened_while_a_restored_view_installs_keeps_focus(
         .unwrap();
     harness.wait_for("the tab to leave and the move to record", |cx| {
         tab_order(cx, window) == [first]
-            && next_label(cx, window, RestoreDirection::Undo).is_some()
+            && next_label(cx, window, RestoreDirection::Undo)
+                .as_deref()
+                .is_some()
     });
     // Undo brings the tab back, but its view's install waits; the palette
     // opens meanwhile.

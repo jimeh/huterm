@@ -1,6 +1,9 @@
 //! Portable configuration definitions and validation shared by the desktop and schemas.
 
-use huterm_protocol::{Rgb, ScrollbackLimit};
+use huterm_protocol::{
+    BUILT_IN_LAYOUTS, LayoutTemplate, MAX_LAYOUT_NAME_LEN, NamedLayout, Rgb,
+    ScrollbackLimit,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -786,10 +789,11 @@ pub enum PaneZoomScope {
     Shared,
 }
 
+/// The most user-defined layouts `[panes.layouts]` holds.
+pub const MAX_LAYOUTS: usize = 64;
+
 /// Split pane behavior.
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
-)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct PanesConfig {
@@ -802,6 +806,144 @@ pub struct PanesConfig {
         "x-huterm-apply" = "live",
     )))]
     pub zoom: PaneZoomScope,
+    /// Named pane layouts, each a layout template: `columns(...)` places
+    /// its children left to right and `rows(...)` top to bottom; `pane`
+    /// takes one pane, `*` shares the remaining panes, and `grid(*)` tiles
+    /// them; a child may end with a share such as `60%`. For example,
+    /// `columns(pane 60%, rows(*))`. Names are lowercase letters, digits,
+    /// and underscores, starting with a letter, and may not be a built-in
+    /// layout's name.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Pane layouts",
+        "x-huterm-order" = 50,
+        "x-huterm-apply" = "live",
+        "maxProperties" = MAX_LAYOUTS,
+        "propertyNames" = crate::schema::user_layout_name(),
+        "additionalProperties" = crate::schema::layout_template(),
+    )))]
+    pub layouts: BTreeMap<String, String>,
+    /// The layouts `next_pane_layout` and `previous_pane_layout` step
+    /// through, in order: built-in names (`columns`, `rows`, `main_left`,
+    /// `main_top`, and `tiled`) or names from `[panes.layouts]`.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Layout cycle",
+        "x-huterm-order" = 60,
+        "x-huterm-apply" = "live",
+        "minItems" = 1,
+        "uniqueItems" = true,
+        "items" = crate::schema::layout_name(),
+    )))]
+    pub layout_cycle: Vec<String>,
+}
+
+impl Default for PanesConfig {
+    fn default() -> Self {
+        Self {
+            zoom: PaneZoomScope::default(),
+            layouts: BTreeMap::new(),
+            layout_cycle: BUILT_IN_LAYOUTS
+                .iter()
+                .map(|layout| layout.name.clone())
+                .collect(),
+        }
+    }
+}
+
+impl PanesConfig {
+    /// Checks the user layouts and the cycle.
+    ///
+    /// # Errors
+    /// Returns the first invalid layout or cycle entry, with its key path.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.layouts.len() > MAX_LAYOUTS {
+            return Err(format!(
+                "panes.layouts holds at most {MAX_LAYOUTS} layouts"
+            ));
+        }
+        for (name, source) in &self.layouts {
+            if !NamedLayout::valid_name(name) {
+                return Err(format!(
+                    "panes.layouts: {name:?} is not a layout name; use 1 to \
+                     {MAX_LAYOUT_NAME_LEN} lowercase letters, digits, and \
+                     underscores, starting with a letter"
+                ));
+            }
+            if NamedLayout::built_in(name).is_some() {
+                return Err(format!(
+                    "panes.layouts.{name}: `{name}` is a built-in layout"
+                ));
+            }
+            LayoutTemplate::parse(source).map_err(|error| {
+                // One-based, in characters, as an editor counts columns.
+                let column = source
+                    .get(..error.offset)
+                    .map_or(error.offset, |before| before.chars().count())
+                    + 1;
+                format!(
+                    "panes.layouts.{name}: {} at column {column}",
+                    error.kind
+                )
+            })?;
+        }
+        if self.layout_cycle.is_empty() {
+            return Err(
+                "panes.layout_cycle must name at least one layout".into()
+            );
+        }
+        for (index, name) in self.layout_cycle.iter().enumerate() {
+            if self.layout_cycle[..index].contains(name) {
+                return Err(format!(
+                    "panes.layout_cycle names `{name}` more than once"
+                ));
+            }
+            if self.layout(name).is_none() {
+                return Err(format!(
+                    "panes.layout_cycle: no pane layout named `{name}`"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The layout called `name`: a built-in, or one from `[panes.layouts]`,
+    /// titled by its name.
+    #[must_use]
+    pub fn layout(&self, name: &str) -> Option<NamedLayout> {
+        if let Some(layout) = NamedLayout::built_in(name) {
+            return Some(layout.clone());
+        }
+        let template = LayoutTemplate::parse(self.layouts.get(name)?).ok()?;
+        Some(NamedLayout {
+            name: name.to_owned(),
+            title: name.to_owned(),
+            template,
+        })
+    }
+
+    /// Every layout: the built-ins in cycle order, then the user layouts
+    /// by name.
+    #[must_use]
+    pub fn layouts(&self) -> Vec<NamedLayout> {
+        BUILT_IN_LAYOUTS
+            .iter()
+            .map(|layout| layout.name.as_str())
+            .chain(self.layouts.keys().map(String::as_str))
+            .filter_map(|name| self.layout(name))
+            .collect()
+    }
+
+    /// The layouts of the cycle, in order.
+    #[must_use]
+    pub fn cycle(&self) -> Vec<NamedLayout> {
+        self.layout_cycle
+            .iter()
+            .filter_map(|name| self.layout(name))
+            .collect()
+    }
 }
 
 /// Where the command palette sits within its window.
@@ -1709,6 +1851,7 @@ pub enum ConfigError {
     Engine(String),
     Keybinding(String),
     Quake(String),
+    Panes(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -1727,7 +1870,8 @@ impl fmt::Display for ConfigError {
             Self::Theme(message)
             | Self::Engine(message)
             | Self::Keybinding(message)
-            | Self::Quake(message) => formatter.write_str(message),
+            | Self::Quake(message)
+            | Self::Panes(message) => formatter.write_str(message),
         }
     }
 }
@@ -1753,6 +1897,7 @@ impl RawConfig {
     /// Returns an error when the input violates the configuration contract.
     pub fn validate_values(&self) -> Result<(), ConfigError> {
         self.quake.validate().map_err(ConfigError::Quake)?;
+        self.panes.validate().map_err(ConfigError::Panes)?;
         if self.palette.retain_query_seconds > 3600 {
             return Err(ConfigError::Invalid(
                 "palette.retain_query_seconds must be between 0 and 3600",
@@ -2336,6 +2481,132 @@ mod tests {
                 "[terminal]\nclipboard_write = 'prompt'"
             )
             .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod panes_tests {
+    use std::fmt::Write as _;
+
+    use super::*;
+
+    fn panes(source: &str) -> Result<PanesConfig, String> {
+        let raw: RawConfig =
+            toml::from_str(source).map_err(|error| error.to_string())?;
+        raw.validate_values().map_err(|error| error.to_string())?;
+        Ok(raw.panes)
+    }
+
+    #[test]
+    fn user_layouts_and_the_cycle_load_and_resolve() {
+        let defaults = panes("").unwrap();
+        assert_eq!(
+            defaults.layout_cycle,
+            ["columns", "rows", "main_left", "main_top", "tiled"]
+        );
+        let configured = panes(
+            "[panes.layouts]\n\
+             sides = 'columns(rows(*) 25%, pane, rows(*) 25%)'\n\
+             dev = 'columns(pane 55%, rows(pane 70%, columns(*)))'\n\
+             [panes]\n\
+             layout_cycle = ['dev', 'columns']\n",
+        )
+        .unwrap();
+        let names = |layouts: Vec<NamedLayout>| -> Vec<(String, String)> {
+            layouts
+                .into_iter()
+                .map(|layout| (layout.name, layout.title))
+                .collect()
+        };
+        assert_eq!(
+            names(configured.cycle()),
+            [
+                ("dev".to_owned(), "dev".to_owned()),
+                ("columns".to_owned(), "Equal Columns".to_owned()),
+            ]
+        );
+        // Built-ins in cycle order, then user layouts by name.
+        let all: Vec<String> = configured
+            .layouts()
+            .into_iter()
+            .map(|layout| layout.name)
+            .collect();
+        assert_eq!(
+            all,
+            [
+                "columns",
+                "rows",
+                "main_left",
+                "main_top",
+                "tiled",
+                "dev",
+                "sides"
+            ]
+        );
+        assert_eq!(
+            configured.layout("sides").unwrap().template.as_str(),
+            "columns(rows(*) 25%, pane, rows(*) 25%)"
+        );
+        assert!(configured.layout("missing").is_none());
+    }
+
+    #[test]
+    fn each_invalid_layout_or_cycle_names_its_key() {
+        let cases = [
+            (
+                "[panes.layouts]\ndev = 'columns(pane, )'",
+                "panes.layouts.dev: expected `columns`, `rows`, `grid`, `pane`, or `*` at column 15",
+            ),
+            (
+                "[panes.layouts]\nDev = 'rows(*)'",
+                "panes.layouts: \"Dev\" is not a layout name; use 1 to 32 lowercase letters, digits, and underscores, starting with a letter",
+            ),
+            (
+                "[panes.layouts]\ntiled = 'rows(*)'",
+                "panes.layouts.tiled: `tiled` is a built-in layout",
+            ),
+            (
+                "[panes]\nlayout_cycle = []",
+                "panes.layout_cycle must name at least one layout",
+            ),
+            (
+                "[panes]\nlayout_cycle = ['rows', 'columns', 'rows']",
+                "panes.layout_cycle names `rows` more than once",
+            ),
+            (
+                "[panes]\nlayout_cycle = ['columns', 'dev']",
+                "panes.layout_cycle: no pane layout named `dev`",
+            ),
+        ];
+        for (source, message) in cases {
+            assert_eq!(panes(source).unwrap_err(), message, "{source}");
+        }
+    }
+
+    #[test]
+    fn layout_limits_bound_the_config() {
+        let mut most = String::from("[panes.layouts]\n");
+        for index in 0..MAX_LAYOUTS {
+            writeln!(most, "l{index} = 'rows(*)'").unwrap();
+        }
+        assert_eq!(panes(&most).unwrap().layouts.len(), MAX_LAYOUTS);
+        most.push_str("extra = 'rows(*)'\n");
+        assert_eq!(
+            panes(&most).unwrap_err(),
+            "panes.layouts holds at most 64 layouts"
+        );
+        // Columns count characters: 8 ASCII bytes, then 508 two-byte
+        // characters, reach the 1 KiB limit at the 517th character.
+        let long = format!("columns({}", "é".repeat(600));
+        assert_eq!(
+            panes(&format!("[panes.layouts]\nlong = '{long}'")).unwrap_err(),
+            "panes.layouts.long: a template holds at most 1024 bytes at column 517"
+        );
+        let deep = format!("{}*{}", "columns(rows(".repeat(9), "))".repeat(9));
+        assert_eq!(
+            panes(&format!("[panes.layouts]\ndeep = '{deep}'")).unwrap_err(),
+            "panes.layouts.deep: splits nest at most 16 levels deep at column 105"
         );
     }
 }

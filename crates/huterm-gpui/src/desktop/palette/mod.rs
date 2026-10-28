@@ -26,9 +26,9 @@ use gpui::{
 };
 use huterm_config::PalettePlacement;
 use huterm_protocol::{
-    ArgumentKind, BUILT_IN_LAYOUTS, CommandArgument, CommandError, CommandId,
-    CommandInvocation, CommandOutcome, CommandScope, CommandSpec, CommandValue,
-    HierarchyState, SIDES, SessionId, TabId, TerminalId, WorkspaceId, catalog,
+    ArgumentKind, CommandArgument, CommandError, CommandId, CommandInvocation,
+    CommandOutcome, CommandScope, CommandSpec, CommandValue, HierarchyState,
+    NamedLayout, SIDES, SessionId, TabId, TerminalId, WorkspaceId, catalog,
     ids,
 };
 use search::{CommandHistory, CommandMatch, CommandSearch, PickerMatcher};
@@ -175,6 +175,8 @@ pub(super) struct PaletteOpen<'a> {
     pub(super) placement: PalettePlacement,
     pub(super) history: OwnedHistory,
     pub(super) profiles: Vec<QuakeProfileRow>,
+    /// Every layout `arrange_panes` can name, in picker order.
+    pub(super) layouts: Vec<NamedLayout>,
     /// A command invoked interactively without its required arguments.
     pub(super) request: Option<&'a CommandInvocation>,
     /// A query retained from a recent cancellation.
@@ -239,13 +241,10 @@ fn side_rows() -> Vec<IdentityRow> {
         .collect()
 }
 
-/// The rows a layout picker offers: the built-in layouts in cycle order,
-/// by title, with their templates as detail.
-static LAYOUT_ROWS: std::sync::LazyLock<Vec<IdentityRow>> =
-    std::sync::LazyLock::new(layout_rows);
-
-fn layout_rows() -> Vec<IdentityRow> {
-    BUILT_IN_LAYOUTS
+/// The rows a layout picker offers for `layouts`, by title, with their
+/// templates as detail.
+fn layout_rows(layouts: &[NamedLayout]) -> Vec<IdentityRow> {
+    layouts
         .iter()
         .map(|layout| IdentityRow {
             value: CommandValue::Text(layout.name.clone()),
@@ -423,6 +422,7 @@ impl PaletteHierarchy {
 struct DomainView<'a> {
     hierarchy: &'a PaletteHierarchy,
     profiles: &'a [IdentityRow],
+    layouts: &'a [IdentityRow],
     target: &'a PaletteTarget,
     /// Window-scoped commands can only act on this window's tabs.
     window_only: bool,
@@ -436,7 +436,7 @@ impl DomainView<'_> {
         match kind {
             ArgumentKind::QuakeProfile => self.profiles.iter().collect(),
             ArgumentKind::Side => SIDE_ROWS.iter().collect(),
-            ArgumentKind::Layout => LAYOUT_ROWS.iter().collect(),
+            ArgumentKind::Layout => self.layouts.iter().collect(),
             // A pane is never moved beside itself, nor a tab into one of
             // its own panes.
             ArgumentKind::Pane => self
@@ -684,6 +684,7 @@ pub(super) struct CommandPalette {
     /// The projection sequence `hierarchy` reflects.
     hierarchy_seq: u64,
     profiles: Vec<IdentityRow>,
+    layouts: Vec<IdentityRow>,
     /// Why each unavailable command is unavailable.
     pub(super) availability: HashMap<CommandId, String>,
     /// Row titles that extend a command's own, as [`PaletteOpen`] gives
@@ -724,6 +725,7 @@ impl CommandPalette {
             placement,
             history,
             profiles,
+            layouts,
             request,
             retained_query,
             hierarchy,
@@ -765,6 +767,7 @@ impl CommandPalette {
             hierarchy,
             hierarchy_seq,
             profiles: profile_rows(profiles),
+            layouts: layout_rows(&layouts),
             availability,
             titles,
             keymap,
@@ -831,18 +834,20 @@ impl CommandPalette {
         self.titles = titles;
     }
 
-    /// Applies reloaded theme colours, placement, and profiles to an open
-    /// palette.
+    /// Applies reloaded theme colours, placement, profiles, and layouts to
+    /// an open palette.
     pub(super) fn set_presentation(
         &mut self,
         colors: OverlayColors,
         placement: PalettePlacement,
         profiles: Vec<QuakeProfileRow>,
+        layouts: &[NamedLayout],
         cx: &mut Context<'_, Self>,
     ) {
         self.colors = colors;
         self.placement = placement;
         self.profiles = profile_rows(profiles);
+        self.layouts = layout_rows(layouts);
         self.input.update(cx, |input, cx| {
             input.set_foreground(colors.foreground, cx);
         });
@@ -932,6 +937,7 @@ impl CommandPalette {
         DomainView {
             hierarchy: &self.hierarchy,
             profiles: &self.profiles,
+            layouts: &self.layouts,
             target: &self.target,
             window_only: spec.scope == CommandScope::Window,
             moving_tab: self.moving_tab(spec, tab),
@@ -978,6 +984,7 @@ impl CommandPalette {
         DomainView {
             hierarchy: &self.hierarchy,
             profiles: &self.profiles,
+            layouts: &self.layouts,
             target: &self.target,
             window_only: self.window_only(),
             moving_tab,

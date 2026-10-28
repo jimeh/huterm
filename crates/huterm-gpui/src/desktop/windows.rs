@@ -3473,7 +3473,7 @@ enum MenuFocusReturn {
     Keep,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct PaletteRefreshState {
     tabs: usize,
     active: Option<TabId>,
@@ -3483,7 +3483,7 @@ struct PaletteRefreshState {
     quake: Option<(bool, bool)>,
     /// What undo and redo would restore, which pruning can change while
     /// the palette is open.
-    restorable: [Option<&'static str>; 2],
+    restorable: [Option<gpui::SharedString>; 2],
 }
 
 impl Drop for WorkspaceView {
@@ -7007,6 +7007,7 @@ impl WorkspaceView {
             placement: self.config.palette.placement,
             history,
             profiles: quake_profile_rows(cx),
+            layouts: self.config.panes.layouts(),
             request,
             retained_query,
             hierarchy,
@@ -7255,7 +7256,7 @@ impl WorkspaceView {
             return;
         };
         let state = self.current_palette_refresh_state(cx);
-        if self.palette_refresh_state == Some(state) {
+        if self.palette_refresh_state.as_ref() == Some(&state) {
             return;
         }
         self.palette_refresh_state = Some(state);
@@ -7495,11 +7496,13 @@ impl WorkspaceView {
         if let Some(palette) = self.palette.clone() {
             let colors = self.palette_colors();
             let profiles = quake_profile_rows(cx);
+            let layouts = self.config.panes.layouts();
             palette.update(cx, |palette, cx| {
                 palette.set_presentation(
                     colors,
                     self.config.palette.placement,
                     profiles,
+                    &layouts,
                     cx,
                 );
             });

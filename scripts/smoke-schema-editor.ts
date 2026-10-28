@@ -109,6 +109,12 @@ try {
   requireLabels(await completions(quakeUri, 3, 13), ["top", "bottom", "left", "right", "center"]);
   requireLabels(await completions(quakeUri, 4, 14), ["auto", "none", "fade", "slide", "slide_top", "slide_bottom", "slide_left", "slide_right"]);
   console.log("quake profiles: position and animation values complete; width boundary diagnosed");
+  const panesUri = pathToFileURL(join(directory, "panes.toml")).href;
+  const panesDiagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === panesUri && (message.params.diagnostics?.some(item => item.message.includes('is not allowed for "tiled"')) ?? false), "reserved layout name diagnostic");
+  send({ method: "textDocument/didOpen", params: { textDocument: { uri: panesUri, languageId: "toml", version: 1, text: `#:schema ${schema}\n[panes.layouts]\ntiled = "rows(*)"\n[panes]\n\n` } } });
+  await panesDiagnostic;
+  requireLabels(await completions(panesUri, 4, 0), ["zoom", "layout_cycle"]);
+  console.log("panes: layout_cycle completes; a built-in name as a user layout diagnosed");
   const engineUri = pathToFileURL(join(directory, "engine.toml")).href;
   const diagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === engineUri && (message.params.diagnostics?.length ?? 0) > 0, "engine enum diagnostic");
   send({ method: "textDocument/didOpen", params: { textDocument: { uri: engineUri, languageId: "toml", version: 1, text: `#:schema ${schema}\n[terminal]\nengine = "unknown"\n` } } });

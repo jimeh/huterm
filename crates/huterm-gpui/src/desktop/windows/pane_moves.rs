@@ -510,7 +510,7 @@ impl WorkspaceView {
                 view.reconcile_own(window, cx);
                 if let Ok(made) = &result {
                     view.record_layout_change(
-                        change.label(),
+                        change.label().into(),
                         focus,
                         made.clone(),
                         seq,

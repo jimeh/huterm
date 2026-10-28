@@ -514,6 +514,57 @@
       "additionalProperties": false,
       "description": "Split pane behavior.",
       "properties": {
+        "layout_cycle": {
+          "default": [
+            "columns",
+            "rows",
+            "main_left",
+            "main_top",
+            "tiled"
+          ],
+          "description": "The layouts `next_pane_layout` and `previous_pane_layout` step\nthrough, in order: built-in names (`columns`, `rows`, `main_left`,\n`main_top`, and `tiled`) or names from `[panes.layouts]`.",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true,
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Layout cycle",
+          "x-huterm-order": 60,
+          "x-huterm-section": "window"
+        },
+        "layouts": {
+          "additionalProperties": {
+            "description": "A layout template, such as `columns(pane 60%, rows(*))`.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "description": "Named pane layouts, each a layout template: `columns(...)` places\nits children left to right and `rows(...)` top to bottom; `pane`\ntakes one pane, `*` shares the remaining panes, and `grid(*)` tiles\nthem; a child may end with a share such as `60%`. For example,\n`columns(pane 60%, rows(*))`. Names are lowercase letters, digits,\nand underscores, starting with a letter, and may not be a built-in\nlayout's name.",
+          "maxProperties": 64,
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "columns",
+                "rows",
+                "main_left",
+                "main_top",
+                "tiled"
+              ]
+            },
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "type": "string"
+          },
+          "type": "object",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Pane layouts",
+          "x-huterm-order": 50,
+          "x-huterm-section": "window"
+        },
         "zoom": {
           "allOf": [
             {
@@ -4430,7 +4481,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "layout": {
-                    "description": "Pane layout name: `columns`, `rows`, `main_left`, `main_top`, or `tiled`.",
+                    "description": "Pane layout name: `columns`, `rows`, `main_left`, `main_top`, `tiled`, or a name from `[panes.layouts]`.",
                     "pattern": "^[a-z][a-z0-9_]{0,31}$",
                     "type": "string"
                   }

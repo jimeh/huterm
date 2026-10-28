@@ -36,7 +36,12 @@ const OVERRIDES: &[(&str, Special)] = &[
 ];
 
 /// Settings that Settings never edits, leaving them to `config.toml`.
-const FILE_ONLY: &[&str] = &["themes", "terminal.engine"];
+const FILE_ONLY: &[&str] = &[
+    "themes",
+    "terminal.engine",
+    "panes.layouts",
+    "panes.layout_cycle",
+];
 
 /// The special control for `path`, if any.
 pub(super) fn special(path: &str) -> Option<Special> {

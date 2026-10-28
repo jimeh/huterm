@@ -150,6 +150,67 @@ same zoomed pane:
 zoom = "view" # view or shared
 ```
 
+### Pane layouts
+
+`arrange_panes` and the layout cycle start with five built-in layouts,
+described in [pane layouts](keybindings.md#pane-layouts). Define your own
+under `[panes.layouts]`, each a name and a layout template, and choose the
+layouts the cycle visits with `layout_cycle`:
+
+```toml
+[panes.layouts]
+dev = "columns(pane 55%, rows(pane 70%, columns(*)))"
+pair = "rows(columns(pane, pane) 70%, columns(*))"
+sides = "columns(rows(*) 25%, pane, rows(*) 25%)"
+
+[panes]
+layout_cycle = ["columns", "rows", "main_left", "main_top", "tiled", "dev"]
+```
+
+A template describes a layout for any number of panes. The built-ins are
+templates too: `main_left` is `columns(pane 60%, rows(*))`.
+
+- `columns(...)` places its children left to right, and `rows(...)` top to
+  bottom.
+- `pane` takes one pane.
+- `*` takes the panes left once every `pane` has one. Several stars divide
+  them as evenly as possible, and when they do not divide evenly the earlier
+  stars take one more each. In `columns` or `rows`, a star's panes sit side
+  by side in that split and share the star's space equally.
+- `grid(*)` tiles its panes as the built-in `tiled` layout does.
+- A child may end with a share from 1 % to 99 %, such as `pane 60%`.
+  Children without one divide what the shares leave equally, and a star
+  counts as one child however many panes it takes, so in `columns(pane, *)`
+  the pane keeps half the width at any pane count. The shares must total
+  less than 100 when some child has none, and exactly 100 when every child
+  has one.
+
+Panes fill the slots in template order, which is the order focus and swaps
+follow. A slot that receives no pane drops out, and its siblings' shares
+grow in proportion to fill its space. With six panes, `sides` puts three on
+the left, one in the centre, and two on the right. With two panes its right
+stack is empty, so the left pane and the centre pane take one third and two
+thirds of the width. A template without a `*` holds no more panes than it
+has `pane` slots: `arrange_panes` refuses a tab with more, with a notice,
+and the cycle skips that layout.
+
+A layout name is up to 32 lowercase letters, digits, and underscores,
+starting with a letter, and cannot be a built-in's name. The file holds at
+most 64 layouts; each template is at most 1 KiB, with splits nested at most
+16 deep. `layout_cycle` defaults to the five built-ins in the table's order,
+may name any built-in or user layout, and must not be empty or repeat a
+name. A layout that breaks these rules, or a `layout_cycle` entry naming a
+layout that does not exist, makes the whole configuration invalid. The
+error names the key, and for a template that does not parse, the column
+where it goes wrong. Removing a layout the cycle still names is such an
+error, as removing a quake profile that a global shortcut uses is. A
+keybinding naming a missing layout fails only when it runs, with a notice. A
+reload replaces the layouts and the cycle.
+
+The palette's layout picker and the Settings keybinding editor list your
+layouts after the built-ins. Settings does not edit `[panes.layouts]` or
+`layout_cycle` yet; change them in the file.
+
 ## Tab bar
 
 Tabs can sit at the top, bottom, left, or right of the window, or in the title

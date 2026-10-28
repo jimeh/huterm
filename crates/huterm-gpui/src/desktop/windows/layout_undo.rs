@@ -2,6 +2,7 @@
 //! restore. Each restore commits one runtime operation on a worker, which
 //! the runtime refuses when the touched tabs no longer match the entry.
 
+use gpui::SharedString;
 use huterm_core::RestoreDirection;
 use huterm_protocol::LayoutChange;
 
@@ -60,7 +61,7 @@ impl WorkspaceView {
     /// ignored. The history is then checked against the projection.
     pub(super) fn record_layout_change(
         &mut self,
-        label: &'static str,
+        label: SharedString,
         focus: Option<PaneId>,
         change: LayoutChange,
         seq: u64,
@@ -92,9 +93,9 @@ impl WorkspaceView {
         &self,
         direction: RestoreDirection,
         cx: &App,
-    ) -> Option<&'static str> {
+    ) -> Option<SharedString> {
         let record = cx.global::<Desktop>().windows.record(self.window)?;
-        Some(record.layout_history.peek(direction)?.label)
+        Some(record.layout_history.peek(direction)?.label.clone())
     }
 
     /// Whether `undo` or `redo` can run now: no structural operation,
