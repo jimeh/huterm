@@ -590,7 +590,8 @@ GPUI reports an accessibility node only for an element with both an `id` and a
 `aria_position_in_set` and `aria_size_of_set` pass AccessKit's values through
 unchanged, and AccessKit differs from ARIA: a position is zero-based, and the
 AT-SPI adapter adds one and reads the size from the set's container, never
-from the item. The macOS adapter reads neither. The vendored
+from the item. The macOS adapter reads neither. States are per node too: a
+disabled container does not disable its items, so set them on each. The vendored
 GPUI's `test-window-accessibility` patch activates accessibility in test
 windows: tests read `Window::debug_a11y_tree_json`, which spells element ids
 in their `Debug` form (`Name("id")`), and act through

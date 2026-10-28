@@ -1,8 +1,9 @@
 //! Button: a labelled control that runs an action, such as Reset, Open
 //! config.toml, or a dialog's Cancel and Delete.
 //!
-//! Anatomy: a label, optionally followed by a key cap for its shortcut, in a
-//! control-height pill. [`Variant`]s follow shadcn/ui's: outlined by
+//! Anatomy: an optional icon and a label, optionally followed by a key cap
+//! for its shortcut, in a control-height pill. An icon-only button, such as
+//! the title row's, is a square that shows its label as a tooltip. [`Variant`]s follow shadcn/ui's: outlined by
 //! default, a quiet secondary fill, a borderless ghost, an accent fill for
 //! the primary action, a danger fill for destructive actions, and a link.
 //!
@@ -22,8 +23,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ElementId, FocusHandle, Hsla, IntoElement, MouseButton, RenderOnce,
-    SharedString, Window, div, prelude::*, px,
+    AnyElement, App, Div, ElementId, FocusHandle, Hsla, IntoElement,
+    MouseButton, RenderOnce, SharedString, Stateful, Window, div, prelude::*,
+    px,
 };
 
 use crate::a11y::States;
@@ -64,6 +66,8 @@ pub struct Button {
     disabled: Option<SharedString>,
     tooltip: Option<SharedString>,
     shortcut: Vec<Glyph>,
+    icon: Option<AnyElement>,
+    icon_only: bool,
     key_context: Option<SharedString>,
     on_click: Option<Action>,
 }
@@ -96,6 +100,8 @@ impl Button {
             disabled: None,
             tooltip: None,
             shortcut: Vec::new(),
+            icon: None,
+            icon_only: false,
             key_context: None,
             on_click: None,
         }
@@ -134,6 +140,21 @@ impl Button {
     #[must_use]
     pub fn shortcut(mut self, glyphs: Vec<Glyph>) -> Self {
         self.shortcut = glyphs;
+        self
+    }
+
+    /// An icon drawn before the label, such as an SVG at the text size.
+    #[must_use]
+    pub fn icon(mut self, icon: impl IntoElement) -> Self {
+        self.icon = Some(icon.into_any_element());
+        self
+    }
+
+    /// Draws the icon alone in a control-height square; the label stays
+    /// the accessible name and becomes the tooltip, unless one is set.
+    #[must_use]
+    pub fn icon_only(mut self) -> Self {
+        self.icon_only = true;
         self
     }
 
@@ -179,7 +200,10 @@ fn look(variant: Variant, tokens: Tokens) -> Look {
             text: tokens.fg,
             border: None,
             hover: tokens.pressed(),
-            pressed: tokens.pressed(),
+            pressed: Hsla {
+                a: (tokens.pressed().a * 1.5).min(1.0),
+                ..tokens.pressed()
+            },
         },
         Variant::Ghost => Look {
             fill: None,
@@ -192,7 +216,7 @@ fn look(variant: Variant, tokens: Tokens) -> Look {
             fill: Some(tokens.accent),
             text: tokens.on_accent(),
             border: None,
-            hover: tokens.accent_pressed(),
+            hover: crate::tokens::mix(tokens.accent, tokens.bg, 0.12),
             pressed: tokens.accent_pressed(),
         },
         Variant::Destructive => Look {
@@ -211,6 +235,32 @@ fn look(variant: Variant, tokens: Tokens) -> Look {
             pressed: tokens.pressed(),
         },
     }
+}
+
+/// `button`'s hover and pressed states, or, when disabled, its dimming and
+/// a press guard: a disabled control keeps its handle but takes no focus
+/// from a press.
+fn interactions(
+    button: Stateful<Div>,
+    variant: Variant,
+    look: &Look,
+    enabled: bool,
+) -> Stateful<Div> {
+    if !enabled {
+        return button.opacity(0.5).on_mouse_down(
+            MouseButton::Left,
+            |_, window, _| {
+                window.prevent_default();
+            },
+        );
+    }
+    if variant == Variant::Link {
+        return button.hover(Styled::underline);
+    }
+    let (hover, pressed) = (look.hover, look.pressed);
+    button
+        .hover(move |style| style.bg(hover))
+        .active(move |style| style.bg(pressed))
 }
 
 impl RenderOnce for Button {
@@ -234,6 +284,12 @@ impl RenderOnce for Button {
         });
         let keyshortcuts =
             (!self.shortcut.is_empty()).then(|| kbd::text(&self.shortcut));
+        // An icon-only button names itself in its tooltip; the label is
+        // already its accessible name, so it is not also its description.
+        let tooltip = description
+            .clone()
+            .or_else(|| self.icon_only.then(|| self.label.clone()));
+        let icon_only = self.icon_only;
         let focus = self.focus.map(|focus| focus.tab_stop(enabled));
         let button = div()
             .id(self.id)
@@ -261,7 +317,13 @@ impl RenderOnce for Button {
             .gap(px(8.0))
             .h(size::CONTROL_HEIGHT)
             .when(self.variant != Variant::Link, |button| {
-                button.px(px(10.0)).rounded(px(size::CONTROL_RADIUS))
+                button.rounded(px(size::CONTROL_RADIUS))
+            })
+            .when(self.variant != Variant::Link && !icon_only, |button| {
+                button.px(px(10.0))
+            })
+            .when(icon_only, |button| {
+                button.w(size::CONTROL_HEIGHT).justify_center()
             })
             .text_size(size::TEXT_CONTROL)
             .text_color(look.text)
@@ -269,30 +331,12 @@ impl RenderOnce for Button {
             .when_some(look.border, |button, border| {
                 button.border_1().border_color(border)
             })
-            .when_some(description, |button, text| {
+            .when_some(tooltip, |button, text| {
                 button.tooltip(move |_, cx| {
                     Tooltip::view(text.clone(), tokens, cx)
                 })
             })
-            .when(enabled, |button| {
-                if self.variant == Variant::Link {
-                    button.hover(Styled::underline)
-                } else {
-                    button
-                        .hover(|style| style.bg(look.hover))
-                        .active(|style| style.bg(look.pressed))
-                }
-            })
-            .when(!enabled, |button| {
-                // A disabled control keeps its handle but takes no focus
-                // from a press.
-                button.opacity(0.5).on_mouse_down(
-                    MouseButton::Left,
-                    |_, window, _| {
-                        window.prevent_default();
-                    },
-                )
-            })
+            .map(|button| interactions(button, self.variant, &look, enabled))
             .when_some(self.on_click.filter(|_| enabled), |button, action| {
                 button.on_click(move |event, window, cx| {
                     if !from_keyboard(event) {
@@ -300,7 +344,8 @@ impl RenderOnce for Button {
                     }
                 })
             })
-            .child(self.label)
+            .children(self.icon)
+            .when(!icon_only, |button| button.child(self.label))
             .children(cap);
         let button = match &focus {
             Some(focus) => focus::ring(button, focus, tokens, window, cx),
@@ -326,6 +371,7 @@ mod tests {
 
     use super::{Button, Variant};
     use crate::components::kbd::Glyph;
+    use crate::focus::ring_drawn;
     use crate::testing::{a11y_node, host, tokens};
 
     struct Probe {
@@ -410,6 +456,28 @@ mod tests {
             let aria = &a11y_node(window, "reload")["aria"];
             assert_eq!(aria["disabled"], true);
             assert_eq!(aria["description"], "The file is invalid");
+        });
+    }
+
+    #[gpui::test]
+    fn keyboard_focus_draws_the_ring(cx: &mut TestAppContext) {
+        let (probe, cx) = button(cx, |button| button);
+        cx.simulate_keystrokes("a");
+        cx.update(|window, cx| probe.focus.focus(window, cx));
+        cx.run_until_parked();
+        assert!(cx.update(|window, cx| ring_drawn(&probe.focus, window, cx)));
+    }
+
+    #[gpui::test]
+    fn an_icon_only_button_keeps_its_name(cx: &mut TestAppContext) {
+        let (_, cx) = button(cx, |button| {
+            button.icon(gpui::div().size(px(14.0))).icon_only()
+        });
+        cx.update(|window, _| {
+            let aria = &a11y_node(window, "reload")["aria"];
+            assert_eq!(aria["label"], "Reload");
+            // The label is its name, so it is not repeated as a description.
+            assert!(aria["description"].is_null());
         });
     }
 }

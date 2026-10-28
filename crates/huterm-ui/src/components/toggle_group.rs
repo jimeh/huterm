@@ -14,11 +14,15 @@
 //! keyboard click is ignored, so only routed commands act on keys.
 //!
 //! Pointer: a click selects an item (single) or toggles it (multiple). A
-//! disabled group takes no focus from a press and does not act.
+//! disabled group takes no focus from a press, does not act, and shows its
+//! reason as a tooltip.
 //!
 //! Accessibility, single: a `RadioGroup` of `RadioButton`s whose toggled
-//! state marks the selection, with their position in the set. Multiple: a
-//! `Group` of `Button`s whose toggled state follows each item.
+//! state marks the selection, with their position in the set; while the
+//! group has focus, the selected radio is its active descendant, which
+//! assistive technology follows. Multiple: a `Group` of `Button`s whose
+//! toggled state follows each item. Each item reports a disabled group's
+//! disabled state, since AccessKit states are per node.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -30,12 +34,13 @@ use gpui::{
 
 use crate::a11y::States;
 use crate::click::from_keyboard;
+use crate::components::tooltip::Tooltip;
 use crate::focus;
 use crate::tokens::{Tokens, size};
 
 /// Whether a group picks one item or toggles several.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
+enum Mode {
     /// One selected item, as a segmented control or radio group.
     Single,
     /// Independent toggles, as chips.
@@ -136,6 +141,11 @@ impl ToggleGroup {
         label: impl Into<SharedString>,
         on: bool,
     ) -> Self {
+        debug_assert_eq!(
+            self.mode,
+            Mode::Single,
+            "`option` is a single group's"
+        );
         self.items.push(Item {
             value: value.into(),
             label: label.into(),
@@ -155,6 +165,11 @@ impl ToggleGroup {
         on: bool,
         focus: &FocusHandle,
     ) -> Self {
+        debug_assert_eq!(
+            self.mode,
+            Mode::Multiple,
+            "`toggle` is a multiple group's"
+        );
         self.items.push(Item {
             value: value.into(),
             label: label.into(),
@@ -257,6 +272,12 @@ fn render_item(
         })
         // AccessKit positions are zero-based; the group carries the size.
         .aria_position_in_set(index)
+        // Focus stays on a single group, so its selection is what assistive
+        // technology follows.
+        .when(
+            single && item.on,
+            StatefulInteractiveElement::aria_active_descendant,
+        )
         .when_some(focus.as_ref(), InteractiveElement::track_focus)
         .when_some(key_context, |element, context| {
             element.key_context(context.as_ref())
@@ -299,10 +320,16 @@ fn render_item(
             })
         })
         .child(item.label);
-    match &focus {
+    let element = match &focus {
         Some(focus) => focus::ring(element, focus, tokens, window, cx),
         None => element,
+    };
+    // AccessKit states are per node, so each item reports the group's.
+    States {
+        disabled: !enabled,
+        ..States::default()
     }
+    .apply(element)
 }
 
 impl RenderOnce for ToggleGroup {
@@ -348,7 +375,13 @@ impl RenderOnce for ToggleGroup {
             })
             .aria_label(self.label)
             .aria_size_of_set(count)
-            .when_some(reason, StatefulInteractiveElement::aria_description)
+            .when_some(reason, |group, reason| {
+                group
+                    .aria_description(reason.clone())
+                    .tooltip(move |_, cx| {
+                        Tooltip::view(reason.clone(), tokens, cx)
+                    })
+            })
             .when_some(group_focus.as_ref(), |group, focus| {
                 group.track_focus(focus)
             })
@@ -398,7 +431,11 @@ mod tests {
 
     use super::{ToggleGroup, roving_target};
     use crate::components::button::Button;
-    use crate::testing::{a11y_labelled, a11y_node, a11y_send, host, tokens};
+    use crate::focus::ring_drawn;
+    use crate::testing::{
+        a11y_active_descendant, a11y_labelled, a11y_node, a11y_send, host,
+        tokens,
+    };
 
     struct Probe {
         focus: FocusHandle,
@@ -480,6 +517,11 @@ mod tests {
             let group = &a11y_node(window, "tabs")["aria"];
             assert_eq!(group["disabled"], true);
             assert_eq!(group["description"], "The file is invalid");
+            // AccessKit states are per node, so each item says so too.
+            assert_eq!(
+                a11y_labelled(window, "Bottom")["aria"]["disabled"],
+                true
+            );
         });
     }
 
@@ -576,6 +618,9 @@ mod tests {
         click(cx, "Ctrl");
         assert!(chips.picks.borrow().is_empty());
         assert!(!focused(cx, &chips.items[2]));
+        cx.update(|window, _| {
+            assert_eq!(a11y_labelled(window, "Ctrl")["aria"]["disabled"], true);
+        });
     }
 
     #[gpui::test]
@@ -610,5 +655,32 @@ mod tests {
             let back = roving_target(&items, false, window);
             assert_eq!(back.as_ref(), Some(&items[2]));
         });
+    }
+
+    #[gpui::test]
+    fn a_focused_single_group_follows_its_selection(cx: &mut TestAppContext) {
+        let (probe, cx) = single(cx, false);
+        cx.simulate_keystrokes("a");
+        cx.update(|window, cx| probe.focus.focus(window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(ring_drawn(&probe.focus, window, cx));
+            let followed = a11y_active_descendant(window)
+                .expect("the focused group names its selection");
+            assert_eq!(followed["aria"]["label"], "Top");
+        });
+    }
+
+    #[gpui::test]
+    fn keyboard_focus_rings_a_multiple_groups_item(cx: &mut TestAppContext) {
+        let (chips, cx) = multiple(cx, false);
+        cx.simulate_keystrokes("a");
+        cx.update(|window, cx| chips.items[1].focus(window, cx));
+        cx.run_until_parked();
+        assert!(cx.update(|window, cx| ring_drawn(
+            &chips.items[1],
+            window,
+            cx
+        )));
     }
 }

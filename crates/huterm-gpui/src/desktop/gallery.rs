@@ -499,6 +499,21 @@ fn buttons(index: usize, swatch: Swatch) -> Div {
                             swatch,
                         )
                         .disabled(Some("Shown when unavailable".into())),
+                    )
+                    .child(
+                        Button::new(
+                            ("button-new-tab", index),
+                            "New tab",
+                            swatch,
+                        )
+                        .variant(Variant::Ghost)
+                        .icon(
+                            gpui::svg()
+                                .path("icons/plus.svg")
+                                .size(px(14.0))
+                                .text_color(swatch.fg),
+                        )
+                        .icon_only(),
                     ),
             ),
     )

@@ -9,8 +9,9 @@
 //! as in WAI-ARIA's switch pattern. GPUI's implicit keyboard click is
 //! ignored, so only that routed command acts on keys.
 //!
-//! Pointer: a click toggles. A disabled switch takes no focus from a press
-//! and does not toggle.
+//! Pointer: a click toggles; hover and pressed states show. A disabled
+//! switch takes no focus from a press, does not toggle, and shows its reason
+//! as a tooltip.
 //!
 //! Accessibility: a `Switch` named by its label whose toggled state follows
 //! it, reporting a disabled reason as its description.
@@ -18,14 +19,15 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ElementId, FocusHandle, IntoElement, MouseButton, RenderOnce,
+    App, ElementId, FocusHandle, Hsla, IntoElement, MouseButton, RenderOnce,
     SharedString, Toggled, Window, div, prelude::*, px,
 };
 
 use crate::a11y::States;
 use crate::click::from_keyboard;
+use crate::components::tooltip::Tooltip;
 use crate::focus;
-use crate::tokens::Tokens;
+use crate::tokens::{Tokens, mix};
 
 type Toggle = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
@@ -108,12 +110,31 @@ impl RenderOnce for Switch {
         let on = self.on;
         let focus = self.focus.clone().tab_stop(enabled);
         let reason = self.disabled.clone().filter(|reason| !reason.is_empty());
+        let deeper = |amount: f32| Hsla {
+            a: (tokens.line_strong.a + amount).min(1.0),
+            ..tokens.line_strong
+        };
+        let (track, hover, pressed) = if on {
+            (
+                tokens.accent,
+                mix(tokens.accent, tokens.bg, 0.12),
+                tokens.accent_pressed(),
+            )
+        } else {
+            (tokens.line_strong, deeper(0.08), deeper(0.16))
+        };
         let switch = div()
             .id(self.id)
             .role(gpui::Role::Switch)
             .aria_label(self.label)
             .aria_toggled(if on { Toggled::True } else { Toggled::False })
-            .when_some(reason, StatefulInteractiveElement::aria_description)
+            .when_some(reason, |switch, reason| {
+                switch
+                    .aria_description(reason.clone())
+                    .tooltip(move |_, cx| {
+                        Tooltip::view(reason.clone(), tokens, cx)
+                    })
+            })
             .track_focus(&focus)
             .when_some(self.key_context, |switch, context| {
                 switch.key_context(context.as_ref())
@@ -123,10 +144,11 @@ impl RenderOnce for Switch {
             .h(px(20.0))
             .p(px(2.0))
             .rounded_full()
-            .bg(if on {
-                tokens.accent
-            } else {
-                tokens.line_strong
+            .bg(track)
+            .when(enabled, |switch| {
+                switch
+                    .hover(|style| style.bg(hover))
+                    .active(|style| style.bg(pressed))
             })
             .when(!enabled, |switch| {
                 switch.opacity(0.5).on_mouse_down(
@@ -170,6 +192,7 @@ mod tests {
     };
 
     use super::Switch;
+    use crate::focus::ring_drawn;
     use crate::testing::{a11y_node, host, tokens};
 
     struct Probe {
@@ -242,5 +265,30 @@ mod tests {
             assert_eq!(aria["disabled"], true);
             assert_eq!(aria["description"], "The file is invalid");
         });
+    }
+
+    #[gpui::test]
+    fn the_ring_shows_for_keyboard_focus_until_a_press(
+        cx: &mut TestAppContext,
+    ) {
+        let (probe, cx) = switch(cx, false, false);
+        cx.simulate_keystrokes("a");
+        cx.update(|window, cx| probe.focus.focus(window, cx));
+        cx.run_until_parked();
+        let ring = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| ring_drawn(&probe.focus, window, cx))
+        };
+        assert!(ring(cx));
+        // Pointer motion alone keeps it; a press on the switch hides it.
+        cx.simulate_mouse_move(
+            point(px(10.0), px(10.0)),
+            None,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+        assert!(ring(cx));
+        cx.simulate_click(point(px(10.0), px(10.0)), Modifiers::none());
+        cx.run_until_parked();
+        assert!(!ring(cx));
     }
 }

@@ -92,6 +92,18 @@ pub(crate) fn a11y_node(window: &Window, id: &str) -> Value {
         })
 }
 
+/// The node assistive technology follows inside the focused element, such
+/// as a radio group's selected radio, if any.
+pub(crate) fn a11y_active_descendant(window: &Window) -> Option<Value> {
+    let json = window
+        .debug_a11y_tree_json()
+        .expect("test windows report an accessibility tree for every frame");
+    let tree: Value =
+        serde_json::from_str(&json).expect("the tree dump is JSON");
+    let key = tree["active_descendant_focus"].as_str()?;
+    Some(tree["nodes"][key].clone())
+}
+
 /// The node labelled `label`, for elements whose ids are child ids,
 /// panicking with the tree when no node carries that label.
 pub(crate) fn a11y_labelled(window: &Window, label: &str) -> Value {
