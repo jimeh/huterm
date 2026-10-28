@@ -14,13 +14,16 @@
 //!   on the control that already has focus does not change focus.
 //!
 //! A window takes part by mounting [`tracker`] once in its root view.
-//! Components draw their ring through [`ring`].
+//! Components draw their ring through [`ring`], or through [`current_ring`]
+//! when their owner keeps focus and marks the keyboard's place among them
+//! itself, as a dialog that routes its own keys between its buttons does.
 
 use std::collections::HashMap;
 
 use gpui::{
-    App, DispatchPhase, FocusHandle, Global, IntoElement, MouseDownEvent,
-    Styled, Subscription, WeakFocusHandle, Window, WindowId, canvas,
+    App, DispatchPhase, ElementId, FocusHandle, Global, IntoElement,
+    MouseDownEvent, Styled, Subscription, WeakFocusHandle, Window, WindowId,
+    canvas,
 };
 
 use crate::tokens::Tokens;
@@ -35,12 +38,21 @@ struct Record {
     /// Whether the window's last press was a key rather than a pointer
     /// button: the input that decides a focus change not yet recorded.
     last_press_was_key: bool,
-    /// Handles whose ring this frame applied.
+    /// Rings this frame applied.
     #[cfg(feature = "test-support")]
-    pending: Vec<WeakFocusHandle>,
-    /// Handles whose ring the last painted frame applied.
+    pending: Vec<Ringed>,
+    /// Rings the last painted frame applied.
     #[cfg(feature = "test-support")]
-    drawn: Vec<WeakFocusHandle>,
+    drawn: Vec<Ringed>,
+}
+
+/// What a ring was applied for, so tests can ask after it.
+#[cfg(feature = "test-support")]
+enum Ringed {
+    /// A control that holds focus through this handle.
+    Handle(WeakFocusHandle),
+    /// A control its owner marks as current, named by its element id.
+    Current(ElementId),
 }
 
 #[derive(Default)]
@@ -100,7 +112,46 @@ pub fn ring<E: Styled>(
     // Only a tracked window keeps a record; creating one here would change
     // `visible` for a window without a tracker in test builds alone.
     #[cfg(feature = "test-support")]
-    with_record(window, cx, |record| record.pending.push(handle.downgrade()));
+    with_record(window, cx, |record| {
+        record.pending.push(Ringed::Handle(handle.downgrade()));
+    });
+    element.shadow(tokens.focus_ring())
+}
+
+/// Whether a control its owner marks as the keyboard's place shows a ring:
+/// the window's last press was a key. The owner keeps focus itself and
+/// moves the mark with its own commands, so no focus change decides it; a
+/// pointer press hides the ring until the next key.
+#[must_use]
+pub fn current_visible(window: &Window, cx: &App) -> bool {
+    cx.try_global::<Records>()
+        .and_then(|records| records.windows.get(&window_id(window)))
+        .map_or_else(
+            || window.last_input_was_keyboard(),
+            |record| record.last_press_was_key,
+        )
+}
+
+/// `element`, the control named `id` that its owner marks as the keyboard's
+/// place, with the focus ring while [`current_visible`]. Apply it last
+/// among an element's shadows, as [`ring`].
+#[must_use]
+pub fn current_ring<E: Styled>(
+    element: E,
+    id: &ElementId,
+    tokens: Tokens,
+    window: &Window,
+    cx: &mut App,
+) -> E {
+    if !current_visible(window, cx) {
+        return element;
+    }
+    #[cfg(feature = "test-support")]
+    with_record(window, cx, |record| {
+        record.pending.push(Ringed::Current(id.clone()));
+    });
+    #[cfg(not(feature = "test-support"))]
+    let _ = id;
     element.shadow(tokens.focus_ring())
 }
 
@@ -110,9 +161,35 @@ pub fn ring<E: Styled>(
 #[cfg(feature = "test-support")]
 #[must_use]
 pub fn ring_drawn(handle: &FocusHandle, window: &Window, cx: &App) -> bool {
+    drawn(
+        window,
+        cx,
+        |ringed| matches!(ringed, Ringed::Handle(drawn) if drawn == handle),
+    )
+}
+
+/// Whether the last painted frame applied the ring of the control named
+/// `id` through [`current_ring`].
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn current_ring_drawn(
+    id: impl Into<ElementId>,
+    window: &Window,
+    cx: &App,
+) -> bool {
+    let id = id.into();
+    drawn(
+        window,
+        cx,
+        |ringed| matches!(ringed, Ringed::Current(drawn) if *drawn == id),
+    )
+}
+
+#[cfg(feature = "test-support")]
+fn drawn(window: &Window, cx: &App, matches: impl Fn(&Ringed) -> bool) -> bool {
     cx.try_global::<Records>()
         .and_then(|records| records.windows.get(&window_id(window)))
-        .is_some_and(|record| record.drawn.iter().any(|drawn| drawn == handle))
+        .is_some_and(|record| record.drawn.iter().any(matches))
 }
 
 /// The element that keeps a window's focus record. Mount it once in the
@@ -136,9 +213,14 @@ pub fn tracker() -> impl IntoElement {
                 .collect();
             if cx.default_global::<Records>().keys.is_none() {
                 let keys = cx.intercept_keystrokes(|_, window, cx| {
-                    with_record(window, cx, |record| {
-                        record.last_press_was_key = true;
+                    // A key after a pointer press shows a current control's
+                    // ring, even when the key itself changes nothing.
+                    let shows = with_record(window, cx, |record| {
+                        !std::mem::replace(&mut record.last_press_was_key, true)
                     });
+                    if shows {
+                        window.refresh();
+                    }
                 });
                 cx.global_mut::<Records>().keys = Some(keys);
             }
@@ -167,13 +249,15 @@ pub fn tracker() -> impl IntoElement {
     .size(gpui::px(0.0))
 }
 
-/// Records a pointer press in `window`, hiding a keyboard focus ring. A
+/// Records a pointer press in `window`, hiding a keyboard focus ring or a
+/// current control's ring. A
 /// capture-phase listener that stops a press, such as a popover's guard,
 /// calls this first, since the tracker's own listener may come after it.
 pub(crate) fn note_pointer_press(window: &mut Window, cx: &mut App) {
     let hid = with_record(window, cx, |record| {
-        record.last_press_was_key = false;
-        std::mem::take(&mut record.keyboard)
+        let after_key =
+            std::mem::replace(&mut record.last_press_was_key, false);
+        std::mem::take(&mut record.keyboard) || after_key
     });
     if hid {
         window.refresh();

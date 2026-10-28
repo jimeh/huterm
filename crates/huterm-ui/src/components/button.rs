@@ -8,33 +8,46 @@
 //! tooltip and draws no key cap. [`Variant`]s follow shadcn/ui's: outlined
 //! by default, a quiet secondary fill, a borderless ghost, an accent fill
 //! for the primary action, a danger fill for destructive actions, and a
-//! link.
+//! link. A button drawn on another surface's palette, such as a tab bar's,
+//! takes its [`Colors`] instead; its owner may also resize, place, and
+//! restyle it through `Styled`, which applies over the variant's style, and
+//! add children, such as a badge, after its content.
 //!
 //! Keyboard: a button the owner gives a focus handle takes focus; the owner
 //! runs its action on its activation command (Space and Return by default).
 //! GPUI's implicit keyboard click is ignored, so only that routed command
-//! acts on keys.
+//! acts on keys. An owner that keeps focus itself and moves between its
+//! buttons with its own commands, as a dialog does, marks the keyboard's
+//! place with [`Button::current`] instead.
 //!
 //! Pointer: a click runs the action; hover and pressed states show. A
 //! disabled button takes no focus from a press and does not act, and shows
 //! its reason as a tooltip.
 //!
-//! Accessibility: a `Button` (or `Link`) named by its label, reporting its
-//! shortcut, its tooltip or disabled reason as its description, and its
-//! disabled state.
+//! Focus: the ring shows for keyboard focus, or on the current button while
+//! the window's last press was a key, never after a pointer press. A button
+//! with a tooltip shows it below itself while the ring shows. A button whose
+//! menu is expanded shows no tooltip, which would cover the menu.
+//!
+//! Accessibility: a `Button` (or a `Link`, unless a link-look action takes
+//! [`Button::button_role`]) named by its label, reporting its
+//! shortcut, its tooltip or disabled reason as its description, whether a
+//! menu it opens is expanded, and its disabled state. The current button is
+//! its focused owner's active descendant, so assistive technology follows
+//! the keyboard's place.
 
 use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Hsla, IntoElement,
-    MouseButton, RenderOnce, SharedString, Stateful, Window, div, prelude::*,
-    px,
+    MouseButton, ParentElement, Refineable, RenderOnce, SharedString, Stateful,
+    StyleRefinement, Styled, Window, div, prelude::*, px,
 };
 
 use crate::a11y::States;
 use crate::click::from_keyboard;
 use crate::components::kbd::{self, Glyph};
-use crate::components::tooltip::Tooltip;
+use crate::components::tooltip::{self, Tooltip};
 use crate::focus;
 use crate::tokens::{Tokens, size};
 
@@ -56,24 +69,54 @@ pub enum Variant {
     Link,
 }
 
+/// A button's fill, text, border, hover, and pressed colors. A link
+/// underlines on hover instead of filling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Colors {
+    /// The resting fill, if any.
+    pub fill: Option<Hsla>,
+    /// The label, icon tint, and key cap color.
+    pub text: Hsla,
+    /// The one-point border, if any.
+    pub border: Option<Hsla>,
+    /// The fill while hovered.
+    pub hover: Hsla,
+    /// The fill while held down.
+    pub pressed: Hsla,
+}
+
 type Action = Rc<dyn Fn(&mut Window, &mut App)>;
 
 /// A button.
 #[derive(IntoElement)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent builder option"
+)]
 pub struct Button {
     id: ElementId,
     label: SharedString,
     variant: Variant,
     tokens: Tokens,
+    colors: Option<Colors>,
     focus: Option<FocusHandle>,
+    current: bool,
     disabled: Option<SharedString>,
     tooltip: Option<SharedString>,
     shortcut: Vec<Glyph>,
     icon: Option<AnyElement>,
     icon_only: bool,
     small: bool,
+    expanded: Option<bool>,
+    plain_role: bool,
+    group: Option<SharedString>,
+    occlude: bool,
+    stop_presses: bool,
     key_context: Option<SharedString>,
+    debug_selector: Option<String>,
     on_click: Option<Action>,
+    style: StyleRefinement,
+    children: Vec<AnyElement>,
 }
 
 impl std::fmt::Debug for Button {
@@ -100,15 +143,25 @@ impl Button {
             label: label.into(),
             variant: Variant::Outline,
             tokens,
+            colors: None,
             focus: None,
+            current: false,
             disabled: None,
             tooltip: None,
             shortcut: Vec::new(),
             icon: None,
             icon_only: false,
             small: false,
+            expanded: None,
+            plain_role: false,
+            group: None,
+            occlude: false,
+            stop_presses: false,
             key_context: None,
+            debug_selector: None,
             on_click: None,
+            style: StyleRefinement::default(),
+            children: Vec::new(),
         }
     }
 
@@ -119,11 +172,31 @@ impl Button {
         self
     }
 
+    /// The button drawn in `colors` rather than its variant's, for a button
+    /// on another surface's palette, such as a tab bar's.
+    #[must_use]
+    pub fn colors(mut self, colors: Colors) -> Self {
+        self.colors = Some(colors);
+        self
+    }
+
     /// The handle the button takes focus through, which makes it a tab stop
     /// and shows its ring for keyboard focus.
     #[must_use]
     pub fn focus(mut self, focus: &FocusHandle) -> Self {
         self.focus = Some(focus.clone());
+        self
+    }
+
+    /// Marks the button as the keyboard's place among its owner's buttons,
+    /// for an owner that keeps focus itself and moves between them with its
+    /// own commands, as a dialog does. It shows the ring while the window's
+    /// last press was a key, and reports the button as the active
+    /// descendant of the focused owner, which needs an accessibility role.
+    /// A button with a focus handle ignores it.
+    #[must_use]
+    pub fn current(mut self, current: bool) -> Self {
+        self.current = current;
         self
     }
 
@@ -173,11 +246,62 @@ impl Button {
         self
     }
 
+    /// Reports whether the menu the button opens is expanded.
+    #[must_use]
+    pub fn expanded(mut self, expanded: bool) -> Self {
+        self.expanded = Some(expanded);
+        self
+    }
+
+    /// Reports a `Button` in the link variant too, for a control that looks
+    /// like a link but runs an action rather than opening a page.
+    #[must_use]
+    pub fn button_role(mut self) -> Self {
+        self.plain_role = true;
+        self
+    }
+
+    /// Names the button as a hover group, so an icon passed to it can
+    /// change with the button's hover through `group_hover`.
+    #[must_use]
+    pub fn group(mut self, name: impl Into<SharedString>) -> Self {
+        self.group = Some(name.into());
+        self
+    }
+
+    /// Keeps the pointer's hover and presses from reaching what the button
+    /// covers.
+    #[must_use]
+    pub fn occlude(mut self) -> Self {
+        self.occlude = true;
+        self
+    }
+
+    /// Stops primary presses at the button, so they never reach what it
+    /// sits on, such as a title row whose press moves the window.
+    #[must_use]
+    pub fn stop_presses(mut self) -> Self {
+        self.stop_presses = true;
+        self
+    }
+
     /// The key context the button carries, such as the owner's control
     /// context that its activation command binds under.
     #[must_use]
     pub fn key_context(mut self, context: impl Into<SharedString>) -> Self {
         self.key_context = Some(context.into());
+        self
+    }
+
+    /// Names the button for GPUI's `debug_bounds` in tests. Like GPUI's own
+    /// `debug_selector`, it calls `selector` only where GPUI records
+    /// selectors: in debug builds with `test-support`, which also enables
+    /// GPUI's.
+    #[must_use]
+    pub fn debug_selector(mut self, selector: impl FnOnce() -> String) -> Self {
+        if cfg!(any(test, all(debug_assertions, feature = "test-support"))) {
+            self.debug_selector = Some(selector());
+        }
         self
     }
 
@@ -192,46 +316,49 @@ impl Button {
     }
 }
 
-/// A variant's fill, text, border, hover, and pressed colors.
-struct Look {
-    fill: Option<Hsla>,
-    text: Hsla,
-    border: Option<Hsla>,
-    hover: Hsla,
-    pressed: Hsla,
+impl Styled for Button {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
 }
 
-fn look(variant: Variant, tokens: Tokens) -> Look {
+impl ParentElement for Button {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.children.extend(elements);
+    }
+}
+
+fn colors(variant: Variant, tokens: Tokens) -> Colors {
     match variant {
-        Variant::Outline => Look {
+        Variant::Outline => Colors {
             fill: None,
             text: tokens.fg,
             border: Some(tokens.line_strong),
             hover: tokens.hover,
             pressed: tokens.pressed(),
         },
-        Variant::Secondary => Look {
+        Variant::Secondary => Colors {
             fill: Some(tokens.chip),
             text: tokens.fg,
             border: None,
             hover: tokens.chip_hover(),
             pressed: tokens.pressed(),
         },
-        Variant::Ghost => Look {
+        Variant::Ghost => Colors {
             fill: None,
             text: tokens.fg,
             border: None,
             hover: tokens.hover,
             pressed: tokens.pressed(),
         },
-        Variant::Primary => Look {
+        Variant::Primary => Colors {
             fill: Some(tokens.accent),
             text: tokens.on_accent(),
             border: None,
             hover: tokens.shade(tokens.accent, 0.1),
             pressed: tokens.accent_pressed(),
         },
-        Variant::Destructive => Look {
+        Variant::Destructive => Colors {
             fill: Some(tokens.danger),
             text: tokens.on(tokens.danger),
             border: None,
@@ -240,7 +367,7 @@ fn look(variant: Variant, tokens: Tokens) -> Look {
             pressed: tokens.shade(tokens.danger, 0.2),
         },
         // A link underlines on hover instead of filling.
-        Variant::Link => Look {
+        Variant::Link => Colors {
             fill: None,
             text: tokens.accent_text(),
             border: None,
@@ -256,7 +383,7 @@ fn look(variant: Variant, tokens: Tokens) -> Look {
 fn interactions(
     button: Stateful<Div>,
     variant: Variant,
-    look: &Look,
+    colors: &Colors,
     enabled: bool,
 ) -> Stateful<Div> {
     if !enabled {
@@ -270,17 +397,90 @@ fn interactions(
     if variant == Variant::Link {
         return button.hover(Styled::underline);
     }
-    let (hover, pressed) = (look.hover, look.pressed);
+    let (hover, pressed) = (colors.hover, colors.pressed);
     button
         .hover(move |style| style.bg(hover))
         .active(move |style| style.bg(pressed))
 }
 
+impl Button {
+    /// The button's own element: its identity, accessibility, layout,
+    /// colors, and the owner's style over them, before its states, content,
+    /// and ring.
+    fn frame(
+        &mut self,
+        look: &Colors,
+        description: Option<SharedString>,
+        focus: Option<&FocusHandle>,
+        current: bool,
+    ) -> Stateful<Div> {
+        let height = if self.small {
+            size::SMALL_CONTROL_HEIGHT
+        } else {
+            size::CONTROL_HEIGHT
+        };
+        let link = self.variant == Variant::Link;
+        let keyshortcuts =
+            (!self.shortcut.is_empty()).then(|| kbd::text(&self.shortcut));
+        let mut button = div()
+            .id(self.id.clone())
+            .role(if link && !self.plain_role {
+                gpui::Role::Link
+            } else {
+                gpui::Role::Button
+            })
+            .aria_label(self.label.clone())
+            .when_some(description, |button, text| {
+                button.aria_description(text)
+            })
+            .when_some(keyshortcuts, |button, text| {
+                button.aria_keyshortcuts(text)
+            })
+            .when_some(self.expanded, |button, expanded| {
+                button.aria_expanded(expanded)
+            })
+            .when_some(focus, InteractiveElement::track_focus)
+            .when(current, StatefulInteractiveElement::aria_active_descendant)
+            .when_some(self.key_context.take(), |button, context| {
+                button.key_context(context.as_ref())
+            })
+            .when_some(self.group.take(), InteractiveElement::group)
+            .when_some(self.debug_selector.take(), |button, selector| {
+                button.debug_selector(|| selector)
+            })
+            .when(self.occlude, InteractiveElement::occlude)
+            .when(self.stop_presses, |button| {
+                button.on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+            })
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(8.0))
+            .h(height)
+            .when(!link, |button| button.rounded(px(size::CONTROL_RADIUS)))
+            .when(!link && !self.icon_only, |button| {
+                button.px(px(if self.small { 6.0 } else { 10.0 }))
+            })
+            .when(self.icon_only, |button| button.w(height).justify_center())
+            .text_size(size::TEXT_CONTROL)
+            .text_color(look.text)
+            .when_some(look.fill, Styled::bg)
+            .when_some(look.border, |button, border| {
+                button.border_1().border_color(border)
+            });
+        // The owner's style applies over the variant's.
+        button.style().refine(&std::mem::take(&mut self.style));
+        button
+    }
+}
+
 impl RenderOnce for Button {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let tokens = self.tokens;
         let enabled = self.disabled.is_none();
-        let look = look(self.variant, tokens);
+        let look = self.colors.unwrap_or_else(|| colors(self.variant, tokens));
         let description = self
             .disabled
             .clone()
@@ -295,59 +495,21 @@ impl RenderOnce for Button {
         // every fill the button takes.
         let cap = (!self.shortcut.is_empty() && !self.icon_only)
             .then(|| kbd::cap_on(&self.shortcut, look.text));
-        let keyshortcuts =
-            (!self.shortcut.is_empty()).then(|| kbd::text(&self.shortcut));
         // An icon-only button names itself in its tooltip; the label is
         // already its accessible name, so it is not also its description.
         let tooltip = description
             .clone()
-            .or_else(|| self.icon_only.then(|| self.label.clone()));
-        let icon_only = self.icon_only;
-        let height = if self.small {
-            size::SMALL_CONTROL_HEIGHT
-        } else {
-            size::CONTROL_HEIGHT
+            .or_else(|| self.icon_only.then(|| self.label.clone()))
+            .filter(|_| self.expanded != Some(true));
+        let focus = self.focus.take().map(|focus| focus.tab_stop(enabled));
+        let current = self.current && focus.is_none();
+        let ringed = match &focus {
+            Some(focus) => focus::visible(focus, window, cx),
+            None => current && focus::current_visible(window, cx),
         };
-        let focus = self.focus.map(|focus| focus.tab_stop(enabled));
-        let button = div()
-            .id(self.id)
-            .role(if self.variant == Variant::Link {
-                gpui::Role::Link
-            } else {
-                gpui::Role::Button
-            })
-            .aria_label(self.label.clone())
-            .when_some(description.clone(), |button, text| {
-                button.aria_description(text)
-            })
-            .when_some(keyshortcuts, |button, text| {
-                button.aria_keyshortcuts(text)
-            })
-            .when_some(focus.as_ref(), |button, focus| {
-                button.track_focus(focus)
-            })
-            .when_some(self.key_context, |button, context| {
-                button.key_context(context.as_ref())
-            })
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(8.0))
-            .h(height)
-            .when(self.variant != Variant::Link, |button| {
-                button.rounded(px(size::CONTROL_RADIUS))
-            })
-            .when(self.variant != Variant::Link && !icon_only, |button| {
-                button.px(px(if self.small { 6.0 } else { 10.0 }))
-            })
-            .when(icon_only, |button| button.w(height).justify_center())
-            .text_size(size::TEXT_CONTROL)
-            .text_color(look.text)
-            .when_some(look.fill, Styled::bg)
-            .when_some(look.border, |button, border| {
-                button.border_1().border_color(border)
-            })
-            .when_some(tooltip, |button, text| {
+        let button = self
+            .frame(&look, description, focus.as_ref(), current)
+            .when_some(tooltip.clone(), |button, text| {
                 button.tooltip(move |_, cx| {
                     Tooltip::view(text.clone(), tokens, cx)
                 })
@@ -361,10 +523,17 @@ impl RenderOnce for Button {
                 })
             })
             .children(self.icon)
-            .when(!icon_only, |button| button.child(self.label))
-            .children(cap);
+            .when(!self.icon_only, |button| button.child(self.label))
+            .children(cap)
+            .children(self.children)
+            .when_some(tooltip.filter(|_| ringed), |button, text| {
+                button.child(tooltip::focused(text, tokens))
+            });
         let button = match &focus {
             Some(focus) => focus::ring(button, focus, tokens, window, cx),
+            None if current => {
+                focus::current_ring(button, &self.id, tokens, window, cx)
+            }
             None => button,
         };
         States {
@@ -379,6 +548,7 @@ impl RenderOnce for Button {
 mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
+    use std::time::Duration;
 
     use gpui::{
         FocusHandle, KeyUpEvent, Keystroke, Modifiers, TestAppContext,
@@ -387,7 +557,7 @@ mod tests {
 
     use super::{Button, Variant};
     use crate::components::kbd::Glyph;
-    use crate::focus::ring_drawn;
+    use crate::focus::{current_ring_drawn, ring_drawn};
     use crate::testing::{a11y_node, host, tokens};
 
     struct Probe {
@@ -433,10 +603,25 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_link_button_reports_a_link(cx: &mut TestAppContext) {
-        let (_, cx) = button(cx, |button| button.variant(Variant::Link));
+    fn a_link_button_reports_a_link_unless_it_takes_the_button_role(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, cx) = host(cx, |_, _| {
+            gpui::div()
+                .child(
+                    Button::new("link", "Docs", tokens())
+                        .variant(Variant::Link),
+                )
+                .child(
+                    Button::new("action", "Reload", tokens())
+                        .variant(Variant::Link)
+                        .button_role(),
+                )
+                .into_any_element()
+        });
         cx.update(|window, _| {
-            assert_eq!(a11y_node(window, "reload")["aria"]["role"], "Link");
+            assert_eq!(a11y_node(window, "link")["aria"]["role"], "Link");
+            assert_eq!(a11y_node(window, "action")["aria"]["role"], "Button");
         });
     }
 
@@ -519,5 +704,100 @@ mod tests {
         let icon = cx.debug_bounds("icon").expect("the icon drew");
         assert!(icon.origin.x >= px(0.0), "{icon:?}");
         assert!(icon.origin.x + icon.size.width <= px(24.0), "{icon:?}");
+    }
+
+    #[gpui::test]
+    fn keyboard_focus_shows_the_tooltip_until_a_press(cx: &mut TestAppContext) {
+        let (probe, cx) =
+            button(cx, |button| button.tooltip("Reload the config file"));
+        assert!(cx.debug_bounds("tooltip").is_none());
+        cx.simulate_keystrokes("a");
+        cx.update(|window, cx| probe.focus.focus(window, cx));
+        cx.run_until_parked();
+        let tooltip = cx
+            .debug_bounds("tooltip")
+            .expect("keyboard focus shows the tooltip");
+        assert!(
+            tooltip.origin.y >= px(24.0),
+            "below the button: {tooltip:?}"
+        );
+        cx.update(|window, _| {
+            let aria = &a11y_node(window, "reload")["aria"];
+            assert_eq!(aria["description"], "Reload the config file");
+        });
+        cx.simulate_click(point(px(20.0), px(10.0)), Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| probe.focus.is_focused(window)));
+        assert!(cx.debug_bounds("tooltip").is_none(), "a press hides it");
+    }
+
+    #[gpui::test]
+    fn an_expanded_button_shows_no_hover_tooltip(cx: &mut TestAppContext) {
+        let (_, cx) = button(cx, |button| {
+            button.tooltip("Reload the config file").expanded(true)
+        });
+        cx.simulate_mouse_move(
+            point(px(20.0), px(10.0)),
+            None,
+            Modifiers::none(),
+        );
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("tooltip").is_none(), "it covers the menu");
+        cx.update(|window, _| {
+            let aria = &a11y_node(window, "reload")["aria"];
+            assert_eq!(aria["description"], "Reload the config file");
+        });
+    }
+
+    #[gpui::test]
+    fn a_current_button_shows_its_ring_after_a_key_and_not_after_a_press(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, cx) = host(cx, |_, _| {
+            Button::new("cancel", "Cancel", tokens())
+                .current(true)
+                .into_any_element()
+        });
+        let drawn = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| current_ring_drawn("cancel", window, cx))
+        };
+        // Nothing binds the key, so only the focus record redraws.
+        let key = |cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes("a");
+            cx.run_until_parked();
+        };
+        key(cx);
+        assert!(drawn(cx), "a key shows the ring");
+        cx.simulate_click(point(px(20.0), px(10.0)), Modifiers::none());
+        cx.run_until_parked();
+        assert!(!drawn(cx), "a press hides it");
+        key(cx);
+        assert!(drawn(cx), "the next key shows it again");
+    }
+
+    #[gpui::test]
+    fn an_owner_restyles_the_button_and_adds_children(cx: &mut TestAppContext) {
+        let (_, cx) = button(cx, |button| {
+            button
+                .icon(gpui::div().size(px(14.0)))
+                .icon_only()
+                .expanded(true)
+                .debug_selector(|| "reload".to_owned())
+                .w(px(30.0))
+                .h(px(30.0))
+                .child(
+                    gpui::div()
+                        .absolute()
+                        .size(px(4.0))
+                        .debug_selector(|| "badge".to_owned()),
+                )
+        });
+        let bounds = cx.debug_bounds("reload").expect("the button drew");
+        assert_eq!(bounds.size, gpui::size(px(30.0), px(30.0)));
+        assert!(cx.debug_bounds("badge").is_some());
+        cx.update(|window, _| {
+            assert_eq!(a11y_node(window, "reload")["aria"]["expanded"], true);
+        });
     }
 }

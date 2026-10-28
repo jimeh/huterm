@@ -75,6 +75,34 @@ test("Settings draws focus rings through huterm-ui, except where a later migrati
   expect(counts).toEqual(remaining);
 });
 
+test("terminal-window files whose buttons moved to Button draw only the rings they keep", () => {
+  // Migration 3b moved these files' buttons onto `Button`, which draws its
+  // ring through `focus::ring` or `focus::current_ring`. Two rings stay on
+  // purpose: the Licenses search field's, until its `Input` migration, and
+  // a focused toast's, part of the app-specific notice stack. Lower a count
+  // when its ring moves; a new ring fails here.
+  const remaining: Record<string, number> = {
+    "crates/huterm-gpui/src/desktop/licenses.rs": 1,
+    "crates/huterm-gpui/src/desktop/notices.rs": 1,
+  };
+  const files = [
+    "crates/huterm-gpui/src/desktop/about.rs",
+    "crates/huterm-gpui/src/desktop/close_dialog.rs",
+    "crates/huterm-gpui/src/desktop/licenses.rs",
+    "crates/huterm-gpui/src/desktop/notices.rs",
+    "crates/huterm-gpui/src/desktop/windows.rs",
+    "crates/huterm-gpui/src/desktop/windows/tab_bar.rs",
+  ];
+  const patterns = [/\.(focus|in_focus|focus_visible)\(\s*(move\s+)?\|/g, /\bfocus_ring\b/g];
+  const counts: Record<string, number> = {};
+  for (const relative of files) {
+    const source = readFileSync(join(repoRoot, relative), "utf8");
+    const count = patterns.reduce((total, pattern) => total + [...source.matchAll(pattern)].length, 0);
+    if (count > 0) counts[relative] = count;
+  }
+  expect(counts).toEqual(remaining);
+});
+
 test("text draws with corrected tokens, never raw theme colors", () => {
   // `Tokens` corrects arbitrary themes so enabled text reads on its fill:
   // `accent_text()`, `warning_text()`, `danger_text()`, `on(fill)`, and

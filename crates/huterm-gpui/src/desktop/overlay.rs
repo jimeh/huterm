@@ -107,10 +107,6 @@ pub(crate) fn scrim(swatch: Swatch) -> Div {
     div().absolute().inset_0().occlude().bg(swatch.scrim())
 }
 
-/// A one-line hover tooltip on the raised surface, for controls whose icon
-/// or disabled state needs a word of explanation.
-pub(crate) use huterm_ui::components::tooltip::Tooltip as TextTooltip;
-
 /// A severity mark: a filled circle with a single glyph.
 pub(crate) fn severity_mark(glyph: &str, fill: Hsla, swatch: Swatch) -> Div {
     div()

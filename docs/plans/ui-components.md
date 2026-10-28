@@ -1,12 +1,13 @@
 # UI components
 
 Status: in progress. Step 1 (the foundation), the components of steps 2, 3,
-and 4, and migrations 2a (Settings selects), 2b (terminal-window menus), and
+and 4, and migrations 2a (Settings selects), 2b (terminal-window menus),
 3a (Settings buttons, links, switches, segmented controls, tri-states,
-modifier chips, tags, and counts) are implemented; 2b removed
-`desktop/menu.rs` and its menu host (D13). 3a also moved the Keybindings
-filter and shortcut switches; the key recorders, delete prompt, theme cards,
-and sidebar rows keep their GPUI focus styles until their own migrations.
+modifier chips, tags, and counts), and 3b (terminal-window buttons and
+tooltips) are implemented; 2b removed `desktop/menu.rs` and its menu host
+(D13). 3a also moved the Keybindings filter and shortcut switches; the key
+recorders, delete prompt, theme cards, and sidebar rows keep their GPUI
+focus styles until their own migrations.
 Approved on 2026-10-27 after four Codex and Claude review rounds, then
 revised for a separate crate, the terminal window's adoption, and
 normalization against shadcn/ui, which three more review rounds checked.
@@ -764,7 +765,12 @@ still change. Siblings that share a shape land together.
    group before calling `step`, which finds only settings and would drop the
    chip commands, and `docs/keybindings.md` says the arrows move between
    chips. Migration 3b: the terminal window's dialog, title-row, tab-bar, and
-   notice buttons and tooltips.
+   notice buttons and tooltips. The dialogs keep their own focus model until
+   7b, so their buttons mark the keyboard's place with `Button::current`
+   rather than taking focus, and a click moves the mark. The close dialog
+   and About already hold focus on an `AlertDialog` or `Dialog` node, so
+   the current button is its active descendant; Licenses keeps focus in its
+   search field until 7b, so its mark has no active descendant.
 4. **Text entry:** `Input` (the moved `TextField`, hardened with a
    read-only state, horizontal scrolling, Cut, and an accessible value),
    `InputGroup`, `NumberField`, and `Slider`. `ui/text.rs` moves with

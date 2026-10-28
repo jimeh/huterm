@@ -38,7 +38,7 @@ use super::notices::{
     Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
     ToastHandlers, render_notice_stack,
 };
-use super::overlay::{OverlayColors, TextTooltip, overlay_colors, tokens};
+use super::overlay::{OverlayColors, overlay_colors, tokens};
 use super::palette::{
     CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
     PaletteHierarchy, PaletteOpen, PaletteScope, PaletteTarget,
@@ -67,6 +67,7 @@ use huterm_protocol::{
     ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name, validate,
     validate_supplied,
 };
+use huterm_ui::components::button::{Button, Colors as ButtonColors};
 use huterm_ui::components::menu::{
     MIN_WIDTH as MENU_MIN_WIDTH, Menu as MenuView, MenuEvent,
 };
@@ -2182,6 +2183,7 @@ fn open_window_with_profile(
             };
             let button_layout = cx.global::<Desktop>().button_layout;
             let frame = WindowFrame::resolve(
+                host.platform,
                 resolve_tab_position(config.tabs.position, host),
                 state,
                 button_layout,
@@ -2261,6 +2263,8 @@ fn open_window_with_profile(
                 native_fullscreen,
                 fullscreen_work,
                 frame_state: state,
+                #[cfg(test)]
+                decorations_override: None,
                 applied_frame: None,
                 button_layout,
                 tabs: Vec::new(),
@@ -3325,6 +3329,11 @@ struct WorkspaceView {
     /// The decorations, maximized, and fullscreen facts GPUI last
     /// reported; `sync_frame` samples them.
     frame_state: FrameState,
+    /// Decorations `sync_frame` takes in place of GPUI's: the test window
+    /// always reports server-side ones. While set, the frame also resolves
+    /// as on Linux, so the title row Huterm draws can be tested on macOS.
+    #[cfg(test)]
+    decorations_override: Option<gpui::Decorations>,
     /// The frame last pushed to GPUI as the client inset and background
     /// appearance; `None` before the first sample.
     applied_frame: Option<WindowFrame>,
@@ -5223,10 +5232,23 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
 }
 
 impl WorkspaceView {
+    /// The platform whose window frame this window draws.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "only tests override it")
+    )]
+    fn frame_platform(&self) -> Platform {
+        #[cfg(test)]
+        if self.decorations_override.is_some() {
+            return Platform::Linux;
+        }
+        Platform::current()
+    }
+
     /// The facts that decide whether this window has a title-bar row.
     fn tab_host(&self) -> TabHost {
         TabHost {
-            platform: Platform::current(),
+            platform: self.frame_platform(),
             fullscreen: self.fullscreen.chrome_hidden,
             quake: self.quake.is_some(),
             client_decorations: self.frame_state.client_decorations(),
@@ -5237,6 +5259,7 @@ impl WorkspaceView {
     /// and the decorations GPUI last reported.
     fn window_frame(&self) -> WindowFrame {
         WindowFrame::resolve(
+            self.frame_platform(),
             self.layout_tabs().position,
             self.frame_state,
             self.button_layout,
@@ -5255,6 +5278,11 @@ impl WorkspaceView {
     /// the caller relays out.
     fn sync_frame(&mut self, window: &mut Window) -> bool {
         let state = frame_state(window);
+        #[cfg(test)]
+        let state = FrameState {
+            decorations: self.decorations_override.unwrap_or(state.decorations),
+            ..state
+        };
         let state_changed = self.frame_state != state;
         self.frame_state = state;
         let frame = self.window_frame();
@@ -6069,8 +6097,11 @@ impl WorkspaceView {
         changed
     }
 
+    /// Focuses the active terminal, or the showing dialog.
     fn restore_tab_focus(&self, window: &mut Window, cx: &mut App) {
-        if let Some(tab) = self.active_view(cx) {
+        if self.dialog_showing() {
+            self.focus_dialog(window, cx);
+        } else if let Some(tab) = self.active_view(cx) {
             let focus = tab.read(cx).focus.clone();
             focus.focus(window, cx);
         }
@@ -8288,21 +8319,16 @@ fn close_dialog_input<'a>(
 impl WorkspaceView {
     /// Shows the About panel, or refocuses it, or the Licenses view over it,
     /// when it is already showing.
-    /// It takes the root focus so the `confirming` bindings close it, and
-    /// blocks terminal input while it is up.
+    /// Its dialog node holds the window's focus handle, so the
+    /// `confirming` bindings close it and terminal input is blocked while
+    /// it is up.
     fn show_about(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         if self.about.is_some() {
-            // The Licenses view replaces the panel; keep its search focused.
-            match &self.licenses {
-                Some(licenses) => {
-                    licenses.read(cx).focus_handle(cx).focus(window, cx);
-                }
-                None => self.focus.focus(window, cx),
-            }
+            self.focus_dialog(window, cx);
             cx.notify();
             return Ok(CommandOutcome::Completed);
         }
@@ -8319,6 +8345,17 @@ impl WorkspaceView {
         self.focus.focus(window, cx);
         cx.notify();
         Ok(CommandOutcome::Completed)
+    }
+
+    /// Focuses the showing dialog's holder: the window's focus handle, or
+    /// the Licenses search, as the Licenses view replaces the About panel.
+    fn focus_dialog(&self, window: &mut Window, cx: &mut App) {
+        match &self.licenses {
+            Some(licenses) => {
+                licenses.read(cx).focus_handle(cx).focus(window, cx);
+            }
+            None => self.focus.focus(window, cx),
+        }
     }
 
     /// Closes the About panel, and the Licenses view over it, and returns
@@ -9978,17 +10015,18 @@ pub(super) struct WindowFrame {
 }
 
 impl WindowFrame {
-    /// The frame for a window whose tabs resolved to `position`. Only a
-    /// Linux window drawing the merged row owns a border; its inset follows
-    /// the tiling, maximized, and fullscreen state GPUI reports, and its
-    /// row draws the desktop's `buttons`.
+    /// The frame for a `platform` window whose tabs resolved to
+    /// `position`. Only a Linux window drawing the merged row owns a
+    /// border; its inset follows the tiling, maximized, and fullscreen
+    /// state GPUI reports, and its row draws the desktop's `buttons`.
     fn resolve(
+        platform: Platform,
         position: TabPosition,
         state: FrameState,
         buttons: ButtonLayout,
     ) -> Self {
-        let controls = Platform::current() == Platform::Linux
-            && position == TabPosition::Titlebar;
+        let controls =
+            platform == Platform::Linux && position == TabPosition::Titlebar;
         if !controls {
             return Self::default();
         }
@@ -10500,6 +10538,12 @@ impl Render for WorkspaceView {
                 self.window_button_bounds[button.index()].set(None);
             }
         }
+        // The top dialog holds the window's focus on its own node, so
+        // assistive technology follows its current button, the node's
+        // active descendant. Licenses keeps focus in its search field.
+        let confirming = self.close.confirmation.is_some();
+        let about_holds_focus =
+            !confirming && self.licenses.is_none() && self.about.is_some();
         let mut root = div()
             .size_full()
             .relative()
@@ -10507,7 +10551,9 @@ impl Render for WorkspaceView {
             .text_color(foreground)
             .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
-            .track_focus(&self.focus)
+            .when(!confirming && !about_holds_focus, |root| {
+                root.track_focus(&self.focus)
+            })
             .on_drag_move::<gpui::ExternalPaths>(|_, window, cx| {
                 // GPUI owns one app-wide drag. Closing another window must
                 // not cancel the external payload delivered to this one.
@@ -10552,7 +10598,8 @@ impl Render for WorkspaceView {
                     }
                 },
             ))
-            .on_action(cx.listener(Self::invoke_palette));
+            .on_action(cx.listener(Self::invoke_palette))
+            .child(huterm_ui::focus::tracker());
         if decorated {
             root = root.child(
                 div()
@@ -11018,8 +11065,9 @@ impl Render for WorkspaceView {
                             |drag| drag.spring.tab() == Some(tab.id),
                         ),
                     };
-                bar = bar
-                    .child(Self::tab_element(&item, bounds, tabs, colors, cx));
+                bar = bar.child(Self::tab_element(
+                    &item, bounds, tabs, colors, swatch, cx,
+                ));
             }
             for forward in [false, true] {
                 if !vertical
@@ -11032,68 +11080,70 @@ impl Render for WorkspaceView {
                         px(0.0)
                     } + CONTROL_INSET;
                     bar = bar.child(
-                        div()
-                            .id(if forward {
+                        Button::new(
+                            if forward {
                                 "scroll-tabs-forward"
                             } else {
                                 "scroll-tabs-backward"
-                            })
-                            .absolute()
-                            .left(if vertical {
-                                (strip.bounds.size.width - CONTROL_SIZE)
-                                    .max(px(0.0))
-                                    / 2.0
+                            },
+                            if forward {
+                                "Scroll Tabs Right"
                             } else {
-                                edge
-                            })
-                            .top(if vertical { edge } else { bar_inset })
-                            .w(CONTROL_SIZE)
-                            .h(CONTROL_SIZE)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .group("scroll-tabs")
-                            .bg(colors.bar)
-                            .hover(|style| style.bg(colors.control_hover))
-                            .active(|style| style.bg(colors.control_pressed))
-                            .rounded_md()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation();
-                            })
-                            .on_click(cx.listener(
-                                move |view, _, window, cx| {
-                                    let amount = view
-                                        .tab_strip(window)
-                                        .available()
-                                        * if forward { 0.75 } else { -0.75 };
-                                    let strip = view.tab_strip(window);
-                                    if view.scroll_target.is_none() {
-                                        view.last_scroll = Instant::now();
-                                    }
-                                    view.scroll_target = Some(
-                                        (view
-                                            .scroll_target
-                                            .unwrap_or(strip.offset)
-                                            + amount)
-                                            .clamp(px(0.0), strip.max_offset()),
-                                    );
-                                    cx.notify();
-                                    cx.stop_propagation();
+                                "Scroll Tabs Left"
+                            },
+                            swatch,
+                        )
+                        .colors(ButtonColors {
+                            fill: Some(colors.bar),
+                            ..colors.control()
+                        })
+                        .icon(
+                            icon_element(
+                                if forward {
+                                    Icon::ChevronRight
+                                } else {
+                                    Icon::ChevronLeft
                                 },
-                            ))
-                            .child(
-                                icon_element(
-                                    if forward {
-                                        Icon::ChevronRight
-                                    } else {
-                                        Icon::ChevronLeft
-                                    },
-                                    colors.inactive,
-                                )
-                                .group_hover("scroll-tabs", |style| {
-                                    style.text_color(colors.foreground)
-                                }),
-                            ),
+                                colors.inactive,
+                            )
+                            .group_hover("scroll-tabs", |style| {
+                                style.text_color(colors.foreground)
+                            }),
+                        )
+                        .icon_only()
+                        .group("scroll-tabs")
+                        .stop_presses()
+                        .absolute()
+                        .left(if vertical {
+                            (strip.bounds.size.width - CONTROL_SIZE)
+                                .max(px(0.0))
+                                / 2.0
+                        } else {
+                            edge
+                        })
+                        .top(if vertical { edge } else { bar_inset })
+                        .size(CONTROL_SIZE)
+                        .rounded_md()
+                        .on_click(Self::button_action(
+                            cx,
+                            move |view, window, cx| {
+                                let amount = view.tab_strip(window).available()
+                                    * if forward { 0.75 } else { -0.75 };
+                                let strip = view.tab_strip(window);
+                                if view.scroll_target.is_none() {
+                                    view.last_scroll = Instant::now();
+                                }
+                                view.scroll_target = Some(
+                                    (view
+                                        .scroll_target
+                                        .unwrap_or(strip.offset)
+                                        + amount)
+                                        .clamp(px(0.0), strip.max_offset()),
+                                );
+                                cx.notify();
+                                cx.stop_propagation();
+                            },
+                        )),
                     );
                 }
             }
@@ -11104,12 +11154,17 @@ impl Render for WorkspaceView {
                 menu_placement == MenuButtonPlacement::SplitRow,
             );
             chrome = chrome.child(bar).child(
-                div()
-                    .id("new-tab")
+                Button::new("new-tab", "New Tab", swatch)
+                    .colors(colors.control())
+                    .icon(
+                        icon_element(Icon::Plus, colors.inactive)
+                            .group_hover("new-tab", |style| {
+                                style.text_color(colors.foreground)
+                            }),
+                    )
+                    .icon_only()
                     .group("new-tab")
                     .occlude()
-                    .hover(|style| style.bg(colors.control_hover))
-                    .active(|style| style.bg(colors.control_pressed))
                     .rounded(px(7.0))
                     .absolute()
                     .left(
@@ -11138,10 +11193,7 @@ impl Render for WorkspaceView {
                     } else {
                         CONTROL_SIZE
                     })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .on_click(cx.listener(|view, _, window, cx| {
+                    .on_click(Self::button_action(cx, |view, window, cx| {
                         if let Err(error) = view.new_tab(window, cx) {
                             view.report_failure(
                                 "Cannot open tab",
@@ -11149,13 +11201,7 @@ impl Render for WorkspaceView {
                                 cx,
                             );
                         }
-                    }))
-                    .child(
-                        icon_element(Icon::Plus, colors.inactive)
-                            .group_hover("new-tab", |style| {
-                                style.text_color(colors.foreground)
-                            }),
-                    ),
+                    })),
             );
             let bar_menu_button = match menu_placement {
                 // The strip area ends where the bar does, or before the
@@ -11437,16 +11483,27 @@ impl Render for WorkspaceView {
                 self.config.window.shortcut_hints,
                 self.about_focus,
                 AboutActions {
-                    licenses: cx.listener(|view, _, window, cx| {
+                    licenses: Self::button_action(cx, |view, window, cx| {
                         view.show_licenses(window, cx);
                     }),
-                    copy: cx.listener(|view, _, _, cx| {
+                    copy: Self::button_action(cx, |view, _, cx| {
+                        // A click moves the keyboard's place, as a browser
+                        // moves focus, so Enter repeats what was clicked.
+                        view.about_focus = AboutFocus::Copy;
                         view.copy_about_details(cx);
+                        cx.notify();
                     }),
-                    close: cx.listener(|view, _, window, cx| {
+                    close: Self::button_action(cx, |view, window, cx| {
                         view.close_about(window, cx);
                     }),
                 },
+            );
+            let about = dialog_node(
+                about,
+                "about-dialog",
+                gpui::Role::Dialog,
+                "About Huterm".into(),
+                about_holds_focus.then_some(&self.focus),
             );
             root = root.child(modal_layer(about, &layout));
         }
@@ -11462,10 +11519,10 @@ impl Render for WorkspaceView {
                 content.size,
                 tokens(&self.config.theme),
                 self.config.window.shortcut_hints,
-                cx.listener(|view, _, window, cx| {
+                Self::button_action(cx, |view, window, cx| {
                     view.cancel_confirmation(window, cx);
                 }),
-                cx.listener(move |view, _, window, cx| {
+                Self::button_action(cx, move |view, window, cx| {
                     view.confirm_confirmation(
                         target.clone(),
                         generation,
@@ -11473,6 +11530,13 @@ impl Render for WorkspaceView {
                         cx,
                     );
                 }),
+            );
+            let dialog = dialog_node(
+                dialog,
+                "close-dialog",
+                gpui::Role::AlertDialog,
+                model.title.clone().into(),
+                Some(&self.focus),
             );
             root = root.child(modal_layer(dialog, &layout));
         }
@@ -11516,9 +11580,12 @@ impl Render for WorkspaceView {
 /// Hosts a modal `overlay` that fills its parent: the whole window, or the
 /// content inside a drawn client frame, so the transparent border around
 /// the frame's shadow stays untinted and its rounded top corners hold.
-fn modal_layer(overlay: gpui::Div, layout: &ChromeLayout) -> gpui::Div {
+fn modal_layer(
+    overlay: impl IntoElement + Styled,
+    layout: &ChromeLayout,
+) -> gpui::AnyElement {
     if !layout.frame.decorated() {
-        return overlay;
+        return overlay.into_any_element();
     }
     let content = layout.content;
     div()
@@ -11528,6 +11595,25 @@ fn modal_layer(overlay: gpui::Div, layout: &ChromeLayout) -> gpui::Div {
         .w(content.size.width)
         .h(content.size.height)
         .child(overlay.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS))
+        .into_any_element()
+}
+
+/// Makes a dialog's `overlay` its accessibility node, `role` named `label`,
+/// holding the window's `focus` while it is the top dialog. Its current
+/// button then reports as the node's active descendant, which GPUI honors
+/// only under the focused node.
+fn dialog_node(
+    overlay: gpui::Div,
+    id: &'static str,
+    role: gpui::Role,
+    label: gpui::SharedString,
+    focus: Option<&FocusHandle>,
+) -> gpui::Stateful<gpui::Div> {
+    overlay
+        .id(id)
+        .role(role)
+        .aria_label(label)
+        .when_some(focus, InteractiveElement::track_focus)
 }
 
 /// The split, close, and focus commands for panes.
@@ -12156,6 +12242,17 @@ impl WorkspaceView {
         Ok(CommandOutcome::Completed)
     }
 
+    /// `run` on this view as a [`Button`]'s click action.
+    pub(super) fn button_action(
+        cx: &Context<'_, Self>,
+        run: impl Fn(&mut Self, &mut Window, &mut Context<'_, Self>) + 'static,
+    ) -> impl Fn(&mut Window, &mut App) + 'static {
+        let view = cx.entity().downgrade();
+        move |window, cx| {
+            let _ = view.update(cx, |view, cx| run(view, window, cx));
+        }
+    }
+
     /// The menu's anchor: the painted menu button, or the terminal's top
     /// right corner when the button is hidden and `open_menu` ran.
     fn menu_anchor(&self, layout: &ChromeLayout) -> Bounds<Pixels> {
@@ -12188,35 +12285,14 @@ impl WorkspaceView {
         &self,
         colors: TabColors,
         cx: &mut Context<'_, Self>,
-    ) -> gpui::Stateful<gpui::Div> {
+    ) -> Button {
         let bounds_cell = Rc::clone(&self.menu_button_bounds);
         let open = self.menu_button_open();
         let dot = !open && !self.notices.is_empty();
         let swatch = tokens(&self.config.theme);
-        div()
-            .id("window-menu")
-            .role(gpui::Role::Button)
-            .aria_label("Menu")
-            .aria_expanded(open)
-            .group("window-menu")
-            .occlude()
-            .w(CONTROL_SIZE)
-            .h(CONTROL_SIZE)
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
-            .hover(|style| style.bg(colors.control_hover))
-            .when(open, |button| button.bg(colors.control_hover))
-            .active(|style| style.bg(colors.control_pressed))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                cx.stop_propagation();
-            })
-            .on_click(cx.listener(|view, _, window, cx| {
-                view.toggle_menu(window, cx);
-                cx.stop_propagation();
-            }))
-            .child(
+        Button::new("window-menu", "Menu", swatch)
+            .colors(colors.control())
+            .icon(
                 icon_element(Icon::Menu, colors.inactive)
                     .w(px(14.0))
                     .h(px(14.0))
@@ -12224,6 +12300,18 @@ impl WorkspaceView {
                         style.text_color(colors.foreground)
                     }),
             )
+            .icon_only()
+            .expanded(open)
+            .group("window-menu")
+            .occlude()
+            .stop_presses()
+            .size(CONTROL_SIZE)
+            .rounded_md()
+            .when(open, |button| button.bg(colors.control_hover))
+            .on_click(Self::button_action(cx, |view, window, cx| {
+                view.toggle_menu(window, cx);
+                cx.stop_propagation();
+            }))
             .when(dot, |button| {
                 button.child(
                     div()
@@ -12335,30 +12423,24 @@ impl WorkspaceView {
                 }
             };
             let bounds = Rc::clone(&self.window_button_bounds);
-            let element = div()
-                .id(id)
-                .group(id)
-                .occlude()
-                .relative()
-                .w(WINDOW_CONTROL_SIZE)
-                .h(WINDOW_CONTROL_SIZE)
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .bg(colors.hover)
-                .hover(|style| style.bg(colors.control_hover))
-                .active(|style| style.bg(colors.control_pressed))
-                .tooltip(move |_, cx| TextTooltip::view(label, swatch, cx))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                    cx.stop_propagation();
+            let element = Button::new(id, label, swatch)
+                .colors(ButtonColors {
+                    fill: Some(colors.hover),
+                    ..colors.control()
                 })
-                .child(
+                .icon(
                     icon_element(icon, colors.inactive)
                         .group_hover(id, |style| {
                             style.text_color(colors.foreground)
                         }),
                 )
+                .icon_only()
+                .group(id)
+                .occlude()
+                .stop_presses()
+                .relative()
+                .size(WINDOW_CONTROL_SIZE)
+                .rounded_full()
                 .child(
                     canvas(
                         |_, _, _| (),
@@ -12370,20 +12452,21 @@ impl WorkspaceView {
                     .inset_0(),
                 );
             controls = controls.child(match button {
-                WindowButton::Minimize => element.on_click(|_, window, cx| {
+                WindowButton::Minimize => element.on_click(|window, cx| {
                     window.minimize_window();
                     cx.stop_propagation();
                 }),
-                WindowButton::Maximize => element.on_click(|_, window, cx| {
+                WindowButton::Maximize => element.on_click(|window, cx| {
                     window.zoom_window();
                     cx.stop_propagation();
                 }),
-                WindowButton::Close => {
-                    element.on_click(cx.listener(|view, _, window, cx| {
+                WindowButton::Close => element.on_click(Self::button_action(
+                    cx,
+                    |view, window, cx| {
                         view.request_close(CloseTarget::Window, window, cx);
                         cx.stop_propagation();
-                    }))
-                }
+                    },
+                )),
             });
         }
         controls

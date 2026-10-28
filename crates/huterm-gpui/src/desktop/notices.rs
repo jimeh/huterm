@@ -13,10 +13,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, ClickEvent, Div, FocusHandle, MouseButton, MouseDownEvent, Pixels,
-    SharedString, Window, div, prelude::*, px, relative, svg,
+    App, Div, FocusHandle, MouseButton, MouseDownEvent, Pixels, SharedString,
+    Window, div, prelude::*, px, relative, svg,
 };
 use huterm_protocol::{CommandInvocation, TabId};
+use huterm_ui::components::button::{Button, Variant};
 
 use super::overlay::{
     Swatch, accent_bar, mono_font_family, raised_panel, severity_mark,
@@ -560,20 +561,21 @@ fn toast_body(
         let run = Rc::clone(&handlers.run_action);
         let command = action.command.clone();
         actions = actions.child(
-            div()
-                .id(SharedString::from(format!(
-                    "toast-action-{}-{index}",
-                    id.0
-                )))
-                .cursor_pointer()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(swatch.accent_text())
-                // Fading the text would drop it below 4.5:1 while held.
-                .active(gpui::Styled::underline)
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    run(id, command.clone(), window, cx);
-                })
-                .child(action.label.clone()),
+            Button::new(
+                SharedString::from(format!("toast-action-{}-{index}", id.0)),
+                action.label.clone(),
+                swatch,
+            )
+            .variant(Variant::Link)
+            // It runs a command rather than opening a page.
+            .button_role()
+            .h_auto()
+            .text_size(px(12.5))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .cursor_pointer()
+            .on_click(move |window, cx| {
+                run(id, command.clone(), window, cx);
+            }),
         );
     }
     body.child(actions)
@@ -595,6 +597,12 @@ fn render_toast(
     }
     let dismiss = Rc::clone(&handlers.dismiss);
     let hover = Rc::clone(&handlers.hover);
+    // The name and tooltip say which of the stacked toasts it dismisses.
+    let dismiss_name = if content.title.is_empty() {
+        "Dismiss".to_owned()
+    } else {
+        format!("Dismiss {}", content.title)
+    };
     // Presses stay on the toast: a click must not start a terminal selection
     // or application mouse input beneath it. Releases pass through, so a
     // terminal gesture that ends over the toast still finishes; the terminal
@@ -624,28 +632,20 @@ fn render_toast(
         .child(severity_mark(content.severity.glyph(), stripe, swatch))
         .child(toast_body(id, content, swatch, handlers))
         .child(
-            div()
-                .id(("toast-dismiss", id.0))
-                .flex_none()
-                .w(px(22.0))
-                .h(px(22.0))
-                .rounded(px(5.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|button| button.bg(swatch.hover))
-                .active(|button| button.bg(swatch.pressed()))
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    dismiss(id, window, cx);
-                })
-                .child(
+            Button::new(("toast-dismiss", id.0), dismiss_name, swatch)
+                .variant(Variant::Ghost)
+                .icon(
                     svg()
                         .path(Icon::X.asset_path())
                         .w(px(12.0))
                         .h(px(12.0))
                         .text_color(swatch.muted),
-                ),
+                )
+                .icon_only()
+                .size(px(22.0))
+                .rounded(px(5.0))
+                .cursor_pointer()
+                .on_click(move |window, cx| dismiss(id, window, cx)),
         );
     if let Some(progress) = progress {
         toast = toast.child(

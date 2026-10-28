@@ -200,6 +200,7 @@ impl SettingsView {
             };
             self.action_button(id.to_owned(), label, key.to_owned(), swatch, cx)
                 .variant(Variant::Link)
+                .button_role()
         });
         let open = self
             .action_button(
@@ -209,7 +210,8 @@ impl SettingsView {
                 swatch,
                 cx,
             )
-            .variant(Variant::Link);
+            .variant(Variant::Link)
+            .button_role();
         div()
             .flex()
             .flex_col()
@@ -442,7 +444,8 @@ impl SettingsView {
                     swatch,
                     cx,
                 )
-                .variant(Variant::Link);
+                .variant(Variant::Link)
+                .button_role();
             let file = self
                 .action_button(
                     format!("settings-file-{path}"),
@@ -451,7 +454,8 @@ impl SettingsView {
                     swatch,
                     cx,
                 )
-                .variant(Variant::Link);
+                .variant(Variant::Link)
+                .button_role();
             Some(
                 div()
                     .flex()

@@ -4676,6 +4676,7 @@ fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
     assert!(harness.cx.update(|cx| licenses_state(cx, window)).is_some());
 }
 
+mod buttons;
 mod layout_undo;
 mod menus;
 mod pane_drags;

@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, Render,
+    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, Render,
     ScrollHandle, ScrollWheelEvent, SharedString, Subscription, Task, Window,
     div, point, prelude::*, px, relative,
 };
@@ -23,8 +23,7 @@ use huterm_protocol::{CommandError, CommandInvocation, CommandOutcome, ids};
 use super::about::footer_button;
 use super::key_hint::KeyHint;
 use super::overlay::{
-    OverlayColors, Swatch, key_cap, key_cap_on, mono_font_family, raised_panel,
-    scrim,
+    OverlayColors, Swatch, key_cap, mono_font_family, raised_panel, scrim,
 };
 use super::palette::FORWARDED_TEXT_COMMANDS;
 use crate::keymap::Platform;
@@ -322,6 +321,14 @@ impl LicensesView {
         cx.notify();
     }
 
+    /// Moves keyboard focus to the clicked `button`, as a browser moves
+    /// focus on a click, so Enter presses what was clicked. The press on
+    /// the panel moved it to the search first.
+    fn mark(&mut self, button: LicensesFocus, cx: &mut Context<'_, Self>) {
+        self.focus = button;
+        cx.notify();
+    }
+
     fn press_focused(&mut self, cx: &mut Context<'_, Self>) {
         match self.focus {
             LicensesFocus::Search => {}
@@ -581,27 +588,41 @@ impl LicensesView {
         });
         let copied = self.copied == Some(self.selected);
         let mut actions = div().flex().flex_none().items_center().gap(px(8.0));
+        let view = cx.entity().downgrade();
         if let Some(url) = component.url.clone() {
+            let view = view.clone();
             actions = actions.child(
-                self.ring(
-                    footer_button("license-website", swatch, false, false),
-                    LicensesFocus::Website,
+                footer_button(
+                    "license-website",
+                    "Website",
                     swatch,
+                    false,
+                    None,
                 )
-                .on_click(move |_: &ClickEvent, _, cx| cx.open_url(&url))
-                .child("Website"),
+                .current(self.focus == LicensesFocus::Website)
+                .on_click(move |_, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        view.mark(LicensesFocus::Website, cx);
+                    });
+                    cx.open_url(&url);
+                }),
             );
         }
         actions = actions.child(
-            self.ring(
-                footer_button("license-copy", swatch, false, false),
-                LicensesFocus::Copy,
+            footer_button(
+                "license-copy",
+                if copied { "Copied" } else { "Copy" },
                 swatch,
+                false,
+                None,
             )
-            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                view.copy_selected(cx);
-            }))
-            .child(if copied { "Copied" } else { "Copy" }),
+            .current(self.focus == LicensesFocus::Copy)
+            .on_click(move |_, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    view.mark(LicensesFocus::Copy, cx);
+                    view.copy_selected(cx);
+                });
+            }),
         );
         div()
             .flex()
@@ -727,18 +748,6 @@ impl LicensesView {
             )
     }
 
-    /// `button` with the focus ring while keyboard focus is on `which`.
-    fn ring(
-        &self,
-        button: gpui::Stateful<gpui::Div>,
-        which: LicensesFocus,
-        swatch: Swatch,
-    ) -> gpui::Stateful<gpui::Div> {
-        button.when(self.focus == which, |button| {
-            button.shadow(swatch.focus_ring())
-        })
-    }
-
     fn render_footer(
         &self,
         swatch: Swatch,
@@ -756,6 +765,8 @@ impl LicensesView {
             ),
             Load::Loading | Load::Failed(_) => String::new(),
         };
+        let escape = self.hints.then(|| KeyHint::keys(&["escape"], platform));
+        let view = cx.entity().downgrade();
         let mut hints = div()
             .flex()
             .flex_1()
@@ -795,18 +806,16 @@ impl LicensesView {
             .bg(swatch.footer())
             .child(hints)
             .child(
-                self.ring(
-                    footer_button("licenses-done", swatch, true, self.hints),
-                    LicensesFocus::Done,
+                footer_button(
+                    "licenses-done",
+                    "Done",
                     swatch,
+                    true,
+                    escape.as_ref(),
                 )
-                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(Done)))
-                .child("Done")
-                .when(self.hints, |button| {
-                    button.child(key_cap_on(
-                        &KeyHint::keys(&["escape"], platform),
-                        swatch.on_accent(),
-                    ))
+                .current(self.focus == LicensesFocus::Done)
+                .on_click(move |_, cx| {
+                    let _ = view.update(cx, |_, cx| cx.emit(Done));
                 }),
             )
     }
@@ -901,7 +910,8 @@ impl Render for LicensesView {
                     .flex_col()
                     .text_color(swatch.fg)
                     // A press anywhere in the panel returns keys and keyboard
-                    // focus to the search; a button's click still acts.
+                    // focus to the search; a button's click then acts and
+                    // moves keyboard focus to that button.
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(
