@@ -885,17 +885,37 @@ label = "title"
     await arrange("tiled", "R[500000:C[500000:0,500000:1],500000:2]");
     await sizesMatch("tiled");
     // Both dividers move right by the same cells, so the middle pane keeps
-    // its grid and moves; balancing moves it back left with that grid.
+    // its grid and moves; balancing moves it back left with that grid. A
+    // layout reaches the projection before the views draw it and request
+    // their grids, so each step waits for the drawn rectangles to show the
+    // change and for every pane's grid to match its rectangle.
+    const paneRects = (text: string) => field(text, "pane_rects").split(";").map(parseRect);
+    const gridsDrawn = (text: string) => {
+      const focused = paneRects(text)[Number(field(text, "pane_focus"))];
+      const inner = parseRect(field(text, "grid_bounds"));
+      const [cellW, cellH] = field(text, "cell").split(",").map(Number);
+      if (!focused || !cellW || !cellH) return false;
+      const padX = inner.x - focused.x;
+      const padY = inner.y - focused.y;
+      return field(text, "pane_grids").split(";").every((grid, index) => {
+        const rect = paneRects(text)[index];
+        return rect !== undefined
+          && grid === `${Math.floor((rect.w - 2 * padX) / cellW)},${Math.floor((rect.h - 2 * padY) / cellH)}`;
+      });
+    };
     await arrange("columns", COLUMNS);
     await focusPane(0);
     await invoke("resize_pane_right");
-    const once = await stateWhere((text) => layoutOf(text) !== COLUMNS, "the first divider to move");
+    await stateWhere((text) => layoutOf(text) !== COLUMNS && paneRects(text)[0]!.w > paneRects(text)[1]!.w && gridsDrawn(text), "the first divider to move");
     await focusPane(1);
     await invoke("resize_pane_right");
-    const moved = await stateWhere((text) => layoutOf(text) !== layoutOf(once) && field(text, "arranging") === "0", "the second divider to move");
+    const moved = await stateWhere((text) => field(text, "arranging") === "0" && paneRects(text)[2]!.w < paneRects(text)[1]!.w
+      && gridsDrawn(text), "the second divider to move");
     const middlePane = (text: string) => ({ grid: field(text, "pane_grids").split(";")[1]!, rect: parseRect(field(text, "pane_rects").split(";")[1]!) });
     await invoke("balance_panes");
-    const balanced = await settledLayout(COLUMNS, "the balanced columns");
+    const balanced = await stateWhere((text) => layoutOf(text) === COLUMNS && field(text, "arranging") === "0"
+      && Math.abs(paneRects(text)[2]!.w - paneRects(text)[1]!.w) <= 2 && middlePane(text).rect.x < middlePane(moved).rect.x
+      && gridsDrawn(text), "the balanced columns");
     if (middlePane(balanced).grid !== middlePane(moved).grid) {
       throw new Error(`${engine}: balancing changed the moved middle pane's grid from ${middlePane(moved).grid} to ${middlePane(balanced).grid}; the origin-only check needs an unchanged grid`);
     }

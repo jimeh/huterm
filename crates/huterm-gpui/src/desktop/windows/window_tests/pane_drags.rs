@@ -731,3 +731,48 @@ fn a_still_pointer_finds_its_target_once_the_sprung_tab_draws(
                 .is_some_and(|(panes, _)| panes == [lone, right])
     });
 }
+
+#[gpui::test]
+fn a_pane_drag_under_way_still_drops_while_an_arrangement_is_in_flight(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, left, right) = harness.split_window(tab);
+    // The drag starts first, from the columns layout.
+    let grab = harness.grab(window, left);
+    let frame = harness.frame(window, right);
+    let edge = gpui::point(frame.center().x, frame.bottom() - px(8.0));
+    harness.press_at(window, grab);
+    harness.move_to(window, edge);
+    harness.wait_for("the drag to target the bottom edge", |cx| {
+        pane_drag(cx, window).is_some_and(|(target, _)| {
+            target_is(target, right, Zone::Edge(SplitDirection::Down), false)
+        })
+    });
+    // An arrangement is then held in flight, before its runtime call.
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Layout);
+    assert!(matches!(
+        harness.invoke(window, ids::NEXT_PANE_LAYOUT),
+        Ok(CommandOutcome::Accepted)
+    ));
+    harness.wait_for("the arrangement to wait", |_| {
+        runtime.worker_hooks.held(Stage::Layout) == 1
+    });
+    // The drag goes on and drops: the left pane moves under the right.
+    harness.move_to(window, edge);
+    harness.release_at(window, edge);
+    harness.wait_for("the drop to move the pane", |cx| {
+        no_drag(cx, window)
+            && panes_shown(cx, window, tab) == Some((vec![right, left], left))
+    });
+    // The arrangement was fitted against the layout the drop replaced, so
+    // the runtime refuses it with one notice.
+    runtime.worker_hooks.release(Stage::Layout);
+    harness.wait_for("the refused arrangement's notice", |cx| {
+        notices(cx, window)
+            .iter()
+            .any(|notice| notice.ends_with("|The panes changed; try again"))
+    });
+}

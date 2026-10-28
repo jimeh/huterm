@@ -169,7 +169,9 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if !self.can_drag_panes(cx) {
+        // A drag that started from the layout an arrangement is about to
+        // replace would aim at stale zones; one already under way goes on.
+        if !self.can_drag_panes(cx) || self.arrangements > 0 {
             return;
         }
         self.scroll_target = None;
@@ -191,7 +193,6 @@ impl WorkspaceView {
     fn can_drag_panes(&self, cx: &App) -> bool {
         let desktop = cx.global::<Desktop>();
         !self.busy
-            && self.arrangements == 0
             && !self.overlay_holds_focus()
             && !desktop.quitting
             && !desktop.quit_pending

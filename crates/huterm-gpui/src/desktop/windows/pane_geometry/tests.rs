@@ -567,9 +567,11 @@ fn fractional_scales_fit_whenever_some_weights_hold_the_minimums() {
                 ))
                 .unwrap();
                 let ideal = layout.balanced();
+                let mut fitting = 0;
+                // Around where two panes stop fitting, padding included.
                 let start = match axis {
-                    SplitAxis::Columns => 56.0,
-                    SplitAxis::Rows => 104.0,
+                    SplitAxis::Columns => 56.0 + 4.0 * padding.0,
+                    SplitAxis::Rows => 104.0 + 4.0 * padding.1,
                 };
                 for step in 0..60_u16 {
                     let extent = start + f32::from(step) * 0.2;
@@ -595,6 +597,7 @@ fn fractional_scales_fit_whenever_some_weights_hold_the_minimums() {
                         "{scale}x, padding {padding:?}, {axis:?} {extent}"
                     );
                     if possible {
+                        fitting += 1;
                         assert!(matches!(fitted, Fit::Fits(_)), "{label}");
                     }
                     if matches!(fitted, Fit::Fits(_)) {
@@ -607,6 +610,11 @@ fn fractional_scales_fit_whenever_some_weights_hold_the_minimums() {
                         assert!(fits_minimum(&after), "{label}");
                     }
                 }
+                // The sweep straddles the boundary, so both sides occur.
+                assert!(
+                    (1..60).contains(&fitting),
+                    "{scale}x, padding {padding:?}, {axis:?}: {fitting} fit"
+                );
             }
         }
     }
