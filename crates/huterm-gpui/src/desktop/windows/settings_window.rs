@@ -228,6 +228,8 @@ pub(super) struct SettingsView {
     conflicts: HashMap<&'static str, Conflict>,
     /// The setting whose write is in flight.
     writing: Option<&'static str>,
+    /// What the batch in flight put in `pending`, if one is.
+    writing_batch: Option<saving::Outcome>,
     queued: VecDeque<Queued>,
     /// The latest value requested for each setting whose write has not
     /// settled; controls show it, and steps build on it.
@@ -346,6 +348,7 @@ impl SettingsView {
             errors: HashMap::new(),
             conflicts: HashMap::new(),
             writing: None,
+            writing_batch: None,
             queued: VecDeque::new(),
             pending: HashMap::new(),
             epoch: 0,

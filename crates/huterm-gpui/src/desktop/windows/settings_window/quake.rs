@@ -17,6 +17,7 @@ use toml::{Table, Value};
 use super::super::super::key_hint::KeyHint;
 use super::super::super::overlay::Swatch;
 use super::super::super::settings::keybindings::{Edit, names_profile};
+use super::super::Desktop;
 use super::controls::Opener;
 use super::dialog::Prompt;
 use super::keybindings::{CAP_WIDTH, Target, card, group_block, small};
@@ -472,12 +473,15 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Shows why a rename of `from` wrote nothing, in an alert over `from`'s
-    /// card, unless another dialog is open, when the footer alone says why
-    /// and the card behind that dialog stays as it is.
+    /// Shows why a rename of `from` to `to` wrote nothing, in an alert over
+    /// `from`'s card. While another dialog is open the footer says why
+    /// instead, unless the file's error already fills it, and the card
+    /// behind that dialog stays as it is unless it shows `to`, which will
+    /// not exist.
     pub(super) fn rename_refused(
         &mut self,
         from: &str,
+        to: &str,
         message: String,
         cx: &mut Context<'_, Self>,
     ) {
@@ -491,6 +495,13 @@ impl SettingsView {
                 },
                 &rename,
             );
+        } else {
+            if self.quake.profile == to {
+                self.pick_profile(from);
+            }
+            if !self.status.invalid() {
+                self.status.failed(message);
+            }
         }
         cx.notify();
     }
@@ -521,6 +532,7 @@ impl SettingsView {
         &self,
         name: &str,
         from: Option<&str>,
+        cx: &App,
     ) -> Result<(), NameProblem> {
         let (message, shown) = if self.locked() {
             ("config.toml has an error. Not saved.".to_owned(), false)
@@ -537,6 +549,19 @@ impl SettingsView {
             )
         } else if self.profiles().iter().any(|known| known == name) {
             (format!("A profile named {name} exists."), true)
+        } else if from.is_some()
+            && cx.global::<Desktop>().windows.quake_name_held(name)
+        {
+            // A removed profile's window keeps its name until it becomes an
+            // ordinary window, and the renamed profile's window would turn
+            // ordinary instead of taking the name.
+            (
+                format!(
+                    "A window for {name} is still closing; try again in a \
+                     moment."
+                ),
+                true,
+            )
         } else {
             return Ok(());
         };
@@ -569,7 +594,7 @@ impl SettingsView {
     fn checked_name(&mut self, from: Option<&str>, cx: &App) -> Option<String> {
         let text = self.dialog.field()?.read(cx).text().to_owned();
         let name = text.trim().to_owned();
-        match self.name_check(&name, from) {
+        match self.name_check(&name, from, cx) {
             Ok(()) => Some(name),
             Err(problem) => {
                 self.quake.name_error = Some((text, problem.message));
@@ -1204,7 +1229,7 @@ impl SettingsView {
             return None;
         }
         let text = field.read(cx).text().to_owned();
-        let check = self.name_check(text.trim(), from);
+        let check = self.name_check(text.trim(), from, cx);
         let message = self.name_message(&text, &check);
         field.update(cx, |field, cx| field.set_invalid(message.is_some(), cx));
         let refusal: Option<SharedString> = self
@@ -1569,7 +1594,7 @@ impl SettingsView {
             .field()
             .and_then(|field| {
                 let text = field.read(cx).text();
-                self.name_message(text, &self.name_check(text.trim(), from))
+                self.name_message(text, &self.name_check(text.trim(), from, cx))
             })
             .or_else(|| self.quake.delete_error.clone())
     }

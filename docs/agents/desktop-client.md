@@ -783,13 +783,19 @@ in the file as it is when the batch applies, since a reference added
 elsewhere would otherwise survive a successful rename. `batch_outcome` lists
 the values `pending` shows meanwhile, including each value a rename copies
 under the new name, so an edit made there before the batch lands takes the
-copied value as its base and builds on the batch instead of conflicting.
-`batch_refused` says why it failed and drops the queued and pending edits
-under the new name, which written alone would create it; `batch_landed`
-follows a written batch outside the window, such as moving a renamed
-profile's Quake window association before the reload, whose `reconcile`
-would otherwise turn it into an ordinary window. Another rename adds a
-`Batch` variant.
+copied value as its base and builds on the batch instead of conflicting;
+`batch_baseline` makes a field there sync against that value, not the file,
+until the batch lands, so a draft typed over it is not taken for a conflict
+when an earlier save lands. `batch_refused` says why it failed and drops the
+queued and pending edits under the new name, which written alone would create
+it; `batch_landed` follows a written batch outside the window. A rename notes
+itself in the window model (`quake_renamed`) rather than moving the Quake
+window's association at once: a reload that read the file before the rename
+can apply after it, and its `reconcile` would turn the moved window into an
+ordinary one. Each reload takes `quake_renames_noted` before it reads, and
+`reconcile_quake` moves a window along the noted renames to the first name
+the file it read has, dropping the renames that read already shows. Another
+rename adds a `Batch` variant.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with

@@ -486,11 +486,13 @@ the file's first `[[...]]` entry, or at its end when it has none, rather than
 where the old table stood, so comments on its lines and directly above its
 header are removed; a comment on a rewritten shortcut's line stays. An open
 quake window of the profile stays open as that profile's window under the new
-name, with its tabs and shells. When the save cannot be written, such as for a
-shortcut in an inline `global_keybinding = [...]` array, which Settings cannot
-edit in place, or for a profile another editor changed meanwhile, Settings
-writes nothing and says why, and changes made to the new name's settings
-while the rename waited are not written either. Deleting a profile that a
+name, with its tabs and shells. A deleted profile's window keeps its name until
+it has become an ordinary window, so renaming a profile to that name is refused
+until then. When the save cannot be written, such as for a shortcut in an
+inline `global_keybinding = [...]` array, which Settings cannot edit in place,
+or for a profile another editor changed meanwhile, Settings writes nothing and
+says why, and changes made to the new name's settings while the rename waited
+are not written either. Deleting a profile that a
 global shortcut uses is refused; deleting one that a `[[keybinding]]` runs
 warns first, since the file still accepts that binding and it fails only when
 pressed.

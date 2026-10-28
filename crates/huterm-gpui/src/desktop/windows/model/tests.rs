@@ -312,20 +312,65 @@ fn quake_state_follows_summon_hide_tabs_detach_and_close() {
 }
 
 #[test]
-fn a_renamed_profile_keeps_its_window_unless_the_new_name_has_one() {
+fn a_renamed_profiles_window_follows_the_reloads_that_read_the_rename() {
     let mut model = WindowModel::default();
     model.open(window(2), Some(quake("logs", false)), layout(5.0));
     model.open_tab(window(2), entry(1));
-    assert_eq!(model.rename_quake("logs", "work"), Some(window(2)));
-    assert_eq!(model.quake_window("logs"), None);
-    assert_eq!(model.quake_state("work"), Some((false, 1)));
-    // A window still serving the new name, such as a removed profile's
-    // detaching window, keeps it, and the renamed one stays as it was.
-    model.open(window(3), Some(quake("build", true)), layout(5.0));
-    assert_eq!(model.rename_quake("work", "build"), None);
-    assert_eq!(model.quake_window("work"), Some(window(2)));
-    assert_eq!(model.quake_window("build"), Some(window(3)));
-    assert_eq!(model.rename_quake("missing", "other"), None);
+    let renamed = |name: &str| QuakeReconciled {
+        renamed: vec![(window(2), name.to_owned())],
+        removed: Vec::new(),
+    };
+    // A reload that read the file before the rename keeps the window.
+    let before = model.quake_renames_noted();
+    model.quake_renamed("logs", "work");
+    let applied = model.reconcile_quake(before, |name| name == "logs");
+    assert_eq!(applied, QuakeReconciled::default());
+    assert_eq!(model.quake_window("logs"), Some(window(2)));
+    // The rename's own reload reads the file, then a second rename lands
+    // before that reload applies what it read.
+    let first = model.quake_renames_noted();
+    model.quake_renamed("work", "build");
+    assert_eq!(
+        model.reconcile_quake(first, |name| name == "work"),
+        renamed("work")
+    );
+    let second = model.quake_renames_noted();
+    assert_eq!(
+        model.reconcile_quake(second, |name| name == "build"),
+        renamed("build")
+    );
+    assert_eq!(model.quake_state("build"), Some((false, 1)));
+    // Every rename is applied, so a later file without the name removes it.
+    let applied = model.reconcile_quake(second, |name| name == "work");
+    assert_eq!(applied.removed, [window(2)]);
+}
+
+#[test]
+fn a_renamed_profile_keeps_its_window_unless_the_new_name_has_one() {
+    let mut model = WindowModel::default();
+    model.open(window(2), Some(quake("logs", false)), layout(5.0));
+    // Two renames land before a reload reads the file.
+    model.quake_renamed("logs", "work");
+    model.quake_renamed("work", "build");
+    let read = model.quake_renames_noted();
+    let applied = model.reconcile_quake(read, |name| name == "build");
+    assert_eq!(applied.renamed, [(window(2), "build".to_owned())]);
+    // A removed profile's detaching window still holds its name, so a
+    // renamed profile's window cannot take it.
+    model.open(window(3), Some(quake("old", true)), layout(5.0));
+    assert!(model.quake_name_held("old"));
+    model.quake_renamed("build", "old");
+    assert!(!model.quake_name_held("build"), "the rename moves it on");
+    let read = model.quake_renames_noted();
+    let applied = model.reconcile_quake(read, |name| name == "old");
+    assert_eq!(
+        applied,
+        QuakeReconciled {
+            renamed: Vec::new(),
+            removed: vec![window(2)],
+        }
+    );
+    assert_eq!(model.quake_window("old"), Some(window(3)));
 }
 
 #[test]
