@@ -4720,6 +4720,7 @@ mod pane_layouts;
 mod pane_moves;
 mod settings;
 mod settings_controls;
+mod settings_dialog;
 mod settings_fields;
 mod settings_keys;
 mod settings_quake;

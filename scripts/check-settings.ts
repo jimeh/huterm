@@ -27,19 +27,21 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
 }
 
 type SettingsKey =
-  | "open" | "search" | "select-all" | "enter" | "space" | "tab" | "shift-tab" | "up" | "reset" | "close"
-  | "new-tab" | "global";
+  | "open" | "search" | "select-all" | "enter" | "space" | "tab" | "shift-tab" | "up" | "down" | "escape"
+  | "reset" | "close" | "new-tab" | "global";
 
 // AppKit key codes, modifier flags, and characters.
 const macKeys: Record<SettingsKey, [number, number, string]> = {
   open: [43, commandFlag, ","], search: [3, commandFlag, "f"], "select-all": [0, commandFlag, "a"],
   enter: [36, 0, "\r"], space: [49, 0, " "], tab: [48, 0, "\\t"], up: [126, 0, ""],
+  down: [125, 0, ""], escape: [53, 0, "\x1b"],
   "shift-tab": [48, shiftFlag, "\\t"], reset: [51, commandFlag, "\x7f"], close: [13, commandFlag, "w"],
   "new-tab": [17, commandFlag, "t"], global: [16, controlFlag | optionFlag | shiftFlag, "y"],
 };
 const x11Keys: Record<SettingsKey, string> = {
   open: "ctrl+comma", search: "ctrl+f", "select-all": "ctrl+a", enter: "Return", space: "space",
-  tab: "Tab", "shift-tab": "shift+Tab", up: "Up", reset: "ctrl+BackSpace", close: "ctrl+shift+w",
+  tab: "Tab", "shift-tab": "shift+Tab", up: "Up", down: "Down", escape: "Escape", reset: "ctrl+BackSpace",
+  close: "ctrl+shift+w",
   "new-tab": "ctrl+shift+t", global: "ctrl+alt+shift+y",
 };
 // What the recorder writes for the search key, and New Tab's default.
@@ -72,6 +74,9 @@ close_on_exit = false # keep the shell
 
 [tabs]
 position = "top"
+
+[quake.profiles.logs]
+height = 0.3
 `;
   await writeFile(config, original);
   const app = Bun.spawn([executable], {
@@ -135,7 +140,7 @@ position = "top"
   }
   /** Presses Tab until `name` has focus, waiting for each press to move it. */
   async function tabTo(name: string): Promise<void> {
-    for (let step = 0; step < 12; step++) {
+    for (let step = 0; step < 20; step++) {
       let focus: string | undefined;
       await waitFor(async () => (focus = field(await current(), "focus")) !== undefined, "a readable focus");
       if (focus === name) return;
@@ -271,6 +276,27 @@ position = "top"
       (text) => text.includes('[[global_keybinding]]\nkey = "ctrl-alt-shift-y"\ncommand = "toggle_quake"\n'),
       "global shortcut in config.toml",
     );
+    // Delete profile asks in an alert that opens on Cancel. Escape, which
+    // is `dialog_cancel`, returns focus to Delete profile; Delete removes
+    // the profile and focuses the profile select.
+    await tabTo("action:qprof");
+    await key("space");
+    await state("settings.menu=true", "settings.focus=menu");
+    await key("down");
+    await key("enter");
+    await state("settings.menu=false", "settings.focus=action:qprof");
+    await tabTo("action:qdel");
+    await key("space");
+    await state("settings.dialog=delete", "settings.focus=dialog:qdelno");
+    await key("escape");
+    await state("settings.dialog=none", "settings.focus=action:qdel");
+    await key("space");
+    await state("settings.dialog=delete", "settings.focus=dialog:qdelno");
+    await key("tab");
+    await state("settings.focus=dialog:qdelyes");
+    await key("enter");
+    await saved((text) => !text.includes("[quake.profiles.logs]"), "logs profile removed from config.toml");
+    await state("settings.dialog=none", "settings.focus=action:qprof");
 
     // Search finds a command; Space opens it in Keybindings.
     await key("search");
@@ -318,7 +344,7 @@ position = "top"
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded alert=dialog-commands close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

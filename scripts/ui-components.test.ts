@@ -57,9 +57,9 @@ test("Settings draws focus rings through huterm-ui, except where a later migrati
   // and chips onto `huterm-ui`, whose rings follow `focus::ring`. These GPUI
   // focus styles remain, each owned by a later migration of
   // `docs/plans/ui-components.md`: the theme cards and the sidebar rows
-  // (6a), and `actionable` for the key recorders (8), the delete prompt
-  // (7a), and the keybinding rows (6a). Lower a count as its migration
-  // lands; a new GPUI focus style fails here.
+  // (6a), and `actionable` for the key recorders (8) and the keybinding
+  // rows (6a). Lower a count as its migration lands; a new GPUI focus
+  // style fails here.
   const remaining: Record<string, number> = {
     "crates/huterm-gpui/src/desktop/windows/settings_window/controls.rs": 1,
     "crates/huterm-gpui/src/desktop/windows/settings_window/render.rs": 2,

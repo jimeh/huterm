@@ -745,7 +745,20 @@ the panel, where the guard lets presses through. The
 guard stops presses on anything outside the panel, so a popover opened from a
 dialog's body does not work yet. A simulated press in a GPUI test draws a
 notified window first, so a stale-frame test opens without notifying,
-presses, and notifies afterwards.
+presses, and notifies afterwards. In the desktop harness, `simulate_click`
+still draws after an update through the Settings window's handle, so its
+stale-frame test dispatches the press with `Window::dispatch_event`.
+
+The Settings window has one dialog slot, in `settings_window/dialog.rs`. A
+section adds a `Prompt` variant, opens it with `open_dialog`, and draws it
+from `render_dialog` with buttons from `dialog_button`. Each button answers
+with an action key that `act` runs, and `dialog_cancel` runs the prompt's
+Cancel key. `run` routes the `dialog_*` commands to the slot and, while a
+dialog is open, ignores every other command except the window's close,
+minimize, zoom, and fullscreen. App commands such as Quit and Settings… go
+through the application's handler, not `run`, so they still work and need
+no gate. A dialog with a text field also routes that
+field's `palette_*` commands from `run_palette`, as above.
 
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with

@@ -8,6 +8,7 @@ use super::super::settings_window::SettingsView;
 use super::settings::{
     ScratchConfig, open_settings, settings, settled, with_view, with_window,
 };
+use super::settings_controls::{a11y_node, keys, visual};
 use super::*;
 
 const LOGS: &str = "# Mine.\n\n[quake.profiles.logs]\nheight = 0.3 # short\n";
@@ -33,6 +34,12 @@ fn saved(
     check: impl Fn(&str) -> bool,
 ) {
     harness.wait_for("the save", |cx| settled(cx) && check(&file.text()));
+}
+
+/// Opens the delete alert from Delete profile and answers Delete.
+fn confirm_delete(harness: &mut DesktopHarness) {
+    press(harness, "qdel");
+    keys(harness, "tab enter");
 }
 
 /// Opens Settings on the Quake windows section.
@@ -106,14 +113,24 @@ fn deleting_a_profile_waits_for_its_global_shortcuts(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
     open_quake(&mut harness, &file);
     with_view(&mut harness, |view, _| view.pick_profile("logs"));
+    // Delete profile says why at once, in an alert with only OK.
     press(&mut harness, "qdel");
-    press(&mut harness, "qdelyes");
-    with_view(&mut harness, |view, _| {
-        assert!(
-            view.quake_message().is_some_and(|message| {
-                message.contains("uses this profile")
-            })
-        );
+    visual(&harness).run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        assert_eq!(view.dialog_name(), "delete-refused");
+        assert_eq!(view.focus_name(window, cx), "dialog:qdelno");
+    });
+    let alert = a11y_node(&mut harness, "settings-delete-profile");
+    assert_eq!(
+        alert["aria"]["label"],
+        "The \u{201c}logs\u{201d} profile cannot be deleted"
+    );
+    let why = alert["aria"]["description"].as_str().unwrap_or_default();
+    assert!(why.contains("uses this profile"), "{alert}");
+    keys(&harness, "enter");
+    with_window(&mut harness, |view, window, cx| {
+        assert_eq!(view.dialog_name(), "none");
+        assert_eq!(view.focus_name(window, cx), "action:qdel");
     });
     assert_eq!(file.text(), original);
     // With its shortcut gone, the profile goes.
@@ -122,8 +139,7 @@ fn deleting_a_profile_waits_for_its_global_shortcuts(cx: &mut TestAppContext) {
         !text.contains("global_keybinding")
     });
     with_view(&mut harness, |view, _| view.pick_profile("logs"));
-    press(&mut harness, "qdel");
-    press(&mut harness, "qdelyes");
+    confirm_delete(&mut harness);
     saved(&mut harness, &file, |text| !text.contains("logs"));
     assert_eq!(file.text(), "# Mine.\n");
     with_view(&mut harness, |view, _| {
@@ -347,35 +363,9 @@ fn deleting_a_profile_reads_the_file_afresh(cx: &mut TestAppContext) {
     // Another editor changes the profile before Settings rereads.
     std::fs::write(file.path(), LOGS.replace("0.3", "0.4")).unwrap();
     with_view(&mut harness, |view, _| view.pick_profile("logs"));
-    press(&mut harness, "qdel");
-    press(&mut harness, "qdelyes");
+    confirm_delete(&mut harness);
     saved(&mut harness, &file, |text| !text.contains("logs"));
     assert_eq!(file.text(), "# Mine.\n");
-}
-
-#[gpui::test]
-fn escape_closes_the_delete_prompt_only_from_its_buttons(
-    cx: &mut TestAppContext,
-) {
-    let file = ScratchConfig::new("quake-escape", LOGS);
-    let mut harness = DesktopHarness::new(cx);
-    open_quake(&mut harness, &file);
-    with_view(&mut harness, |view, _| view.pick_profile("logs"));
-    press(&mut harness, "qdel");
-    let duration = "quake.profiles.logs.animation_ms";
-    with_window(&mut harness, |view, window, cx| {
-        view.focus_field(duration, window, cx);
-        view.type_into(duration, "900", window, cx);
-    });
-    harness.cx.run_until_parked();
-    // Escape in the field puts its value back and leaves the prompt.
-    keystrokes(&mut harness, "escape");
-    harness.cx.run_until_parked();
-    with_window(&mut harness, |view, _, cx| {
-        assert_eq!(view.field_value(duration, cx), "150");
-        assert_eq!(view.quake_prompts(), (false, true));
-    });
-    assert_eq!(file.text(), LOGS);
 }
 
 #[gpui::test]
@@ -570,8 +560,14 @@ fn a_delete_on_an_invalid_file_says_why(cx: &mut TestAppContext) {
                     .unwrap_or(false)
             })
     });
-    press(&mut harness, "qdelyes");
+    // The alert asks again in its place, saying why.
+    keys(&harness, "tab enter");
     with_view(&mut harness, |view, _| {
-        assert!(view.quake_message().is_some());
+        assert_eq!(view.dialog_name(), "delete-refused");
     });
+    let alert = a11y_node(&mut harness, "settings-delete-profile");
+    assert_eq!(
+        alert["aria"]["description"],
+        "config.toml has an error. Not saved."
+    );
 }

@@ -4,11 +4,15 @@ Status: in progress. Step 1 (the foundation), the components of steps 2, 3,
 4, 6, and 7, and migrations 2a (Settings selects), 2b (terminal-window menus),
 3a (Settings buttons, links, switches, segmented controls, tri-states,
 modifier chips, tags, and counts), 3b (terminal-window buttons and
-tooltips), and 4a (Settings text, search, and number fields, units, the
-Quake width and height sliders, and `text_cut`) are implemented; 2b removed
+tooltips), 4a (Settings text, search, and number fields, units, the
+Quake width and height sliders, and `text_cut`), and 7a (the Settings
+delete-profile alert dialog, which fixes D17) are implemented; 2b removed
 `desktop/menu.rs` and its menu host (D13). 3a also moved the Keybindings
-filter and shortcut switches; the key recorders, delete prompt, theme cards,
-and sidebar rows keep their GPUI focus styles until their own migrations.
+filter and shortcut switches; the key recorders, theme cards, and sidebar
+rows keep their GPUI focus styles until their own migrations. 7a checks
+whether a global shortcut uses the profile before asking, so Delete profile
+opens a refusal alert with only OK instead; a refusal found on Delete, such
+as a file that turned invalid meanwhile, takes the question's place.
 4a binds Page Up and Page Down on number fields and sliders and Home and End
 on sliders alone (`settings_page_up`, `settings_page_down`,
 `settings_first`, and `settings_last` under `control == slider`; a number
@@ -79,7 +83,7 @@ App-specific surfaces). Everything else in the table migrates.
 | Modifier chips (toggle buttons) | `controls.rs` `render_modifiers` | Settings | One tab stop per chip, Space toggles | Click | Ring | n/a | Opacity, last chip refuses |
 | Theme cards (radio cards) | `controls.rs` `render_themes` | Settings | One tab stop per card | Click | `.focus()` style set, but #276 reports none visible | n/a | Opacity |
 | Sidebar (navigation list) | `render.rs` `render_nav` | Settings | Tab stops; no arrows (#276) | Click | Ring | n/a | n/a |
-| Inline confirm | `quake.rs` `render_delete`, `escape_delete` | Quake | Escape matched literally in the keystroke interceptor, only while a prompt button has focus (D17) | Buttons | Ring | Cancel, Escape | n/a |
+| Inline confirm (an `AlertDialog` since 7a) | `quake.rs` `render_delete`, `escape_delete` | Quake | Escape matched literally in the keystroke interceptor, only while a prompt button has focus (D17) | Buttons | Ring | Cancel, Escape | n/a |
 | Modal dialog | `close_dialog.rs`, About in `about.rs` | Terminal window | `dialog_*` and `confirming` commands | Buttons, scrim | Accent buttons | Escape, Cancel | n/a |
 | Command palette | `palette/` | Terminal window | Full catalog grammar | Hover, click | n/a | Escape, outside press | n/a |
 | Licenses view | `licenses.rs` | About panel | Search field and list under `Palette`; arrows select, PageUp and PageDown scroll the text, Tab and Shift-Tab move between the search and the buttons, Enter presses the focused button | Click selects, wheel scrolls, list scrollbar | Rings on the search field and buttons | Escape clears the search, then returns to About | n/a |
@@ -130,7 +134,7 @@ Settings menu.
 | D14 | `Swatch::focus_ring` carries two doc comments, the first stale. | `overlay.rs:155-156` | Trivial |
 | D15 | Shift-Tab in an open Settings menu moves focus behind it and leaves the menu open, the stale state of D5, reached from the keyboard alone. Smoke state hides it: it reports `focus=menu` whenever a menu exists. | `menu_defaults` binds `tab` but not `shift-tab` (`keymap.rs:950-951`), so `settings_focus_previous` runs `window.focus_prev` (`settings_window.rs:946`); `smoke_state` at `settings_window.rs:1182`. | Medium |
 | D16 | Removing or rebinding the Enter or Space binding of a Settings control does not stop those keys from activating it. | GPUI turns Enter or Space on a focused element with `on_click` into a `ClickEvent::Keyboard` (`gpui-pre-0.3.9/src/elements/div.rs:3016-3045`); Settings click handlers ignore the event kind (for example `controls.rs:139`). | Medium |
-| D17 | The Quake delete prompt's Escape cannot be rebound and is missing from the keybinding editor. | `escape_delete` matches the literal key in the window's keystroke interceptor (`quake.rs:378-395`, wired at `settings_window.rs:282-291`). | Low |
+| D17 | The Quake delete prompt's Escape cannot be rebound and is missing from the keybinding editor. | `escape_delete` matches the literal key in the window's keystroke interceptor (`quake.rs:378-395`, wired at `settings_window.rs:282-291`). | Low; fixed in 7a |
 
 From [#276][issue-276], by owning component: Tab does not scroll the focused
 control into view (scroll area); the sidebar has no arrow keys (navigation
