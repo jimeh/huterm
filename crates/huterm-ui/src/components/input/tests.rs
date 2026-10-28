@@ -298,6 +298,67 @@ fn the_field_reports_its_role_value_and_states(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn only_the_users_edits_report_edited(cx: &mut TestAppContext) {
+    let (probe, cx) = field(cx, 200.0, |input| input);
+    let edits = Rc::new(Cell::new(0));
+    let counted = edits.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&probe.input, move |_, _: &Edited, _| {
+            counted.set(counted.get() + 1);
+        })
+        .detach();
+    });
+    probe.update(cx, |input, cx| {
+        input.set_text("Menlo", cx);
+        input.replace(0..1, "m", cx);
+    });
+    assert_eq!(edits.get(), 0, "the owner's writes are not edits");
+    assert_eq!(probe.changes.get(), 2);
+    cx.simulate_click(point(px(20.0), px(12.0)), Modifiers::none());
+    cx.simulate_input("x");
+    cx.run_until_parked();
+    probe.update(cx, Input::delete_backward);
+    assert_eq!(edits.get(), 2);
+    assert_eq!(probe.changes.get(), 4, "every edit is also a change");
+}
+
+#[gpui::test]
+fn a_field_driving_a_list_reports_an_editable_combobox(
+    cx: &mut TestAppContext,
+) {
+    let (probe, cx) = field(cx, 200.0, |input| input);
+    probe.update(cx, |input, cx| {
+        input.set_list_state(
+            Some(ListState {
+                expanded: true,
+                active: Some("Monaco".into()),
+            }),
+            cx,
+        );
+    });
+    cx.update(|window, _| {
+        let aria = &a11y_node(window, "name")["aria"];
+        assert_eq!(aria["role"], "EditableComboBox");
+        assert_eq!(aria["expanded"], true);
+        assert_eq!(aria["description"], "Monaco");
+    });
+    // A disabled reason describes the field before the suggestion.
+    probe.update(cx, |input, cx| {
+        input.set_disabled(true, Some("Set by the profile".into()), cx);
+    });
+    cx.update(|window, _| {
+        let aria = &a11y_node(window, "name")["aria"];
+        assert_eq!(aria["description"], "Set by the profile");
+    });
+    probe.update(cx, |input, cx| input.set_list_state(None, cx));
+    cx.update(|window, _| {
+        let aria = &a11y_node(window, "name")["aria"];
+        assert_eq!(aria["role"], "TextInput");
+        assert!(aria["expanded"].is_null(), "{aria}");
+    });
+}
+
+#[gpui::test]
 fn keyboard_focus_rings_a_framed_field_only(cx: &mut TestAppContext) {
     for (chrome, ringed) in [(Chrome::Framed, true), (Chrome::Bare, false)] {
         let (probe, cx) =

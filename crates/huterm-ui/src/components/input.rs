@@ -36,12 +36,19 @@
 //!
 //! Accessibility: a `TextInput` named by its label, reporting its text as
 //! its value, its placeholder, its read-only, disabled, and invalid states,
-//! and a disabled reason as its description. GPUI exposes no caret or
-//! selection ranges, so assistive technology reads the value but may not
-//! move through it by character.
+//! and a disabled reason as its description. A field that drives a list of
+//! suggestions ([`Input::set_list_state`]), such as a combobox's or a
+//! command's search, is an `EditableComboBox` instead, reporting whether the
+//! list shows and the highlighted suggestion as its description. GPUI
+//! exposes no caret or selection ranges, so assistive technology reads the
+//! value but may not move through it by character.
 //!
-//! Reference: WAI-ARIA's textbox, and `NSTextField` for editing and
-//! scrolling.
+//! Events: [`Changed`] follows every change of the text, and [`Edited`]
+//! comes first when the user made it, so an owner can tell typing from its
+//! own writes.
+//!
+//! Reference: WAI-ARIA's textbox and editable combobox, and `NSTextField`
+//! for editing and scrolling.
 
 use std::ops::Range;
 
@@ -63,6 +70,23 @@ use crate::tokens::{Tokens, size};
 /// Emitted whenever the text changes, by the user or the owner.
 #[derive(Clone, Debug)]
 pub struct Changed;
+
+/// Emitted before [`Changed`] when the user changed the text: typing,
+/// composing, pasting, cutting, or deleting. The owner's
+/// [`Input::set_text`] and [`Input::replace`] emit only [`Changed`].
+#[derive(Clone, Debug)]
+pub struct Edited;
+
+/// What a field reports while it drives a list of suggestions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListState {
+    /// Whether the list shows.
+    pub expanded: bool,
+    /// The highlighted suggestion's label, reported as the field's
+    /// description, since GPUI honors an active descendant only inside the
+    /// focused node.
+    pub active: Option<SharedString>,
+}
 
 /// Who draws the field's border and focus ring.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -226,6 +250,8 @@ pub struct Input {
     /// The disabled reason, empty for none, while disabled.
     disabled: Option<SharedString>,
     invalid: bool,
+    /// The list the field drives, if any.
+    list: Option<ListState>,
     layout: Option<Layout>,
     /// A pointer selection in progress since a left press in the field.
     dragging: bool,
@@ -263,6 +289,7 @@ impl Input {
             read_only: false,
             disabled: None,
             invalid: false,
+            list: None,
             layout: None,
             dragging: false,
         }
@@ -388,6 +415,25 @@ impl Input {
     pub fn set_invalid(&mut self, invalid: bool, cx: &mut Context<'_, Self>) {
         if self.invalid != invalid {
             self.invalid = invalid;
+            cx.notify();
+        }
+    }
+
+    /// What the field reports about the list it drives, if any.
+    #[must_use]
+    pub fn list_state(&self) -> Option<&ListState> {
+        self.list.as_ref()
+    }
+
+    /// Makes the field report the list it drives, or a plain text field
+    /// again with `None`; an unchanged state is ignored.
+    pub fn set_list_state(
+        &mut self,
+        list: Option<ListState>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.list != list {
+            self.list = list;
             cx.notify();
         }
     }
@@ -553,7 +599,7 @@ impl Input {
         }
         self.copy(cx);
         self.buffer.replace(self.buffer.selection.clone(), "");
-        Self::changed(cx);
+        Self::edited(cx);
     }
 
     /// Replaces the selection with the clipboard's text.
@@ -565,7 +611,7 @@ impl Input {
             cx.read_from_clipboard().and_then(|item| item.text())
         {
             self.buffer.replace_input(None, &text);
-            Self::changed(cx);
+            Self::edited(cx);
         }
     }
 
@@ -598,6 +644,12 @@ impl Input {
         cx.notify();
     }
 
+    /// Reports a change the user made.
+    fn edited(cx: &mut Context<'_, Self>) {
+        cx.emit(Edited);
+        Self::changed(cx);
+    }
+
     /// Deletes the selection, or from the caret to `to` when nothing is
     /// selected.
     fn delete_to(
@@ -613,7 +665,7 @@ impl Input {
             self.buffer.select_to(target);
         }
         self.buffer.replace(self.buffer.selection.clone(), "");
-        Self::changed(cx);
+        Self::edited(cx);
     }
 
     /// Moves the cursor to `target`, or extends the selection there when
@@ -703,6 +755,8 @@ impl Input {
 
 impl EventEmitter<Changed> for Input {}
 
+impl EventEmitter<Edited> for Input {}
+
 impl Focusable for Input {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -760,7 +814,7 @@ impl EntityInputHandler for Input {
             return;
         }
         self.buffer.replace_input(range, text);
-        Self::changed(cx);
+        Self::edited(cx);
     }
     fn replace_and_mark_text_in_range(
         &mut self,
@@ -774,7 +828,7 @@ impl EntityInputHandler for Input {
             return;
         }
         self.buffer.replace_marked(range, text, selected);
-        Self::changed(cx);
+        Self::edited(cx);
     }
     fn bounds_for_range(
         &mut self,
@@ -918,16 +972,30 @@ impl Render for Input {
         let tokens = self.tokens;
         let enabled = self.disabled.is_none();
         let reason = self.disabled.clone().filter(|reason| !reason.is_empty());
+        // A disabled reason describes the field before any suggestion.
+        let active = self
+            .list
+            .as_ref()
+            .and_then(|list| list.active.clone())
+            .filter(|_| reason.is_none());
         let text = self.text_canvas(self.focus.is_focused(window), cx);
         let field =
             div()
                 .id(self.id.clone())
-                .role(gpui::Role::TextInput)
+                .role(if self.list.is_some() {
+                    gpui::Role::EditableComboBox
+                } else {
+                    gpui::Role::TextInput
+                })
                 .aria_label(self.label.clone())
                 .aria_value(SharedString::from(self.buffer.content.clone()))
                 .when(!self.placeholder.is_empty(), |field| {
                     field.aria_placeholder(self.placeholder.clone())
                 })
+                .when_some(self.list.as_ref(), |field, list| {
+                    field.aria_expanded(list.expanded)
+                })
+                .when_some(active, StatefulInteractiveElement::aria_description)
                 .when_some(reason, |field, reason| {
                     field.aria_description(reason.clone()).tooltip(
                         move |_, cx| Tooltip::view(reason.clone(), tokens, cx),

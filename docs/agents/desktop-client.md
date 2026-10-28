@@ -679,6 +679,29 @@ through `show_text`, which keeps the field's value in step.
 GPUI sends focus and blur events only while a window is active, so a test of
 blur behavior, such as `NumberField`'s commit, activates its window first.
 
+`Combobox` and `Command` drive a list from a field that the owner keeps and
+draws with any chrome, and focus never leaves that field. Mount a `Combobox`
+entity as the last child of a relatively positioned wrapper around its
+field: it measures the wrapper and draws its suggestions in its own
+non-modal `Popover`, mounting that popover's guard itself, since a non-modal
+guard never stops a press. Its filter runs on each `Edited`, which `Input`
+emits before `Changed` for the user's edits alone, so an owner's `set_text`,
+such as Escape putting back a value, opens nothing. The filter reads its own
+data, never the owner's entity, which may be mid-update when the owner calls
+`refresh`. `Command` takes the items its owner filters and ranks through
+`set_options`, typically from `Changed`, and draws them inline; turn off its
+pointer highlight where the highlight shows details, as Licenses does. Route
+list commands to their methods: a combobox's return `false` when the key is
+the owner's, such as a second Escape or Enter with nothing highlighted. Both
+set their field's `ListState`, so it reports an `EditableComboBox` whose
+description is the highlight, because the list draws outside the focused
+field, where GPUI ignores an active descendant. A press on a row prevents
+the default focus change, and a combobox's list also occludes and stops it,
+so the field never blurs before a pick. Test such a press under a focusable
+root, as a window's root view is, or no blur could happen without them.
+GPUI blurs the focused field when its window deactivates, which closes a
+combobox's list.
+
 Open menus and selects in a `huterm_ui::components::popover::Popover` and
 mount its `guard` in the owner's root view on every frame, open or not. The
 guard's capture-phase press listener reads the live open state, so it also
