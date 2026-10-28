@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use gpui::{
     App, BoxShadow, ClickEvent, Context, Entity, EventEmitter, Focusable,
-    FontWeight, HighlightStyle, KeyBindingContextPredicate, KeyContext,
+    FontWeight, HighlightStyle, Hsla, KeyBindingContextPredicate, KeyContext,
     MouseButton, MouseDownEvent, MouseUpEvent, Render, ScrollHandle,
     ScrollWheelEvent, Subscription, WeakEntity, Window, div, hsla, point,
     prelude::*, px,
@@ -38,7 +38,9 @@ use slots::{
 
 use super::TerminalView;
 use super::key_hint::KeyHint;
-use super::overlay::{OverlayColors, Swatch, footer_hints, key_cap};
+use super::overlay::{
+    OverlayColors, Swatch, footer_hints, key_cap, key_cap_on,
+};
 use crate::keymap::{InstalledKeymap, Platform};
 use crate::ui::list_scrollbar::ListScrollbar;
 use crate::ui::text_field::{Changed, TextField};
@@ -731,8 +733,10 @@ impl CommandPalette {
             hierarchy,
             hierarchy_seq,
         } = open;
-        let input = cx
-            .new(|cx| TextField::new("Search commands", colors.foreground, cx));
+        let input = cx.new(|cx| {
+            let swatch = Swatch::new(colors);
+            TextField::new("Search commands", swatch.fg, swatch.muted, cx)
+        });
         let subscription =
             cx.subscribe(&input, |palette, input, _: &Changed, cx| {
                 let text = input.read(cx).text().to_owned();
@@ -849,7 +853,8 @@ impl CommandPalette {
         self.profiles = profile_rows(profiles);
         self.layouts = layout_rows(layouts);
         self.input.update(cx, |input, cx| {
-            input.set_foreground(colors.foreground, cx);
+            let swatch = Swatch::new(colors);
+            input.set_colors(swatch.fg, swatch.muted, cx);
         });
         self.refresh_picker_rows();
         cx.notify();
@@ -1666,7 +1671,13 @@ impl EventEmitter<PaletteEvent> for CommandPalette {}
 
 /// A small label beside a row: `recent`, or an argument badge such as
 /// `⇥ options`, whose key draws as an icon.
-fn tag(hint: &KeyHint, swatch: Swatch, dashed: bool) -> impl IntoElement {
+/// A small labelled tag in `text`, the row's secondary text color.
+fn tag(
+    hint: &KeyHint,
+    swatch: Swatch,
+    dashed: bool,
+    text: Hsla,
+) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -1676,10 +1687,15 @@ fn tag(hint: &KeyHint, swatch: Swatch, dashed: bool) -> impl IntoElement {
         .when(dashed, |tag| {
             tag.border_1().border_dashed().border_color(swatch.dim)
         })
-        .when(!dashed, |tag| tag.bg(swatch.chip))
+        // On a selected row, `text` is the row's corrected secondary text
+        // and the tag draws outlined in it rather than filled.
+        .when(!dashed && text == swatch.muted, |tag| tag.bg(swatch.chip))
+        .when(!dashed && text != swatch.muted, |tag| {
+            tag.border_1().border_color(text.opacity(0.35))
+        })
         .text_size(px(10.0))
-        .text_color(swatch.muted)
-        .child(hint.element(px(9.5), swatch.muted))
+        .text_color(text)
+        .child(hint.element(px(9.5), text))
 }
 
 fn band(message: String, swatch: Swatch, error: bool) -> gpui::AnyElement {
@@ -1735,7 +1751,7 @@ fn highlighted_title(
     window: &Window,
 ) -> gpui::AnyElement {
     let highlight = HighlightStyle {
-        color: Some(swatch.accent),
+        color: Some(swatch.accent_text()),
         font_weight: Some(FontWeight::SEMIBOLD),
         ..HighlightStyle::default()
     };
@@ -1825,6 +1841,12 @@ impl CommandPalette {
             };
             let recent = search.query.is_empty()
                 && self.history.recency(spec.id).is_some();
+            // Secondary text on a selected row reads against its fill.
+            let secondary = if selected {
+                swatch.muted_on(swatch.selection)
+            } else {
+                swatch.muted
+            };
             let mut meta = div().flex().flex_none().items_center().gap(px(6.0));
             if recent {
                 meta = meta.child(tag(
@@ -1832,21 +1854,26 @@ impl CommandPalette {
                         .with_suffix("recent"),
                     swatch,
                     false,
+                    secondary,
                 ));
             }
             if let Some((hint, dashed)) = badge {
-                meta = meta.child(tag(&hint, swatch, dashed));
+                meta = meta.child(tag(&hint, swatch, dashed, secondary));
             }
             for key in self.shortcut_keys(spec, None) {
-                meta = meta.child(key_cap(
-                    &KeyHint::parse(&key, Platform::current()),
-                    swatch,
-                ));
+                let hint = KeyHint::parse(&key, Platform::current());
+                // On a selected row a cap draws outlined, with no fill of
+                // its own over the selection.
+                meta = meta.child(if selected {
+                    key_cap_on(&hint, swatch.fg)
+                } else {
+                    key_cap(&hint, swatch)
+                });
             }
             meta = meta.child(
                 div()
                     .text_size(px(10.0))
-                    .text_color(swatch.muted)
+                    .text_color(secondary)
                     .child(format!("{:?}", spec.scope).to_uppercase()),
             );
             let description = match &unavailable {
@@ -2134,10 +2161,12 @@ impl CommandPalette {
                 let mut meta =
                     div().flex().flex_none().items_center().gap(px(6.0));
                 if let Some(key) = key {
-                    meta = meta.child(key_cap(
-                        &KeyHint::parse(&key, Platform::current()),
-                        swatch,
-                    ));
+                    let hint = KeyHint::parse(&key, Platform::current());
+                    meta = meta.child(if selected {
+                        key_cap_on(&hint, swatch.fg)
+                    } else {
+                        key_cap(&hint, swatch)
+                    });
                 }
                 let element = div()
                     .id(("palette-picker", row))
@@ -2185,7 +2214,11 @@ impl CommandPalette {
                                 div()
                                     .truncate()
                                     .text_size(px(11.5))
-                                    .text_color(swatch.muted)
+                                    .text_color(if selected {
+                                        swatch.muted_on(swatch.selection)
+                                    } else {
+                                        swatch.muted
+                                    })
                                     .child(item.detail.clone()),
                             ),
                     )

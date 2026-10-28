@@ -281,8 +281,9 @@ impl SettingsView {
         let path = desktop.config_path.clone();
         let watching = desktop.config.general.watch_config;
         let swatch = tokens(&desktop.config.theme);
-        let search =
-            cx.new(|cx| TextField::new("Search settings", swatch.fg, cx));
+        let search = cx.new(|cx| {
+            TextField::new("Search settings", swatch.fg, swatch.muted, cx)
+        });
         let _ = search.read(cx).focus_handle(cx).tab_stop(true);
         cx.subscribe(
             &search,
@@ -413,7 +414,8 @@ impl SettingsView {
             ""
         };
         let field = cx.new(|cx| {
-            let mut field = TextField::new(placeholder, swatch.fg, cx);
+            let mut field =
+                TextField::new(placeholder, swatch.fg, swatch.muted, cx);
             field.set_text(text, cx);
             field
         });

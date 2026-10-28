@@ -187,14 +187,24 @@ mod contrast {
     /// Every enabled text color with each fill it is drawn on, and the
     /// focus ring with the surfaces it is drawn against, for one theme.
     fn drawn_pairs(t: &Swatch) -> Vec<(&'static str, Hsla, Hsla, f32)> {
-        let selection = [over(t.selection, t.bg), over(t.selection, t.surface)];
         let plain = [t.bg, t.surface];
-        let chips = [over(t.chip, t.bg), over(t.chip, t.surface)];
-        let footers = [over(t.footer(), t.bg), over(t.footer(), t.surface)];
+        let over_each = |fill: Hsla, unders: &[Hsla]| -> Vec<Hsla> {
+            unders.iter().map(|under| over(fill, *under)).collect()
+        };
+        let selection = over_each(t.selection, &plain);
+        let footers = over_each(t.footer(), &plain);
+        let chips = over_each(t.chip, &plain);
+        // Key caps sit on chips over footers too; on a selected row they
+        // draw outlined, on the selection itself.
+        let nested_chips: Vec<Hsla> =
+            footers.iter().map(|under| over(t.chip, *under)).collect();
+        let pressed = over_each(t.pressed(), &plain);
+        let selection_pressed = over_each(t.selection_pressed(), &plain);
         let primary = [t.accent, t.accent_pressed()];
         let danger = [t.danger_fill(), t.danger_hover(), t.danger_pressed()];
         let close = t.on(t.danger_fill());
-        let band = over(t.accent.opacity(0.05), t.surface);
+        let bands = over_each(t.accent.opacity(0.05), &plain);
+        let muted_selected = t.muted_on(t.selection);
         let mut pairs = Vec::new();
         let mut text = |name, color: Hsla, unders: &[Hsla]| {
             for under in unders {
@@ -203,10 +213,19 @@ mod contrast {
         };
         text("fg", t.fg, &plain);
         text("fg on selection", t.fg, &selection);
+        text("fg on chips", t.fg, &chips);
+        text("fg on nested chips", t.fg, &nested_chips);
+        text("fg pressed", t.fg, &pressed);
+        text("fg on selection pressed", t.fg, &selection_pressed);
         text("muted", t.muted, &plain);
         text("muted on chips", t.muted, &chips);
         text("muted on footers", t.muted, &footers);
-        text("muted on selection", t.muted_on(t.selection), &selection);
+        text("muted on selection", muted_selected, &selection);
+        text(
+            "muted on selection pressed",
+            muted_selected,
+            &selection_pressed,
+        );
         text("on_accent", t.on_accent(), &primary);
         text("on warning", t.on(t.warning), &[t.warning]);
         text("on danger", t.on(t.danger), &[t.danger]);
@@ -218,8 +237,9 @@ mod contrast {
         ] {
             text(name, color, &plain);
             text(name, color, &chips);
+            text(name, color, &selection);
         }
-        text("error band", t.accent_text(), &[band]);
+        text("error band", t.accent_text(), &bands);
         let ring = t.focus_ring()[0].color;
         for under in plain {
             pairs.push(("focus ring", ring, under, NON_TEXT_CONTRAST));

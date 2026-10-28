@@ -146,6 +146,8 @@ pub(crate) struct TextField {
     placeholder: String,
     buffer: TextBuffer,
     foreground: Hsla,
+    /// The placeholder's color: secondary text, which reads on the field.
+    hint: Hsla,
     /// The field's last painted bounds and shaped text, for pointer
     /// hit-testing.
     layout: Option<(Bounds<Pixels>, ShapedLine)>,
@@ -154,9 +156,12 @@ pub(crate) struct TextField {
 }
 
 impl TextField {
+    /// A field drawing its text in `foreground` and its placeholder in
+    /// `hint`.
     pub(crate) fn new(
         placeholder: impl Into<String>,
         foreground: Hsla,
+        hint: Hsla,
         cx: &mut Context<'_, Self>,
     ) -> Self {
         Self {
@@ -164,6 +169,7 @@ impl TextField {
             placeholder: placeholder.into(),
             buffer: TextBuffer::default(),
             foreground,
+            hint,
             layout: None,
             dragging: false,
         }
@@ -245,12 +251,14 @@ impl TextField {
         self.placeholder = placeholder.into();
     }
 
-    pub(crate) fn set_foreground(
+    pub(crate) fn set_colors(
         &mut self,
         foreground: Hsla,
+        hint: Hsla,
         cx: &mut Context<'_, Self>,
     ) {
         self.foreground = foreground;
+        self.hint = hint;
         cx.notify();
     }
 
@@ -559,8 +567,9 @@ impl Render for TextField {
         let empty = self.buffer.content.is_empty();
         let mut contents = div().flex().items_center().w_full();
         if empty {
-            contents = contents
-                .child(div().opacity(0.62).child(self.placeholder.clone()));
+            contents = contents.child(
+                div().text_color(self.hint).child(self.placeholder.clone()),
+            );
         } else {
             contents = contents.child(self.buffer.content.clone());
         }

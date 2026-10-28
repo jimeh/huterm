@@ -9,9 +9,9 @@
 //! [`Tokens::on_accent`] on solid fills, at rest and pressed; and
 //! [`Tokens::accent_text`] and its siblings for colored text. The focus
 //! ring reaches 3:1 against the background and the surface. Disabled text
-//! and placeholders ([`Tokens::dim`]) are exempt, as WCAG exempts inactive
-//! controls, and so are the borders of controls whose text labels identify
-//! them.
+//! ([`Tokens::dim`]) is exempt, as WCAG exempts inactive controls, and so
+//! are the borders of controls whose text labels identify them.
+//! Placeholders are enabled text and use `muted`.
 //! Further shades are methods rather than fields, because [`Tokens`] is passed
 //! by value and must stay under Clippy's 256-byte `large_types_passed_by_value`
 //! limit: its thirteen colors and [`ScrollbarColors`] take 240 bytes.
@@ -52,7 +52,8 @@ pub struct Tokens {
     /// Secondary text, readable on the background, the surface, chips, and
     /// footers.
     pub muted: Hsla,
-    /// Disabled text and placeholders only: enabled text uses `muted`.
+    /// Disabled text only: enabled text, placeholders included, uses
+    /// `muted`.
     pub dim: Hsla,
     /// Hairline separators and key-cap borders.
     pub line: Hsla,
@@ -118,23 +119,24 @@ impl Tokens {
             })
             .unwrap_or(bg);
         // Fills under body text keep it at 4.5:1: each takes the strongest
-        // of its opacities that allows that on the background and the
-        // surface.
-        let chip = gentlest(
-            fg,
-            fg,
-            bg,
-            surface,
-            &[0.1, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04],
-        );
+        // of its opacities that allows that wherever it is drawn, down to
+        // none.
+        let plain = [bg, surface];
         let selection = gentlest(
             colors.selection,
-            fg,
-            bg,
-            surface,
+            &[fg],
+            &plain,
             &[0.35, 0.3, 0.25, 0.2, 0.15, 0.12],
         );
         let footer = footer(fg, bg, surface);
+        // Chips, such as key caps, also sit on footers. On a selected row
+        // they draw outlined instead, with no fill of their own.
+        let chip = gentlest(
+            fg,
+            &[fg],
+            &[bg, surface, over(footer, bg), over(footer, surface)],
+            &[0.1, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04],
+        );
         // Secondary text at the lightest opacity that stays readable on
         // every plain fill it sits on, else the foreground itself.
         let unders = [
@@ -164,22 +166,36 @@ impl Tokens {
         }
     }
 
-    /// Buttons while the pointer holds them down: twice the hover overlay.
+    /// Buttons while the pointer holds them down: up to twice the hover
+    /// overlay, as strong as their text on it allows.
     #[must_use]
     pub fn pressed(&self) -> Hsla {
-        Hsla {
-            a: (self.hover.a * 2.0).min(1.0),
-            ..self.hover
-        }
+        let a = self.hover.a;
+        gentlest(
+            Hsla {
+                a: 1.0,
+                ..self.hover
+            },
+            &[self.fg],
+            &[self.bg, self.surface],
+            &[a * 2.0, a * 1.75, a * 1.5, a * 1.25, a],
+        )
     }
 
-    /// A selected row while the pointer holds it down.
+    /// A selected row while the pointer holds it down: up to 1.6 times the
+    /// selection, as strong as its text allows, else the selection itself.
     #[must_use]
     pub fn selection_pressed(&self) -> Hsla {
-        Hsla {
-            a: (self.selection.a * 1.6).min(1.0),
-            ..self.selection
-        }
+        let a = self.selection.a;
+        gentlest(
+            Hsla {
+                a: 1.0,
+                ..self.selection
+            },
+            &[self.fg, self.muted_on(self.selection)],
+            &[self.bg, self.surface],
+            &[a * 1.6, a * 1.4, a * 1.2, a],
+        )
     }
 
     /// Accent-filled buttons and rows while held down.
@@ -305,6 +321,8 @@ impl Tokens {
             self.surface,
             over(self.chip, self.bg),
             over(self.chip, self.surface),
+            over(self.selection, self.bg),
+            over(self.selection, self.surface),
         ];
         toward(color, self.fg, &unders, TEXT_CONTRAST)
             .unwrap_or_else(|| self.on_all(&unders))
@@ -372,18 +390,26 @@ impl Tokens {
         ]
     }
 
-    /// A solid ring of [`Self::ring`], [`size::FOCUS_RING`] wide, around a
-    /// focused control. Components draw it through [`crate::focus::ring`],
-    /// which shows it only for keyboard focus.
+    /// A solid ring of [`Self::ring`], [`size::FOCUS_RING`] wide, outside a
+    /// one-point gap of background, around a focused control. Components
+    /// draw it through [`crate::focus::ring`], which shows it only for
+    /// keyboard focus.
     #[must_use]
     pub fn focus_ring(&self) -> Vec<BoxShadow> {
-        vec![BoxShadow {
-            color: self.ring(),
+        let shadow = |color, spread| BoxShadow {
+            color,
             offset: point(px(0.0), px(0.0)),
             blur_radius: px(0.0),
-            spread_radius: size::FOCUS_RING,
+            spread_radius: spread,
             inset: false,
-        }]
+        };
+        // A gap of background inside the ring sets it apart from a control
+        // filled with the accent, and keeps a transparent control's own
+        // area from showing the ring's color behind its label.
+        vec![
+            shadow(self.ring(), size::FOCUS_RING + px(1.0)),
+            shadow(self.bg, px(1.0)),
+        ]
     }
 }
 
@@ -404,28 +430,30 @@ pub fn mix(from: Hsla, to: Hsla, amount: f32) -> Hsla {
 /// The footer fill: a faint wash of the foreground, as faint as body text
 /// on it needs.
 fn footer(fg: Hsla, bg: Hsla, surface: Hsla) -> Hsla {
-    gentlest(fg, fg, bg, surface, &[0.03, 0.02, 0.01])
+    gentlest(fg, &[fg], &[bg, surface], &[0.03, 0.02, 0.01])
 }
 
-/// `color` at the first of `alphas` under which `fg` reaches 4.5:1 over
-/// both `bg` and `surface`, else at the last.
+/// `color` at the first of `alphas` under which every one of `texts`
+/// reaches 4.5:1 over each of `unders`, else no fill at all, under which
+/// the corrected foreground always reads.
 fn gentlest(
     color: Hsla,
-    fg: Hsla,
-    bg: Hsla,
-    surface: Hsla,
+    texts: &[Hsla],
+    unders: &[Hsla],
     alphas: &[f32],
 ) -> Hsla {
-    let last = alphas.last().copied().unwrap_or(0.0);
     alphas
         .iter()
         .map(|alpha| color.opacity(*alpha))
         .find(|fill| {
-            [bg, surface]
-                .iter()
-                .all(|under| contrast(fg, over(*fill, *under)) >= TEXT_CONTRAST)
+            unders.iter().all(|under| {
+                let base = over(*fill, *under);
+                texts.iter().all(|text| {
+                    contrast(over(*text, base), base) >= TEXT_CONTRAST
+                })
+            })
         })
-        .unwrap_or(color.opacity(last))
+        .unwrap_or(color.opacity(0.0))
 }
 
 /// `fg` at the lightest secondary-text opacity that reaches 4.5:1 on every
@@ -529,31 +557,54 @@ mod tests {
         hsla(0.0, 0.0, lightness, 1.0)
     }
 
-    #[test]
-    fn a_theme_with_almost_no_contrast_still_reads() {
-        // Every color close to mid-gray: no step toward the theme's own
-        // colors reaches the minimums, so the fallbacks must.
-        let t = Tokens::new(OverlayColors {
-            foreground: gray(0.56),
-            background: gray(0.5),
-            selection: gray(0.53),
-            accent: gray(0.5),
-            danger: gray(0.52),
-            warning: gray(0.54),
+    fn theme(fg: f32, bg: f32, selection: f32, accent: f32) -> Tokens {
+        Tokens::new(OverlayColors {
+            foreground: gray(fg),
+            background: gray(bg),
+            selection: gray(selection),
+            accent: gray(accent),
+            danger: gray(bg + 0.02),
+            warning: gray(bg + 0.04),
             scrollbar: ScrollbarColors {
-                thumb: gray(0.56),
-                track: gray(0.5),
+                thumb: gray(fg),
+                track: gray(bg),
             },
-        });
-        for under in [t.bg, t.surface] {
-            assert!(contrast(t.fg, under) >= TEXT_CONTRAST);
-            assert!(contrast(over(t.muted, under), under) >= TEXT_CONTRAST);
-            assert!(contrast(t.accent_text(), under) >= TEXT_CONTRAST);
-            let ring = t.focus_ring()[0].color;
-            assert!(contrast(ring, under) >= NON_TEXT_CONTRAST);
-        }
-        for fill in [t.accent, t.accent_pressed()] {
-            assert!(contrast(t.on_accent(), fill) >= TEXT_CONTRAST);
+        })
+    }
+
+    /// Whether `text` reads at `minimum` on each of `unders`, composited.
+    fn reads(text: Hsla, unders: &[Hsla], minimum: f32) -> bool {
+        unders
+            .iter()
+            .all(|under| contrast(over(text, *under), *under) >= minimum)
+    }
+
+    #[test]
+    fn themes_with_almost_no_contrast_still_read() {
+        // Near mid-gray in both polarities, no step toward the theme's own
+        // colors meets the minimums, so the corrections and the fallbacks
+        // that remove a fill must.
+        for t in [
+            theme(0.56, 0.5, 0.53, 0.5),
+            theme(1.0, 0.46, 0.46, 0.5),
+            theme(0.0, 0.47, 0.47, 0.5),
+        ] {
+            let plain = [t.bg, t.surface];
+            let fills: Vec<Hsla> =
+                [t.chip, t.selection, t.footer(), t.pressed()]
+                    .into_iter()
+                    .flat_map(|fill| plain.map(|under| over(fill, under)))
+                    .collect();
+            assert!(reads(t.fg, &plain, TEXT_CONTRAST));
+            assert!(reads(t.fg, &fills, TEXT_CONTRAST), "{t:?}");
+            assert!(reads(t.muted, &plain, TEXT_CONTRAST));
+            assert!(reads(t.accent_text(), &plain, TEXT_CONTRAST));
+            assert!(reads(
+                t.on_accent(),
+                &[t.accent, t.accent_pressed()],
+                TEXT_CONTRAST
+            ));
+            assert!(reads(t.focus_ring()[0].color, &plain, NON_TEXT_CONTRAST));
         }
     }
 }

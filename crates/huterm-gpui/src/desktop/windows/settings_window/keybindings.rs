@@ -175,6 +175,7 @@ impl Keys {
             TextField::new(
                 "Search commands, shortcuts, or conditions",
                 swatch.fg,
+                swatch.muted,
                 cx,
             )
         });
@@ -914,7 +915,8 @@ impl SettingsView {
         }
         let swatch = Self::swatch(cx);
         let field = cx.new(|cx| {
-            let mut field = TextField::new(placeholder, swatch.fg, cx);
+            let mut field =
+                TextField::new(placeholder, swatch.fg, swatch.muted, cx);
             field.set_text(text.clone(), cx);
             field
         });
@@ -2002,13 +2004,12 @@ impl SettingsView {
                         &recording.strokes.join(" "),
                         Platform::current(),
                     )
-                    .element(px(12.0), swatch.accent),
+                    .element(px(12.0), swatch.accent_text()),
                 )
-                .child(small("…".to_owned(), swatch.accent))
+                .child(small("…".to_owned(), swatch.accent_text()))
                 .into_any_element(),
-            _ => {
-                small("Press keys".to_owned(), swatch.accent).into_any_element()
-            }
+            _ => small("Press keys".to_owned(), swatch.accent_text())
+                .into_any_element(),
         }
     }
 
@@ -2027,7 +2028,7 @@ impl SettingsView {
             } else {
                 "Press the new shortcut. Esc cancels.".to_owned()
             },
-            swatch.accent,
+            swatch.accent_text(),
         )
     }
 
@@ -2420,7 +2421,7 @@ impl SettingsView {
             key.as_str() == name || field_row(key) == Some(name)
         });
         let error = errors.map(|(_, error)| {
-            small(error.clone(), swatch.danger).into_any_element()
+            small(error.clone(), swatch.danger_text()).into_any_element()
         });
         let notes = self
             .keys
@@ -2433,7 +2434,7 @@ impl SettingsView {
                 small(
                     note.text,
                     if note.warning {
-                        swatch.warning
+                        swatch.warning_text()
                     } else {
                         swatch.muted
                     },

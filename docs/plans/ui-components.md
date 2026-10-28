@@ -613,8 +613,10 @@ has room for one more field at most:
   them; raising `line_strong` (1.3:1 to 2:1) to 3:1 would make every outline
   heavy. `line_strong` also draws a switch's off track and the modifier chips'
   borders, which are state indicators rather than labelled outlines; step 3's
-  migrations owe them 3:1. Disabled text and placeholders (`dim`) are exempt
-  as well.
+  migrations owe them 3:1. Disabled text (`dim`) is exempt as well;
+  placeholders are enabled text and use `muted`. A script test rejects raw
+  theme colors used directly as text, and the pair table checks the tokens;
+  a color chosen in a branch still needs a reviewer.
 
 ## Testing strategy
 

@@ -568,7 +568,8 @@ fn toast_body(
                 .cursor_pointer()
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(swatch.accent_text())
-                .active(|action| action.opacity(0.6))
+                // Fading the text would drop it below 4.5:1 while held.
+                .active(gpui::Styled::underline)
                 .on_click(move |_: &ClickEvent, window, cx| {
                     run(id, command.clone(), window, cx);
                 })
