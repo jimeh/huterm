@@ -2262,10 +2262,12 @@ impl SettingsView {
             ))
         });
         let remove = (user && listed.entry.is_some()).then(|| {
+            // A key can repeat under different conditions, so the name
+            // carries the command, as the row's switch does.
             self.remove_button(
                 format!("settings-kdel-{name}"),
                 format!("kdel:{name}"),
-                &listed.binding.key,
+                &format!("{} on {}", spec.title, listed.binding.key),
                 swatch,
                 cx,
             )
@@ -2599,18 +2601,19 @@ fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
 }
 
 impl SettingsView {
-    /// A small × that removes the entry for `shortcut` from the file, by
-    /// running the action `key` names. Its name includes the shortcut, so
-    /// each row's button reads differently.
+    /// A small × that removes an entry from the file, by running the
+    /// action `key` names. It is named "Remove `subject`", where `subject`
+    /// is the shortcut, or the command and its shortcut where a key can
+    /// repeat, so each row's button reads differently.
     pub(super) fn remove_button(
         &mut self,
         name: String,
         key: String,
-        shortcut: &str,
+        subject: &str,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> Button {
-        self.action_button(name, format!("Remove {shortcut}"), key, swatch, cx)
+        self.action_button(name, format!("Remove {subject}"), key, swatch, cx)
             .variant(Variant::Ghost)
             .icon(
                 gpui::svg()
