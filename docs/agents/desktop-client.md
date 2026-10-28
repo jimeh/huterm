@@ -460,7 +460,9 @@ a pane layout's template field marks its path) and
 moves focus to the window when the focused control was not drawn, or when
 focus stays across a frame outside the view's tree. A pane layout or cycle
 row that went away hands focus to the same control of a neighbouring row
-instead (`layout_neighbour`, from the rows the last two frames drew). No
+instead (`layout_neighbour`, from the rows the last two frames drew): a user
+layout's to the next row, else New layout; a cycle row's to the next row,
+else the previous one. No
 recovery runs while a dialog is open: a dialog opening over a control that
 just went away takes focus on its first frame, after the recovery was
 scheduled, and the recovery would take it back out of the dialog.
@@ -925,7 +927,11 @@ nothing. A layout's deletion is a batch too (`DeleteLayout`): its
 `current_patches` refuses it, writing nothing, when an active keybinding or
 the cycle in the file as it is then names the layout, since one added
 elsewhere or pointed there by a rename queued ahead of it would otherwise
-name a missing layout; `Batch::fresh` applies it to that read. Every
+name a missing layout; `Batch::fresh` applies it to that read. Because it
+reads afresh, a deletion queued behind a write that would have made the
+layout, a rename to its name or a creation, goes when that write does
+not land (`drop_queued_deletes`); otherwise it would delete a layout of that
+name another editor made. Every
 conflict and error must sit on a drawn row, since `request_close` refuses
 while any conflict exists and nothing else shows it: a rename clears the
 old name's, and `forget_gone_layouts` drops those of a layout a load or

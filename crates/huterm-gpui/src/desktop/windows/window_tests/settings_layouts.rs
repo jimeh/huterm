@@ -449,6 +449,76 @@ fn a_refused_rename_drops_the_edits_made_under_the_new_name(
 }
 
 #[gpui::test]
+fn a_refused_rename_drops_a_deletion_of_the_new_name(cx: &mut TestAppContext) {
+    let original = "[panes.layouts]\ndev = \"rows(*)\"\n";
+    let file = ScratchConfig::new("layouts-rename-refused-delete", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    // Another editor makes a work of its own, which refuses the rename.
+    let theirs = format!("{original}work = \"grid(*)\"\n");
+    std::fs::write(file.path(), &theirs).unwrap();
+    with_window(&mut harness, |view, window, cx| {
+        renaming(view, "dev", "work", window, cx);
+        // Queued behind the rename; applied to the file as it is then, it
+        // would delete the other editor's work.
+        view.press("ldel:work", window, cx);
+        assert_eq!(view.dialog_name(), "delete-layout");
+        view.answer("ldelyes", window, cx);
+        assert_eq!(view.dialog_name(), "none");
+    });
+    dialog_shows(&mut harness, "rename-layout-refused");
+    assert_eq!(file.text(), theirs);
+    let alert = a11y_node(&mut harness, "settings-rename-layout-refused");
+    let why = alert["aria"]["description"].as_str().unwrap_or_default();
+    assert!(
+        why.ends_with("Changes made meanwhile that name work were not saved."),
+        "{alert}"
+    );
+    with_view(&mut harness, |view, _| {
+        assert_ne!(view.status_text(), "Saved");
+    });
+}
+
+#[gpui::test]
+fn a_conflicted_create_drops_a_deletion_of_its_name(cx: &mut TestAppContext) {
+    let original = "[panes.layouts]\ndev = \"rows(*)\"\n";
+    let file = ScratchConfig::new("layouts-create-conflict-delete", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    // Another editor makes a work of its own, which the creation conflicts
+    // with.
+    let theirs = format!("{original}work = \"grid(*)\"\n");
+    std::fs::write(file.path(), &theirs).unwrap();
+    let before = with_view(&mut harness, |view, _| view.writes_finished());
+    with_window(&mut harness, |view, window, cx| {
+        view.press("lnew", window, cx);
+        view.type_dialog_name("work", cx);
+        view.answer("lcreate", window, cx);
+        // Queued behind the creation; applied to the file as it is then, it
+        // would delete the other editor's work.
+        view.press("ldel:work", window, cx);
+        assert_eq!(view.dialog_name(), "delete-layout");
+        view.answer("ldelyes", window, cx);
+        assert_eq!(view.dialog_name(), "none");
+    });
+    harness.wait_for("the creation's save", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.writes_finished() > before)
+                    .unwrap_or(false)
+            })
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), theirs);
+    // The creation's conflict shows on the other editor's work.
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.layout_names(), ["dev", "work"]);
+        assert!(view.conflicted(WORK));
+    });
+}
+
+#[gpui::test]
 fn delete_asks_first_and_focus_moves_to_the_next_row(cx: &mut TestAppContext) {
     let original = "[panes.layouts]\ndev = \"rows(*)\"\npair = \"grid(*)\"\n";
     let file = ScratchConfig::new("layouts-delete", original);
@@ -655,7 +725,7 @@ fn a_draft_in_a_layout_deleted_elsewhere_leaves_nothing_to_settle(
 }
 
 #[gpui::test]
-fn focus_in_a_template_moves_to_a_neighbour_when_its_layout_goes(
+fn focus_in_a_template_moves_to_the_next_row_or_new_layout_when_its_layout_goes(
     cx: &mut TestAppContext,
 ) {
     let original = "[panes.layouts]\nalpha = \"rows(*)\"\ndev = \"grid(*)\"\n\
@@ -681,8 +751,8 @@ fn focus_in_a_template_moves_to_a_neighbour_when_its_layout_goes(
         });
         visual(harness).run_until_parked();
     };
-    // The next row's template takes it, else the previous row's, else New
-    // layout.
+    // The next row's template takes it, else New layout, which follows the
+    // list, never the previous row's.
     deleted(
         &mut harness,
         "[panes.layouts]\nalpha = \"rows(*)\"\npair = \"columns(*)\"\n",
@@ -694,9 +764,41 @@ fn focus_in_a_template_moves_to_a_neighbour_when_its_layout_goes(
         "[panes.layouts]\nalpha = \"rows(*)\"\n",
         &["alpha"],
     );
-    assert_eq!(focus(&mut harness), "panes.layouts.alpha");
-    deleted(&mut harness, "", &[]);
     assert_eq!(focus(&mut harness), "action:lnew");
+}
+
+#[gpui::test]
+fn a_layout_made_behind_an_earlier_save_keeps_its_typed_template(
+    cx: &mut TestAppContext,
+) {
+    let original = "[panes.layouts]\ndev = \"rows(*)\"\npair = \"grid(*)\"\n";
+    let file = ScratchConfig::new("layouts-new-behind", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_window_section(&mut harness, &file);
+    let release = with_view(&mut harness, |view, _| view.hold_batch());
+    with_window(&mut harness, |view, window, cx| {
+        view.press("ldel:pair", window, cx);
+        view.answer("ldelyes", window, cx);
+        // Made behind the deletion, and typed into before either lands.
+        view.press("lnew", window, cx);
+        view.type_dialog_name("work", cx);
+        view.answer("lcreate", window, cx);
+        assert_eq!(view.dialog_name(), "none");
+        view.type_into(WORK, "rows(*)", window, cx);
+    });
+    harness.wait_for("the deletion's write", |_| !file.text().contains("pair"));
+    // The deletion settles while the creation still waits, so the file it
+    // read has no work yet.
+    drop(release);
+    harness.wait_for("every save", settled);
+    assert_eq!(
+        file.text(),
+        "[panes.layouts]\ndev = \"rows(*)\"\nwork = \"columns(*)\"\n"
+    );
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.layout_names(), ["dev", "work"]);
+        assert_eq!(view.field_value(WORK, cx), "rows(*)");
+    });
 }
 
 #[gpui::test]

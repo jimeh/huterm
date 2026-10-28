@@ -78,13 +78,25 @@ impl Rows {
             && self.before.iter().any(|row| row == name)
     }
 
+    /// The first row this frame drew of those after where the row `name`
+    /// was in the last one.
+    fn next(&self, name: &str) -> Option<&String> {
+        let at = self.before.iter().position(|row| row == name)?;
+        self.before[at + 1..]
+            .iter()
+            .find(|row| self.now.contains(row))
+    }
+
     /// The row this frame drew nearest where the row `name` was in the
     /// last one, the next one first.
     fn nearest(&self, name: &str) -> Option<&String> {
         let at = self.before.iter().position(|row| row == name)?;
-        let after = self.before.iter().skip(at + 1);
-        let before = self.before.iter().take(at).rev();
-        after.chain(before).find(|row| self.now.contains(row))
+        self.next(name).or_else(|| {
+            self.before[..at]
+                .iter()
+                .rev()
+                .find(|row| self.now.contains(row))
+        })
     }
 }
 
@@ -614,9 +626,10 @@ impl SettingsView {
     }
 
     /// Drops the changes made under a refused rename's new name `to`: its
-    /// template, and a cycle that names it. Written alone, they would make
-    /// the layout, or name one that does not exist. Returns whether a
-    /// change went.
+    /// template, a cycle that names it, and its deletion. Written alone,
+    /// they would make the layout, or name one that does not exist, and the
+    /// deletion, applied to the file as it is then, would remove a layout
+    /// of that name made elsewhere. Returns whether a change went.
     pub(super) fn drop_layout_edits(
         &mut self,
         to: &str,
@@ -624,6 +637,7 @@ impl SettingsView {
     ) -> bool {
         let path = template_path(to);
         let mut went = self.drop_edits(|at| at == path, cx);
+        went |= self.drop_queued_deletes(to);
         let names_to = self.pending.get(CYCLE).is_some_and(|cycle| {
             cycle
                 .as_ref()
@@ -729,6 +743,19 @@ impl SettingsView {
             self.errors.remove(path.as_str());
             self.conflicts.remove(path.as_str());
             self.submit_batch(Batch::DeleteLayout { name: layout }, cx);
+        }
+    }
+
+    /// Drops the deletions queued behind a failed write to the template at
+    /// `path` when the file as the window read it has no such layout: that
+    /// write was creating it, and a deletion applied to the file as it is
+    /// then would remove a layout of that name made elsewhere.
+    pub(super) fn drop_deletes_of_failed_create(&mut self, path: &str) {
+        if is_template(path)
+            && self.file.get(path).is_none()
+            && let Some(name) = path.strip_prefix(PREFIX)
+        {
+            self.drop_queued_deletes(name);
         }
     }
 
@@ -865,9 +892,11 @@ impl SettingsView {
     }
 
     /// Where focus goes when the user layout or cycle row holding it went
-    /// away: the same control of the nearest row this frame drew, the next
-    /// one first. A user layout's row with no neighbour left gives focus to
-    /// New layout. `None` for focus elsewhere, which returns to the window.
+    /// away: the same control of another row this frame drew. A user
+    /// layout's row hands it on in reading order, to the next row, else to
+    /// New layout, which follows the list. A cycle row's goes to the next
+    /// row, else the previous one. `None` for focus elsewhere, which
+    /// returns to the window.
     pub(super) fn layout_neighbour(
         &mut self,
         window: &Window,
@@ -886,15 +915,20 @@ impl SettingsView {
                 .map(|(path, _)| *path)?;
             ("field".to_owned(), path.strip_prefix(PREFIX)?.to_owned())
         };
-        let (rows, fallback) = match kind.as_str() {
-            "field" | "lren" | "ldel" => (&self.layouts.rows, Some("lnew")),
-            "lcyc" | "lup" | "ldown" => (&self.layouts.cycle, None),
+        let (rows, user) = match kind.as_str() {
+            "field" | "lren" | "ldel" => (&self.layouts.rows, true),
+            "lcyc" | "lup" | "ldown" => (&self.layouts.cycle, false),
             _ => return None,
         };
         if !rows.went(&name) {
             return None;
         }
-        let target = match rows.nearest(&name) {
+        let neighbour = if user {
+            rows.next(&name)
+        } else {
+            rows.nearest(&name)
+        };
+        let target = match neighbour {
             Some(row) => {
                 let row = row.clone();
                 match kind.as_str() {
@@ -904,7 +938,8 @@ impl SettingsView {
                     _ => format!("{kind}:{row}"),
                 }
             }
-            None => fallback?.to_owned(),
+            None if user => "lnew".to_owned(),
+            None => return None,
         };
         match target.strip_prefix("field:") {
             Some(row) => self

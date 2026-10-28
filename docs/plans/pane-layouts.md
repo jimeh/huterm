@@ -1421,12 +1421,18 @@ Recorded with PR 3b:
 - A rename's refusal says "Changes made meanwhile that name {to} were not
   saved." when it drops a template or cycle edit made meanwhile.
 - A refused rename also drops a cycle change made meanwhile that names the
-  new name, since written alone it would name a layout that does not exist.
-- Focus that a row leaves behind moves to the same control of the
-  neighbouring row, the next one first, whenever the row goes, including
-  when another editor removes the layout; a user layout's last row hands it
-  to New layout. A template field counts as drawn with its row, so focus
-  in it moves on the frame the row goes. While a dialog is opening, the
+  new name, since written alone it would name a layout that does not exist,
+  and a deletion of the new name queued behind it, since applied to the
+  file as it is then it would delete a layout of that name made elsewhere.
+  A creation that conflicts or fails drops a queued deletion of its name
+  the same way, when the file as the window read it has no such layout.
+- Focus that a row leaves behind moves to the same control of another row
+  whenever the row goes, including when another editor removes the layout.
+  A user layout's row (its template field, Rename, or Delete) follows
+  reading order: the next row, else New layout, never the previous row. A
+  cycle row's goes to the next row, else the previous one. A template field
+  counts as drawn with its row, so focus in it moves on the frame the row
+  goes. While a dialog is opening, the
   window does not move focus
   off a control that went away, since the dialog takes focus on its first
   frame.

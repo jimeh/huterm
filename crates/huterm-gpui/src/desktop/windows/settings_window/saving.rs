@@ -1087,6 +1087,25 @@ impl SettingsView {
         went
     }
 
+    /// Drops the queued deletions of the pane layout `name`, settling what
+    /// they show. Returns whether one went.
+    pub(super) fn drop_queued_deletes(&mut self, name: &str) -> bool {
+        let mut dropped = Vec::new();
+        self.queued.retain(|queued| match queued {
+            Queued::Batch(Batch::DeleteLayout { name: deleted }, outcome)
+                if deleted == name =>
+            {
+                dropped.push(outcome.clone());
+                false
+            }
+            _ => true,
+        });
+        for outcome in &dropped {
+            self.settle_batch(outcome);
+        }
+        !dropped.is_empty()
+    }
+
     /// Moves each queued setting change whose path still holds what it
     /// expected onto `snapshot`, which this window just wrote: nothing else
     /// touched that path, so the change can build on the write.
@@ -1255,6 +1274,7 @@ impl SettingsView {
                     },
                 );
                 self.status.failed("config.toml changed on disk");
+                self.drop_deletes_of_failed_create(key);
                 self.load(cx);
             }
             Err(ApplyError::InvalidFile(message)) => {
@@ -1289,6 +1309,7 @@ impl SettingsView {
                 failed = true;
                 let message = error.to_string();
                 settle(self);
+                self.drop_deletes_of_failed_create(key);
                 self.errors.insert(key, message.clone());
                 self.status.failed(message);
                 self.sync_fields(cx);
