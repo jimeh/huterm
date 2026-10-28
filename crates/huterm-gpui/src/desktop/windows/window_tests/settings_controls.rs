@@ -88,16 +88,25 @@ pub(super) fn a11y_find(
 /// An accessibility Click on `node`, which GPUI performs as a pointer
 /// press and release at its center.
 pub(super) fn a11y_click(harness: &mut DesktopHarness, node: &Value) {
+    a11y_act(harness, node, AccessibleAction::Click);
+}
+
+/// Sends the accessibility `action` to `node`.
+pub(super) fn a11y_act(
+    harness: &mut DesktopHarness,
+    node: &Value,
+    action: AccessibleAction,
+) {
     let target = node["accesskit_id"]
         .as_str()
         .and_then(|id| id.parse().ok())
         .expect("every node reports its AccessKit id");
-    // Through the window, not the view: the click updates the view.
+    // Through the window, not the view: the action updates the view.
     let mut visual = visual(harness);
     visual.update(|window, cx| {
         window.simulate_a11y_action(
             gpui::accesskit::ActionRequest {
-                action: AccessibleAction::Click,
+                action,
                 target_tree: gpui::accesskit::TreeId::ROOT,
                 target_node: gpui::accesskit::NodeId(target),
                 data: None,

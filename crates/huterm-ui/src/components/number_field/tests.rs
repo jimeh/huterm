@@ -7,7 +7,7 @@ use gpui::{
     div, point, prelude::*, px,
 };
 
-use super::{Changed, Format, NumberField};
+use super::{Changed, EmptyStep, Format, NumberField};
 use crate::steps::Steps;
 use crate::testing::{
     a11y_action, a11y_labelled, a11y_node, a11y_send, tokens,
@@ -165,6 +165,37 @@ fn every_step_stays_in_the_range(cx: &mut TestAppContext) {
     assert_eq!(probe.value(cx), Some(0.5));
     assert_eq!(probe.text(cx), "50");
     assert_eq!(probe.changes(), [0.95, 0.05, 0.55, 1.0, 0.5]);
+}
+
+type Act = fn(&mut NumberField, &mut Context<'_, NumberField>);
+
+#[gpui::test]
+fn an_empty_field_steps_as_its_owner_says(cx: &mut TestAppContext) {
+    // A range open at its top once stepped down from empty to a stand-in
+    // maximum far out of the value's type.
+    let (up, down, page_down): (Act, Act, Act) = (
+        NumberField::increment,
+        NumberField::decrement,
+        NumberField::page_down,
+    );
+    for (empty, act, expected) in [
+        (EmptyStep::Ends, up, 0.05),
+        (EmptyStep::Ends, down, 1.0),
+        (EmptyStep::From(0.5), up, 0.55),
+        (EmptyStep::From(0.9), page_down, 0.4),
+        (EmptyStep::To(0.05), down, 0.05),
+        (EmptyStep::To(0.05), page_down, 0.05),
+        (EmptyStep::To(0.05), up, 0.05),
+        // The end, whatever an empty field steps to.
+        (EmptyStep::To(0.05), NumberField::to_max, 1.0),
+    ] {
+        let (probe, cx) =
+            number_with(cx, 0.3, |field| field.with_empty_step(empty));
+        probe.act(cx, |field, cx| field.set_value(None, cx));
+        probe.act(cx, act);
+        assert_eq!(probe.value(cx), Some(expected), "{empty:?}");
+        assert_eq!(probe.changes(), [expected], "{empty:?}");
+    }
 }
 
 #[gpui::test]

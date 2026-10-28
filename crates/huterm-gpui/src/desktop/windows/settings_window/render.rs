@@ -356,6 +356,12 @@ impl SettingsView {
                 )
                 .variant(Variant::Ghost)
             });
+        let reset = reset.map(|reset| {
+            div()
+                .flex_none()
+                .debug_selector(move || format!("settings-reset-{path}"))
+                .child(reset)
+        });
         let control =
             self.render_control(setting, read_only, swatch, window, cx);
         // The theme picker's cards need the row's width.
@@ -508,6 +514,7 @@ impl SettingsView {
             .flex_1()
             .min_w_0()
             .gap(px(2.0))
+            .debug_selector(move || format!("settings-label-{path}"))
             .child(self.render_title(setting, swatch))
             .children(description.map(|text| small(text, swatch.muted)))
             .children(note.map(|note| small(note.to_owned(), swatch.muted)))

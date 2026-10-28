@@ -1028,12 +1028,15 @@ impl SettingsView {
 
     /// How a field shows `value`, or the default for a reset.
     fn display(&self, setting: &Setting, value: Option<Value>) -> String {
-        field_text(value.or_else(|| {
-            self.defaults
-                .get(setting.path.as_str())
-                .cloned()
-                .or_else(|| setting.default.clone())
-        }))
+        field_text(value.or_else(|| self.default_value(setting)))
+    }
+
+    /// The value the setting takes when the file leaves it unset, if any.
+    pub(super) fn default_value(&self, setting: &Setting) -> Option<Value> {
+        self.defaults
+            .get(setting.path.as_str())
+            .or(setting.default.as_ref())
+            .cloned()
     }
 
     /// Whether writes are in flight or queued.

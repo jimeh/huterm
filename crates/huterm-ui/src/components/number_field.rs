@@ -26,7 +26,9 @@
 //! the field shows, and are not snapped to the grid. A value the owner
 //! sets is shown as is, even off the grid or out of range. An empty
 //! field steps to the minimum going up and the maximum going down, as
-//! React Aria's does.
+//! React Aria's does, unless the owner says otherwise with
+//! [`NumberField::with_empty_step`], as one whose range is open at an end
+//! does.
 //!
 //! Pointer: the steppers step once per click, committing typed text
 //! first, and keep focus in the field. A stepper at its bound is disabled,
@@ -120,6 +122,21 @@ impl Format {
     }
 }
 
+/// Where a step from an empty field goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum EmptyStep {
+    /// The minimum going up and the maximum going down, as React Aria's
+    /// field does.
+    #[default]
+    Ends,
+    /// One step from this value, as though the field held it, such as a
+    /// setting's default.
+    From(f64),
+    /// This value, clamped, in either direction, such as the bound of a
+    /// range open at its other end.
+    To(f64),
+}
+
 /// A number field.
 pub struct NumberField {
     id: ElementId,
@@ -130,6 +147,7 @@ pub struct NumberField {
     format: Format,
     value: Option<f64>,
     unit: Option<SharedString>,
+    empty_step: EmptyStep,
     commit_on_blur: bool,
     _blur: Subscription,
 }
@@ -181,6 +199,7 @@ impl NumberField {
             format,
             value: None,
             unit: None,
+            empty_step: EmptyStep::Ends,
             commit_on_blur: true,
             _blur: blur,
         }
@@ -190,6 +209,13 @@ impl NumberField {
     #[must_use]
     pub fn with_unit(mut self, unit: impl Into<SharedString>) -> Self {
         self.unit = Some(unit.into());
+        self
+    }
+
+    /// The field stepping from empty as `empty_step` says.
+    #[must_use]
+    pub fn with_empty_step(mut self, empty_step: EmptyStep) -> Self {
+        self.empty_step = empty_step;
         self
     }
 
@@ -297,12 +323,12 @@ impl NumberField {
 
     /// The minimum.
     pub fn to_min(&mut self, cx: &mut Context<'_, Self>) {
-        self.step(|steps, _| steps.min(), Steps::min, cx);
+        self.jump(Steps::min, cx);
     }
 
     /// The maximum.
     pub fn to_max(&mut self, cx: &mut Context<'_, Self>) {
-        self.step(|steps, _| steps.max(), Steps::max, cx);
+        self.jump(Steps::max, cx);
     }
 
     /// Takes the typed number as the value, rounded to the shown decimals
@@ -354,23 +380,41 @@ impl NumberField {
         !input.is_disabled() && !input.is_read_only()
     }
 
-    /// Commits typed text, then moves the value with `step`, or to
-    /// `empty` of the range while there is none.
+    /// Commits typed text, then moves the value with `step`. While there
+    /// is none, the field's [`EmptyStep`] decides, and its `Ends` go to
+    /// `end` of the range.
     fn step(
         &mut self,
         step: impl FnOnce(Steps, f64) -> f64,
-        empty: impl FnOnce(Steps) -> f64,
+        end: impl FnOnce(Steps) -> f64,
         cx: &mut Context<'_, Self>,
     ) {
         if !self.editable(cx) {
             return;
         }
         self.commit(cx);
-        let next = match self.value {
-            Some(value) => step(self.steps, value),
-            None => empty(self.steps),
+        let next = match (self.value, self.empty_step) {
+            (Some(value), _) | (None, EmptyStep::From(value)) => {
+                step(self.steps, value)
+            }
+            (None, EmptyStep::To(value)) => self.steps.clamp(value),
+            (None, EmptyStep::Ends) => end(self.steps),
         };
         self.change(next, cx);
+    }
+
+    /// Commits typed text, then moves the value to `end` of the range,
+    /// empty or not.
+    fn jump(
+        &mut self,
+        end: impl FnOnce(Steps) -> f64,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !self.editable(cx) {
+            return;
+        }
+        self.commit(cx);
+        self.change(end(self.steps), cx);
     }
 
     /// Takes `value` as the user's change, emitting [`Changed`] when it

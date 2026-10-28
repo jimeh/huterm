@@ -498,6 +498,8 @@ impl SettingsView {
     ) -> Entity<NumberField> {
         let path = setting.path.as_str();
         let swatch = Self::swatch(cx);
+        let empty_step =
+            values::empty_step(setting, self.default_value(setting).as_ref());
         let format = NumberFormat {
             scale: 1.0,
             decimals: match setting.kind {
@@ -515,6 +517,7 @@ impl SettingsView {
                 window,
                 cx,
             )
+            .with_empty_step(empty_step)
             .with_commit_on_blur(false);
             match setting.unit.clone() {
                 Some(unit) => number.with_unit(unit),

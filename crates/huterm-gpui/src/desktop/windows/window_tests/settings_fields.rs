@@ -7,15 +7,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{Keystroke, Modifiers};
+use gpui::{AccessibleAction, Keystroke, Modifiers, MouseButton, point, px};
 use huterm_config::settings::SectionId;
 
 use super::settings::{
     ScratchConfig, settings, settled, with_view, with_window,
 };
 use super::settings_controls::{
-    a11y_click, a11y_find, a11y_node, break_file, focus, keys, ring, show,
-    visual,
+    a11y_act, a11y_click, a11y_find, a11y_node, break_file, focus, keys, ring,
+    show, visual,
 };
 use super::*;
 
@@ -142,6 +142,170 @@ fn a_slider_shows_an_off_grid_value_as_is_and_steps_to_the_grid(
     assert_eq!(file.text(), "[quake.profiles.logs]\nwidth = 0.25\n");
     let aria = a11y_node(&mut harness, &id)["aria"].clone();
     assert_eq!(aria["value"], "25%", "{aria}");
+}
+
+#[gpui::test]
+fn a_slider_row_keeps_its_description_beside_the_slider(
+    cx: &mut TestAppContext,
+) {
+    // The slider took the row's width, so the description wrapped one
+    // character per line and Reset drew over the track.
+    let file = ScratchConfig::new(
+        "fields-slider-layout",
+        "[quake.profiles.logs]\nwidth = 0.3\nheight = 0.4\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    for (label, slider, reset) in [
+        (
+            "settings-label-quake.profiles.logs.width",
+            "settings-slider-quake.profiles.logs.width",
+            "settings-reset-quake.profiles.logs.width",
+        ),
+        (
+            "settings-label-quake.profiles.logs.height",
+            "settings-slider-quake.profiles.logs.height",
+            "settings-reset-quake.profiles.logs.height",
+        ),
+    ] {
+        let mut visual = visual(&harness);
+        let mut bounds = |selector| {
+            visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} was drawn"))
+        };
+        let (label, slider, reset) =
+            (bounds(label), bounds(slider), bounds(reset));
+        assert!(
+            label.right() <= slider.left(),
+            "{label:?} overlaps {slider:?}"
+        );
+        assert!(label.size.width > px(100.0), "{label:?} is squeezed");
+        assert!(
+            reset.right() <= slider.left() && !reset.intersects(&slider),
+            "{reset:?} overlaps {slider:?}"
+        );
+    }
+}
+
+#[gpui::test]
+fn a_slider_shows_the_default_while_its_reset_saves(cx: &mut TestAppContext) {
+    // A pending reset holds no value, and the slider showed its minimum.
+    let width = "quake.profiles.logs.width";
+    let file = ScratchConfig::new(
+        "fields-slider-reset",
+        "[quake.profiles.logs]\nwidth = 0.3\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    let id = format!("settings-slider-{width}");
+    with_window(&mut harness, |view, window, cx| {
+        view.press(&format!("reset:{width}"), window, cx);
+    });
+    assert!(!harness.cx.update(settled), "the reset already saved");
+    let aria = a11y_node(&mut harness, &id)["aria"].clone();
+    assert_eq!(aria["value"], "100%", "{aria}");
+    assert_eq!(aria["numeric_value"], 1.0, "{aria}");
+    harness.wait_for("the reset", |cx| {
+        settled(cx) && !file.text().contains("width")
+    });
+    let aria = a11y_node(&mut harness, &id)["aria"].clone();
+    assert_eq!(aria["value"], "100%", "{aria}");
+}
+
+#[gpui::test]
+fn a_slider_drag_past_its_start_writes_its_floor(cx: &mut TestAppContext) {
+    let width = "quake.profiles.logs.width";
+    let file = ScratchConfig::new(
+        "fields-slider-drag",
+        "[quake.profiles.logs]\nwidth = 0.5\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    let mut visual = visual(&harness);
+    let slider = visual
+        .debug_bounds("settings-slider-quake.profiles.logs.width")
+        .expect("the slider was drawn");
+    let y = slider.center().y;
+    visual.simulate_mouse_down(
+        point(slider.left() + px(40.0), y),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    visual.run_until_parked();
+    let past = point(slider.left() - px(60.0), y);
+    visual.simulate_mouse_move(
+        past,
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    visual.run_until_parked();
+    visual.simulate_mouse_up(past, MouseButton::Left, Modifiers::none());
+    visual.run_until_parked();
+    harness.wait_for("the drag to save", settled);
+    // Never 0, which the schema's exclusive minimum refuses.
+    assert_eq!(with_view(&mut harness, |view, _| view.error(width)), None);
+    assert_eq!(file.text(), "[quake.profiles.logs]\nwidth = 0.05\n");
+    assert_eq!(focus(&mut harness), width);
+}
+
+#[gpui::test]
+fn an_accessibility_increment_steps_a_slider_by_five_percent(
+    cx: &mut TestAppContext,
+) {
+    let width = "quake.profiles.logs.width";
+    let file = ScratchConfig::new(
+        "fields-slider-a11y",
+        "[quake.profiles.logs]\nwidth = 0.5\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    let node = a11y_node(&mut harness, &format!("settings-slider-{width}"));
+    a11y_act(&mut harness, &node, AccessibleAction::Increment);
+    harness.wait_for("the step to save", settled);
+    assert_eq!(file.text(), "[quake.profiles.logs]\nwidth = 0.55\n");
+}
+
+/// The update interval is macOS's alone; `values` tests the step itself
+/// on every platform.
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn an_empty_update_interval_steps_down_to_its_minimum(cx: &mut TestAppContext) {
+    // It has a minimum of 1 and no maximum or default, so a step down from
+    // empty went to a stand-in maximum of 2^40 hours.
+    let path = "updates.check_interval_hours";
+    let file = ScratchConfig::new("fields-empty-interval", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Updates);
+    for step in ["down", "pagedown", "Decrease"] {
+        assert_eq!(field_text(&mut harness, path), "", "before {step}");
+        with_window(&mut harness, |view, window, cx| {
+            view.focus_field(path, window, cx);
+        });
+        if step == "Decrease" {
+            let button =
+                a11y_find(&mut harness, |node| node["aria"]["label"] == step)
+                    .expect("a Decrease stepper");
+            a11y_click(&mut harness, &button);
+        } else {
+            keys(&harness, step);
+        }
+        harness.wait_for(&format!("{step} to save"), |cx| {
+            settled(cx) && file.text().contains("check_interval_hours")
+        });
+        assert_eq!(
+            file.text(),
+            "[updates]\ncheck_interval_hours = 1\n",
+            "{step}"
+        );
+        assert_eq!(field_text(&mut harness, path), "1", "{step}");
+        with_window(&mut harness, |view, window, cx| {
+            view.press(&format!("reset:{path}"), window, cx);
+        });
+        harness.wait_for("the reset", |cx| {
+            settled(cx) && !file.text().contains("check_interval_hours")
+        });
+    }
 }
 
 #[gpui::test]

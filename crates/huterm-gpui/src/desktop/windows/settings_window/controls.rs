@@ -29,6 +29,10 @@ use crate::renderer::rgb_color as color;
 /// select.
 const SEGMENT_LABEL_MAX: usize = 16;
 
+/// A slider's width with its readout: room for a 5% to 100% track in 5%
+/// steps beside a "100%" readout.
+const SLIDER_WIDTH: f32 = 200.0;
+
 /// How a select trigger opens its menu.
 pub(super) enum Opener {
     /// A setting's own choices.
@@ -457,14 +461,16 @@ impl SettingsView {
             return div().into_any_element();
         };
         let path = setting.path.as_str();
+        // A pending reset holds no value; it shows the default it restores.
         let value = self
             .value(setting)
+            .or_else(|| self.default_value(setting))
             .as_ref()
             .and_then(as_number)
             .unwrap_or_else(|| steps.min());
         let handle = self.stop(path, cx);
         let focus = handle.clone();
-        Slider::new(
+        let slider = Slider::new(
             id(format!("settings-slider-{path}")),
             setting.label.clone(),
             value,
@@ -475,14 +481,24 @@ impl SettingsView {
         .readout(readout(setting, value))
         .key_context("SettingsControl control=slider")
         .when_some(read_only, |slider, reason| slider.disabled(Some(reason)))
-        .on_change(Self::listen(cx, move |view, value: f64, window, cx| {
-            focus.focus(window, cx);
-            let value = number_value(setting, value);
-            if !view.holds(setting, &value) {
-                view.write(setting, Some(value), cx);
-            }
-        }))
-        .into_any_element()
+        .on_change(Self::listen(
+            cx,
+            move |view, value: f64, window, cx| {
+                focus.focus(window, cx);
+                let value = number_value(setting, value);
+                if !view.holds(setting, &value) {
+                    view.write(setting, Some(value), cx);
+                }
+            },
+        ));
+        // A fixed width, as the row's other controls have, leaves the
+        // label and description the row's flexible width.
+        div()
+            .flex_none()
+            .w(px(SLIDER_WIDTH))
+            .debug_selector(move || format!("settings-slider-{path}"))
+            .child(slider)
+            .into_any_element()
     }
 
     /// The link modifiers as a multiple toggle group: one roving tab stop,

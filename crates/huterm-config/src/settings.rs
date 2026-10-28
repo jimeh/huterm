@@ -159,6 +159,9 @@ pub enum SettingKind {
     Integer {
         min: Option<i64>,
         max: Option<i64>,
+        /// The largest value the schema's unsigned `format` stores, such as
+        /// `u32::MAX` for `uint32`. It caps a setting without a `maximum`.
+        limit: Option<i64>,
     },
     Number {
         min: Option<f64>,
@@ -483,7 +486,8 @@ fn setting(
     let field = |key: &str| property.get(key).or_else(|| target.get(key));
     let kind = kind(path, property, target)?;
     let step = step(path, property, &kind)?;
-    let control = control(path, property, &kind, step)?;
+    let unit = text("unit")?;
+    let control = control(path, property, &kind, step, unit.as_deref())?;
     Ok(Setting {
         path: path.into(),
         section,
@@ -495,7 +499,7 @@ fn setting(
         default: property
             .get("default")
             .and_then(|default| toml::Value::try_from(default).ok()),
-        unit: text("unit")?,
+        unit,
         step,
         control,
         apply,
@@ -534,12 +538,14 @@ fn step(
 }
 
 /// The `x-huterm-control` of a setting. A slider needs a number with both
-/// bounds, either minimum inclusive or exclusive, and a step.
+/// bounds, either minimum inclusive or exclusive, and a step. Without a
+/// unit its readout is a percent, so its range must lie within 0 to 1.
 fn control(
     path: &str,
     property: &Value,
     kind: &SettingKind,
     step: Option<f64>,
+    unit: Option<&str>,
 ) -> Result<Option<Control>, ModelError> {
     let Some(control) = property.get("x-huterm-control") else {
         return Ok(None);
@@ -548,19 +554,31 @@ fn control(
         .as_str()
         .and_then(Control::parse)
         .ok_or_else(|| error(path, "x-huterm-control must be \"slider\""))?;
-    let bounded = match kind {
-        SettingKind::Integer { min, max } => min.is_some() && max.is_some(),
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "slider bounds are far below 2^52"
+    )]
+    let bounds = match kind {
+        SettingKind::Integer { min, max, .. } => {
+            min.zip(*max).map(|(min, max)| (min as f64, max as f64))
+        }
         SettingKind::Number {
             min,
             max,
             exclusive_min,
-        } => (min.is_some() || exclusive_min.is_some()) && max.is_some(),
-        _ => false,
+        } => min.or(*exclusive_min).zip(*max),
+        _ => None,
     };
-    if !bounded || step.is_none() {
+    let Some((min, max)) = bounds.filter(|_| step.is_some()) else {
         return Err(error(
             path,
             "a slider needs a number with both bounds and x-huterm-step",
+        ));
+    };
+    if unit.is_none() && (min < 0.0 || max > 1.0) {
+        return Err(error(
+            path,
+            "a slider without x-huterm-unit shows a percent, so its range must lie within 0 to 1",
         ));
     }
     Ok(Some(control))
@@ -634,6 +652,10 @@ fn kind(
         Some("integer") => SettingKind::Integer {
             min: integer("minimum"),
             max: integer("maximum"),
+            limit: target
+                .get("format")
+                .and_then(Value::as_str)
+                .and_then(unsigned_limit),
         },
         Some("number") => SettingKind::Number {
             min: number("minimum"),
@@ -648,6 +670,16 @@ fn kind(
         },
         _ => SettingKind::Compound,
     })
+}
+
+/// The largest value an unsigned integer `format` stores.
+fn unsigned_limit(format: &str) -> Option<i64> {
+    match format {
+        "uint8" => Some(u8::MAX.into()),
+        "uint16" => Some(u16::MAX.into()),
+        "uint32" => Some(u32::MAX.into()),
+        _ => None,
+    }
 }
 
 /// The options of a string enum, written as `enum`, as `oneOf` members with
@@ -835,7 +867,8 @@ mod tests {
             rows.kind,
             SettingKind::Integer {
                 min: Some(0),
-                max: Some(100_000)
+                max: Some(100_000),
+                limit: Some(u32::MAX.into()),
             }
         );
         for path in [
@@ -1136,6 +1169,14 @@ mod tests {
                 }))}),
                 "a",
                 "a slider needs a number with both bounds and x-huterm-step",
+            ),
+            (
+                json!({"a": setting(&json!({
+                    "type": "number", "minimum": 0, "maximum": 100,
+                    "x-huterm-step": 5, "x-huterm-control": "slider"
+                }))}),
+                "a",
+                "a slider without x-huterm-unit shows a percent, so its range must lie within 0 to 1",
             ),
         ] {
             assert_eq!(

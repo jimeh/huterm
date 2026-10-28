@@ -4,6 +4,7 @@
 use huterm_config::RawConfig;
 use huterm_config::document::Patch;
 use huterm_config::settings::{Setting, SettingKind};
+use huterm_ui::components::number_field::EmptyStep;
 use huterm_ui::steps::Steps;
 use toml::{Table, Value};
 
@@ -99,13 +100,13 @@ pub(crate) fn check(setting: &Setting, value: &Value) -> Result<(), String> {
                 Err(format!("{value} is not an option"))
             }
         }
-        (SettingKind::Integer { min, max }, Value::Integer(value)) => {
+        (SettingKind::Integer { min, max, limit }, Value::Integer(value)) => {
             if let Some(min) = min
                 && value < min
             {
                 Err(format!("Must be at least {min}{unit}"))
-            } else if let Some(max) = max
-                && value > max
+            } else if let Some(max) = max.or(*limit)
+                && *value > max
             {
                 Err(format!("Must be at most {max}{unit}"))
             } else {
@@ -157,16 +158,15 @@ pub(crate) fn parse_number(
         return Ok(None);
     }
     let value = match setting.kind {
-        SettingKind::Integer { min, max } => {
-            text.parse::<i64>()
-                .map(|value| {
-                    Value::Integer(value.clamp(
-                        min.unwrap_or(i64::MIN),
-                        max.unwrap_or(i64::MAX),
-                    ))
-                })
-                .map_err(|_| "Must be a whole number".to_owned())?
-        }
+        SettingKind::Integer { min, max, limit } => text
+            .parse::<i64>()
+            .map(|value| {
+                Value::Integer(value.clamp(
+                    min.unwrap_or(i64::MIN),
+                    max.or(limit).unwrap_or(i64::MAX),
+                ))
+            })
+            .map_err(|_| "Must be a whole number".to_owned())?,
         SettingKind::Number { .. } => text
             .parse::<f64>()
             .ok()
@@ -182,35 +182,47 @@ pub(crate) fn parse_number(
 /// How many steps from zero an unbounded end of a range lies.
 const UNBOUNDED_STEPS: f64 = 1_099_511_627_776.0;
 
-/// The range and grid a number setting steps along: its schema bounds, an
-/// exclusive minimum as the first grid value above it, and its
-/// `x-huterm-step`, else one. A missing bound lies far enough away to never
-/// be reached. A bounded range pages by about a tenth of itself, as sliders
-/// conventionally do, and an unbounded one by ten steps. `None` for any
-/// other kind.
-pub(crate) fn steps(setting: &Setting) -> Option<Steps> {
+/// A number setting's minimum and maximum, each `None` when open, its
+/// step, and whether the schema bounds both ends: the schema bounds, an
+/// exclusive minimum as the first grid value above it, an integer's
+/// `format` limit as its maximum when it has none, and its `x-huterm-step`,
+/// else one. A `format` limit is no designed range, so it does not count as
+/// bounding the top. `None` for any other kind.
+fn bounds(setting: &Setting) -> Option<(Option<f64>, Option<f64>, f64, bool)> {
     let step = setting.step.unwrap_or(1.0);
-    let (min, max) = match &setting.kind {
-        SettingKind::Integer { min, max } => {
-            (min.map(integer_number), max.map(integer_number))
-        }
+    Some(match &setting.kind {
+        SettingKind::Integer { min, max, limit } => (
+            min.map(integer_number),
+            max.or(*limit).map(integer_number),
+            step,
+            min.is_some() && max.is_some(),
+        ),
         SettingKind::Number {
             min,
             max,
             exclusive_min,
-        } => (
-            (*min)
+        } => {
+            let min = (*min)
                 .into_iter()
                 .chain(exclusive_min.map(|bound| bound + step))
-                .reduce(f64::max),
-            *max,
-        ),
+                .reduce(f64::max);
+            (min, *max, step, min.is_some() && max.is_some())
+        }
         _ => return None,
-    };
+    })
+}
+
+/// The range and grid a number setting steps along, from its [`bounds`].
+/// A missing bound lies far enough away to never be reached. A range the
+/// schema bounds pages by about a tenth of itself, as sliders
+/// conventionally do, and any other by ten steps. `None` for any other
+/// kind.
+pub(crate) fn steps(setting: &Setting) -> Option<Steps> {
+    let (min, max, step, bounded) = bounds(setting)?;
     let far = step * UNBOUNDED_STEPS;
     let steps = Steps::new(min.unwrap_or(-far), max.unwrap_or(far), step);
     Some(match (min, max) {
-        (Some(min), Some(max)) => {
+        (Some(min), Some(max)) if bounded => {
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -221,6 +233,23 @@ pub(crate) fn steps(setting: &Setting) -> Option<Steps> {
         }
         _ => steps,
     })
+}
+
+/// Where a step from a number setting's empty field goes, so it never
+/// lands on the stand-in for an unbounded end: one step from `default`
+/// when the setting has one, else to its minimum, else to its maximum,
+/// else to zero.
+pub(crate) fn empty_step(
+    setting: &Setting,
+    default: Option<&Value>,
+) -> EmptyStep {
+    if let Some(default) = default.and_then(as_number) {
+        return EmptyStep::From(default);
+    }
+    let (min, max) = bounds(setting)
+        .map(|(min, max, ..)| (min, max))
+        .unwrap_or_default();
+    EmptyStep::To(min.or(max).unwrap_or(0.0))
 }
 
 /// `value` as the setting stores it: rounded to an integer for `Integer`,
@@ -374,6 +403,29 @@ mod tests {
         assert_eq!(
             number_value(setting("updates.check_interval_hours"), 2.0),
             Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn an_empty_field_never_steps_to_an_unbounded_end() {
+        // An empty update interval, with a minimum of 1 and no maximum or
+        // default, stepped down to a stand-in maximum of 2^40 hours, which
+        // overflows the u32 it is stored in.
+        let hours = setting("updates.check_interval_hours");
+        assert_eq!(empty_step(hours, None), EmptyStep::To(1.0));
+        // Its uint32 format caps it, typed or stepped, but is no designed
+        // range, so it still pages by ten steps.
+        let grid = steps(hours).unwrap();
+        assert_eq!(grid.max(), f64::from(u32::MAX));
+        assert_eq!(grid.page_up(1.0), 11.0);
+        assert_eq!(
+            parse_number(hours, "99999999999"),
+            Ok(Some(Value::Integer(u32::MAX.into())))
+        );
+        // A setting with a default steps from it.
+        assert_eq!(
+            empty_step(setting("font.size"), Some(&Value::Float(13.0))),
+            EmptyStep::From(13.0)
         );
     }
 

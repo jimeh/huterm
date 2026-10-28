@@ -315,10 +315,10 @@ imply `Settings` or `SettingsControl`. User bindings for them need no `when`.
 | `settings_first` | Window | Bound only while `SettingsControl`. Moves the focused slider to its minimum; other controls ignore it. |
 | `settings_last` | Window | Bound only while `SettingsControl`. Moves the focused slider to its maximum; other controls ignore it. |
 | `settings_reset` | Window | Bound only while `SettingsControl`. |
-| `palette_select_next` | Palette | |
-| `palette_select_previous` | Palette | |
-| `palette_page_down` | Palette | |
-| `palette_page_up` | Palette | |
+| `palette_select_next` | Palette | Also steps a focused Settings number field up. |
+| `palette_select_previous` | Palette | Also steps a focused Settings number field down. |
+| `palette_page_down` | Palette | Also pages a focused Settings number field down. |
+| `palette_page_up` | Palette | Also pages a focused Settings number field up. |
 | `palette_confirm` | Palette | |
 | `palette_back` | Palette | |
 | `palette_pop` | Palette | |
@@ -528,8 +528,9 @@ The window's text fields take the `Palette` context, so the palette bindings
 edit them: `palette_confirm` saves a field, or from the search field moves to
 the first match; `palette_expand` and `palette_previous_slot` move focus on and
 back; `palette_select_previous` and `palette_select_next` step a number within
-its range; `palette_page_up` and `palette_page_down` page a number by ten
-steps; and `palette_back` puts a field's value back or clears the search.
+its range; `palette_page_up` and `palette_page_down` page a number by a tenth
+of its range, or by ten steps when either end is open; and `palette_back` puts
+a field's value back or clears the search.
 Home and End keep moving the caret in a number field. `settings_increase` and
 `settings_decrease` step a Quake width or height slider by 5%, stopping at 5%
 and 100%; on a slider, `settings_page_up` and `settings_page_down` page it by

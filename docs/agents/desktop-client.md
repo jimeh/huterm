@@ -654,9 +654,15 @@ around `Chrome::Bare` fields until their migrations; Settings fields are
 searches, uses `Chrome::Grouped`. `NumberField` and `Slider` step along
 `huterm_ui::steps::Steps`, whose grid clamps every user change to the range.
 Settings builds a number setting's `Steps` with `values::steps` from the
-schema's bounds, an exclusive minimum as the first grid value above it, and
-`x-huterm-step`; `x-huterm-control = "slider"` picks a `Slider` instead of a
-field. A locked Settings field is `Input`'s disabled state with the lock
+schema's bounds, an exclusive minimum as the first grid value above it, an
+unsigned integer `format`'s limit when there is no `maximum`, and
+`x-huterm-step`; an open end gets a far stand-in bound, so an empty field
+steps as `values::empty_step` says, from the default or to the minimum, never
+to that stand-in. `x-huterm-control = "slider"` picks a `Slider` instead of a
+field; without `x-huterm-unit` its readout is a percent, so the model refuses
+a unitless slider whose range leaves 0 to 1. Row controls take a fixed width:
+a full-width control squeezes the row's description to a character per line.
+A locked Settings field is `Input`'s disabled state with the lock
 reason, not read-only, so a press takes no focus. Settings commits number
 fields itself (`with_commit_on_blur(false)`), so a conflicted draft survives
 focus moving to Use mine or Use file, and routes every `NumberField` change
