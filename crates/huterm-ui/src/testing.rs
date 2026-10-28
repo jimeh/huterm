@@ -1,18 +1,111 @@
-//! Helpers for the component contract tests: a host window, and the
-//! accessibility tree it last drew.
+//! Helpers for the component contract tests: a host window, the
+//! accessibility tree it last drew, and a test keymap that stands in for an
+//! owner's commands.
 //!
 //! Test windows activate accessibility when they open (the vendored GPUI's
 //! `test-window-accessibility` patch), so every drawn frame has a tree. A
 //! missing tree fails the test rather than skipping its assertions.
 
+use std::rc::Rc;
+
 use gpui::{
-    AnyElement, Context, IntoElement, Render, TestAppContext,
-    VisualTestContext, Window, div, prelude::*, px,
+    AnyElement, App, Axis, Context, FocusHandle, IntoElement, KeyBinding,
+    Render, TestAppContext, VisualTestContext, Window, div, prelude::*, px,
 };
 use serde_json::Value;
 
+use crate::roving::{Arrow, Group, Move, move_focus};
 use crate::scrollbar::ScrollbarColors;
 use crate::tokens::{OverlayColors, Tokens};
+
+gpui::actions!(
+    component_test,
+    [
+        /// Up, as an owner's move command.
+        Up,
+        /// Down.
+        Down,
+        /// Left.
+        Left,
+        /// Right.
+        Right,
+        /// Home.
+        Home,
+        /// End.
+        End,
+        /// Space, as an owner's activation command.
+        Activate,
+    ]
+);
+
+/// The key context the test keymap binds under.
+pub(crate) const KEYS: &str = "ComponentTest";
+
+/// Binds the arrows, Home, End, and Space to the test actions under
+/// [`KEYS`], as an owner's keymap binds its commands. Elements that carry
+/// that context then receive them while they have focus.
+pub(crate) fn bind_keys(cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        let context = Some(KEYS);
+        cx.bind_keys([
+            KeyBinding::new("up", Up, context),
+            KeyBinding::new("down", Down, context),
+            KeyBinding::new("left", Left, context),
+            KeyBinding::new("right", Right, context),
+            KeyBinding::new("home", Home, context),
+            KeyBinding::new("end", End, context),
+            KeyBinding::new("space", Activate, context),
+        ]);
+    });
+}
+
+/// `element` routing the test move keys as the owner of a roving group
+/// does: the arrows along `axis` (every arrow with none), Home, and End
+/// move focus among `handles` through [`move_focus`], with the selection
+/// and enabled state `live` reports when the key arrives, and `select`
+/// hears the index to select.
+pub(crate) fn route_moves<E: InteractiveElement>(
+    element: E,
+    handles: &[FocusHandle],
+    axis: Option<Axis>,
+    live: impl Fn() -> (Option<usize>, bool) + 'static,
+    select: impl Fn(usize, &mut Window, &mut App) + 'static,
+) -> E {
+    let handles: Rc<[FocusHandle]> = handles.into();
+    let (live, select) = (Rc::new(live), Rc::new(select));
+    let route = move |step: Option<Move>| {
+        let (handles, live, select) =
+            (handles.clone(), live.clone(), select.clone());
+        move |window: &mut Window, cx: &mut App| {
+            let (selected, enabled) = live();
+            let group = Group {
+                handles: &handles,
+                selected,
+                enabled,
+            };
+            if let Some(index) =
+                step.and_then(|step| move_focus(group, step, window, cx))
+            {
+                select(index, window, cx);
+            }
+        }
+    };
+    let arrow = |arrow| route(Move::along(axis, arrow));
+    let (up, down, left, right) = (
+        arrow(Arrow::Up),
+        arrow(Arrow::Down),
+        arrow(Arrow::Left),
+        arrow(Arrow::Right),
+    );
+    let (home, end) = (route(Some(Move::First)), route(Some(Move::Last)));
+    element
+        .on_action(move |_: &Up, window, cx| up(window, cx))
+        .on_action(move |_: &Down, window, cx| down(window, cx))
+        .on_action(move |_: &Left, window, cx| left(window, cx))
+        .on_action(move |_: &Right, window, cx| right(window, cx))
+        .on_action(move |_: &Home, window, cx| home(window, cx))
+        .on_action(move |_: &End, window, cx| end(window, cx))
+}
 
 /// Dark tokens for tests.
 pub(crate) fn tokens() -> Tokens {

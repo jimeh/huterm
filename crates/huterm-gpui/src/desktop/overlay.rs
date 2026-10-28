@@ -155,6 +155,7 @@ mod tests {
 #[cfg(test)]
 mod contrast {
     use gpui::Hsla;
+    use huterm_ui::components::alert::Tone as AlertTone;
     use huterm_ui::tokens::{NON_TEXT_CONTRAST, TEXT_CONTRAST, contrast, over};
 
     use super::Swatch;
@@ -255,6 +256,17 @@ mod contrast {
         }
         text("highlight held", t.accent_text(), &selection_pressed);
         text("error band", t.accent_text(), &bands);
+        // An alert's title and description on its tone's wash.
+        for (name, tone) in [
+            ("neutral alert", AlertTone::Neutral),
+            ("warning alert", AlertTone::Warning),
+            ("danger alert", AlertTone::Danger),
+        ] {
+            let colors = tone.colors(*t);
+            let wash = over_each(colors.fill, &plain);
+            text(name, colors.title, &wash);
+            text(name, colors.text, &wash);
+        }
         let ring = t.focus_ring()[0].color;
         for under in plain {
             pairs.push(("focus ring", ring, under, NON_TEXT_CONTRAST));

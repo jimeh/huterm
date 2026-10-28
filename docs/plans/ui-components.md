@@ -1,7 +1,7 @@
 # UI components
 
 Status: in progress. Step 1 (the foundation), the components of steps 2, 3,
-and 4, and migrations 2a (Settings selects), 2b (terminal-window menus),
+4, and 6, and migrations 2a (Settings selects), 2b (terminal-window menus),
 3a (Settings buttons, links, switches, segmented controls, tri-states,
 modifier chips, tags, and counts), 3b (terminal-window buttons and
 tooltips), and 4a (Settings text, search, and number fields, units, the

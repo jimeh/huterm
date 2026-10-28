@@ -17,6 +17,9 @@
 //! Components draw their ring through [`ring`], or through [`current_ring`]
 //! when their owner keeps focus and marks the keyboard's place among them
 //! itself, as a dialog that routes its own keys between its buttons does.
+//! A full-width row, such as a vertical tab or a collapsible's trigger in a
+//! card, draws it inside its edge through [`ring_inset`], because GPUI clips
+//! a child's outer ring to a container that clips its overflow.
 
 use std::collections::HashMap;
 
@@ -51,6 +54,9 @@ struct Record {
 enum Ringed {
     /// A control that holds focus through this handle.
     Handle(WeakFocusHandle),
+    /// A full-width row that holds focus through this handle and draws the
+    /// ring inside its edge.
+    Inset(WeakFocusHandle),
     /// A control its owner marks as current, named by its element id.
     Current(ElementId),
 }
@@ -118,6 +124,28 @@ pub fn ring<E: Styled>(
     element.shadow(tokens.focus_ring())
 }
 
+/// `element`, a full-width row, with `handle`'s focus ring drawn inside its
+/// edge while [`visible`], so a container that clips its overflow, such as
+/// a card or a scrolled sidebar, cannot hide it. Apply it last among an
+/// element's shadows, as [`ring`].
+#[must_use]
+pub fn ring_inset<E: Styled>(
+    element: E,
+    handle: &FocusHandle,
+    tokens: Tokens,
+    window: &Window,
+    cx: &mut App,
+) -> E {
+    if !visible(handle, window, cx) {
+        return element;
+    }
+    #[cfg(feature = "test-support")]
+    with_record(window, cx, |record| {
+        record.pending.push(Ringed::Inset(handle.downgrade()));
+    });
+    element.shadow(tokens.focus_ring_inset())
+}
+
 /// Whether a control its owner marks as the keyboard's place shows a ring:
 /// the window's last press was a key. The owner keeps focus itself and
 /// moves the mark with its own commands, so no focus change decides it; a
@@ -165,6 +193,22 @@ pub fn ring_drawn(handle: &FocusHandle, window: &Window, cx: &App) -> bool {
         window,
         cx,
         |ringed| matches!(ringed, Ringed::Handle(drawn) if drawn == handle),
+    )
+}
+
+/// Whether the last painted frame applied `handle`'s ring inside its edge
+/// through [`ring_inset`].
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn inset_ring_drawn(
+    handle: &FocusHandle,
+    window: &Window,
+    cx: &App,
+) -> bool {
+    drawn(
+        window,
+        cx,
+        |ringed| matches!(ringed, Ringed::Inset(drawn) if drawn == handle),
     )
 }
 
