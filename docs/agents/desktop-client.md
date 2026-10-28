@@ -657,8 +657,9 @@ bars show floating arrows that indicate hidden content and animate scrolling
 when clicked, plus a slim `Scrollbars` indicator along their bottom edge that
 never expands or shows a track but still drags and jumps. Vertical columns use
 the same overlay on their right edge instead of arrows: it appears on scrolling
-and reveal, widens on hover while shown, jumps on a track press, and drags
-through the window-level capture that also serves tab reordering. It sits
+and reveal, widens once the pointer rests on it (200 ms) or at once on a
+press, jumps on a track press, and drags through the window-level capture
+that also serves tab reordering. It sits
 inboard of the sidebar resize handle by the handle's width so the two never
 overlap, and both tab bar indicators fade after 700 ms rather than the
 terminal's two seconds. Explicit selection or creating a tab reveals it;

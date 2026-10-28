@@ -497,9 +497,10 @@ impl AxisScrollbar {
         self.hovering || self.drag.is_some()
     }
 
-    /// Whether the scrollbar is widened or widening.
+    /// Whether the scrollbar is widened, widening, or still partly wide as
+    /// it collapses: a pointer arriving then keeps it wide with no dwell.
     fn expanded(&self) -> bool {
-        self.expansion.target > 0.0
+        self.expansion.target > 0.0 || self.expansion.progress > 0.0
     }
 
     /// When a hover that has not widened the scrollbar yet will.

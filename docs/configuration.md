@@ -206,8 +206,9 @@ even when the pointer leaves the window, releasing commits the position, and
 Escape cancels. Drag near the end of the bar to scroll toward hidden tabs.
 Scroll the bar with a trackpad or mouse wheel. Horizontal bars show arrows
 where more tabs remain and a draggable position indicator along their bottom
-edge. Vertical bars show an overlay scrollbar that widens on hover. The
-new-tab button stays visible and follows the last tab in a vertical bar.
+edge. Vertical bars show an overlay scrollbar that widens when the pointer
+rests on it. The new-tab button stays visible and follows the last tab in a
+vertical bar.
 
 With one tab the bar stays hidden unless `always_show = true`.
 `auto_hide_in_fullscreen = true` hides the bar in fullscreen until the pointer
