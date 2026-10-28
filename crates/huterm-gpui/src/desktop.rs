@@ -2041,16 +2041,16 @@ impl TerminalView {
         }
     }
 
-    /// Asks the window for the context menu at `position`, first looking
-    /// up the link at `cell` unless its result is already known. The
-    /// lookup rides on a snapshot request and is bounded by
-    /// [`CONTEXT_LINK_TIMEOUT`], after which the menu opens without it.
     /// Drops a right-click still waiting for its link lookup, so it never
     /// opens its menu.
     fn cancel_context_lookup(&mut self) {
         self.context_lookup = None;
     }
 
+    /// Asks the window for the context menu at `position`, first looking
+    /// up the link at `cell` unless its result is already known. The
+    /// lookup rides on a snapshot request and is bounded by
+    /// [`CONTEXT_LINK_TIMEOUT`], after which the menu opens without it.
     fn request_context_menu(
         &mut self,
         position: gpui::Point<Pixels>,
