@@ -16,12 +16,16 @@ use gpui::{
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::badge::{Tone, badge};
 use huterm_ui::components::button::{Button, Variant};
+use huterm_ui::components::input::{Chrome, Input};
+use huterm_ui::components::input_group::{Addon, InputGroup};
 use huterm_ui::components::menu::{
     MIN_WIDTH, Menu, MenuEvent, Role as MenuRole,
 };
+use huterm_ui::components::number_field::{Format, NumberField};
 use huterm_ui::components::popover::{Anchor, Popover, place};
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::components::select::Select;
+use huterm_ui::components::slider::Slider;
 use huterm_ui::components::switch::Switch;
 use huterm_ui::components::toggle_group::ToggleGroup;
 use huterm_ui::components::tooltip::Tooltip;
@@ -29,6 +33,7 @@ use huterm_ui::components::{kbd, separator, surface};
 use huterm_ui::focus;
 use huterm_ui::list_scrollbar::ListScrollbar;
 use huterm_ui::listbox::{Button as MenuButton, Item, Model, Row};
+use huterm_ui::steps::Steps;
 use huterm_ui::tokens::size;
 
 use super::key_hint::KeyHint;
@@ -47,7 +52,7 @@ pub(crate) fn run() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..WindowOptions::default()
             },
-            |_, cx| cx.new(Gallery::new),
+            |window, cx| cx.new(|cx| Gallery::new(window, cx)),
         );
         if let Err(error) = opened {
             eprintln!("component gallery failed to open: {error:#}");
@@ -75,6 +80,92 @@ struct Column {
     select_popover: Popover,
     select_menu: Option<Entity<Menu>>,
     controls: Controls,
+    fields: Fields,
+    /// The slider entry's value, a Quake width.
+    slider: f64,
+}
+
+/// The text entry entries' fields, which hold their own editing state.
+struct Fields {
+    /// Empty, filled, read-only, disabled, and invalid inputs.
+    inputs: [Entity<Input>; 5],
+    /// The grouped fields: a link with a clear button, and a size in points.
+    link: Entity<Input>,
+    size: Entity<Input>,
+    number: Entity<NumberField>,
+}
+
+impl Fields {
+    fn new(
+        index: usize,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let field = |id: &str, label: &'static str, cx: &mut App| {
+            let id = SharedString::from(format!("{id}-{index}"));
+            cx.new(|cx| Input::new(id, label, swatch, cx))
+        };
+        let inputs = [
+            field("input-empty", "Name", cx),
+            field("input-filled", "Font", cx),
+            field("input-read-only", "Config path", cx),
+            field("input-disabled", "Shell", cx),
+            field("input-invalid", "Padding", cx),
+        ];
+        let [empty, filled, read_only, disabled, invalid] = &inputs;
+        empty.update(cx, |input, _| input.set_placeholder("Default"));
+        filled.update(cx, |input, cx| {
+            input.set_text(
+                "Berkeley Mono, a family name long enough to scroll",
+                cx,
+            );
+        });
+        read_only.update(cx, |input, cx| {
+            input.set_text("~/.config/huterm/config.toml", cx);
+            input.set_read_only(true, cx);
+        });
+        disabled.update(cx, |input, cx| {
+            input.set_text("/bin/zsh", cx);
+            input.set_disabled(true, Some("Set by the profile".into()), cx);
+        });
+        invalid.update(cx, |input, cx| {
+            input.set_text("-4", cx);
+            input.set_invalid(true, cx);
+        });
+        let grouped = |id: &str, label: &'static str, cx: &mut App| {
+            let id = SharedString::from(format!("{id}-{index}"));
+            cx.new(|cx| {
+                Input::new(id, label, swatch, cx).with_chrome(Chrome::Grouped)
+            })
+        };
+        let link = grouped("group-link-field", "Link", cx);
+        link.update(cx, |input, cx| input.set_text("https://huterm.dev", cx));
+        let size = grouped("group-size-field", "Font size", cx);
+        size.update(cx, |input, cx| input.set_text("13", cx));
+        let number = cx.new(|cx| {
+            let mut field = NumberField::new(
+                SharedString::from(format!("number-{index}")),
+                "Quake width",
+                Steps::new(0.05, 1.0, 0.05),
+                Format {
+                    scale: 100.0,
+                    decimals: 0,
+                },
+                swatch,
+                window,
+                cx,
+            );
+            field.set_value(Some(0.6), cx);
+            field
+        });
+        Self {
+            inputs,
+            link,
+            size,
+            number,
+        }
+    }
 }
 
 /// The handles the column's focusable controls take focus through.
@@ -82,6 +173,7 @@ struct Controls {
     switches: [FocusHandle; 3],
     segments: [FocusHandle; 2],
     chips: [FocusHandle; 3],
+    sliders: [FocusHandle; 2],
 }
 
 impl Controls {
@@ -90,6 +182,7 @@ impl Controls {
             switches: std::array::from_fn(|_| cx.focus_handle()),
             segments: std::array::from_fn(|_| cx.focus_handle()),
             chips: std::array::from_fn(|_| cx.focus_handle()),
+            sliders: std::array::from_fn(|_| cx.focus_handle()),
         }
     }
 }
@@ -129,11 +222,11 @@ struct Gallery {
 }
 
 impl Gallery {
-    fn new(cx: &mut Context<'_, Self>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let light =
             crate::themes::preview(LIGHT_THEME, std::path::Path::new(""))
                 .unwrap_or_else(Theme::huterm_dark);
-        let mut column = |name, theme: &Theme| {
+        let mut column = |index, name, theme: &Theme| {
             let scroll = ScrollHandle::new();
             let swatch = tokens(theme);
             Column {
@@ -150,12 +243,14 @@ impl Gallery {
                 select_popover: Popover::new(),
                 select_menu: None,
                 controls: Controls::new(cx),
+                fields: Fields::new(index, swatch, window, cx),
+                slider: 0.6,
             }
         };
         Self {
             columns: [
-                column("huterm-dark", &Theme::huterm_dark()),
-                column(LIGHT_THEME, &light),
+                column(0, "huterm-dark", &Theme::huterm_dark()),
+                column(1, LIGHT_THEME, &light),
             ],
             focus: cx.focus_handle(),
             wake: Wake::default(),
@@ -243,6 +338,17 @@ impl Gallery {
             ))
             .child(self.popover_entry(index, cx))
             .child(self.select_entry(index, cx))
+            .child(inputs(swatch, &self.columns[index].fields))
+            .child(input_groups(index, swatch, &self.columns[index].fields))
+            .child(entry(
+                "number_field",
+                "Number field",
+                swatch,
+                div()
+                    .w(px(160.0))
+                    .child(self.columns[index].fields.number.clone()),
+            ))
+            .child(self.slider_entry(index, cx))
             .into_any_element()
     }
 
@@ -278,6 +384,59 @@ impl Gallery {
                 cx.notify();
             }));
         entry("popover", "Popover", swatch, div().child(button))
+    }
+
+    /// A Quake width slider, and a disabled one.
+    fn slider_entry(
+        &mut self,
+        index: usize,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
+        let gallery = cx.entity().downgrade();
+        let column = &self.columns[index];
+        let swatch = column.tokens;
+        let steps = Steps::new(0.05, 1.0, 0.05);
+        let [focus, disabled] = &column.controls.sliders;
+        let percent = |value: f64| format!("{:.0}%", value * 100.0);
+        entry(
+            "slider",
+            "Slider",
+            swatch,
+            div()
+                .w(px(220.0))
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(
+                    Slider::new(
+                        ("slider", index),
+                        "Quake width",
+                        column.slider,
+                        steps,
+                        focus,
+                        swatch,
+                    )
+                    .readout(percent(column.slider))
+                    .on_change(move |value, _, cx| {
+                        let _ = gallery.update(cx, |gallery, cx| {
+                            gallery.columns[index].slider = value;
+                            cx.notify();
+                        });
+                    }),
+                )
+                .child(
+                    Slider::new(
+                        ("slider-disabled", index),
+                        "Quake height",
+                        0.4,
+                        steps,
+                        disabled,
+                        swatch,
+                    )
+                    .readout(percent(0.4))
+                    .disabled(Some("Quake is off".into())),
+                ),
+        )
     }
 
     /// A select over [`SIZES`] whose menu opens in a popover.
@@ -632,6 +791,61 @@ fn toggle_groups(index: usize, swatch: Swatch, controls: &Controls) -> Div {
                     ),
             )
             .child(chips),
+    )
+}
+
+fn inputs(swatch: Swatch, fields: &Fields) -> Div {
+    entry(
+        "input",
+        "Input",
+        swatch,
+        div()
+            .w(px(220.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .children(fields.inputs.iter().cloned()),
+    )
+}
+
+fn input_groups(index: usize, swatch: Swatch, fields: &Fields) -> Div {
+    let link = fields.link.downgrade();
+    let icon = |path: &'static str| {
+        gpui::svg()
+            .path(path)
+            .size(px(14.0))
+            .text_color(swatch.muted)
+    };
+    entry(
+        "input_group",
+        "Input group",
+        swatch,
+        div()
+            .w(px(220.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(
+                InputGroup::new(("group-link", index), &fields.link, swatch)
+                    .leading(Addon::Icon(
+                        icon("icons/link.svg").into_any_element(),
+                    ))
+                    .trailing(Addon::Button(
+                        Button::new(("group-clear", index), "Clear", swatch)
+                            .variant(Variant::Ghost)
+                            .icon(icon("icons/x.svg"))
+                            .icon_only()
+                            .on_click(move |_, cx| {
+                                let _ = link.update(cx, |input, cx| {
+                                    input.set_text("", cx);
+                                });
+                            }),
+                    )),
+            )
+            .child(
+                InputGroup::new(("group-size", index), &fields.size, swatch)
+                    .trailing(Addon::Text("pt".into())),
+            ),
     )
 }
 

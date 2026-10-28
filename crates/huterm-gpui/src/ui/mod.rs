@@ -2,5 +2,4 @@
 //! `huterm-ui` modules re-exported under their former paths.
 
 pub(crate) use huterm_ui::{animation, list_scrollbar, scrollbar};
-pub(crate) mod text;
-pub(crate) mod text_field;
+pub(crate) mod input;

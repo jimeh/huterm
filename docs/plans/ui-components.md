@@ -1,13 +1,13 @@
 # UI components
 
-Status: in progress. Step 1 (the foundation), the components of steps 2 and
-3, and migrations 2a (Settings selects) and 2b (terminal-window menus) are
-implemented; 2b removed `desktop/menu.rs` and its menu host (D13). Approved
-on 2026-10-27 after four Codex and Claude review rounds, then revised for a
-separate crate, the terminal window's adoption, and normalization against
-shadcn/ui, which three more review rounds checked. Follows
-[the settings plan](settings-ui.md), whose PR 3 built a control kit inside
-the Settings window, and folds in the open Settings follow-ups
+Status: in progress. Step 1 (the foundation), the components of steps 2, 3,
+and 4, and migrations 2a (Settings selects) and 2b (terminal-window menus)
+are implemented; 2b removed `desktop/menu.rs` and its menu host (D13).
+Approved on 2026-10-27 after four Codex and Claude review rounds, then
+revised for a separate crate, the terminal window's adoption, and
+normalization against shadcn/ui, which three more review rounds checked.
+Follows [the settings plan](settings-ui.md), whose PR 3 built a control kit
+inside the Settings window, and folds in the open Settings follow-ups
 [#276][issue-276] and [#277][issue-277]. Migration 2a's running-app review
 covered the select defects; the running-app checks for the other controls are
 still owed (see Defects).

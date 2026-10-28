@@ -22,7 +22,7 @@ use super::keybindings::{
 };
 use super::{MenuFor, SettingsView, button};
 use crate::keymap::Platform;
-use crate::ui::text_field::TextField;
+use huterm_ui::components::input::{Chrome, Input};
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
@@ -38,7 +38,7 @@ pub(super) struct Quake {
     /// The profile the card edits.
     pub(super) profile: String,
     /// The New profile name field, while it is open.
-    pub(super) naming: Option<Entity<TextField>>,
+    pub(super) naming: Option<Entity<Input>>,
     pub(super) name_error: Option<String>,
     /// Delete profile is asking for confirmation.
     pub(super) deleting: bool,
@@ -424,12 +424,7 @@ impl SettingsView {
             } else {
                 let swatch = Self::swatch(cx);
                 let field = cx.new(|cx| {
-                    let mut field = TextField::new(
-                        "Profile name",
-                        swatch.fg,
-                        swatch.muted,
-                        cx,
-                    );
+                    let mut field = profile_name_field(swatch, cx);
                     field.set_text(name, cx);
                     field
                 });
@@ -460,11 +455,10 @@ impl SettingsView {
             return;
         }
         let swatch = Self::swatch(cx);
-        let field = self.quake.naming.get_or_insert_with(|| {
-            cx.new(|cx| {
-                TextField::new("Profile name", swatch.fg, swatch.muted, cx)
-            })
-        });
+        let field = self
+            .quake
+            .naming
+            .get_or_insert_with(|| cx.new(|cx| profile_name_field(swatch, cx)));
         let handle = field.read(cx).focus_handle(cx).tab_stop(true);
         handle.focus(window, cx);
         self.quake.name_error = None;
@@ -1117,7 +1111,7 @@ impl SettingsView {
         &self,
         window: &Window,
         cx: &App,
-    ) -> Option<Entity<TextField>> {
+    ) -> Option<Entity<Input>> {
         self.quake
             .naming
             .clone()
@@ -1240,6 +1234,13 @@ fn global_key_allowed(key: &str) -> bool {
             .strip_prefix('f')
             .and_then(|number| number.parse::<u8>().ok())
             .is_some_and(|number| (1..=maximum_function_key).contains(&number))
+}
+
+/// The field that names a new Quake profile.
+fn profile_name_field(swatch: Swatch, cx: &mut Context<'_, Input>) -> Input {
+    Input::new("quake-profile-name", "Profile name", swatch, cx)
+        .with_placeholder("Profile name")
+        .with_chrome(Chrome::Bare)
 }
 
 #[cfg(test)]

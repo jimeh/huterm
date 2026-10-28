@@ -41,7 +41,7 @@ use super::key_hint::KeyHint;
 use super::overlay::{OverlayColors, Swatch, footer_hints, key_cap_on};
 use crate::keymap::{InstalledKeymap, Platform};
 use crate::ui::list_scrollbar::ListScrollbar;
-use crate::ui::text_field::{Changed, TextField};
+use huterm_ui::components::input::{Changed, Chrome, Input};
 
 const PAGE_STEP: isize = 8;
 
@@ -675,7 +675,7 @@ pub(super) struct CommandPalette {
     stage: Stage,
     /// The search query to restore when leaving slots entered from search.
     return_query: Option<String>,
-    input: Entity<TextField>,
+    input: Entity<Input>,
     engine: CommandSearch,
     matcher: PickerMatcher,
     history: OwnedHistory,
@@ -732,8 +732,14 @@ impl CommandPalette {
             hierarchy_seq,
         } = open;
         let input = cx.new(|cx| {
-            let swatch = Swatch::new(colors);
-            TextField::new("Search commands", swatch.fg, swatch.muted, cx)
+            Input::new(
+                "palette-input",
+                "Command palette",
+                Swatch::new(colors),
+                cx,
+            )
+            .with_placeholder("Search commands")
+            .with_chrome(Chrome::Bare)
         });
         let subscription =
             cx.subscribe(&input, |palette, input, _: &Changed, cx| {
@@ -804,7 +810,7 @@ impl CommandPalette {
             palette.rank(&query);
             palette.input.update(cx, |input, cx| {
                 input.set_text(query, cx);
-                input.select_all_text(cx);
+                input.select_all(cx);
             });
         }
         palette
@@ -851,8 +857,7 @@ impl CommandPalette {
         self.profiles = profile_rows(profiles);
         self.layouts = layout_rows(layouts);
         self.input.update(cx, |input, cx| {
-            let swatch = Swatch::new(colors);
-            input.set_colors(swatch.fg, swatch.muted, cx);
+            input.set_tokens(Swatch::new(colors), cx);
         });
         self.refresh_picker_rows();
         cx.notify();
@@ -1370,7 +1375,7 @@ impl CommandPalette {
         }
         self.input.update(cx, |input, cx| {
             input.set_text(name, cx);
-            input.select_all_text(cx);
+            input.select_all(cx);
         });
     }
 
@@ -1413,7 +1418,6 @@ impl CommandPalette {
     pub(super) fn run(
         &mut self,
         invocation: &CommandInvocation,
-        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         match invocation.id {
@@ -1440,7 +1444,7 @@ impl CommandPalette {
             }
             id if FORWARDED_TEXT_COMMANDS.contains(&id) => {
                 self.input.update(cx, |field, cx| {
-                    field.run(invocation, window, cx)
+                    crate::ui::input::run(field, invocation, cx)
                 })?;
             }
             other => return Err(CommandError::UnknownCommand(other)),

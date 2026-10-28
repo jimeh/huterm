@@ -2639,6 +2639,7 @@ version = "0.23.0"
 dependencies = [
  "gpui-pre",
  "serde_json",
+ "unicode-segmentation",
 ]
 
 [[package]]

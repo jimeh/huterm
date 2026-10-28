@@ -31,7 +31,7 @@ use crate::keymap::Platform;
 use crate::licenses::{Catalog, Component, LoadError};
 use crate::ui::animation::AnimationSchedule;
 use crate::ui::list_scrollbar::ListScrollbar;
-use crate::ui::text_field::{Changed, TextField};
+use huterm_ui::components::input::{Changed, Chrome, Input};
 
 const PANEL_WIDTH: f32 = 860.0;
 const PANEL_HEIGHT: f32 = 600.0;
@@ -86,7 +86,7 @@ pub(super) enum LicensesState {
 
 pub(super) struct LicensesView {
     load: Load,
-    input: Entity<TextField>,
+    input: Entity<Input>,
     /// The search text, lowercased and trimmed.
     query: String,
     /// Indices of the catalog's components that match the query.
@@ -119,8 +119,14 @@ impl LicensesView {
         cx: &mut Context<'_, Self>,
     ) -> Self {
         let input = cx.new(|cx| {
-            let swatch = Swatch::new(colors);
-            TextField::new("Search licenses", swatch.fg, swatch.muted, cx)
+            Input::new(
+                "licenses-search",
+                "Search licenses",
+                Swatch::new(colors),
+                cx,
+            )
+            .with_placeholder("Search licenses")
+            .with_chrome(Chrome::Bare)
         });
         let subscription =
             cx.subscribe(&input, |view, input, _: &Changed, cx| {
@@ -185,8 +191,7 @@ impl LicensesView {
         self.colors = colors;
         self.hints = hints;
         self.input.update(cx, |input, cx| {
-            let swatch = Swatch::new(colors);
-            input.set_colors(swatch.fg, swatch.muted, cx);
+            input.set_tokens(Swatch::new(colors), cx);
         });
         cx.notify();
     }
@@ -201,7 +206,6 @@ impl LicensesView {
     pub(super) fn run(
         &mut self,
         invocation: &CommandInvocation,
-        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         match invocation.id {
@@ -218,7 +222,7 @@ impl LicensesView {
             ids::PALETTE_POP => {}
             id if FORWARDED_TEXT_COMMANDS.contains(&id) => {
                 self.input.update(cx, |field, cx| {
-                    field.run(invocation, window, cx)
+                    crate::ui::input::run(field, invocation, cx)
                 })?;
             }
             other => return Err(CommandError::UnknownCommand(other)),

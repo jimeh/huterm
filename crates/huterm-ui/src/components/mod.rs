@@ -5,12 +5,16 @@
 
 pub mod badge;
 pub mod button;
+pub mod input;
+pub mod input_group;
 pub mod kbd;
 pub mod menu;
+pub mod number_field;
 pub mod popover;
 pub mod scroll_area;
 pub mod select;
 pub mod separator;
+pub mod slider;
 pub mod surface;
 pub mod switch;
 pub mod toggle_group;
