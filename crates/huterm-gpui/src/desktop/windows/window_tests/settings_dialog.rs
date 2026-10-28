@@ -254,3 +254,32 @@ fn a_profile_removed_elsewhere_closes_its_alert(cx: &mut TestAppContext) {
     assert_eq!(focus(&mut harness), "action:qprof");
     assert_eq!(file.text(), "# Mine.\n");
 }
+
+#[gpui::test]
+fn the_alert_blocks_other_settings_commands_but_not_closing_the_window(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("dialog-blocks", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    open_alert(&mut harness);
+    assert_eq!(dialog(&mut harness), "delete");
+    // Search and section moves would take focus behind the scrim, where
+    // Escape no longer reaches the alert.
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
+        view.command(ids::NEXT_TAB, window, cx).unwrap();
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(dialog(&mut harness), "delete");
+    assert_eq!(focus(&mut harness), "dialog:qdelno");
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.shown_section()),
+        SectionId::Quake
+    );
+    // Closing the window still works.
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::CLOSE_WINDOW, window, cx).unwrap();
+    });
+    harness.wait_for("the window to close", |cx| settings(cx).is_none());
+}

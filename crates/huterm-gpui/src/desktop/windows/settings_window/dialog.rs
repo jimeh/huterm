@@ -218,6 +218,15 @@ impl SettingsView {
         }
     }
 
+    /// The section the window shows, for tests that check nothing moved
+    /// it behind a dialog.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(in crate::desktop::windows) fn shown_section(
+        &self,
+    ) -> huterm_config::settings::SectionId {
+        self.section
+    }
+
     /// The open dialog's smoke name, or `none`.
     pub(in crate::desktop::windows) fn dialog_name(&self) -> &'static str {
         self.dialog.prompt().map_or("none", Prompt::name)

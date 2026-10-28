@@ -755,7 +755,9 @@ from `render_dialog` with buttons from `dialog_button`. Each button answers
 with an action key that `act` runs, and `dialog_cancel` runs the prompt's
 Cancel key. `run` routes the `dialog_*` commands to the slot and, while a
 dialog is open, ignores every other command except the window's close,
-minimize, zoom, and fullscreen. A dialog with a text field also routes that
+minimize, zoom, and fullscreen. App commands such as Quit and Settings… go
+through the application's handler, not `run`, so they still work and need
+no gate. A dialog with a text field also routes that
 field's `palette_*` commands from `run_palette`, as above.
 
 GPUI reports an accessibility node only for an element with both an `id` and a

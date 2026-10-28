@@ -467,8 +467,10 @@ one, and `dialog_cancel` closes it. Focus starts on Close.
 
 In Settings, Delete profile asks in a dialog whose Cancel has focus. The focus
 commands move between Cancel and Delete, `dialog_confirm` presses the focused
-one, and `dialog_cancel` cancels, as Cancel does. Space presses neither. While
-the dialog is open, other Settings commands do nothing.
+one, and `dialog_cancel` cancels, as Cancel does. Space presses neither. When
+a global shortcut uses the profile, the dialog says why and offers only OK.
+While the dialog is open, other Settings commands do nothing; closing the
+window and app commands such as Quit still work.
 
 The Licenses view takes the `Palette` context, so the palette bindings apply
 there: `palette_select_next` and `palette_select_previous` move the selection,
