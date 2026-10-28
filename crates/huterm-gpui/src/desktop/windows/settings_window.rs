@@ -1724,6 +1724,11 @@ impl SettingsView {
         self.open_argument_menu(row, argument, window, cx);
     }
 
+    /// Whether the window's root has focus, as recovery leaves it.
+    pub(super) fn root_focused(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+    }
+
     /// Gives the control of setting `path` keyboard focus.
     pub(super) fn focus_stop(
         &mut self,

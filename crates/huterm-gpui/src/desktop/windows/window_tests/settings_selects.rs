@@ -222,8 +222,10 @@ fn changing_section_closes_the_menu(cx: &mut TestAppContext) {
     draw(&harness);
     assert!(!menu_open(&mut harness));
     // The menu's control is in the old section, so focus recovers to the
-    // window rather than staying on the dropped menu.
-    assert_ne!(focus(&mut harness), "menu");
+    // window's root rather than staying on the dropped menu.
+    assert!(with_window(&mut harness, |view, window, _| {
+        view.root_focused(window)
+    }));
 }
 
 #[gpui::test]
