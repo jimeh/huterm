@@ -95,6 +95,9 @@ struct Owner {
     field: Field,
     /// How far right of the window's edge the field sits.
     shift: Pixels,
+    /// Makes the field read-only while rendering, as an owner that derives
+    /// its fields' states from its own does.
+    lock_in_render: bool,
 }
 
 impl Owner {
@@ -159,6 +162,7 @@ impl Owner {
             scroll: ScrollHandle::new(),
             field: setup.field,
             shift: px(0.0),
+            lock_in_render: false,
         }
     }
 
@@ -173,6 +177,10 @@ impl Render for Owner {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        if self.lock_in_render {
+            self.input
+                .update(cx, |input, cx| input.set_read_only(true, cx));
+        }
         let viewport = window.viewport_size();
         let top = if self.field == Field::AtBottom {
             viewport.height - px(30.0)
@@ -672,6 +680,31 @@ fn a_read_only_or_disabled_field_never_shows_suggestions(
     let combobox = probe.combobox(cx);
     let opened = cx.update(|_, cx| combobox.update(cx, Combobox::open));
     assert!(!opened);
+}
+
+#[gpui::test]
+fn a_field_its_owner_locks_while_drawing_closes_the_list(
+    cx: &mut TestAppContext,
+) {
+    // GPUI drops a notification made during a draw, so no observer sees a
+    // field its owner locks while rendering.
+    let (probe, cx) = setup(cx, Setup::default());
+    type_text(cx, "mo");
+    assert!(probe.open(cx));
+    cx.update(|_, cx| {
+        probe.owner.update(cx, |owner, cx| {
+            owner.lock_in_render = true;
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+    assert!(!probe.open(cx), "the list stayed open on a read-only field");
+    let combobox = probe.combobox(cx);
+    assert!(
+        cx.read(|cx| combobox.read(cx).list_bounds()).is_none(),
+        "the list still draws"
+    );
+    assert!(probe.field_focused(cx));
 }
 
 #[gpui::test]

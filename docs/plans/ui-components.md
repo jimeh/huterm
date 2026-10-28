@@ -5,7 +5,9 @@ through 7, and migrations 2a (Settings selects), 2b (terminal-window menus),
 3a (Settings buttons, links, switches, segmented controls, tri-states,
 modifier chips, tags, and counts), 3b (terminal-window buttons and
 tooltips), 4a (Settings text, search, and number fields, units, the
-Quake width and height sliders, and `text_cut`), 6a (the Settings layout:
+Quake width and height sliders, and `text_cut`), 5a (the keybinding
+condition field and the font family field as `Combobox`es, which fixes D6
+and folds the "Installed" menu into the font field), 6a (the Settings layout:
 the sidebar as vertical tabs, theme cards as a radio group, `Field`,
 `Item`, `Collapsible`, `Card`, `Alert`, and `Empty` rows, and Tab scrolling
 the focused control into view), 7a (the Settings delete-profile alert
@@ -46,7 +48,15 @@ palette and Licenses search differently, and its `HighlightFallback::Clear`
 lets the palette's identity pickers lose a highlight whose item vanished
 rather than move it. Both draw `option_list`'s rows,
 and both report their field as an `EditableComboBox` (see Accessibility);
-migrations 5a and 5b remain.
+migration 5b remains. In 5a, Settings routes `palette_select_next`,
+`palette_select_previous`, `palette_page_up`, `palette_page_down`,
+`palette_confirm`, and `palette_back` to a focused combobox field's list
+first, and a key the list leaves alone keeps the field's own behavior; Tab
+in a condition field also closes its open list first, as it did. The
+`Combobox` now also closes its list when it draws a field its owner
+disabled while rendering, as Settings does, because GPUI reports a
+notification made during a draw to no observer. No catalog command or
+default binding changed.
 Approved on 2026-10-27 after four Codex and Claude review rounds, then
 revised for a separate crate, the terminal window's adoption, and
 normalization against shadcn/ui, which three more review rounds checked.
@@ -102,11 +112,11 @@ App-specific surfaces). Everything else in the table migrates.
 | Select | `controls.rs` `render_select`, `with_menu` | Settings, Quake, keybinding arguments | Space, Return open; arrows step and write without opening | Click opens; a second click opens a new menu | Ring | Escape, Tab, a pick; not Shift-Tab, an outside press, a trigger press, or deactivation | Opacity |
 | Menu (listbox) | `desktop/menu.rs` `Menu`, `MenuModel` (removed in 2b) | Window menu, tab and terminal context menus, every select | Arrows, Home, End, Return, Space, Escape, Tab, type-ahead | Moving pointer selects; click picks | n/a | Emits `Dismissed`; each host closes it | Disabled rows with a hint |
 | Menu host | `windows.rs` (`toggle_menu`, capture-phase press), `settings_window.rs` (`show_menu`, `close_menu`) | Two hosts (one since 2b) | n/a | Before 2b, terminal window: outside press closes, button toggles. Settings: neither | n/a | See defects D1 to D4 | n/a |
-| Font picker | `controls.rs` `render_font` | Settings | Field plus an "Installed" select | Menu of every family | Ring | As select | Opacity |
+| Font picker (one `Combobox` since 5a) | `controls.rs` `render_font` | Settings | Field plus an "Installed" select | Menu of every family | Ring | As select | Opacity |
 | Text field | `ui/text_field.rs` `TextField` | Palette, Licenses, Settings | Catalog text commands under `Palette`; IME | Click, drag, double-click word | None (caret only) | Escape restores in Settings | None in the field itself |
 | Number field | `render_field` plus `stepped` in `settings_window.rs` | Settings, Quake | Up and Down add or subtract 1 | None | None | n/a | Opacity |
 | Size field | `render_field` (`Special::Size`) | Settings | Text | None | None | n/a | Opacity |
-| Condition completion (combobox) | `keybindings.rs` `render_completion` | Keybindings | Up, Down, Return, Tab, Escape | Hover highlight; mouse-down accepts | n/a | Tab, Escape, blur | n/a |
+| Condition completion (a `Combobox` since 5a) | `keybindings.rs` `render_completion` (removed in 5a) | Keybindings | Up, Down, Return, Tab, Escape | Hover highlight; mouse-down accepts | n/a | Tab, Escape, blur | n/a |
 | Key recorder | `keybindings.rs` `record`, window keystroke interceptor | Keybindings, global shortcuts | Escape cancels, Return saves, chord timeout | Click starts | Ring | Blur, deactivation, outside click cancel | Opacity |
 | Modifier chips (toggle buttons) | `controls.rs` `render_modifiers` | Settings | One tab stop per chip, Space toggles | Click | Ring | n/a | Opacity, last chip refuses |
 | Theme cards (radio cards) | `controls.rs` `render_themes` | Settings | One tab stop per card | Click | `.focus()` style set, but #276 reports none visible | n/a | Opacity |
@@ -151,7 +161,7 @@ Settings menu.
 | D3 | A menu taller than the window, such as Installed fonts, cannot scroll; rows past the window edge are unreachable by pointer (keyboard selection and type-ahead still pick them, unseen), and the menu slides up over its trigger. | Settings never calls `Menu::set_max_height` (`menu.rs:551`); `snap_to_window_with_margin` only shifts the origin; the menu is offset by a fixed `mt(px(28.0))` and never opens upward. Runtime check pending. | High |
 | D4 | No menu closes when its window deactivates. | Settings' activation observer only cancels recording (`settings_window.rs:345`); the terminal window's cancels drags (`windows.rs:2347`). AppKit menus and GTK popovers close on deactivation. | Medium |
 | D5 | After D1, the clicked control acts and takes focus while the stale menu stays drawn; its keys are dead because `menu` bindings match only on the focus path, and a later close returns focus to the original trigger. | Inference from D1, `close_menu` (`settings_window.rs:902`), and the key-path rule in the desktop client guide. Runtime check pending. | Medium |
-| D6 | The condition completion is a second, different listbox: it shows separate hover and keyboard highlights, caps at eight matches with no scrolling, accepts on mouse-down, and lays out in the row's flow, so it pushes the row down. | `keybindings.rs:2242-2296` (`.hover` at 2275, `take(8)` at 2264); placed in a column under the field at 2092-2099. | Medium |
+| D6 | The condition completion is a second, different listbox: it shows separate hover and keyboard highlights, caps at eight matches with no scrolling, accepts on mouse-down, and lays out in the row's flow, so it pushes the row down. | `keybindings.rs:2242-2296` (`.hover` at 2275, `take(8)` at 2264); placed in a column under the field at 2092-2099. | Medium; fixed in 5a |
 | D7 | Setting and Quake number stepping ignores range and scale: Up and Down add 1 and do not clamp, so a Quake `width` or `height` (greater than 0, at most 1) always steps out of range into an error. Keybinding arguments already clamp. | `stepped` (`settings_window.rs:1264-1297`); schema `exclusiveMinimum: 0, maximum: 1`; argument stepping clamps at `keybindings.rs:1404-1409`. No PageUp, PageDown, Home, End, or stepper buttons. | Medium |
 | D8 | Arrow keys on a select or a switch write a new value without opening or confirming. Every arrow press while moving through the form saves. | `settings_defaults` binds the arrows to `settings_increase` and `settings_decrease` (`keymap.rs:973`); `stepped` steps a `Choice` and sets a `Bool`. Radix Select, AppKit pop-up buttons, and GTK drop-downs open the list on Down or Up. | Medium |
 | D9 | The focus ring also shows after a pointer click. | Every control uses `.focus()` (`controls.rs:129, 417, 467, 573, 614`; `render.rs:37, 119`). GPUI 0.3.9 has `focus_visible`, but it rechecks the input mode every frame, so it alone is not the fix (see the API conventions). | Low |
@@ -339,8 +349,8 @@ keyboard and focus, AppKit and GNOME for platform feel.
 | Window menu, tab and terminal context menus | Dropdown Menu, Context Menu | Adopt one `Menu` with both triggers |
 | Text field | Input | Adopt (`Input`, the hardened `TextField`) |
 | Search field, number field unit, size field | Input Group (prefix and suffix addons) | Adopt for the search icon and clear button and for units |
-| Font family field plus a separate "Installed" menu | Combobox | **Change:** one combobox that filters the installed families as you type and still accepts any name. Two controls for one value is the odd one out. Like shadcn's current Combobox, the field itself is the search input, following WAI-ARIA's editable combobox. It keeps the field's save behavior: any name saves on Enter or blur, and Escape puts back the value. No suggestion is highlighted until the user moves to one, so Enter saves the typed name; pressing a row prevents the field's blur and writes once. |
-| Condition completion | Combobox | Adopt the same `Combobox`; its suggestions are context names. `Combobox` takes an opt-in `auto_highlight`, as shadcn's `autoHighlight` does: the condition field turns it on, so the first match is highlighted and Return completes it, as today; the font field leaves it off |
+| Font family field plus a separate "Installed" menu | Combobox | **Change:** one combobox that filters the installed families as you type and still accepts any name. Two controls for one value is the odd one out. Like shadcn's current Combobox, the field itself is the search input, following WAI-ARIA's editable combobox. It keeps the field's save behavior: any name saves on Enter or blur, and Escape puts back the value. No suggestion is highlighted until the user moves to one, so Enter saves the typed name; pressing a row prevents the field's blur and writes once. Implemented in 5a: the first Escape closes the list, and Down on a closed list opens it, listing every family when the field is empty |
+| Condition completion | Combobox | Adopt the same `Combobox`; its suggestions are context names. `Combobox` takes an opt-in `auto_highlight`, as shadcn's `autoHighlight` does: the condition field turns it on, so the first match is highlighted and Return completes it, as today; the font field leaves it off. Implemented in 5a: the list floats below the field, the eight-match cap is gone (no name prefix matches more than five contexts today, so the list never scrolls yet), the page keys move the highlight, the pointer moves the same highlight, Escape and Tab close the list first, and a second Escape puts back the saved text |
 | Number field with steps | none (shadcn uses a plain input) | **Keep custom** `NumberField`, after React Aria's and Base UI's number fields: steppers, clamping, PageUp, PageDown, Home, End |
 | Quake `width` and `height` number fields (fractions, greater than 0 through 1) | Slider | **Change:** a percent slider from 5% to 100% in 5% steps with a value readout; the settings plan's PR 5 mockup already drew sliders. The schema's minimum is exclusive, so the slider's minimum is one step, and Home, a drag past the left edge, and stepping down all stop there, never writing 0. A file value off the grid shows as is, and the first step moves it to the next grid value in that direction; a value below 5%, such as 0.02, steps to 5% in either direction, since the floor is the nearest valid grid value. Settings picks the slider from schema metadata (`x-huterm-control = "slider"` with `x-huterm-step`), which the `Profile` fields carry, so the per-profile copies get it too. |
 | Key recorder | none | **Keep custom** `KeyRecorder`; its key caps use `Kbd` |

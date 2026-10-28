@@ -495,8 +495,19 @@ impl Render for Combobox {
         let guard = self.popover.guard(move |_, _, cx| {
             let _ = view.update(cx, Combobox::close);
         });
+        // An owner that disables its field while drawing, as it renders,
+        // notifies no observer: GPUI drops a notification during a draw.
+        // The list hides now and closes once the draw is done.
+        let usable = self.usable(cx);
+        if self.open && !usable {
+            cx.defer_in(window, |combobox, _, cx| {
+                if !combobox.usable(cx) {
+                    combobox.close(cx);
+                }
+            });
+        }
         let viewport = window.viewport_size();
-        let list = match (self.open, self.popover.trigger_bounds()) {
+        let list = match (self.open && usable, self.popover.trigger_bounds()) {
             (true, Some(field)) => {
                 let width = field
                     .size

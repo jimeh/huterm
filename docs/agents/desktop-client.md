@@ -720,7 +720,20 @@ the default focus change, and a combobox's list also occludes and stops it,
 so the field never blurs before a pick. Test such a press under a focusable
 root, as a window's root view is, or no blur could happen without them.
 GPUI blurs the focused field when its window deactivates, which closes a
-combobox's list.
+combobox's list. GPUI also reports a notification made during a draw to no
+observer, so a combobox cannot observe a field its owner disables while
+rendering, as Settings does; it checks its field when it draws instead.
+
+Settings has two comboboxes. A keybinding's `when` field suggests context
+names with `with_auto_highlight(true)`, so Return completes the name before
+the caret; `Keys::completions` holds each list by its field's entity, which
+keeps it as the field moves between rows. The font family field suggests
+the installed families with no highlight, so Enter saves the typed name, and
+a pick saves the family through `commit_field`, as Enter does. The GPUI test
+platform lists no installed fonts, so font tests set `set_families` before
+the Appearance section first draws. `run_list` routes the `Palette` field
+commands to the focused field's list first; the field's own behavior gets
+the keys the list leaves alone.
 
 Open menus and selects in a `huterm_ui::components::popover::Popover` and
 mount its `guard` in the owner's root view on every frame, open or not. The

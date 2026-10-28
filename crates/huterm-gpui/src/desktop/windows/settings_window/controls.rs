@@ -89,8 +89,7 @@ impl SettingsView {
                 return self.render_modifiers(setting, read_only, swatch, cx);
             }
             Some(Special::FontPicker) => {
-                return self
-                    .render_font(setting, read_only, swatch, window, cx);
+                return self.render_font(setting, read_only, window, cx);
             }
             Some(Special::Size) => {
                 return self.render_field(setting, read_only, window, cx);
@@ -441,36 +440,23 @@ impl SettingsView {
             .into_any_element()
     }
 
-    /// A family name field with a menu of the installed families.
+    /// A family name field whose suggestions are the installed families,
+    /// floating below it as the user types. The list mounts last in a
+    /// relatively positioned wrapper around the field, which it measures.
     fn render_font(
         &mut self,
         setting: &'static Setting,
         read_only: Option<SharedString>,
-        swatch: Swatch,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let path = setting.path.as_str();
-        let locked = read_only.is_some();
         let field = self.render_field(setting, read_only, window, cx);
-        let pick = self.select(
-            format!("settings-fonts-{path}"),
-            path,
-            "Installed fonts".to_owned(),
-            "Installed".to_owned(),
-            Opener::Action(format!("fonts:{path}")),
-            locked,
-            px(0.0),
-            swatch,
-            cx,
-        );
+        let list = self.font_list(setting, window, cx);
         div()
-            .flex()
             .flex_none()
-            .items_center()
-            .gap(px(6.0))
+            .relative()
             .child(field)
-            .child(pick)
+            .child(list)
             .into_any_element()
     }
 
