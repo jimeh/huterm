@@ -1002,13 +1002,18 @@ fn a_read_dropped_behind_a_failed_write_is_read_again(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn an_arrange_panes_shortcut_picks_its_layout_from_the_built_ins(
+fn an_arrange_panes_shortcut_picks_its_layout_from_every_layout(
     cx: &mut TestAppContext,
 ) {
     let original =
         "[[keybinding]]\nkey = \"ctrl-alt-l\"\ncommand = \"arrange_panes\"\n";
     let file = ScratchConfig::new("keys-layouts", original);
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config
+            .panes
+            .layouts
+            .insert("dev".into(), "columns(pane 55%, rows(*))".into());
+    });
     open_settings(&mut harness, &file.path());
     // The row offers the argument as a select, not hidden as an unknown
     // kind.
@@ -1030,13 +1035,14 @@ fn an_arrange_panes_shortcut_picks_its_layout_from_the_built_ins(
                 "Equal Rows",
                 "Main Left",
                 "Main Top",
-                "Tiled"
+                "Tiled",
+                "dev"
             ]
         );
         // The titles are labels only: each item writes the layout's name.
         assert_eq!(
             view.menu_ids(cx)[1..],
-            ["columns", "rows", "main_left", "main_top", "tiled"]
+            ["columns", "rows", "main_left", "main_top", "tiled", "dev"]
         );
     });
     with_window(&mut harness, |view, window, cx| {
@@ -1047,7 +1053,7 @@ fn an_arrange_panes_shortcut_picks_its_layout_from_the_built_ins(
             "u0",
             "layout",
             huterm_protocol::ArgumentKind::Layout,
-            "main_top",
+            "dev",
             cx,
         );
     });
@@ -1055,6 +1061,6 @@ fn an_arrange_panes_shortcut_picks_its_layout_from_the_built_ins(
     assert_eq!(
         file.text(),
         "[[keybinding]]\nkey = \"ctrl-alt-l\"\ncommand = \"arrange_panes\"\n\
-         args = { layout = \"main_top\" }\n"
+         args = { layout = \"dev\" }\n"
     );
 }

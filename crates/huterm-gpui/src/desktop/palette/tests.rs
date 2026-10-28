@@ -189,6 +189,7 @@ fn window_scoped_commands_list_only_this_windows_tabs() {
     let window_only = DomainView {
         hierarchy: &hierarchy,
         profiles: &[],
+        layouts: &[],
         target: &target,
         window_only: true,
         moving_tab: None,
@@ -242,6 +243,7 @@ fn identity_replacement_and_duplicate_labels_keep_scoped_ids() {
     let domain = DomainView {
         hierarchy: &hierarchy,
         profiles: &[],
+        layouts: &[],
         target: &target,
         window_only: false,
         moving_tab: None,
@@ -278,6 +280,7 @@ fn rename_targets_prefill_from_the_projected_session_and_workspace() {
     let domain = DomainView {
         hierarchy: &hierarchy,
         profiles: &[],
+        layouts: &[],
         target: &target,
         window_only: false,
         moving_tab: None,
@@ -326,6 +329,7 @@ fn palette_invocation_renames_exact_tab_and_stale_target_changes_nothing() {
     let domain = DomainView {
         hierarchy: &hierarchy,
         profiles: &[],
+        layouts: &[],
         target: &target,
         window_only: false,
         moving_tab: None,
@@ -368,6 +372,7 @@ fn quake_profiles_form_a_strict_domain_with_a_default() {
     let domain = DomainView {
         hierarchy: &hierarchy,
         profiles: &profiles,
+        layouts: &[],
         target: &target,
         window_only: false,
         moving_tab: None,
@@ -694,6 +699,7 @@ fn a_rebuild_moves_window_scoped_pickers_and_defaults_to_the_current_scope() {
     let domain = DomainView {
         hierarchy: &rows,
         profiles: &[],
+        layouts: &[],
         target: &target,
         window_only: true,
         moving_tab: None,
@@ -778,6 +784,7 @@ fn pane_and_side_pickers_build_the_explicit_move_invocation() {
     let domain = DomainView {
         hierarchy: &hierarchy,
         profiles: &[],
+        layouts: &[],
         target: &target,
         window_only: true,
         moving_tab: None,
@@ -846,12 +853,25 @@ fn pane_and_side_pickers_build_the_explicit_move_invocation() {
 }
 
 #[test]
-fn the_layout_picker_lists_built_ins_by_title_and_runs_arrange_panes() {
+fn the_layout_picker_lists_built_ins_by_title_then_user_layouts_by_name() {
     let hierarchy = PaletteHierarchy::default();
     let target = target();
+    let config = huterm_config::PanesConfig {
+        layouts: [
+            (
+                "pair".to_owned(),
+                "rows(columns(pane, pane) 70%, columns(*))".to_owned(),
+            ),
+            ("dev".to_owned(), "columns(pane 55%, rows(*))".to_owned()),
+        ]
+        .into(),
+        ..huterm_config::PanesConfig::default()
+    };
+    let layouts = layout_rows(&config.layouts());
     let domain = DomainView {
         hierarchy: &hierarchy,
         profiles: &[],
+        layouts: &layouts,
         target: &target,
         window_only: true,
         moving_tab: None,
@@ -869,6 +889,8 @@ fn the_layout_picker_lists_built_ins_by_title_and_runs_arrange_panes() {
             ("Main Left", "columns(pane 60%, rows(*))"),
             ("Main Top", "rows(pane 60%, columns(*))"),
             ("Tiled", "grid(*)"),
+            ("dev", "columns(pane 55%, rows(*))"),
+            ("pair", "rows(columns(pane, pane) 70%, columns(*))"),
         ]
     );
     // Picking a row gives the invocation a binding would carry.
@@ -876,7 +898,7 @@ fn the_layout_picker_lists_built_ins_by_title_and_runs_arrange_panes() {
     let mut editor = SlotEditor::new(spec, &[], &domain, false).unwrap();
     assert_eq!(editor.active().spec.name, "layout");
     let Ok(Commit::Run(invocation)) =
-        editor.commit(Some(CommandValue::Text("main_left".to_owned())))
+        editor.commit(Some(CommandValue::Text("dev".to_owned())))
     else {
         panic!("picking the layout runs the command");
     };
@@ -886,7 +908,7 @@ fn the_layout_picker_lists_built_ins_by_title_and_runs_arrange_panes() {
             ids::ARRANGE_PANES,
             vec![CommandArgument::new(
                 "layout",
-                CommandValue::Text("main_left".into())
+                CommandValue::Text("dev".into())
             )],
         )
     );

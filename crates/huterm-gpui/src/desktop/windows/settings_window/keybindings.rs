@@ -16,8 +16,8 @@ use gpui::{
     Subscription, Window, div, prelude::*, px,
 };
 use huterm_protocol::{
-    ArgumentKind, ArgumentSpec, BUILT_IN_LAYOUTS, CommandId, CommandSpec,
-    NamedLayout, Requirement, SIDES, catalog, lookup,
+    ArgumentKind, ArgumentSpec, CommandId, CommandSpec, NamedLayout,
+    Requirement, SIDES, catalog, lookup,
 };
 use toml::Value;
 
@@ -1463,10 +1463,11 @@ impl SettingsView {
             ArgumentKind::Layout => {
                 // The palette's titles, with the name the file stores as
                 // the item's identity.
-                rows.extend(BUILT_IN_LAYOUTS.iter().map(|layout| {
+                let layouts = cx.global::<Desktop>().config.panes.layouts();
+                rows.extend(layouts.iter().map(|layout| {
                     MenuRow::Item(MenuItem::new(
-                        layout.name.as_str(),
-                        layout.title.as_str(),
+                        interned(&layout.name),
+                        interned(&layout.title),
                     ))
                 }));
             }

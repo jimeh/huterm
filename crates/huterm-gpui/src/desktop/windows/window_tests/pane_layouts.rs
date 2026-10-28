@@ -80,7 +80,10 @@ fn dragging(cx: &mut App, window: AnyWindowHandle) -> bool {
         .unwrap_or(false)
 }
 
-fn undo_label(cx: &mut App, window: AnyWindowHandle) -> Option<&'static str> {
+fn undo_label(
+    cx: &mut App,
+    window: AnyWindowHandle,
+) -> Option<gpui::SharedString> {
     window
         .update(cx, |root, _, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
@@ -258,6 +261,93 @@ fn an_unknown_layout_raises_one_notice_and_commits_nothing(
     assert_eq!(harness.runtime.lock().hierarchy_seq(), seq);
 }
 
+/// `dev` over three panes: main left at 55 %.
+const DEV: &str = "C[550000:0,450000:R[500000:1,500000:2]]";
+/// `sides` over three panes: a centre pane between two quarter columns.
+const SIDES: &str = "C[250000:0,500000:1,250000:2]";
+
+/// The layout picker's rows, from the palette's smoke state.
+fn picker_rows(cx: &mut App, window: AnyWindowHandle) -> Option<String> {
+    let state = palette_state(cx, window)?;
+    Some(state.split_once("picker_rows=")?.1.to_owned())
+}
+
+#[gpui::test]
+fn user_layouts_arrange_and_cycle_until_a_reload_replaces_them(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        let layouts = &mut config.panes.layouts;
+        layouts.insert("dev".into(), "columns(pane 55%, rows(*))".into());
+        layouts.insert("sides".into(), "columns(* 25%, pane, * 25%)".into());
+        config.panes.layout_cycle =
+            vec!["dev".into(), "sides".into(), "rows".into()];
+    });
+    let (window, tab, panes) = harness.three_panes(ECHO);
+    harness.invoke_with(window, &arrange_panes("dev")).unwrap();
+    harness.wait_layout(window, tab, &panes, DEV);
+    harness.cx.update(|cx| {
+        assert_eq!(
+            undo_label(cx, window).as_deref(),
+            Some("Arrange Panes: dev")
+        );
+    });
+    // The cycle runs in list order, never visiting the built-ins it omits.
+    harness.invoke(window, ids::NEXT_PANE_LAYOUT).unwrap();
+    harness.wait_layout(window, tab, &panes, SIDES);
+    harness.invoke(window, ids::NEXT_PANE_LAYOUT).unwrap();
+    harness.wait_layout(window, tab, &panes, ROWS);
+    harness.invoke(window, ids::PREVIOUS_PANE_LAYOUT).unwrap();
+    harness.wait_layout(window, tab, &panes, SIDES);
+    // The picker lists the user layouts after the built-ins, and an open
+    // picker follows a reload.
+    harness.invoke(window, ids::ARRANGE_PANES).unwrap();
+    harness.wait_for("the layout picker", |cx| {
+        picker_rows(cx, window).is_some_and(|rows| {
+            rows.starts_with(
+                r#""Equal Columns;Equal Rows;Main Left;Main Top;Tiled;dev;sides""#,
+            )
+        })
+    });
+    let file = super::settings::ScratchConfig::new(
+        "layouts-reload",
+        "[tabs]\nposition = 'top'\n\n[panes]\nlayout_cycle = ['main_top', 'columns']\n",
+    );
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().config_path = file.path();
+        let reload = CommandInvocation::new(ids::RELOAD_CONFIG, Vec::new());
+        Desktop::invoke(cx, &reload, None).unwrap();
+    });
+    harness.wait_for("the reloaded picker", |cx| {
+        picker_rows(cx, window).is_some_and(|rows| {
+            rows.starts_with(
+                r#""Equal Columns;Equal Rows;Main Left;Main Top;Tiled""#,
+            )
+        })
+    });
+    harness.press(window, "escape");
+    harness.wait_for("the closed palette", |cx| {
+        palette_state(cx, window).is_none()
+    });
+    // Sides matches columns in the new cycle, so next wraps to main top,
+    // where the old cycle would have stepped to rows.
+    harness.invoke(window, ids::NEXT_PANE_LAYOUT).unwrap();
+    harness.wait_layout(window, tab, &panes, MAIN_TOP);
+    let seq = harness.runtime.lock().hierarchy_seq();
+    harness.invoke_with(window, &arrange_panes("dev")).unwrap();
+    harness.cx.update(|cx| {
+        let shown_notices = notices(cx, window);
+        assert_eq!(shown_notices.len(), 1, "{shown_notices:?}");
+        assert!(
+            shown_notices[0].ends_with("|No pane layout named `dev`"),
+            "{shown_notices:?}"
+        );
+        assert_eq!(shown(cx, tab, &panes), MAIN_TOP);
+        assert_eq!(arranging(cx, window), 0);
+    });
+    assert_eq!(harness.runtime.lock().hierarchy_seq(), seq);
+}
+
 impl DesktopHarness {
     /// Shrinks `window` until the tab holds two panes stacked but not
     /// three.
@@ -334,7 +424,7 @@ fn balance_lands_after_the_resizes_queued_before_it(cx: &mut TestAppContext) {
     harness.wait_layout(window, tab, &panes, NESTED);
     assert_eq!(harness.runtime.worker_hooks.entered(Stage::Layout), 3);
     harness.cx.update(|cx| {
-        assert_eq!(undo_label(cx, window), Some("Balance Panes"));
+        assert_eq!(undo_label(cx, window).as_deref(), Some("Balance Panes"));
     });
 }
 
@@ -422,7 +512,7 @@ fn a_split_elsewhere_between_fit_and_commit_refuses_the_arrangement(
             "{shown_notices:?}"
         );
         assert_eq!(shown(cx, tab, &order), split);
-        assert_eq!(undo_label(cx, window), None);
+        assert_eq!(undo_label(cx, window).as_deref(), None);
     });
 }
 
@@ -539,7 +629,10 @@ fn an_arrangement_in_flight_refuses_structure_but_not_typing(
     harness.wait_layout(window, tab, &panes, MAIN_TOP);
     assert_eq!(harness.runtime.worker_hooks.entered(Stage::Layout), 2);
     harness.cx.update(|cx| {
-        assert_eq!(undo_label(cx, window), Some("Arrange Panes: Main Top"));
+        assert_eq!(
+            undo_label(cx, window).as_deref(),
+            Some("Arrange Panes: Main Top")
+        );
     });
 }
 
@@ -599,14 +692,15 @@ fn an_earlier_drop_completing_first_keeps_its_undo_entry(
         );
     });
     harness.wait_for("the swap to complete", |cx| {
-        !busy(cx, window) && undo_label(cx, window) == Some("Swap Panes")
+        !busy(cx, window)
+            && undo_label(cx, window).as_deref() == Some("Swap Panes")
     });
     harness.runtime.worker_hooks.release(Stage::LayoutCommitted);
     harness.wait_for("the arrangement to complete", |cx| {
         arranging(cx, window) == 0
     });
     harness.cx.update(|cx| {
-        assert_eq!(undo_label(cx, window), Some("Swap Panes"));
+        assert_eq!(undo_label(cx, window).as_deref(), Some("Swap Panes"));
         // Main top, then the swap of its first two panes.
         assert_eq!(
             shown(cx, tab, &panes),
@@ -775,7 +869,7 @@ fn an_arrangement_another_writer_made_empty_gives_the_zoom_back(
     harness.wait_layout(window, tab, &panes, NESTED);
     harness.cx.update(|cx| {
         assert_eq!(notices(cx, window), Vec::<String>::new());
-        assert_eq!(undo_label(cx, window), None);
+        assert_eq!(undo_label(cx, window).as_deref(), None);
         assert_eq!(shown_zoom(cx, window, tab), Some(panes[2]));
     });
 }
@@ -907,7 +1001,7 @@ fn undo_restores_a_layout_or_a_balance_exactly_until_a_split_prunes_it(
     harness.invoke(window, ids::BALANCE_PANES).unwrap();
     harness.wait_layout(window, tab, &panes, NESTED);
     harness.cx.update(|cx| {
-        assert_eq!(undo_label(cx, window), Some("Balance Panes"));
+        assert_eq!(undo_label(cx, window).as_deref(), Some("Balance Panes"));
     });
     harness.invoke(window, ids::UNDO).unwrap();
     harness.wait_for("undo to restore the weights", |cx| {

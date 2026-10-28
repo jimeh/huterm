@@ -25,7 +25,7 @@ fn idle() -> TerminalCommand {
 
 fn entry(label: &'static str, change: LayoutChange, seq: u64) -> HistoryEntry {
     HistoryEntry {
-        label,
+        label: label.into(),
         focus: None,
         change,
         seq,
@@ -49,7 +49,7 @@ fn projection(mux: &mut Mux) -> HierarchyState {
 }
 
 fn label(history: &LayoutHistory, direction: RestoreDirection) -> Option<&str> {
-    history.peek(direction).map(|entry| entry.label)
+    history.peek(direction).map(|entry| entry.label.as_ref())
 }
 
 #[test]
