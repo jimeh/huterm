@@ -731,10 +731,14 @@ recorders, adds `focus::probe` itself, or Tab to it never scrolls.
 Open a dialog in a `huterm_ui::components::dialog::Modal`, draw its `Dialog`
 or `AlertDialog` as the last child of the area it covers while it is open, and
 mount `Modal::guard` on every frame, as for a popover. The guard stops presses
-and wheel events outside the panel, including before its first frame, and
-reports an outside press to the owner, never for an alert. The panel carries
-the `confirming` context: route `dialog_focus_next` and `dialog_focus_previous`
-to `Modal::focus_next` and `focus_previous`, which cycle through the dialog's
+and wheel events on the scrim outside the panel, and reports such a press to
+the owner, never for an alert. It lets presses and wheel events outside the
+scrim through unreported, so what lies around the dialog's area, such as a
+client-drawn frame's resize edges, keeps working. Before the dialog's first
+frame no scrim has painted, so the guard stops a press anywhere. The panel
+carries the `confirming` context: route `dialog_focus_next` and
+`dialog_focus_previous` to `Modal::focus_next` and `focus_previous`, which
+cycle through the dialog's
 declared controls and its enabled buttons, and give its buttons no
 `SettingsControl` context, which would win for Enter, Space, and the arrows.
 A text field in a dialog carries the `Palette` context, as Settings' fields
@@ -754,7 +758,7 @@ puts its long content in a `ScrollArea` made with `fill()`, which shrinks
 with the body, since a plain `ScrollArea` grows to its content's height and
 never scrolls there; the body shrinks and clips so the footer stays inside
 the panel, where the guard lets presses through. The
-guard stops presses on anything outside the panel, so a popover opened from a
+guard stops presses on the scrim outside the panel, so a popover opened from a
 dialog's body does not work yet. A simulated press in a GPUI test draws a
 notified window first, so a stale-frame test opens without notifying,
 presses, and notifies afterwards. In the desktop harness, `simulate_click`
@@ -793,8 +797,11 @@ caller then focuses the terminal. The close confirmation is a bare
 `AlertDialog` that opens on its primary button (`AlertDialog::initial_focus`);
 About and Licenses are bare `Dialog`s, whose content draws its own header
 and footer, and `LicensesView` draws its own with a clone of the slot's
-`Modal`. None closes on an outside press or on deactivation, so the guard's
-callback ignores the reason. In Licenses, a press that focuses nothing
+`Modal`. The slot draws through `modal_layer`, so inside a client-drawn frame
+the scrim covers only the content, rounded at its top corners
+(`Dialog::scrim_corners`), and the frame's resize edges still work. None
+closes on an outside press or on deactivation, so the guard's callback
+ignores the reason. In Licenses, a press that focuses nothing
 returns focus to the search, and so do Escape that clears the search and a
 selection that hides the focused Website or Copy button.
 Smoke state reads `dialog_focus`, `about_focus`, and `licenses_focus` from

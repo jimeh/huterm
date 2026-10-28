@@ -23,8 +23,8 @@
 //! the title, makes the alert [`AlertDialog::bare`], as a [`Dialog`]; the
 //! footer still holds Cancel and the actions.
 //!
-//! Dismissal: as a [`Dialog`]'s, except that a press outside the panel is
-//! stopped and never reported, so only an answer, Escape, or the owner
+//! Dismissal: as a [`Dialog`]'s, except that a press on the scrim outside
+//! the panel is stopped and never reported, so only an answer, Escape, or the owner
 //! closes the alert.
 //!
 //! Accessibility: a modal `AlertDialog` named by its title and described by
@@ -35,8 +35,9 @@
 //! [`Variant::Destructive`]: crate::components::button::Variant::Destructive
 
 use gpui::{
-    AnyElement, App, ElementId, FocusHandle, IntoElement, ParentElement,
-    RenderOnce, SharedString, StyleRefinement, Styled, Window,
+    AnyElement, App, Corners, ElementId, FocusHandle, IntoElement,
+    ParentElement, Pixels, RenderOnce, SharedString, StyleRefinement, Styled,
+    Window,
 };
 
 use crate::components::button::Button;
@@ -113,6 +114,13 @@ impl AlertDialog {
     #[must_use]
     pub fn bare(mut self) -> Self {
         self.dialog = self.dialog.bare();
+        self
+    }
+
+    /// Rounds the scrim's corners, as [`Dialog::scrim_corners`] describes.
+    #[must_use]
+    pub fn scrim_corners(mut self, corners: Corners<Pixels>) -> Self {
+        self.dialog = self.dialog.scrim_corners(corners);
         self
     }
 }

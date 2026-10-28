@@ -877,10 +877,6 @@ from #276 or #277 that it covers.
   since a default entry before any user entry has position 0. Only a
   catalog mistake reaches it, and it should report the clash; use a
   saturating subtract or a debug assertion, plus a test.
-- A dialog's guard stops every press outside its panel, so while a
-  terminal-window dialog shows, the resize edges of a client-drawn Linux
-  frame do not resize the window; before 7b, the dialogs' scrims covered
-  only the content.
 
 ## Non-goals
 

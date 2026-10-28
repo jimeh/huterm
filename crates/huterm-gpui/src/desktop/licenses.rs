@@ -16,10 +16,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, MouseButton, Pixels, Render, ScrollHandle, ScrollWheelEvent,
-    SharedString, Size, Subscription, Task, Window, div, point, prelude::*, px,
-    relative,
+    App, ClipboardItem, Context, Corners, Entity, EventEmitter, FocusHandle,
+    Focusable, FontWeight, MouseButton, Pixels, Render, ScrollHandle,
+    ScrollWheelEvent, SharedString, Size, Subscription, Task, Window, div,
+    point, prelude::*, px, relative,
 };
 use huterm_protocol::{CommandError, CommandInvocation, CommandOutcome, ids};
 
@@ -110,6 +110,8 @@ pub(super) struct LicensesView {
     buttons: Buttons,
     /// The window's content size, which the panel fits.
     viewport: Size<Pixels>,
+    /// The corners the scrim rounds to match the window's content.
+    scrim_corners: Corners<Pixels>,
     /// The `matches` position whose texts the Copy button last copied.
     copied: Option<usize>,
     colors: OverlayColors,
@@ -174,6 +176,7 @@ impl LicensesView {
                 done: cx.focus_handle(),
             },
             viewport: Size::default(),
+            scrim_corners: Corners::default(),
             copied: None,
             colors,
             hints,
@@ -217,9 +220,15 @@ impl LicensesView {
         .map(|(focus, _)| focus)
     }
 
-    /// Sets the window content size the panel fits.
-    pub(super) fn set_viewport(&mut self, viewport: Size<Pixels>) {
+    /// Sets the window content size the panel fits, and the corners the
+    /// scrim rounds to match it.
+    pub(super) fn set_viewport(
+        &mut self,
+        viewport: Size<Pixels>,
+        scrim_corners: Corners<Pixels>,
+    ) {
         self.viewport = viewport;
+        self.scrim_corners = scrim_corners;
     }
 
     pub(super) fn set_presentation(
@@ -933,6 +942,7 @@ impl Render for LicensesView {
             .h(height)
             .mt(top)
             .rounded(px(10.0))
+            .scrim_corners(self.scrim_corners)
             .child(content)
     }
 }

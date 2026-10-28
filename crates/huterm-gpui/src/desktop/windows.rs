@@ -10887,9 +10887,10 @@ impl Render for WorkspaceView {
                 view.close_menu(MenuFocusReturn::Terminal, window, cx);
             });
         }));
-        // A dialog's guard stops every press and wheel event outside its
-        // panel, even before its first frame. None of the window's dialogs
-        // closes on an outside press, so the reason it reports is ignored.
+        // A dialog's guard stops every press and wheel event on its scrim
+        // outside its panel, and anywhere before its first frame. None of
+        // the window's dialogs closes on an outside press, so the reason it
+        // reports is ignored.
         root = root.child(self.dialog.guard(|_, _, _| {}));
         let titlebar = self.title_row();
         let top_chrome = titlebar + self.fullscreen_insets.top.max(px(0.0));
@@ -11602,6 +11603,7 @@ impl Render for WorkspaceView {
         }
         // The window's one dialog slot shows the top dialog.
         self.drawn_dialog_groups = None;
+        let scrim_corners = modal_corners(&layout);
         if let Some(target) = self.close.confirmation.clone() {
             let generation = self.close.generation;
             let input = self.close_dialog_input(&target, cx);
@@ -11625,11 +11627,12 @@ impl Render for WorkspaceView {
                         cx,
                     );
                 }),
-            );
+            )
+            .scrim_corners(scrim_corners);
             root = root.child(modal_layer(dialog, &layout));
         } else if let Some(licenses) = &self.licenses {
             licenses.update(cx, |licenses, _| {
-                licenses.set_viewport(content.size);
+                licenses.set_viewport(content.size, scrim_corners);
             });
             root = root.child(modal_layer(
                 div().absolute().inset_0().child(licenses.clone()),
@@ -11655,7 +11658,8 @@ impl Render for WorkspaceView {
                         view.close_about(window, cx);
                     }),
                 },
-            );
+            )
+            .scrim_corners(scrim_corners);
             root = root.child(modal_layer(about, &layout));
         }
         if let Some(palette) = &self.palette {
@@ -11695,9 +11699,24 @@ impl Render for WorkspaceView {
     }
 }
 
+/// The corners a dialog's scrim rounds: a drawn client frame's rounded top
+/// corners, or none.
+fn modal_corners(layout: &ChromeLayout) -> gpui::Corners<Pixels> {
+    if !layout.frame.decorated() {
+        return gpui::Corners::default();
+    }
+    gpui::Corners {
+        top_left: FRAME_RADIUS,
+        top_right: FRAME_RADIUS,
+        ..gpui::Corners::default()
+    }
+}
+
 /// Hosts a dialog, whose scrim fills its parent: the whole window, or the
 /// content inside a drawn client frame, so the transparent border around
-/// the frame's shadow stays untinted.
+/// the frame's shadow stays untinted and the frame's resize edges, outside
+/// the scrim, still take presses. The dialog rounds its scrim with
+/// [`modal_corners`].
 fn modal_layer(
     dialog: impl IntoElement,
     layout: &ChromeLayout,
