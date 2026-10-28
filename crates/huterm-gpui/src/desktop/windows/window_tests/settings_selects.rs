@@ -200,6 +200,11 @@ fn focus_leaving_the_menu_closes_it_where_focus_went(cx: &mut TestAppContext) {
     draw(&harness);
     assert!(!menu_open(&mut harness));
     assert_eq!(focus(&mut harness), "search");
+    // The closed menu is gone from the screen too: a stale frame would
+    // still draw its window-wide layer over the next select.
+    let label = trigger(&mut harness, "tabs.label").center();
+    click(&harness, label);
+    assert!(menu_open(&mut harness));
 }
 
 #[gpui::test]
@@ -216,6 +221,28 @@ fn changing_section_closes_the_menu(cx: &mut TestAppContext) {
     });
     draw(&harness);
     assert!(!menu_open(&mut harness));
+    // The menu's control is in the old section, so focus recovers to the
+    // window rather than staying on the dropped menu.
+    assert_ne!(focus(&mut harness), "menu");
+}
+
+#[gpui::test]
+fn resizing_the_window_closes_the_menu(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("select-resize", "");
+    let mut harness = DesktopHarness::new(cx);
+    tabs_section(&mut harness, &file);
+    let at = trigger(&mut harness, "tabs.position").center();
+    click(&harness, at);
+    assert!(menu_open(&mut harness));
+    // The menu was placed for the larger window.
+    let resized = visual(&harness).update(|window, _| {
+        let viewport = window.viewport_size();
+        gpui::size(viewport.width, viewport.height * 0.6)
+    });
+    visual(&harness).simulate_resize(resized);
+    draw(&harness);
+    assert!(!menu_open(&mut harness));
+    assert_eq!(focus(&mut harness), "tabs.position");
 }
 
 #[gpui::test]

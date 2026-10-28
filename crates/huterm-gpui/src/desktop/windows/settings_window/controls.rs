@@ -272,9 +272,10 @@ impl SettingsView {
     }
 
     /// A select trigger for the menu `key`, showing `value` and named
-    /// `label`, at least `min_width` wide, that opens through `opener`. It is a `huterm-ui` select:
-    /// pointer presses toggle it, keys reach it only as `SettingsControl`
-    /// commands, and its ring shows for keyboard focus alone.
+    /// `label`, at least `min_width` wide, that opens through `opener`. It
+    /// is a `huterm-ui` select: pointer presses toggle it, keys reach it
+    /// only as `SettingsControl` commands, and its ring shows for keyboard
+    /// focus alone.
     #[expect(
         clippy::too_many_arguments,
         reason = "a trigger needs its names, value, opener, and state"

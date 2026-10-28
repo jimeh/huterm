@@ -254,6 +254,8 @@ pub(super) struct SettingsView {
     triggers: Rc<RefCell<HashMap<String, gpui::Bounds<gpui::Pixels>>>>,
     /// Wakes the window for the open menu's scroll indicator.
     menu_wake: Wake,
+    /// The window size the open menu was placed for.
+    menu_viewport: Option<gpui::Size<gpui::Pixels>>,
     /// The Keybindings section.
     keys: Keys,
     /// The Quake windows section.
@@ -349,6 +351,7 @@ impl SettingsView {
             popover: Popover::new(),
             triggers: Rc::default(),
             menu_wake: Wake::default(),
+            menu_viewport: None,
             scroll: ScrollHandle::new(),
         };
         view.create_and_load(cx);
@@ -912,12 +915,16 @@ impl SettingsView {
         // is gone, so this finds nothing to close then.
         let menu_id = menu.entity_id();
         let menu_focus = menu.read(cx).focus_handle(cx);
-        cx.on_blur(&menu_focus, window, move |view, _, cx| {
-            let current =
-                view.menu.as_ref().map(|(menu, _, _)| menu.entity_id());
-            if current == Some(menu_id) && view.drop_menu() {
-                cx.notify();
-            }
+        // Blur runs in the draw's focus phase, which drops a notify, so the
+        // close waits for the draw to end.
+        cx.on_blur(&menu_focus, window, move |_, window, cx| {
+            cx.defer_in(window, move |view, _, cx| {
+                let current =
+                    view.menu.as_ref().map(|(menu, _, _)| menu.entity_id());
+                if current == Some(menu_id) && view.drop_menu() {
+                    cx.notify();
+                }
+            });
         })
         .detach();
         menu_focus.focus(window, cx);
@@ -929,6 +936,7 @@ impl SettingsView {
                 Anchor::Trigger,
             );
         self.popover.open(anchor, true);
+        self.menu_viewport = Some(window.viewport_size());
         self.menu = Some((menu, target, opener));
         cx.notify();
     }
@@ -957,12 +965,18 @@ impl SettingsView {
             self.menu_wake.arm(AnimationSchedule::IDLE, window, cx);
             return None;
         };
+        // The menu was placed for the window it opened in; a resize would
+        // leave it anchored where its trigger was and sized for room it no
+        // longer has, so it closes, as a menu does when its window changes.
+        let viewport = window.viewport_size();
+        if self.menu_viewport != Some(viewport) {
+            cx.defer_in(window, Self::close_menu);
+        }
         let width = match anchor {
             Anchor::Trigger(bounds) => bounds.size.width.max(MIN_WIDTH),
             Anchor::Pointer(_) => MIN_WIDTH,
         };
         let height = MenuView::content_height(menu.read(cx).model());
-        let viewport = window.viewport_size();
         let placement = place(anchor, size(width, height), viewport);
         let now = Instant::now();
         menu.update(cx, |menu, cx| {
