@@ -201,11 +201,11 @@ most 64 layouts; each template is at most 1 KiB, with splits nested at most
 may name any built-in or user layout, and must not be empty or repeat a
 name. A layout that breaks these rules, or a `layout_cycle` entry naming a
 layout that does not exist, makes the whole configuration invalid. The
-error names the key, and for a template that does not parse, the column
-where it goes wrong. Removing a layout the cycle still names is such an
-error, as removing a quake profile that a global shortcut uses is. A
-keybinding naming a missing layout fails only when it runs, with a notice. A
-reload replaces the layouts and the cycle.
+error names the key, and for a template that does not parse, the line and
+column within the template where it goes wrong. Removing a layout the cycle
+still names is such an error, as removing a quake profile that a global
+shortcut uses is. A keybinding naming a missing layout fails only when it
+runs, with a notice. A reload replaces the layouts and the cycle.
 
 The palette's layout picker and the Settings keybinding editor list your
 layouts after the built-ins. Settings does not edit `[panes.layouts]` or

@@ -263,17 +263,25 @@ fn an_unknown_layout_raises_one_notice_and_commits_nothing(
 
 /// `dev` over three panes: main left at 55 %.
 const DEV: &str = "C[550000:0,450000:R[500000:1,500000:2]]";
+/// `sides` over three panes: a centre pane between two quarter columns.
+const SIDES: &str = "C[250000:0,500000:1,250000:2]";
+
+/// The layout picker's rows, from the palette's smoke state.
+fn picker_rows(cx: &mut App, window: AnyWindowHandle) -> Option<String> {
+    let state = palette_state(cx, window)?;
+    Some(state.split_once("picker_rows=")?.1.to_owned())
+}
 
 #[gpui::test]
-fn user_layouts_arrange_and_cycle_until_a_reload_removes_them(
+fn user_layouts_arrange_and_cycle_until_a_reload_replaces_them(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
-        config
-            .panes
-            .layouts
-            .insert("dev".into(), "columns(pane 55%, rows(*))".into());
-        config.panes.layout_cycle = vec!["dev".into(), "rows".into()];
+        let layouts = &mut config.panes.layouts;
+        layouts.insert("dev".into(), "columns(pane 55%, rows(*))".into());
+        layouts.insert("sides".into(), "columns(* 25%, pane, * 25%)".into());
+        config.panes.layout_cycle =
+            vec!["dev".into(), "sides".into(), "rows".into()];
     });
     let (window, tab, panes) = harness.three_panes(ECHO);
     harness.invoke_with(window, &arrange_panes("dev")).unwrap();
@@ -284,32 +292,47 @@ fn user_layouts_arrange_and_cycle_until_a_reload_removes_them(
             Some("Arrange Panes: dev")
         );
     });
-    // The cycle holds only dev and rows, so it never visits columns.
+    // The cycle runs in list order, never visiting the built-ins it omits.
+    harness.invoke(window, ids::NEXT_PANE_LAYOUT).unwrap();
+    harness.wait_layout(window, tab, &panes, SIDES);
     harness.invoke(window, ids::NEXT_PANE_LAYOUT).unwrap();
     harness.wait_layout(window, tab, &panes, ROWS);
-    harness.invoke(window, ids::NEXT_PANE_LAYOUT).unwrap();
-    harness.wait_layout(window, tab, &panes, DEV);
     harness.invoke(window, ids::PREVIOUS_PANE_LAYOUT).unwrap();
-    harness.wait_layout(window, tab, &panes, ROWS);
-    // A reload from a file without the layout replaces the registry.
+    harness.wait_layout(window, tab, &panes, SIDES);
+    // The picker lists the user layouts after the built-ins, and an open
+    // picker follows a reload.
+    harness.invoke(window, ids::ARRANGE_PANES).unwrap();
+    harness.wait_for("the layout picker", |cx| {
+        picker_rows(cx, window).is_some_and(|rows| {
+            rows.starts_with(
+                r#""Equal Columns;Equal Rows;Main Left;Main Top;Tiled;dev;sides""#,
+            )
+        })
+    });
     let file = super::settings::ScratchConfig::new(
         "layouts-reload",
-        "[tabs]\nposition = 'top'\n",
+        "[tabs]\nposition = 'top'\n\n[panes]\nlayout_cycle = ['main_top', 'columns']\n",
     );
     harness.cx.update(|cx| {
         cx.global_mut::<Desktop>().config_path = file.path();
         let reload = CommandInvocation::new(ids::RELOAD_CONFIG, Vec::new());
         Desktop::invoke(cx, &reload, None).unwrap();
     });
-    harness.wait_for("the reloaded layouts", |cx| {
-        window
-            .update(cx, |root, _, cx| {
-                root.downcast::<WorkspaceView>().is_ok_and(|view| {
-                    view.read(cx).config.panes.layouts.is_empty()
-                })
-            })
-            .unwrap_or(false)
+    harness.wait_for("the reloaded picker", |cx| {
+        picker_rows(cx, window).is_some_and(|rows| {
+            rows.starts_with(
+                r#""Equal Columns;Equal Rows;Main Left;Main Top;Tiled""#,
+            )
+        })
     });
+    harness.press(window, "escape");
+    harness.wait_for("the closed palette", |cx| {
+        palette_state(cx, window).is_none()
+    });
+    // Sides matches columns in the new cycle, so next wraps to main top,
+    // where the old cycle would have stepped to rows.
+    harness.invoke(window, ids::NEXT_PANE_LAYOUT).unwrap();
+    harness.wait_layout(window, tab, &panes, MAIN_TOP);
     let seq = harness.runtime.lock().hierarchy_seq();
     harness.invoke_with(window, &arrange_panes("dev")).unwrap();
     harness.cx.update(|cx| {
@@ -319,7 +342,7 @@ fn user_layouts_arrange_and_cycle_until_a_reload_removes_them(
             shown_notices[0].ends_with("|No pane layout named `dev`"),
             "{shown_notices:?}"
         );
-        assert_eq!(shown(cx, tab, &panes), ROWS);
+        assert_eq!(shown(cx, tab, &panes), MAIN_TOP);
         assert_eq!(arranging(cx, window), 0);
     });
     assert_eq!(harness.runtime.lock().hierarchy_seq(), seq);

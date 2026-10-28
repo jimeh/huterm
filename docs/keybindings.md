@@ -407,9 +407,9 @@ args = { layout = "dev" } # from [panes.layouts]
 
 The cycle visits the layouts in the table's order, or the order of
 `[panes] layout_cycle`, which can add your own layouts and leave built-ins
-out. It continues from the
-layout the tab matches, so resizing a divider keeps the place, and after a
-split or a move that matches none it starts from the beginning. Layouts and
+out. It continues from the layout the tab matches, so resizing a divider
+keeps the place, and after a split or a move that matches none it starts from
+the beginning. Layouts and
 balancing keep every pane at least 4 columns by 2 rows in the window that runs
 them, moving sizes from their ideal shares only as far as that needs. A layout
 that cannot fit is refused with a notice, or skipped by the cycle. Balancing

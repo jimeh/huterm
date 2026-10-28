@@ -878,14 +878,10 @@ impl PanesConfig {
                 ));
             }
             LayoutTemplate::parse(source).map_err(|error| {
-                // One-based, in characters, as an editor counts columns.
-                let column = source
-                    .get(..error.offset)
-                    .map_or(error.offset, |before| before.chars().count())
-                    + 1;
                 format!(
-                    "panes.layouts.{name}: {} at column {column}",
-                    error.kind
+                    "panes.layouts.{name}: {} at {}",
+                    error.kind,
+                    template_position(source, error.offset)
                 )
             })?;
         }
@@ -943,6 +939,21 @@ impl PanesConfig {
             .iter()
             .filter_map(|name| self.layout(name))
             .collect()
+    }
+}
+
+/// Where byte `offset` falls in a template, as an editor counts it: a
+/// one-based column in characters, after the line when the template spans
+/// several, as a multi-line TOML string can.
+fn template_position(source: &str, offset: usize) -> String {
+    let before = source.get(..offset).unwrap_or(source);
+    let line = before.rsplit('\n').next().unwrap_or(before);
+    let column = line.chars().count() + 1;
+    match before.matches('\n').count() {
+        0 => format!("column {column} of the template"),
+        breaks => {
+            format!("line {}, column {column} of the template", breaks + 1)
+        }
     }
 }
 
@@ -2556,7 +2567,11 @@ mod panes_tests {
         let cases = [
             (
                 "[panes.layouts]\ndev = 'columns(pane, )'",
-                "panes.layouts.dev: expected `columns`, `rows`, `grid`, `pane`, or `*` at column 15",
+                "panes.layouts.dev: expected `columns`, `rows`, `grid`, `pane`, or `*` at column 15 of the template",
+            ),
+            (
+                "[panes.layouts]\ndev = \"\"\"\ncolumns(\n  pane,\n  rows(*) 40\n)\"\"\"",
+                "panes.layouts.dev: expected `%` at line 4, column 1 of the template",
             ),
             (
                 "[panes.layouts]\nDev = 'rows(*)'",
@@ -2601,12 +2616,12 @@ mod panes_tests {
         let long = format!("columns({}", "é".repeat(600));
         assert_eq!(
             panes(&format!("[panes.layouts]\nlong = '{long}'")).unwrap_err(),
-            "panes.layouts.long: a template holds at most 1024 bytes at column 517"
+            "panes.layouts.long: a template holds at most 1024 bytes at column 517 of the template"
         );
         let deep = format!("{}*{}", "columns(rows(".repeat(9), "))".repeat(9));
         assert_eq!(
             panes(&format!("[panes.layouts]\ndeep = '{deep}'")).unwrap_err(),
-            "panes.layouts.deep: splits nest at most 16 levels deep at column 105"
+            "panes.layouts.deep: splits nest at most 16 levels deep at column 105 of the template"
         );
     }
 }

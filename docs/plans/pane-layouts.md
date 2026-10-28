@@ -6,8 +6,8 @@ Claude review rounds; Jim settled every open question that day (see
 layouts. PR 1, runtime arrangements (#284), and PR 2, commands (#286), are
 implemented. On 2026-10-28 Jim split PR 3: PR 3a, user-defined layouts
 from the config file, is in progress, and PR 3b, their Settings editor,
-waits for the `huterm-ui` components it builds on. Plans [issue #30][issue-30] within
-[epic #12][issue-12].
+waits for the `huterm-ui` components it builds on. Plans
+[issue #30][issue-30] within [epic #12][issue-12].
 Builds on [the split panes plan](split-panes.md) (#28) and
 [the pane moves plan](pane-moves.md) (#29), both implemented. Layout undo,
 [#256][issue-256], is related with no ordering dependency; this plan assumes
@@ -1341,10 +1341,12 @@ Recorded with PR 3a:
   metadata PR 3b needs.
 - Undo labels became owned strings, so an entry can read "Arrange Panes:
   dev". Built-in layouts keep the labels PR 2 gave them.
-- A template error names the key, the parser's message, and a one-based
-  column counted in characters, the column the Settings field will show:
-  `dev = "columns(pane, )"` fails with "panes.layouts.dev: expected
-  \`columns\`, \`rows\`, \`grid\`, \`pane\`, or \`*\` at column 15".
+- A template error names the key, the parser's message, and where the
+  template goes wrong: a one-based column counted in characters, the column
+  the Settings field will show, after a line number when a multi-line TOML
+  string spans several lines. `dev = "columns(pane, )"` fails with
+  "panes.layouts.dev: expected \`columns\`, \`rows\`, \`grid\`,
+  \`pane\`, or \`*\` at column 15 of the template".
 - The schema also rejects built-in names as `[panes.layouts]` keys and
   bounds each template at 1 KiB and the table at 64 entries, so an editor
   flags them before a reload does.
