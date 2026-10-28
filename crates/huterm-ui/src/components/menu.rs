@@ -193,13 +193,15 @@ impl Menu {
         if self.model == model {
             return;
         }
-        let previous = self.selection;
-        self.selection = remap_selection(&self.model, previous, &model);
+        let before = self
+            .selection
+            .and_then(|selection| row_span(&self.model, selection.row));
+        self.selection = remap_selection(&self.model, self.selection, &model);
         self.model = model;
         // Only a selection the new rows moved scrolls; a refresh leaves a
         // list the user scrolled away from where it is.
         if let Some(selection) = self.selection
-            && previous.map(|previous| previous.row) != Some(selection.row)
+            && row_span(&self.model, selection.row) != before
         {
             self.reveal(selection.row);
         }
@@ -231,14 +233,13 @@ impl Menu {
     /// for the next frame's layout, after the scrollbar has drawn from the
     /// old offset, and before the first frame it has no rows to scroll to.
     fn reveal(&self, row: usize) {
-        let (Some(height), Some(revealed)) =
-            (self.max_height, self.model.rows.get(row))
+        let (Some(height), Some((top, bottom))) =
+            (self.max_height, row_span(&self.model, row))
         else {
             return;
         };
         let height = f32::from(height);
-        let top: f32 = self.model.rows[..row].iter().map(row_height).sum();
-        let bottom = top + row_height(revealed) + PANEL_PADDING * 2.0;
+        let bottom = bottom + PANEL_PADDING * 2.0;
         let rows: f32 = self.model.rows.iter().map(row_height).sum();
         let max = (rows + PANEL_PADDING * 2.0 - height).max(0.0);
         let shown = -f32::from(self.scroll.offset().y);
@@ -645,6 +646,13 @@ impl EntityInputHandler for Menu {
     ) -> Option<usize> {
         None
     }
+}
+
+/// Where `row` sits in `model`'s rows, top and bottom, before scrolling.
+fn row_span(model: &Model, row: usize) -> Option<(f32, f32)> {
+    let height = row_height(model.rows.get(row)?);
+    let top: f32 = model.rows[..row].iter().map(row_height).sum();
+    Some((top, top + height))
 }
 
 /// A row's fixed height.
@@ -1074,6 +1082,22 @@ mod tests {
         menu.update(cx, |menu, cx| menu.set_model(Model::new(rows), cx));
         cx.run_until_parked();
         cx.read(|cx| assert_eq!(menu.read(cx).scroll.offset(), scrolled));
+    }
+
+    #[gpui::test]
+    fn a_model_that_moves_the_selection_up_reveals_it(cx: &mut TestAppContext) {
+        let (menu, cx) = long(cx, items(40), "row-30");
+        // Shorter rows above leave the selection at its index but move it
+        // above the view.
+        let mut rows = items(40);
+        rows[..10].fill(Row::Separator);
+        menu.update(cx, |menu, cx| menu.set_model(Model::new(rows), cx));
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let menu = menu.read(cx);
+            assert_eq!(menu.selection().map(|s| s.row), Some(30));
+            assert!(shows(menu, 30), "offset {:?}", menu.scroll.offset());
+        });
     }
 
     #[gpui::test]
