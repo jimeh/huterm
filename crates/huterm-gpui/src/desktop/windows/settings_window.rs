@@ -152,6 +152,7 @@ pub(super) fn close(cx: &mut App) {
 }
 
 mod controls;
+mod dialog;
 mod keybindings;
 mod quake;
 mod render;
@@ -268,6 +269,8 @@ pub(super) struct SettingsView {
     keys: Keys,
     /// The Quake windows section.
     quake: quake::Quake,
+    /// The open dialog, if any.
+    dialog: dialog::SettingsDialog,
     /// The action and keybinding field keys the last frame drew, so focus
     /// left on a control that went away can move on.
     drawn: HashSet<String>,
@@ -312,10 +315,7 @@ impl SettingsView {
             let Some(view) = weak.upgrade() else {
                 return;
             };
-            if view.update(cx, |view, cx| {
-                view.record(&event.keystroke, cx)
-                    || view.escape_delete(&event.keystroke, window, cx)
-            }) {
+            if view.update(cx, |view, cx| view.record(&event.keystroke, cx)) {
                 cx.stop_propagation();
             }
         });
@@ -323,6 +323,7 @@ impl SettingsView {
             focus: cx.focus_handle(),
             keys,
             quake: quake::Quake::new(),
+            dialog: dialog::SettingsDialog::default(),
             drawn: HashSet::new(),
             last_focus: None,
             _recorder: recorder,
@@ -848,7 +849,6 @@ impl SettingsView {
             self.keys.stranded = true;
         }
         self.section = section;
-        self.quake.deleting = false;
         self.search.update(cx, |search, cx| search.set_text("", cx));
         self.scroll.set_offset(point(px(0.0), px(0.0)));
         cx.notify();
@@ -1218,6 +1218,9 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<(), CommandError> {
+        if self.run_dialog(invocation.id, window, cx) {
+            return Ok(());
+        }
         if let Some((menu, _, _)) = &self.menu
             && super::is_menu_command(invocation.id)
         {
@@ -1521,6 +1524,8 @@ impl SettingsView {
             format!("section:{}", section.id())
         } else if let Some(key) = self.focused_action(window) {
             format!("action:{key}")
+        } else if let Some(key) = self.focused_dialog_button(window) {
+            format!("dialog:{key}")
         } else if let Some((key, _)) = self.focused_key_field(window, cx) {
             format!("key:{key}")
         } else if let Some(setting) = self.focused_setting(window, cx) {
@@ -1550,7 +1555,7 @@ impl SettingsView {
             .collect();
         selects.sort();
         format!(
-            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.status={:?} settings.read_only={} settings.writing={}",
+            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.dialog={} settings.status={:?} settings.read_only={} settings.writing={}",
             window.is_window_active(),
             self.section.id(),
             self.query(cx),
@@ -1561,6 +1566,7 @@ impl SettingsView {
             } else {
                 selects.join("|")
             },
+            self.dialog_name(),
             self.status.line().text,
             self.locked(),
             self.busy(),
@@ -1852,6 +1858,10 @@ impl Render for SettingsView {
             let _ = weak.update(cx, |view, cx| view.close_menu(window, cx));
         });
         let popover = self.render_popover(window, cx);
+        // The dialog's guard stops every press outside an open dialog, even
+        // before its first frame.
+        let dialog_guard = self.dialog_guard(cx);
+        let dialog = self.render_dialog(swatch, window, cx);
         let mut context = KeyContext::default();
         context.add("Settings");
         div()
@@ -1876,9 +1886,11 @@ impl Render for SettingsView {
             .text_color(swatch.fg)
             .child(huterm_ui::focus::tracker())
             .child(guard)
+            .child(dialog_guard)
             .child(sidebar)
             .child(main)
             .children(popover)
+            .children(dialog)
     }
 }
 

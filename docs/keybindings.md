@@ -159,7 +159,7 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `pane_zoomed` | The window shows that terminal's pane zoomed: the window's own zoom under `[panes] zoom = "view"`, the tab's under `"shared"`. |
 | `has_pane_left`, `has_pane_right`, `has_pane_up`, `has_pane_down` | `focus_pane_left`, or the command for that side, has a pane to move to from that terminal. They follow the layout, so zoom does not change them. |
 | `Workspace` | Always, on the window's root. |
-| `confirming` | A close confirmation or the About panel is open. |
+| `confirming` | A close confirmation, the About panel, or a Settings dialog such as Delete profile's is open. |
 | `menu` | The window menu has keyboard focus. |
 | `notices` | A notice has keyboard focus (after `focus_notices`). |
 | `reordering` | A tab drag is in progress. |
@@ -458,12 +458,17 @@ directions if you use them.
 
 ### Dialog
 
-These bind only while a close confirmation or the About panel is showing
-(`confirming`), so they take nothing from terminal input. The primary button
-has focus when the dialog opens, and a repeated close shortcut never confirms.
-In the About panel, the focus commands move between its Licenses, Copy Details,
-and Close buttons, `dialog_confirm` presses the focused one, and
-`dialog_cancel` closes it. Focus starts on Close.
+These bind only while a close confirmation, the About panel, or a Settings
+dialog is showing (`confirming`), so they take nothing from terminal input. The
+primary button has focus when the dialog opens, and a repeated close shortcut
+never confirms. In the About panel, the focus commands move between its
+Licenses, Copy Details, and Close buttons, `dialog_confirm` presses the focused
+one, and `dialog_cancel` closes it. Focus starts on Close.
+
+In Settings, Delete profile asks in a dialog whose Cancel has focus. The focus
+commands move between Cancel and Delete, `dialog_confirm` presses the focused
+one, and `dialog_cancel` cancels, as Cancel does. Space presses neither. While
+the dialog is open, other Settings commands do nothing.
 
 The Licenses view takes the `Palette` context, so the palette bindings apply
 there: `palette_select_next` and `palette_select_previous` move the selection,

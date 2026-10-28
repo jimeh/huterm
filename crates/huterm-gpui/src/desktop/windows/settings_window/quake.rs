@@ -17,9 +17,13 @@ use super::super::super::key_hint::KeyHint;
 use super::super::super::overlay::Swatch;
 use super::super::super::settings::keybindings::Edit;
 use super::controls::Opener;
+use super::dialog::Prompt;
 use super::keybindings::{CAP_WIDTH, Target, card, group_block, small};
 use super::{MenuFor, SettingsView, button};
 use crate::keymap::Platform;
+use huterm_ui::components::alert_dialog::AlertDialog;
+use huterm_ui::components::button::Variant;
+use huterm_ui::components::dialog::Dismissal;
 use huterm_ui::components::input::Input;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
@@ -38,8 +42,7 @@ pub(super) struct Quake {
     /// The New profile name field, while it is open.
     pub(super) naming: Option<Entity<Input>>,
     pub(super) name_error: Option<String>,
-    /// Delete profile is asking for confirmation.
-    pub(super) deleting: bool,
+    /// Why the write of a confirmed deletion was refused.
     pub(super) delete_error: Option<String>,
 }
 
@@ -49,7 +52,6 @@ impl Quake {
             profile: DEFAULT.to_owned(),
             naming: None,
             name_error: None,
-            deleting: false,
             delete_error: None,
         }
     }
@@ -290,13 +292,22 @@ impl SettingsView {
             "qcancel" => self.stop_naming(window, cx),
             "qdel" if self.locked() => {}
             "qdel" => {
-                self.quake.deleting = true;
+                let profile = self.shown_profile();
+                let prompt = match self.delete_refusal(&profile) {
+                    Some(message) => Prompt::DeleteRefused { profile, message },
+                    None => Prompt::DeleteProfile(profile),
+                };
                 self.quake.delete_error = None;
-                self.action_stop("qdelno".to_owned(), cx).focus(window, cx);
+                let delete = self.action_stop("qdel".to_owned(), cx);
+                self.open_dialog(prompt, &delete);
             }
             "qdelno" => {
-                self.quake.deleting = false;
-                self.action_stop("qdel".to_owned(), cx).focus(window, cx);
+                self.close_dialog(window, cx);
+                // A profile removed meanwhile took its Delete profile with
+                // it.
+                if self.shown_profile() == DEFAULT {
+                    self.action_stop("qprof".to_owned(), cx).focus(window, cx);
+                }
             }
             "qdelyes" => self.delete_profile(window, cx),
             "grec" => {
@@ -373,28 +384,6 @@ impl SettingsView {
         })
     }
 
-    /// Escape closes the delete confirmation, as Cancel does. Returns
-    /// whether it took the key.
-    pub(super) fn escape_delete(
-        &mut self,
-        keystroke: &gpui::Keystroke,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) -> bool {
-        let on_prompt = self
-            .focused_action(window)
-            .is_some_and(|key| key == "qdelyes" || key == "qdelno");
-        if !self.quake.deleting
-            || !on_prompt
-            || keystroke.key != "escape"
-            || keystroke.modifiers.modified()
-        {
-            return false;
-        }
-        self.act("qdelno", window, cx);
-        true
-    }
-
     /// Shows why a profile's creation or deletion was refused. A refused
     /// creation reopens the name field with its name.
     pub(super) fn profile_failed(
@@ -440,7 +429,6 @@ impl SettingsView {
     /// Shows the profile picked from the dropdown.
     pub(in crate::desktop::windows) fn pick_profile(&mut self, name: &str) {
         name.clone_into(&mut self.quake.profile);
-        self.quake.deleting = false;
         self.quake.delete_error = None;
     }
 
@@ -460,7 +448,6 @@ impl SettingsView {
         let handle = field.read(cx).focus_handle(cx).tab_stop(true);
         handle.focus(window, cx);
         self.quake.name_error = None;
-        self.quake.deleting = false;
     }
 
     fn stop_naming(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -520,54 +507,66 @@ impl SettingsView {
         self.action_stop("qprof".to_owned(), cx).focus(window, cx);
     }
 
+    /// Why `profile` cannot be deleted now, if it cannot.
+    fn delete_refusal(&self, profile: &str) -> Option<String> {
+        if self.locked() {
+            return Some("config.toml has an error. Not saved.".to_owned());
+        }
+        // The validator refuses a global shortcut for a missing profile.
+        let global = self
+            .globals()
+            .into_iter()
+            .find(|global| global.profile.as_deref() == Some(profile))?;
+        let key = KeyHint::parse(&global.key, Platform::current()).text();
+        Some(format!(
+            "The global shortcut {key} uses this profile. Remove it, or give \
+             it another profile, first."
+        ))
+    }
+
+    /// Deletes the profile the open alert asks about, or shows why it
+    /// cannot in the alert's place.
     fn delete_profile(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let name = self.shown_profile();
-        self.quake.deleting = false;
-        if name == DEFAULT {
-            return;
-        }
-        if self.locked() {
-            self.quake.delete_error =
-                Some("config.toml has an error. Not saved.".to_owned());
-            self.action_stop("qdel".to_owned(), cx).focus(window, cx);
-            return;
-        }
-        // The validator refuses a global shortcut for a missing profile.
-        if let Some(global) = self
-            .globals()
-            .into_iter()
-            .find(|global| global.profile.as_deref() == Some(name.as_str()))
-        {
-            let key = KeyHint::parse(&global.key, Platform::current()).text();
-            self.quake.delete_error = Some(format!(
-                "The global shortcut {key} uses this profile. Remove it, or \
-                 give it another profile, first."
-            ));
-            self.action_stop("qdel".to_owned(), cx).focus(window, cx);
-            return;
-        }
-        let Some(setting) =
-            profile_setting(self.model, &format!("{PREFIX}{name}"))
+        let Some(Prompt::DeleteProfile(name)) = self.dialog.prompt().cloned()
         else {
             return;
         };
-        // The user confirmed deleting the profile as it is now, so the write
-        // reads the file afresh rather than conflicting with an edit to it.
-        self.fresh = Some(setting.path.as_str());
-        self.submit(
-            setting,
-            huterm_config::document::Patch::Remove {
-                path: vec!["quake".into(), "profiles".into(), name],
-            },
-            None,
-            None,
-            cx,
-        );
-        self.pick_profile(DEFAULT);
+        if let Some(message) = self.delete_refusal(&name) {
+            let delete = self.action_stop("qdel".to_owned(), cx);
+            self.open_dialog(
+                Prompt::DeleteRefused {
+                    profile: name,
+                    message,
+                },
+                &delete,
+            );
+            return;
+        }
+        self.close_dialog(window, cx);
+        let setting = (name != DEFAULT && self.profiles().contains(&name))
+            .then(|| profile_setting(self.model, &format!("{PREFIX}{name}")))
+            .flatten();
+        if let Some(setting) = setting {
+            // The user confirmed deleting the profile as it is now, so the
+            // write reads the file afresh rather than conflicting with an
+            // edit to it.
+            self.fresh = Some(setting.path.as_str());
+            self.submit(
+                setting,
+                huterm_config::document::Patch::Remove {
+                    path: vec!["quake".into(), "profiles".into(), name],
+                },
+                None,
+                None,
+                cx,
+            );
+            self.pick_profile(DEFAULT);
+        }
+        // Delete profile went with the profile.
         self.action_stop("qprof".to_owned(), cx).focus(window, cx);
     }
 
@@ -855,68 +854,119 @@ impl SettingsView {
             );
         }
         if profile != DEFAULT && bare(&profile) {
-            body = body.child(self.render_delete(&profile, swatch, cx));
+            body = body.child(self.render_delete(swatch, cx));
         }
         group_block(&title, body, swatch)
     }
 
     fn render_delete(
         &mut self,
-        profile: &str,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let mut row = div()
+        let reason = self.lock_reason();
+        let delete = self
+            .action_button(
+                "settings-qdel".to_owned(),
+                "Delete profile",
+                "qdel".to_owned(),
+                swatch,
+                cx,
+            )
+            .when_some(reason, |button, reason| button.disabled(Some(reason)));
+        div()
             .flex()
             .flex_col()
             .gap(px(6.0))
             .px(px(14.0))
             .py(px(10.0))
             .border_t_1()
-            .border_color(swatch.line);
-        if self.quake.deleting {
-            let yes = button("settings-qdelyes", swatch)
-                .text_color(swatch.danger_text())
-                .child("Delete");
-            let yes = self.actionable(yes, "qdelyes".to_owned(), swatch, cx);
-            let no = button("settings-qdelno", swatch).child("Cancel");
-            let no = self.actionable(no, "qdelno".to_owned(), swatch, cx);
-            row = row
-                .child(small(
-                    format!(
-                        "Delete profile {profile}? Its settings and comments \
-                         are removed from config.toml."
-                    ),
-                    swatch.fg,
-                ))
-                .child(div().flex().gap(px(8.0)).child(yes).child(no));
-        } else {
-            let reason = self.lock_reason();
-            let delete = self
-                .action_button(
-                    "settings-qdel".to_owned(),
-                    "Delete profile",
-                    "qdel".to_owned(),
-                    swatch,
-                    cx,
-                )
-                .when_some(reason, |button, reason| {
-                    button.disabled(Some(reason))
-                });
-            row = row.child(div().flex().child(delete)).child(small(
+            .border_color(swatch.line)
+            .child(div().flex().child(delete))
+            .child(small(
                 "An open window of a deleted profile becomes an ordinary \
-                     window and keeps its tabs."
+                 window and keeps its tabs."
                     .to_owned(),
                 swatch.muted,
-            ));
+            ))
+            .children(
+                self.quake
+                    .delete_error
+                    .clone()
+                    .map(|error| small(error, swatch.danger_text())),
+            )
+            .into_any_element()
+    }
+
+    /// The alert Delete profile opens: whether to delete the profile, or
+    /// why it cannot be. Cancel, or OK on a refusal, returns focus to Delete
+    /// profile. A profile removed while the alert is open, such as by
+    /// another editor, closes it.
+    pub(super) fn render_delete_alert(
+        &mut self,
+        prompt: &Prompt,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let (Prompt::DeleteProfile(profile)
+        | Prompt::DeleteRefused { profile, .. }) = prompt;
+        if !self.profiles().iter().any(|name| name == profile) {
+            cx.defer_in(window, |view, window, cx| {
+                view.dismiss_dialog(Dismissal::OwnerChanged, window, cx);
+            });
+            return None;
         }
-        row.children(
-            self.quake
-                .delete_error
-                .clone()
-                .map(|error| small(error, swatch.danger_text())),
-        )
-        .into_any_element()
+        let alert = match prompt {
+            Prompt::DeleteProfile(_) => {
+                let (cancel, cancel_focus) = self.dialog_button(
+                    "settings-qdelno",
+                    "Cancel",
+                    "qdelno",
+                    swatch,
+                    cx,
+                );
+                let (delete, delete_focus) = self.dialog_button(
+                    "settings-qdelyes",
+                    "Delete",
+                    "qdelyes",
+                    swatch,
+                    cx,
+                );
+                AlertDialog::new(
+                    "settings-delete-profile",
+                    format!("Delete the \u{201c}{profile}\u{201d} profile?"),
+                    self.dialog.modal(),
+                    swatch,
+                )
+                .description(
+                    "Its settings and comments are removed from config.toml.",
+                )
+                .cancel(cancel, &cancel_focus)
+                .action(delete.variant(Variant::Destructive), &delete_focus)
+            }
+            Prompt::DeleteRefused { message, .. } => {
+                let (ok, ok_focus) = self.dialog_button(
+                    "settings-qdelno",
+                    "OK",
+                    "qdelno",
+                    swatch,
+                    cx,
+                );
+                AlertDialog::new(
+                    "settings-delete-profile",
+                    format!(
+                        "The \u{201c}{profile}\u{201d} profile cannot be \
+                         deleted"
+                    ),
+                    self.dialog.modal(),
+                    swatch,
+                )
+                .description(message.clone())
+                .cancel(ok.variant(Variant::Primary), &ok_focus)
+            }
+        };
+        Some(alert.into_any_element())
     }
 
     fn render_globals(
@@ -1175,9 +1225,12 @@ impl SettingsView {
             .or_else(|| self.quake.delete_error.clone())
     }
 
-    /// Whether the New profile field or the delete confirmation shows.
+    /// Whether the New profile field or the delete alert shows.
     pub(in crate::desktop::windows) fn quake_prompts(&self) -> (bool, bool) {
-        (self.quake.naming.is_some(), self.quake.deleting)
+        (
+            self.quake.naming.is_some(),
+            matches!(self.dialog.prompt(), Some(Prompt::DeleteProfile(_))),
+        )
     }
 
     /// The New profile field's text.
