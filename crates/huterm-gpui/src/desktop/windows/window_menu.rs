@@ -149,6 +149,7 @@ pub(super) fn label(id: CommandId) -> String {
     match id {
         ids::OPEN_COMMAND_PALETTE => "Command Palette…".to_owned(),
         ids::RENAME_TAB => "Rename Tab…".to_owned(),
+        ids::ARRANGE_PANES => "Arrange Panes…".to_owned(),
         ids::COPY_TAB_DIRECTORY => "Copy Directory Path".to_owned(),
         ids::CHECK_FOR_UPDATES => "Check for Updates…".to_owned(),
         ids::QUIT => "Quit Huterm".to_owned(),
@@ -195,6 +196,8 @@ pub(super) fn window_menu_model(
         MenuRow::Separator,
         item(ids::RENAME_TAB),
         item(ids::CLOSE_PANE),
+        item(ids::ARRANGE_PANES),
+        item(ids::BALANCE_PANES),
         item(ids::CLOSE_TAB),
         item(ids::CLOSE_WINDOW),
         MenuRow::Separator,

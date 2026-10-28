@@ -178,6 +178,9 @@ projection reaches it, so the divider never snaps back; a rejected commit
 drops them silently. Escape, blur, switching tabs, a zoom change from either
 scope, a close request, and a layout change that removes the split or
 changes its children cancel the drag. Resize commands commit the same way.
+While the window has a pane arrangement in flight, a divider press starts no
+drag and resize commands are refused, since both would compute from the
+weights the arrangement is about to replace.
 
 Zoom hides the tab's other panes as a hidden tab hides its view: `hide`
 releases accepted gestures and finalizes the selection, and the hidden panes

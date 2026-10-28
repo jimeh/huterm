@@ -97,6 +97,35 @@ its own full reconcile, because attaching emits no hierarchy event. A view
 installed after its pane exited shows the exit from status but announces
 nothing: only the exit transition raises a notice or records an exit-close.
 
+Resize commands, divider releases, and the layout commands (`arrange_panes`,
+the cycle, `balance_panes`) share one ordered layout commit queue per window
+(`windows/pane_layouts.rs`), so a balance pressed after a resize lands after
+it. A layout command fits its arrangement first, in this view's content
+bounds unzoomed, with `pane_geometry::fit`, whose oracle is the same
+`pane_grids` and `fits_minimum` a split preflight uses; the runtime knows
+weights, not pixels. A fitted arrangement equal to `committed_layout` commits
+nothing, unzooms nothing, and records nothing. Otherwise the view clears only
+its own zoom, as a move does, and never sends `set_pane_zoom`: the runtime
+clears a shared zoom inside the arrangement's own event, so undo keeps it.
+Arrangements never set `busy`, which would drop keystrokes and make reconcile
+defer membership changes an arrangement does not make. A per-window count of
+arrangements in flight instead makes `check_available` refuse, as `busy`
+does and refuses divider presses and pane drags, and leaves terminal input
+and reconcile alone. Binding paths that skip `check_available` check the
+count themselves: a layout, undo, resize, pane focus, or zoom key, or a
+title bar zoom, pressed while one is in flight does nothing, quietly, so a
+held key raises no notices. A commit the runtime refuses or finds empty
+gives the view back the zoom it cleared, unless focus or the zoom moved
+meanwhile. The real grids decide `fit`: an ideal arrangement that passes
+is kept, and minimum extents are exact rather than whole physical pixels,
+because a fractional scale leaves dividers off the pixel grid. Each
+completion waits for the projection to reach its commit's sequence before
+recording through `record_layout_change`, which ignores a
+completion older than the window's newest entry, because a drop from a drag
+that started earlier can complete first. Tier 2 tests order other work
+against `worker_hooks::Stage::Layout`, before each queue job's runtime call,
+and `Stage::LayoutCommitted`, after it.
+
 A view whose viewer reports revocation while its tab stays in the window's
 workspace is replaced in place by the same worker and sequence wait. The tab's
 activity drain runs `reconcile_own` on seeing it, because a revocation emits

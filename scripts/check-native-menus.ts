@@ -4,6 +4,7 @@ export function checkNativeMenus(exitCode: number, output: string): void {
   const expected = [
     "default-fullscreen-shortcut",
     "default-undo-shortcuts",
+    "default-balance-shortcut",
     "startup-update-command",
     "startup-user-shortcut",
     "untouched-default-shortcut",

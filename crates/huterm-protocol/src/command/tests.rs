@@ -333,6 +333,47 @@ fn quake_profile_arguments_carry_text() {
 }
 
 #[test]
+fn layout_arguments_carry_any_valid_name_and_are_prompted() {
+    // The catalog checks only the syntax: a configured name is resolved
+    // when the command runs.
+    for name in ["columns", "main_left", "dev2"] {
+        assert!(
+            validate(&CommandInvocation::new(
+                ids::ARRANGE_PANES,
+                vec![text("layout", name)]
+            ))
+            .is_ok(),
+            "{name}"
+        );
+    }
+    for name in ["", "Main", "2up", "main-left"] {
+        assert_eq!(
+            validate_supplied(&CommandInvocation::new(
+                ids::ARRANGE_PANES,
+                vec![text("layout", name)]
+            )),
+            Err(CommandError::ArgumentType {
+                command: ids::ARRANGE_PANES,
+                name: "layout",
+                expected: ArgumentKind::Layout,
+            }),
+            "{name:?}"
+        );
+    }
+    // A binding or menu may leave it out, and the palette asks for it.
+    let bare = CommandInvocation::new(ids::ARRANGE_PANES, Vec::new());
+    assert!(validate_supplied(&bare).is_ok());
+    let spec = lookup(ids::ARRANGE_PANES.as_str()).unwrap();
+    assert_eq!(
+        spec.missing_prompted(&bare)
+            .iter()
+            .map(|argument| argument.name)
+            .collect::<Vec<_>>(),
+        ["layout"]
+    );
+}
+
+#[test]
 fn palette_commands_are_palette_scoped_and_context_bound() {
     let expected = [
         ids::PALETTE_SELECT_NEXT,

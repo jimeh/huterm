@@ -844,3 +844,50 @@ fn pane_and_side_pickers_build_the_explicit_move_invocation() {
     assert!(huterm_protocol::validate(&invocation).is_ok());
     mux.close_session(session).unwrap();
 }
+
+#[test]
+fn the_layout_picker_lists_built_ins_by_title_and_runs_arrange_panes() {
+    let hierarchy = PaletteHierarchy::default();
+    let target = target();
+    let domain = DomainView {
+        hierarchy: &hierarchy,
+        profiles: &[],
+        target: &target,
+        window_only: true,
+        moving_tab: None,
+    };
+    let rows: Vec<(&str, &str)> = domain
+        .rows(ArgumentKind::Layout)
+        .into_iter()
+        .map(|row| (row.label.as_str(), row.detail.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("Equal Columns", "columns(*)"),
+            ("Equal Rows", "rows(*)"),
+            ("Main Left", "columns(pane 60%, rows(*))"),
+            ("Main Top", "rows(pane 60%, columns(*))"),
+            ("Tiled", "grid(*)"),
+        ]
+    );
+    // Picking a row gives the invocation a binding would carry.
+    let spec = huterm_protocol::lookup(ids::ARRANGE_PANES.as_str()).unwrap();
+    let mut editor = SlotEditor::new(spec, &[], &domain, false).unwrap();
+    assert_eq!(editor.active().spec.name, "layout");
+    let Ok(Commit::Run(invocation)) =
+        editor.commit(Some(CommandValue::Text("main_left".to_owned())))
+    else {
+        panic!("picking the layout runs the command");
+    };
+    assert_eq!(
+        invocation,
+        CommandInvocation::new(
+            ids::ARRANGE_PANES,
+            vec![CommandArgument::new(
+                "layout",
+                CommandValue::Text("main_left".into())
+            )],
+        )
+    );
+}

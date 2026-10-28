@@ -165,6 +165,7 @@ mod layout_undo;
 mod model;
 mod pane_drag;
 mod pane_geometry;
+mod pane_layouts;
 mod pane_moves;
 mod projection;
 mod settings_window;
@@ -2273,7 +2274,8 @@ fn open_window_with_profile(
                 divider_drag: None,
                 resize_commits: Vec::new(),
                 resize_commit_counter: 0,
-                resize_queue: None,
+                layout_queue: None,
+                arrangements: 0,
                 drawn_dividers: RefCell::new(Vec::new()),
                 drawn_panes: RefCell::new(None),
                 drawn_drop: RefCell::new(None),
@@ -3342,10 +3344,15 @@ struct WorkspaceView {
     /// them, keyed by a per-window counter.
     resize_commits: Vec<(u64, ResizePreview)>,
     resize_commit_counter: u64,
-    /// Feeds this window's resize commits to one worker in order, so a
-    /// later command never lands before an earlier one.
-    resize_queue:
-        Option<async_channel::Sender<(u64, WorkspaceId, ResizePreview)>>,
+    /// Feeds this window's resize and arrangement commits to one worker in
+    /// order, so a later command never lands before an earlier one.
+    layout_queue: Option<
+        async_channel::Sender<(u64, WorkspaceId, pane_layouts::LayoutCommit)>,
+    >,
+    /// Arrangements this window queued whose completion has not run. While
+    /// any is in flight, structural commands and divider presses are
+    /// refused, as `busy` refuses them, but terminal input still flows.
+    arrangements: usize,
     /// The active tab's dividers as the last frame drew them, which
     /// presses hit-test against.
     drawn_dividers: RefCell<Vec<Divider>>,
@@ -4411,6 +4418,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // A zoom set while an arrangement is in flight would hide the
+        // layout it lands, or, shared, could land first and be cleared.
+        if self.arrangements > 0 {
+            return;
+        }
         let zoomed = self
             .tabs
             .iter()
@@ -4485,9 +4497,11 @@ impl WorkspaceView {
         }
     }
 
-    /// Whether a press may grab a divider: no overlay or modal claims it.
+    /// Whether a press may grab a divider: no overlay or modal claims it,
+    /// and no arrangement is about to replace the weights it would drag.
     fn divider_press_allowed(&self) -> bool {
-        self.menu.is_none()
+        self.arrangements == 0
+            && self.menu.is_none()
             && self.palette.is_none()
             && self.close.confirmation.is_none()
             && self.about.is_none()
@@ -4761,54 +4775,21 @@ impl WorkspaceView {
         }
     }
 
-    /// Commits `preview` with `resize_split` on a worker. The window shows
-    /// the committed weights until the projection holds the commit, so the
-    /// divider never snaps back; a rejected commit drops them silently and
-    /// the projection's layout shows.
+    /// Commits `preview` with `resize_split` on the layout commit queue.
+    /// The window shows the committed weights until the projection holds
+    /// the commit, so the divider never snaps back; a rejected commit drops
+    /// them silently and the projection's layout shows.
     fn commit_resize(
         &mut self,
         preview: ResizePreview,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(workspace) = self.workspace_id(cx) else {
-            return;
-        };
-        self.resize_commit_counter += 1;
-        let id = self.resize_commit_counter;
-        self.resize_commits.push((id, preview.clone()));
-        let queue = self.resize_queue.get_or_insert_with(|| {
-            let (sender, receiver) =
-                async_channel::unbounded::<(u64, WorkspaceId, ResizePreview)>();
-            let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-            let app = cx.to_async();
-            cx.spawn_in(window, async move |view, cx| {
-                while let Ok((id, workspace, preview)) = receiver.recv().await {
-                    let runtime = Arc::clone(&runtime);
-                    let tab = preview.tab;
-                    let Committed { result, seq } = cx
-                        .background_executor()
-                        .spawn(async move {
-                            runtime.resize_split(workspace, tab, &preview)
-                        })
-                        .await;
-                    if result.is_ok() {
-                        projected(&app, seq).await;
-                    }
-                    // A closed window still sends the commits it queued; the
-                    // loop ends once its sender is dropped.
-                    let _ = view.update(cx, |view, cx| {
-                        view.resize_commits.retain(|(commit, _)| *commit != id);
-                        cx.notify();
-                    });
-                }
-            })
-            .detach();
-            sender
-        });
-        // The receiver lives as long as the view, so sending cannot fail
-        // while the view exists.
-        let _ = queue.try_send((id, workspace, preview));
+        self.queue_layout_commit(
+            pane_layouts::LayoutCommit::Resize(preview),
+            window,
+            cx,
+        );
     }
 
     /// Moves the focused pane's edge toward `direction` by `amount` cells,
@@ -4821,6 +4802,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        // Its weights would come from the layout the arrangement replaces
+        // and land after it.
+        if self.arrangements > 0 {
+            return Ok(CommandOutcome::Completed);
+        }
         let (tab, pane) = self.focused_pane(cx)?;
         self.cancel_divider_drag(cx);
         let (axis, leading) = match direction {
@@ -7251,7 +7237,7 @@ impl WorkspaceView {
         PaletteRefreshState {
             tabs: self.tabs.len(),
             active: self.active_tab(cx),
-            busy: self.busy,
+            busy: self.busy || self.arrangements > 0,
             confirming: self.dialog_showing(),
             reordering: self.reorder.is_some(),
             quake: self
@@ -7422,6 +7408,9 @@ impl WorkspaceView {
                 other if pane_moves::is_pane_move_command(other) => {
                     self.pane_move_availability(other, cx)
                 }
+                other if pane_layouts::is_layout_command(other) => {
+                    self.pane_layout_availability(cx)
+                }
                 other => match layout_undo::restore_direction(other) {
                     Some(direction) => {
                         self.layout_restore_availability(direction, cx)
@@ -7544,6 +7533,8 @@ impl WorkspaceView {
     fn check_available(&self, reordering: bool) -> Result<(), CommandError> {
         let reason = if self.busy {
             "structural operation in progress"
+        } else if self.arrangements > 0 {
+            "pane arrangement in progress"
         } else if self.close.confirmation.is_some() {
             "close confirmation pending"
         } else if self.about.is_some() {
@@ -7904,6 +7895,26 @@ impl WorkspaceView {
             .integer("amount")
             .and_then(|amount| u16::try_from(amount).ok())
             .map_or(5.0, f32::from);
+        // Focus, resize, and zoom would act on the layout an arrangement of
+        // this window is about to replace. A key pressed meanwhile does
+        // nothing, as a layout key does, so a held key stays quiet.
+        let follows_layout = matches!(
+            invocation.id,
+            ids::FOCUS_NEXT_PANE
+                | ids::FOCUS_PREVIOUS_PANE
+                | ids::FOCUS_PANE_LEFT
+                | ids::FOCUS_PANE_RIGHT
+                | ids::FOCUS_PANE_UP
+                | ids::FOCUS_PANE_DOWN
+                | ids::RESIZE_PANE_LEFT
+                | ids::RESIZE_PANE_RIGHT
+                | ids::RESIZE_PANE_UP
+                | ids::RESIZE_PANE_DOWN
+                | ids::TOGGLE_PANE_ZOOM
+        );
+        if follows_layout && self.arrangements > 0 {
+            return Ok(CommandOutcome::Completed);
+        }
         match invocation.id {
             ids::SPLIT_RIGHT => self.split_pane(Right, window, cx),
             ids::SPLIT_DOWN => self.split_pane(Down, window, cx),
@@ -7999,6 +8010,9 @@ impl WorkspaceView {
             }
             id if pane_moves::is_pane_move_command(id) => {
                 self.run_pane_move(invocation, window, cx)
+            }
+            id if pane_layouts::is_layout_command(id) => {
+                self.run_pane_layout(invocation, window, cx)
             }
             ids::UNDO => {
                 self.run_layout_restore(RestoreDirection::Undo, window, cx)
@@ -12425,7 +12439,9 @@ impl WorkspaceView {
     /// points (a pane a zoom hides keeps its split bounds), and `pane_close`
     /// and `pane_zoom` its title bar buttons' centres as `x,y`, or `none`
     /// while the tab is not split. `pane_dividers` lists the drawn
-    /// dividers' grab zones as `x,y,w,h`.
+    /// dividers' grab zones as `x,y,w,h`. `pane_layout` is the projected
+    /// layout in canonical form, and `arranging` counts this window's
+    /// arrangements in flight.
     pub(super) fn pane_smoke_state(
         &self,
         prefix: &str,
@@ -12518,8 +12534,9 @@ impl WorkspaceView {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}drop={drop} {prefix}spring={spring} {prefix}pane_dividers={}",
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}drop={drop} {prefix}spring={spring} {} {prefix}pane_dividers={}",
             panes.len(),
+            self.layout_smoke_state(prefix, cx),
             if dividers.is_empty() {
                 "none"
             } else {

@@ -16,8 +16,8 @@ use gpui::{
     Subscription, Window, div, prelude::*, px,
 };
 use huterm_protocol::{
-    ArgumentKind, ArgumentSpec, CommandId, CommandSpec, Requirement, SIDES,
-    catalog, lookup,
+    ArgumentKind, ArgumentSpec, BUILT_IN_LAYOUTS, CommandId, CommandSpec,
+    NamedLayout, Requirement, SIDES, catalog, lookup,
 };
 use toml::Value;
 
@@ -336,6 +336,7 @@ fn configurable(
                 | ArgumentKind::Text
                 | ArgumentKind::QuakeProfile
                 | ArgumentKind::Side
+                | ArgumentKind::Layout
         )
     })
 }
@@ -1415,7 +1416,7 @@ impl SettingsView {
     }
 
     /// Opens the menu of values for a select argument.
-    fn open_argument_menu(
+    pub(super) fn open_argument_menu(
         &mut self,
         name: &str,
         argument: &str,
@@ -1455,6 +1456,16 @@ impl SettingsView {
                         .iter()
                         .map(|side| MenuRow::Item(MenuItem::new(side, *side))),
                 );
+            }
+            ArgumentKind::Layout => {
+                // The palette's titles, with the name the file stores as
+                // the item's identity.
+                rows.extend(BUILT_IN_LAYOUTS.iter().map(|layout| {
+                    MenuRow::Item(MenuItem::new(
+                        layout.name.as_str(),
+                        layout.title.as_str(),
+                    ))
+                }));
             }
             ArgumentKind::QuakeProfile => {
                 let profiles: Vec<String> = cx
@@ -2356,8 +2367,16 @@ impl SettingsView {
                     .into_any_element()
             }
             _ => {
-                let label =
-                    value.unwrap_or_else(|| unset_label(argument).to_owned());
+                let label = match value {
+                    // A built-in layout shows its title; the file keeps
+                    // its name.
+                    Some(name) if argument.kind == ArgumentKind::Layout => {
+                        NamedLayout::built_in(&name)
+                            .map_or(name, |layout| layout.title.clone())
+                    }
+                    Some(value) => value,
+                    None => unset_label(argument).to_owned(),
+                };
                 let element = button(
                     format!("settings-karg-{name}-{}", argument.name),
                     swatch,

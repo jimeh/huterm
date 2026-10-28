@@ -3,16 +3,23 @@
 //! the tab's content bounds, the view's zoom, and the display scale, so
 //! painting, hit testing, and every pane's requested grid read the same
 //! rectangles. Divider drags move one boundary through [`dragged_weights`],
-//! and a pane or tab drag finds where it would land through [`drop_zone`].
+//! a pane or tab drag finds where it would land through [`drop_zone`], and
+//! a named layout or a balance fits its weights to the minimum pane size
+//! through [`fit`].
 
 // User input picks positions here, so a stale index must not panic.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 use gpui::{Bounds, Pixels, Size, point, px, size};
 use huterm_protocol::{
-    PaneId, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis, SplitDirection,
-    SplitId, SplitNode,
+    Arrangement, PaneId, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis,
+    SplitDirection, SplitId, SplitNode,
 };
+
+use super::super::TerminalLayout;
+use super::pane_moves::probe_splits;
+use super::{MIN_PANE_COLUMNS, MIN_PANE_ROWS, fits_minimum};
+use crate::config::WindowConfig;
 
 /// Height of a pane title bar.
 pub(super) const TITLE_BAR_HEIGHT: Pixels = px(24.0);
@@ -223,25 +230,16 @@ fn place(
             out.panes.push(pane_rect(pane.id, bounds, title_bars));
         }
         PaneNode::Split(split) => {
-            let (start, extent) = axis_range(bounds, split.axis);
-            let last = split.children.len() - 1;
-            let available = (extent - DIVIDER_WIDTH * count(last)).max(px(0.0));
-            let mut prefix = 0_u32;
-            let mut edge = start;
-            for (index, child) in split.children.iter().enumerate() {
-                prefix += child.weight;
-                // The last child ends at the far edge itself, so rounding
-                // never leaves a gap or overlap at the tab's edge.
-                let far = if index == last {
-                    start + extent
-                } else {
-                    start
-                        + snap(available * fraction(prefix), scale)
-                        + DIVIDER_WIDTH * count(index)
-                };
-                let child_bounds = along(bounds, split.axis, edge, far - edge);
-                place(&child.node, child_bounds, scale, title_bars, out);
+            let weights: Vec<u32> =
+                split.children.iter().map(|child| child.weight).collect();
+            let spans = child_spans(&weights, bounds, split.axis, scale);
+            for (index, (child, child_bounds)) in
+                split.children.iter().zip(&spans).enumerate()
+            {
+                place(&child.node, *child_bounds, scale, title_bars, out);
                 if index + 1 < split.children.len() {
+                    let far = axis_range(*child_bounds, split.axis);
+                    let far = far.0 + far.1;
                     let reach = (GRAB_WIDTH - DIVIDER_WIDTH) / 2.0;
                     let grab =
                         along(bounds, split.axis, far - reach, GRAB_WIDTH)
@@ -255,10 +253,44 @@ fn place(
                         span: bounds,
                     });
                 }
-                edge = far + DIVIDER_WIDTH;
             }
         }
     }
+}
+
+/// The bounds of each child of a split with `weights` along `axis` inside
+/// `bounds`, divider lines between them. Every boundary but the far edge
+/// snaps to physical pixels at `scale`; the last child ends at the far
+/// edge itself, so rounding never leaves a gap or overlap at the tab's
+/// edge.
+fn child_spans(
+    weights: &[u32],
+    bounds: Bounds<Pixels>,
+    axis: SplitAxis,
+    scale: f32,
+) -> Vec<Bounds<Pixels>> {
+    let (start, extent) = axis_range(bounds, axis);
+    let last = weights.len().saturating_sub(1);
+    let available = (extent - DIVIDER_WIDTH * count(last)).max(px(0.0));
+    let mut prefix = 0_u32;
+    let mut edge = start;
+    weights
+        .iter()
+        .enumerate()
+        .map(|(index, weight)| {
+            prefix += weight;
+            let far = if index == last {
+                start + extent
+            } else {
+                start
+                    + snap(available * fraction(prefix), scale)
+                    + DIVIDER_WIDTH * count(index)
+            };
+            let child = along(bounds, axis, edge, far - edge);
+            edge = far + DIVIDER_WIDTH;
+            child
+        })
+        .collect()
 }
 
 fn pane_rect(
@@ -329,6 +361,385 @@ fn fraction(prefix: u32) -> f32 {
 fn units(fraction: f32) -> u32 {
     let total = f64::from(SPLIT_TOTAL);
     (f64::from(fraction) * total).round().clamp(0.0, total) as u32
+}
+
+/// An arrangement fitted to one view's minimum pane size.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Fit {
+    /// Every pane keeps at least the minimum size.
+    Fits(Arrangement),
+    /// No weights keep every pane at the minimum size in this view; the
+    /// arrangement shares the space in proportion to the minimums.
+    Short(Arrangement),
+}
+
+/// What a view's panes need to hold the minimum grid: its cell size and
+/// window padding, through [`TerminalLayout`].
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PaneMetrics {
+    pub(super) cell: Size<Pixels>,
+    pub(super) window: WindowConfig,
+}
+
+impl PaneMetrics {
+    /// The grid a pane terminal of `terminal` size requests.
+    fn grid(self, terminal: Size<Pixels>) -> huterm_protocol::GridSize {
+        TerminalLayout::new(terminal, self.cell, self.window).grid
+    }
+}
+
+/// Fits `arrangement` of `layout`'s panes inside `content`, unzoomed, with
+/// title bars and dividers, so every pane keeps the minimum pane size.
+///
+/// Top down, each split keeps its ideal weights while every child fits
+/// them. Otherwise, when the children's minimums fit, a child whose share
+/// falls under its minimum takes exactly its minimum and the others divide
+/// the rest in proportion to their ideal weights, repeated until none is
+/// short. A child that boundary snapping leaves a physical pixel short
+/// moves its boundary one physical pixel toward the neighbour with the
+/// most room, at most once per boundary. When the minimums do not fit,
+/// the children share the space in proportion to them. The real geometry
+/// decides: an arrangement whose grids pass the check a split preflight
+/// uses is [`Fit::Fits`], the ideal one unchanged when it already passes,
+/// and any other is [`Fit::Short`].
+pub(super) fn fit(
+    layout: &PaneLayout,
+    arrangement: &Arrangement,
+    content: Bounds<Pixels>,
+    scale: f32,
+    metrics: PaneMetrics,
+) -> Fit {
+    let holds = |arrangement: &Arrangement| {
+        layout
+            .arranged(arrangement, probe_splits())
+            .is_ok_and(|placed| {
+                let grids: Vec<_> = layout_panes(&placed, content, scale, None)
+                    .panes
+                    .iter()
+                    .map(|rect| (rect.pane, metrics.grid(rect.terminal.size)))
+                    .collect();
+                fits_minimum(&grids)
+            })
+    };
+    if holds(arrangement) {
+        return Fit::Fits(arrangement.clone());
+    }
+    let minimums = Minimums::new(metrics);
+    let fitted = fit_node(arrangement, content, scale, &minimums);
+    if holds(&fitted) {
+        Fit::Fits(fitted)
+    } else {
+        Fit::Short(fitted)
+    }
+}
+
+/// The smallest pane frame that holds the minimum grid on each axis, title
+/// bar included, exactly rather than rounded to physical pixels: at a
+/// fractional scale the dividers leave child extents off the pixel grid.
+struct Minimums {
+    width: Pixels,
+    height: Pixels,
+}
+
+impl Minimums {
+    fn new(metrics: PaneMetrics) -> Self {
+        let large = px(1_000_000.0);
+        let columns = |width: Pixels| {
+            metrics.grid(size(width, large)).columns >= MIN_PANE_COLUMNS
+        };
+        let rows = |height: Pixels| {
+            let terminal = height - TITLE_BAR_HEIGHT.min(height);
+            metrics.grid(size(large, terminal)).rows >= MIN_PANE_ROWS
+        };
+        let padding = |value: f32| px(value) * 2.0;
+        Self {
+            width: smallest(
+                padding(metrics.window.padding_x)
+                    + metrics.cell.width * f32::from(MIN_PANE_COLUMNS),
+                columns,
+            ),
+            height: smallest(
+                TITLE_BAR_HEIGHT
+                    + padding(metrics.window.padding_y)
+                    + metrics.cell.height * f32::from(MIN_PANE_ROWS),
+                rows,
+            ),
+        }
+    }
+
+    /// The smallest extent of `node` along `axis`: a pane's frame, the sum
+    /// of a same-axis split's children and dividers, or the largest child
+    /// of a split across the axis.
+    fn of(&self, node: &Arrangement, axis: SplitAxis) -> Pixels {
+        match node {
+            Arrangement::Pane(_) => match axis {
+                SplitAxis::Columns => self.width,
+                SplitAxis::Rows => self.height,
+            },
+            Arrangement::Split {
+                axis: inner,
+                children,
+            } => {
+                let each =
+                    children.iter().map(|(_, child)| self.of(child, axis));
+                if *inner == axis {
+                    each.fold(px(0.0), |sum, extent| sum + extent)
+                        + DIVIDER_WIDTH
+                            * count(children.len().saturating_sub(1))
+                } else {
+                    each.fold(px(0.0), Pixels::max)
+                }
+            }
+        }
+    }
+}
+
+/// The smallest extent for which `holds` is true, found by bisection
+/// against the real grid from `estimate` rather than trusted.
+fn smallest(estimate: Pixels, holds: impl Fn(Pixels) -> bool) -> Pixels {
+    let mut high = estimate.max(px(1.0));
+    while !holds(high) {
+        high *= 2.0;
+    }
+    let mut low = px(0.0);
+    for _ in 0..32 {
+        let middle = (low + high) / 2.0;
+        if holds(middle) {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    high
+}
+
+fn fit_node(
+    node: &Arrangement,
+    bounds: Bounds<Pixels>,
+    scale: f32,
+    minimums: &Minimums,
+) -> Arrangement {
+    let Arrangement::Split { axis, children } = node else {
+        return node.clone();
+    };
+    let axis = *axis;
+    let (_, extent) = axis_range(bounds, axis);
+    let available = (extent
+        - DIVIDER_WIDTH * count(children.len().saturating_sub(1)))
+    .max(px(0.0));
+    let needs: Vec<Pixels> = children
+        .iter()
+        .map(|(_, child)| minimums.of(child, axis))
+        .collect();
+    let ideal: Vec<u32> = children.iter().map(|(weight, _)| *weight).collect();
+    let extents = |weights: &[u32]| -> Vec<Pixels> {
+        child_spans(weights, bounds, axis, scale)
+            .into_iter()
+            .map(|span| axis_range(span, axis).1)
+            .collect()
+    };
+    let roomy = |weights: &[u32]| {
+        extents(weights)
+            .iter()
+            .zip(&needs)
+            .all(|(have, need)| have >= need)
+    };
+    let weights = if roomy(&ideal) {
+        ideal
+    } else if needs.iter().fold(px(0.0), |sum, need| sum + *need) <= available {
+        let weights = water_fill(&ideal, &needs, available);
+        nudge(weights, &needs, scale, available, extents)
+    } else {
+        let parts: Vec<f64> = needs
+            .iter()
+            .map(|need| f64::from(f32::from(*need)))
+            .collect();
+        apportion(&parts)
+    };
+    let spans = child_spans(&weights, bounds, axis, scale);
+    Arrangement::Split {
+        axis,
+        children: weights
+            .into_iter()
+            .zip(children.iter().zip(spans))
+            .map(|(weight, ((_, child), span))| {
+                (weight, fit_node(child, span, scale, minimums))
+            })
+            .collect(),
+    }
+}
+
+/// Weights where each child whose share of `available` would fall under
+/// its minimum takes exactly the minimum, and the rest divide what is left
+/// in proportion to their `ideal` weights. Each round fixes at least one
+/// more child, so it ends within the child count. The minimums must fit.
+fn water_fill(ideal: &[u32], needs: &[Pixels], available: Pixels) -> Vec<u32> {
+    let available = f64::from(f32::from(available));
+    // Each child's ideal weight, minimum, and whether it takes the minimum.
+    let mut children: Vec<(f64, f64, bool)> = ideal
+        .iter()
+        .zip(needs)
+        .map(|(weight, need)| {
+            (f64::from(*weight), f64::from(f32::from(*need)), false)
+        })
+        .collect();
+    loop {
+        let taken: f64 = children
+            .iter()
+            .filter(|child| child.2)
+            .map(|child| child.1)
+            .sum();
+        let free: f64 = children
+            .iter()
+            .filter(|child| !child.2)
+            .map(|child| child.0)
+            .sum();
+        let rest = (available - taken).max(0.0);
+        let mut changed = false;
+        for child in children.iter_mut().filter(|child| !child.2) {
+            if rest * child.0 / free < child.1 {
+                child.2 = true;
+                changed = true;
+            }
+        }
+        if !changed || children.iter().all(|child| child.2) {
+            let parts: Vec<f64> = children
+                .iter()
+                .map(
+                    |(weight, need, fixed)| {
+                        if *fixed { *need } else { rest * weight / free }
+                    },
+                )
+                .collect();
+            return apportion(&parts);
+        }
+    }
+}
+
+/// Moves the boundary beside each child that snapping left under its
+/// minimum toward the neighbour with the most room above its own, in
+/// quarter physical pixels and at most three pixels, until the child holds
+/// its minimum. A move that would leave the neighbour under its own
+/// minimum is not made, and each boundary moves for one child only.
+fn nudge(
+    mut weights: Vec<u32>,
+    needs: &[Pixels],
+    scale: f32,
+    available: Pixels,
+    extents: impl Fn(&[u32]) -> Vec<Pixels>,
+) -> Vec<u32> {
+    if available <= px(0.0) {
+        return weights;
+    }
+    let pixel = 1.0 / f64::from(scale.max(1e-3));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a quarter physical pixel of a positive extent is a small share"
+    )]
+    let step = ((pixel / 4.0) / f64::from(f32::from(available))
+        * f64::from(SPLIT_TOTAL))
+    .ceil()
+    .max(1.0) as u32;
+    let room = |weights: &[u32], index: usize| {
+        extents(weights)
+            .get(index)
+            .zip(needs.get(index))
+            .map(|(have, need)| f32::from(*have - *need))
+    };
+    let mut moved = vec![false; weights.len().saturating_sub(1)];
+    for child in 0..weights.len() {
+        if room(&weights, child).is_none_or(|room| room >= 0.0) {
+            continue;
+        }
+        // The boundary before the child gives way toward its previous
+        // sibling, the one after it toward its next.
+        let open = |boundary: usize| moved.get(boundary) == Some(&false);
+        let before = child
+            .checked_sub(1)
+            .filter(|boundary| open(*boundary))
+            .and_then(|boundary| {
+                Some((boundary, boundary, room(&weights, boundary)?))
+            });
+        let after = Some(child).filter(|boundary| open(*boundary)).and_then(
+            |boundary| {
+                Some((boundary, boundary + 1, room(&weights, boundary + 1)?))
+            },
+        );
+        let Some((boundary, giver, _)) = [before, after]
+            .into_iter()
+            .flatten()
+            .max_by(|a, b| a.2.total_cmp(&b.2))
+        else {
+            continue;
+        };
+        if let Some(slot) = moved.get_mut(boundary) {
+            *slot = true;
+        }
+        let mut trial = weights.clone();
+        for _ in 0..12 {
+            let spare = trial.get(giver).is_some_and(|weight| *weight > step);
+            if !spare {
+                break;
+            }
+            if let Some(weight) = trial.get_mut(giver) {
+                *weight -= step;
+            }
+            if let Some(weight) = trial.get_mut(child) {
+                *weight += step;
+            }
+            if room(&trial, giver).is_some_and(|room| room < 0.0) {
+                break;
+            }
+            if room(&trial, child).is_some_and(|room| room >= 0.0) {
+                weights = trial;
+                break;
+            }
+        }
+    }
+    weights
+}
+
+/// Weights out of [`SPLIT_TOTAL`] in proportion to `parts`: each child
+/// first takes one unit, and the rest go by largest remainder, ties to
+/// the earlier child, so every weight is positive and they sum exactly.
+fn apportion(parts: &[f64]) -> Vec<u32> {
+    let total: f64 = parts.iter().sum();
+    let units = u32::try_from(parts.len()).unwrap_or(u32::MAX);
+    let spare = f64::from(SPLIT_TOTAL.saturating_sub(units));
+    let shares: Vec<f64> = parts
+        .iter()
+        .map(|part| {
+            if total > 0.0 {
+                part / total * spare
+            } else {
+                spare / f64::from(units.max(1))
+            }
+        })
+        .collect();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "each share lies in 0..=SPLIT_TOTAL"
+    )]
+    let mut weights: Vec<u32> = shares
+        .iter()
+        .map(|share| 1 + share.floor() as u32)
+        .collect();
+    let left = SPLIT_TOTAL.saturating_sub(weights.iter().sum());
+    let mut order: Vec<(usize, f64)> = shares
+        .iter()
+        .map(|share| share - share.floor())
+        .enumerate()
+        .collect();
+    order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let extra = usize::try_from(left).unwrap_or(usize::MAX);
+    for (index, _) in order.into_iter().cycle().take(extra) {
+        if let Some(weight) = weights.get_mut(index) {
+            *weight += 1;
+        }
+    }
+    weights
 }
 
 /// Where a dragged pane or tab lands on a pane frame.

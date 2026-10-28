@@ -738,6 +738,51 @@ fn linux_binds_ctrl_comma_to_open_settings_and_reserves_it() {
 }
 
 #[test]
+fn layout_defaults_cycle_and_balance_through_the_real_gpui_keymap() {
+    for (platform, next, previous, balance) in [
+        (Platform::MacOs, "cmd-ctrl-]", "cmd-ctrl-[", "cmd-ctrl-="),
+        (
+            Platform::Linux,
+            "ctrl-super-alt-]",
+            "ctrl-super-alt-[",
+            "ctrl-super-=",
+        ),
+    ] {
+        let compiled = compile(platform, &[]).unwrap();
+        let keymap = Keymap::new(compiled.bindings);
+        let terminal = [
+            KeyContext::parse("Workspace").unwrap(),
+            KeyContext::parse("Terminal").unwrap(),
+        ];
+        for (key, command) in [
+            (next, ids::NEXT_PANE_LAYOUT),
+            (previous, ids::PREVIOUS_PANE_LAYOUT),
+            (balance, ids::BALANCE_PANES),
+        ] {
+            assert!(compiled.reserved.is_reserved(&keystroke(key)), "{key}");
+            let (bindings, pending) =
+                keymap.bindings_for_input(&[keystroke(key)], &terminal);
+            assert!(!pending);
+            assert_eq!(
+                bindings.iter().map(command_of).collect::<Vec<_>>(),
+                vec![command],
+                "{key}"
+            );
+        }
+    }
+    // `arrange_panes` ships unbound; a binding names its layout, and only
+    // the name's syntax is checked before the command runs.
+    let layout = |name: &str| {
+        with_args(
+            entry("cmd-alt-1", "arrange_panes"),
+            &[("layout", toml::Value::String(name.into()))],
+        )
+    };
+    assert!(compile(Platform::MacOs, &[layout("dev")]).is_ok());
+    assert!(compile(Platform::MacOs, &[layout("Main Left")]).is_err());
+}
+
+#[test]
 fn notice_defaults_match_only_while_a_toast_has_focus() {
     for platform in [Platform::MacOs, Platform::Linux] {
         let compiled = compile(platform, &[]).unwrap();

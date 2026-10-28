@@ -765,6 +765,14 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
         Platform::MacOs => ("cmd-ctrl", "cmd-shift-enter"),
         Platform::Linux => ("ctrl-super-shift", "ctrl-shift-enter"),
     };
+    // GPUI folds Shift+bracket into a brace, so the Linux cycle keys add
+    // Alt to the `ctrl-super` focus keys instead.
+    let (next_layout, previous_layout, balance) = match platform {
+        Platform::MacOs => ("cmd-ctrl-]", "cmd-ctrl-[", "cmd-ctrl-="),
+        Platform::Linux => {
+            ("ctrl-super-alt-]", "ctrl-super-alt-[", "ctrl-super-=")
+        }
+    };
     let mut bindings = vec![
         default(
             &format!("{resize}-left"),
@@ -787,6 +795,17 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
             "Resize the pane down",
         ),
         default(zoom, ids::TOGGLE_PANE_ZOOM, "Zoom the pane"),
+        default(
+            next_layout,
+            ids::NEXT_PANE_LAYOUT,
+            "Arrange the panes in the next layout",
+        ),
+        default(
+            previous_layout,
+            ids::PREVIOUS_PANE_LAYOUT,
+            "Arrange the panes in the previous layout",
+        ),
+        default(balance, ids::BALANCE_PANES, "Balance the panes"),
     ];
     bindings.extend(vec![
         default(split_right, ids::SPLIT_RIGHT, "Split the pane to the right"),

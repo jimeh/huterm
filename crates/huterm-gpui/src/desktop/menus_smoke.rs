@@ -8,6 +8,7 @@ use crate::native_quit::{MenuShortcut, menu_shortcut};
 
 const COMMAND_MODIFIER: usize = 1 << 20;
 const SHIFT_MODIFIER: usize = 1 << 17;
+const CONTROL_MODIFIER: usize = 1 << 18;
 
 pub(crate) fn run() {
     crate::assets::application().run(|cx| {
@@ -26,6 +27,8 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     shortcut("Undo", "z")?;
     shortcut_with("Redo", "z", COMMAND_MODIFIER | SHIFT_MODIFIER)?;
     marker("default-undo-shortcuts");
+    shortcut_with("Balance Panes", "=", COMMAND_MODIFIER | CONTROL_MODIFIER)?;
+    marker("default-balance-shortcut");
     let mut config = Config {
         keybindings: vec![
             KeybindingEntry {

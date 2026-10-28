@@ -1517,6 +1517,52 @@ impl SettingsView {
         field.read(cx).focus_handle(cx).focus(window, cx);
     }
 
+    /// Whether the last frame drew the control `key`.
+    pub(super) fn drew(&self, key: &str) -> bool {
+        self.drawn.contains(key)
+    }
+
+    /// The open menu's item labels, in order.
+    pub(super) fn menu_labels(&self, cx: &App) -> Vec<String> {
+        self.menu.as_ref().map_or_else(Vec::new, |(menu, _, _)| {
+            menu.read(cx)
+                .model()
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    MenuRow::Item(item) => Some(item.label.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    /// The open menu's item identities, in order: what a pick writes.
+    pub(super) fn menu_ids(&self, cx: &App) -> Vec<&'static str> {
+        self.menu.as_ref().map_or_else(Vec::new, |(menu, _, _)| {
+            menu.read(cx)
+                .model()
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    MenuRow::Item(item) => Some(item.id),
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    /// Opens a shortcut argument's menu, as a press on its control does.
+    pub(super) fn open_key_argument(
+        &mut self,
+        row: &str,
+        argument: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.open_argument_menu(row, argument, window, cx);
+    }
+
     /// Dismisses an open menu, as Escape in it does.
     pub(super) fn dismiss_menu(
         &mut self,

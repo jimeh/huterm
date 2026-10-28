@@ -126,7 +126,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        if self.busy {
+        // A key pressed while a move or an arrangement of this window is
+        // in flight does nothing, so it never overtakes the entry it
+        // should undo.
+        if self.busy || self.arrangements > 0 {
             return Ok(CommandOutcome::Completed);
         }
         self.check_new_tab_available(cx)?;

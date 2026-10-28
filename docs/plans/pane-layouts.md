@@ -1,7 +1,8 @@
 # Pane layouts
 
 Status: approved on 2026-10-27, after five Codex and five Claude review
-rounds; PR 1, runtime arrangements, is in progress. Jim settled every open
+rounds; PR 1, runtime arrangements, is implemented and pending merge, and
+PR 2, commands, is in progress. Jim settled every open
 question that day (see "Settled decisions"), adding default cycle bindings
 and user-defined layouts. Plans [issue #30][issue-30] within
 [epic #12][issue-12].
@@ -892,7 +893,7 @@ three points.
 | Another window drags a divider of the tab | A layout of another shape cancels the drag; a balance lets it continue from the new weights | Tier 2 |
 | Another window zooms a pane in view mode | Its zoom stays on the same pane | Tier 2 (convergence) |
 | A pane exits while the commit is queued | With `close_on_exit = false` the pane stays and the guard passes; an exit-close changes the shape, the guard refuses, and the close proceeds, because no `busy` hold defers it | Tier 2 |
-| A structural command (undo, a cycle step, resize, split) or a divider press in this window while an arrangement is in flight | Unavailable or refused until the completion; keystrokes still reach the shell | Tier 2 |
+| A structural command (undo, a cycle step, resize, split) or a divider press in this window while an arrangement is in flight | Unavailable in the palette and menus, and a key does nothing, until the completion; keystrokes still reach the shell | Tier 2 |
 | This window's divider drag is in progress when a layout command runs | Step 6 cancels it before the commit is queued | Tier 2 |
 | A pane drag that started earlier drops while an arrangement is in flight, and the two complete out of commit order | History keeps the entry with the newer commit sequence | Tier 2 (completion order) |
 | The layout event and the tab's terminal output interleave | Terminal events route by pane, and the geometry rules above order the repaint | Existing rule |
@@ -1266,6 +1267,60 @@ alternatives he considered.
 ## Open questions
 
 None.
+
+## Deviations
+
+Recorded with PR 2:
+
+- `fit` keeps an ideal arrangement whose real grids already pass, computes
+  each pane's minimum extent exactly by bisection against the real grid
+  instead of in whole physical pixels, and calls `Fits` whatever the real
+  grids accept. Its nudge moves a short child's boundary in quarter
+  physical pixels, up to three, rather than one whole pixel once: at 1.25×
+  and 1.5× the single valid boundary position lies between whole-pixel
+  steps, and the review reproduced refusals of layouts that fit.
+- The in-flight gate also covers the binding paths that never call
+  `check_available`: layout, undo, resize, pane focus, and zoom keys, and
+  the title bar zoom, are taken quietly while an arrangement is in flight,
+  and pane drags do not start. A refused or empty commit restores the
+  cleared zoom only while focus is still on that pane.
+- Notices name a built-in layout by its title in lower case: "Window too
+  small for the main left layout" and "The equal columns layout holds at
+  most 256 panes", where the plan's example said "the columns layout". The
+  UX review found the name and the title disagreeing between the palette,
+  Settings, and notices, so every surface now shows the title and only the
+  config stores the name. The Settings keybinding editor's `layout`
+  dropdown lists titles and shows the chosen layout's title.
+- A layout key pressed while this window's last arrangement is in flight
+  does nothing, as `undo` does while busy, so a held cycle key repeats
+  quietly instead of raising a notice per repeat. The palette and menus
+  still show the commands unavailable through `check_available`.
+- Resize commands from bindings never called `check_available`, so
+  `resize_pane` checks the count itself and does nothing while an
+  arrangement is in flight, which the race in "Desktop flow" needs.
+- The keybinding schema gives the `layout` argument the name's syntax as a
+  `pattern` as well as a description naming the built-ins, kept aligned with
+  the catalog through three new `schemas/fixtures.json` cases.
+- The tier 2 reflow test asserts the shrunk pane's one new grid, the
+  wrapped and unwrapped rows read from the runtime's snapshots, and that the
+  unchanged pane keeps its grid and snapshot. It does not pin the interval
+  in which the old snapshot shows clipped: the runtime can answer before
+  any frame, so that rule stays with
+  `a_larger_canonical_grid_is_clipped_and_owned_gestures_survive_it`.
+- The tier 1 harness gained a host root that places the view at the bounds
+  its geometry names, as the workspace places a pane, so the origin test
+  can move where it paints.
+- The completion-order test commits its earlier drop through
+  `commit_pane_move` directly, the path a released pane drag takes, rather
+  than simulating the drag's pointer events.
+- Smoke state gained `pane_layout` and `arranging` fields, and the fixture's
+  `invoke` command takes text arguments, which the native layout steps use.
+  In the in-window window menu, type-ahead on `a` now reaches Arrange Panes…
+  before About, so the overlay smoke types `aa` to reach About.
+- Checking the Linux keys against GNOME and KWin defaults found no conflict
+  for the layout and balance keys, but found that KWin's
+  `ctrl-super-shift-` arrows, which move a window to another desktop, take
+  the existing Linux resize keys; `docs/keybindings.md` notes it.
 
 [issue-12]: https://github.com/jimeh/huterm/issues/12
 [issue-30]: https://github.com/jimeh/huterm/issues/30

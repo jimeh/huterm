@@ -4,6 +4,7 @@ import { checkNativeMenus } from "./check-native-menus.ts";
 const markers = [
   "default-fullscreen-shortcut",
   "default-undo-shortcuts",
+  "default-balance-shortcut",
   "startup-update-command",
   "startup-user-shortcut",
   "untouched-default-shortcut",

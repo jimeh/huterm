@@ -1,4 +1,4 @@
-//! Tier 1 view tests: one `TerminalView` as the root of a GPUI test window,
+//! Tier 1 view tests: one `TerminalView` filling a GPUI test window,
 //! over a standalone terminal runtime. The harness section of
 //! `docs/plans/terminal-viewers.md` describes what this tier can and cannot
 //! cover.
@@ -63,7 +63,33 @@ fn click(column: u16, row: u16) -> String {
     sgr(0, column, row, true) + &sgr(0, column, row, false)
 }
 
-/// One `TerminalView` as the root of a test window, with the drain the tab
+/// Hosts the view at the bounds its geometry names, as the workspace
+/// places a pane: the whole window until a test pushes other bounds.
+struct Host {
+    view: Entity<TerminalView>,
+}
+
+impl Render for Host {
+    fn render(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
+        let bounds = self.view.read(cx).content_bounds(window);
+        div().size_full().child(
+            div()
+                .absolute()
+                .left(bounds.origin.x)
+                .top(bounds.origin.y)
+                .w(bounds.size.width)
+                .h(bounds.size.height)
+                .overflow_hidden()
+                .child(self.view.clone()),
+        )
+    }
+}
+
+/// One `TerminalView` filling a test window, with the drain the tab
 /// activity task runs in production.
 struct ViewHarness {
     cx: VisualTestContext,
@@ -98,24 +124,30 @@ impl ViewHarness {
         let wake = viewer.wake_handle();
         let config = Config::default();
         let window = cx.open_window(window_size(), |window, cx| {
-            TerminalView::new(
-                viewer,
-                refresh::FrameClock::new(window),
-                &config,
-                "Huterm Test".into(),
-                GridMetrics::fixed(CELL_WIDTH, CELL_HEIGHT),
-                window,
-                cx,
-            )
+            let view = cx.new(|cx| {
+                TerminalView::new(
+                    viewer,
+                    refresh::FrameClock::new(window),
+                    &config,
+                    "Huterm Test".into(),
+                    GridMetrics::fixed(CELL_WIDTH, CELL_HEIGHT),
+                    window,
+                    cx,
+                )
+            });
+            Host { view }
         });
-        let view = window.root(cx).unwrap();
+        let view = window
+            .root(cx)
+            .unwrap()
+            .read_with(cx, |host, _| host.view.clone());
         let handle: AnyWindowHandle = window.into();
         let mut cx = VisualTestContext::from_window(handle, cx);
         let drain = cx.update(|window, cx| {
             window.activate_window();
             view.update(cx, |view, cx| {
-                // As a window root the view paints at the window's origin, so
-                // its content must start there too: no workspace pushes
+                // The host places the view at the window's origin, so its
+                // content must start there too: no workspace pushes
                 // geometry, so the view fills the window.
                 assert_eq!(
                     view.content_bounds(window).origin,
@@ -635,4 +667,72 @@ fn a_split_views_focus_change_repaints_its_cursor_without_a_snapshot(
         harness.read(|view, _| unchanged(view)),
         "a focus took a snapshot"
     );
+}
+
+#[gpui::test]
+fn moving_the_origin_without_changing_the_grid_repaints_the_same_rows_there(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &echo_fixture(3, BUTTONS));
+    harness.wait_ready(MouseTracking::Buttons);
+    harness.wait_for("a paint of the shown snapshot", |view, _| {
+        view.renderer
+            .borrow()
+            .painted()
+            .is_some_and(|(_, painted)| {
+                view.snapshot
+                    .as_ref()
+                    .is_some_and(|shown| Arc::ptr_eq(shown, &painted))
+            })
+    });
+    let (origin, snapshot, sequence, grid) = harness.read(|view, _| {
+        let (origin, snapshot) = view.renderer.borrow().painted().unwrap();
+        (
+            origin,
+            snapshot,
+            view.snapshot_sequence,
+            view.requested_grid,
+        )
+    });
+    // A layout change moves the pane down by less than its spare half row,
+    // as a neighbour's resize or a balance can: the grid stays the same.
+    let moved = gpui::point(px(0.0), px(6.0));
+    harness.update(|view, window, cx| {
+        let viewport = window.viewport_size();
+        view.geometry.bounds = Some(gpui::Bounds::new(
+            moved,
+            gpui::size(viewport.width, viewport.height - moved.y),
+        ));
+        view.resize_to_layout(window, true);
+        cx.notify();
+    });
+    harness.wait_for("a paint at the new origin", |view, _| {
+        view.renderer
+            .borrow()
+            .painted()
+            .is_some_and(|(painted, _)| painted == origin + moved)
+    });
+    // The view's own refresh starts any snapshot it owes; the move owes
+    // none.
+    let (painted, requested, now) = harness.update(|view, window, cx| {
+        let _ = view.refresh(window, cx);
+        let (_, painted) = view.renderer.borrow().painted().unwrap();
+        (painted, view.requested_grid, view.snapshot_sequence)
+    });
+    assert_eq!(requested, grid);
+    assert_eq!(now, sequence, "the move requested a snapshot");
+    assert_eq!(painted.rows.len(), snapshot.rows.len());
+    assert!(
+        painted
+            .rows
+            .iter()
+            .zip(&snapshot.rows)
+            .all(|(painted, kept)| Arc::ptr_eq(painted, kept)),
+        "the move rebuilt rows"
+    );
+    // The pointer maps from the new origin onto the same cells.
+    let cell = harness.cell_center(2, 1);
+    assert_eq!(cell.y, origin.y + moved.y + px(CELL_HEIGHT * 1.5));
+    harness.click(cell);
+    harness.assert_received(&click(2, 1));
 }

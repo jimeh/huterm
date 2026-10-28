@@ -82,11 +82,29 @@ fn argument_schema(kind: ArgumentKind) -> Option<Value> {
             "type":"string",
             "enum": huterm_protocol::SIDES,
         }),
+        ArgumentKind::Layout => json!({
+            "type":"string",
+            "pattern": format!(
+                "^[a-z][a-z0-9_]{{0,{}}}$",
+                huterm_protocol::MAX_LAYOUT_NAME_LEN - 1
+            ),
+            "description": layout_description(),
+        }),
         ArgumentKind::Tab
         | ArgumentKind::Workspace
         | ArgumentKind::Session
         | ArgumentKind::Pane => return None,
     })
+}
+
+/// Names the built-in layouts a `layout` argument may take.
+fn layout_description() -> String {
+    let names: Vec<String> = huterm_protocol::BUILT_IN_LAYOUTS
+        .iter()
+        .map(|layout| format!("`{}`", layout.name))
+        .collect();
+    let (last, rest) = names.split_last().expect("built-in layouts exist");
+    format!("Pane layout name: {}, or {last}.", rest.join(", "))
 }
 
 fn keybindings(base: &Value, global: bool) -> Value {
