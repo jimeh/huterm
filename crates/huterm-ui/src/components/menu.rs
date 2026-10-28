@@ -780,6 +780,34 @@ impl Render for Menu {
     }
 }
 
+#[cfg(test)]
+mod height_tests {
+    use gpui::px;
+
+    use super::Menu;
+    use crate::listbox::{Button, Item, Model, Row};
+
+    #[test]
+    fn the_content_height_sums_fixed_row_heights_and_panel_chrome() {
+        let model = Model::new(vec![
+            Row::Item(Item::new("a", "A")),
+            Row::Separator,
+            Row::Item(Item::new("b", "B").disabled(None)),
+            Row::Buttons {
+                label: "Edit".to_owned(),
+                buttons: vec![Button::new("copy", "Copy")],
+            },
+        ]);
+        // Two items, one separator, one button row, plus 5pt padding and a
+        // 1pt border on both sides.
+        assert_eq!(
+            Menu::content_height(&model),
+            px(2.0 * 28.0 + 9.0 + 30.0 + 12.0)
+        );
+        assert_eq!(Menu::content_height(&Model::default()), px(12.0));
+    }
+}
+
 #[cfg(all(test, feature = "test-support"))]
 mod tests {
     use gpui::{

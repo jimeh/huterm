@@ -588,11 +588,16 @@ Open menus and selects in a `huterm_ui::components::popover::Popover` and
 mount its `guard` in the owner's root view on every frame, open or not. The
 guard's capture-phase press listener reads the live open state, so it also
 stops a press that arrives before the popover's first frame, when no backdrop
-is drawn yet. `huterm_ui::components::menu::Menu` and the terminal window's
-`desktop/menu.rs` coexist until the terminal window's menus migrate; change
-both when menu behavior changes. Component click listeners ignore
-`ClickEvent::Keyboard` through `huterm_ui::click::from_keyboard`, so a removed
-Enter or Space binding really removes the key.
+is drawn yet. GPUI runs capture listeners in paint order, and the guard
+stops the presses it consumes, so the terminal window mounts it after its own
+window-level listeners, which every press must reach. The window, tab, and
+terminal menus share that window's one popover and return focus to the
+active terminal. GPUI also blurs a focused menu when its window deactivates;
+the menu's blur close skips an inactive window and leaves the close to the
+activation observer, or focus would stay on the dropped menu. Component
+click listeners ignore `ClickEvent::Keyboard` through
+`huterm_ui::click::from_keyboard`, so a removed Enter or Space binding really
+removes the key.
 GPUI sends that implicit click only to the focused element: a test of the
 filter must focus the element that holds the listener, or it passes without it.
 A composite such as a single-choice `ToggleGroup` keeps focus on its container,

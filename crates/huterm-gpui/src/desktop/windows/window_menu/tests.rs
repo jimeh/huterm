@@ -2,6 +2,7 @@ use super::*;
 use crate::config::KeybindingEntry;
 use crate::keymap::compile;
 use huterm_config::WindowConfig;
+use huterm_ui::components::kbd;
 
 const POSITIONS: [TabPosition; 4] = [
     TabPosition::Top,
@@ -112,9 +113,10 @@ fn items(model: &MenuModel) -> Vec<(&str, Option<String>)> {
         .rows
         .iter()
         .filter_map(|row| match row {
-            MenuRow::Item(item) => {
-                Some((item.id, item.shortcut.as_ref().map(KeyHint::text)))
-            }
+            MenuRow::Item(item) => Some((
+                item.id.as_ref(),
+                (!item.shortcut.is_empty()).then(|| kbd::text(&item.shortcut)),
+            )),
             _ => None,
         })
         .collect()

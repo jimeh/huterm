@@ -100,7 +100,6 @@ mod key_hint;
 mod keyboard;
 mod licenses;
 mod links;
-mod menu;
 mod notices;
 mod overlay;
 pub(crate) mod palette;
