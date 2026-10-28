@@ -570,6 +570,16 @@ prepainting. The same script test rejects those styles and `focus_ring`
 references in `huterm-ui` outside `focus.rs`; `huterm-gpui` keeps its own until
 the migrations replace them.
 
+Open menus and selects in a `huterm_ui::components::popover::Popover` and
+mount its `guard` in the owner's root view on every frame, open or not. The
+guard's capture-phase press listener reads the live open state, so it also
+stops a press that arrives before the popover's first frame, when no backdrop
+is drawn yet. `huterm_ui::components::menu::Menu` and the terminal window's
+`desktop/menu.rs` coexist until the terminal window's menus migrate; change
+both when menu behavior changes. Component click listeners ignore
+`ClickEvent::Keyboard` through `huterm_ui::click::from_keyboard`, so a removed
+Enter or Space binding really removes the key.
+
 GPUI reports an accessibility node only for an element with both an `id` and a
 `role`; set disabled, read-only, invalid, modal, and live states with
 `huterm_ui::a11y::States`, since GPUI has no setters for them. The vendored

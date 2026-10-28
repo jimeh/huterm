@@ -1,12 +1,13 @@
 # UI components
 
-Status: in progress. Step 1 (the foundation) is implemented. Approved on
-2026-10-27 after four Codex and Claude review rounds, then revised for a
-separate crate, the terminal window's adoption, and normalization against
-shadcn/ui, which three more review rounds checked. Follows
-[the settings plan](settings-ui.md), whose PR 3 built a control kit inside the
-Settings window, and folds in the open Settings follow-ups [#276][issue-276]
-and [#277][issue-277]. The running-app checks are still owed (see Defects).
+Status: in progress. Step 1 (the foundation) and step 2's components are
+implemented. Approved on 2026-10-27 after four Codex and Claude review rounds,
+then revised for a separate crate, the terminal window's adoption, and
+normalization against shadcn/ui, which three more review rounds checked.
+Follows [the settings plan](settings-ui.md), whose PR 3 built a control kit
+inside the Settings window, and folds in the open Settings follow-ups
+[#276][issue-276] and [#277][issue-277]. The running-app checks are still owed
+(see Defects).
 
 The Settings series (#269, #274, #275) built its controls one at a time,
 inside the window that uses them. Each works on its happy path, but the kit

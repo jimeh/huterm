@@ -1,8 +1,8 @@
 //! Separator: a hairline between groups of content, such as menu sections.
 //!
-//! Anatomy: a one-point line in the tokens' `line` color, filling its
-//! container's width (horizontal) or height (vertical). Callers add the
-//! margins their layout needs.
+//! Anatomy: a one-point line in the tokens' `line` color, stretching across
+//! a flex column (horizontal) or row (vertical), as flex children do by
+//! default. Callers add the margins their layout needs.
 //!
 //! Behavior: none; it never takes focus or input.
 //!
@@ -16,11 +16,11 @@ use crate::tokens::Tokens;
 /// A horizontal hairline across the container.
 #[must_use]
 pub fn horizontal(tokens: Tokens) -> Div {
-    div().flex_none().h(px(1.0)).w_full().bg(tokens.line)
+    div().flex_none().h(px(1.0)).bg(tokens.line)
 }
 
 /// A vertical hairline down the container.
 #[must_use]
 pub fn vertical(tokens: Tokens) -> Div {
-    div().flex_none().w(px(1.0)).h_full().bg(tokens.line)
+    div().flex_none().w(px(1.0)).bg(tokens.line)
 }
