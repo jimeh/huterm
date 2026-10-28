@@ -395,10 +395,16 @@ omits is refused as unknown from every shortcut and menu, while a test that
 calls the handler directly still passes. Settings binds Space and the arrows
 under `SettingsControl`, which only its controls and section rows carry: a
 binding under `Settings` matched inside a focused text field too, because the
-field's `Palette` context binds no Space, and ate the space. `SettingsView::run`
-routes the arrows to the focused modifier chip's group (`step_chips`) and the
-shortcut filter (`step_filter`) before `step`, which finds only settings and
-would drop them; `step_setting` gives a switch no steps. Page Up, Page Down,
+field's `Palette` context binds no Space, and ate the space. The roving
+groups (the sidebar's sections, the theme cards, and the modifier chips) set
+`SettingsControl control=group`, where the arrows bind to `settings_next` and
+`settings_previous` (`on_group`), listed after the stepping bindings so they
+win GPUI's equal-depth tie; `SettingsView::run` routes those to `move_group`,
+which tries each group in turn, and routes `settings_increase` and
+`settings_decrease` to the shortcut filter (`step_filter`) before `step`,
+which finds only settings and would drop it; `step_setting` gives a switch no
+steps. A user entry that switches a group default off names its
+`when = "control == group"`, or it matches nothing. Page Up, Page Down,
 Home, and End bind under `SettingsControl && control == slider`, which only
 a slider's `SettingsControl control=slider` context matches, so the keys stay
 unbound, not swallowed, on every other control. A number field's context is
@@ -715,6 +721,10 @@ paint, such as through a `canvas` probe in the focused row, because GPUI
 has no query for an element's bounds by focus handle. They are in content
 coordinates, so a second reveal before the repaint moves nothing; reveal
 only sets the offset, so the owner redraws when it returns true.
+`focus::ring` and `ring_inset` add such a probe to the control whose ring
+they draw, and `focus::ring_bounds` reports where it last painted; a
+control that draws its focus some other way, such as Settings' `actionable`
+recorders, adds `focus::probe` itself, or Tab to it never scrolls.
 
 Open a dialog in a `huterm_ui::components::dialog::Modal`, draw its `Dialog`
 or `AlertDialog` as the last child of the area it covers while it is open, and
@@ -748,6 +758,23 @@ notified window first, so a stale-frame test opens without notifying,
 presses, and notifies afterwards. In the desktop harness, `simulate_click`
 still draws after an update through the Settings window's handle, so its
 stale-frame test dispatches the press with `Window::dispatch_event`.
+
+The Settings layout is built from the step 6 components. The sidebar is a
+vertical `Tabs` with the section handles, one tab stop that the group
+commands move and select along; the footer's links take `tab_index(1)`
+(`footer_stop`), so Tab from the sidebar enters the section and Shift-Tab
+from its first control returns. The theme cards are a card `RadioGroup` whose
+moves choose the theme. A setting's row is a `Field` (`render_row`), with its
+conflict under it as a warning `Alert`; the rows that only lead to another
+section are `Item`s, as are the `unbind` rows; a command row is a
+`Collapsible::item` whose shortcut summary is the item's action, outside the
+trigger; groups of rows are titled `Card`s (`group_card`, which uppercases
+the title); the invalid-file banner is a danger `Alert`; and an empty global
+shortcut list is an `Empty`. `render` notes a focus that moved since the last
+frame and defers `reveal_focused`, which scrolls the pane only when the ring
+shows (`focus::visible`, so a pointer press scrolls nothing), the ring
+painted inside the pane's columns, and no dialog or menu is open. Smoke state
+reports `settings.scroll` and `settings.in_view` for it.
 
 The Settings window has one dialog slot, in `settings_window/dialog.rs`. A
 section adds a `Prompt` variant, opens it with `open_dialog`, and draws it

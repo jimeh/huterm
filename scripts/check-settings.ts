@@ -1,6 +1,7 @@
 /**
  * Drive the Settings window with native keys against the palette smoke
- * binary: open it, search, toggle and reset a switch, step a number, rebind
+ * binary: open it, move between sidebar sections, search, toggle and reset
+ * a switch, step a number, rebind
  * a command, edit, rename, and delete a quake profile, record a global
  * shortcut, and close it,
  * checking `config.toml` after each save and that keys reach the terminal
@@ -207,6 +208,17 @@ height = 0.3
     await state("settings.open=true", "settings.active=true", "settings.section=general");
     await focusX11("^Settings$");
 
+    // The sidebar is one tab stop after the search field; Down moves to the
+    // next section and shows it, and Shift-Tab returns to the search.
+    await key("search");
+    await state("settings.focus=search");
+    await key("tab");
+    await state("settings.focus=section:general");
+    await key("down");
+    await state("settings.section=appearance", "settings.focus=section:appearance");
+    await key("shift-tab");
+    await state("settings.focus=search");
+
     // Search, then Enter moves focus to the first match.
     await key("search");
     await state("settings.focus=search");
@@ -270,7 +282,13 @@ height = 0.3
     await tabTo("quake.profiles.default.height");
     await key("up");
     await saved((text) => text.includes("[quake.profiles.default]\nheight = 0.55\n"), "default profile height in config.toml");
+    // Add global shortcut sits below the fold; Tab scrolled the pane to
+    // show it whole, ring included.
     await tabTo("action:gadd");
+    const revealed = await state("settings.focus=action:gadd", "settings.in_view=true");
+    if (!(Number(field(revealed, "scroll")) > 0)) {
+      throw new Error(`Tab to Add global shortcut did not scroll the pane: ${field(revealed, "scroll")}`);
+    }
     await key("space");
     await key("global");
     await saved(
@@ -358,7 +376,7 @@ height = 0.3
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} search=focus-first toggle=saved reset=removed tab=round-trip step=saved select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} sidebar=arrows search=focus-first toggle=saved reset=removed tab=round-trip step=saved reveal=in-view select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

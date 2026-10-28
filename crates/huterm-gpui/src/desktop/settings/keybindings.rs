@@ -166,7 +166,10 @@ pub(crate) const CONTEXTS: &[Context] = &[
         "SettingsControl",
         "A Settings switch, select, slider, or section has focus.",
     ),
-    context("control", "`slider` while a Settings slider has focus."),
+    context(
+        "control",
+        "`slider` on a Settings slider, `group` on sections, themes, or chips.",
+    ),
 ];
 
 /// Checks a `when` condition: `Err` with the parser's message when it does

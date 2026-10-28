@@ -2,14 +2,19 @@
 //! grouped rows.
 
 use gpui::{
-    AnyElement, App, Context, Div, ElementId, Entity, SharedString, Stateful,
-    Window, div, prelude::*, px, svg,
+    AnyElement, App, Context, Div, ElementId, Entity, FocusHandle,
+    SharedString, Stateful, Window, div, prelude::*, px, svg,
 };
 use huterm_config::settings::{SectionId, Setting};
+use huterm_ui::components::alert::{Alert, Tone as AlertTone};
 use huterm_ui::components::badge::{Tone as BadgeTone, badge};
 use huterm_ui::components::button::{Button, Variant};
+use huterm_ui::components::card::Card;
+use huterm_ui::components::field::Field;
 use huterm_ui::components::input::Input;
 use huterm_ui::components::input_group::{Addon, InputGroup};
+use huterm_ui::components::item::Item;
+use huterm_ui::components::tabs::Tabs;
 
 use super::super::super::overlay::{Swatch, mono_font_family};
 use super::super::super::settings::status::Action;
@@ -63,7 +68,8 @@ impl SettingsView {
     }
 
     /// Makes `element` a keyboard stop that runs the action `key` names,
-    /// by click or by `settings_toggle`.
+    /// by click or by `settings_toggle`. Its probe records where it draws,
+    /// so focus reaching it scrolls it into view.
     pub(super) fn actionable(
         &mut self,
         element: Stateful<Div>,
@@ -76,6 +82,7 @@ impl SettingsView {
             .track_focus(&handle)
             .key_context("SettingsControl")
             .focus(|style| style.shadow(swatch.focus_ring()))
+            .child(huterm_ui::focus::probe(&handle))
             .on_click(cx.listener(move |view, _, window, cx| {
                 handle.focus(window, cx);
                 view.act(&key, window, cx);
@@ -109,7 +116,7 @@ impl SettingsView {
                     .p(px(10.0))
                     .child(div().key_context("Palette").child(search)),
             )
-            .child(div().flex_1().child(nav))
+            .child(div().flex_1().px(px(8.0)).child(nav))
             .child(self.render_footer(swatch, cx))
             .into_any_element()
     }
@@ -149,13 +156,18 @@ impl SettingsView {
             })
     }
 
+    /// The sections as a vertical tab list: one tab stop whose arrows,
+    /// as `settings_next` and `settings_previous`, show the section they
+    /// reach. A search hides the selection.
     fn render_nav(
         &mut self,
         swatch: Swatch,
         searching: bool,
         cx: &mut Context<'_, Self>,
-    ) -> Div {
-        let mut nav = div().flex().flex_col().gap(px(1.0)).px(px(8.0));
+    ) -> Tabs {
+        let mut tabs = Tabs::new("settings-sections", "Sections", swatch)
+            .vertical()
+            .key_context("SettingsControl control=group");
         for section in self.visible_sections() {
             let handle = self.section_stop(section, cx);
             // A list counts its entries, as each is something the file sets.
@@ -172,46 +184,51 @@ impl SettingsView {
                 })
                 .sum();
             let on = section == self.section && !searching;
-            nav = nav.child(
-                div()
-                    .id(id(format!("settings-section-{}", section.id())))
-                    .track_focus(&handle)
-                    .key_context("SettingsControl")
-                    .flex()
-                    .items_center()
-                    .h(px(28.0))
-                    .px(px(8.0))
-                    .rounded(px(6.0))
-                    .text_size(px(13.0))
-                    .text_color(swatch.fg)
-                    .when(on, |row| row.bg(swatch.selection))
-                    .when(!on, |row| row.hover(|style| style.bg(swatch.hover)))
-                    .focus(|style| style.shadow(swatch.focus_ring()))
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.select_section(section, cx);
-                    }))
-                    .child(div().flex_1().child(section.title()))
-                    .when(count > 0, |row| {
-                        // The row hovers and takes the selection fill, so
-                        // the count draws no chip fill over them.
-                        row.child(
-                            badge(
-                                id(format!("settings-count-{}", section.id())),
-                                count.to_string(),
-                                BadgeTone::Neutral,
-                                swatch,
-                            )
-                            .bg(gpui::transparent_black())
-                            .text_color(if on {
-                                swatch.muted_on(swatch.selection)
-                            } else {
-                                swatch.muted
-                            }),
-                        )
+            tabs = tabs.tab(section.id(), section.title(), on, &handle);
+            if count > 0 {
+                // The tab hovers and takes the selection fill, so the count
+                // draws no chip fill over them.
+                tabs = tabs.trailing(
+                    badge(
+                        id(format!("settings-count-{}", section.id())),
+                        count.to_string(),
+                        BadgeTone::Neutral,
+                        swatch,
+                    )
+                    .bg(gpui::transparent_black())
+                    .text_color(if on {
+                        swatch.muted_on(swatch.selection)
+                    } else {
+                        swatch.muted
                     }),
-            );
+                );
+            }
         }
-        nav
+        tabs.on_select(Self::listen(cx, |view, value: SharedString, _, cx| {
+            if let Some(section) = SectionId::ALL
+                .into_iter()
+                .find(|section| section.id() == value.as_ref())
+            {
+                view.select_section(section, cx);
+            }
+        }))
+    }
+
+    /// The focus handle for the footer's action `key`, after the pane's
+    /// controls in the tab order: Tab from the sidebar enters the section,
+    /// and Shift-Tab from the section's first control returns to it.
+    fn footer_stop(
+        &mut self,
+        key: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> FocusHandle {
+        let handle = self.action_stop(key.to_owned(), cx);
+        if handle.tab_index == 1 {
+            return handle;
+        }
+        let handle = handle.tab_index(1);
+        self.actions.insert(key.to_owned(), handle.clone());
+        handle
     }
 
     /// The file status with its action, and the link that opens the file.
@@ -230,10 +247,12 @@ impl SettingsView {
                     ("settings-footer-open-error", "Open", "open:footer-error")
                 }
             };
+            let _ = self.footer_stop(key, cx);
             self.action_button(id.to_owned(), label, key.to_owned(), swatch, cx)
                 .variant(Variant::Link)
                 .button_role()
         });
+        let _ = self.footer_stop("open:footer", cx);
         let open = self
             .action_button(
                 "settings-footer-open".to_owned(),
@@ -295,46 +314,33 @@ impl SettingsView {
                 cx,
             )
         });
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .mb(px(14.0))
-                .p(px(12.0))
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(swatch.danger)
-                .bg(swatch.danger.opacity(0.08))
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .text_color(swatch.fg)
-                        .child("config.toml has an error"),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(swatch.muted)
-                        .child(
-                            "Huterm keeps running with the last valid settings, and Settings is read-only until the file is fixed.",
-                        ),
-                )
-                .child(
-                    div()
-                        .p(px(8.0))
-                        .rounded(px(5.0))
-                        .bg(swatch.bg)
-                        .font_family(mono_font_family())
-                        .text_size(px(11.5))
-                        .text_color(swatch.fg)
-                        .child(message.trim_end().to_owned()),
-                )
-                .child(div().flex().gap(px(6.0)).child(open).children(reload))
-                .into_any_element(),
+        let alert = Alert::new(
+            "settings-banner",
+            "config.toml has an error",
+            swatch,
         )
+        .tone(AlertTone::Danger)
+        .description(
+            "Huterm keeps running with the last valid settings, and Settings is read-only until the file is fixed.",
+        )
+        .child(
+            div()
+                .p(px(8.0))
+                .rounded(px(5.0))
+                .bg(swatch.bg)
+                .font_family(mono_font_family())
+                .text_size(px(11.5))
+                .text_color(swatch.fg)
+                .child(message.trim_end().to_owned()),
+        )
+        .child(div().flex().gap(px(6.0)).child(open).children(reload));
+        Some(div().mb(px(14.0)).child(alert).into_any_element())
     }
 
+    /// A setting's row: a `Field` with the setting's name, a dot when the
+    /// file sets it, its descriptions and error, Reset while it is changed,
+    /// and its control, then any conflict with the file. The rows that
+    /// lead to another section's editor are `Item`s with that button.
     pub(super) fn render_row(
         &mut self,
         setting: &'static Setting,
@@ -344,7 +350,30 @@ impl SettingsView {
     ) -> AnyElement {
         let path = setting.path.as_str();
         let read_only = self.read_only_reason(setting);
-        let label = self.render_label(setting, swatch, cx);
+        let foreign = foreign_note(setting);
+        let note = apply_note(setting.apply).filter(|_| foreign.is_none());
+        let description = foreign.or_else(|| setting.description.clone());
+        let changed = self.file.is_set(path);
+        let control =
+            self.render_control(setting, read_only.clone(), swatch, window, cx);
+        if matches!(
+            special(path),
+            Some(
+                Special::Keybindings
+                    | Special::GlobalShortcuts
+                    | Special::QuakeProfiles
+            )
+        ) {
+            return Item::new(
+                id(format!("settings-row-{path}")),
+                setting.label.clone(),
+                swatch,
+            )
+            .when_some(description, Item::description)
+            .when(changed, |item| item.before_title(changed_dot(swatch)))
+            .action(control)
+            .into_any_element();
+        }
         // Each row's reset is named for its setting, so the buttons read
         // differently.
         let reset =
@@ -372,30 +401,98 @@ impl SettingsView {
                 .debug_selector(move || format!("settings-reset-{path}"))
                 .child(reset)
         });
-        let control =
-            self.render_control(setting, read_only, swatch, window, cx);
+        let conflict = self.render_conflict(setting, swatch, cx);
+        // A conflict's alert says what the error would, and more.
+        let error = self
+            .errors
+            .get(path)
+            .filter(|_| conflict.is_none())
+            .cloned()
+            .map(SharedString::from);
         // The theme picker's cards need the row's width.
         let wide = special(path) == Some(Special::ThemePicker);
+        let field = Field::new(
+            id(format!("settings-row-{path}")),
+            setting.label.clone(),
+            swatch,
+        )
+        .when(wide, Field::vertical)
+        .when(changed, |field| field.before_label(changed_dot(swatch)))
+        .when(setting.advanced, |field| {
+            field.after_label(badge(
+                id(format!("settings-advanced-{path}")),
+                "Advanced",
+                BadgeTone::Neutral,
+                swatch,
+            ))
+        })
+        .when_some(description, Field::description)
+        .when_some(note, Field::description)
+        .error(error)
+        .when_some(reset, Field::action)
+        .control(control);
         div()
             .flex()
-            .when(wide, |row| row.flex_col().items_start())
-            .when(!wide, gpui::Styled::items_center)
-            .gap(px(12.0))
-            .px(px(14.0))
-            .py(px(10.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.0))
-                    .w_full()
-                    .min_w_0()
-                    .when(!wide, gpui::Styled::flex_1)
-                    .child(label)
-                    .children(reset),
-            )
-            .child(control)
+            .flex_col()
+            .debug_selector(move || format!("settings-row-{path}"))
+            .child(field)
+            .children(conflict)
             .into_any_element()
+    }
+
+    /// The warning under a row whose value changed in the file while an
+    /// edit to it was waiting, with Use mine and Use file, which an invalid
+    /// file cannot take yet.
+    fn render_conflict(
+        &mut self,
+        setting: &'static Setting,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let path = setting.path.as_str();
+        let message = self.conflicts.get(path)?.message.clone();
+        let choices = (!self.locked()).then(|| {
+            let mine = self
+                .action_button(
+                    format!("settings-mine-{path}"),
+                    "Use mine",
+                    format!("mine:{path}"),
+                    swatch,
+                    cx,
+                )
+                .variant(Variant::Link)
+                .button_role();
+            let file = self
+                .action_button(
+                    format!("settings-file-{path}"),
+                    "Use file",
+                    format!("file:{path}"),
+                    swatch,
+                    cx,
+                )
+                .variant(Variant::Link)
+                .button_role();
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(mine)
+                .child(file)
+        });
+        let alert = Alert::new(
+            id(format!("settings-conflict-{path}")),
+            message,
+            swatch,
+        )
+        .tone(AlertTone::Warning)
+        .children(choices);
+        Some(
+            div()
+                .px(px(14.0))
+                .pb(px(10.0))
+                .child(alert)
+                .into_any_element(),
+        )
     }
 
     /// The file's path, with buttons that open it and show it in the file
@@ -424,17 +521,12 @@ impl SettingsView {
             swatch,
             cx,
         );
-        div()
+        let row = div()
             .flex()
             .items_center()
             .gap(px(12.0))
-            .mb(px(12.0))
             .px(px(14.0))
             .py(px(10.0))
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(swatch.line)
-            .bg(swatch.surface)
             .child(
                 div()
                     .flex()
@@ -460,102 +552,11 @@ impl SettingsView {
                     ),
             )
             .child(open)
-            .child(reveal)
+            .child(reveal);
+        div()
+            .mb(px(12.0))
+            .child(Card::new("settings-file", swatch).child(row))
             .into_any_element()
-    }
-
-    /// A row's label: the setting's name with a dot when the file sets it,
-    /// then its description, apply note, and any error or conflict.
-    fn render_label(
-        &mut self,
-        setting: &'static Setting,
-        swatch: Swatch,
-        cx: &mut Context<'_, Self>,
-    ) -> Div {
-        let path = setting.path.as_str();
-        let small = |text: String, color| {
-            div().text_size(px(11.5)).text_color(color).child(text)
-        };
-        let foreign = foreign_note(setting);
-        let note = apply_note(setting.apply).filter(|_| foreign.is_none());
-        let description = foreign.or_else(|| setting.description.clone());
-        let message = if let Some(text) = self
-            .conflicts
-            .get(path)
-            .map(|conflict| conflict.message.clone())
-        {
-            let mine = self
-                .action_button(
-                    format!("settings-mine-{path}"),
-                    "Use mine",
-                    format!("mine:{path}"),
-                    swatch,
-                    cx,
-                )
-                .variant(Variant::Link)
-                .button_role();
-            let file = self
-                .action_button(
-                    format!("settings-file-{path}"),
-                    "Use file",
-                    format!("file:{path}"),
-                    swatch,
-                    cx,
-                )
-                .variant(Variant::Link)
-                .button_role();
-            Some(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(small(text, swatch.warning_text()))
-                    // An invalid file cannot take either choice yet.
-                    .when(!self.locked(), |row| row.child(mine).child(file)),
-            )
-        } else {
-            self.errors
-                .get(path)
-                .map(|error| small(error.clone(), swatch.danger_text()))
-        };
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_w_0()
-            .gap(px(2.0))
-            .debug_selector(move || format!("settings-label-{path}"))
-            .child(self.render_title(setting, swatch))
-            .children(description.map(|text| small(text, swatch.muted)))
-            .children(note.map(|note| small(note.to_owned(), swatch.muted)))
-            .children(message)
-    }
-
-    fn render_title(&self, setting: &Setting, swatch: Swatch) -> Div {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .text_size(px(13.0))
-            .text_color(swatch.fg)
-            .when(self.file.is_set(&setting.path), |line| {
-                line.child(
-                    div()
-                        .flex_none()
-                        .size(px(6.0))
-                        .rounded_full()
-                        .bg(swatch.accent),
-                )
-            })
-            .child(setting.label.clone())
-            .when(setting.advanced, |line| {
-                line.child(badge(
-                    id(format!("settings-advanced-{}", setting.path)),
-                    "Advanced",
-                    BadgeTone::Neutral,
-                    swatch,
-                ))
-            })
     }
 
     pub(super) fn render_main(
@@ -664,38 +665,16 @@ impl SettingsView {
             if settings.is_empty() {
                 continue;
             }
-            let mut card = div()
-                .flex()
-                .flex_col()
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(swatch.line)
-                .bg(swatch.surface);
-            for (index, setting) in settings.into_iter().enumerate() {
-                let row = self.render_row(setting, swatch, window, cx);
-                card = card.child(
-                    div()
-                        .when(index > 0, |row| {
-                            row.border_t_1().border_color(swatch.line)
-                        })
-                        .child(row),
-                );
-            }
-            cards.push(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .mb(px(12.0))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(swatch.muted)
-                            .child(group.title.to_uppercase()),
-                    )
-                    .child(card)
-                    .into_any_element(),
-            );
+            let rows: Vec<AnyElement> = settings
+                .into_iter()
+                .map(|setting| self.render_row(setting, swatch, window, cx))
+                .collect();
+            cards.push(group_card(
+                id(format!("settings-group-{}-{}", section.id(), group.title)),
+                &group.title,
+                rows,
+                swatch,
+            ));
         }
         cards
     }
@@ -733,4 +712,31 @@ impl SettingsView {
             .into_any_element(),
         )
     }
+}
+
+/// A titled card of `rows`, as each group of the pane draws, with the space
+/// below it that separates it from the next.
+pub(super) fn group_card(
+    id: impl Into<ElementId>,
+    title: &str,
+    rows: Vec<AnyElement>,
+    swatch: Swatch,
+) -> AnyElement {
+    div()
+        .mb(px(12.0))
+        .child(
+            Card::new(id, swatch)
+                .title(title.to_uppercase())
+                .children(rows),
+        )
+        .into_any_element()
+}
+
+/// The dot before a name the file sets.
+pub(super) fn changed_dot(swatch: Swatch) -> Div {
+    div()
+        .flex_none()
+        .size(px(6.0))
+        .rounded_full()
+        .bg(swatch.accent)
 }

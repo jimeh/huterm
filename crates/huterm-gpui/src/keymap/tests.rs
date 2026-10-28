@@ -689,6 +689,76 @@ fn settings_page_home_and_end_keys_match_only_on_a_slider() {
 }
 
 #[test]
+fn settings_arrows_move_a_group_and_step_every_other_control() {
+    for platform in [Platform::MacOs, Platform::Linux] {
+        let keymap = Keymap::new(compile(platform, &[]).unwrap().bindings);
+        let within = |focused: &str| {
+            [
+                KeyContext::parse("Settings").unwrap(),
+                KeyContext::parse(focused).unwrap(),
+            ]
+        };
+        // The sidebar, theme cards, and chips set `control = group`; a
+        // switch or select is a bare `SettingsControl`.
+        let group = within("SettingsControl control=group");
+        let slider = within("SettingsControl control=slider");
+        let switch = within("SettingsControl");
+        let number = within("Palette");
+        // GPUI runs the first binding it lists.
+        let first = |key: &str, contexts: &[KeyContext]| {
+            let (bindings, pending) =
+                keymap.bindings_for_input(&[keystroke(key)], contexts);
+            assert!(!pending, "{platform:?}: {key} left a pending chord");
+            bindings.first().map(command_of)
+        };
+        for (key, on_group, stepping, in_number) in [
+            (
+                "down",
+                ids::SETTINGS_NEXT,
+                ids::SETTINGS_DECREASE,
+                ids::PALETTE_SELECT_NEXT,
+            ),
+            (
+                "right",
+                ids::SETTINGS_NEXT,
+                ids::SETTINGS_INCREASE,
+                ids::TEXT_MOVE_RIGHT,
+            ),
+            (
+                "up",
+                ids::SETTINGS_PREVIOUS,
+                ids::SETTINGS_INCREASE,
+                ids::PALETTE_SELECT_PREVIOUS,
+            ),
+            (
+                "left",
+                ids::SETTINGS_PREVIOUS,
+                ids::SETTINGS_DECREASE,
+                ids::TEXT_MOVE_LEFT,
+            ),
+        ] {
+            assert_eq!(
+                first(key, &group),
+                Some(on_group),
+                "{platform:?}: {key} on a group"
+            );
+            for (name, contexts) in [("slider", &slider), ("switch", &switch)] {
+                assert_eq!(
+                    first(key, contexts),
+                    Some(stepping),
+                    "{platform:?}: {key} on a {name}"
+                );
+            }
+            assert_eq!(
+                first(key, &number),
+                Some(in_number),
+                "{platform:?}: {key} in a number field"
+            );
+        }
+    }
+}
+
+#[test]
 fn menu_defaults_match_only_while_a_menu_has_focus() {
     for platform in [Platform::MacOs, Platform::Linux] {
         let compiled = compile(platform, &[]).unwrap();

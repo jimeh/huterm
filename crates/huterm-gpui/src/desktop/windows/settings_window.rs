@@ -47,10 +47,12 @@ use huterm_ui::components::number_field::{
     self, Format as NumberFormat, NumberField,
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
+use huterm_ui::components::scroll_area::{ContentBounds, ScrollArea};
 use huterm_ui::components::toggle_group::roving_target;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
+use huterm_ui::roving::{self, Group, Move};
 use huterm_ui::steps::Steps;
 
 const SIDEBAR_WIDTH: f32 = 200.0;
@@ -902,7 +904,7 @@ impl SettingsView {
     /// Moves focus to the next or previous modifier chip, wrapping, when a
     /// chip has focus; the chips are one roving tab stop, as a multiple
     /// toggle group is. False when no chip has focus.
-    fn step_chips(
+    fn move_chips(
         &self,
         forward: bool,
         window: &mut Window,
@@ -929,6 +931,130 @@ impl SettingsView {
             target.focus(window, cx);
         }
         true
+    }
+
+    /// Moves within the focused roving group, the sidebar's sections, the
+    /// theme cards, or the modifier chips, as `settings_next` and
+    /// `settings_previous` do, wrapping: a section focus reaches shows, and
+    /// a theme card it reaches is chosen. False when no group has focus.
+    fn move_group(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let step = if forward { Move::Next } else { Move::Previous };
+        self.move_sections(step, window, cx)
+            || self.move_themes(step, window, cx)
+            || self.move_chips(forward, window, cx)
+    }
+
+    /// Moves between the sidebar's sections by `step` when one has focus,
+    /// and shows the section focus reaches. A search hides the selection,
+    /// so any section focus reaches shows.
+    fn move_sections(
+        &mut self,
+        step: Move,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let sections = self.visible_sections();
+        let handles: Vec<FocusHandle> = sections
+            .iter()
+            .map(|section| self.section_stop(*section, cx))
+            .collect();
+        if roving::focused(&handles, window).is_none() {
+            return false;
+        }
+        let searching = !self.query(cx).is_empty();
+        let selected = sections
+            .iter()
+            .position(|section| *section == self.section)
+            .filter(|_| !searching);
+        let group = Group {
+            handles: &handles,
+            selected,
+            enabled: true,
+        };
+        if let Some(index) = roving::move_focus(group, step, window, cx)
+            && let Some(section) = sections.get(index)
+        {
+            self.select_section(*section, cx);
+        }
+        true
+    }
+
+    /// Moves between the theme cards by `step` when one has focus, and
+    /// chooses the theme focus reaches. A read-only picker refuses.
+    fn move_themes(
+        &mut self,
+        step: Move,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let names: Vec<String> =
+            self.themes.iter().map(|(name, _)| name.clone()).collect();
+        let handles: Vec<FocusHandle> = names
+            .iter()
+            .filter_map(|name| self.actions.get(&format!("theme:{name}")))
+            .cloned()
+            .collect();
+        if handles.len() != names.len()
+            || roving::focused(&handles, window).is_none()
+        {
+            return false;
+        }
+        let selected = self.selected_theme();
+        let enabled = self
+            .model
+            .setting("theme")
+            .is_some_and(|theme| self.read_only_reason(theme).is_none());
+        let group = Group {
+            handles: &handles,
+            selected: names.iter().position(|name| *name == selected),
+            enabled,
+        };
+        if let Some(index) = roving::move_focus(group, step, window, cx)
+            && let Some(name) = names.get(index)
+        {
+            self.act(&format!("theme:{name}"), window, cx);
+        }
+        true
+    }
+
+    /// Scrolls the pane the least that shows the control the keyboard just
+    /// moved focus to, with its ring, once the frame that drew the ring has
+    /// painted. A pointer press, a control outside the pane, such as the
+    /// sidebar's, and a dialog or menu over the pane scroll nothing.
+    fn reveal_focused(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.dialog.prompt().is_some() || self.menu.is_some() {
+            return;
+        }
+        let Some(focused) = window.focused(cx) else {
+            return;
+        };
+        if !huterm_ui::focus::visible(&focused, window, cx) {
+            return;
+        }
+        let Some(painted) = huterm_ui::focus::ring_bounds(&focused, window, cx)
+        else {
+            return;
+        };
+        let viewport = self.scroll.bounds();
+        if painted.left() < viewport.left()
+            || painted.right() > viewport.right()
+        {
+            return;
+        }
+        // The pane has not scrolled since the ring painted.
+        let target = ContentBounds::record(&self.scroll, painted);
+        if ScrollArea::reveal(&self.scroll, target) {
+            cx.notify();
+        }
     }
 
     fn step_setting(
@@ -1277,14 +1403,16 @@ impl SettingsView {
                     self.toggle(window, cx);
                 }
             }
-            // The arrows move between chips and step everything else.
+            // A group's arrows run these; they step nothing there.
             ids::SETTINGS_INCREASE | ids::SETTINGS_DECREASE => {
                 let forward = invocation.id == ids::SETTINGS_INCREASE;
-                if !self.step_chips(forward, window, cx)
-                    && !self.step_filter(forward, window)
-                {
+                if !self.step_filter(forward, window) {
                     self.step(Jump::Step(forward), window, cx);
                 }
+            }
+            ids::SETTINGS_NEXT | ids::SETTINGS_PREVIOUS => {
+                let forward = invocation.id == ids::SETTINGS_NEXT;
+                self.move_group(forward, window, cx);
             }
             ids::SETTINGS_PAGE_UP | ids::SETTINGS_PAGE_DOWN => {
                 let forward = invocation.id == ids::SETTINGS_PAGE_UP;
@@ -1548,6 +1676,23 @@ impl SettingsView {
                 },
             )
         };
+        // Whether the focused control's ring last painted inside the pane's
+        // viewport, so a smoke can see that Tab scrolled it into view.
+        let in_view = window
+            .focused(cx)
+            .and_then(|focused| {
+                huterm_ui::focus::ring_bounds(&focused, window, cx)
+            })
+            .map_or("none", |painted| {
+                let viewport = self.scroll.bounds();
+                if painted.top() >= viewport.top()
+                    && painted.bottom() <= viewport.bottom()
+                {
+                    "true"
+                } else {
+                    "false"
+                }
+            });
         let mut selects: Vec<String> = self
             .triggers
             .borrow()
@@ -1556,7 +1701,7 @@ impl SettingsView {
             .collect();
         selects.sort();
         format!(
-            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.dialog={} settings.status={:?} settings.read_only={} settings.writing={}",
+            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.dialog={} settings.scroll={} settings.in_view={in_view} settings.status={:?} settings.read_only={} settings.writing={}",
             window.is_window_active(),
             self.section.id(),
             self.query(cx),
@@ -1568,6 +1713,7 @@ impl SettingsView {
                 selects.join("|")
             },
             self.dialog_name(),
+            f32::from(-self.scroll.offset().y).round(),
             self.status.line().text,
             self.locked(),
             self.busy(),
@@ -1835,6 +1981,11 @@ impl Render for SettingsView {
         let orphaned = focused.is_some()
             && focused == self.last_focus
             && !self.focus.contains_focused(window, cx);
+        // Focus that moved since the last frame scrolls into view once this
+        // frame draws its ring.
+        if focused.is_some() && focused != self.last_focus {
+            cx.defer_in(window, Self::reveal_focused);
+        }
         self.last_focus = focused;
         let stranded = self
             .focused_action(window)
@@ -2057,6 +2208,39 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         self.select_section(section, cx);
+    }
+
+    /// The sidebar's sections, in order.
+    pub(super) fn sidebar_sections(&self) -> Vec<SectionId> {
+        self.visible_sections()
+    }
+
+    /// The focus handle of `section`'s tab in the sidebar.
+    pub(super) fn section_handle(&self, section: SectionId) -> FocusHandle {
+        self.sections
+            .get(&section)
+            .cloned()
+            .expect("a drawn section")
+    }
+
+    /// Every theme card's name, in order.
+    pub(super) fn theme_names(&self) -> Vec<String> {
+        self.themes.iter().map(|(name, _)| name.clone()).collect()
+    }
+
+    /// How far the pane has scrolled down.
+    pub(super) fn pane_scrolled(&self) -> gpui::Pixels {
+        -self.scroll.offset().y
+    }
+
+    /// Scrolls the pane `y` down from its top, as the wheel does.
+    pub(super) fn scroll_pane_to(&self, y: gpui::Pixels) {
+        self.scroll.set_offset(point(px(0.0), -y));
+    }
+
+    /// The pane's visible bounds in the window.
+    pub(super) fn pane_viewport(&self) -> gpui::Bounds<gpui::Pixels> {
+        self.scroll.bounds()
     }
 
     /// Every select trigger the last frame drew, by menu key, with its

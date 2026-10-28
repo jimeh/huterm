@@ -20,13 +20,15 @@ use super::super::super::settings::keybindings::{Edit, names_profile};
 use super::super::Desktop;
 use super::controls::Opener;
 use super::dialog::Prompt;
-use super::keybindings::{CAP_WIDTH, Target, card, group_block, small};
+use super::keybindings::{CAP_WIDTH, Target, small};
+use super::render::group_card;
 use super::saving::Batch;
 use super::{MenuFor, SettingsView, button};
 use crate::keymap::Platform;
 use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::button::Variant;
 use huterm_ui::components::dialog::{Dialog, Dismissal};
+use huterm_ui::components::empty::Empty;
 use huterm_ui::components::field::Field;
 use huterm_ui::components::input::{Chrome, Input};
 use huterm_ui::components::input_group::InputGroup;
@@ -1000,7 +1002,7 @@ impl SettingsView {
     ) -> AnyElement {
         let profile = self.shown_profile();
         let title = format!("Profile \u{201c}{profile}\u{201d}");
-        let mut body = card(swatch);
+        let mut rows = Vec::new();
         if bare(&profile) {
             let fields: Vec<&'static Setting> = self
                 .model
@@ -1014,30 +1016,27 @@ impl SettingsView {
                 })
                 .filter(|setting| self.shows(setting, false))
                 .collect();
-            for (index, setting) in fields.into_iter().enumerate() {
-                let row = self.render_row(setting, swatch, window, cx);
-                body = body.child(
-                    div()
-                        .when(index > 0, |row| {
-                            row.border_t_1().border_color(swatch.line)
-                        })
-                        .child(row),
-                );
+            for setting in fields {
+                rows.push(self.render_row(setting, swatch, window, cx));
             }
         } else {
-            body = body.child(
-                div().px(px(14.0)).py(px(10.0)).child(small(
-                    "This profile's name needs quoting in TOML, so Settings \
-                     leaves it to config.toml."
-                        .to_owned(),
-                    swatch.muted,
-                )),
+            rows.push(
+                div()
+                    .px(px(14.0))
+                    .py(px(10.0))
+                    .child(small(
+                        "This profile's name needs quoting in TOML, so \
+                         Settings leaves it to config.toml."
+                            .to_owned(),
+                        swatch.muted,
+                    ))
+                    .into_any_element(),
             );
         }
         if profile != DEFAULT && bare(&profile) {
-            body = body.child(self.render_profile_actions(swatch, cx));
+            rows.push(self.render_profile_actions(swatch, cx));
         }
-        group_block(&title, body, swatch)
+        group_card("settings-qprofile", &title, rows, swatch)
     }
 
     /// A named profile's Rename profile and Delete profile.
@@ -1073,8 +1072,6 @@ impl SettingsView {
             .gap(px(6.0))
             .px(px(14.0))
             .py(px(10.0))
-            .border_t_1()
-            .border_color(swatch.line)
             .child(div().flex().gap(px(8.0)).child(rename).child(delete))
             .child(small(
                 "An open window of a deleted profile becomes an ordinary \
@@ -1331,26 +1328,19 @@ impl SettingsView {
     ) -> AnyElement {
         let read_only = self.keys_read_only();
         let globals = self.globals();
-        let mut body = card(swatch);
+        let mut rows = Vec::new();
         if globals.is_empty() {
-            body = body.child(
-                div().px(px(14.0)).py(px(10.0)).child(small(
-                    "No global shortcuts are set. A global shortcut shows or \
-                 hides a quake window while another application has focus."
-                        .to_owned(),
-                    swatch.muted,
-                )),
+            rows.push(
+                Empty::new("settings-gempty", "No global shortcuts", swatch)
+                    .description(
+                        "A global shortcut shows or hides a quake window \
+                         while another application has focus.",
+                    )
+                    .into_any_element(),
             );
         }
         for (index, global) in globals.iter().enumerate() {
-            let row = self.render_global(index, global, read_only, swatch, cx);
-            body = body.child(
-                div()
-                    .when(index > 0, |row| {
-                        row.border_t_1().border_color(swatch.line)
-                    })
-                    .child(row),
-            );
+            rows.push(self.render_global(index, global, read_only, swatch, cx));
         }
         let recording_add = self
             .keys
@@ -1367,15 +1357,13 @@ impl SettingsView {
             });
         let add = self.actionable(add, "gadd".to_owned(), swatch, cx);
         let _ = self.action_stop("gadd".to_owned(), cx).tab_stop(!read_only);
-        body = body.child(
+        rows.push(
             div()
                 .flex()
                 .flex_col()
                 .gap(px(6.0))
                 .px(px(14.0))
                 .py(px(10.0))
-                .border_t_1()
-                .border_color(swatch.line)
                 .child(div().flex().child(add))
                 .when(recording_add, |block| {
                     block.child(self.recording_hint(swatch))
@@ -1395,9 +1383,10 @@ impl SettingsView {
                             .to_owned(),
                         swatch.muted,
                     ))
-                }),
+                })
+                .into_any_element(),
         );
-        group_block("Global shortcuts", body, swatch)
+        group_card("settings-globals", "Global shortcuts", rows, swatch)
     }
 
     fn render_global(

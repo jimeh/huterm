@@ -895,6 +895,12 @@ pub mod ids {
     pub const SETTINGS_FIRST: CommandId = CommandId::new("settings_first");
     /// Moves the focused slider to its maximum.
     pub const SETTINGS_LAST: CommandId = CommandId::new("settings_last");
+    /// Moves to the next item of the focused Settings group, such as the
+    /// sidebar's sections or the theme cards.
+    pub const SETTINGS_NEXT: CommandId = CommandId::new("settings_next");
+    /// Moves to the previous item of the focused Settings group.
+    pub const SETTINGS_PREVIOUS: CommandId =
+        CommandId::new("settings_previous");
     /// Resets the focused setting to its default.
     pub const SETTINGS_RESET: CommandId = CommandId::new("settings_reset");
     /// Moves the palette selection down.
@@ -1902,6 +1908,22 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Settings: Maximum",
         "Move the focused slider to its maximum.",
+        &[],
+    ),
+    spec_in(
+        "SettingsControl",
+        ids::SETTINGS_NEXT,
+        CommandScope::Window,
+        "Settings: Next Item",
+        "Move to the next item of the focused group.",
+        &[],
+    ),
+    spec_in(
+        "SettingsControl",
+        ids::SETTINGS_PREVIOUS,
+        CommandScope::Window,
+        "Settings: Previous Item",
+        "Move to the previous item of the focused group.",
         &[],
     ),
     spec_in(

@@ -876,6 +876,8 @@
                 "settings_page_down",
                 "settings_first",
                 "settings_last",
+                "settings_next",
+                "settings_previous",
                 "settings_reset",
                 "palette_select_next",
                 "palette_select_previous",
@@ -6490,6 +6492,108 @@
               "command": {
                 "const": "settings_last",
                 "description": "Move the focused slider to its maximum.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "settings_next"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move to the next item of the focused group.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "settings_next",
+                "description": "Move to the next item of the focused group.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "settings_previous"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move to the previous item of the focused group.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "settings_previous",
+                "description": "Move to the previous item of the focused group.",
                 "type": "string"
               },
               "description": {

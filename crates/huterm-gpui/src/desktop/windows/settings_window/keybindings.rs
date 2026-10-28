@@ -29,13 +29,17 @@ use super::super::super::settings::keybindings::{
 };
 use super::super::Desktop;
 use super::controls::Opener;
+use super::render::{changed_dot, group_card};
 use super::saving::Queued;
 use super::{MenuFor, SettingsView, button};
 use crate::assets::Icon;
 use crate::keymap::{BindingState, Inventory, ListedBinding, Origin, Platform};
 use huterm_ui::components::badge::{Tone as BadgeTone, badge};
 use huterm_ui::components::button::{Button, Variant};
+use huterm_ui::components::card;
+use huterm_ui::components::collapsible::{Collapsible, chevron};
 use huterm_ui::components::input::{Changed, Chrome, Input};
+use huterm_ui::components::item::Item;
 use huterm_ui::components::switch::Switch;
 use huterm_ui::components::toggle_group::ToggleGroup;
 use huterm_ui::listbox::{
@@ -1715,19 +1719,23 @@ impl SettingsView {
                 continue;
             }
             any = true;
-            let mut card = card(swatch);
-            for (index, spec) in commands.into_iter().enumerate() {
-                let command =
-                    self.render_command(&inventory, spec, swatch, window, cx);
-                card = card.child(
-                    div()
-                        .when(index > 0, |row| {
-                            row.border_t_1().border_color(swatch.line)
-                        })
-                        .child(command),
-                );
-            }
-            body.push(group_block(group, card, swatch));
+            let count = commands.len();
+            let rows = commands
+                .into_iter()
+                .enumerate()
+                .map(|(index, spec)| {
+                    let corners = card::row_corners(index, count);
+                    self.render_command(
+                        &inventory, spec, corners, swatch, window, cx,
+                    )
+                })
+                .collect();
+            body.push(group_card(
+                id(format!("settings-kgroup-{group}")),
+                group,
+                rows,
+                swatch,
+            ));
         }
         if !any {
             body.push(
@@ -1767,8 +1775,8 @@ impl SettingsView {
         if inventory.unbinds.is_empty() {
             return None;
         }
-        let mut card = card(swatch);
-        for (index, (entry, key)) in inventory.unbinds.iter().enumerate() {
+        let mut rows = Vec::new();
+        for (entry, key) in &inventory.unbinds {
             let remove = self
                 .remove_button(
                     format!("settings-kunbind-{entry}"),
@@ -1780,31 +1788,24 @@ impl SettingsView {
                 .when_some(self.keys_lock_reason(), |button, reason| {
                     button.disabled(Some(reason))
                 });
-            card = card.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.0))
-                    .px(px(14.0))
-                    .py(px(10.0))
-                    .when(index > 0, |row| {
-                        row.border_t_1().border_color(swatch.line)
-                    })
-                    .child(
-                        KeyHint::parse(key, Platform::current())
-                            .element(px(12.0), swatch.fg),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(12.0))
-                            .text_color(swatch.muted)
-                            .child("Unbound; programs receive this key."),
-                    )
-                    .child(remove),
+            let hint = KeyHint::parse(key, Platform::current());
+            rows.push(
+                Item::new(
+                    id(format!("settings-kunbound-{entry}")),
+                    hint.text(),
+                    swatch,
+                )
+                .description("Unbound; programs receive this key.")
+                .action(remove)
+                .into_any_element(),
             );
         }
-        Some(group_block("Passed through to programs", card, swatch))
+        Some(group_card(
+            "settings-kunbinds",
+            "Passed through to programs",
+            rows,
+            swatch,
+        ))
     }
 
     /// The section's search field and filter.
@@ -1863,11 +1864,15 @@ impl SettingsView {
             .into_any_element()
     }
 
-    /// One command: its header, and its shortcuts when expanded.
+    /// One command: a collapsible whose header item names it, with a dot
+    /// when it is customized, and summarizes its shortcuts beside its
+    /// trigger, and its shortcuts when expanded. `corners` round the
+    /// trigger to the card row it fills.
     fn render_command(
         &mut self,
         inventory: &Inventory,
         spec: &'static CommandSpec,
+        corners: gpui::Corners<gpui::Pixels>,
         swatch: Swatch,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
@@ -1882,76 +1887,43 @@ impl SettingsView {
             .map(|(_, listed)| *listed)
             .filter(|listed| listed.state == BindingState::Active)
             .collect();
-        let summary = summary(&active, swatch);
-        let customized = Self::customized(inventory, spec.id);
-        let head = div()
-            .id(id(format!("settings-kcmd-{}", spec.id.as_str())))
-            .flex()
-            .items_center()
-            .gap(px(10.0))
-            .px(px(14.0))
-            .py(px(9.0))
-            .hover(|style| style.bg(swatch.hover))
-            .child(
-                gpui::svg()
-                    .path(Icon::ChevronRight.asset_path())
-                    .flex_none()
-                    .size(px(12.0))
-                    .text_color(swatch.muted)
-                    .when(open, |chevron| {
-                        chevron.with_transformation(
-                            gpui::Transformation::rotate(gpui::percentage(
-                                0.25,
-                            )),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .text_size(px(13.0))
-                            .text_color(swatch.fg)
-                            .when(customized, |line| {
-                                line.child(
-                                    div()
-                                        .flex_none()
-                                        .size(px(6.0))
-                                        .rounded_full()
-                                        .bg(swatch.accent),
-                                )
-                            })
-                            .child(spec.title),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.5))
-                            .text_color(swatch.muted)
-                            .truncate()
-                            .child(spec.description.replace('`', "")),
-                    ),
-            )
-            .child(summary);
-        let head = self.actionable(
-            head,
-            format!("kcmd:{}", spec.id.as_str()),
+        let command = spec.id.as_str();
+        let summary = summary(&active, swatch)
+            .debug_selector(move || format!("settings-ksummary-{command}"));
+        let item = Item::new(
+            id(format!("settings-kitem-{command}")),
+            spec.title,
             swatch,
-            cx,
-        );
-        let mut command = div().flex().flex_col().child(head);
+        )
+        .description(spec.description.replace('`', ""))
+        .media(chevron(Icon::ChevronRight.asset_path(), open, swatch))
+        .when(Self::customized(inventory, spec.id), |item| {
+            item.before_title(changed_dot(swatch))
+        })
+        .action(summary);
+        let key = format!("kcmd:{command}");
+        let handle = self.action_stop(key.clone(), cx);
+        let focus = handle.clone();
+        let mut section = Collapsible::new(
+            id(format!("settings-kcmd-{command}")),
+            spec.title,
+            open,
+            &handle,
+            swatch,
+        )
+        .item(item)
+        .corners(corners)
+        .key_context("SettingsControl")
+        .on_toggle(Self::listen(cx, move |view, _, window, cx| {
+            focus.focus(window, cx);
+            view.act(&key, window, cx);
+        }));
         if open {
-            command = command.child(
+            section = section.child(
                 self.render_shortcuts(spec, &listed, swatch, window, cx),
             );
         }
-        command.into_any_element()
+        section.into_any_element()
     }
 
     /// An expanded command's shortcut rows and its buttons.
@@ -2497,8 +2469,8 @@ impl SettingsView {
         if commands.is_empty() {
             return None;
         }
-        let mut card = card(swatch);
-        for (index, spec) in commands.into_iter().take(20).enumerate() {
+        let mut rows = Vec::new();
+        for spec in commands.into_iter().take(20) {
             let caps: Vec<String> = self
                 .keys
                 .inventory
@@ -2527,9 +2499,6 @@ impl SettingsView {
                 .gap(px(10.0))
                 .px(px(14.0))
                 .py(px(8.0))
-                .when(index > 0, |row| {
-                    row.border_t_1().border_color(swatch.line)
-                })
                 .hover(|style| style.bg(swatch.hover))
                 .child(
                     div()
@@ -2539,14 +2508,17 @@ impl SettingsView {
                         .child(spec.title),
                 )
                 .child(keys);
-            card = card.child(self.actionable(
-                element,
-                format!("kgo:{}", spec.id.as_str()),
-                swatch,
-                cx,
-            ));
+            rows.push(
+                self.actionable(
+                    element,
+                    format!("kgo:{}", spec.id.as_str()),
+                    swatch,
+                    cx,
+                )
+                .into_any_element(),
+            );
         }
-        Some(group_block("Commands", card, swatch))
+        Some(group_card("settings-kresults", "Commands", rows, swatch))
     }
 }
 
@@ -2607,37 +2579,6 @@ impl SettingsView {
             )
             .icon_only()
     }
-}
-
-pub(super) fn card(swatch: Swatch) -> gpui::Div {
-    div()
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(swatch.line)
-        .bg(swatch.surface)
-}
-
-pub(super) fn group_block(
-    title: &str,
-    card: gpui::Div,
-    swatch: Swatch,
-) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(6.0))
-        .mb(px(12.0))
-        .child(
-            div()
-                .text_size(px(11.0))
-                .text_color(swatch.muted)
-                .child(title.to_uppercase()),
-        )
-        .child(card)
-        .into_any_element()
 }
 
 pub(super) fn small(text: String, color: gpui::Hsla) -> gpui::Div {

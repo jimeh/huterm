@@ -20,13 +20,18 @@
 //! A full-width row, such as a vertical tab or a collapsible's trigger in a
 //! card, draws it inside its edge through [`ring_inset`], because GPUI clips
 //! a child's outer ring to a container that clips its overflow.
+//!
+//! [`ring`] and [`ring_inset`] also record where the ring painted, which
+//! [`ring_bounds`] reports, so an owner can scroll the control the keyboard
+//! reached into view: GPUI has no query for an element's bounds by its focus
+//! handle.
 
 use std::collections::HashMap;
 
 use gpui::{
-    App, DispatchPhase, ElementId, FocusHandle, Global, IntoElement,
-    MouseDownEvent, Styled, Subscription, WeakFocusHandle, Window, WindowId,
-    canvas,
+    App, Bounds, DispatchPhase, ElementId, FocusHandle, Global, IntoElement,
+    MouseDownEvent, ParentElement, Pixels, Styled, Subscription,
+    WeakFocusHandle, Window, WindowId, canvas,
 };
 
 use crate::tokens::Tokens;
@@ -41,6 +46,8 @@ struct Record {
     /// Whether the window's last press was a key rather than a pointer
     /// button: the input that decides a focus change not yet recorded.
     last_press_was_key: bool,
+    /// The handle whose ring painted last, and where.
+    ring_bounds: Option<(WeakFocusHandle, Bounds<Pixels>)>,
     /// Rings this frame applied.
     #[cfg(feature = "test-support")]
     pending: Vec<Ringed>,
@@ -105,7 +112,7 @@ pub fn visible(handle: &FocusHandle, window: &Window, cx: &App) -> bool {
 /// `element` with `handle`'s focus ring while [`visible`]. Apply it last
 /// among an element's shadows, because a later `shadow` replaces it.
 #[must_use]
-pub fn ring<E: Styled>(
+pub fn ring<E: Styled + ParentElement>(
     element: E,
     handle: &FocusHandle,
     tokens: Tokens,
@@ -121,7 +128,7 @@ pub fn ring<E: Styled>(
     with_record(window, cx, |record| {
         record.pending.push(Ringed::Handle(handle.downgrade()));
     });
-    element.shadow(tokens.focus_ring())
+    element.shadow(tokens.focus_ring()).child(probe(handle))
 }
 
 /// `element`, a full-width row, with `handle`'s focus ring drawn inside its
@@ -129,7 +136,7 @@ pub fn ring<E: Styled>(
 /// a card or a scrolled sidebar, cannot hide it. Apply it last among an
 /// element's shadows, as [`ring`].
 #[must_use]
-pub fn ring_inset<E: Styled>(
+pub fn ring_inset<E: Styled + ParentElement>(
     element: E,
     handle: &FocusHandle,
     tokens: Tokens,
@@ -143,7 +150,57 @@ pub fn ring_inset<E: Styled>(
     with_record(window, cx, |record| {
         record.pending.push(Ringed::Inset(handle.downgrade()));
     });
-    element.shadow(tokens.focus_ring_inset())
+    element
+        .shadow(tokens.focus_ring_inset())
+        .child(probe(handle))
+}
+
+/// An element to lay over a focusable control, as the last child of the
+/// element that tracks `handle`: while `handle` has focus, it records its
+/// parent's painted bounds for [`ring_bounds`]. [`ring`] and [`ring_inset`]
+/// add it themselves; a control that draws its focus some other way adds
+/// it, so an owner can scroll that control into view too.
+#[must_use]
+pub fn probe(handle: &FocusHandle) -> impl IntoElement + use<> {
+    let handle = handle.downgrade();
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, cx| {
+            let focused = handle
+                .upgrade()
+                .is_some_and(|handle| handle.is_focused(window));
+            if focused {
+                with_record(window, cx, |record| {
+                    record.ring_bounds = Some((handle.clone(), bounds));
+                });
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// Where `handle`'s focus ring last painted, in window coordinates: the
+/// bounds of the control [`ring`] or [`ring_inset`] drew it on, or that a
+/// [`probe`] covers, without the ring. An owner reads it once the frame
+/// that drew the ring has painted,
+/// such as from `cx.defer_in` during that frame's render, to scroll the
+/// control the keyboard reached into view. `None` until the ring paints, in
+/// a window without a [`tracker`], and once another handle's ring paints.
+#[must_use]
+pub fn ring_bounds(
+    handle: &FocusHandle,
+    window: &Window,
+    cx: &App,
+) -> Option<Bounds<Pixels>> {
+    let record = cx
+        .try_global::<Records>()
+        .and_then(|records| records.windows.get(&window_id(window)))?;
+    record
+        .ring_bounds
+        .as_ref()
+        .filter(|(painted, _)| painted == handle)
+        .map(|(_, bounds)| *bounds)
 }
 
 /// Whether a control its owner marks as the keyboard's place shows a ring:
@@ -327,7 +384,7 @@ mod tests {
         prelude::*, px,
     };
 
-    use super::{ring, ring_drawn};
+    use super::{ring, ring_bounds, ring_drawn};
     use crate::testing::{host, tokens};
 
     /// A focusable 40-point square at the window's origin that draws its
@@ -413,6 +470,24 @@ mod tests {
         cx.run_until_parked();
         assert!(cx.update(|window, _| handle.is_focused(window)));
         assert!(!drawn(&handle, cx));
+    }
+
+    #[gpui::test]
+    fn a_painted_ring_reports_its_controls_bounds(cx: &mut TestAppContext) {
+        let (handle, cx) = control(cx);
+        assert_eq!(
+            cx.update(|window, cx| ring_bounds(&handle, window, cx)),
+            None
+        );
+        focus_from_keyboard(&handle, cx);
+        let bounds = cx.update(|window, cx| ring_bounds(&handle, window, cx));
+        assert_eq!(
+            bounds,
+            Some(gpui::Bounds::new(
+                point(px(0.0), px(0.0)),
+                gpui::size(px(40.0), px(40.0))
+            ))
+        );
     }
 
     #[gpui::test]
