@@ -14,7 +14,7 @@ use gpui::{
 };
 use serde_json::Value;
 
-use crate::roving::{Arrow, Move, move_focus};
+use crate::roving::{Arrow, Group, Move, move_focus};
 use crate::scrollbar::ScrollbarColors;
 use crate::tokens::{OverlayColors, Tokens};
 
@@ -61,20 +61,30 @@ pub(crate) fn bind_keys(cx: &mut VisualTestContext) {
 
 /// `element` routing the test move keys as the owner of a roving group
 /// does: the arrows along `axis` (every arrow with none), Home, and End
-/// move focus among `handles`, and `select` hears where focus went.
+/// move focus among `handles` through [`move_focus`], with the selection
+/// and enabled state `live` reports when the key arrives, and `select`
+/// hears the index to select.
 pub(crate) fn route_moves<E: InteractiveElement>(
     element: E,
     handles: &[FocusHandle],
     axis: Option<Axis>,
+    live: impl Fn() -> (Option<usize>, bool) + 'static,
     select: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> E {
     let handles: Rc<[FocusHandle]> = handles.into();
-    let select = Rc::new(select);
+    let (live, select) = (Rc::new(live), Rc::new(select));
     let route = move |step: Option<Move>| {
-        let (handles, select) = (handles.clone(), select.clone());
+        let (handles, live, select) =
+            (handles.clone(), live.clone(), select.clone());
         move |window: &mut Window, cx: &mut App| {
+            let (selected, enabled) = live();
+            let group = Group {
+                handles: &handles,
+                selected,
+                enabled,
+            };
             if let Some(index) =
-                step.and_then(|step| move_focus(&handles, step, window, cx))
+                step.and_then(|step| move_focus(group, step, window, cx))
             {
                 select(index, window, cx);
             }

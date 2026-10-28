@@ -10,14 +10,19 @@
 //! `Styled`.
 //!
 //! Behavior: none of its own; its actions keep their own. An item that
-//! expands is the trigger of a
-//! [`crate::components::collapsible::Collapsible`].
+//! expands is the header of a
+//! [`crate::components::collapsible::Collapsible`] (through its `item`):
+//! the collapsible's trigger covers the media, title, and description, and
+//! the actions sit beside the trigger, outside it, so a press on an action
+//! never toggles the row.
 //!
 //! Accessibility: a `Group` named by the title, with the description as
-//! its description; the actions report their own nodes.
+//! its description; the actions report their own nodes. As a collapsible's
+//! header, the item reports no node of its own: the trigger carries its
+//! title and description.
 
 use gpui::{
-    AnyElement, App, ElementId, IntoElement, RenderOnce, SharedString,
+    AnyElement, App, Div, ElementId, IntoElement, RenderOnce, SharedString,
     StyleRefinement, Window, div, prelude::*, px,
 };
 
@@ -110,8 +115,20 @@ impl Styled for Item {
     }
 }
 
-impl RenderOnce for Item {
-    fn render(mut self, _: &mut Window, _: &mut App) -> impl IntoElement {
+/// An item taken apart, for a collapsible's header.
+pub(crate) struct Parts {
+    pub(crate) title: SharedString,
+    pub(crate) description: Option<SharedString>,
+    /// The media and content, in a row that grows to fill the item.
+    pub(crate) lead: Div,
+    /// The actions, at the trailing edge, if any.
+    pub(crate) actions: Option<Div>,
+    pub(crate) style: StyleRefinement,
+}
+
+impl Item {
+    /// The item's parts, which [`Item::render`] lays out in a padded row.
+    pub(crate) fn into_parts(self) -> Parts {
         let tokens = self.tokens;
         let title = div()
             .flex()
@@ -136,31 +153,58 @@ impl RenderOnce for Item {
                     .truncate()
                     .child(text)
             }));
+        let lead = div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(px(GAP))
+            .children(self.media)
+            .child(content);
+        let actions = (!self.actions.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(6.0))
+                .children(self.actions)
+        });
+        Parts {
+            title: self.title,
+            description: self.description,
+            lead,
+            actions,
+            style: self.style,
+        }
+    }
+}
+
+/// The space between an item's media, content, and actions.
+pub(crate) const GAP: f32 = 10.0;
+/// An item's horizontal padding, as a row of a card.
+pub(crate) const PADDING_X: f32 = 14.0;
+/// An item's vertical padding, as a row of a card.
+pub(crate) const PADDING_Y: f32 = 9.0;
+
+impl RenderOnce for Item {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let id = self.id.clone();
+        let parts = self.into_parts();
         let mut item = div()
-            .id(self.id)
+            .id(id)
             .role(gpui::Role::Group)
-            .aria_label(self.title)
-            .when_some(self.description, |item, text| {
+            .aria_label(parts.title)
+            .when_some(parts.description, |item, text| {
                 item.aria_description(text)
             })
             .flex()
             .items_center()
-            .gap(px(10.0))
-            .px(px(14.0))
-            .py(px(9.0))
-            .children(self.media)
-            .child(content)
-            .when(!self.actions.is_empty(), |item| {
-                item.child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(px(6.0))
-                        .children(self.actions),
-                )
-            });
-        item.style().refine(&std::mem::take(&mut self.style));
+            .gap(px(GAP))
+            .px(px(PADDING_X))
+            .py(px(PADDING_Y))
+            .child(parts.lead)
+            .children(parts.actions);
+        item.style().refine(&parts.style);
         item
     }
 }

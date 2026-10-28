@@ -12,10 +12,12 @@
 //! fits draws no scrollbar and leaves its right edge free for clicks.
 //!
 //! Keyboard: the area takes no focus. When focus moves to a control inside
-//! it, such as on Tab or Shift-Tab, the owner passes the control's painted
-//! bounds to [`ScrollArea::reveal`], which scrolls the smallest distance
-//! that shows the control and its focus ring fully, and nothing when they
-//! already show. A control taller than the area shows from its top.
+//! it, such as on Tab or Shift-Tab, the owner passes the control's
+//! [`ContentBounds`], recorded as it painted, to [`ScrollArea::reveal`],
+//! which scrolls the smallest distance that shows the control and its focus
+//! ring fully, and nothing when they already show, even when called again
+//! before the area repaints. A control taller than the area shows from its
+//! top.
 //!
 //! Accessibility: a `ScrollView` node; the content reports its own nodes.
 
@@ -58,15 +60,15 @@ impl ScrollArea {
     }
 
     /// Scrolls the area `scroll` tracks the smallest distance that shows
-    /// `bounds`, a control's bounds as last painted in window coordinates,
-    /// with its focus ring. Returns whether it scrolled; the owner then
-    /// redraws, and may show its scrollbar's indicator.
+    /// `target`, a control's bounds within its content, with its focus
+    /// ring. Returns whether it scrolled; the owner then redraws, and may
+    /// show its scrollbar's indicator.
     #[must_use = "the owner redraws when the area scrolled"]
-    pub fn reveal(scroll: &ScrollHandle, bounds: Bounds<Pixels>) -> bool {
+    pub fn reveal(scroll: &ScrollHandle, target: ContentBounds) -> bool {
         let offset = scroll.offset();
         let y = reveal_offset(
             scroll.bounds(),
-            bounds,
+            target.0 + offset,
             offset.y,
             scroll.max_offset().y,
         );
@@ -115,6 +117,27 @@ impl ScrollArea {
                     .children(self.children),
             )
             .children(strip)
+    }
+}
+
+/// A control's bounds within a scroll area's content: where it painted in
+/// the window, less the area's scroll offset at the time. Unlike painted
+/// bounds, they stay true after the area scrolls and before it repaints.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContentBounds(Bounds<Pixels>);
+
+impl ContentBounds {
+    /// The content bounds of a control that painted at `painted`, in window
+    /// coordinates, inside the area `scroll` tracks. Record them while the
+    /// control paints, such as from a `canvas` in it, when the area's offset
+    /// is the one its bounds were laid out with.
+    #[must_use]
+    pub fn record(scroll: &ScrollHandle, painted: Bounds<Pixels>) -> Self {
+        let offset = scroll.offset();
+        Self(Bounds {
+            origin: painted.origin - offset,
+            size: painted.size,
+        })
     }
 }
 
@@ -168,7 +191,7 @@ mod tests {
         div, point, prelude::*, px, size,
     };
 
-    use super::{ScrollArea, reveal_offset};
+    use super::{ContentBounds, ScrollArea, reveal_offset};
     use crate::list_scrollbar::ListScrollbar;
     use crate::testing::{a11y_node, tokens};
 
@@ -267,17 +290,43 @@ mod tests {
         });
         cx.run_until_parked();
         let scroll = view.read_with(cx, |view, _| view.scroll.clone());
-        let row = cx.debug_bounds("row-10").expect("row 10 painted");
+        let painted = cx.debug_bounds("row-10").expect("row 10 painted");
+        let row = ContentBounds::record(&scroll, painted);
         assert!(ScrollArea::reveal(&scroll, row), "row 10 sits below");
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
-        let row = cx.debug_bounds("row-10").expect("row 10 painted");
+        let painted = cx.debug_bounds("row-10").expect("row 10 painted");
         let viewport = scroll.bounds();
         // Its bottom and ring meet the viewport's bottom.
-        assert_eq!(row.bottom() + px(3.0), viewport.bottom());
+        assert_eq!(painted.bottom() + px(3.0), viewport.bottom());
+        let row = ContentBounds::record(&scroll, painted);
         assert!(
             !ScrollArea::reveal(&scroll, row),
             "a shown row moves nothing"
         );
+    }
+
+    #[gpui::test]
+    fn a_second_reveal_before_a_repaint_moves_nothing(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| {
+            let scroll = ScrollHandle::new();
+            Scrolled {
+                scrollbar: ListScrollbar::new(scroll.clone()),
+                scroll,
+            }
+        });
+        cx.run_until_parked();
+        let scroll = view.read_with(cx, |view, _| view.scroll.clone());
+        let painted = cx.debug_bounds("row-10").expect("row 10 painted");
+        let row = ContentBounds::record(&scroll, painted);
+        assert!(ScrollArea::reveal(&scroll, row));
+        assert!(!ScrollArea::reveal(&scroll, row), "already revealed");
+        assert_eq!(scroll.offset().y, px(-123.0));
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let painted = cx.debug_bounds("row-10").expect("row 10 painted");
+        let viewport = scroll.bounds();
+        assert!(painted.top() >= viewport.top());
+        assert!(painted.bottom() <= viewport.bottom());
     }
 }

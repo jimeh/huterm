@@ -12,14 +12,14 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, Entity, FocusHandle, Focusable as _,
-    IntoElement, Pixels, Render, ScrollHandle, SharedString, Window,
-    WindowBounds, WindowOptions, canvas, div, prelude::*, px, size,
+    IntoElement, Render, ScrollHandle, SharedString, Window, WindowBounds,
+    WindowOptions, canvas, div, prelude::*, px, size,
 };
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::alert::{Alert, Tone as AlertTone};
 use huterm_ui::components::badge::{Tone, badge};
 use huterm_ui::components::button::{Button, Variant};
-use huterm_ui::components::card::Card;
+use huterm_ui::components::card::{self, Card};
 use huterm_ui::components::collapsible::{Collapsible, chevron};
 use huterm_ui::components::empty::Empty;
 use huterm_ui::components::field::Field;
@@ -32,7 +32,7 @@ use huterm_ui::components::menu::{
 use huterm_ui::components::number_field::{Format, NumberField};
 use huterm_ui::components::popover::{Anchor, Popover, place};
 use huterm_ui::components::radio_group::RadioGroup;
-use huterm_ui::components::scroll_area::ScrollArea;
+use huterm_ui::components::scroll_area::{ContentBounds, ScrollArea};
 use huterm_ui::components::select::Select;
 use huterm_ui::components::slider::Slider;
 use huterm_ui::components::switch::Switch;
@@ -96,7 +96,7 @@ struct Column {
     slider: f64,
     /// The scroll area's row that its Reveal button scrolls to, as last
     /// painted.
-    revealed: Rc<Cell<Option<Bounds<Pixels>>>>,
+    revealed: Rc<Cell<Option<ContentBounds>>>,
     /// The layout entries' state: the selected tab, the checked density and
     /// theme, and whether the collapsible is open.
     section: usize,
@@ -343,10 +343,11 @@ impl Gallery {
             |gallery| &mut gallery.columns[1].scrollbar
         };
         let revealed = column.revealed.clone();
+        let scroll = column.scroll.clone();
         let rows = ScrollArea::new(("gallery-scroll", index), &column.scroll)
             .max_height(Some(px(96.0)))
             .children((1..=20).map(|row| {
-                let probe = revealed.clone();
+                let (probe, scroll) = (revealed.clone(), scroll.clone());
                 div()
                     .relative()
                     .px(px(8.0))
@@ -356,7 +357,11 @@ impl Gallery {
                         row.child(
                             canvas(
                                 |_, _, _| {},
-                                move |bounds, (), _, _| probe.set(Some(bounds)),
+                                move |bounds, (), _, _| {
+                                    probe.set(Some(ContentBounds::record(
+                                        &scroll, bounds,
+                                    )));
+                                },
                             )
                             .absolute()
                             .inset_0(),
@@ -651,12 +656,13 @@ impl Gallery {
             enabled,
             swatch,
         )
-        .trigger(
+        .item(
             RowItem::new(("collapsible-copy", index), "Copy", swatch)
                 .description("Copy the selection to the clipboard")
                 .media(chevron(path, open, swatch))
                 .action(kbd::cap(&glyphs, swatch)),
         )
+        .corners(card::row_corners(0, 2))
         .on_toggle(move |next, _, cx| {
             let _ = gallery.update(cx, |gallery, cx| {
                 gallery.columns[index].open = next;
@@ -678,10 +684,11 @@ impl Gallery {
             disabled,
             swatch,
         )
-        .trigger(
+        .item(
             RowItem::new(("collapsible-paste", index), "Paste", swatch)
                 .media(chevron(path, false, swatch)),
         )
+        .corners(card::row_corners(1, 2))
         .disabled(Some("The file is invalid".into()));
         entry(
             "collapsible",

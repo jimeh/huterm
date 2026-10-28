@@ -13,12 +13,15 @@
 //! [`crate::roving::Move::along`] and no axis (Up and Left back, Down and
 //! Right on, wrapping), and Home and End, and checks the radio focus
 //! reaches, as WAI-ARIA's radio group does. Its activation command (Space
-//! by default) checks the focused radio. GPUI's implicit keyboard click is
-//! ignored, so only routed commands act on keys.
+//! by default) checks the focused radio through
+//! [`crate::roving::activate`]. A move or activation onto the checked radio
+//! reports nothing. GPUI's implicit keyboard click is ignored, so only
+//! routed commands act on keys.
 //!
 //! Pointer: a click on a radio focuses and checks it. A disabled group
-//! takes no focus from a press, does not check, drops its tab stop, dims,
-//! and shows its reason as a tooltip.
+//! takes no focus from a press, does not check, drops its tab stop,
+//! refuses its routed commands (the owner passes its live enabled state to
+//! [`crate::roving`]), dims, and shows its reason as a tooltip.
 //!
 //! Focus: the focused radio, row or card, draws the focus ring after a key.
 //!

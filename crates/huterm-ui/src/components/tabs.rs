@@ -12,12 +12,18 @@
 //! [`crate::roving::Move::along`] for the arrows of the list's axis (Up and
 //! Down when vertical, Left and Right when horizontal), and Home and End,
 //! and selects the tab focus reaches: activation is automatic, as Radix's
-//! default is. Moves wrap. GPUI's implicit keyboard click is ignored, so
-//! only routed commands act on keys.
+//! default is. Moves wrap; a move onto the selected tab reports nothing.
+//! GPUI's implicit keyboard click is ignored, so only routed commands act
+//! on keys.
 //!
 //! Pointer: a click on a tab focuses and selects it. A disabled list takes
-//! no focus from a press, does not select, drops its tab stop, and shows
-//! its reason as a tooltip.
+//! no focus from a press, does not select, drops its tab stop, refuses its
+//! routed commands (the owner passes its live enabled state to
+//! [`crate::roving::move_focus`]), and shows its reason as a tooltip.
+//!
+//! Focus: the focused tab draws the focus ring after a key: around a
+//! horizontal tab, and inside a vertical one, which fills the list's width
+//! and would lose an outer ring to a sidebar that clips its overflow.
 //!
 //! Accessibility: a `TabList` named by its label, with its orientation and
 //! size, of `Tab`s whose selected state follows the selection (macOS reads
@@ -262,7 +268,11 @@ fn render_tab(
         })
         .child(div().flex_1().min_w_0().truncate().child(tab.label))
         .children(tab.trailing);
-    let element = focus::ring(element, &focus, tokens, window, cx);
+    let element = if vertical {
+        focus::ring_inset(element, &focus, tokens, window, cx)
+    } else {
+        focus::ring(element, &focus, tokens, window, cx)
+    };
     States {
         disabled: !enabled,
         ..States::default()

@@ -8,18 +8,42 @@
 //!
 //! Behavior: none; a card never takes focus or input.
 //!
+//! Focus: the panel clips its rows to its rounded corners, so a full-width
+//! row that takes focus, such as a
+//! [`crate::components::collapsible::Collapsible`]'s trigger, draws its
+//! ring inside its edge ([`crate::focus::ring_inset`]) and rounds its fill
+//! and ring to [`row_corners`].
+//!
 //! Accessibility: a titled card is a `Group` named by its title; an
 //! untitled one reports no node, and its rows report their own.
 
 use gpui::{
-    AnyElement, App, ElementId, IntoElement, ParentElement, RenderOnce,
-    SharedString, Window, div, prelude::*, px,
+    AnyElement, App, Corners, ElementId, IntoElement, ParentElement, Pixels,
+    RenderOnce, SharedString, Window, div, prelude::*, px,
 };
 
 use crate::tokens::{Tokens, size};
 
 /// The panel's corner radius.
 const RADIUS: f32 = 8.0;
+
+/// The corner radii of row `index` of a card's `count` rows, for a row that
+/// draws a fill or a ring to its edges: the radius inside the panel's
+/// border where the row meets the panel's rounded corners, and square
+/// elsewhere.
+#[must_use]
+pub fn row_corners(index: usize, count: usize) -> Corners<Pixels> {
+    // Inside the one-point border.
+    let inner = px(RADIUS - 1.0);
+    let (top, bottom) = (index == 0, index + 1 == count);
+    let radius = |at: bool| if at { inner } else { Pixels::ZERO };
+    Corners {
+        top_left: radius(top),
+        top_right: radius(top),
+        bottom_right: radius(bottom),
+        bottom_left: radius(bottom),
+    }
+}
 
 /// A card.
 #[derive(IntoElement)]

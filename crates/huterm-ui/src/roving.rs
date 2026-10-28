@@ -5,8 +5,13 @@
 //! stop ([`stop`]): the focused item, else the selected one, else the
 //! first. The owner routes its move commands (the arrow keys, Home, and End
 //! by default) through [`move_focus`], which focuses the target item and
-//! returns its index, so the owner can select it as well. [`Move::along`]
-//! turns an arrow into a move for a group laid out along one axis.
+//! returns its index when that changes the selection, so the owner can
+//! select it as well; its activation command goes through [`activate`] the
+//! same way. [`Move::along`] turns an arrow into a move for a group laid
+//! out along one axis. Both take the owner's [`Group`] as it stands when
+//! the command arrives, and a disabled group refuses them: an item keeps
+//! the focus it had when its group became disabled, and keys still reach
+//! the owner.
 
 use gpui::{App, Axis, FocusHandle, Window};
 
@@ -81,6 +86,17 @@ pub fn target(count: usize, from: Option<usize>, step: Move) -> Option<usize> {
     })
 }
 
+/// A roving group as its owner holds it when a command arrives.
+#[derive(Clone, Copy, Debug)]
+pub struct Group<'a> {
+    /// Every item's focus handle, in order.
+    pub handles: &'a [FocusHandle],
+    /// The selected item, if any.
+    pub selected: Option<usize>,
+    /// Whether the group is enabled now.
+    pub enabled: bool,
+}
+
 /// The index of the item in `handles` that has focus.
 #[must_use]
 pub fn focused(handles: &[FocusHandle], window: &Window) -> Option<usize> {
@@ -94,19 +110,34 @@ pub fn stop(focused: Option<usize>, selected: Option<usize>) -> usize {
     focused.or(selected).unwrap_or(0)
 }
 
-/// Moves focus from the focused item in `handles` by `step`, and returns
-/// the index it moved to. Nothing moves, and `None` returns, while no item
-/// has focus, because only a focused group receives its move commands.
+/// Moves focus from the group's focused item by `step`, and returns the
+/// index it moved to, for the owner to select. `None` returns when the move
+/// leaves the selection as it was: while the group is disabled or no item
+/// has focus (only a focused group receives its move commands), nothing
+/// moves; a move onto the selected item, such as Home on the first, moves
+/// focus there and reports nothing, as a click on it does.
 pub fn move_focus(
-    handles: &[FocusHandle],
+    group: Group<'_>,
     step: Move,
     window: &mut Window,
     cx: &mut App,
 ) -> Option<usize> {
-    let from = focused(handles, window)?;
-    let index = target(handles.len(), Some(from), step)?;
-    handles[index].focus(window, cx);
-    Some(index)
+    if !group.enabled {
+        return None;
+    }
+    let from = focused(group.handles, window)?;
+    let index = target(group.handles.len(), Some(from), step)?;
+    group.handles[index].focus(window, cx);
+    Some(index).filter(|index| group.selected != Some(*index))
+}
+
+/// The index of the item the owner's activation command (Space by default)
+/// selects: the focused one, while the group is enabled and that item is
+/// not already selected.
+#[must_use]
+pub fn activate(group: Group<'_>, window: &Window) -> Option<usize> {
+    focused(group.handles, window)
+        .filter(|index| group.enabled && group.selected != Some(*index))
 }
 
 #[cfg(test)]

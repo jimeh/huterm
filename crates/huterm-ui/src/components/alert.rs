@@ -9,8 +9,10 @@
 //! and removes it with the state it reports.
 //!
 //! Colors: the band is a faint wash of the tone over whatever it sits on,
-//! its border the tone itself; the title draws in the foreground, and the
-//! description in muted text corrected for the wash, so both reach 4.5:1.
+//! its border the tone itself; the title draws in the foreground where that
+//! reaches 4.5:1 on the wash over the background and the surface, else in
+//! whichever text color does, and the description in muted text corrected
+//! for the wash, so both reach 4.5:1.
 //!
 //! Accessibility: a `Status` node named by the title, with the description
 //! as its description; its content reports its own nodes.
@@ -20,7 +22,7 @@ use gpui::{
     SharedString, Window, div, prelude::*, px,
 };
 
-use crate::tokens::{Tokens, size};
+use crate::tokens::{TEXT_CONTRAST, Tokens, contrast, over, size};
 
 /// An alert's color scheme.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -56,10 +58,18 @@ impl Tone {
             Self::Warning => (tokens.warning.opacity(0.08), tokens.warning),
             Self::Danger => (tokens.danger.opacity(0.08), tokens.danger),
         };
+        let unders = [over(fill, tokens.bg), over(fill, tokens.surface)];
+        let fg_reads = unders.iter().all(|under| {
+            contrast(over(tokens.fg, *under), *under) >= TEXT_CONTRAST
+        });
         Colors {
             fill,
             border,
-            title: tokens.fg,
+            title: if fg_reads {
+                tokens.fg
+            } else {
+                tokens.on_all(&unders)
+            },
             text: tokens.muted_on(fill),
         }
     }
@@ -165,8 +175,9 @@ mod tests {
     use gpui::{TestAppContext, prelude::*};
 
     use super::{Alert, Tone};
+    use crate::scrollbar::ScrollbarColors;
     use crate::testing::{a11y_node, host, tokens};
-    use crate::tokens::{TEXT_CONTRAST, contrast, over};
+    use crate::tokens::{OverlayColors, TEXT_CONTRAST, Tokens, contrast, over};
 
     #[gpui::test]
     fn an_alert_reports_a_named_status(cx: &mut TestAppContext) {
@@ -189,7 +200,29 @@ mod tests {
 
     #[test]
     fn every_tones_text_reads_on_its_wash() {
-        let t = tokens();
+        reads_on_every_wash(tokens());
+    }
+
+    #[test]
+    fn a_title_reads_where_the_foreground_would_not() {
+        let rgb = |hex: u32| gpui::Hsla::from(gpui::rgb(hex));
+        // Its foreground reaches only 4.44:1 on the warning wash.
+        let dim = Tokens::new(OverlayColors {
+            foreground: rgb(0x0078_7878),
+            background: rgb(0x0000_0000),
+            selection: rgb(0x0033_4466),
+            accent: rgb(0x0066_99ff),
+            danger: rgb(0x00ff_5555),
+            warning: rgb(0x00ff_cc00),
+            scrollbar: ScrollbarColors {
+                thumb: rgb(0x0078_7878),
+                track: rgb(0x0000_0000),
+            },
+        });
+        reads_on_every_wash(dim);
+    }
+
+    fn reads_on_every_wash(t: Tokens) {
         for tone in [Tone::Neutral, Tone::Warning, Tone::Danger] {
             let colors = tone.colors(t);
             for under in [t.bg, t.surface] {

@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use super::{Tabs, panel};
-use crate::focus::ring_drawn;
+use crate::focus::{inset_ring_drawn, ring_drawn};
 use crate::testing::{
     KEYS, a11y_labelled, a11y_node, a11y_send, bind_keys, host, route_moves,
     tokens,
@@ -19,6 +19,8 @@ struct Probe {
     tabs: Vec<FocusHandle>,
     before: FocusHandle,
     picks: Rc<RefCell<Vec<SharedString>>>,
+    /// Whether the list is enabled; a test may change it.
+    enabled: Rc<Cell<bool>>,
 }
 
 /// A focusable stop, then a tab list over [`SECTIONS`] along `axis` with
@@ -33,9 +35,10 @@ fn sections(
         cx.update(|cx| SECTIONS.iter().map(|_| cx.focus_handle()).collect());
     let before = cx.update(|cx| cx.focus_handle().tab_stop(true));
     let picks = Rc::new(RefCell::new(Vec::new()));
+    let enabled = Rc::new(Cell::new(!disabled));
     let selected = Rc::new(RefCell::new(SharedString::from(SECTIONS[0])));
-    let (drawn, drawn_before, seen) =
-        (tabs.clone(), before.clone(), picks.clone());
+    let (drawn, drawn_before, seen, live_enabled) =
+        (tabs.clone(), before.clone(), picks.clone(), enabled.clone());
     let (_, cx) = host(cx, move |_, _| {
         let pick = {
             let (seen, selected) = (seen.clone(), selected.clone());
@@ -58,16 +61,26 @@ fn sections(
         } else {
             list
         };
-        let list = if disabled {
-            list.disabled(Some("The file is invalid".into()))
-        } else {
+        let list = if live_enabled.get() {
             let pick = pick.clone();
             list.on_select(move |value, window, _| pick(value, window))
+        } else {
+            list.disabled(Some("The file is invalid".into()))
+        };
+        let live = {
+            let (selected, enabled) = (selected.clone(), live_enabled.clone());
+            move || {
+                let selected = selected.borrow();
+                let index =
+                    SECTIONS.iter().position(|section| *selected == *section);
+                (index, enabled.get())
+            }
         };
         let routed = route_moves(
             div().w(px(200.0)).child(list),
             &drawn,
             Some(axis),
+            live,
             move |index, window, _| pick(SECTIONS[index].into(), window),
         );
         div()
@@ -82,6 +95,7 @@ fn sections(
             tabs,
             before,
             picks,
+            enabled,
         },
         cx,
     )
@@ -163,7 +177,7 @@ fn vertical_arrows_home_and_end_move_and_select(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("right left");
     assert!(focused(cx, &probe.tabs[1]));
     // Moves wrap at the ends, and Home and End jump to them.
-    cx.simulate_keystrokes("down down up end home");
+    cx.simulate_keystrokes("down down up home");
     assert!(focused(cx, &probe.tabs[0]));
     assert_eq!(
         picks(&probe),
@@ -172,10 +186,21 @@ fn vertical_arrows_home_and_end_move_and_select(cx: &mut TestAppContext) {
             "Keybindings",
             "General",
             "Keybindings",
-            "Keybindings",
             "General"
         ]
     );
+}
+
+#[gpui::test]
+fn a_move_onto_the_selected_tab_reports_nothing(cx: &mut TestAppContext) {
+    let (probe, cx) = sections(cx, Axis::Vertical, false);
+    cx.update(|window, cx| probe.tabs[0].focus(window, cx));
+    cx.simulate_keystrokes("home");
+    assert!(focused(cx, &probe.tabs[0]));
+    assert!(probe.picks.borrow().is_empty());
+    cx.simulate_keystrokes("end end");
+    assert!(focused(cx, &probe.tabs[2]));
+    assert_eq!(picks(&probe), ["Keybindings"]);
 }
 
 #[gpui::test]
@@ -217,9 +242,36 @@ fn keyboard_focus_rings_the_focused_tab(cx: &mut TestAppContext) {
     cx.update(|window, cx| probe.tabs[0].focus(window, cx));
     cx.simulate_keystrokes("down");
     cx.update(|window, cx| {
-        assert!(ring_drawn(&probe.tabs[1], window, cx));
-        assert!(!ring_drawn(&probe.tabs[0], window, cx));
+        // A vertical tab fills the list's width, so its ring is inside it.
+        assert!(inset_ring_drawn(&probe.tabs[1], window, cx));
+        assert!(!ring_drawn(&probe.tabs[1], window, cx));
+        assert!(!inset_ring_drawn(&probe.tabs[0], window, cx));
     });
+}
+
+#[gpui::test]
+fn a_horizontal_tab_draws_its_ring_around_it(cx: &mut TestAppContext) {
+    let (probe, cx) = sections(cx, Axis::Horizontal, false);
+    cx.update(|window, cx| probe.tabs[0].focus(window, cx));
+    cx.simulate_keystrokes("right");
+    cx.update(|window, cx| {
+        assert!(ring_drawn(&probe.tabs[1], window, cx));
+    });
+}
+
+#[gpui::test]
+fn a_list_disabled_under_focus_refuses_moves(cx: &mut TestAppContext) {
+    let (probe, cx) = sections(cx, Axis::Vertical, false);
+    cx.update(|window, cx| probe.tabs[0].focus(window, cx));
+    probe.enabled.set(false);
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.update(|window, _| {
+        assert_eq!(a11y_node(window, "sections")["aria"]["disabled"], true);
+    });
+    cx.simulate_keystrokes("down end");
+    assert!(focused(cx, &probe.tabs[0]));
+    assert!(probe.picks.borrow().is_empty());
 }
 
 #[gpui::test]

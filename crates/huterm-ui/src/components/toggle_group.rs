@@ -8,8 +8,9 @@
 //! Keyboard, single: the group is one tab stop; the owner moves the
 //! selection with its step commands (the arrow keys by default), which
 //! selects and applies, as a radio group does. Multiple: one roving tab
-//! stop, the focused item or else the first; the owner moves focus between
-//! items with its step commands through [`roving_target`], wrapping, and
+//! stop, the focused item or else the first, as [`crate::roving::stop`]
+//! decides; the owner moves focus between items with its step commands
+//! through [`roving_target`], wrapping as [`crate::roving`] does, and
 //! toggles the focused item with its activation command. GPUI's implicit
 //! keyboard click is ignored, so only routed commands act on keys.
 //!
@@ -38,6 +39,7 @@ use crate::a11y::States;
 use crate::click::from_keyboard;
 use crate::components::tooltip::Tooltip;
 use crate::focus;
+use crate::roving::{self, Move};
 use crate::tokens::{Tokens, size};
 
 /// Whether a group picks one item or toggles several.
@@ -224,24 +226,20 @@ impl ToggleGroup {
 }
 
 /// The handle a multiple group's focus moves to from the focused item,
-/// `forward` or back, wrapping; the first item when none has focus.
+/// `forward` or back, wrapping, through [`crate::roving::target`]; the first
+/// item when none has focus.
 #[must_use]
 pub fn roving_target(
     items: &[FocusHandle],
     forward: bool,
     window: &Window,
 ) -> Option<FocusHandle> {
-    let count = items.len();
-    let Some(current) = items.iter().position(|item| item.is_focused(window))
-    else {
-        return items.first().cloned();
+    let step = if forward { Move::Next } else { Move::Previous };
+    let index = match roving::focused(items, window) {
+        Some(from) => roving::target(items.len(), Some(from), step)?,
+        None => 0,
     };
-    let next = if forward {
-        (current + 1) % count
-    } else {
-        (current + count - 1) % count
-    };
-    items.get(next).cloned()
+    items.get(index).cloned()
 }
 
 /// Where an item sits and how its group draws it.
@@ -372,14 +370,14 @@ impl RenderOnce for ToggleGroup {
         let single = self.mode == Mode::Single;
         let count = self.items.len();
         let parent = Arc::new(self.id.clone());
-        // A multiple group's tab stop is its focused item, else its first.
-        let roving = self
-            .items
-            .iter()
-            .position(|item| {
+        // A multiple group's tab stop is its focused item, else its first:
+        // it marks no item as selected, since several may be on.
+        let tab_stop = roving::stop(
+            self.items.iter().position(|item| {
                 item.focus.as_ref().is_some_and(|f| f.is_focused(window))
-            })
-            .unwrap_or(0);
+            }),
+            None,
+        );
         debug_assert!(
             !single || self.items.iter().filter(|item| item.on).count() <= 1,
             "a single toggle group selects at most one option"
@@ -402,7 +400,7 @@ impl RenderOnce for ToggleGroup {
                     single,
                     enabled,
                     index,
-                    stop: index == roving,
+                    stop: index == tab_stop,
                     followed: followed == Some(index),
                     key_context: self.key_context.clone().filter(|_| !single),
                 };

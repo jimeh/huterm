@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
@@ -8,7 +8,7 @@ use gpui::{
 
 use super::RadioGroup;
 use crate::focus::ring_drawn;
-use crate::roving::focused;
+use crate::roving::{Group, activate};
 use crate::testing::{
     Activate, KEYS, a11y_labelled, a11y_node, a11y_send, bind_keys, host,
     route_moves, tokens,
@@ -20,6 +20,8 @@ struct Probe {
     radios: Vec<FocusHandle>,
     before: FocusHandle,
     picks: Rc<RefCell<Vec<SharedString>>>,
+    /// Whether the group is enabled; a test may change it.
+    enabled: Rc<Cell<bool>>,
 }
 
 /// How a test group draws.
@@ -41,17 +43,20 @@ fn themes(
         cx.update(|cx| THEMES.iter().map(|_| cx.focus_handle()).collect());
     let before = cx.update(|cx| cx.focus_handle().tab_stop(true));
     let picks = Rc::new(RefCell::new(Vec::new()));
+    let enabled = Rc::new(Cell::new(kind != Kind::Disabled));
     let checked = Rc::new(RefCell::new(SharedString::from(THEMES[1])));
-    let (drawn, drawn_before, seen) =
-        (radios.clone(), before.clone(), picks.clone());
+    let (drawn, drawn_before, seen, live_enabled) = (
+        radios.clone(),
+        before.clone(),
+        picks.clone(),
+        enabled.clone(),
+    );
     let (_, cx) = host(cx, move |_, _| {
         let pick = {
             let (seen, checked) = (seen.clone(), checked.clone());
             move |value: SharedString, window: &mut Window| {
-                if *checked.borrow() != value {
-                    seen.borrow_mut().push(value.clone());
-                    *checked.borrow_mut() = value;
-                }
+                seen.borrow_mut().push(value.clone());
+                *checked.borrow_mut() = value;
                 window.refresh();
             }
         };
@@ -68,23 +73,37 @@ fn themes(
                 }
             },
         );
-        let group = match kind {
-            Kind::Rows => group,
-            Kind::Cards => group.card(px(116.0)),
-            Kind::Disabled => {
-                group.disabled(Some("The file is invalid".into()))
-            }
-        };
-        let group = if kind == Kind::Disabled {
-            group
+        let group = if kind == Kind::Cards {
+            group.card(px(116.0))
         } else {
+            group
+        };
+        let group = if live_enabled.get() {
             let pick = pick.clone();
             group.on_select(move |value, window, _| pick(value, window))
+        } else {
+            group.disabled(Some("The file is invalid".into()))
         };
+        let live = {
+            let (checked, enabled) = (checked.clone(), live_enabled.clone());
+            move || {
+                let checked = checked.borrow();
+                let index = THEMES.iter().position(|theme| *checked == *theme);
+                (index, enabled.get())
+            }
+        };
+        let live = Rc::new(live);
         let activate = {
-            let (pick, handles) = (pick.clone(), drawn.clone());
+            let (pick, handles, live) =
+                (pick.clone(), drawn.clone(), live.clone());
             move |_: &Activate, window: &mut Window, _: &mut gpui::App| {
-                if let Some(index) = focused(&handles, window) {
+                let (selected, enabled) = live();
+                let group = Group {
+                    handles: &handles,
+                    selected,
+                    enabled,
+                };
+                if let Some(index) = activate(group, window) {
                     pick(THEMES[index].into(), window);
                 }
             }
@@ -93,6 +112,7 @@ fn themes(
             div().w(px(400.0)).child(group),
             &drawn,
             None,
+            move || live(),
             move |index, window, _| pick(THEMES[index].into(), window),
         )
         .on_action(activate);
@@ -107,6 +127,7 @@ fn themes(
             radios,
             before,
             picks,
+            enabled,
         },
         cx,
     )
@@ -202,6 +223,24 @@ fn space_checks_the_focused_radio(cx: &mut TestAppContext) {
     assert!(probe.picks.borrow().is_empty());
     cx.simulate_keystrokes("space");
     assert_eq!(picks(&probe), ["Solarized"]);
+    // The checked radio reports nothing.
+    cx.simulate_keystrokes("space");
+    assert_eq!(picks(&probe), ["Solarized"]);
+}
+
+#[gpui::test]
+fn a_group_disabled_under_focus_refuses_keys(cx: &mut TestAppContext) {
+    let (probe, cx) = themes(cx, Kind::Rows);
+    cx.update(|window, cx| probe.radios[2].focus(window, cx));
+    probe.enabled.set(false);
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.update(|window, _| {
+        assert_eq!(a11y_node(window, "themes")["aria"]["disabled"], true);
+    });
+    cx.simulate_keystrokes("down home space");
+    assert!(is_focused(cx, &probe.radios[2]));
+    assert!(probe.picks.borrow().is_empty());
 }
 
 #[gpui::test]

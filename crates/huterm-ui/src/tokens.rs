@@ -494,6 +494,27 @@ impl Tokens {
             shadow(self.surface, px(1.0)),
         ]
     }
+
+    /// [`Self::focus_ring`] drawn inside a control's edge, with its gap of
+    /// the surface inside the ring, for a full-width row whose container
+    /// clips anything drawn outside it. Components draw it through
+    /// [`crate::focus::ring_inset`].
+    #[must_use]
+    pub fn focus_ring_inset(&self) -> Vec<BoxShadow> {
+        let shadow = |color, spread| BoxShadow {
+            color,
+            offset: point(px(0.0), px(0.0)),
+            blur_radius: px(0.0),
+            spread_radius: spread,
+            inset: true,
+        };
+        // Later shadows draw over earlier ones, so the ring covers all but
+        // the innermost point of the gap.
+        vec![
+            shadow(self.surface, size::FOCUS_RING + px(1.0)),
+            shadow(self.ring(), size::FOCUS_RING),
+        ]
+    }
 }
 
 /// Mixes `from` toward `to` by `amount` in sRGB, ignoring alpha.
