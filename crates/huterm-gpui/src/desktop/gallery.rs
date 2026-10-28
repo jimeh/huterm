@@ -12,8 +12,8 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, Entity, FocusHandle, Focusable as _,
-    IntoElement, KeyBinding, Render, ScrollHandle, SharedString, Window,
-    WindowBounds, WindowOptions, canvas, div, prelude::*, px, size,
+    IntoElement, KeyBinding, Render, ScrollHandle, SharedString, Subscription,
+    Window, WindowBounds, WindowOptions, canvas, div, prelude::*, px, size,
 };
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::alert::{Alert, Tone as AlertTone};
@@ -30,6 +30,9 @@ use huterm_ui::components::field::Field;
 use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::components::input_group::{Addon, InputGroup};
 use huterm_ui::components::item::Item as RowItem;
+use huterm_ui::components::key_recorder::{
+    KeyRecorder, KeyRecorderButton, KeyRecorderEvent,
+};
 use huterm_ui::components::menu::{
     MIN_WIDTH, Menu, MenuEvent, Role as MenuRole,
 };
@@ -160,6 +163,7 @@ struct Column {
     fields: Fields,
     lists: Lists,
     dialogs: Dialogs,
+    recorders: Recorders,
     /// The slider entry's value, a Quake width.
     slider: f64,
     /// The scroll area's row that its Reveal button scrolls to, as last
@@ -493,6 +497,34 @@ enum ListKey {
     Close,
 }
 
+/// The key recorder entry: a shortcut it records over, an Add button with
+/// none, and a disabled recorder.
+struct Recorders {
+    shortcut: SharedString,
+    set: Entity<KeyRecorder>,
+    add: Entity<KeyRecorder>,
+    locked: Entity<KeyRecorder>,
+}
+
+impl Recorders {
+    fn new(cx: &mut App) -> Self {
+        let recorder = |cx: &mut App| {
+            let focus = cx.focus_handle();
+            cx.new(|_| {
+                KeyRecorder::new(focus, |keys| {
+                    KeyHint::parse(keys, Platform::current()).glyphs()
+                })
+            })
+        };
+        Self {
+            shortcut: "cmd-k cmd-t".into(),
+            set: recorder(cx),
+            add: recorder(cx),
+            locked: recorder(cx),
+        }
+    }
+}
+
 /// The handles the column's focusable controls take focus through.
 struct Controls {
     switches: [FocusHandle; 3],
@@ -572,6 +604,9 @@ struct Gallery {
     focus: FocusHandle,
     /// Wakes the gallery at the scrollbars' and menus' next deadline.
     wake: Wake,
+    /// The key recorder that started last, which the interceptor feeds.
+    recorder: Option<Entity<KeyRecorder>>,
+    _interceptor: Subscription,
 }
 
 impl Gallery {
@@ -599,6 +634,7 @@ impl Gallery {
                 fields: Fields::new(index, swatch, window, cx),
                 lists: Lists::new(index, swatch, window, cx),
                 dialogs: Dialogs::new(index, swatch, cx),
+                recorders: Recorders::new(cx),
                 slider: 0.6,
                 revealed: Rc::default(),
                 section: 0,
@@ -611,18 +647,53 @@ impl Gallery {
             column(0, "huterm-dark", &Theme::huterm_dark()),
             column(1, LIGHT_THEME, &light),
         ];
-        for column in &columns {
+        for (index, column) in columns.iter().enumerate() {
             cx.subscribe(&column.dialogs.field, |_, field, _: &Changed, cx| {
                 let invalid = rename_error(field.read(cx).text()).is_some();
                 field.update(cx, |field, cx| field.set_invalid(invalid, cx));
                 cx.notify();
             })
             .detach();
+            let recorders = &column.recorders;
+            for recorder in [&recorders.set, &recorders.add] {
+                cx.subscribe(recorder, move |gallery, recorder, event, cx| {
+                    match event {
+                        KeyRecorderEvent::Started => {
+                            gallery.recorder = Some(recorder);
+                        }
+                        KeyRecorderEvent::Recorded(keys) => {
+                            gallery.columns[index].recorders.shortcut =
+                                keys.clone().into();
+                        }
+                        KeyRecorderEvent::Canceled => {}
+                    }
+                    cx.notify();
+                })
+                .detach();
+            }
         }
+        // The recorders see raw keys, before any binding.
+        let gallery = cx.entity().downgrade();
+        let interceptor = cx.intercept_keystrokes(move |event, _, cx| {
+            let taken = gallery
+                .update(cx, |gallery, cx| {
+                    gallery.recorder.clone().is_some_and(|recorder| {
+                        recorder.update(cx, |recorder, cx| {
+                            recorder.intercept(event, cx)
+                        })
+                    })
+                })
+                .unwrap_or(false);
+            if taken {
+                cx.stop_propagation();
+            }
+        });
         Self {
             columns,
             focus: cx.focus_handle(),
             wake: Wake::default(),
+            recorder: None,
+            _interceptor: interceptor,
         }
     }
 
@@ -749,6 +820,7 @@ impl Gallery {
             .child(badges(index, swatch))
             .child(buttons(index, swatch))
             .child(key_caps(swatch))
+            .child(key_recorders(index, swatch, &column.recorders, cx))
             .child(scroll_area)
             .child(separators(swatch))
             .child(entry(
@@ -1891,6 +1963,70 @@ fn key_caps(swatch: Swatch) -> Div {
                 .child("Run")
                 .child(kbd::cap_on(&glyphs, swatch.on_accent())),
         ),
+    )
+}
+
+/// A recorder over a shortcut, an Add button with none, and a disabled
+/// recorder, with the hint under them while one records. A click starts
+/// recording; the gallery binds no activation key.
+fn key_recorders(
+    index: usize,
+    swatch: Swatch,
+    recorders: &Recorders,
+    cx: &App,
+) -> Div {
+    let hint = [&recorders.set, &recorders.add]
+        .into_iter()
+        .find_map(|recorder| recorder.read(cx).hint());
+    entry(
+        "key_recorder",
+        "Key recorder",
+        swatch,
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(
+                row()
+                    .child(
+                        KeyRecorderButton::new(
+                            ("recorder-set", index),
+                            "New Tab shortcut",
+                            &recorders.set,
+                            swatch,
+                        )
+                        .shortcut(Some(recorders.shortcut.clone()))
+                        .w(px(96.0)),
+                    )
+                    .child(
+                        KeyRecorderButton::new(
+                            ("recorder-add", index),
+                            "Add shortcut for New Tab",
+                            &recorders.add,
+                            swatch,
+                        )
+                        .placeholder("Add shortcut"),
+                    )
+                    .child(
+                        KeyRecorderButton::new(
+                            ("recorder-locked", index),
+                            "Close Tab shortcut",
+                            &recorders.locked,
+                            swatch,
+                        )
+                        .shortcut(Some("cmd-w"))
+                        .disabled(Some(
+                            "Read-only until config.toml is fixed".into(),
+                        ))
+                        .w(px(96.0)),
+                    ),
+            )
+            .children(hint.map(|hint| {
+                div()
+                    .text_size(size::TEXT_SMALL)
+                    .text_color(swatch.accent_text())
+                    .child(hint)
+            })),
     )
 }
 

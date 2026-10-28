@@ -8,7 +8,7 @@ use super::super::settings_window::SettingsView;
 use super::settings::{
     ScratchConfig, open_settings, settings, settled, with_view, with_window,
 };
-use super::settings_controls::{a11y_node, keys, visual};
+use super::settings_controls::{a11y_node, key_down, keys, visual};
 use super::*;
 
 const LOGS: &str = "# Mine.\n\n[quake.profiles.logs]\nheight = 0.3 # short\n";
@@ -191,6 +191,39 @@ fn global_shortcuts_record_change_and_go(cx: &mut TestAppContext) {
         !text.contains("global_keybinding")
     });
     assert_eq!(file.text(), LOGS);
+}
+
+#[gpui::test]
+fn a_held_key_records_one_global_shortcut(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-held", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    press(&mut harness, "gadd");
+    // The Space that started recording repeats while it is held, which
+    // records nothing.
+    key_down(&harness, "space", true);
+    key_down(&harness, "space", true);
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), Some(Vec::new()));
+    });
+    // The held shortcut records once; its repeats start nothing.
+    key_down(&harness, "ctrl-alt-shift-y", false);
+    key_down(&harness, "ctrl-alt-shift-y", true);
+    key_down(&harness, "ctrl-alt-shift-y", true);
+    saved(&mut harness, &file, |text| {
+        text.contains("global_keybinding")
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), None);
+    });
+    assert_eq!(
+        file.text(),
+        format!(
+            "{LOGS}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+             command = \"toggle_quake\"\n"
+        )
+    );
 }
 
 #[gpui::test]

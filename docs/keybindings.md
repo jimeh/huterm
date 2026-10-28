@@ -8,13 +8,14 @@ live in the same file as the other settings; see
 The Keybindings section of Settings edits them in place. Each command row
 expands to its shortcuts: click a key, or press Space on it, then press the new
 shortcut. A second key within a second makes a chord, Return saves at once,
-and Escape cancels. The recorder takes keys that are bound elsewhere, so
-`cmd-w` records instead of closing the window. Each shortcut also has a `when`
-field that completes context names and checks the condition before saving,
-its argument values, and a switch. Changing or switching off a default writes
-a `disabled = true` entry for exactly that shortcut, plus the changed binding;
-Restore defaults removes the command's entries. Keys the operating system or a
-global shortcut takes first cannot be recorded.
+and Escape cancels. Holding a key records it once. The recorder takes keys
+that are bound elsewhere, so `cmd-w` records instead of closing the window.
+Each shortcut also has a `when` field that completes context names and checks
+the condition before saving, its argument values, and a switch. Changing or
+switching off a default writes a `disabled = true` entry for exactly that
+shortcut, plus the changed binding; Restore defaults removes the command's
+entries. Keys the operating system or a global shortcut takes first cannot be
+recorded.
 
 ## Command palette
 
@@ -557,8 +558,8 @@ sidebar moves into the shown section's first control, and Shift-Tab from that
 control returns to the sidebar; the footer's links come after the section.
 Moving focus with the keyboard scrolls the focused control into view; a click
 does not. Enter and Space reach a switch, segmented control, chip, theme card,
-section, or button only through these bindings, so removing a binding removes
-its key there; the key recorders follow in a later migration.
+section, button, or key recorder only through these bindings, so removing a
+binding removes its key there.
 
 The window's text fields take the `Palette` context, so the palette bindings
 edit them: `palette_confirm` saves a field, or from the search field moves to

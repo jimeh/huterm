@@ -89,8 +89,8 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
             .any(|window| Some(window.window_id()) == handle)
     });
     assert!(open, "Close Pane's key closed Settings");
-    with_view(&mut harness, |view, _| {
-        assert_eq!(view.recording(), Some(vec![CLOSE.to_owned()]));
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), Some(vec![CLOSE.to_owned()]));
     });
     // With no second stroke, the recording ends after the chord timeout.
     harness
@@ -107,13 +107,26 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
         )
     );
     // A Return meant to save, landing just after the timeout saved, does
-    // not start another recording; a later one does.
-    press(&mut harness, "kadd:new_window");
-    with_view(&mut harness, |view, _| assert_eq!(view.recording(), None));
+    // not start another recording on the key cap focus followed to; a
+    // later one does.
+    harness.cx.run_until_parked();
+    let followed = with_window(&mut harness, |view, window, cx| {
+        view.focus_name(window, cx)
+    });
+    assert!(followed.starts_with("action:krec:"), "{followed}");
+    keystrokes(&mut harness, "enter");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), None);
+    });
     harness
         .cx
         .executor()
         .advance_clock(super::super::settings_window::CHORD_TIMEOUT);
+    keystrokes(&mut harness, "enter");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), Some(Vec::new()));
+    });
+    keystrokes(&mut harness, "escape");
     // A second stroke makes a chord.
     press(&mut harness, "kadd:new_window");
     keystrokes(&mut harness, "ctrl-k ctrl-t");
@@ -125,11 +138,15 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
     let before = file.text();
     press(&mut harness, "kadd:new_tab");
     keystrokes(&mut harness, "escape");
-    with_view(&mut harness, |view, _| assert_eq!(view.recording(), None));
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), None);
+    });
     // So does Escape after a first stroke.
     press(&mut harness, "kadd:new_tab");
     keystrokes(&mut harness, "ctrl-k escape");
-    with_view(&mut harness, |view, _| assert_eq!(view.recording(), None));
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), None);
+    });
     harness
         .cx
         .executor()
@@ -220,10 +237,61 @@ fn the_editor_writes_nothing_while_the_file_is_invalid(
         assert_eq!(view.key_row(ids::NEXT_TAB, "ctrl-tab"), None);
         view.press("kreset:next_tab", window, cx);
         view.press("kadd:next_tab", window, cx);
-        assert_eq!(view.recording(), None);
+        assert_eq!(view.recording(cx), None);
     });
     harness.cx.run_until_parked();
     assert_eq!(file.text(), broken);
+}
+
+#[gpui::test]
+fn recording_a_key_keeps_the_condition_and_argument_drafts(
+    cx: &mut TestAppContext,
+) {
+    let original = "[[keybinding]]\nkey = \"ctrl-alt-l\"\n\
+                    command = \"resize_pane_right\"\nargs = { amount = 5 }\n";
+    let file = ScratchConfig::new("keys-record-drafts", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // Drafts that cannot save stay in their fields, with their errors.
+    let drafts = |harness: &mut DesktopHarness, row: &str, argument: &str| {
+        with_window(harness, |view, window, cx| {
+            let when = format!("when:{row}");
+            let argument = format!("arg:{row}:{argument}");
+            view.type_key(&when, "Terminal &&", window, cx);
+            view.enter_key(&when, cx);
+            view.type_key(&argument, "five", window, cx);
+            view.enter_key(&argument, cx);
+            assert!(view.key_error(row).is_some());
+        });
+    };
+    let kept = |harness: &mut DesktopHarness, row: &str, argument: &str| {
+        with_view(harness, |view, cx| {
+            assert_eq!(
+                view.key_text(&format!("when:{row}"), cx),
+                "Terminal &&"
+            );
+            assert_eq!(
+                view.key_text(&format!("arg:{row}:{argument}"), cx),
+                "five"
+            );
+            assert!(view.key_error(row).is_some());
+        });
+    };
+    // A user entry changes its key in place.
+    drafts(&mut harness, "u0", "amount");
+    press(&mut harness, "krec:u0");
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    saved(&mut harness, &file, |text| text.contains("ctrl-alt-k"));
+    assert_eq!(file.text(), original.replace("ctrl-alt-l", "ctrl-alt-k"));
+    kept(&mut harness, "u0", "amount");
+    // A changed default becomes a new entry, which takes its drafts.
+    let first = row(&mut harness, ids::SELECT_TAB, SELECT_FIRST);
+    drafts(&mut harness, &first, "index");
+    press(&mut harness, &format!("krec:{first}"));
+    keystrokes(&mut harness, "ctrl-alt-1 enter");
+    saved(&mut harness, &file, |text| text.contains("ctrl-alt-1"));
+    let changed = row(&mut harness, ids::SELECT_TAB, "ctrl-alt-1");
+    kept(&mut harness, &changed, "index");
 }
 
 /// Resize Pane Right's default, which sets no `amount`.
@@ -579,8 +647,8 @@ fn a_timer_from_an_earlier_recording_does_not_end_a_later_one(
     // The first recording's timer fires now; the second's has time left.
     harness.cx.executor().advance_clock(timeout * 9 / 10);
     harness.cx.run_until_parked();
-    with_view(&mut harness, |view, _| {
-        assert_eq!(view.recording(), Some(vec!["ctrl-j".to_owned()]));
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), Some(vec!["ctrl-j".to_owned()]));
     });
     assert_eq!(file.text(), "");
 }

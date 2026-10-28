@@ -52,17 +52,13 @@ test("huterm-ui draws focus rings only through focus::ring", () => {
   expect(offenders).toEqual([]);
 });
 
-test("Settings draws focus rings through huterm-ui, except where a later migration moves them", () => {
+test("Settings draws focus rings only through huterm-ui", () => {
   // Migration 3a moved Settings' buttons, links, switches, toggle groups,
-  // and chips onto `huterm-ui`, whose rings follow `focus::ring`, and 6a
-  // the theme cards, the sidebar, the keybinding command rows, and the
-  // command search results. One GPUI focus style remains: `actionable`, for
-  // the key recorders and their Add buttons, which migration 8 of
-  // `docs/plans/ui-components.md` owns. Lower the count as it moves; a new
-  // GPUI focus style fails here.
-  const remaining: Record<string, number> = {
-    "crates/huterm-gpui/src/desktop/windows/settings_window/render.rs": 1,
-  };
+  // and chips onto `huterm-ui`, whose rings follow `focus::ring`, 6a the
+  // theme cards, the sidebar, the keybinding command rows, and the command
+  // search results, and 8a the key recorders and their Add buttons. A GPUI
+  // focus style fails here.
+  const remaining: Record<string, number> = {};
   const style = /\.(focus|in_focus|focus_visible)\(\s*(move\s+)?\|/g;
   const window = join(repoRoot, "crates/huterm-gpui/src/desktop/windows");
   const files = [join(window, "settings_window.rs"), ...rustFiles(join(window, "settings_window"))];

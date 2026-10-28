@@ -6,6 +6,15 @@ and file drops in `huterm-gpui`. Smoke fixtures that exercise this input are in
 
 ## Keyboard and text input
 
+`KeyDownEvent::is_held` marks a held key's repeat. macOS sets it from
+`isARepeat` and Wayland from GPUI's own repeat timer. On X11 the vendored
+`x11-key-repeat` patch turns on XKB detectable auto-repeat and marks a press
+whose key has had no release since; a server that refuses the flag leaves
+every press unheld. With the flag on, X11 sends no release before each
+repeat, so a held key's `KeyUp` arrives once, at its real release, as on
+macOS. Keystroke interceptors see the flag through the `keystroke-held-flag`
+patch; keystroke observers and modifier-only keystrokes always see `false`.
+
 GPUI's macOS `key_char` resolves Option dead keys separately, and AppKit handles
 marked text before GPUI shortcuts. Keep Option-only composition in caller-owned
 `UCKeyTranslate` state after GPUI dispatch; never create native marked text for

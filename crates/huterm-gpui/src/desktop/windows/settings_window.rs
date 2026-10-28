@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, Hsla, KeyContext, Render,
-    ScrollHandle, SharedString, Stateful, Window, WindowBounds, WindowKind,
+    ScrollHandle, SharedString, Window, WindowBounds, WindowKind,
     WindowOptions, div, point, prelude::*, px, size,
 };
 use huterm_config::document::Snapshot;
@@ -164,7 +164,7 @@ mod render;
 mod saving;
 
 #[cfg(all(test, feature = "test-support"))]
-pub(super) use keybindings::CHORD_TIMEOUT;
+pub(super) use huterm_ui::components::key_recorder::CHORD_TIMEOUT;
 use keybindings::Keys;
 use saving::{Conflict, Queued};
 
@@ -351,7 +351,7 @@ impl SettingsView {
             let Some(view) = weak.upgrade() else {
                 return;
             };
-            if view.update(cx, |view, cx| view.record(&event.keystroke, cx)) {
+            if view.update(cx, |view, cx| view.intercept_key(event, cx)) {
                 cx.stop_propagation();
             }
         });
@@ -423,10 +423,9 @@ impl SettingsView {
             if window.is_window_active() {
                 view.check_disk(cx);
             } else {
-                view.cancel_recording(cx);
-                // An open menu closes, as AppKit menus and GTK popovers do,
-                // and focus returns to its trigger for when the window
-                // comes back.
+                // A recording cancels itself. An open menu closes, as
+                // AppKit menus and GTK popovers do, and focus returns to
+                // its trigger for when the window comes back.
                 view.close_menu(window, cx);
             }
         })
@@ -1834,8 +1833,21 @@ impl SettingsView {
             .map(|(key, bounds)| format!("{key}:{}", rect(Some(*bounds))))
             .collect();
         selects.sort();
+        // Keybinding fields whose text differs from the file, as
+        // `<key>=<text>`, so a smoke can see that a draft survived.
+        let mut drafts: Vec<String> = self
+            .keys
+            .fields
+            .iter()
+            .filter_map(|(key, field)| {
+                let text = field.read(cx).text();
+                (self.keys.synced.get(key).map(String::as_str) != Some(text))
+                    .then(|| format!("{key}={text}"))
+            })
+            .collect();
+        drafts.sort();
         format!(
-            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.dialog={} settings.list={list} settings.highlight={highlight:?} settings.scroll={} settings.in_view={in_view} settings.status={:?} settings.read_only={} settings.writing={}",
+            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.dialog={} settings.list={list} settings.highlight={highlight:?} settings.scroll={} settings.in_view={in_view} settings.status={:?} settings.read_only={} settings.writing={} settings.drafts={:?}",
             window.is_window_active(),
             self.section.id(),
             self.query(cx),
@@ -1851,6 +1863,7 @@ impl SettingsView {
             self.status.line().text,
             self.locked(),
             self.busy(),
+            drafts.join("|"),
         )
     }
 }
@@ -2075,23 +2088,6 @@ fn tone_color(tone: Tone, swatch: Swatch) -> Hsla {
     }
 }
 
-fn button(id: impl Into<SharedString>, swatch: Swatch) -> Stateful<gpui::Div> {
-    div()
-        .id(gpui::ElementId::Name(id.into()))
-        .flex()
-        .flex_none()
-        .items_center()
-        .h(px(24.0))
-        .px(px(10.0))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(swatch.line_strong)
-        .text_size(px(12.0))
-        .text_color(swatch.fg)
-        .hover(|style| style.bg(swatch.hover))
-        .active(|style| style.bg(swatch.pressed()))
-}
-
 /// The link modifiers Settings offers. macOS rejects Ctrl: Control-click
 /// opens the context menu.
 fn offered_modifiers() -> &'static [&'static str] {
@@ -2134,6 +2130,7 @@ impl Render for SettingsView {
         let swatch = Self::swatch(cx);
         self.recolor_fields(swatch, cx);
         self.animate_lists(window, cx);
+        self.cancel_stale_recording(cx);
         let query = self.query(cx);
         let searching = !query.is_empty();
         self.drawn.clear();
@@ -2713,11 +2710,9 @@ impl SettingsView {
     }
 
     /// The strokes recorded so far, while recording.
-    pub(super) fn recording(&self) -> Option<Vec<String>> {
-        self.keys
-            .recording
-            .as_ref()
-            .map(|recording| recording.strokes.clone())
+    pub(super) fn recording(&self, cx: &App) -> Option<Vec<String>> {
+        let recorder = self.keys.recorder.as_ref()?.read(cx);
+        recorder.is_recording().then(|| recorder.strokes().to_vec())
     }
 
     pub(super) fn use_mine(&mut self, path: &str, cx: &mut Context<'_, Self>) {

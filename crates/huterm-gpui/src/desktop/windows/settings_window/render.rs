@@ -3,7 +3,7 @@
 
 use gpui::{
     AnyElement, App, Context, Div, ElementId, Entity, FocusHandle,
-    SharedString, Stateful, Window, div, prelude::*, px, svg,
+    SharedString, Window, div, prelude::*, px, svg,
 };
 use huterm_config::settings::{SectionId, Setting};
 use huterm_ui::components::alert::{Alert, Tone as AlertTone};
@@ -65,28 +65,6 @@ impl SettingsView {
             let _ =
                 weak.update(cx, |view, cx| handler(view, value, window, cx));
         }
-    }
-
-    /// Makes `element` a keyboard stop that runs the action `key` names,
-    /// by click or by `settings_toggle`. Its probe records where it draws,
-    /// so focus reaching it scrolls it into view.
-    pub(super) fn actionable(
-        &mut self,
-        element: Stateful<Div>,
-        key: String,
-        swatch: Swatch,
-        cx: &mut Context<'_, Self>,
-    ) -> Stateful<Div> {
-        let handle = self.action_stop(key.clone(), cx);
-        element
-            .track_focus(&handle)
-            .key_context("SettingsControl")
-            .focus(|style| style.shadow(swatch.focus_ring()))
-            .child(huterm_ui::focus::probe(&handle))
-            .on_click(cx.listener(move |view, _, window, cx| {
-                handle.focus(window, cx);
-                view.act(&key, window, cx);
-            }))
     }
 
     pub(super) fn render_sidebar(
