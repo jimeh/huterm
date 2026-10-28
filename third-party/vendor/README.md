@@ -6,9 +6,10 @@
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI's core crate has hidden-window creation,
-file-drop pointer-modality, scene sprite-order, and test-window accessibility
-patches, its Linux crate has X11 file-drop and fullscreen-state patches, and its
-macOS crate has offscreen-screen and per-window frame-constraint patches.
+file-drop pointer-modality, scene sprite-order, test-window accessibility, and
+keystroke held-flag patches, its Linux crate has X11 file-drop,
+fullscreen-state, and key-repeat patches, and its macOS crate has
+offscreen-screen and per-window frame-constraint patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -233,6 +234,45 @@ an already ordered list in one pass. On macOS, sampling a full-grid terminal
 paint put `Scene::finish` at 697 of 1,274 `Window::draw` samples before the
 patch and 18 of 720 after it. The renderer smoke's held fixture differed only
 in three pixels by 1/255. Remove the patch if upstream changes the sort key.
+
+## GPUI held-key flag for keystroke interceptors
+
+Settings' key recorder takes keys through an application keystroke
+interceptor, but GPUI's `KeystrokeEvent` did not say whether a key-down was a
+held key's repeat, so a held key recorded its repeats as a chord. The
+`keystroke-held-flag` patch adds `KeystrokeEvent::is_held` and fills it from
+the `KeyDownEvent` at the one interceptor call in
+`Window::dispatch_key_event`. Keystroke observers, modifier-only keystrokes,
+and every other construction site set it to `false`. macOS already sets
+`KeyDownEvent::is_held` from `isARepeat`, and Wayland on GPUI's own repeat
+timer.
+
+GPUI's X11 client always reported `is_held: false`. Without XKB detectable
+auto-repeat, which GPUI did not request, the server sends each repeat as a
+release and a press with the same timestamp. The `x11-key-repeat` patch asks
+for detectable auto-repeat once per connection, as GTK does, so a repeat
+arrives as another press with no release before it, and tracks the keycodes
+down (`linux/x11/key_repeat.rs`): a press of a key still down is held. Focus
+leaving the window forgets every key, since its release may reach another
+client. A server that refuses the flag leaves every press unheld. The flag
+also stops the synthetic releases, so a held key's `KeyUp` arrives once, at
+its real release, as on macOS. GPUI's event reducer drops a release that a
+press of the same key follows within 20 ms, as a repeat's synthetic release;
+with the flag granted, every release is real, so the patch skips that filter
+there and a fast fresh press neither loses its `KeyUp` nor reads as held. A
+server that refuses the flag keeps the filter. The reducer also held only the
+batch's latest release, so a release that another followed, such as K's before
+Control's, was lost; the patch delivers it, since only a press makes a release
+synthetic. `huterm-gpui`'s
+`gpui_x11_key_repeat` test compiles the tracker and the reducer's release
+decision directly. An input method that consumes a release it
+was forwarded leaves its key marked down until the key's next release, so
+one fresh press of it reads as held.
+
+Both patches are candidates to upstream to Zed's GPUI, which is the owner's
+call. Drop each once a reviewed `gpui-pre` snapshot reports the flag to
+interceptors, and marks X11 repeats, equivalently; the key recorder tests in
+`huterm-ui` and the Settings recorder tests fail without the first.
 
 ## macOS exclusive global shortcuts
 

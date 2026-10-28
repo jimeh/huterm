@@ -32,6 +32,11 @@
           "name": "test-window-accessibility",
           "file": "patches/gpui-pre/test-window-accessibility.patch",
           "description": "Activate accessibility in test-support windows, let tests send an AccessKit action request, and report disabled, read-only, invalid, modal, and live states in the debug tree dump, so accessibility trees and actions can be asserted."
+        },
+        {
+          "name": "keystroke-held-flag",
+          "file": "patches/gpui-pre/keystroke-held-flag.patch",
+          "description": "Report a key-down's is_held repeat flag on the KeystrokeEvent that keystroke interceptors receive, so a key recorder can ignore a held key's repeats."
         }
       ]
     },
@@ -56,6 +61,11 @@
           "name": "fullscreen-state-notification",
           "file": "patches/gpui-pre-linux/fullscreen-state-notification.patch",
           "description": "Notify bounds observers when X11 fullscreen state changes without a geometry event."
+        },
+        {
+          "name": "x11-key-repeat",
+          "file": "patches/gpui-pre-linux/x11-key-repeat.patch",
+          "description": "Enable XKB detectable auto-repeat and mark an X11 key press whose key is still down as held, as macOS and Wayland already do. Keep the real releases that GPUI's event reducer would drop: with the flag granted, a release before a fast press of its key, and in any mode, a release that another release follows."
         }
       ]
     },

@@ -2572,6 +2572,7 @@ impl Window {
                 &KeystrokeEvent {
                     keystroke: keystroke.clone(),
                     input_preference,
+                    is_held: false,
                     action: action.map(|action| action.boxed_clone()),
                     context_stack: context_stack.clone(),
                 },
@@ -2585,6 +2586,7 @@ impl Window {
         &mut self,
         keystroke: &Keystroke,
         input_preference: InputPreference,
+        is_held: bool,
         context_stack: Vec<KeyContext>,
         cx: &mut App,
     ) {
@@ -2595,6 +2597,7 @@ impl Window {
                     &KeystrokeEvent {
                         keystroke: keystroke.clone(),
                         input_preference,
+                        is_held,
                         action: None,
                         context_stack: context_stack.clone(),
                     },
@@ -6082,10 +6085,14 @@ impl Window {
 
         let input_preference = self.input_preference(event, cx);
 
+        let is_held = event
+            .downcast_ref::<KeyDownEvent>()
+            .is_some_and(|key_down| key_down.is_held);
         cx.propagate_event = true;
         self.dispatch_keystroke_interceptors(
             &keystroke,
             input_preference,
+            is_held,
             self.context_stack(),
             cx,
         );

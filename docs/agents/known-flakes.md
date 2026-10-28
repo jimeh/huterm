@@ -50,8 +50,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   aarch64 (run 40346320545), then 2026-10-27 on x86_64 (PR #270, run
   40495981661, job 122161417130), and again on x86_64 the same day (PR
   #279, run 40576556557, job 122444431856), and 2026-10-28 on x86_64 (PR
-  #311 at `465f1dbc`, run 40693317698, job 122833434701). Every other
-  Linux smoke in those jobs passed, and reruns passed.
+  #311 at `465f1dbc`, run 40693317698, job 122833434701), and again
+  that day (PR #320 at `667367e6`, run 40783118712, job 123149517765).
+  Every other Linux smoke in those jobs passed, and reruns passed.
 - **Evidence:** the smoke prints its first `RENDERER_SMOKE prepared` line
   during the first prepare, and Rust line-buffers stdout even into a pipe,
   so an empty stdout means the process hung before its first prepare. It
@@ -89,6 +90,14 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   main thread (its thread ID equal to the process ID) was in state `D` in
   `folio_wait_bit_common` with syscall `-1`, and the other 20 threads were
   sleeping (state `S`).
+- **Fourth thread dump:** the PR #320 run also stopped after
+  `application started`, with empty stderr and SIGTERM at 15.02 seconds.
+  At the 15.01-second `threads` event the main thread was running (state
+  `R`, syscall `running`), not waiting on page I/O. Mesa's
+  `WSI swapchain` threads existed, so the window's surface was up, and the
+  other 23 threads were sleeping. Mesa's llvmpipe compiles shaders on the
+  calling thread, so this fits a first draw still compiling at the
+  deadline, not a deadlock.
 - **Triage:** download the `smoke-evidence-Linux-*` artifact and read
   `renderer-process/stdout.log` for the last marker and
   `renderer-process/events.jsonl` for the `threads` event. Record both here,
@@ -281,9 +290,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   pane_rects in" followed by nothing, from `field(panes, "pane_rects")` at
   `scripts/check-native-input.ts` right after the `pane-keys-consumed`
   marker.
-- **Occurrences:** once, 2026-10-27, on PR #281 (run 40587040829, job
+- **Occurrences:** 2026-10-27, on PR #281 (run 40587040829, job
   122481163722, head `5e1c3c66`). The PR does not change the input smoke or
   the code it drives; the same job passed on its earlier head `60c82966`.
+  Again on 2026-10-28, on PR #318 (run 40768430893, job 123099018222, head
+  `86322b08`), which also left the input smoke alone; the next head passed.
 - **Evidence:** `currentState()` returned an empty string, yet the state
   read for the error message moments later held `pane_rects`. The smoke
   writes `state` every 10ms with `std::fs::write`
@@ -293,6 +304,26 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** rerun. A fix writes the state to a temporary file and renames
   it into place, as the smoke's own command files do, or has the script
   retry an empty read.
+
+## Linux overlays smoke: Enter on "Close 2 tabs?" closes no tabs
+
+- **Label:** `Smoke palette` in `Rust smoke (Linux x86_64)` and
+  `Rust smoke (Linux aarch64)`, at the `close_other_tabs` step of
+  `scripts/check-overlays.ts`: timed out waiting for `w0.confirming=false`,
+  `w0.tabs=1`, `w0.active_index=0`, and `w0.terminal_focused=true`.
+- **Occurrences:** once on both architectures in the same run, 2026-10-28,
+  on PR #318 (run 40768430893, jobs 123099017973 and 123099018193, head
+  `86322b08`). The PR changes no terminal-window code; the next heads
+  passed.
+- **Evidence:** the last state had `w0.confirming=false`, `w0.tabs=3`,
+  `w0.active_index=2`, and `w0.terminal_focused=false`: the dialog closed
+  without closing the tabs. That step waits for `w0.confirming=true` and the
+  dialog's title, but not for `w0.dialog_focus=primary` as the steps around
+  it do, before sending Enter, and since 7b Enter before a dialog's first
+  frame does nothing. That alone would leave the dialog open, so the cause
+  is unconfirmed.
+- **Triage:** rerun and record the run here. A hardening is to wait for
+  `w0.dialog_focus=primary` before Enter, as the neighboring steps do.
 
 ## `smoke:macos-palette` stray DEL at an early step
 

@@ -1,0 +1,59 @@
+diff --git a/src/app.rs b/src/app.rs
+index cdbd5593b11418b85d8344f59c047a02238b652b..bbdfa6298d81d02302d131f6a32afa2a63704d7c 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -3482,6 +3482,11 @@ pub struct KeystrokeEvent {
+     /// even when this is [`InputPreference::CharacterInput`].
+     pub input_preference: InputPreference,
+ 
++    /// Whether the keystroke is a held key's repeat, from its
++    /// [`KeyDownEvent::is_held`](crate::KeyDownEvent::is_held). Only interceptors receive it set;
++    /// observers and modifier-only keystrokes always see `false`.
++    pub is_held: bool,
++
+     /// The action that was resolved for the keystroke, if any
+     pub action: Option<Box<dyn Action>>,
+ 
+diff --git a/src/window.rs b/src/window.rs
+index 7ffd348ea183c89ab2889c0dd26dc4f7298955db..a97c275fd9ef4c59fe9cc7c1827c193a1878a8d7 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -2572,6 +2572,7 @@ impl Window {
+                 &KeystrokeEvent {
+                     keystroke: keystroke.clone(),
+                     input_preference,
++                    is_held: false,
+                     action: action.map(|action| action.boxed_clone()),
+                     context_stack: context_stack.clone(),
+                 },
+@@ -2585,6 +2586,7 @@ impl Window {
+         &mut self,
+         keystroke: &Keystroke,
+         input_preference: InputPreference,
++        is_held: bool,
+         context_stack: Vec<KeyContext>,
+         cx: &mut App,
+     ) {
+@@ -2595,6 +2597,7 @@ impl Window {
+                     &KeystrokeEvent {
+                         keystroke: keystroke.clone(),
+                         input_preference,
++                        is_held,
+                         action: None,
+                         context_stack: context_stack.clone(),
+                     },
+@@ -6082,10 +6085,14 @@ impl Window {
+ 
+         let input_preference = self.input_preference(event, cx);
+ 
++        let is_held = event
++            .downcast_ref::<KeyDownEvent>()
++            .is_some_and(|key_down| key_down.is_held);
+         cx.propagate_event = true;
+         self.dispatch_keystroke_interceptors(
+             &keystroke,
+             input_preference,
++            is_held,
+             self.context_stack(),
+             cx,
+         );

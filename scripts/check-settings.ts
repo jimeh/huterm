@@ -2,8 +2,9 @@
  * Drive the Settings window with native keys against the palette smoke
  * binary: open it, move between sidebar sections, search, toggle and reset
  * a switch, step a number, type a font family and browse its suggestions,
- * rebind a command and complete its condition, edit, rename, and delete a
- * quake profile, record a global shortcut, create, edit, and rename a pane
+ * rebind a command, holding its new key, with a condition draft that
+ * survives the recording, complete its condition, edit, rename, and delete
+ * a quake profile, record a global shortcut, create, edit, and rename a pane
  * layout and add it to the layout cycle, and close it,
  * checking `config.toml` after each save and that keys reach the terminal
  * again afterwards.
@@ -123,6 +124,19 @@ args = { layout = "smoke" }
       await command(["native", code, flags, text, text].join("\t"));
     } else {
       run(["xdotool", "key", "--clearmodifiers", x11Keys[name]]);
+    }
+  }
+  /** A key held down: its press and two repeats. X11 cannot post a repeat, so
+   * it presses once there. */
+  async function heldKey(name: SettingsKey): Promise<void> {
+    if (process.platform === "darwin") {
+      const [code, flags, text] = macKeys[name];
+      await command(["native", code, flags, text, text].join("\t"));
+      for (let repeat = 0; repeat < 2; repeat++) {
+        await command(["native", code, flags, text, text, "repeat"].join("\t"));
+      }
+    } else {
+      await key(name);
     }
   }
   async function typeText(text: string): Promise<void> {
@@ -435,25 +449,43 @@ args = { layout = "smoke" }
     await state("settings.focus=action:kgo:new_tab");
     await key("space");
     await state("settings.section=keybindings", "settings.focus=action:kcmd:new_tab");
-    // The recorder takes the search key instead of its binding, and
-    // replaces New Tab's default with it after the chord timeout.
+    // A condition that cannot save stays a draft. The recorder takes the
+    // held search key, once, instead of its binding, and replaces New Tab's
+    // default with it after the chord timeout; the draft moves to the new
+    // row with it.
     await key("tab");
     await state("settings.focus=action:krec:");
+    await key("tab");
+    await state("settings.focus=key:when:");
+    await typeText("Terminal (");
+    await key("enter");
+    await state('=Terminal ("');
+    await key("shift-tab");
+    await state("settings.focus=action:krec:");
     await key("space");
-    await key("search");
+    await heldKey("search");
     await saved(
       (text) =>
         text.includes(`key = "${newTabKey}"\ncommand = "new_tab"\ndisabled = true`) &&
         text.includes(`key = "${searchKey}"\ncommand = "new_tab"\n`),
       "New Tab rebound in config.toml",
     );
-    await state("settings.focus=action:krec:");
+    // Focus and the draft follow the changed default to its new row.
+    await waitFor(async () => {
+      const text = await current();
+      const focus = field(text, "focus") ?? "";
+      const row = focus.replace("action:krec:", "");
+      return focus.startsWith("action:krec:") && (field(text, "drafts") ?? "").includes(`when:${row}=Terminal (`);
+    }, "the condition draft on the rebound row");
     // The shortcut's condition field suggests contexts as you type, with the
     // first highlighted: Escape closes them, typing reopens them, Return
     // completes the name, and the next Return saves it. The rebind's reload
     // can add a row stop, such as the replaced default's switch, between
     // the recorder and the field, so Tab until the field has focus.
     await tabTo("key:when:");
+    // Clear the draft the recording kept before typing a fresh name.
+    await key("select-all");
+    await key("backspace");
     await typeText("Te");
     await state("settings.list=key:when:", 'settings.highlight="Terminal"');
     await key("escape");
@@ -489,7 +521,7 @@ args = { layout = "smoke" }
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} sidebar=arrows search=focus-first toggle=saved reset=removed tab=round-trip step=saved font=combobox condition=combobox reveal=in-view select=pointer-dismissal record=intercepted rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands layouts=saved close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} sidebar=arrows search=focus-first toggle=saved reset=removed tab=round-trip step=saved font=combobox condition=combobox reveal=in-view select=pointer-dismissal record=intercepted held=one-stroke draft=kept rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands layouts=saved close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

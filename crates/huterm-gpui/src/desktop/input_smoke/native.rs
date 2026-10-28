@@ -2,7 +2,7 @@
 #![allow(unsafe_code, unexpected_cfgs)]
 
 use anyhow::{Context as _, ensure};
-use objc::runtime::{Class, NO, Object, Sel};
+use objc::runtime::{Class, NO, Object, Sel, YES};
 use objc::{msg_send, sel, sel_impl};
 use std::ffi::{CString, c_void};
 
@@ -103,9 +103,12 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
         return post_mouse(&fields);
     }
     ensure!(
-        fields.len() == 4,
-        "expected keycode, flags, characters, plain characters"
+        fields.len() == 4 || (fields.len() == 5 && fields[4] == "repeat"),
+        "expected keycode, flags, characters, plain characters, and \
+         optionally `repeat`"
     );
+    // A held key's repeat, as AppKit marks it while a key stays down.
+    let repeat = fields.len() == 5;
     let key: u16 = fields[0].parse()?;
     let flags: usize = fields[1].parse()?;
     // Fields are tab-separated, so a Tab key's characters arrive escaped.
@@ -137,7 +140,7 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
             context: std::ptr::null_mut::<Object>()
             characters: characters
             charactersIgnoringModifiers: plain
-            isARepeat: NO
+            isARepeat: if repeat { YES } else { NO }
             keyCode: key];
         ensure!(!event.is_null(), "NSEvent construction failed");
         let _: () = msg_send![app, postEvent: event atStart: NO];

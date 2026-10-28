@@ -703,6 +703,7 @@ impl SettingsView {
                 self.follow_changed_default(
                     &change.edit,
                     change.row.as_deref(),
+                    &change.patches,
                 );
                 self.forget_gone_layouts(cx);
                 self.sync_key_fields(cx);

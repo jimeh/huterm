@@ -20,10 +20,10 @@ use super::super::super::settings::keybindings::{Edit, names_profile};
 use super::super::Desktop;
 use super::controls::Opener;
 use super::dialog::Prompt;
-use super::keybindings::{CAP_WIDTH, Target, small};
+use super::keybindings::{CAP_WIDTH, small};
 use super::render::group_card;
 use super::saving::Batch;
-use super::{MenuFor, SettingsView, button};
+use super::{MenuFor, SettingsView};
 use crate::keymap::Platform;
 use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::button::Variant;
@@ -32,6 +32,7 @@ use huterm_ui::components::empty::Empty;
 use huterm_ui::components::field::Field;
 use huterm_ui::components::input::{Chrome, Input};
 use huterm_ui::components::input_group::InputGroup;
+use huterm_ui::components::key_recorder::KeyRecorderButton;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
@@ -250,14 +251,12 @@ impl SettingsView {
                 self.keys.globals.get(entry).map(EntryLocator::content)
                     != globals.get(entry).map(EntryLocator::content)
             };
-            if let Some(Target::Global(entry)) = self
-                .keys
-                .recording
-                .as_ref()
-                .map(|recording| recording.target.clone())
-                && moved(entry)
+            if self
+                .recorder_key()
+                .and_then(|key| key.strip_prefix("grec:")?.parse().ok())
+                .is_some_and(moved)
             {
-                self.keys.recording = None;
+                self.keys.recorder_stale = true;
             }
             if let Some((_, MenuFor::Global { entry, .. }, _)) = &self.menu
                 && moved(*entry)
@@ -362,21 +361,10 @@ impl SettingsView {
                 }
             }
             "qdelyes" => self.delete_profile(window, cx),
-            "grec" => {
-                if let Ok(entry) = argument.parse() {
-                    let handle = self.action_stop(format!("grec:{entry}"), cx);
-                    self.start_recording(
-                        Target::Global(entry),
-                        &handle,
-                        window,
-                        cx,
-                    );
-                }
+            "grec" if argument.parse::<usize>().is_ok() => {
+                self.start_recording(&format!("grec:{argument}"), window, cx);
             }
-            "gadd" => {
-                let handle = self.action_stop("gadd".to_owned(), cx);
-                self.start_recording(Target::AddGlobal, &handle, window, cx);
-            }
+            "gadd" => self.start_recording("gadd", window, cx),
             "gcmd" | "gprofile" => {
                 if let Ok(entry) = argument.parse() {
                     self.open_global_menu(entry, kind == "gcmd", window, cx);
@@ -1348,21 +1336,17 @@ impl SettingsView {
         for (index, global) in globals.iter().enumerate() {
             rows.push(self.render_global(index, global, read_only, swatch, cx));
         }
-        let recording_add = self
-            .keys
-            .recording
-            .as_ref()
-            .is_some_and(|recording| recording.target == Target::AddGlobal);
-        let add = button("settings-gadd", swatch)
-            .when(read_only, |button| button.opacity(0.5))
-            .when(recording_add, |button| button.border_color(swatch.accent))
-            .child(if recording_add {
-                self.recording_content(swatch)
-            } else {
-                div().child("Add global shortcut").into_any_element()
-            });
-        let add = self.actionable(add, "gadd".to_owned(), swatch, cx);
-        let _ = self.action_stop("gadd".to_owned(), cx).tab_stop(!read_only);
+        let recorder = self.recorder("gadd", cx);
+        let add = KeyRecorderButton::new(
+            "settings-gadd",
+            "Add global shortcut",
+            &recorder,
+            swatch,
+        )
+        .placeholder("Add global shortcut")
+        .key_context("SettingsControl")
+        .px(px(10.0))
+        .when(read_only, |add| add.disabled(self.keys_lock_reason()));
         rows.push(
             div()
                 .flex()
@@ -1371,9 +1355,7 @@ impl SettingsView {
                 .px(px(14.0))
                 .py(px(10.0))
                 .child(div().flex().child(add))
-                .when(recording_add, |block| {
-                    block.child(self.recording_hint(swatch))
-                })
+                .children(self.recording_hint("gadd", swatch, cx))
                 .children(
                     self.keys
                         .errors
@@ -1403,41 +1385,19 @@ impl SettingsView {
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let recording =
-            self.keys.recording.as_ref().is_some_and(|recording| {
-                recording.target == Target::Global(index)
-            });
-        let content = if recording {
-            self.recording_content(swatch)
-        } else {
-            KeyHint::parse(&global.key, Platform::current())
-                .element(px(12.0), swatch.fg)
-                .into_any_element()
-        };
-        let cap = div()
-            .id(gpui::ElementId::Name(
-                format!("settings-grec-{index}").into(),
-            ))
-            .flex()
-            .flex_none()
-            .items_center()
-            .w(px(CAP_WIDTH))
-            .overflow_hidden()
-            .h(px(24.0))
-            .px(px(8.0))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(if recording {
-                swatch.accent
-            } else {
-                swatch.accent.opacity(0.5)
-            })
-            .when(read_only, |cap| cap.opacity(0.6))
-            .child(content);
-        let cap = self.actionable(cap, format!("grec:{index}"), swatch, cx);
-        let _ = self
-            .action_stop(format!("grec:{index}"), cx)
-            .tab_stop(!read_only);
+        let record_key = format!("grec:{index}");
+        let recorder = self.recorder(&record_key, cx);
+        let cap = KeyRecorderButton::new(
+            gpui::ElementId::Name(format!("settings-grec-{index}").into()),
+            "Global shortcut",
+            &recorder,
+            swatch,
+        )
+        .shortcut(Some(global.key.clone()))
+        .key_context("SettingsControl")
+        .w(px(CAP_WIDTH))
+        .border_color(swatch.accent.opacity(0.5))
+        .when(read_only, |cap| cap.disabled(self.keys_lock_reason()));
         let command = lookup(&global.command).map_or_else(
             || global.command.clone(),
             |spec| spec.title.to_owned(),
@@ -1483,7 +1443,7 @@ impl SettingsView {
                         ))
                     }),
             )
-            .when(recording, |row| row.child(self.recording_hint(swatch)))
+            .children(self.recording_hint(&record_key, swatch, cx))
             .children(error.map(|error| small(error, swatch.danger_text())))
             .into_any_element()
     }

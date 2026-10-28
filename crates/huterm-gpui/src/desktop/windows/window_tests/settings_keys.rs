@@ -6,7 +6,7 @@ use super::super::settings_window::SettingsView;
 use super::settings::{
     ScratchConfig, open_settings, settings, settled, with_view, with_window,
 };
-use super::settings_controls::visual;
+use super::settings_controls::{a11y_node, visual};
 use super::*;
 
 /// The default that closes a pane, which closes Settings unless the
@@ -89,8 +89,8 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
             .any(|window| Some(window.window_id()) == handle)
     });
     assert!(open, "Close Pane's key closed Settings");
-    with_view(&mut harness, |view, _| {
-        assert_eq!(view.recording(), Some(vec![CLOSE.to_owned()]));
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), Some(vec![CLOSE.to_owned()]));
     });
     // With no second stroke, the recording ends after the chord timeout.
     harness
@@ -107,13 +107,26 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
         )
     );
     // A Return meant to save, landing just after the timeout saved, does
-    // not start another recording; a later one does.
-    press(&mut harness, "kadd:new_window");
-    with_view(&mut harness, |view, _| assert_eq!(view.recording(), None));
+    // not start another recording on the key cap focus followed to; a
+    // later one does.
+    harness.cx.run_until_parked();
+    let followed = with_window(&mut harness, |view, window, cx| {
+        view.focus_name(window, cx)
+    });
+    assert!(followed.starts_with("action:krec:"), "{followed}");
+    keystrokes(&mut harness, "enter");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), None);
+    });
     harness
         .cx
         .executor()
         .advance_clock(super::super::settings_window::CHORD_TIMEOUT);
+    keystrokes(&mut harness, "enter");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), Some(Vec::new()));
+    });
+    keystrokes(&mut harness, "escape");
     // A second stroke makes a chord.
     press(&mut harness, "kadd:new_window");
     keystrokes(&mut harness, "ctrl-k ctrl-t");
@@ -125,11 +138,15 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
     let before = file.text();
     press(&mut harness, "kadd:new_tab");
     keystrokes(&mut harness, "escape");
-    with_view(&mut harness, |view, _| assert_eq!(view.recording(), None));
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), None);
+    });
     // So does Escape after a first stroke.
     press(&mut harness, "kadd:new_tab");
     keystrokes(&mut harness, "ctrl-k escape");
-    with_view(&mut harness, |view, _| assert_eq!(view.recording(), None));
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), None);
+    });
     harness
         .cx
         .executor()
@@ -220,10 +237,61 @@ fn the_editor_writes_nothing_while_the_file_is_invalid(
         assert_eq!(view.key_row(ids::NEXT_TAB, "ctrl-tab"), None);
         view.press("kreset:next_tab", window, cx);
         view.press("kadd:next_tab", window, cx);
-        assert_eq!(view.recording(), None);
+        assert_eq!(view.recording(cx), None);
     });
     harness.cx.run_until_parked();
     assert_eq!(file.text(), broken);
+}
+
+#[gpui::test]
+fn recording_a_key_keeps_the_condition_and_argument_drafts(
+    cx: &mut TestAppContext,
+) {
+    let original = "[[keybinding]]\nkey = \"ctrl-alt-l\"\n\
+                    command = \"resize_pane_right\"\nargs = { amount = 5 }\n";
+    let file = ScratchConfig::new("keys-record-drafts", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // Drafts that cannot save stay in their fields, with their errors.
+    let drafts = |harness: &mut DesktopHarness, row: &str, argument: &str| {
+        with_window(harness, |view, window, cx| {
+            let when = format!("when:{row}");
+            let argument = format!("arg:{row}:{argument}");
+            view.type_key(&when, "Terminal &&", window, cx);
+            view.enter_key(&when, cx);
+            view.type_key(&argument, "five", window, cx);
+            view.enter_key(&argument, cx);
+            assert!(view.key_error(row).is_some());
+        });
+    };
+    let kept = |harness: &mut DesktopHarness, row: &str, argument: &str| {
+        with_view(harness, |view, cx| {
+            assert_eq!(
+                view.key_text(&format!("when:{row}"), cx),
+                "Terminal &&"
+            );
+            assert_eq!(
+                view.key_text(&format!("arg:{row}:{argument}"), cx),
+                "five"
+            );
+            assert!(view.key_error(row).is_some());
+        });
+    };
+    // A user entry changes its key in place.
+    drafts(&mut harness, "u0", "amount");
+    press(&mut harness, "krec:u0");
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    saved(&mut harness, &file, |text| text.contains("ctrl-alt-k"));
+    assert_eq!(file.text(), original.replace("ctrl-alt-l", "ctrl-alt-k"));
+    kept(&mut harness, "u0", "amount");
+    // A changed default becomes a new entry, which takes its drafts.
+    let first = row(&mut harness, ids::SELECT_TAB, SELECT_FIRST);
+    drafts(&mut harness, &first, "index");
+    press(&mut harness, &format!("krec:{first}"));
+    keystrokes(&mut harness, "ctrl-alt-1 enter");
+    saved(&mut harness, &file, |text| text.contains("ctrl-alt-1"));
+    let changed = row(&mut harness, ids::SELECT_TAB, "ctrl-alt-1");
+    kept(&mut harness, &changed, "index");
 }
 
 /// Resize Pane Right's default, which sets no `amount`.
@@ -563,6 +631,194 @@ fn a_queued_edit_after_a_removal_changes_the_entry_the_user_saw(
 }
 
 #[gpui::test]
+fn a_recorded_key_queued_behind_a_removal_keeps_the_condition_draft(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-record-queued", THREE);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_window");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u1", "Terminal &&", window, cx);
+        view.enter_key("when:u1", cx);
+        assert!(view.key_error("u1").is_some());
+        view.press("kdel:u0", window, cx);
+        view.press("krec:u1", window, cx);
+    });
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    // The removal had not landed when the recording ended.
+    assert!(file.text().contains("ctrl-alt-a"));
+    saved(&mut harness, &file, |text| {
+        !text.contains("ctrl-alt-a") && text.contains("ctrl-alt-k")
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-k"), "u0");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal &&");
+        assert!(view.key_error("u0").is_some());
+    });
+}
+
+#[gpui::test]
+fn a_recorded_key_keeps_its_own_draft_when_another_editor_removes_a_twin(
+    cx: &mut TestAppContext,
+) {
+    // Two shortcuts that differ only in their keys.
+    let twins = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_window\"\n\n\
+                 [[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n";
+    let file = ScratchConfig::new("keys-record-twin", twins);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_window");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u0", "Terminal ||", window, cx);
+        view.enter_key("when:u0", cx);
+        view.type_key("when:u1", "Terminal &&", window, cx);
+        view.enter_key("when:u1", cx);
+        assert!(view.key_error("u1").is_some());
+        view.press("krec:u1", window, cx);
+    });
+    // Another editor removes the first shortcut before the key lands.
+    let shifted = twins.split_once("\n\n").unwrap().1.to_owned();
+    std::fs::write(file.path(), &shifted).unwrap();
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    saved(&mut harness, &file, |text| {
+        !text.contains("ctrl-alt-a") && text.contains("ctrl-alt-k")
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-k"), "u0");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal &&");
+    });
+}
+
+#[gpui::test]
+fn a_recorded_key_keeps_its_draft_on_the_rebound_one_of_identical_entries(
+    cx: &mut TestAppContext,
+) {
+    let entry = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_tab\"\n";
+    let file = ScratchConfig::new(
+        "keys-record-identical",
+        &format!("{entry}\n{entry}"),
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_tab");
+    harness.cx.run_until_parked();
+    // The second entry is the active one.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u1", "Terminal &&", window, cx);
+        view.enter_key("when:u1", cx);
+        assert!(view.key_error("u1").is_some());
+        view.press("krec:u1", window, cx);
+    });
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    saved(&mut harness, &file, |text| text.contains("ctrl-alt-k"));
+    harness.cx.run_until_parked();
+    assert_eq!(row(&mut harness, ids::NEW_TAB, "ctrl-alt-k"), "u1");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u1", cx), "Terminal &&");
+        assert_eq!(view.key_text("when:u0", cx), "");
+        assert!(view.key_error("u0").is_none());
+    });
+}
+
+#[gpui::test]
+fn a_recorded_key_and_another_draft_both_follow_entries_another_editor_swapped(
+    cx: &mut TestAppContext,
+) {
+    let pair = "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_window\"\n\n\
+                [[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n\
+                when = \"Terminal\"\n";
+    let file = ScratchConfig::new("keys-record-swap", pair);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_window");
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u0", "Terminal ||", window, cx);
+        view.enter_key("when:u0", cx);
+        view.type_key("when:u1", "Terminal &&", window, cx);
+        view.enter_key("when:u1", cx);
+        view.press("krec:u1", window, cx);
+    });
+    // Another editor swaps the two entries before the key lands.
+    let (first, second) = pair.split_once("\n\n").unwrap();
+    std::fs::write(file.path(), format!("{second}\n{first}")).unwrap();
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    saved(&mut harness, &file, |text| text.contains("ctrl-alt-k"));
+    harness.cx.run_until_parked();
+    assert_eq!(row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-k"), "u0");
+    assert_eq!(row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-a"), "u1");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal &&");
+        assert_eq!(view.key_text("when:u1", cx), "Terminal ||");
+    });
+}
+
+#[gpui::test]
+fn a_recorded_key_keeps_its_draft_when_another_editor_moved_entries_before_a_queued_write(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-record-queued-shift", THREE);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:close_tab");
+    harness.cx.run_until_parked();
+    // Another editor removes the second entry before this window's removal
+    // of the first reads the file, so the queued key's locator, moved up
+    // past one removal, names a row that no longer exists.
+    let without_second = THREE.replacen(
+        "[[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n\n",
+        "",
+        1,
+    );
+    with_window(&mut harness, |view, window, cx| {
+        view.type_key("when:u2", "Terminal &&", window, cx);
+        view.enter_key("when:u2", cx);
+        assert!(view.key_error("u2").is_some());
+        view.press("kdel:u0", window, cx);
+        view.press("krec:u2", window, cx);
+        std::fs::write(file.path(), &without_second).unwrap();
+    });
+    keystrokes(&mut harness, "ctrl-alt-k enter");
+    saved(&mut harness, &file, |text| {
+        !text.contains("ctrl-alt-a") && text.contains("ctrl-alt-k")
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(row(&mut harness, ids::CLOSE_TAB, "ctrl-alt-k"), "u0");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.key_text("when:u0", cx), "Terminal &&");
+    });
+}
+
+#[gpui::test]
+fn a_switched_off_shortcuts_key_cap_says_why_it_refuses(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "keys-off-cap",
+        "[[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n\
+         disabled = true\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    press(&mut harness, "kgo:new_window");
+    harness.cx.run_until_parked();
+    let name = row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-b");
+    let aria =
+        a11y_node(&mut harness, &format!("settings-krec-{name}"))["aria"]
+            .clone();
+    assert_eq!(aria["disabled"], true, "{aria}");
+    assert_eq!(
+        aria["description"], "Only an active shortcut can change",
+        "{aria}"
+    );
+}
+
+#[gpui::test]
 fn a_timer_from_an_earlier_recording_does_not_end_a_later_one(
     cx: &mut TestAppContext,
 ) {
@@ -579,8 +835,8 @@ fn a_timer_from_an_earlier_recording_does_not_end_a_later_one(
     // The first recording's timer fires now; the second's has time left.
     harness.cx.executor().advance_clock(timeout * 9 / 10);
     harness.cx.run_until_parked();
-    with_view(&mut harness, |view, _| {
-        assert_eq!(view.recording(), Some(vec!["ctrl-j".to_owned()]));
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.recording(cx), Some(vec!["ctrl-j".to_owned()]));
     });
     assert_eq!(file.text(), "");
 }

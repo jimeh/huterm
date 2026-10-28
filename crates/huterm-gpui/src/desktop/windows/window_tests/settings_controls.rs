@@ -3,7 +3,7 @@
 //! D8, D9, D10, and D16 of `docs/plans/ui-components.md`, and the arrow
 //! keys that move between chips.
 
-use gpui::{AccessibleAction, FocusHandle, KeyUpEvent};
+use gpui::{AccessibleAction, FocusHandle, KeyDownEvent, KeyUpEvent};
 use huterm_config::settings::SectionId;
 use serde_json::Value;
 
@@ -39,6 +39,17 @@ pub(super) fn visual(harness: &DesktopHarness) -> VisualTestContext {
 pub(super) fn keys(harness: &DesktopHarness, keys: &str) {
     let mut visual = visual(harness);
     visual.simulate_keystrokes(keys);
+    visual.run_until_parked();
+}
+
+/// Sends a press of `key`, as a held key's repeat when `is_held`.
+pub(super) fn key_down(harness: &DesktopHarness, key: &str, is_held: bool) {
+    let mut visual = visual(harness);
+    visual.simulate_event(KeyDownEvent {
+        keystroke: gpui::Keystroke::parse(key).expect("a valid keystroke"),
+        is_held,
+        prefer_character_input: false,
+    });
     visual.run_until_parked();
 }
 

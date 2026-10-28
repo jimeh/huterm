@@ -637,6 +637,30 @@ control can turn read-only while it has focus. Tests click these components
 through `simulate_a11y_action` from the window, not inside a view update, since
 the click updates the view.
 
+Settings' key recorders are `huterm_ui::components::key_recorder::KeyRecorder`
+entities, one per action key (`krec:<row>`, `kadd:<command>`, `grec:<entry>`,
+`gadd`), created by `SettingsView::recorder` with that key's focus handle and
+drawn each frame by a `KeyRecorderButton` with the file's shortcut, so the
+component never caches it. The crate registers no interceptor: the window's one
+keystroke interceptor feeds every key to the recorder that started last
+(`intercept_key`), even after it stops, so that recorder swallows a held key's
+repeats and a Return or Space meant to save that lands just after the chord
+timeout. A recorder cancels itself on blur, window deactivation, and an outside
+press; an outside press also ends that Return or Space guard. It tells a held
+key's repeat by `KeystrokeEvent::is_held`, which only interceptors receive set
+(see [desktop input](desktop-input.md)). A recorded key lands through
+`follow_changed_default`, which first keeps the shortcut's drafts
+(`keep_drafts_for_new_key`): fields follow a shortcut by its binding, so a new
+key would otherwise drop them. It gives the edited row's identity before the
+write the binding's new identity, so `follow_moved_rows` moves those fields
+together with every other row's. Queued writes and other editors can move the
+entries first, so a user entry is matched by the key its write's locator
+replaced; the locator's row only tells identical entries apart. Without a
+match the fields fall to `follow_moved_rows` alone, which moves a draft to an
+identical entry. `set_globals` has no context to cancel a
+recording whose global shortcut moved, so it marks the recording stale, and the
+next frame or keystroke cancels it.
+
 The terminal window's dialog, title-row, tab-bar, and toast buttons are
 `huterm_ui::components::button::Button`s; tabs, pane title-bar buttons, and
 the scroll pill are not. An owner sizes, places, and restyles a `Button`
@@ -783,7 +807,13 @@ built from its state when the command arrives: the handles, the selection,
 and whether the group is enabled now. Both return the index to select, and
 `None` for a disabled group, a group without focus, or the selected item.
 A disabled group keeps the focus it had, so its keys still reach the owner;
-`collapsible::toggled` applies the same rule to a trigger. A new
+`collapsible::toggled` applies the same rule to a trigger. GPUI reports a
+window's deactivation to blur listeners, since an inactive window's focus
+path is empty, so a control that cancels on blur needs no activation
+observer. A test window starts inactive, and GPUI reports no focus change in
+an inactive window, so a test of a blur listener activates its window first
+(`window.activate_window()`); the desktop harness's Settings window delivers
+no focus events either. A new
 `FocusHandle` is not a tab stop until it says so, so a test's plain
 focusable stand-in needs `tab_stop(true)` for `Window::focus_next` to reach
 it. GPUI clips a child's outer ring to a container with `overflow_hidden`,
@@ -796,8 +826,8 @@ coordinates, so a second reveal before the repaint moves nothing; reveal
 only sets the offset, so the owner redraws when it returns true.
 `focus::ring` and `ring_inset` add such a probe to the control whose ring
 they draw, and `focus::ring_bounds` reports where it last painted; a
-control that draws its focus some other way, such as Settings' `actionable`
-recorders, adds `focus::probe` itself, or Tab to it never scrolls.
+control that draws its focus some other way adds `focus::probe` itself, or
+Tab to it never scrolls.
 
 Open a dialog in a `huterm_ui::components::dialog::Modal`, draw its `Dialog`
 or `AlertDialog` as the last child of the area it covers while it is open, and

@@ -1,7 +1,7 @@
 # UI components
 
 Status: in progress. Step 1 (the foundation), the components of steps 2
-through 7, and migrations 2a (Settings selects), 2b (terminal-window menus),
+through 8, and migrations 2a (Settings selects), 2b (terminal-window menus),
 3a (Settings buttons, links, switches, segmented controls, tri-states,
 modifier chips, tags, and counts), 3b (terminal-window buttons and
 tooltips), 4a (Settings text, search, and number fields, units, the
@@ -13,14 +13,21 @@ the sidebar as vertical tabs, theme cards as a radio group, `Field`,
 the focused control into view), 7a (the Settings delete-profile alert
 dialog, which fixes D17), 7b (the terminal window's close confirmation,
 About, and Licenses in one dialog slot, their buttons taking real focus),
-and 7c (the New profile and Rename profile dialogs, a rename written in one
-save) are implemented; 2b removed `desktop/menu.rs` and its menu host
+7c (the New profile and Rename profile dialogs, a rename written in one
+save), and 8a (the keybinding and global shortcut key recorders) are
+implemented; 2b removed `desktop/menu.rs` and its menu host
 (D13). 7b adds `Dialog::bare`, for content with its own header and footer,
 and `AlertDialog::initial_focus`, so the close confirmation still opens on
 its primary button. 3a also moved the Keybindings
-filter and shortcut switches; since 6a only the key recorders and their
-Add buttons keep their GPUI focus styles, until step 8, and the command
-search results are link `Item`s. 6a adds `settings_next` and
+filter and shortcut switches, and the command search results are link
+`Item`s since 6a; since 8a no Settings control keeps a GPUI focus style.
+Step 8's `KeyRecorder` tells a held key's repeat by GPUI's `is_held`, which
+the vendored `keystroke-held-flag` patch passes to keystroke interceptors
+and the `x11-key-repeat` patch sets on X11 through XKB detectable
+auto-repeat, so a held key records one stroke; afterwards its repeats act
+nowhere until a fresh press. The owner's one interceptor feeds the recorder
+that started last, and a recorded key keeps the drafts in its shortcut's
+condition and argument fields. 6a adds `settings_next` and
 `settings_previous`, bound to the arrows under their own `SettingsGroup`
 context, which the sidebar's tabs, the theme cards, and the modifier chips
 nest inside their `SettingsControl` one, so Down and Right move forward and
@@ -184,8 +191,10 @@ component. Migration 6a fixed the first three: keyboard focus scrolls the
 control it reaches into view through `ScrollArea::reveal`, the sidebar's
 arrows move between sections, and the theme cards draw `focus::ring`
 through `RadioGroup`. The cause of the missing `.focus()` ring was not
-diagnosed; the style is gone. The key recorder items wait for step 8, and
-the footer status for its own fix.
+diagnosed; the style is gone. Migration 8a fixed the key recorder items: a
+held key records one stroke, and a recorded key's condition and argument
+drafts move with its shortcut to the row that shows the new key, where a
+key change used to drop them. The footer status waits for its own fix.
 
 From [#277][issue-277]: renaming a profile, like the New profile name
 field, is a `Field` and `InputGroup` composition, and the delete prompt

@@ -10,13 +10,12 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, ElementId, Entity, EntityId, FocusHandle,
-    Focusable, Keystroke, SharedString, Subscription, Window, div, prelude::*,
-    px,
+    AnyElement, App, Context, ElementId, Entity, EntityId, Focusable,
+    KeystrokeEvent, SharedString, Window, div, prelude::*, px,
 };
+use huterm_config::document::Patch;
 use huterm_protocol::{
     ArgumentKind, ArgumentSpec, CommandId, CommandSpec, NamedLayout,
     Requirement, SIDES, catalog, lookup,
@@ -33,9 +32,11 @@ use super::super::Desktop;
 use super::controls::Opener;
 use super::render::{changed_dot, group_card};
 use super::saving::Queued;
-use super::{MenuFor, SettingsView, button};
+use super::{MenuFor, SettingsView};
 use crate::assets::Icon;
-use crate::keymap::{BindingState, Inventory, ListedBinding, Origin, Platform};
+use crate::keymap::{
+    BindingState, Bound, Inventory, ListedBinding, Origin, Platform,
+};
 use huterm_ui::components::badge::{Tone as BadgeTone, badge};
 use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::card;
@@ -43,6 +44,9 @@ use huterm_ui::components::collapsible::{Collapsible, chevron};
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::components::item::Item;
+use huterm_ui::components::key_recorder::{
+    KeyRecorder, KeyRecorderButton, KeyRecorderEvent,
+};
 use huterm_ui::components::switch::Switch;
 use huterm_ui::components::toggle_group::ToggleGroup;
 use huterm_ui::listbox::{
@@ -50,10 +54,6 @@ use huterm_ui::listbox::{
 };
 use huterm_ui::option_list::ListOption;
 use huterm_ui::tokens::size;
-
-/// How long the recorder waits for a chord's second stroke: GPUI's own
-/// chord timeout.
-pub(crate) const CHORD_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The key cap's width, and the tag's, so rows line up.
 pub(super) const CAP_WIDTH: f32 = 96.0;
@@ -94,12 +94,18 @@ pub(super) enum Target {
     AddGlobal,
 }
 
-pub(super) struct Recording {
-    pub(super) target: Target,
-    pub(super) strokes: Vec<String>,
-    /// Bumped by each stroke, so only the latest stroke's timer finishes.
-    generation: u64,
-    _blur: Subscription,
+impl Target {
+    /// The target of the recorder whose action key is `key`.
+    fn of(key: &str) -> Option<Self> {
+        let (kind, argument) = key.split_once(':').unwrap_or((key, ""));
+        match kind {
+            "krec" => Some(Self::Row(argument.to_owned())),
+            "kadd" => lookup(argument).map(|spec| Self::Add(spec.id)),
+            "grec" => argument.parse().ok().map(Self::Global),
+            "gadd" => Some(Self::AddGlobal),
+            _ => None,
+        }
+    }
 }
 
 /// The section's state, held by the view.
@@ -118,10 +124,18 @@ pub(super) struct Keys {
     pub(super) synced: HashMap<String, String>,
     /// Errors by row.
     pub(super) errors: HashMap<String, String>,
-    pub(super) recording: Option<Recording>,
     /// Each `when` field's context suggestions, by the field's entity,
     /// which keeps them as the field moves between rows.
     pub(super) completions: HashMap<EntityId, Entity<Combobox>>,
+    /// Key recorders by action key: `krec:<row>`, `kadd:<command>`,
+    /// `grec:<entry>`, and `gadd`.
+    pub(super) recorders: HashMap<String, Entity<KeyRecorder>>,
+    /// The recorder that started last, which the window's interceptor
+    /// feeds, even after it stops, so it can swallow what follows.
+    pub(super) recorder: Option<Entity<KeyRecorder>>,
+    /// That recorder records a global shortcut whose entry now holds
+    /// another one; the next frame or keystroke cancels it.
+    pub(super) recorder_stale: bool,
     /// The field being edited, whose draft a read must not replace.
     pub(super) editing: Option<String>,
     /// A control to focus once it draws, and the control focus must still
@@ -139,12 +153,6 @@ pub(super) struct Keys {
     pub(super) globals: Vec<huterm_config::document::EntryLocator>,
     /// The row whose change is being written.
     pub(super) writing_row: Option<String>,
-    /// Strokes recorded across every recording; a chord timer finishes its
-    /// recording only while no later stroke has arrived.
-    pub(super) strokes: u64,
-    /// When the recorder last saved by its chord timeout: a Return or Space
-    /// meant to save, arriving just after, must not start recording again.
-    pub(super) timed_out_at: Option<std::time::Instant>,
 }
 
 impl Keys {
@@ -200,8 +208,10 @@ impl Keys {
             fields: HashMap::new(),
             synced: HashMap::new(),
             errors: HashMap::new(),
-            recording: None,
             completions: HashMap::new(),
+            recorders: HashMap::new(),
+            recorder: None,
+            recorder_stale: false,
             editing: None,
             follow: None,
             stranded: false,
@@ -209,8 +219,6 @@ impl Keys {
             entries: Vec::new(),
             globals: Vec::new(),
             writing_row: None,
-            strokes: 0,
-            timed_out_at: None,
         }
     }
 }
@@ -219,14 +227,21 @@ impl Keys {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Identity {
     whole: String,
+    /// The binding without its key.
+    keyless: String,
     key: String,
     command: CommandId,
 }
 
 impl Identity {
     fn of(listed: &ListedBinding) -> Self {
+        let keyless = Bound {
+            key: String::new(),
+            ..listed.binding.clone()
+        };
         Self {
             whole: format!("{:?}", listed.binding),
+            keyless: format!("{keyless:?}"),
             key: listed.binding.key.clone(),
             command: listed.binding.command,
         }
@@ -235,6 +250,11 @@ impl Identity {
     /// The same shortcut with another condition or other arguments.
     fn same_shortcut(&self, other: &Self) -> bool {
         self.key == other.key && self.command == other.command
+    }
+
+    /// The same binding on another key.
+    fn rekeyed(&self, other: &Self) -> bool {
+        self.key != other.key && self.keyless == other.keyless
     }
 }
 
@@ -487,9 +507,9 @@ impl SettingsView {
         })
     }
 
-    /// Why a shortcut's condition and argument fields refuse edits: the
-    /// section is read-only, or the shortcut is not active. `None` for an
-    /// active shortcut that can change.
+    /// Why a shortcut's key cap, condition, and argument fields refuse
+    /// edits: the section is read-only, or the shortcut is not active.
+    /// `None` for an active shortcut that can change.
     fn key_field_refusal(&self, active: bool) -> Option<SharedString> {
         self.keys_lock_reason().or_else(|| {
             (!active).then(|| "Only an active shortcut can change".into())
@@ -626,26 +646,8 @@ impl SettingsView {
             }
             // Only an active shortcut's key records.
             "krec" if !self.field_row_active(&format!("krec:{argument}")) => {}
-            "krec" => {
-                let handle = self.action_stop(format!("krec:{argument}"), cx);
-                self.start_recording(
-                    Target::Row(argument.to_owned()),
-                    &handle,
-                    window,
-                    cx,
-                );
-            }
-            "kadd" => {
-                if let Some(spec) = lookup(argument) {
-                    let handle =
-                        self.action_stop(format!("kadd:{argument}"), cx);
-                    self.start_recording(
-                        Target::Add(spec.id),
-                        &handle,
-                        window,
-                        cx,
-                    );
-                }
+            "krec" | "kadd" => {
+                self.start_recording(&format!("{kind}:{argument}"), window, cx);
             }
             "kon" => self.switch_row(argument, cx),
             // Removing a control's row moves focus to its command, or to
@@ -800,12 +802,16 @@ impl SettingsView {
     /// After a changed default lands, the changed binding is the file's
     /// last entry; when focus is still on the control that changed it,
     /// focus moves to the same control on the new row, so further typing
-    /// edits that row rather than the default it replaced.
+    /// edits that row rather than the default it replaced. A recorded key
+    /// also keeps the drafts in its shortcut's other fields
+    /// (`keep_drafts_for_new_key`).
     pub(super) fn follow_changed_default(
         &mut self,
         edit: &Edit,
         row: Option<&str>,
+        patches: &[Patch],
     ) {
+        self.keep_drafts_for_new_key(edit, row, patches);
         let (Edit::ChangeDefault { default, field, .. }, Some(row)) =
             (edit, row)
         else {
@@ -842,6 +848,110 @@ impl SettingsView {
             }
         };
         self.keys.follow = Some((control(&format!("u{last}")), control(row)));
+    }
+
+    /// Keeps the drafts in a shortcut's condition and argument fields when
+    /// its recorded key lands. Fields follow a shortcut by its binding, so
+    /// a new key would otherwise count as another shortcut and drop them.
+    /// The edited binding's identity before the write becomes its identity
+    /// now, so `follow_moved_rows` moves its fields with every other row's,
+    /// to wherever the entries now put it. A user entry is matched by the
+    /// key its write replaced, and by its write's row among identical
+    /// entries; a default's change is the file's last entry. Without one
+    /// match, `follow_moved_rows` handles the fields as after any edit.
+    fn keep_drafts_for_new_key(
+        &mut self,
+        edit: &Edit,
+        changed: Option<&str>,
+        patches: &[Patch],
+    ) {
+        let Some(inventory) = &self.keys.inventory else {
+            return;
+        };
+        let (from, now) = match edit {
+            Edit::ChangeUser {
+                field: Field::Key,
+                value: Some(Value::String(key)),
+                ..
+            } => {
+                // Another editor can move the entries, so the write's
+                // locator may no longer name the row; its content still
+                // names the key it replaced. Its row tells identical
+                // entries apart.
+                let Some((replaced, located)) =
+                    patches.iter().find_map(|patch| match patch {
+                        Patch::SetEntryField { locator, field, .. }
+                            if field == "key" =>
+                        {
+                            let replaced = locator
+                                .content()
+                                .get("key")
+                                .and_then(Value::as_str)?;
+                            Some((replaced, format!("u{}", locator.index())))
+                        }
+                        _ => None,
+                    })
+                else {
+                    return;
+                };
+                let found: Vec<(String, Identity)> = rows(inventory)
+                    .into_iter()
+                    .filter(|(_, listed)| listed.binding.key == *key)
+                    .filter_map(|(_, listed)| {
+                        let now = Identity::of(listed);
+                        let before: Vec<&String> = self
+                            .keys
+                            .identities
+                            .iter()
+                            .filter(|(_, before)| {
+                                before.key == replaced && before.rekeyed(&now)
+                            })
+                            .map(|(name, _)| name)
+                            .collect();
+                        let from = match before.as_slice() {
+                            [from] => Some(*from),
+                            _ => before
+                                .into_iter()
+                                .find(|name| **name == located),
+                        };
+                        from.map(|from| (from.clone(), now))
+                    })
+                    .collect();
+                let [found] = found.as_slice() else {
+                    return;
+                };
+                found.clone()
+            }
+            Edit::ChangeDefault {
+                field: Field::Key,
+                value: Some(Value::String(key)),
+                ..
+            } => {
+                let (Some(from), Some(last)) = (
+                    changed,
+                    inventory
+                        .bindings
+                        .iter()
+                        .filter_map(|listed| listed.entry)
+                        .max(),
+                ) else {
+                    return;
+                };
+                let command =
+                    self.keys.identities.get(from).map(|before| before.command);
+                let Some(listed) =
+                    row(inventory, &format!("u{last}")).filter(|listed| {
+                        listed.binding.key == *key
+                            && Some(listed.binding.command) == command
+                    })
+                else {
+                    return;
+                };
+                (from.to_owned(), Identity::of(listed))
+            }
+            _ => return,
+        };
+        self.keys.identities.insert(from, now);
     }
 
     /// Focuses a followed control once it draws.
@@ -886,110 +996,124 @@ impl SettingsView {
         }
     }
 
+    /// Starts the recorder for an action key, unless keybindings are
+    /// read-only.
     pub(super) fn start_recording(
         &mut self,
-        target: Target,
-        focus: &FocusHandle,
+        key: &str,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         if self.keys_read_only() {
             return;
         }
-        // A Return meant to save, landing just after the chord timeout
-        // already saved, would otherwise start a new recording.
-        if self.keys.timed_out_at.take().is_some_and(|at| {
-            cx.background_executor().now().duration_since(at)
-                < CHORD_TIMEOUT / 2
-        }) {
-            return;
-        }
-        focus.focus(window, cx);
-        let blur = cx.on_blur(focus, window, |view, _, cx| {
-            view.cancel_recording(cx);
-        });
-        self.keys.recording = Some(Recording {
-            target,
-            strokes: Vec::new(),
-            generation: 0,
-            _blur: blur,
-        });
-        cx.notify();
+        let recorder = self.recorder(key, cx);
+        recorder.update(cx, |recorder, cx| recorder.start(window, cx));
     }
 
-    pub(super) fn cancel_recording(&mut self, cx: &mut Context<'_, Self>) {
-        if self.keys.recording.take().is_some() {
-            cx.notify();
-        }
-    }
-
-    /// Takes a key-down while recording, before any binding or menu sees
-    /// it. Returns whether it was taken.
-    pub(super) fn record(
+    /// The key recorder for an action key, created on first use with that
+    /// key's focus handle, which marks it drawn.
+    pub(super) fn recorder(
         &mut self,
-        keystroke: &Keystroke,
+        key: &str,
         cx: &mut Context<'_, Self>,
-    ) -> bool {
-        let Some(recording) = &mut self.keys.recording else {
-            return false;
-        };
-        let plain = !keystroke.modifiers.modified();
-        match keystroke.key.as_str() {
-            "escape" if plain => {
-                self.cancel_recording(cx);
-                return true;
-            }
-            "enter" if plain && !recording.strokes.is_empty() => {
-                self.finish_recording(cx);
-                return true;
-            }
-            "shift" | "control" | "alt" | "platform" | "function" => {
-                return true;
-            }
-            _ => {}
+    ) -> Entity<KeyRecorder> {
+        let focus = self.action_stop(key.to_owned(), cx);
+        if let Some(recorder) = self.keys.recorders.get(key) {
+            return recorder.clone();
         }
-        let generation = self.keys.strokes + 1;
-        self.keys.strokes = generation;
-        let Some(recording) = &mut self.keys.recording else {
-            return false;
-        };
-        recording.strokes.push(keystroke.unparse());
-        recording.generation = generation;
         // A global shortcut is one stroke.
-        let global =
-            matches!(recording.target, Target::Global(_) | Target::AddGlobal);
-        if global || recording.strokes.len() >= 2 {
-            self.finish_recording(cx);
-            return true;
-        }
-        cx.spawn(async move |view, cx| {
-            cx.background_executor().timer(CHORD_TIMEOUT).await;
-            let _ =
-                view.update(cx, |view, cx| {
-                    if view.keys.recording.as_ref().is_some_and(|recording| {
-                        recording.generation == generation
-                    }) {
-                        view.finish_recording(cx);
-                        view.keys.timed_out_at =
-                            Some(cx.background_executor().now());
-                    }
-                });
+        let strokes = if key.starts_with('g') { 1 } else { 2 };
+        let recorder = cx.new(|_| {
+            KeyRecorder::new(focus, |keys| {
+                KeyHint::parse(keys, Platform::current()).glyphs()
+            })
+            .with_max_strokes(strokes)
+        });
+        cx.subscribe(&recorder, |view, recorder, event, cx| {
+            view.recorder_event(&recorder, event, cx);
         })
         .detach();
-        cx.notify();
-        true
+        self.keys.recorders.insert(key.to_owned(), recorder.clone());
+        recorder
     }
 
-    fn finish_recording(&mut self, cx: &mut Context<'_, Self>) {
-        let Some(recording) = self.keys.recording.take() else {
-            return;
-        };
-        let key = recording.strokes.join(" ");
-        if key.is_empty() {
-            cx.notify();
-            return;
+    fn recorder_event(
+        &mut self,
+        recorder: &Entity<KeyRecorder>,
+        event: &KeyRecorderEvent,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match event {
+            KeyRecorderEvent::Started => {
+                self.keys.recorder_stale = false;
+                // One recording at a time.
+                if let Some(previous) =
+                    self.keys.recorder.replace(recorder.clone())
+                    && previous != *recorder
+                {
+                    previous.update(cx, KeyRecorder::cancel);
+                }
+            }
+            KeyRecorderEvent::Recorded(keys) => {
+                let target =
+                    self.key_of_recorder(recorder).and_then(Target::of);
+                if let Some(target) = target {
+                    self.finish_recording(target, keys.clone(), cx);
+                }
+            }
+            KeyRecorderEvent::Canceled => {}
         }
-        match recording.target {
+        cx.notify();
+    }
+
+    /// The action key of `recorder`.
+    fn key_of_recorder(&self, recorder: &Entity<KeyRecorder>) -> Option<&str> {
+        self.keys
+            .recorders
+            .iter()
+            .find(|(_, held)| *held == recorder)
+            .map(|(key, _)| key.as_str())
+    }
+
+    /// The action key of the recorder that started last.
+    pub(super) fn recorder_key(&self) -> Option<&str> {
+        self.key_of_recorder(self.keys.recorder.as_ref()?)
+    }
+
+    /// Cancels a recording whose global shortcut moved, which `set_globals`
+    /// found without the context to cancel it.
+    pub(super) fn cancel_stale_recording(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if std::mem::take(&mut self.keys.recorder_stale)
+            && let Some(recorder) = self.keys.recorder.clone()
+        {
+            recorder.update(cx, KeyRecorder::cancel);
+        }
+    }
+
+    /// Feeds a keystroke to the recorder that started last, before any
+    /// binding, menu, or field sees it. Returns whether it was taken.
+    pub(super) fn intercept_key(
+        &mut self,
+        event: &KeystrokeEvent,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        self.cancel_stale_recording(cx);
+        self.keys.recorder.clone().is_some_and(|recorder| {
+            recorder.update(cx, |recorder, cx| recorder.intercept(event, cx))
+        })
+    }
+
+    fn finish_recording(
+        &mut self,
+        target: Target,
+        key: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match target {
             Target::Row(name) => {
                 let current = self
                     .keys
@@ -1014,7 +1138,6 @@ impl SettingsView {
             Target::Global(entry) => self.finish_global(Some(entry), key, cx),
             Target::AddGlobal => self.finish_global(None, key, cx),
         }
-        cx.notify();
     }
 
     /// A `when` or argument field for a row, created on first use.
@@ -2010,31 +2133,20 @@ impl SettingsView {
                 self.render_shortcut(spec, name, binding, swatch, window, cx),
             );
         }
-        let recording_add =
-            self.keys.recording.as_ref().is_some_and(|recording| {
-                recording.target == Target::Add(spec.id)
-            });
-        let read_only = self.keys_read_only();
-        let add = {
-            let label = if recording_add {
-                self.recording_content(swatch)
-            } else {
-                "Add shortcut".into_any_element()
-            };
-            let element =
-                button(format!("settings-kadd-{}", spec.id.as_str()), swatch)
-                    .when(recording_add, |button| {
-                        button.border_color(swatch.accent)
-                    })
-                    .when(read_only, |button| button.opacity(0.5))
-                    .child(label);
-            self.actionable(
-                element,
-                format!("kadd:{}", spec.id.as_str()),
-                swatch,
-                cx,
-            )
-        };
+        let add_key = format!("kadd:{}", spec.id.as_str());
+        let recorder = self.recorder(&add_key, cx);
+        let add = KeyRecorderButton::new(
+            id(format!("settings-kadd-{}", spec.id.as_str())),
+            format!("Add shortcut for {}", spec.title),
+            &recorder,
+            swatch,
+        )
+        .placeholder("Add shortcut")
+        .key_context("SettingsControl")
+        .px(px(10.0))
+        .when_some(self.keys_lock_reason(), |add, reason| {
+            add.disabled(Some(reason))
+        });
         let mut buttons = div()
             .flex()
             .flex_wrap()
@@ -2085,52 +2197,22 @@ impl SettingsView {
                 ));
             }
         }
-        let block = block.child(buttons);
         block
-            .when(recording_add, |block| {
-                block.child(self.recording_hint(swatch))
-            })
+            .child(buttons)
+            .children(self.recording_hint(&add_key, swatch, cx))
             .into_any_element()
     }
 
-    /// The keys recorded so far as the platform draws them, or a prompt.
-    pub(super) fn recording_content(&self, swatch: Swatch) -> AnyElement {
-        match &self.keys.recording {
-            Some(recording) if !recording.strokes.is_empty() => div()
-                .flex()
-                .items_center()
-                .gap(px(4.0))
-                .child(
-                    KeyHint::parse(
-                        &recording.strokes.join(" "),
-                        Platform::current(),
-                    )
-                    .element(px(12.0), swatch.accent_text()),
-                )
-                .child(small("…".to_owned(), swatch.accent_text()))
-                .into_any_element(),
-            _ => small("Press keys".to_owned(), swatch.accent_text())
-                .into_any_element(),
-        }
-    }
-
-    /// What the recorder is waiting for, under the row it records into.
-    pub(super) fn recording_hint(&self, swatch: Swatch) -> gpui::Div {
-        let waiting = self
-            .keys
-            .recording
-            .as_ref()
-            .is_some_and(|recording| !recording.strokes.is_empty());
-        small(
-            if waiting {
-                "Saves in a moment. Press a second key for a chord, Return to \
-                 save now, or Esc to cancel."
-                    .to_owned()
-            } else {
-                "Press the new shortcut. Esc cancels.".to_owned()
-            },
-            swatch.accent_text(),
-        )
+    /// What the recorder for an action key is waiting for, under the row it
+    /// records into, while it records.
+    pub(super) fn recording_hint(
+        &self,
+        key: &str,
+        swatch: Swatch,
+        cx: &gpui::App,
+    ) -> Option<gpui::Div> {
+        let hint = self.keys.recorders.get(key)?.read(cx).hint()?;
+        Some(small(hint.to_string(), swatch.accent_text()))
     }
 
     /// One shortcut: key, condition, arguments, tag, switch, and remove,
@@ -2148,51 +2230,31 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let read_only = self.keys_read_only();
         let active = listed.state == BindingState::Active;
-        let editable = active && !read_only;
+        // Why the key cap, condition, and arguments refuse edits, if they do.
+        let refusal = self.key_field_refusal(active);
         let user = listed.binding.origin == Origin::User;
-        let recording = self.keys.recording.as_ref().is_some_and(|recording| {
-            recording.target == Target::Row(name.to_owned())
-        });
         // The key cap records a new key.
+        let record_key = format!("krec:{name}");
         let key = {
-            let content = if recording {
-                self.recording_content(swatch)
+            let recorder = self.recorder(&record_key, cx);
+            KeyRecorderButton::new(
+                id(format!("settings-krec-{name}")),
+                format!("{} shortcut", spec.title),
+                &recorder,
+                swatch,
+            )
+            .shortcut(Some(listed.binding.key.clone()))
+            .key_context("SettingsControl")
+            .w(px(CAP_WIDTH))
+            .border_color(if user {
+                swatch.accent.opacity(0.5)
             } else {
-                KeyHint::parse(&listed.binding.key, Platform::current())
-                    .element(
-                        px(12.0),
-                        if active { swatch.fg } else { swatch.muted },
-                    )
-                    .into_any_element()
-            };
-            let element = div()
-                .id(id(format!("settings-krec-{name}")))
-                .flex()
-                .flex_none()
-                .items_center()
-                .w(px(CAP_WIDTH))
-                .overflow_hidden()
-                .h(px(24.0))
-                .px(px(8.0))
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(if recording {
-                    swatch.accent
-                } else if user {
-                    swatch.accent.opacity(0.5)
-                } else {
-                    swatch.line_strong
-                })
-                .when(!editable, |cap| cap.opacity(0.6))
-                .child(content);
-            let element =
-                self.actionable(element, format!("krec:{name}"), swatch, cx);
-            let _ = self
-                .action_stop(format!("krec:{name}"), cx)
-                .tab_stop(editable);
-            element
+                swatch.line_strong
+            })
+            .when_some(refusal.clone(), |cap, reason| {
+                cap.disabled(Some(reason))
+            })
         };
         // The condition, with suggestions floating below it while typing.
         let when_key = format!("when:{name}");
@@ -2205,7 +2267,6 @@ impl SettingsView {
             cx,
         );
         let invalid = self.keys.errors.contains_key(&when_key);
-        let refusal = self.key_field_refusal(active);
         when.update(cx, |field, cx| {
             field.set_disabled(refusal.is_some(), refusal.clone(), cx);
             field.set_invalid(invalid, cx);
@@ -2342,7 +2403,7 @@ impl SettingsView {
                         .children(arguments),
                 )
             })
-            .when(recording, |row| row.child(self.recording_hint(swatch)))
+            .children(self.recording_hint(&record_key, swatch, cx))
             .children(messages)
             .into_any_element()
     }
