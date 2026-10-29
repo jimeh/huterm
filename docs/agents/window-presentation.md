@@ -243,6 +243,17 @@ window, including after regular-to-Quake conversion; it skips a borderless
 window, which has no buttons, and Quake windows never request a position.
 `smoke:macos-palette` asserts the centring from the `traffic_lights` state.
 
+The macOS Settings window hides AppKit's title bar the same way: a
+transparent title bar with `app_owns_titlebar_drag`, the title still
+"Settings" for accessibility and the Window menu, and the traffic lights
+centred in the 52-point section header strip (`HEADER_HEIGHT`) over the
+sidebar. Its header and the empty strip above the sidebar's search carry
+the same move-on-first-motion and double-click gestures. Keep controls out
+of that strip, since a press there never reaches them. The `macos-settings`
+smoke step drags both with real HID input and presses the search below
+them. On Linux it keeps server decorations and draws neither the strip nor
+the gestures.
+
 X11 moves also need `start_window_move`. GPUI grants
 X11 client-side decorations only when, at client start, the window manager
 lists `_GTK_FRAME_EXTENTS` in the root

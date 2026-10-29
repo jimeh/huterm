@@ -1,13 +1,17 @@
 //! The Settings layout on `huterm-ui`'s layout components (migration 6a of
 //! `docs/plans/ui-components.md`, #276): the sidebar as vertical tabs, the
 //! theme cards as a radio group, the group commands `settings_next` and
-//! `settings_previous`, Tab scrolling the focused control into view, and
-//! the rows, alerts, and empty states.
+//! `settings_previous`, Tab scrolling the focused control into view, the
+//! section header and the pane's scrollbar, and the rows, alerts, and empty
+//! states.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{Bounds, FocusHandle, Modifiers, Pixels};
+use gpui::{
+    Bounds, FocusHandle, Modifiers, Pixels, ScrollDelta, ScrollWheelEvent,
+    TouchPhase,
+};
 use huterm_config::settings::SectionId;
 use serde_json::Value;
 
@@ -792,6 +796,128 @@ fn focus_moving_under_an_open_dialog_scrolls_nothing(cx: &mut TestAppContext) {
         "delete"
     );
     assert_eq!(scrolled(&mut harness), px(0.0), "the pane scrolled");
+}
+
+/// The heading the pane's header shows.
+fn heading(harness: &mut DesktopHarness) -> String {
+    a11y_find(harness, |node| node["aria"]["role"] == "Heading")
+        .expect("the pane draws a heading")["aria"]["label"]
+        .as_str()
+        .expect("the heading is named")
+        .to_owned()
+}
+
+fn header(harness: &DesktopHarness) -> Bounds<Pixels> {
+    visual(harness)
+        .debug_bounds("settings-header")
+        .expect("the header painted")
+}
+
+#[gpui::test]
+fn the_header_names_the_section_above_the_pane_it_scrolls(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("layout-header", "");
+    let mut harness = DesktopHarness::new(cx);
+    short_terminal(&mut harness, &file);
+    assert_eq!(heading(&mut harness), "Terminal");
+    let fixed = header(&harness);
+    // The header spans the top of the window over the pane.
+    assert_eq!(fixed.top(), px(0.0));
+    let viewport = with_view(&mut harness, |view, _| view.pane_viewport());
+    assert_eq!(viewport.top(), fixed.bottom());
+    assert_eq!(viewport.left(), fixed.left());
+    // The content scrolls under it; the header stays.
+    with_view(&mut harness, |view, cx| {
+        view.scroll_pane_to(px(120.0));
+        cx.notify();
+    });
+    visual(&harness).run_until_parked();
+    assert_eq!(scrolled(&mut harness), px(120.0));
+    assert_eq!(header(&harness), fixed);
+    assert_eq!(heading(&mut harness), "Terminal");
+    // It follows the section, and names a search's results.
+    keys(&harness, "shift-tab");
+    keys(&harness, "down");
+    assert_eq!(section(&mut harness), SectionId::Scrollback);
+    assert_eq!(heading(&mut harness), "Scrollback");
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
+    });
+    let mut typing = visual(&harness);
+    typing.simulate_input("font");
+    typing.run_until_parked();
+    assert_eq!(heading(&mut harness), "Search results");
+}
+
+#[gpui::test]
+fn the_pane_shows_its_scrollbar_when_it_scrolls(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("layout-scrollbar", "");
+    let mut harness = DesktopHarness::new(cx);
+    short_terminal(&mut harness, &file);
+    let shows = |harness: &mut DesktopHarness| {
+        with_view(harness, |view, _| view.pane_scrollbar_shows())
+    };
+    assert!(!shows(&mut harness), "the indicator shows before a scroll");
+    // The wheel over the pane scrolls it and shows the indicator.
+    let viewport = with_view(&mut harness, |view, _| view.pane_viewport());
+    let mut wheel = visual(&harness);
+    wheel.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-60.0))),
+        modifiers: Modifiers::none(),
+        touch_phase: TouchPhase::Moved,
+    });
+    wheel.run_until_parked();
+    assert!(
+        scrolled(&mut harness) > px(0.0),
+        "the wheel scrolled nothing"
+    );
+    assert!(shows(&mut harness), "the wheel left the indicator hidden");
+    // Tab to a control below the fold shows it too, once it has faded.
+    with_view(&mut harness, |view, cx| {
+        view.scroll_pane_to(px(0.0));
+        view.hide_pane_scrollbar();
+        cx.notify();
+    });
+    visual(&harness).run_until_parked();
+    assert!(!shows(&mut harness));
+    for _ in 0..40 {
+        keys(&harness, "tab");
+        if scrolled(&mut harness) > px(0.0) {
+            break;
+        }
+    }
+    assert!(scrolled(&mut harness) > px(0.0), "no Tab scrolled the pane");
+    assert!(shows(&mut harness), "the reveal left the indicator hidden");
+}
+
+#[gpui::test]
+fn the_title_strip_leaves_the_search_its_clicks(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("layout-title-strip", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::General);
+    let tab = with_view(&mut harness, |view, _| {
+        view.section_handle(SectionId::General)
+    });
+    keyboard_focus(&mut harness, &tab);
+    let search = with_view(&mut harness, |view, _| view.search_bounds())
+        .expect("the search painted");
+    let fixed = header(&harness);
+    let mut pointer = visual(&harness);
+    // A press on the header, or above the search on macOS, where the
+    // traffic lights sit, is the window's.
+    pointer.simulate_click(fixed.center(), Modifiers::none());
+    if cfg!(target_os = "macos") {
+        assert!(search.top() >= fixed.bottom(), "the search is in the strip");
+        pointer.simulate_click(
+            point(search.center().x, fixed.center().y),
+            Modifiers::none(),
+        );
+    }
+    pointer.simulate_click(search.center(), Modifiers::none());
+    pointer.run_until_parked();
+    assert_eq!(focus(&mut harness), "search");
 }
 
 #[gpui::test]
