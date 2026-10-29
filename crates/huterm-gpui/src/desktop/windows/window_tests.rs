@@ -4724,6 +4724,78 @@ fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
     assert!(harness.cx.update(|cx| licenses_state(cx, window)).is_some());
 }
 
+/// The accessibility nodes in `window`'s last frame with `role`.
+fn a11y_with_role(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    role: &str,
+) -> Vec<serde_json::Value> {
+    let json = harness
+        .cx
+        .update(|cx| {
+            window.update(cx, |_, window, _| window.debug_a11y_tree_json())
+        })
+        .unwrap()
+        .expect("test windows report an accessibility tree for every frame");
+    let tree: serde_json::Value = serde_json::from_str(&json).unwrap();
+    tree["nodes"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|node| node["aria"]["role"] == role)
+        .cloned()
+        .collect()
+}
+
+#[gpui::test]
+fn the_palette_and_licenses_lists_report_a_named_list_and_their_field(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    harness.cx.run_until_parked();
+    let lists = |harness: &mut DesktopHarness| -> Vec<String> {
+        a11y_with_role(harness, window, "ListBox")
+            .iter()
+            .filter_map(|node| {
+                node["aria"]["label"].as_str().map(str::to_owned)
+            })
+            .collect()
+    };
+    assert_eq!(lists(&mut harness), ["Commands"]);
+    let fields = a11y_with_role(&mut harness, window, "EditableComboBox");
+    let [field] = fields.as_slice() else {
+        panic!("one palette search field: {fields:?}");
+    };
+    // The highlighted command is the field's description.
+    assert!(
+        field["aria"]["description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "{field}"
+    );
+    harness.press(window, "escape");
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(lists(&mut harness), ["Components"]);
+    assert_eq!(
+        a11y_with_role(&mut harness, window, "EditableComboBox").len(),
+        1,
+        "the Licenses search field"
+    );
+}
+
 #[gpui::test]
 fn a_licenses_row_shows_its_component_on_a_click_not_a_hover(
     cx: &mut TestAppContext,
