@@ -72,6 +72,8 @@ function noticeLines(value: State, prefix = ""): string[] {
   return Object.entries(value).filter(([key]) => key.startsWith(prefix) && /^notice\d+$/.test(key.slice(prefix.length))).map(([, line]) => line);
 }
 const hasFailure = (value: State, message: string, prefix = "") => noticeLines(value, prefix).some(line => line.startsWith("error|command|") && line.includes(message));
+const hasShortcutWarning = (value: State, message: string, prefix = "") => noticeLines(value, prefix).some(line => line.startsWith("warning|keymap|") && line.includes(message));
+const GRAB_TAKEN = "already in use by another application";
 function frame(value: State): [number, number, number, number] {
   const coordinates = value.frame?.split(",").map(Number);
   if (coordinates?.length !== 4 || coordinates.some(number => !Number.isFinite(number))) throw new Error(`invalid native frame: ${value.frame}`);
@@ -726,12 +728,15 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           const beforeState = (await current())!;
           const before = beforeState.frame;
           const beforeWidth = frame(beforeState)[2];
-          await writeFile(config, configText('width = 0.4', `[[global_keybinding]]\nkey = "${grabChord}"\ncommand = "toggle_quake"`));
+          // A chord another process holds only warns: the rest of the file applies, and ctrl-alt-t stays registered.
+          await writeFile(config, configText('hide_on_focus_loss = false\nanimation_ms = 150\nwidth = 0.4', `[[global_keybinding]]\nkey = "${grabChord}"\ncommand = "toggle_quake"`));
           await command("app reload_config");
-          await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => /\.notice\d+$/.test(key) && value.startsWith("error|config|Config reload failed")),"OS grab conflict rejection");
+          await waitFor(async () => { const value = await state(); return value.reloading === "false" && hasShortcutWarning(value, `cannot register ${grabChord}: ${GRAB_TAKEN}`, "desktop."); },"OS grab conflict warning");
+          const rejected = noticeLines(await state(), "desktop.").find(line => line.startsWith("error|"));
+          if (rejected) throw new Error(`grab conflict reload reported an error: ${rejected}`);
           await command("app show_quake");await settled(true);
           const after = (await current())!;
-          if (frame(after)[2] !== beforeWidth) throw new Error(`failed grab reload published new profile width: before=${before} after=${after.frame}`);
+          if (frame(after)[2] === beforeWidth) throw new Error(`grab conflict reload kept the previous profile width: before=${before} after=${after.frame}`);
           await hotkey();await settled(false);await hotkey();await settled(true);
         } finally {
           try {
@@ -753,6 +758,9 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await grabErrors;
       if (grabCleanupError !== undefined) throw grabCleanupError;
       if (await grab.exited !== 0) throw new Error(`external grab process failed: ${grabDiagnostics}`);
+      // The other process released the chord, so a reload of the same file registers it.
+      await command("app reload_config");
+      await waitFor(async () => { const value = await state(); return value.reloading === "false" && !hasShortcutWarning(value, GRAB_TAKEN, "desktop."); },"released grab registers on reload");
       await writeFile(config,"[quake.profiles.default]\nwidth = 0");
       await command("app reload_config");
       await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => /\.notice\d+$/.test(key) && value.startsWith("error|config|Config reload failed")),"invalid profile reload rejection");
@@ -1016,7 +1024,7 @@ export async function probeFreeChord(executable: string): Promise<string> {
   }
 }
 
-/// `conflictChord` is owned by another process and must be rejected at startup;
+/// `conflictChord` is owned by another process and must warn at startup without registering;
 /// `unregisterChord` is free and must register, then release on reload.
 export async function checkOrdinaryExit(executable: string, conflictChord?: string, unregisterChord?: string): Promise<void> {
   const conflict = conflictChord !== undefined;
@@ -1034,16 +1042,19 @@ export async function checkOrdinaryExit(executable: string, conflictChord?: stri
   let passed = false;
   const state = async () => parseState(await Bun.file(join(directory,"state")).text());
   try {
-    // The conflict precedes every window, so it waits in the latch until the first window takes it. Its notice expires, so observe it on any poll.
+    // The conflict is a startup diagnostic, so the first window raises its warning and later windows would too.
     let conflictShown = false;
+    let conflictFailed = false;
     await waitFor(async () => {
       if (!await Bun.file(join(directory,"state")).exists()) return false;
       const ordinary = profile(await state(),"ordinary");
-      conflictShown ||= hasFailure(ordinary ?? {}, "cannot register");
+      conflictShown ||= hasShortcutWarning(ordinary ?? {}, `cannot register ${chord}: ${GRAB_TAKEN}`);
+      conflictFailed ||= hasFailure(ordinary ?? {}, "cannot register");
       return !!ordinary?.text?.includes("ORDINARY_READY");
     },"ordinary window without registrations");
-    if (conflict && !conflictShown) throw new Error("startup grab conflict did not report its failure in the first window");
-    if (hasFailure(await state(), "cannot register", "desktop.")) throw new Error("startup grab conflict stayed latched after a window showed it");
+    if (conflict && !conflictShown) throw new Error("startup grab conflict did not warn in the first window");
+    if (conflict && !hasShortcutWarning(await state(), GRAB_TAKEN, "desktop.")) throw new Error("startup grab conflict is missing from the desktop diagnostics");
+    if (conflictFailed) throw new Error("startup grab conflict was reported as a failure");
     if ((await state()).keepalive !== String(unregister)) throw new Error("ordinary startup registration ownership disagrees with configuration");
     await publishCommand(join(directory,"command-0"),"ordinary close_window");
     await waitFor(async () => app.exitCode !== null || profile(await state(),"ordinary")?.confirming === "true" || (unregister && (await state()).windows === "0"),"ordinary final-window assessment");

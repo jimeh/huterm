@@ -124,12 +124,12 @@ Extend shared schema fixtures and the desktop global compiler parity check
 together; native key support and OS registration remain runtime checks.
 
 Global shortcut registration is partial, never transactional: each refused
-grab or release is a warning naming the key, the rest of the configuration
-applies, and the next reconcile retries it. Only a compile error, such as an
-unknown profile or a duplicate, fails a reload. Keepalive requires a
-dispatchable binding whose native grab is still owned. A grab whose release
-failed stays tracked for cleanup but must not keep a zero-window application
-alive by itself.
+grab is a warning naming the key, a failed release is logged, the rest of the
+configuration applies, and the next reconcile retries both. Only a compile
+error, such as an unknown profile or a duplicate, fails a reload. Keepalive
+requires a dispatchable binding whose native grab is still owned. A grab whose
+release failed stays tracked for cleanup but must not keep a zero-window
+application alive by itself.
 
 Restore the retained GPUI NSView as AppKit firstResponder after quake style
 changes and activation. setStyleMask can replace it while GPUI focus remains

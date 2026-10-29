@@ -1,4 +1,5 @@
-//! Transactional registrations. Native callbacks only enqueue bounded events.
+//! Partial registrations: a refused key is reported and retried on the next
+//! reconcile. Native callbacks only enqueue bounded events.
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
@@ -225,10 +226,11 @@ impl OwnedKeys {
     }
 
     /// Grabs each binding's key and releases every other owned key, one key
-    /// at a time, and returns one message per key the backend refused. A
-    /// refusal skips only that key, and the next reconcile tries it again.
-    /// `self` holds exactly the backend's grabs, including one whose release
-    /// failed, so `Drop` can still release it.
+    /// at a time, and returns one message per binding the backend refused.
+    /// A refusal skips only that key, and the next reconcile tries it again.
+    /// A failed release is only logged: the key no longer dispatches, and
+    /// `self` holds exactly the backend's grabs, so the next reconcile and
+    /// `Drop` retry it.
     fn reconcile(
         &mut self,
         backend: &impl RegistrationBackend,
@@ -265,7 +267,7 @@ impl OwnedKeys {
                     self.0.remove(&key.id());
                 }
                 Err(error) => {
-                    refused.push(format!("cannot release {key}: {error}"));
+                    eprintln!("Global shortcut release {key}: {error}");
                 }
             }
         }
@@ -298,8 +300,10 @@ impl Registrations {
             move |event: GlobalHotKeyEvent| {
                 // Release state is updated before admission to the bounded queue.
                 // A full queue can drop a press, but never strand a held shortcut.
-                if let Ok(mut live) = callback_live.lock()
-                    && let Some(event) = live.event(event.id, event.state)
+                let mut live = callback_live
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if let Some(event) = live.event(event.id, event.state)
                     && sender.try_send(event).is_ok()
                 {
                     let _ = wake.try_send(());
@@ -479,13 +483,8 @@ mod tests {
             NONE
         );
         backend.fail_unregister.borrow_mut().insert(stray.key.id());
-        let refused = owned.reconcile(&backend, &[]);
-        assert_eq!(refused.len(), 1);
-        assert!(
-            refused[0].starts_with("cannot release ")
-                && refused[0].ends_with(": unregistration rejected"),
-            "{refused:?}"
-        );
+        // The stray no longer dispatches, so it is no shortcut to warn about.
+        assert_eq!(owned.reconcile(&backend, &[]), NONE);
         assert_eq!(owned.0, owned_keys(&[&stray]));
         assert_eq!(owned.0, *backend.keys.borrow());
         assert!(

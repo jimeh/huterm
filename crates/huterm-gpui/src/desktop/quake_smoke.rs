@@ -400,8 +400,8 @@ struct ExternalGrab {
 
 /// Candidate chords in Huterm keybinding syntax, least likely to be bound on
 /// a developer machine first. Only registration matters: the smoke never
-/// presses the chord, it only proves Huterm rejects a binding another process
-/// already owns.
+/// presses the chord, it only proves Huterm warns about a binding another
+/// process already owns and registers it once that process releases it.
 const GRAB_CANDIDATES: &[(&str, global_hotkey::hotkey::Code)] = &[
     ("ctrl-alt-shift-f20", global_hotkey::hotkey::Code::F20),
     ("ctrl-alt-shift-f19", global_hotkey::hotkey::Code::F19),
