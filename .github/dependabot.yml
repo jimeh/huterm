@@ -16,12 +16,6 @@ updates:
       - dependency-name: "gpui-pre*"
       # Must match GPUI's font-kit requirement so the dlopen feature unifies.
       - dependency-name: zed-font-kit
-      # Newer releases deprecate their APIs and flood vendored GPUI builds
-      # with warnings; see docs/agents/dependencies.md.
-      - dependency-name: cocoa
-        versions: [">= 0.26.1"]
-      - dependency-name: cocoa-foundation
-        versions: [">= 0.2.1"]
 
   - package-ecosystem: github-actions
     # "/" covers only workflows and a root action.yml, not local composite actions.

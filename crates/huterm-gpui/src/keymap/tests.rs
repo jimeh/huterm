@@ -26,7 +26,7 @@ fn with_args(
 }
 
 fn keystroke(source: &str) -> Keystroke {
-    Keystroke::parse(source).unwrap()
+    Keystroke::parse_with_os(source, Platform::current().os()).unwrap()
 }
 
 fn command_of(binding: &KeyBinding) -> CommandId {
@@ -132,6 +132,39 @@ fn descriptions_resolve_from_title_and_arguments() {
             .description,
         "New Tab"
     );
+}
+
+#[test]
+fn secondary_resolves_for_the_compiled_platform_rather_than_the_host() {
+    for (platform, expected) in [
+        (
+            Platform::MacOs,
+            Modifiers {
+                platform: true,
+                ..Modifiers::default()
+            },
+        ),
+        (
+            Platform::Linux,
+            Modifiers {
+                control: true,
+                ..Modifiers::default()
+            },
+        ),
+    ] {
+        let user = [entry("secondary-f9", "reload_config")];
+        let keymap = Keymap::new(compile(platform, &user).unwrap().bindings);
+        let reload = invoke(ids::RELOAD_CONFIG).into_boxed();
+        let bound =
+            keymap.bindings_for_action(reload.as_ref()).any(|binding| {
+                matches!(binding.keystrokes(), [stroke]
+                if stroke.key() == "f9" && *stroke.modifiers() == expected)
+            });
+        assert!(
+            bound,
+            "{platform:?} did not bind secondary-f9 as {expected:?}"
+        );
+    }
 }
 
 #[test]
@@ -690,7 +723,7 @@ fn a_default_replacing_another_default_is_reported_rather_than_panicking() {
     ];
     let Resolution {
         items, conflicts, ..
-    } = resolve_entries(&clash).unwrap();
+    } = resolve_entries(Platform::current(), &clash).unwrap();
     assert_eq!(
         conflicts,
         [

@@ -1181,11 +1181,12 @@ mod lists {
         cx.simulate_mouse_move(center, None, Modifiers::none());
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: center,
             delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-150.0))),
             modifiers: Modifiers::none(),
             touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
         });
         cx.run_until_parked();
     }

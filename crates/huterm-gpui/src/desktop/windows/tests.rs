@@ -2387,7 +2387,11 @@ fn native_tab_shortcuts_match_actions_and_are_reserved_from_terminal_input() {
                 ids::SELECT_TAB,
             ),
         ] {
-            let key = Keystroke::parse(&chord).unwrap();
+            let key = Keystroke::parse_with_os(
+                &chord,
+                crate::keymap::Platform::current().os(),
+            )
+            .unwrap();
             let matched = compiled
                 .bindings
                 .iter()

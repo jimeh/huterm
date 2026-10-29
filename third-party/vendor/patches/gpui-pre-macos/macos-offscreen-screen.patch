@@ -1,30 +1,17 @@
 diff --git a/src/window.rs b/src/window.rs
-index b04282552d0da2da69e6a3768b5d2e92d0b49e08..ca8aeb3a4bb9e7b65d721cb1b3f3418e0d846b0e 100644
+index f2208d35ecd15d90733d9d07a0d56aa13b8f91e2..fc56555ea1da0320432174777691495587ab82b7 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -869,7 +869,11 @@ impl MacWindowState {
- 
-         unsafe {
-             let bounds = self.bounds();
--            let screen_size = rect_to_size(self.native_window.screen().visibleFrame());
-+            let screen = self.native_window.screen();
-+            if screen.is_null() {
-+                return false;
-+            }
-+            let screen_size = rect_to_size(screen.visibleFrame());
-             bounds.size == screen_size
-         }
-     }
-@@ -2436,21 +2440,11 @@ impl rwh::HasDisplayHandle for MacWindow {
+@@ -2409,21 +2409,11 @@ impl rwh::HasDisplayHandle for MacWindow {
  }
  
- fn get_scale_factor(native_window: id) -> f32 {
+ fn get_scale_factor(native_window: *mut AnyObject) -> f32 {
 -    let factor = unsafe {
--        let screen: id = msg_send![native_window, screen];
+-        let screen: *mut AnyObject = msg_send![native_window, screen];
 -        if screen.is_null() {
 -            return 2.0;
 -        }
--        NSScreen::backingScaleFactor(screen) as f32
+-        (&*screen.cast::<NSScreen>()).backingScaleFactor() as f32
 -    };
 -
 -    // We are not certain what triggers this, but it seems that sometimes
@@ -37,7 +24,7 @@ index b04282552d0da2da69e6a3768b5d2e92d0b49e08..ca8aeb3a4bb9e7b65d721cb1b3f3418e
 +    // NSWindow retains its backing scale while fully offscreen, when screen is nil.
 +    // A synthetic screen fallback can resize the drawable at a different scale
 +    // from the scene after the window moves back onto the same display.
-+    let factor = unsafe { NSWindow::backingScaleFactor(native_window) as f32 };
++    let factor = unsafe { (&*native_window.cast::<NSWindow>()).backingScaleFactor() as f32 };
 +    if factor.is_finite() && factor > 0.0 { factor } else { 2.0 }
  }
  

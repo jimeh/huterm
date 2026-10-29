@@ -6,7 +6,7 @@ use std::rc::Rc;
 use gpui::{
     AccessibleAction, Context, DispatchPhase, Entity, FocusHandle, Focusable,
     IntoElement, KeyBinding, KeyUpEvent, Keystroke, Modifiers, MouseButton,
-    MouseDownEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
+    MouseDownEvent, Pixels, Point, Render, ScrollDelta, ScrollEvent,
     TestAppContext, TouchPhase, VisualTestContext, Window, canvas, div, point,
     prelude::*, px,
 };
@@ -224,7 +224,7 @@ impl Owner {
             .on_mouse_down(MouseButton::Left, move |_, _, _| {
                 down.borrow_mut().push("edge-down".to_owned());
             })
-            .on_scroll_wheel(move |_, _, _| {
+            .on_scroll(move |_, _, _| {
                 wheel.borrow_mut().push("edge-wheel".to_owned());
             })
     }
@@ -257,13 +257,11 @@ impl Render for Owner {
                     },
                 );
                 let window_wheel = window_wheel.clone();
-                window.on_mouse_event(
-                    move |_: &ScrollWheelEvent, phase, _, _| {
-                        if phase == DispatchPhase::Bubble {
-                            window_wheel();
-                        }
-                    },
-                );
+                window.on_mouse_event(move |_: &ScrollEvent, phase, _, _| {
+                    if phase == DispatchPhase::Bubble {
+                        window_wheel();
+                    }
+                });
             },
         )
         .absolute()
@@ -316,7 +314,7 @@ impl Render for Owner {
                     .on_mouse_down(MouseButton::Left, move |_, _, _| {
                         trigger_down();
                     })
-                    .on_scroll_wheel(move |_, _, _| trigger_wheel())
+                    .on_scroll(move |_, _, _| trigger_wheel())
                     .on_click(cx.listener(|owner, _, _, cx| {
                         owner.open();
                         cx.notify();
@@ -504,11 +502,12 @@ fn open_inset(probe: &Probe, cx: &mut VisualTestContext) {
 
 /// A wheel tick over `position`.
 fn wheel(cx: &mut VisualTestContext, position: Point<Pixels>) {
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position,
         delta: ScrollDelta::Pixels(point(px(0.0), px(-20.0))),
         modifiers: Modifiers::none(),
         touch_phase: TouchPhase::Moved,
+        ..Default::default()
     });
     cx.run_until_parked();
 }

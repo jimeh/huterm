@@ -30,9 +30,14 @@ fn keystrokes(harness: &mut DesktopHarness, keys: &str) {
     let window: gpui::AnyWindowHandle =
         harness.cx.update(|cx| settings(cx).unwrap().into());
     for key in keys.split(' ') {
-        harness
-            .cx
-            .dispatch_keystroke(window, gpui::Keystroke::parse(key).unwrap());
+        harness.cx.dispatch_keystroke(
+            window,
+            gpui::Keystroke::parse_with_os(
+                key,
+                crate::keymap::Platform::current().os(),
+            )
+            .unwrap(),
+        );
     }
 }
 

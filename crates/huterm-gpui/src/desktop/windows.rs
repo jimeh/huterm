@@ -11212,8 +11212,8 @@ impl Render for WorkspaceView {
                 .when(merged_row && frame.controls, |bar| {
                     self.title_row_gestures(bar)
                 })
-                .on_scroll_wheel(cx.listener(
-                    move |view, event: &ScrollWheelEvent, window, cx| {
+                .on_scroll(cx.listener(
+                    move |view, event: &ScrollEvent, window, cx| {
                         let delta = event.delta.pixel_delta(px(32.0));
                         let delta = if vertical {
                             if delta.y == px(0.0) { delta.x } else { delta.y }

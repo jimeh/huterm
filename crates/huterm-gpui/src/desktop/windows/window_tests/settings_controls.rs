@@ -46,7 +46,11 @@ pub(super) fn keys(harness: &DesktopHarness, keys: &str) {
 pub(super) fn key_down(harness: &DesktopHarness, key: &str, is_held: bool) {
     let mut visual = visual(harness);
     visual.simulate_event(KeyDownEvent {
-        keystroke: gpui::Keystroke::parse(key).expect("a valid keystroke"),
+        keystroke: gpui::Keystroke::parse_with_os(
+            key,
+            crate::keymap::Platform::current().os(),
+        )
+        .expect("a valid keystroke"),
         is_held,
         prefer_character_input: false,
     });
@@ -59,7 +63,11 @@ pub(super) fn press_and_release(harness: &DesktopHarness, key: &str) {
     let mut visual = visual(harness);
     visual.simulate_keystrokes(key);
     visual.simulate_event(KeyUpEvent {
-        keystroke: gpui::Keystroke::parse(key).expect("a valid keystroke"),
+        keystroke: gpui::Keystroke::parse_with_os(
+            key,
+            crate::keymap::Platform::current().os(),
+        )
+        .expect("a valid keystroke"),
     });
     visual.run_until_parked();
 }

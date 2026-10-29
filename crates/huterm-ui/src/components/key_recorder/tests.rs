@@ -136,7 +136,7 @@ fn recorder(
     (probe, cx)
 }
 
-fn key_down(cx: &mut VisualTestContext, key: &str, is_held: bool) {
+fn key_down(cx: &mut VisualTestContext, key: &'static str, is_held: bool) {
     cx.simulate_event(KeyDownEvent {
         keystroke: Keystroke::parse(key).expect("a valid keystroke"),
         is_held,
@@ -144,7 +144,7 @@ fn key_down(cx: &mut VisualTestContext, key: &str, is_held: bool) {
     });
 }
 
-fn key_up(cx: &mut VisualTestContext, key: &str) {
+fn key_up(cx: &mut VisualTestContext, key: &'static str) {
     cx.simulate_event(KeyUpEvent {
         keystroke: Keystroke::parse(key).expect("a valid keystroke"),
     });
@@ -161,9 +161,11 @@ fn interceptors_see_whether_a_key_down_is_held(cx: &mut TestAppContext) {
     let seen = Rc::new(RefCell::new(Vec::new()));
     let _interceptor = cx.update(|_, cx| {
         let seen = seen.clone();
-        cx.intercept_keystrokes(move |event, _, _| {
-            seen.borrow_mut()
-                .push((event.keystroke.unparse(), event.is_held));
+        cx.intercept_keystrokes(move |event, _, cx| {
+            seen.borrow_mut().push((
+                event.keystroke.unparse(cx.platform_info().os),
+                event.is_held,
+            ));
         })
     });
     key_down(cx, "a", false);
@@ -207,9 +209,10 @@ fn a_held_cmd_chord_then_a_fresh_press_of_it_records_both_strokes(
     cx: &mut TestAppContext,
 ) {
     // The platform names its own Command key, "super" on Linux.
+    let os = cx.read(|cx| cx.platform_info().os);
     let chord = Keystroke::parse("cmd-k")
         .expect("a valid keystroke")
-        .unparse();
+        .unparse(os);
     let (probe, cx) = recorder(cx, 2, false);
     probe.start(cx);
     key_down(cx, "cmd-k", false);

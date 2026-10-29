@@ -13,7 +13,7 @@ tools for each job. `mise.lock` also records the Rust version, so run
 fails to resolve the tool. `scripts/policy-alignment.test.ts` checks that the
 three files agree.
 
-The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.9 uses
+The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.10 uses
 `std::hint::cold_path`, and libghostty-vt 0.2.1 requires 1.90. Project tooling
 pins Rust 1.99.
 
@@ -23,6 +23,15 @@ On macOS, GPUI shader compilation needs Xcode's optional Metal Toolchain;
 On Ubuntu, GPUI's X11 backend needs both XKB development packages at link time
 and a Vulkan device at runtime; CI uses Mesa's software Vulkan driver under
 Xvfb.
+
+## Cargo release age
+
+Cargo has no release-age setting, so `cargo update` accepts releases inside
+the three-day window. After updating, compare each changed version's
+`created_at` from `https://crates.io/api/v1/crates/<name>/<version>` with a
+72-hour cutoff, and roll back newer ones with
+`cargo update -p <name> --precise <previous>`. Check the crates that a
+`gpui-pre` snapshot pulls in the same way.
 
 ## Bumps that change generated files
 
@@ -56,12 +65,6 @@ review every vendored patch against the new Zed revision. Upstream's Linux
 font-kit links fontconfig at build time; the direct `zed-font-kit` dependency in
 `huterm-gpui` restores `source-fontconfig-dlopen` so packages keep loading
 fontconfig at runtime.
-
-Hold `cocoa` at 0.26.0 and `cocoa-foundation` at 0.2.0 in `Cargo.lock`. Their
-next releases deprecate the whole API, and Cargo reports warnings for path
-dependencies, so the vendored `gpui-pre-macos` printed 1,224 warnings on every
-macOS build. Their functional fixes touch no API GPUI uses. Drop the hold and
-its Dependabot ignore once the vendored GPUI no longer uses `cocoa`.
 
 Enable GPUI's `test-support` feature only through `huterm-gpui`'s own
 `test-support` feature, never as a dev-dependency. Cargo builds examples with

@@ -1,7 +1,7 @@
 //! Compile the vendored X11 held-key tracker directly, without copying
 //! behavior.
 #[rustfmt::skip]
-#[path = "../../../third-party/vendor/gpui-pre-linux-0.3.9/src/linux/x11/key_repeat.rs"]
+#[path = "../../../third-party/vendor/gpui-pre-linux-0.3.10/src/linux/x11/key_repeat.rs"]
 mod key_repeat;
 
 use key_repeat::HeldKeys;

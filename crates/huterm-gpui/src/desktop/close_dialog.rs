@@ -827,7 +827,7 @@ mod tests {
     fn a_short_window_scrolls_the_list_and_keeps_the_footer(
         cx: &mut gpui::TestAppContext,
     ) {
-        use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+        use gpui::{Modifiers, ScrollDelta, ScrollEvent, TouchPhase};
 
         let model = build(
             CloseDialogTarget::Application,
@@ -863,11 +863,12 @@ mod tests {
         // The window is too short to show every row.
         assert!(row(cx).bottom() > confirm.top(), "{:?}", row(cx));
         for _ in 0..20 {
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: list.center(),
                 delta: ScrollDelta::Pixels(gpui::point(px(0.0), px(-40.0))),
                 modifiers: Modifiers::none(),
                 touch_phase: TouchPhase::Moved,
+                ..Default::default()
             });
         }
         cx.run_until_parked();

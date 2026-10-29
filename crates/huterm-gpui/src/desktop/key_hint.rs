@@ -101,7 +101,7 @@ impl KeyHint {
 }
 
 fn keystroke_tokens(source: &str, platform: Platform) -> Vec<KeyToken> {
-    let Ok(keystroke) = Keystroke::parse(source) else {
+    let Ok(keystroke) = Keystroke::parse_with_os(source, platform.os()) else {
         return vec![KeyToken::text(source)];
     };
     let modifiers = keystroke.modifiers;

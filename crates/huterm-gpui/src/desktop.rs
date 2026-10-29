@@ -10,10 +10,10 @@ use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, DispatchPhase,
     EventEmitter, FocusHandle, Focusable, KeyContext, Keystroke, Menu,
     MenuItem, Modifiers as GpuiModifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, Size, Subscription, SystemMenuType, Task,
-    TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions,
-    canvas, div, point, prelude::*, px, size, svg,
+    MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollDelta, ScrollEvent,
+    Size, Subscription, SystemMenuType, Task, TitlebarOptions, Window,
+    WindowBounds, WindowControlArea, WindowOptions, canvas, div, point,
+    prelude::*, px, size, svg,
 };
 use huterm_core::{Mux, RuntimeError, TerminalViewer, ViewerWake};
 use huterm_protocol::{
@@ -1489,7 +1489,7 @@ impl TerminalView {
 
     fn scroll(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -2858,7 +2858,7 @@ impl ScrollBenchmark {
         if !self.started {
             self.started = true;
             eprintln!(
-                "huterm-scroll environment revision={} profile=release os={} arch={} hardware={} display_scale={} gpui=gpui-pre-0.3.9 viewport={}x{} history={}",
+                "huterm-scroll environment revision={} profile=release os={} arch={} hardware={} display_scale={} gpui=gpui-pre-0.3.10 viewport={}x{} history={}",
                 benchmark_environment("HUTERM_SCROLL_REVISION"),
                 std::env::consts::OS,
                 std::env::consts::ARCH,
@@ -3292,7 +3292,7 @@ impl Render for TerminalView {
                 }
             })
             .on_drop(cx.listener(Self::drop_paths))
-            .on_scroll_wheel(cx.listener(Self::scroll))
+            .on_scroll(cx.listener(Self::scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
@@ -3759,7 +3759,7 @@ fn point_for_position(
 }
 fn local_scroll(
     controller: &mut ScrollController,
-    event: &ScrollWheelEvent,
+    event: &ScrollEvent,
     row_height: f32,
 ) -> bool {
     match event.delta {
@@ -4060,7 +4060,7 @@ mod tests {
     fn x11_shift_wheel_uses_remapped_lines_for_local_scrollback() {
         let mut scroll = ScrollController::default();
         scroll.complete(huterm_protocol::Viewport::default(), 100);
-        let mut event = ScrollWheelEvent {
+        let mut event = ScrollEvent {
             position: point(px(40.0), px(40.0)),
             delta: ScrollDelta::Lines(point(3.0, 0.0)),
             modifiers: GpuiModifiers {
@@ -4068,6 +4068,7 @@ mod tests {
                 ..GpuiModifiers::default()
             },
             touch_phase: gpui::TouchPhase::default(),
+            ..Default::default()
         };
         assert!(local_scroll(&mut scroll, &event, 16.0));
         assert_eq!(scroll.desired(), 3);

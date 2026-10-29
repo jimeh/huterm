@@ -26,8 +26,8 @@ use std::time::Instant;
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Corners,
     ElementInputHandler, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, InputHandler, MouseButton, Pixels, Point, Render, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, Subscription, Task,
+    FontWeight, InputHandler, MouseButton, Pixels, Point, Render, ScrollEvent,
+    ScrollHandle, SharedString, Size, Subscription, Task,
     TextInputConfiguration, UTF16Selection, WeakEntity, Window, canvas, div,
     point, prelude::*, px, relative,
 };
@@ -930,12 +930,10 @@ impl LicensesView {
             .py(px(14.0))
             .overflow_y_scroll()
             .track_scroll(&self.text_scroll)
-            .on_scroll_wheel(cx.listener(
-                |view, _: &ScrollWheelEvent, _, cx| {
-                    view.text_scrollbar.show();
-                    cx.notify();
-                },
-            ));
+            .on_scroll(cx.listener(|view, _: &ScrollEvent, _, cx| {
+                view.text_scrollbar.show();
+                cx.notify();
+            }));
         for text in &component.texts {
             texts = texts.child(
                 div()

@@ -6,8 +6,8 @@
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI's core crate has hidden-window creation,
-file-drop pointer-modality, scene sprite-order, test-window accessibility, and
-keystroke held-flag patches, its Linux crate has X11 file-drop,
+file-drop pointer-modality, test-window accessibility, keystroke held-flag, and
+App-free keybinding loader patches, its Linux crate has X11 file-drop,
 fullscreen-state, and key-repeat patches, and its macOS crate has
 offscreen-screen and per-window frame-constraint patches.
 
@@ -148,8 +148,8 @@ patches, and manifest entry, then validate the registry dependency instead.
 ## GPUI snapshot crates
 
 Zed has not published GPUI to crates.io since 0.2.2. Huterm uses `gpui-pre`
-0.3.9, which republishes Zed's workspace crates from revision
-`93d745668805029476e6d7fbb19652116fed51de` as separate Apache-2.0 registry
+0.3.10, which republishes Zed's workspace crates from revision
+`08cbb88a152c3751a43e853425a70e9f631a5918` as separate Apache-2.0 registry
 crates. Only the three patched crates are vendored: `gpui-pre` (Zed's
 `crates/gpui`), `gpui-pre-linux` (`crates/gpui_linux`), and `gpui-pre-macos`
 (`crates/gpui_macos`). The other snapshot crates resolve from the registry.
@@ -163,7 +163,9 @@ Upstream supplies fixes that earlier Huterm patches carried: the buffered X11
 event drain (zed#62081), app-owned macOS title-bar drags (zed#41839,
 zed#60620), sharp zero-blur shadows in the wgpu renderer (zed#57685), the
 borderless traffic-light guard, explicit application lifetime, a live X11 window
-handle, a patched Taffy grid, and explicit float literals.
+handle, a patched Taffy grid, explicit float literals, sprite sorting by atlas
+texture rather than tile (zed#65814), and a nil-screen guard in the macOS
+maximized check.
 
 ## GPUI X11 native file-drop correction
 
@@ -193,7 +195,7 @@ positioning the pointer and before each native drop, so it fails without it.
 GPUI still calls `map_window()` even for `WindowOptions { show: false }`.
 The `hidden-window-creation` patch gates that call on `show` and propagates
 mapping errors. Quake addresses the exact window through GPUI's X11 handle.
-GPUI 0.3.9 destroys the X11 window only when its platform window drops, so the
+GPUI 0.3.10 destroys the X11 window only when its platform window drops, so the
 handle cannot outlive it and the former `x11-window-handle` patch is gone. The
 native quake smoke checks an untouched hidden GPUI window before any hide
 operation, then summons a real profile through the OS shortcut and reads its
@@ -206,10 +208,10 @@ process, and that final-window close without registrations still exits it.
 The `fullscreen-state-notification` patch notifies bounds observers when an X11
 window manager changes `_NET_WM_STATE` fullscreen without a geometry event.
 
-GPUI's macOS display link now tolerates a nil `NSWindow.screen` while an
-animated window is fully offscreen. The `macos-offscreen-screen` patch also
-treats such a window as not maximized, and reads backing scale from NSWindow,
-which retains the real scale without a screen. A synthetic offscreen scale can
+GPUI's macOS display link and maximized check tolerate a nil `NSWindow.screen`
+while an animated window is fully offscreen. The `macos-offscreen-screen` patch
+reads backing scale from NSWindow, which retains the real scale without a
+screen. A synthetic offscreen scale can
 resize Metal's drawable at 2x while GPUI returns to 1x after moving onscreen.
 The native quake smoke checks retained resize, drawable/viewport agreement, and
 PTY geometry.
@@ -222,18 +224,18 @@ conversion and retained-window cleanup. AppKit clamps intermediate top-edge
 animation frames even with a zero borderless style mask. The native smoke checks
 actual slide intermediates and restored constraints on regular conversion.
 
-## GPUI scene sprite order
+## GPUI keybinding loading without an App
 
-`Scene::finish` sorted each sprite list by draw order and atlas tile ID, but
-batching only breaks on draw order and atlas texture. The tile key made every
-frame reorder thousands of glyph sprites of about 100 bytes each, even when a
-layer's sprites already shared one texture. The `scene-sprite-texture-order`
-patch sorts by draw order and texture index instead; each sprite list holds one
-texture kind. The stable sort keeps insertion order within a texture and finds
-an already ordered list in one pass. On macOS, sampling a full-grid terminal
-paint put `Scene::finish` at 697 of 1,274 `Window::draw` samples before the
-patch and 18 of 720 after it. The renderer smoke's held fixture differed only
-in three pixels by 1/255. Remove the patch if upstream changes the sort key.
+GPUI 0.3.10 resolves `secondary-` from the application's host OS, so
+`KeyBinding::load` takes an `App`, and `KeyBinding::new` accepts only static
+keystrokes. Huterm compiles keymaps without an `App`: the configuration
+validator checks a candidate file off the main thread, and unit tests build
+GPUI's `Keymap` matcher directly. The `keybinding-load-with-os` patch adds a
+public `KeyBinding::load_with_os` that takes the keyboard mapper and
+`OperatingSystem` explicitly and calls the same private loader as `load`.
+Huterm passes `keymap::Platform::os()`, so a keymap compiled for one platform
+resolves `secondary-` for that platform. Remove the patch if upstream exposes
+an equivalent App-free constructor.
 
 ## GPUI held-key flag for keystroke interceptors
 

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    EntityInputHandler, InputHandler, Modifiers, ScrollDelta, ScrollWheelEvent,
+    EntityInputHandler, InputHandler, Modifiers, ScrollDelta, ScrollEvent,
     TouchPhase, point,
 };
 
@@ -456,11 +456,12 @@ fn a_long_license_scrolls_to_its_end_by_page_down_and_the_wheel(
     assert_eq!(text_scroll(&mut harness, window).0, px(0.0), "Page Up");
     let mut visual = VisualTestContext::from_window(window, &harness.cx);
     for _ in 0..PAGES {
-        visual.simulate_event(ScrollWheelEvent {
+        visual.simulate_event(ScrollEvent {
             position: text.center(),
             delta: ScrollDelta::Pixels(point(px(0.0), -text.size.height)),
             modifiers: Modifiers::none(),
             touch_phase: TouchPhase::Moved,
+            ..Default::default()
         });
     }
     harness.cx.run_until_parked();

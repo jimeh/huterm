@@ -22,9 +22,8 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, BoxShadow, ClickEvent, Context, Entity, EventEmitter,
     Focusable, FontWeight, HighlightStyle, Hsla, KeyBindingContextPredicate,
-    KeyContext, MouseButton, MouseDownEvent, MouseUpEvent, Render,
-    ScrollWheelEvent, Subscription, WeakEntity, Window, div, hsla, point,
-    prelude::*, px,
+    KeyContext, MouseButton, MouseDownEvent, MouseUpEvent, Render, ScrollEvent,
+    Subscription, WeakEntity, Window, div, hsla, point, prelude::*, px,
 };
 use huterm_config::PalettePlacement;
 use huterm_protocol::{
@@ -2356,8 +2355,8 @@ impl Render for CommandPalette {
                     .w_full()
                     .flex()
                     .flex_col()
-                    .on_scroll_wheel(cx.listener(
-                        |palette, _: &ScrollWheelEvent, _, cx| {
+                    .on_scroll(cx.listener(
+                        |palette, _: &ScrollEvent, _, cx| {
                             palette.observe_scroll_wheel(cx);
                         },
                     ))
@@ -2389,7 +2388,7 @@ impl Render for CommandPalette {
                 // Clicks inside the panel stop before reaching here.
                 palette.close_from_scrim(cx);
             }))
-            .on_scroll_wheel(|_: &ScrollWheelEvent, _, cx| {
+            .on_scroll(|_: &ScrollEvent, _, cx| {
                 cx.stop_propagation();
             })
             .child(panel)
