@@ -1140,11 +1140,14 @@ worker blocks on its channel: no timer, no reads. On the desktop,
 marks it dirty even when the content matches, and one follow-up runs when it
 finishes. A report can also arrive after the reload a Settings save asked
 for, because the worker fingerprinted the write against the older inputs, so
-Settings reports an automatic reload only when its reread finds the file
-changed since the window last read or wrote it. Every finished reload sends
-the watcher fresh `Settings`, including after a failure, which keeps the
-previous `watch_config`. An automatic reload
-that finds the file missing is skipped silently, since editors remove it while
+an automatic reload whose reread finds the file as Settings last wrote it
+keeps a save's footer report. The comparison is with that write, not with the
+last read, which may already hold another editor's change. Such a reload
+still clears a "Not applied" or invalid report, since a theme or a shortcut
+outside the file may have changed.
+Every finished reload sends the watcher fresh `Settings`, including after a
+failure, which keeps the previous `watch_config`. An automatic reload that
+finds the file missing is skipped silently, since editors remove it while
 saving. An editor that truncates the file and writes it more than `QUIET_PERIOD`
 (150 ms) later can briefly apply the empty file, that is the defaults, until the
 write's event reloads the full content; this risk is accepted. An automatic

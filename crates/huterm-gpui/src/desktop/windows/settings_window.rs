@@ -273,6 +273,8 @@ pub(super) struct SettingsView {
     /// An automatic reload applied the file, and the reread it started
     /// decides whether to report it (`loaded`).
     reload_unreported: bool,
+    /// The file as this window's latest successful write left it.
+    written: Option<String>,
     /// Close was asked for while writes were pending.
     closing: bool,
     handle: gpui::AnyWindowHandle,
@@ -406,6 +408,7 @@ impl SettingsView {
             fresh: None,
             reload_error: None,
             reload_unreported: false,
+            written: None,
             closing: false,
             handle: window.window_handle(),
             menu: None,
@@ -2587,6 +2590,12 @@ impl SettingsView {
     pub(super) fn use_file(&mut self, path: &str, cx: &mut Context<'_, Self>) {
         let setting = self.setting_at(path).expect("a known setting");
         self.keep_file(setting.path.as_str(), cx);
+    }
+
+    /// Rereads the file without a reload, as the reread after a save's
+    /// reload or after a refused write does.
+    pub(super) fn reread(&mut self, cx: &mut Context<'_, Self>) {
+        self.load(cx);
     }
 
     /// Follows a reload that applied the file.

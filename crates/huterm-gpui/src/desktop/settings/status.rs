@@ -89,6 +89,16 @@ impl FileStatus {
         }
     }
 
+    /// A reload read the file as this window last wrote it, such as the
+    /// watcher catching up with a save after that save's own reload. It
+    /// keeps a save's report; anything else, such as a refused reload that
+    /// now applied, reports the reload.
+    pub(crate) fn reloaded_unchanged(&mut self) {
+        if !matches!(self.latest, Some(Event::Saved | Event::SavedUnsure(_))) {
+            self.reloaded();
+        }
+    }
+
     /// A write replaced the file but could not make it durable. Like
     /// "Saved", the warning stays through the reload the save asks for.
     pub(crate) fn saved_with_warning(&mut self, message: impl Into<String>) {
@@ -276,6 +286,27 @@ mod tests {
                 Some(Action::Reload)
             )
         );
+    }
+
+    #[test]
+    fn a_reload_of_the_file_as_saved_keeps_only_a_saves_report() {
+        let mut status = FileStatus::new(true);
+        status.saved();
+        status.reloaded();
+        status.reloaded_unchanged();
+        assert_eq!(text(&status), (Tone::Ok, "Saved".into(), None));
+        status.saved_with_warning("the disk did not confirm it");
+        status.reloaded();
+        status.reloaded_unchanged();
+        assert_eq!(text(&status).0, Tone::Warning);
+        // A theme fixed elsewhere, or a shortcut released, applies the
+        // same file.
+        status.not_applied("ctrl-` is taken");
+        status.reloaded_unchanged();
+        assert_eq!(text(&status), (Tone::Ok, "Reloaded".into(), None));
+        status.invalid_file("missing theme");
+        status.reloaded_unchanged();
+        assert!(!status.invalid());
     }
 
     #[test]

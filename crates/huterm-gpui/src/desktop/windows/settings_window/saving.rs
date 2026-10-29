@@ -298,11 +298,14 @@ impl SettingsView {
                 valid,
                 keys,
             }) => {
-                if std::mem::take(&mut self.reload_unreported)
-                    && self.base.as_ref().map(Snapshot::text)
-                        != Some(snapshot.text())
-                {
-                    self.status.reloaded();
+                if std::mem::take(&mut self.reload_unreported) {
+                    if snapshot.text().is_some_and(|text| {
+                        self.written.as_deref() == Some(text)
+                    }) {
+                        self.status.reloaded_unchanged();
+                    } else {
+                        self.status.reloaded();
+                    }
                 }
                 self.keys.inventory = keys.inventory;
                 self.keys.entries = keys.entries;
@@ -332,6 +335,13 @@ impl SettingsView {
                 self.status.failed(error.to_string());
             }
         }
+    }
+
+    /// Records a successful write as the file this window last read and
+    /// wrote.
+    fn wrote(&mut self, snapshot: Snapshot) {
+        self.written = snapshot.text().map(str::to_owned);
+        self.base = Some(snapshot);
     }
 
     /// Reads the selectable themes and their previews in the background;
@@ -394,9 +404,10 @@ impl SettingsView {
     /// the file itself fails validation.
     ///
     /// The watcher can report this window's own write after the reload its
-    /// save asked for, so an automatic reload is reported only when the
-    /// reread finds the file changed since this window last read or wrote
-    /// it.
+    /// save asked for, so an automatic reload keeps a save's report when
+    /// the reread finds the file as this window last wrote it. Another read
+    /// may already have seen another editor's change, so the comparison is
+    /// with the write, not with `base`.
     pub(super) fn reloaded(
         &mut self,
         outcome: Result<(), String>,
@@ -716,7 +727,7 @@ impl SettingsView {
                 self.keys.inventory = written.keys.inventory;
                 self.keys.entries = written.keys.entries;
                 self.set_globals(written.keys.globals);
-                self.base = Some(written.snapshot);
+                self.wrote(written.snapshot);
                 self.rebase_queued_keys(&change.patches);
                 self.status.saved();
                 self.follow_changed_default(
@@ -912,7 +923,7 @@ impl SettingsView {
                 self.keys.inventory = written.keys.inventory;
                 self.keys.entries = written.keys.entries;
                 self.set_globals(written.keys.globals);
-                self.base = Some(written.snapshot);
+                self.wrote(written.snapshot);
                 self.rebase_queued_keys(patches);
                 self.status.saved();
                 self.sync_fields(cx);
@@ -1267,7 +1278,7 @@ impl SettingsView {
                 self.keys.inventory = written.keys.inventory;
                 self.keys.entries = written.keys.entries;
                 self.set_globals(written.keys.globals);
-                self.base = Some(written.snapshot);
+                self.wrote(written.snapshot);
                 self.status.saved();
                 let saved = field_text(shown(
                     change.setting,

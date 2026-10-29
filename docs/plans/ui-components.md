@@ -195,9 +195,8 @@ diagnosed; the style is gone. Migration 8a fixed the key recorder items: a
 held key records one stroke, and a recorded key's condition and argument
 drafts move with its shortcut to the row that shows the new key, where a
 key change used to drop them. The "Reloaded" footer came from the watcher
-reporting the window's own write after its save's reload; Settings now
-reports an automatic reload only when the file changed since it last read
-or wrote it.
+reporting the window's own write after its save's reload; an automatic
+reload of the file as Settings last wrote it now keeps a save's report.
 
 From [#277][issue-277]: renaming a profile, like the New profile name
 field, is a `Field` and `InputGroup` composition, and the delete prompt
