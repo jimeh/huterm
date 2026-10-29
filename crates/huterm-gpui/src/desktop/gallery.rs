@@ -444,6 +444,7 @@ impl Lists {
                 .update(cx, |command, cx| {
                     command.set_empty(format!("No fonts match “{query}”"), cx);
                     command.set_options(options, cx);
+                    command.reveal_highlight(cx);
                 });
         })
         .detach();

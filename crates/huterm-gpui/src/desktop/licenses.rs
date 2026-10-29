@@ -10,21 +10,26 @@
 //! focus cycle. While a button has focus, the search's input handler
 //! takes the platform's text input, composition included, and the first
 //! text moves focus to the search; text edits on a button move it there
-//! too, so the search shows what they change.
+//! too, so the search shows what they change. The component list is a
+//! `huterm-ui` `Command` over the search: the view filters the components,
+//! and the list's highlight is the selected component, whose details show
+//! beside it.
 
 // User input picks positions here, so a stale index must not panic.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, Corners, ElementInputHandler, Entity,
-    EventEmitter, FocusHandle, Focusable, FontWeight, InputHandler,
-    MouseButton, Pixels, Point, Render, ScrollHandle, ScrollWheelEvent,
-    SharedString, Size, Subscription, Task, TextInputConfiguration,
-    UTF16Selection, Window, canvas, div, point, prelude::*, px, relative,
+    AnyElement, App, Bounds, ClipboardItem, Context, Corners,
+    ElementInputHandler, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, InputHandler, MouseButton, Pixels, Point, Render, ScrollHandle,
+    ScrollWheelEvent, SharedString, Size, Subscription, Task,
+    TextInputConfiguration, UTF16Selection, WeakEntity, Window, canvas, div,
+    point, prelude::*, px, relative,
 };
 use huterm_protocol::{CommandError, CommandInvocation, CommandOutcome, ids};
 
@@ -32,12 +37,15 @@ use super::about::footer_button;
 use super::key_hint::KeyHint;
 use super::overlay::{OverlayColors, Swatch, key_cap, mono_font_family};
 use super::palette::FORWARDED_TEXT_COMMANDS;
+use super::refresh::FrameClock;
 use crate::keymap::Platform;
 use crate::licenses::{Catalog, Component, LoadError};
 use crate::ui::animation::AnimationSchedule;
 use crate::ui::list_scrollbar::ListScrollbar;
+use huterm_ui::components::command::{Command, CommandEvent};
 use huterm_ui::components::dialog::{Dialog, Modal};
 use huterm_ui::components::input::{Changed, Chrome, Input};
+use huterm_ui::option_list::ListOption;
 
 const PANEL_WIDTH: f32 = 860.0;
 const PANEL_HEIGHT: f32 = 600.0;
@@ -105,11 +113,9 @@ pub(super) struct LicensesView {
     input: Entity<Input>,
     /// The search text, lowercased and trimmed.
     query: String,
-    /// Indices of the catalog's components that match the query.
-    matches: Vec<usize>,
-    /// The selected position in `matches`.
-    selected: usize,
-    hover: Option<usize>,
+    /// The components that match the query, each named by its index in
+    /// the catalog; the highlighted one is selected.
+    list: Entity<Command>,
     /// The window's dialog slot, which the view's dialog draws in.
     modal: Modal,
     buttons: Buttons,
@@ -117,12 +123,11 @@ pub(super) struct LicensesView {
     viewport: Size<Pixels>,
     /// The corners the scrim rounds to match the window's content.
     scrim_corners: Corners<Pixels>,
-    /// The `matches` position whose texts the Copy button last copied.
+    /// The catalog index of the component whose texts the Copy button last
+    /// copied.
     copied: Option<usize>,
     colors: OverlayColors,
     hints: bool,
-    list_scroll: ScrollHandle,
-    list_scrollbar: ListScrollbar,
     text_scroll: ScrollHandle,
     text_scrollbar: ListScrollbar,
     _load: Task<()>,
@@ -134,11 +139,13 @@ impl EventEmitter<Done> for LicensesView {}
 impl LicensesView {
     /// Opens the view in the window's dialog slot `modal` and starts `load`
     /// off the UI thread. `hints` shows key caps on the Done button and in
-    /// the footer.
+    /// the footer, and the component list's scroll indicator fades on
+    /// `clock`.
     pub(super) fn new(
         modal: Modal,
         colors: OverlayColors,
         hints: bool,
+        clock: &Rc<FrameClock>,
         load: impl FnOnce() -> Result<Catalog, LoadError> + Send + 'static,
         window: &Window,
         cx: &mut Context<'_, Self>,
@@ -153,7 +160,29 @@ impl LicensesView {
             .with_placeholder("Search licenses")
             .with_chrome(Chrome::Bare)
         });
-        let subscription = cx.subscribe_in(
+        let view = cx.weak_entity();
+        let list = cx.new(|cx| {
+            clock.observe(cx);
+            // The highlight shows the details, so the pointer only hovers.
+            Command::new(
+                "licenses-list",
+                "Components",
+                &input,
+                Swatch::new(colors),
+                cx,
+            )
+            .with_pointer_highlight(false)
+            .with_row_height(px(ROW_HEIGHT))
+            .with_content(Rc::new(
+                move |option: &ListOption,
+                      highlighted,
+                      _: &mut Window,
+                      cx: &mut App| {
+                    component_row(&view, option, highlighted, cx)
+                },
+            ))
+        });
+        let edits = cx.subscribe_in(
             &input,
             window,
             |view, input, _: &Changed, window, cx| {
@@ -165,20 +194,26 @@ impl LicensesView {
                 }
             },
         );
+        let selections = cx.subscribe_in(
+            &list,
+            window,
+            |view, _, event: &CommandEvent, window, cx| {
+                if let CommandEvent::Highlighted(_) = event {
+                    view.selected(window, cx);
+                }
+            },
+        );
         let task = cx.background_executor().spawn(async move { load() });
         let load = cx.spawn(async move |view, cx| {
             let result = task.await;
             let _ = view.update(cx, |view, cx| view.loaded(result, cx));
         });
-        let list_scroll = ScrollHandle::new();
         let text_scroll = ScrollHandle::new();
         Self {
             load: Load::Loading,
             input,
             query: String::new(),
-            matches: Vec::new(),
-            selected: 0,
-            hover: None,
+            list,
             modal,
             buttons: Buttons {
                 website: cx.focus_handle(),
@@ -190,23 +225,21 @@ impl LicensesView {
             copied: None,
             colors,
             hints,
-            list_scroll: list_scroll.clone(),
-            list_scrollbar: ListScrollbar::new(list_scroll),
             text_scroll: text_scroll.clone(),
             text_scrollbar: ListScrollbar::new(text_scroll),
             _load: load,
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![edits, selections],
         }
     }
 
-    pub(super) fn state(&self) -> LicensesState {
+    pub(super) fn state(&self, cx: &App) -> LicensesState {
         match &self.load {
             Load::Loading => LicensesState::Loading,
             Load::Failed(_) => LicensesState::Unavailable,
             Load::Ready(_) => LicensesState::Ready {
-                matches: self.matches.len(),
+                matches: self.list.read(cx).options().len(),
                 selected: self
-                    .selected_component()
+                    .selected_component(cx)
                     .map(|item| item.name.clone()),
             },
         }
@@ -252,6 +285,9 @@ impl LicensesView {
         self.input.update(cx, |input, cx| {
             input.set_tokens(Swatch::new(colors), cx);
         });
+        self.list.update(cx, |list, cx| {
+            list.set_tokens(Swatch::new(colors), cx);
+        });
         cx.notify();
     }
 
@@ -270,9 +306,11 @@ impl LicensesView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         match invocation.id {
-            ids::PALETTE_SELECT_NEXT => self.move_selection(1, window, cx),
+            ids::PALETTE_SELECT_NEXT => {
+                self.list.update(cx, Command::select_next);
+            }
             ids::PALETTE_SELECT_PREVIOUS => {
-                self.move_selection(-1, window, cx);
+                self.list.update(cx, Command::select_previous);
             }
             ids::PALETTE_PAGE_DOWN => self.scroll_text(1.0, cx),
             ids::PALETTE_PAGE_UP => self.scroll_text(-1.0, cx),
@@ -318,8 +356,13 @@ impl LicensesView {
         }
     }
 
-    fn selected_component(&self) -> Option<&Component> {
-        let index = *self.matches.get(self.selected)?;
+    /// The selected component's index in the catalog.
+    fn selected_index(&self, cx: &App) -> Option<usize> {
+        self.list.read(cx).highlighted()?.id.parse().ok()
+    }
+
+    fn selected_component(&self, cx: &App) -> Option<&Component> {
+        let index = self.selected_index(cx)?;
         self.catalog()?.components.get(index)
     }
 
@@ -333,41 +376,55 @@ impl LicensesView {
     }
 
     /// Recomputes the matches, keeping the selected component when it still
-    /// matches.
+    /// matches and otherwise selecting the first, in view.
     fn refilter(&mut self, cx: &mut Context<'_, Self>) {
-        let previous = self.matches.get(self.selected).copied();
-        self.matches = self.catalog().map_or_else(Vec::new, |catalog| {
+        let options = self.catalog().map_or_else(Vec::new, |catalog| {
             catalog
                 .components
                 .iter()
                 .enumerate()
                 .filter(|(_, component)| component.matches(&self.query))
-                .map(|(index, _)| index)
+                .map(|(index, component)| {
+                    let title = match &component.version {
+                        Some(version) => {
+                            format!("{} {version}", component.name)
+                        }
+                        None => component.name.clone(),
+                    };
+                    ListOption::new(index.to_string(), title)
+                        .description(component.license.clone())
+                })
                 .collect()
         });
-        let kept = previous.and_then(|index| {
-            self.matches.iter().position(|item| *item == index)
+        let empty = format!("No matches for “{}”", self.query);
+        self.list.update(cx, |list, cx| {
+            list.set_empty(empty, cx);
+            list.set_options(options, cx);
+            list.reveal_highlight(cx);
         });
-        self.selected = kept.unwrap_or(0);
-        if kept.is_none() {
-            self.reset_text();
-        }
-        self.hover = None;
         self.copied = None;
-        self.list_scroll.scroll_to_item(self.selected);
+        cx.notify();
+    }
+
+    /// Shows another selected component: its texts from the top, and focus
+    /// back in the search when the button that had it no longer shows.
+    fn selected(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.copied = None;
+        self.keep_focus_available(window, cx);
+        self.reset_text();
         cx.notify();
     }
 
     /// Whether the selected component shows the Website and Copy buttons.
-    fn shows_buttons(&self) -> (bool, bool) {
-        self.selected_component()
+    fn shows_buttons(&self, cx: &App) -> (bool, bool) {
+        self.selected_component(cx)
             .map_or((false, false), |component| (component.url.is_some(), true))
     }
 
     /// Returns focus to the search when the button that has it no longer
     /// shows.
     fn keep_focus_available(&self, window: &mut Window, cx: &mut App) {
-        let (website, copy) = self.shows_buttons();
+        let (website, copy) = self.shows_buttons(cx);
         if (!website && self.buttons.website.is_focused(window))
             || (!copy && self.buttons.copy.is_focused(window))
         {
@@ -379,8 +436,9 @@ impl LicensesView {
         match self.focus(window, cx) {
             None | Some(LicensesFocus::Search) => {}
             Some(LicensesFocus::Website) => {
-                if let Some(url) =
-                    self.selected_component().and_then(|item| item.url.clone())
+                if let Some(url) = self
+                    .selected_component(cx)
+                    .and_then(|item| item.url.clone())
                 {
                     cx.open_url(&url);
                 }
@@ -388,37 +446,6 @@ impl LicensesView {
             Some(LicensesFocus::Copy) => self.copy_selected(cx),
             Some(LicensesFocus::Done) => cx.emit(Done),
         }
-    }
-
-    fn select(
-        &mut self,
-        position: usize,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if position >= self.matches.len() || position == self.selected {
-            return;
-        }
-        self.selected = position;
-        self.copied = None;
-        self.keep_focus_available(window, cx);
-        self.reset_text();
-        self.list_scroll.scroll_to_item(position);
-        self.list_scrollbar.show();
-        cx.notify();
-    }
-
-    fn move_selection(
-        &mut self,
-        delta: isize,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(last) = self.matches.len().checked_sub(1) else {
-            return;
-        };
-        let target = self.selected.saturating_add_signed(delta).min(last);
-        self.select(target, window, cx);
     }
 
     fn reset_text(&mut self) {
@@ -448,7 +475,7 @@ impl LicensesView {
     }
 
     fn copy_selected(&mut self, cx: &mut Context<'_, Self>) {
-        let Some(component) = self.selected_component() else {
+        let Some(component) = self.selected_component(cx) else {
             return;
         };
         let text = component
@@ -458,7 +485,7 @@ impl LicensesView {
             .collect::<Vec<_>>()
             .join("\n\n");
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        self.copied = Some(self.selected);
+        self.copied = self.selected_index(cx);
         cx.notify();
     }
 
@@ -493,8 +520,7 @@ impl LicensesView {
     }
 
     fn advance(&mut self, now: Instant, cx: &mut Context<'_, Self>) {
-        // Both always advance; `|` keeps either from short-circuiting.
-        if self.list_scrollbar.advance(now) | self.text_scrollbar.advance(now) {
+        if self.text_scrollbar.advance(now) {
             cx.notify();
         }
     }
@@ -690,9 +716,7 @@ impl Focusable for LicensesView {
 
 impl super::refresh::Animated for LicensesView {
     fn animation_schedule(&self, now: Instant) -> AnimationSchedule {
-        self.list_scrollbar
-            .schedule(now)
-            .merge(self.text_scrollbar.schedule(now))
+        self.text_scrollbar.schedule(now)
     }
 
     fn advance_animation(
@@ -734,104 +758,49 @@ fn message(swatch: Swatch, text: &str, detail: Option<String>) -> gpui::Div {
         })
 }
 
+/// A component's row: its name and version over its license, from the
+/// `option` the view lists for it, in `view`'s colors.
+fn component_row(
+    view: &WeakEntity<LicensesView>,
+    option: &ListOption,
+    highlighted: bool,
+    cx: &App,
+) -> AnyElement {
+    let Some(view) = view.upgrade() else {
+        return div().into_any_element();
+    };
+    let swatch = Swatch::new(view.read(cx).colors);
+    div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .child(
+            div()
+                .truncate()
+                .text_size(px(12.5))
+                .text_color(swatch.fg)
+                .child(option.label.clone()),
+        )
+        .when_some(option.description.clone(), |row, license| {
+            row.child(
+                div()
+                    .truncate()
+                    .text_size(px(11.0))
+                    .text_color(if highlighted {
+                        swatch.muted_on(swatch.selection)
+                    } else {
+                        swatch.muted
+                    })
+                    .child(license),
+            )
+        })
+        .into_any_element()
+}
+
 impl LicensesView {
-    fn render_list(
-        &mut self,
-        catalog: &Catalog,
-        swatch: Swatch,
-        cx: &mut Context<'_, Self>,
-    ) -> gpui::Div {
-        let mut list = div()
-            .id("licenses-list")
-            .size_full()
-            .flex()
-            .flex_col()
-            .py(px(4.0))
-            .overflow_y_scroll()
-            .track_scroll(&self.list_scroll)
-            .on_scroll_wheel(cx.listener(
-                |view, _: &ScrollWheelEvent, _, cx| {
-                    view.list_scrollbar.show();
-                    cx.notify();
-                },
-            ));
-        if self.matches.is_empty() {
-            list = list.child(
-                div()
-                    .p(px(14.0))
-                    .text_size(px(12.0))
-                    .text_color(swatch.fg)
-                    .child(format!("No matches for “{}”", self.query)),
-            );
-        }
-        for (position, index) in self.matches.iter().copied().enumerate() {
-            let Some(component) = catalog.components.get(index) else {
-                continue;
-            };
-            let selected = position == self.selected;
-            let hovered = self.hover == Some(position);
-            let title = match &component.version {
-                Some(version) => format!("{} {version}", component.name),
-                None => component.name.clone(),
-            };
-            list = list.child(
-                div()
-                    .id(("license-row", position))
-                    .flex_none()
-                    .h(px(ROW_HEIGHT))
-                    .mx(px(6.0))
-                    .px(px(10.0))
-                    .rounded(px(6.0))
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .when(selected, |row| row.bg(swatch.selection))
-                    .when(!selected && hovered, |row| row.bg(swatch.hover))
-                    .on_hover(cx.listener(
-                        move |view, hovering: &bool, _, cx| {
-                            let hover = hovering.then_some(position);
-                            if *hovering || view.hover == Some(position) {
-                                view.hover = hover;
-                                cx.notify();
-                            }
-                        },
-                    ))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            view.select(position, window, cx);
-                        }),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(12.5))
-                            .text_color(swatch.fg)
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(11.0))
-                            .text_color(if selected {
-                                swatch.muted_on(swatch.selection)
-                            } else {
-                                swatch.muted
-                            })
-                            .child(component.license.clone()),
-                    ),
-            );
-        }
-        let view = cx.entity();
-        let scrollbar = self.list_scrollbar.elements(
-            "licenses-list-scrollbar",
-            swatch.scrollbar,
-            &view,
-            |view| &mut view.list_scrollbar,
-            cx,
-        );
+    fn render_list(&self, swatch: Swatch, cx: &App) -> gpui::Div {
+        let search = self.focus_handle(cx);
         div()
-            .relative()
             .flex_none()
             .h_full()
             .w(relative(0.32))
@@ -839,8 +808,13 @@ impl LicensesView {
             .max_w(px(260.0))
             .border_r_1()
             .border_color(swatch.line)
-            .child(list)
-            .children(scrollbar)
+            // A press on a row keeps the default focus change from
+            // happening, so it returns focus to the search from a button
+            // here.
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                search.focus(window, cx);
+            })
+            .child(self.list.clone())
     }
 
     /// The selected component's name, version, license, and kind, with its
@@ -856,7 +830,8 @@ impl LicensesView {
             Some(used) => format!("{}, used under {used}", component.license),
             None => component.license.clone(),
         });
-        let copied = self.copied == Some(self.selected);
+        let copied =
+            self.copied.is_some() && self.copied == self.selected_index(cx);
         let mut actions = div().flex().flex_none().items_center().gap(px(8.0));
         let view = cx.entity().downgrade();
         if let Some(url) = component.url.clone() {
@@ -941,7 +916,7 @@ impl LicensesView {
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> gpui::Div {
-        let Some(component) = self.selected_component().cloned() else {
+        let Some(component) = self.selected_component(cx).cloned() else {
             return div().flex_1();
         };
         let header = self.detail_header(&component, swatch, cx);
@@ -1021,7 +996,7 @@ impl LicensesView {
             }
             Load::Ready(catalog) => format!(
                 "{} of {} components",
-                self.matches.len(),
+                self.list.read(cx).options().len(),
                 catalog.components.len()
             ),
             Load::Loading | Load::Failed(_) => String::new(),
@@ -1096,13 +1071,13 @@ impl Render for LicensesView {
                 "License information isn’t available in this build.",
                 Some(error.to_string()),
             ),
-            Load::Ready(catalog) => {
-                let catalog = Arc::clone(catalog);
+            Load::Ready(_) => {
+                self.list.update(cx, |list, cx| list.set_tokens(swatch, cx));
                 div()
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_list(&catalog, swatch, cx))
+                    .child(self.render_list(swatch, cx))
                     .child(self.render_detail(swatch, cx))
             }
         };
@@ -1145,7 +1120,7 @@ impl Render for LicensesView {
                     .child(self.input.clone())
                     .child(self.button_text_input(cx)),
             );
-        let (website, copy) = self.shows_buttons();
+        let (website, copy) = self.shows_buttons(cx);
         // The panel's top edge sits at the inset below the window's top, and
         // its height leaves the scrim's margin at the bottom.
         let top = px(PANEL_TOP_INSET - SCRIM_MARGIN);
@@ -1205,6 +1180,24 @@ impl LicensesView {
     /// The search field.
     pub(super) fn search(&self) -> Entity<Input> {
         self.input.clone()
+    }
+
+    /// The component list's scroll offset from its top, and its first row's
+    /// label.
+    pub(super) fn list_scroll(
+        &self,
+        cx: &App,
+    ) -> (Pixels, Option<SharedString>) {
+        let list = self.list.read(cx);
+        let first = list.options().first().map(|option| option.label.clone());
+        (list.scroll_position().0, first)
+    }
+
+    /// The center of the component list's row at `row`, as last laid out.
+    pub(super) fn row_center(&self, row: u8, cx: &App) -> Point<Pixels> {
+        let (offset, bounds) = self.list.read(cx).scroll_position();
+        let y = 4.0 + ROW_HEIGHT * (f32::from(row) + 0.5);
+        point(bounds.center().x, bounds.top() + px(y) - offset)
     }
 
     /// The input handler the view registers while a button has focus, for

@@ -499,7 +499,7 @@ fn tab_rows_prefer_custom_names_then_published_titles_then_fallbacks() {
 }
 
 #[test]
-fn a_move_rebuilds_order_positions_and_parents_and_keeps_the_highlight() {
+fn a_move_rebuilds_order_positions_and_parents() {
     let mut state = projected();
     let runtime = RuntimeId::new(9);
     let first = CommandValue::Tab(TabId::in_runtime(runtime, 1));
@@ -548,90 +548,6 @@ fn a_move_rebuilds_order_positions_and_parents_and_keeps_the_highlight() {
                 "Session 1 › Workspace 11".into()
             ),
         ]
-    );
-    // The highlighted identity stays highlighted at its new row.
-    let highlight =
-        rebuilt_highlight(&Highlight::Initial, Some(first.clone()), |value| {
-            after.tabs.iter().any(|row| &row.value == value)
-        });
-    assert_eq!(highlight, Highlight::Value(first.clone()));
-    let position = |value: &CommandValue| {
-        after.tabs.iter().position(|row| &row.value == value)
-    };
-    assert_eq!(highlighted_row(&highlight, position, None, 2), Some(1));
-}
-
-#[test]
-fn a_rebuild_scrolls_only_when_the_highlighted_row_moves() {
-    // An unrelated title change keeps the user's scroll position.
-    assert_eq!(rebuild_scroll(Some(4), Some(4)), None);
-    assert_eq!(rebuild_scroll(None, None), None);
-    // A reorder that moves the highlighted row follows it.
-    assert_eq!(rebuild_scroll(Some(4), Some(1)), Some(1));
-    assert_eq!(rebuild_scroll(None, Some(0)), Some(0));
-    // A lost highlight scrolls nowhere.
-    assert_eq!(rebuild_scroll(Some(2), None), None);
-}
-
-#[test]
-fn removing_the_highlighted_value_leaves_no_highlight_until_moved_or_filtered()
-{
-    let gone = CommandValue::Tab(TabId::in_runtime(RuntimeId::new(9), 7));
-    let highlight =
-        rebuilt_highlight(&Highlight::Value(gone.clone()), Some(gone), |_| {
-            false
-        });
-    assert_eq!(highlight, Highlight::Lost);
-    let position = |_: &CommandValue| Some(0);
-    assert_eq!(highlighted_row(&highlight, position, None, 3), None);
-    assert!(enter_blocked(&highlight, ArgumentKind::Tab));
-    assert!(!enter_blocked(&highlight, ArgumentKind::Text));
-    assert!(!enter_blocked(&Highlight::Initial, ArgumentKind::Tab));
-    // A lost highlight stays lost through a later rebuild.
-    assert_eq!(
-        rebuilt_highlight(&highlight, None, |_| true),
-        Highlight::Lost
-    );
-    // Down selects the first row and Up the last.
-    assert_eq!(moved_row(None, 1, 3), Some(0));
-    assert_eq!(moved_row(None, -1, 3), Some(2));
-    assert_eq!(moved_row(None, 1, 0), None);
-    assert_eq!(moved_row(Some(1), 8, 3), Some(2));
-    // A stale click on a row a rebuild removed commits nothing.
-    let removed = CommandValue::Tab(TabId::in_runtime(RuntimeId::new(9), 5));
-    let clicked = clicked_highlight(removed.clone(), false);
-    assert_eq!(clicked, Highlight::Lost);
-    assert!(enter_blocked(&clicked, ArgumentKind::Tab));
-    assert_eq!(
-        clicked_highlight(removed.clone(), true),
-        Highlight::Value(removed.clone())
-    );
-    // An explicit value that is no longer listed highlights nothing,
-    // never the preselected or first row.
-    let preselected =
-        CommandValue::Tab(TabId::in_runtime(RuntimeId::new(9), 2));
-    let only_preselected =
-        |value: &CommandValue| (value == &preselected).then_some(1);
-    assert_eq!(
-        highlighted_row(
-            &Highlight::Value(removed),
-            only_preselected,
-            Some(&preselected),
-            3
-        ),
-        None
-    );
-    // Changing the filter restores the initial selection: the slot's
-    // value when listed, else the first row.
-    let slot = CommandValue::Tab(TabId::in_runtime(RuntimeId::new(9), 2));
-    let listed = |value: &CommandValue| (value == &slot).then_some(1);
-    assert_eq!(
-        highlighted_row(&Highlight::Initial, listed, Some(&slot), 3),
-        Some(1)
-    );
-    assert_eq!(
-        highlighted_row(&Highlight::Initial, |_| None, None, 3),
-        Some(0)
     );
 }
 
@@ -912,4 +828,481 @@ fn the_layout_picker_lists_built_ins_by_title_then_user_layouts_by_name() {
             )],
         )
     );
+}
+
+/// The palette in a window: its lists, their highlight, and its events.
+#[cfg(feature = "test-support")]
+mod lists {
+    use std::cell::RefCell;
+
+    use gpui::{
+        Modifiers, Pixels, Point, TestAppContext, VisualTestContext, point,
+    };
+
+    use super::*;
+    use crate::config::Theme;
+    use crate::desktop::overlay::overlay_colors;
+
+    type Events = Rc<RefCell<Vec<PaletteEvent>>>;
+
+    fn runtime() -> RuntimeId {
+        RuntimeId::new(9)
+    }
+
+    fn tab(value: u64) -> CommandValue {
+        CommandValue::Tab(TabId::in_runtime(runtime(), value))
+    }
+
+    /// The scope of a window showing workspace 10 of [`projected`], with
+    /// tab 2 active.
+    fn scope() -> PaletteScope {
+        PaletteScope {
+            session: Some(SessionId::in_runtime(runtime(), 1)),
+            workspace: Some(WorkspaceId::in_runtime(runtime(), 10)),
+            tab: Some(TabId::in_runtime(runtime(), 2)),
+            terminal: None,
+            terminal_view: None,
+        }
+    }
+
+    /// A palette over [`projected`] in [`scope`], opened on `request`'s
+    /// slots or else on command search, and the events it emits.
+    fn open(
+        cx: &mut TestAppContext,
+        request: Option<CommandInvocation>,
+    ) -> (Entity<CommandPalette>, &mut VisualTestContext, Events) {
+        let (palette, cx) = cx.add_window_view(move |window, cx| {
+            let scope = scope();
+            let target = PaletteTarget {
+                session: scope.session,
+                workspace: scope.workspace,
+                tab: scope.tab,
+                ..target()
+            };
+            let (_, keymap) =
+                compile(Platform::MacOs, &[]).unwrap().install_parts();
+            CommandPalette::open(
+                PaletteOpen {
+                    target,
+                    keymap,
+                    availability: HashMap::new(),
+                    titles: HashMap::new(),
+                    colors: overlay_colors(&Theme::huterm_dark()),
+                    placement: PalettePlacement::Top,
+                    history: OwnedHistory::default(),
+                    profiles: Vec::new(),
+                    layouts: Vec::new(),
+                    request: request.as_ref(),
+                    retained_query: None,
+                    hierarchy: PaletteHierarchy::from_projection(
+                        &projected(),
+                        |_| None,
+                        &[],
+                    ),
+                    hierarchy_seq: 0,
+                    clock: FrameClock::new(window),
+                },
+                cx,
+            )
+        });
+        let events = Events::default();
+        let log = Rc::clone(&events);
+        cx.update(|_, cx| {
+            cx.subscribe(&palette, move |_, event: &PaletteEvent, _| {
+                log.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+        cx.run_until_parked();
+        (palette, cx, events)
+    }
+
+    fn run(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+        id: CommandId,
+    ) {
+        palette.update(cx, |palette, cx| {
+            palette
+                .run(&CommandInvocation::new(id, Vec::new()), cx)
+                .unwrap();
+        });
+        cx.run_until_parked();
+    }
+
+    /// Writes `text` into the field, as typing there does.
+    fn type_query(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+        text: &str,
+    ) {
+        let input = palette.read_with(cx, |palette, _| palette.input.clone());
+        input.update(cx, |input, cx| input.set_text(text, cx));
+        cx.run_until_parked();
+    }
+
+    /// The highlighted picker value, or the highlighted result's command.
+    fn highlighted(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+    ) -> Option<String> {
+        palette.read_with(cx, |palette, cx| match &palette.stage {
+            Stage::Search(_) => palette
+                .selected_match(cx)
+                .map(|matched| matched.spec.id.as_str().to_owned()),
+            Stage::Slots(_) => {
+                palette.picker_value(cx).map(|value| display_value(&value))
+            }
+        })
+    }
+
+    /// The ids of the list's rows.
+    fn rows(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+    ) -> Vec<String> {
+        palette.read_with(cx, |palette, cx| {
+            palette.list.as_ref().map_or_else(Vec::new, |list| {
+                list.read(cx)
+                    .options()
+                    .iter()
+                    .map(|option| option.id.to_string())
+                    .collect()
+            })
+        })
+    }
+
+    fn diagnostic(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+    ) -> Option<String> {
+        palette.read_with(cx, |palette, _| palette.diagnostic.clone())
+    }
+
+    /// Replaces the identity rows with `state`'s, as a projection update
+    /// does.
+    fn rebuild(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+        state: &HierarchyState,
+    ) {
+        palette.update(cx, |palette, cx| {
+            let hierarchy =
+                PaletteHierarchy::from_projection(state, |_| None, &[]);
+            palette.set_hierarchy(hierarchy, scope(), state.seq(), cx);
+        });
+        cx.run_until_parked();
+    }
+
+    /// The center of the list's row at `row`, as last laid out.
+    fn row_center(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+        row: u8,
+    ) -> Point<Pixels> {
+        let (_, bounds) = palette.read_with(cx, |palette, cx| {
+            palette.list.as_ref().unwrap().read(cx).scroll_position()
+        });
+        let y = LIST_PADDING + ROW_HEIGHT * (f32::from(row) + 0.5);
+        point(bounds.center().x, bounds.top() + px(y))
+    }
+
+    /// Clicks the list's row at `row`.
+    fn click_row(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+        row: u8,
+    ) {
+        let center = row_center(palette, cx, row);
+        cx.simulate_click(center, Modifiers::none());
+        cx.run_until_parked();
+    }
+
+    fn executed(events: &Events) -> Vec<CommandInvocation> {
+        events
+            .borrow()
+            .iter()
+            .filter_map(|event| match event {
+                PaletteEvent::Execute(invocation) => Some(invocation.clone()),
+                PaletteEvent::Cancel { .. } => None,
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    fn each_query_highlights_its_first_result_and_a_click_runs_a_row(
+        cx: &mut TestAppContext,
+    ) {
+        let (palette, cx, events) = open(cx, None);
+        type_query(&palette, cx, "scroll");
+        let results = rows(&palette, cx);
+        assert!(results.len() > 2, "{results:?}");
+        assert_eq!(highlighted(&palette, cx), results.first().cloned());
+        run(&palette, cx, ids::PALETTE_SELECT_PREVIOUS);
+        assert_eq!(highlighted(&palette, cx), results.first().cloned());
+        run(&palette, cx, ids::PALETTE_SELECT_NEXT);
+        assert_eq!(highlighted(&palette, cx), results.get(1).cloned());
+        // Another query starts again at its own first result.
+        type_query(&palette, cx, "scroll to");
+        let narrower = rows(&palette, cx);
+        assert_ne!(narrower, results);
+        assert_eq!(highlighted(&palette, cx), narrower.first().cloned());
+        click_row(&palette, cx, 1);
+        assert_eq!(
+            executed(&events)
+                .iter()
+                .map(|invocation| invocation.id.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            narrower.get(1).cloned().into_iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[gpui::test]
+    fn hovering_a_result_leaves_enter_on_the_highlighted_one(
+        cx: &mut TestAppContext,
+    ) {
+        let (palette, cx, events) = open(cx, None);
+        type_query(&palette, cx, "scroll");
+        let results = rows(&palette, cx);
+        assert!(results.len() > 2, "{results:?}");
+        let third = row_center(&palette, cx, 2);
+        cx.simulate_mouse_move(third, None, Modifiers::none());
+        cx.run_until_parked();
+        let hovered = palette.read_with(cx, CommandPalette::hovered_row);
+        assert_eq!(hovered, Some(2), "the pointer reached the third row");
+        assert_eq!(highlighted(&palette, cx), results.first().cloned());
+        run(&palette, cx, ids::PALETTE_CONFIRM);
+        assert_eq!(
+            executed(&events)
+                .iter()
+                .map(|invocation| invocation.id.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            results.first().cloned().into_iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[gpui::test]
+    fn a_picker_keeps_its_highlight_through_rebuilds_and_never_moves_it(
+        cx: &mut TestAppContext,
+    ) {
+        let request = CommandInvocation::new(ids::SELECT_TAB, Vec::new());
+        let (palette, cx, events) = open(cx, Some(request));
+        assert_eq!(rows(&palette, cx).len(), 2);
+        // A required slot has no value, so the first row starts highlighted.
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(1))));
+        run(&palette, cx, ids::PALETTE_SELECT_NEXT);
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+        // A reorder keeps the highlight on its tab at its new row.
+        let mut state = projected();
+        apply(
+            &mut state,
+            huterm_protocol::HierarchyEvent::TabMoved {
+                tab: TabId::in_runtime(runtime(), 2),
+                workspace: WorkspaceId::in_runtime(runtime(), 10),
+                index: 0,
+            },
+        );
+        rebuild(&palette, cx, &state);
+        assert_eq!(
+            rows(&palette, cx).first(),
+            Some(&value_id(&tab(2)).to_string())
+        );
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+        // Closing the highlighted tab leaves nothing highlighted, through a
+        // later rebuild that lists it again too, and Enter commits nothing.
+        let mut closed = projected();
+        apply(
+            &mut closed,
+            huterm_protocol::HierarchyEvent::TabClosed {
+                tab: TabId::in_runtime(runtime(), 2),
+            },
+        );
+        rebuild(&palette, cx, &closed);
+        assert_eq!(highlighted(&palette, cx), None);
+        rebuild(&palette, cx, &projected());
+        assert_eq!(highlighted(&palette, cx), None);
+        run(&palette, cx, ids::PALETTE_CONFIRM);
+        assert_eq!(executed(&events), []);
+        assert_eq!(diagnostic(&palette, cx), None);
+        // Up highlights the last row again.
+        run(&palette, cx, ids::PALETTE_SELECT_PREVIOUS);
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+        // Filtering starts again at the first row, even from a lost
+        // highlight.
+        rebuild(&palette, cx, &closed);
+        assert_eq!(highlighted(&palette, cx), None);
+        type_query(&palette, cx, "s");
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(1))));
+        // A filter that matches nothing says so on Enter, and a rebuild
+        // that brings a match highlights it.
+        type_query(&palette, cx, "zz");
+        assert_eq!(rows(&palette, cx), Vec::<String>::new());
+        run(&palette, cx, ids::PALETTE_CONFIRM);
+        assert_eq!(diagnostic(&palette, cx), Some("No matching tab".into()));
+        let mut renamed = projected();
+        apply(
+            &mut renamed,
+            huterm_protocol::HierarchyEvent::TabRenamed {
+                tab: TabId::in_runtime(runtime(), 2),
+                custom_name: Some("zz".into()),
+            },
+        );
+        rebuild(&palette, cx, &renamed);
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+        type_query(&palette, cx, "");
+        click_row(&palette, cx, 0);
+        assert_eq!(
+            executed(&events),
+            [CommandInvocation::new(
+                ids::SELECT_TAB,
+                vec![CommandArgument::new("tab", tab(1))],
+            )]
+        );
+    }
+
+    /// The list's scroll offset from its top.
+    fn scroll_offset(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+    ) -> Pixels {
+        palette.read_with(cx, |palette, cx| {
+            palette.list.as_ref().unwrap().read(cx).scroll_position().0
+        })
+    }
+
+    /// Scrolls the list down with the wheel over its first row.
+    fn wheel_down(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+    ) {
+        // The wheel scrolls what the pointer is over, as of a frame drawn
+        // after the pointer arrived.
+        let center = row_center(palette, cx, 0);
+        cx.simulate_mouse_move(center, None, Modifiers::none());
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: center,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-150.0))),
+            modifiers: Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn a_new_query_scrolls_back_to_its_first_result(cx: &mut TestAppContext) {
+        let (palette, cx, _) = open(cx, None);
+        let first = rows(&palette, cx).first().cloned().unwrap();
+        // A prefix of the first result's title that keeps it first, on the
+        // same row, among more results than show at once.
+        let title = huterm_protocol::lookup(&first).unwrap().title;
+        let query = (1..=title.len())
+            .filter_map(|end| title.get(..end))
+            .find(|prefix| {
+                type_query(&palette, cx, prefix);
+                let rows = rows(&palette, cx);
+                rows.first() == Some(&first) && rows.len() > 6
+            })
+            .expect("a prefix that keeps the first result first")
+            .to_owned();
+        type_query(&palette, cx, "");
+        wheel_down(&palette, cx);
+        assert!(
+            scroll_offset(&palette, cx) > px(0.0),
+            "the wheel scrolled nothing"
+        );
+        type_query(&palette, cx, &query);
+        assert_eq!(rows(&palette, cx).first(), Some(&first));
+        assert_eq!(scroll_offset(&palette, cx), px(0.0));
+    }
+
+    fn close_tab(value: u64) -> HierarchyState {
+        let mut state = projected();
+        apply(
+            &mut state,
+            huterm_protocol::HierarchyEvent::TabClosed {
+                tab: TabId::in_runtime(runtime(), value),
+            },
+        );
+        state
+    }
+
+    #[gpui::test]
+    fn a_rebuild_loses_only_a_highlighted_row_that_it_removes(
+        cx: &mut TestAppContext,
+    ) {
+        let request = CommandInvocation::new(ids::SELECT_TAB, Vec::new());
+        let (palette, cx, events) = open(cx, Some(request));
+        run(&palette, cx, ids::PALETTE_SELECT_NEXT);
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+        // Removing the row above keeps the highlight on its tab, now first.
+        rebuild(&palette, cx, &close_tab(1));
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+        rebuild(&palette, cx, &projected());
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+        // Removing the highlighted last row never moves the highlight to
+        // the row that stays.
+        rebuild(&palette, cx, &close_tab(2));
+        assert_eq!(highlighted(&palette, cx), None);
+        run(&palette, cx, ids::PALETTE_CONFIRM);
+        assert_eq!(executed(&events), []);
+    }
+
+    #[gpui::test]
+    fn a_rebuild_keeps_a_scrolled_picker_where_the_user_left_it(
+        cx: &mut TestAppContext,
+    ) {
+        use huterm_protocol::{PaneId, PaneInfo, PaneLayout, TabInfo};
+        let request = CommandInvocation::new(ids::SELECT_TAB, Vec::new());
+        let (palette, cx, _) = open(cx, Some(request));
+        let mut many = projected();
+        for value in 3..=12_u64 {
+            apply(
+                &mut many,
+                huterm_protocol::HierarchyEvent::TabOpened {
+                    workspace: WorkspaceId::in_runtime(runtime(), 10),
+                    tab: TabInfo {
+                        id: TabId::in_runtime(runtime(), value),
+                        custom_name: None,
+                        layout: PaneLayout::single(PaneInfo {
+                            id: PaneId::in_runtime(runtime(), value),
+                            terminal_id: TerminalId::new(value),
+                            fallback_name: "sh".into(),
+                        }),
+                        zoomed: None,
+                    },
+                    index: u32::try_from(value - 1).unwrap(),
+                },
+            );
+        }
+        rebuild(&palette, cx, &many);
+        assert_eq!(rows(&palette, cx).len(), 12);
+        let highlight = highlighted(&palette, cx);
+        wheel_down(&palette, cx);
+        let scrolled = scroll_offset(&palette, cx);
+        assert!(scrolled > px(0.0), "the wheel scrolled nothing");
+        // Another tab's new title rebuilds the rows in place.
+        apply(
+            &mut many,
+            huterm_protocol::HierarchyEvent::TabRenamed {
+                tab: TabId::in_runtime(runtime(), 7),
+                custom_name: Some("logs".into()),
+            },
+        );
+        rebuild(&palette, cx, &many);
+        assert_eq!(highlighted(&palette, cx), highlight);
+        assert_eq!(scroll_offset(&palette, cx), scrolled);
+    }
+
+    #[gpui::test]
+    fn a_reopened_slot_highlights_its_value(cx: &mut TestAppContext) {
+        // Rename's tab slot holds the active tab, the second row.
+        let request = CommandInvocation::new(ids::RENAME_TAB, Vec::new());
+        let (palette, cx, _) = open(cx, Some(request));
+        assert_eq!(rows(&palette, cx), Vec::<String>::new());
+        run(&palette, cx, ids::PALETTE_NEXT_SLOT);
+        assert_eq!(rows(&palette, cx).len(), 2);
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+    }
 }

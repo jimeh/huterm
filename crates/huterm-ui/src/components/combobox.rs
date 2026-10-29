@@ -457,7 +457,7 @@ impl Combobox {
         };
         let options = filter(self.input.read(cx));
         if !keep_scroll || options != self.list.options() {
-            self.list.set_options(options);
+            self.list.set_options(options, true);
         }
     }
 

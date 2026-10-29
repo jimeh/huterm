@@ -325,6 +325,31 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** rerun and record the run here. A hardening is to wait for
   `w0.dialog_focus=primary` before Enter, as the neighboring steps do.
 
+## `smoke:macos-settings` condition field loses focus after the rebind
+
+- **Label:** `Smoke macOS settings` in `Rust smoke (macOS arm64)`, in
+  `scripts/check-settings.ts` after `tabTo("key:when:")` in the rebind
+  flow: timed out waiting for `settings.list=key:when:` and
+  `settings.highlight="Terminal"`.
+- **Occurrences:** 2026-10-29 on PR #321 (run 40790568761, job
+  123174477208, head `8352a340`), which changed only the footer status,
+  and again that day on PR #322 (run 40802436265, job 123213458734, head
+  `e6ea878e`), which does not touch the Settings window. Both stopped at the
+  same step with focus on `action:kon:u2`. #321's next head passed, and
+  host runs of that step passed every time: 3 of 3 for #321 and 2 of 2 for
+  #322.
+- **Evidence:** the last state had `settings.focus=action:kon:u2`,
+  `settings.list=none`, `settings.status="Saved"`, `settings.writing=false`,
+  and `settings.drafts` still holding `when:u2=Terminal (`, so the
+  select-all, Backspace, and typed text never reached the field. `tabTo`
+  had reached the condition field before focus moved to the replaced
+  default's switch on the same row. A reload that lands after the rebind
+  and draws the row again would fit, but the step's stdout was empty and
+  nothing recorded the focus history, so the cause is unconfirmed.
+- **Triage:** rerun and record the run here. If it recurs, record when
+  focus left the field relative to the rebind's reload and the watcher's
+  report.
+
 ## `smoke:macos-palette` stray DEL at an early step
 
 - **Label:** an early terminal-bytes check in `scripts/check-palette.ts`
@@ -341,6 +366,28 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   window is frontmost.
 - **Triage:** keep the failing step, its expected and received bytes, and a
   list of what else was running on the host; record them here, then rerun.
+
+## Linux palette smoke wheel does not scroll the results
+
+- **Label:** `Smoke Linux command palette` in `Rust smoke (Linux aarch64)`,
+  at the wheel step of `scripts/check-palette.ts`: timed out waiting for
+  `palette wheel scroll` after `xdotool click 5`.
+- **Occurrences:** once, 2026-10-29, on PR #322 (run 40799335675, job
+  123203389902, head `0f2298e4`), the PR that moved the palette's results
+  onto `huterm-ui`'s `Command`. The x86_64 job passed the same step, and
+  both Linux jobs passed it on the next head, `11797d9e`, which did not
+  change the wheel path.
+- **Evidence:** the last state had `results=82`, `highlighted_row=Some(0)`,
+  `hover=Some(0)`, `wheel_events=1`, and `scroll_offset=0.0`: the wheel
+  reached the palette, and the pointer was over the first row, but the
+  list did not scroll. GPUI scrolls the element whose hitbox was under the
+  pointer in the last drawn frame, and `Command`'s rows record hover
+  without asking for a frame, so a wheel that arrives before a frame drawn
+  with the pointer there may miss the list. The palette's own list before
+  #322 redrew on hover. This is unconfirmed.
+- **Triage:** rerun and record the run here. If it recurs, have the smoke
+  wait for a frame drawn after `movePointerToRow` before the wheel, or make
+  a hover change in `option_list` request a frame.
 
 ## Linux palette smoke extra core tab
 

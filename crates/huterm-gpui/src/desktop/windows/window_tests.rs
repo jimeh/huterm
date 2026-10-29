@@ -4471,7 +4471,7 @@ fn licenses_state(
             let view = view.read(cx);
             view.licenses
                 .as_ref()
-                .map(|licenses| licenses.read(cx).state())
+                .map(|licenses| licenses.read(cx).state(cx))
         })
         .ok()
         .flatten()
@@ -4722,6 +4722,184 @@ fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
     harness.press(window, "enter");
     assert!(harness.cx.update(|cx| licenses_state(cx, window)).is_some());
+}
+
+/// The accessibility nodes in `window`'s last frame with `role`.
+fn a11y_with_role(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    role: &str,
+) -> Vec<serde_json::Value> {
+    let json = harness
+        .cx
+        .update(|cx| {
+            window.update(cx, |_, window, _| window.debug_a11y_tree_json())
+        })
+        .unwrap()
+        .expect("test windows report an accessibility tree for every frame");
+    let tree: serde_json::Value = serde_json::from_str(&json).unwrap();
+    tree["nodes"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|node| node["aria"]["role"] == role)
+        .cloned()
+        .collect()
+}
+
+#[gpui::test]
+fn the_palette_and_licenses_lists_report_a_named_list_and_their_field(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    harness.cx.run_until_parked();
+    let lists = |harness: &mut DesktopHarness| -> Vec<String> {
+        a11y_with_role(harness, window, "ListBox")
+            .iter()
+            .filter_map(|node| {
+                node["aria"]["label"].as_str().map(str::to_owned)
+            })
+            .collect()
+    };
+    assert_eq!(lists(&mut harness), ["Commands"]);
+    let fields = a11y_with_role(&mut harness, window, "EditableComboBox");
+    let [field] = fields.as_slice() else {
+        panic!("one palette search field: {fields:?}");
+    };
+    // The highlighted command is the field's description.
+    assert!(
+        field["aria"]["description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "{field}"
+    );
+    harness.press(window, "escape");
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(lists(&mut harness), ["Components"]);
+    assert_eq!(
+        a11y_with_role(&mut harness, window, "EditableComboBox").len(),
+        1,
+        "the Licenses search field"
+    );
+}
+
+#[gpui::test]
+fn a_licenses_filter_scrolls_back_to_the_selected_component(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    harness.cx.run_until_parked();
+    let scroll = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, cx| {
+            view.licenses.as_ref().unwrap().read(cx).list_scroll(cx)
+        })
+    };
+    let (_, first) = scroll(&mut harness);
+    let first = first.expect("a listed component");
+    let center = harness.update_view(window, |view, _, cx| {
+        view.licenses.as_ref().unwrap().read(cx).row_center(0, cx)
+    });
+    // The wheel scrolls what the pointer is over, as of a frame drawn after
+    // the pointer arrived.
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_move(center, None, Modifiers::none());
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    visual.simulate_event(ScrollWheelEvent {
+        position: center,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-300.0))),
+        modifiers: Modifiers::none(),
+        touch_phase: TouchPhase::Moved,
+    });
+    harness.cx.run_until_parked();
+    assert!(
+        scroll(&mut harness).0 > px(0.0),
+        "the wheel scrolled nothing"
+    );
+    // The list keeps the catalog's order, so a filter the first component
+    // matches keeps it selected on the first row.
+    let query = first.chars().next().unwrap().to_string();
+    harness.update_view(window, |view, _, cx| {
+        view.licenses.as_ref().unwrap().update(cx, |licenses, cx| {
+            licenses.set_search(&query, cx);
+        });
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(scroll(&mut harness), (px(0.0), Some(first)));
+}
+
+#[gpui::test]
+fn a_licenses_row_shows_its_component_on_a_click_not_a_hover(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    for key in "ghostty".chars() {
+        harness.press(window, &key.to_string());
+    }
+    let selected = |harness: &mut DesktopHarness| match harness
+        .cx
+        .update(|cx| licenses_state(cx, window))
+    {
+        Some(LicensesState::Ready { selected, .. }) => selected,
+        state => panic!("the view is not ready: {state:?}"),
+    };
+    assert_eq!(selected(&mut harness).as_deref(), Some("Ghostty"));
+    harness.press(window, "tab tab tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Done));
+    let second = harness.update_view(window, |view, _, cx| {
+        view.licenses.as_ref().unwrap().read(cx).row_center(1, cx)
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    // The highlight shows the details, so the pointer only hovers.
+    visual.simulate_mouse_move(second, None, gpui::Modifiers::none());
+    visual.run_until_parked();
+    assert_eq!(selected(&mut harness).as_deref(), Some("Ghostty"));
+    // A click selects and leaves keys in the search.
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_click(second, gpui::Modifiers::none());
+    assert_eq!(
+        selected(&mut harness).as_deref(),
+        Some("Ghostty sprite drawing")
+    );
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
 }
 
 mod buttons;

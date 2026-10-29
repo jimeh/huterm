@@ -774,6 +774,30 @@ the Appearance section first draws. `run_list` routes the `Palette` field
 commands to the focused field's list first; the field's own behavior gets
 the keys the list leaves alone.
 
+The terminal window has two `Command` lists. The palette mounts one per
+stage or identity slot, named "Commands" or for the slot, and drops it for
+a slot that takes text, clearing the field's `ListState`. Its rows draw
+through `with_content` from the palette's own entity, so they follow its
+results, availability, and keymap; a picker row's id is its value's
+`Debug` text, so the highlight follows the value through reorders. Beyond
+`HighlightFallback::Clear`, the pickers keep one rule of their own: a
+rebuild that removes the highlighted row marks the highlight lost, so
+Enter commits nothing and later rebuilds leave nothing highlighted until
+the user moves or filters, while a picker filtered empty takes its initial
+row when a rebuild brings one. A replaced list can still report a press on
+the frame it last drew, so the palette ignores events from a list it no
+longer holds. Both lists turn off the pointer highlight: a moving pointer
+would otherwise move the palette's highlight, so Enter would run whichever
+row the pointer last crossed, and Licenses' highlight shows the details.
+The Licenses list names each component by its catalog index. A press on a
+row prevents the default focus change, which the panel's own press handler
+respects, so the list's wrapper focuses the search itself. Both lists
+register on the window's `FrameClock`, which drives their scroll
+indicators as it does the window menu's. The palette's smoke state reads
+its scroll fields through `Command::scroll_position` and
+`Command::scrollbar`, and its `hover` field, the row under the pointer,
+through `Command::hovered`.
+
 Open menus and selects in a `huterm_ui::components::popover::Popover` and
 mount its `guard` in the owner's root view on every frame, open or not. The
 guard's capture-phase press listener reads the live open state, so it also

@@ -1,77 +1,87 @@
 # UI components
 
-Status: in progress. Step 1 (the foundation), the components of steps 2
-through 8, and migrations 2a (Settings selects), 2b (terminal-window menus),
-3a (Settings buttons, links, switches, segmented controls, tri-states,
-modifier chips, tags, and counts), 3b (terminal-window buttons and
-tooltips), 4a (Settings text, search, and number fields, units, the
-Quake width and height sliders, and `text_cut`), 5a (the keybinding
-condition field and the font family field as `Combobox`es, which fixes D6
-and folds the "Installed" menu into the font field), 6a (the Settings layout:
-the sidebar as vertical tabs, theme cards as a radio group, `Field`,
-`Item`, `Collapsible`, `Card`, `Alert`, and `Empty` rows, and Tab scrolling
-the focused control into view), 7a (the Settings delete-profile alert
-dialog, which fixes D17), 7b (the terminal window's close confirmation,
-About, and Licenses in one dialog slot, their buttons taking real focus),
-7c (the New profile and Rename profile dialogs, a rename written in one
-save), and 8a (the keybinding and global shortcut key recorders) are
-implemented; 2b removed `desktop/menu.rs` and its menu host
-(D13). 7b adds `Dialog::bare`, for content with its own header and footer,
-and `AlertDialog::initial_focus`, so the close confirmation still opens on
-its primary button. 3a also moved the Keybindings
-filter and shortcut switches, and the command search results are link
-`Item`s since 6a; since 8a no Settings control keeps a GPUI focus style.
-Step 8's `KeyRecorder` tells a held key's repeat by GPUI's `is_held`, which
-the vendored `keystroke-held-flag` patch passes to keystroke interceptors
-and the `x11-key-repeat` patch sets on X11 through XKB detectable
-auto-repeat, so a held key records one stroke; afterwards its repeats act
-nowhere until a fresh press. The owner's one interceptor feeds the recorder
-that started last, and a recorded key keeps the drafts in its shortcut's
-condition and argument fields. 6a adds `settings_next` and
+Status: implemented. Step 1 (the foundation), the components of steps 2 through
+8, and migrations 2a (Settings selects), 2b (terminal-window menus), 3a
+(Settings buttons, links, switches, segmented controls, tri-states, modifier
+chips, tags, and counts), 3b (terminal-window buttons and tooltips), 4a
+(Settings text, search, and number fields, units, the Quake width and height
+sliders, and `text_cut`), 5a (the keybinding condition field and the font family
+field as `Combobox`es, which fixes D6 and folds the "Installed" menu into the
+font field), 5b (the palette's results and slot pickers and the Licenses
+component list as `Command`s), 6a (the Settings layout: the sidebar as vertical
+tabs, theme cards as a radio group, `Field`, `Item`, `Collapsible`, `Card`,
+`Alert`, and `Empty` rows, and Tab scrolling the focused control into view), 7a
+(the Settings delete-profile alert dialog, which fixes D17), 7b (the terminal
+window's close confirmation, About, and Licenses in one dialog slot, their
+buttons taking real focus), 7c (the New profile and Rename profile dialogs, a
+rename written in one save), and 8a (the keybinding and global shortcut key
+recorders) are implemented; 2b removed `desktop/menu.rs` and its menu host
+(D13). 7b adds `Dialog::bare`, for content with its own header and footer, and
+`AlertDialog::initial_focus`, so the close confirmation still opens on its
+primary button. 3a also moved the Keybindings filter and shortcut switches, and
+the command search results are link `Item`s since 6a; since 8a no Settings
+control keeps a GPUI focus style. Step 8's `KeyRecorder` tells a held key's
+repeat by GPUI's `is_held`, which the vendored `keystroke-held-flag` patch
+passes to keystroke interceptors and the `x11-key-repeat` patch sets on X11
+through XKB detectable auto-repeat, so a held key records one stroke; afterwards
+its repeats act nowhere until a fresh press. The owner's one interceptor feeds
+the recorder that started last, and a recorded key keeps the drafts in its
+shortcut's condition and argument fields. 6a adds `settings_next` and
 `settings_previous`, bound to the arrows under their own `SettingsGroup`
-context, which the sidebar's tabs, the theme cards, and the modifier chips
-nest inside their `SettingsControl` one, so Down and Right move forward and
-Up and Left back in each, wrapping, and rebinding the stepping commands
-never reaches them; the chips' Up and Down reversed. 7a checks
-whether a global shortcut uses the profile before asking, so Delete profile
-opens a refusal alert with only OK instead; a refusal found on Delete, such
-as a file that turned invalid meanwhile, takes the question's place.
-4a binds Page Up and Page Down on number fields and sliders and Home and End
-on sliders alone (`settings_page_up`, `settings_page_down`,
-`settings_first`, and `settings_last` under `control == slider`; a number
-field pages through `palette_page_up` and `palette_page_down` and keeps Home
-and End for its text), and keybinding argument fields stay `Input`s with
-their own clamped stepping.
-Space presses the focused button of every Settings dialog, the close
-confirmation, and About: its `dialog_confirm` default binds under
-`control == button`, which each of those buttons sets beside `confirming`,
-so a dialog's text field still types a space. The Licenses buttons leave
-Space to the search.
-Step 5's `Combobox` runs its owner's filter on every edit the user
-makes, which `Input`'s new `Edited` event tells from the owner's writes,
-so typing opens and refilters the list and putting back a value does not;
-`Command` takes the items its owner filters and ranks, because the
-palette and Licenses search differently, and its `HighlightFallback::Clear`
-lets the palette's identity pickers lose a highlight whose item vanished
-rather than move it. Both draw `option_list`'s rows,
-and both report their field as an `EditableComboBox` (see Accessibility);
-migration 5b remains. In 5a, Settings routes `palette_select_next`,
-`palette_select_previous`, `palette_page_up`, `palette_page_down`,
-`palette_confirm`, and `palette_back` to a focused combobox field's list
-first, and a key the list leaves alone keeps the field's own behavior; Tab
-in a condition field also closes its open list first, as it did. The
-`Combobox` now also closes its list when it draws a field its owner
-disabled while rendering, as Settings does, because GPUI reports a
-notification made during a draw to no observer. No catalog command or
-default binding changed.
-Approved on 2026-10-27 after four Codex and Claude review rounds, then
-revised for a separate crate, the terminal window's adoption, and
-normalization against shadcn/ui, which three more review rounds checked.
-Follows [the settings plan](settings-ui.md), whose PR 3 built a control kit
-inside the Settings window, and folds in the open Settings follow-ups
-[#276][issue-276] and [#277][issue-277]. Migration 2a's running-app review
-covered the select defects; the running-app checks for the other controls are
-still owed (see Defects).
+context, which the sidebar's tabs, the theme cards, and the modifier chips nest
+inside their `SettingsControl` one, so Down and Right move forward and Up and
+Left back in each, wrapping, and rebinding the stepping commands never reaches
+them; the chips' Up and Down reversed. 7a checks whether a global shortcut uses
+the profile before asking, so Delete profile opens a refusal alert with only OK
+instead; a refusal found on Delete, such as a file that turned invalid
+meanwhile, takes the question's place. 4a binds Page Up and Page Down on number
+fields and sliders and Home and End on sliders alone (`settings_page_up`,
+`settings_page_down`, `settings_first`, and `settings_last` under `control ==
+slider`; a number field pages through `palette_page_up` and `palette_page_down`
+and keeps Home and End for its text), and keybinding argument fields stay
+`Input`s with their own clamped stepping. Space presses the focused button of
+every Settings dialog, the close confirmation, and About: its `dialog_confirm`
+default binds under `control == button`, which each of those buttons sets beside
+`confirming`, so a dialog's text field still types a space. The Licenses buttons
+leave Space to the search. Step 5's `Combobox` runs its owner's filter on every
+edit the user makes, which `Input`'s new `Edited` event tells from the owner's
+writes, so typing opens and refilters the list and putting back a value does
+not; `Command` takes the items its owner filters and ranks, because the palette
+and Licenses search differently, and its `HighlightFallback::Clear` lets the
+palette's identity pickers lose a highlight whose item vanished rather than move
+it. Both draw `option_list`'s rows, and both report their field as an
+`EditableComboBox` (see Accessibility). Migration 5b moved the palette's results
+and slot pickers and the Licenses component list onto `Command`. Each owner
+keeps its search rules: the palette ranks the results and restarts the highlight
+at the first on each query, its pickers filter with their own matcher and take
+`HighlightFallback::Clear`, and Licenses filters by name, license, and kind. A
+palette page became the rows that show at once instead of eight. Both lists turn
+off the pointer highlight, so a row only hovers, as before: in the palette,
+Enter runs the row the keys highlighted, and in Licenses, the highlight shows
+the details. The palette mounts a new list, named "Commands" or for the slot,
+when its stage or slot changes; `Command` gained read-only `scroll_position`,
+`scrollbar`, and `hovered` accessors for the palette's smoke state, which keeps
+`hover` as the row under the pointer and adds `highlighted_row`; and both lists'
+scroll indicators fade on the terminal window's frame clock. A list keeps the
+user's scroll position when its items are replaced and the highlight stays on
+its row, as when a retitle rebuilds a picker, and the palette calls
+`Command::reveal_highlight` after each query or filter, which scrolls to the
+highlight and shows the indicator. An unavailable command dims its content and
+keeps the full selection fill, so the keyboard's place stays plain. In 5a,
+Settings routes `palette_select_next`, `palette_select_previous`,
+`palette_page_up`, `palette_page_down`, `palette_confirm`, and `palette_back` to
+a focused combobox field's list first, and a key the list leaves alone keeps the
+field's own behavior; Tab in a condition field also closes its open list first,
+as it did. The `Combobox` now also closes its list when it draws a field its
+owner disabled while rendering, as Settings does, because GPUI reports a
+notification made during a draw to no observer. No catalog command or default
+binding changed. Approved on 2026-10-27 after four Codex and Claude review
+rounds, then revised for a separate crate, the terminal window's adoption, and
+normalization against shadcn/ui, which three more review rounds checked. Follows
+[the settings plan](settings-ui.md), whose PR 3 built a control kit inside the
+Settings window, and folds in the open Settings follow-ups [#276][issue-276] and
+[#277][issue-277]. Migration 2a's running-app review covered the select defects;
+the running-app checks for the other controls are still owed (see Defects).
 
 The Settings series (#269, #274, #275) built its controls one at a time,
 inside the window that uses them. Each works on its happy path, but the kit
@@ -130,8 +140,8 @@ App-specific surfaces). Everything else in the table migrates.
 | Sidebar (navigation list) | `render.rs` `render_nav` | Settings | Tab stops; no arrows (#276) | Click | Ring | n/a | n/a |
 | Inline confirm (an `AlertDialog` since 7a) | `quake.rs` `render_delete`, `escape_delete` | Quake | Escape matched literally in the keystroke interceptor, only while a prompt button has focus (D17) | Buttons | Ring | Cancel, Escape | n/a |
 | Modal dialog (an `AlertDialog` and a `Dialog` since 7b) | `close_dialog.rs`, About in `about.rs` | Terminal window | `dialog_*` and `confirming` commands | Buttons, scrim | Accent buttons | Escape, Cancel | n/a |
-| Command palette | `palette/` | Terminal window | Full catalog grammar | Hover, click | n/a | Escape, outside press | n/a |
-| Licenses view (a `Dialog` since 7b) | `licenses.rs` | About panel | Search field and list under `Palette`; arrows select, PageUp and PageDown scroll the text, Tab and Shift-Tab move between the search and the buttons, Enter presses the focused button, and text typed or composed on a button, or a text edit other than Copy, moves to the search first | Click selects, wheel scrolls, list scrollbar | Rings on the search field and buttons | Escape clears the search, then returns to About | n/a |
+| Command palette (its lists a `Command` since 5b) | `palette/` | Terminal window | Full catalog grammar | Hover, click | n/a | Escape, outside press | n/a |
+| Licenses view (a `Dialog` since 7b, its list a `Command` since 5b) | `licenses.rs` | About panel | Search field and list under `Palette`; arrows select, PageUp and PageDown scroll the text, Tab and Shift-Tab move between the search and the buttons, Enter presses the focused button, and text typed or composed on a button, or a text edit other than Copy, moves to the search first | Click selects, wheel scrolls, list scrollbar | Rings on the search field and buttons | Escape clears the search, then returns to About | n/a |
 | Scroll pill | `desktop.rs` `render_scroll_pill` | Terminal window | Scroll-to-bottom command | Click scrolls to bottom; stops presses, never releases | n/a | Hides at the bottom | n/a |
 | Toasts | `notices.rs` | Terminal window | `notice_*` commands | Hover pauses | n/a | Escape, Delete, timeout | n/a |
 | Tooltip | `overlay.rs` `TextTooltip` | Menu buttons, tab bar | None | GPUI hover delay | n/a | Pointer leaves | n/a |
@@ -863,7 +873,9 @@ still change. Siblings that share a shape land together.
    command id distinct from #256's window `undo`.
 5. **Search and suggestions:** `Combobox` and `Command`. Migration 5a: the
    condition completion (D6) and the font family field with its "Installed"
-   menu folded in. Migration 5b: the Licenses list and the palette's lists.
+   menu folded in. Migration 5b: the Licenses component list and the
+   palette's results and slot pickers, whose owners keep their search
+   rules, and the palette its stages, slots, and chips.
 6. **Layout:** `Tabs`, `ScrollArea` reveal, `RadioGroup` with its card
    variant, `Field`, `Item`, `Card`, `Collapsible`, `Alert`, and `Empty`.
    Migration 6a: the Settings sidebar with arrow keys, Tab scrolling the
@@ -904,6 +916,15 @@ from #276 or #277 that it covers.
 
 ## Follow-ups
 
+- [#300][issue-300]: hover and press cues are too faint to see in some
+  themes.
+- [#312][issue-312] and [#317][issue-317]: the Quake profile rename and the
+  pane layout saves still have interleavings with other Settings writes
+  that they do not handle, and they share the batch-save gap.
+- The `x11-key-repeat` patch is unit-tested and built in CI but has not
+  run against a real X server, and no Linux smoke holds a key.
+- VoiceOver has not been checked against the combobox and command fields,
+  which carry their highlighted item as the field's description.
 - Space on a Default/On/Off control toggles between On and Off and never
   selects Default; tri-states need radio-style activation (Space selects the
   focused option).
@@ -944,6 +965,9 @@ None.
 
 [issue-276]: https://github.com/jimeh/huterm/issues/276
 [issue-277]: https://github.com/jimeh/huterm/issues/277
+[issue-300]: https://github.com/jimeh/huterm/issues/300
+[issue-312]: https://github.com/jimeh/huterm/issues/312
+[issue-317]: https://github.com/jimeh/huterm/issues/317
 [radix]: https://www.radix-ui.com/primitives/docs/components/select
 [apg]: https://www.w3.org/WAI/ARIA/apg/patterns/
 [hig]: https://developer.apple.com/design/human-interface-guidelines/pop-up-buttons
