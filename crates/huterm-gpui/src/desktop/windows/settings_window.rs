@@ -120,10 +120,12 @@ pub(super) fn open(cx: &mut App) {
 }
 
 /// Tells the Settings window that a reload finished, so it rereads the
-/// file and reports the outcome. `automatic` says the watcher started it.
+/// file and reports the outcome: `Ok` with any warning about what the
+/// applied file asks for, or the error. `automatic` says the watcher
+/// started it.
 pub(super) fn reloaded(
     cx: &mut App,
-    outcome: Result<(), String>,
+    outcome: Result<Option<String>, String>,
     automatic: bool,
 ) {
     let Some(handle) = cx.global::<Desktop>().settings else {
@@ -270,6 +272,9 @@ pub(super) struct SettingsView {
     /// The last reload's error when the file itself validates, so the
     /// footer can say the settings were not applied.
     reload_error: Option<String>,
+    /// The last reload's warning when it applied the file, such as a global
+    /// shortcut another application holds.
+    reload_warning: Option<String>,
     /// An automatic reload applied the file, and the reread it started
     /// decides whether to report it (`loaded`).
     reload_unreported: bool,
@@ -407,6 +412,7 @@ impl SettingsView {
             reread: false,
             fresh: None,
             reload_error: None,
+            reload_warning: None,
             reload_unreported: false,
             written: None,
             closing: false,
@@ -2517,6 +2523,15 @@ impl SettingsView {
         self.reloaded(Err(message.to_owned()), false, cx);
     }
 
+    /// Follows an automatic reload that applied the file with `warning`.
+    pub(super) fn follow_reload_with_warning(
+        &mut self,
+        warning: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.reloaded(Ok(Some(warning.to_owned())), true, cx);
+    }
+
     pub(super) fn status_text(&self) -> String {
         self.status.line().text
     }
@@ -2600,7 +2615,7 @@ impl SettingsView {
 
     /// Follows a reload that applied the file.
     pub(super) fn follow_reload(&mut self, cx: &mut Context<'_, Self>) {
-        self.reloaded(Ok(()), false, cx);
+        self.reloaded(Ok(None), false, cx);
     }
 
     /// Looks for an edit made elsewhere, as coming forward does.

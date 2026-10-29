@@ -1295,22 +1295,50 @@ fn config_diagnostics(
     diagnostics
 }
 
-/// The persistent notices after a successful reload: binding conflicts and
-/// the config warning. A reload that failed never reaches this.
+/// The persistent notices after a successful reload: binding conflicts,
+/// the config warning, and the global shortcuts the platform refused. A
+/// reload that failed never reaches this.
 fn reload_diagnostics(
     path: &Path,
     config: &Config,
     compiled: &CompiledKeymap,
+    refused: &[String],
 ) -> Vec<NoticeContent> {
     if let Some(warning) = &config.warning {
         eprintln!("Huterm configuration warning: {warning}");
     }
-    config_diagnostics(
+    let mut diagnostics = config_diagnostics(
         path,
         None,
         None,
         &compiled.conflicts,
         config.warning.as_deref(),
+    );
+    diagnostics.extend(refused_shortcuts_diagnostic(path, refused));
+    diagnostics
+}
+
+/// The notice for global shortcuts the platform refused, if any. Reload
+/// tries them again, such as after another application releases one.
+fn refused_shortcuts_diagnostic(
+    path: &Path,
+    refused: &[String],
+) -> Option<NoticeContent> {
+    if refused.is_empty() {
+        return None;
+    }
+    let message = refused.join("\n");
+    eprintln!("Huterm global shortcut warning: {message}");
+    Some(
+        NoticeContent::diagnostic(
+            Severity::Warning,
+            NoticeSource::Keymap,
+            "Global shortcuts unavailable",
+            message,
+        )
+        .location(path.display().to_string())
+        .action("Open Config File", bare(ids::OPEN_CONFIG_FILE))
+        .action("Reload", bare(ids::RELOAD_CONFIG)),
     )
 }
 
@@ -1384,7 +1412,11 @@ pub(super) fn run_with_startup(
         #[cfg(target_os = "linux")]
         follow_button_layout(cx);
         install_native_quit(cx);
-        quake_windows::install(cx);
+        let refused = quake_windows::install(cx);
+        let desktop = cx.global_mut::<Desktop>();
+        let refused =
+            refused_shortcuts_diagnostic(&desktop.config_path, &refused);
+        desktop.diagnostics.extend(refused);
         cx.on_app_quit(move |cx| {
             commit_quit(cx);
             quake_windows::shutdown(cx);
@@ -9957,26 +9989,35 @@ fn finish_reload(
         let compiled =
             keymap::compile(Platform::current(), &config.keybindings)
                 .map_err(|error| format!("{}: {error}", path_for_status(cx)))?;
-        quake_windows::replace_registrations(cx, &config, &compiled)?;
-        Ok((config, family, metrics, compiled))
+        let shortcuts = quake_windows::compile_shortcuts(&config, &compiled)?;
+        Ok((config, family, metrics, compiled, shortcuts))
     });
-    let result = result.map(|(config, family, metrics, compiled)| {
-        #[cfg(all(target_os = "macos", feature = "macos-updater"))]
-        apply_update_config(cx, &config);
-        let desktop = cx.global_mut::<Desktop>();
-        desktop.config = config.clone();
-        desktop.diagnostics = reload_diagnostics(path, &config, &compiled);
-        desktop.latched.clear();
-        quake_windows::reconcile(cx, renames);
-        let keymap = bind_keymap(cx, compiled);
-        cx.global_mut::<Desktop>().keymap = keymap;
-        maybe_exit(cx);
-        (config, family, metrics)
-    });
+    let mut refused = Vec::new();
+    let result =
+        result.map(|(config, family, metrics, compiled, shortcuts)| {
+            // A shortcut the platform refuses, such as one another application
+            // holds, warns without blocking the rest of the configuration.
+            refused = quake_windows::replace_registrations(cx, shortcuts);
+            #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+            apply_update_config(cx, &config);
+            let desktop = cx.global_mut::<Desktop>();
+            desktop.config = config.clone();
+            desktop.diagnostics =
+                reload_diagnostics(path, &config, &compiled, &refused);
+            desktop.latched.clear();
+            quake_windows::reconcile(cx, renames);
+            let keymap = bind_keymap(cx, compiled);
+            cx.global_mut::<Desktop>().keymap = keymap;
+            maybe_exit(cx);
+            (config, family, metrics)
+        });
     report_config_reload_error(&result);
     settings_window::reloaded(
         cx,
-        result.as_ref().map(|_| ()).map_err(Clone::clone),
+        result
+            .as_ref()
+            .map(|_| (!refused.is_empty()).then(|| refused.join("; ")))
+            .map_err(Clone::clone),
         kind == ReloadKind::Automatic,
     );
     let diagnostics = match &result {

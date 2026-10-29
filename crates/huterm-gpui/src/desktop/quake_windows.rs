@@ -353,31 +353,52 @@ impl Stage {
     }
 }
 
-pub(super) fn install(cx: &mut App) {
+/// Registers the startup configuration's global shortcuts and returns a
+/// warning for each one the platform refused. An invalid shortcut is
+/// reported as a failure and registers nothing.
+pub(super) fn install(cx: &mut App) -> Vec<String> {
     let config = cx.global::<Desktop>().config.clone();
     let compiled = keymap::compile(Platform::current(), &config.keybindings);
-    let result = compiled
+    let bindings = compiled
         .map_err(|error| error.to_string())
-        .and_then(|compiled| replace_registrations(cx, &config, &compiled));
-    if let Err(error) = result {
-        report(cx, &error, None);
+        .and_then(|compiled| compile_shortcuts(&config, &compiled));
+    match bindings {
+        Ok(bindings) => replace_registrations(cx, bindings),
+        Err(error) => {
+            report(cx, &error, None);
+            Vec::new()
+        }
     }
 }
 
-pub(super) fn replace_registrations(
-    cx: &mut App,
+/// Checks `config`'s global shortcuts without registering them. An error
+/// means the configuration is invalid.
+pub(super) fn compile_shortcuts(
     config: &Config,
     compiled: &keymap::CompiledKeymap,
-) -> Result<(), String> {
-    let bindings =
-        hotkeys::compile(&config.global_keybindings, &config.quake, compiled)?;
+) -> Result<Vec<hotkeys::Binding>, String> {
+    hotkeys::compile(&config.global_keybindings, &config.quake, compiled)
+}
+
+/// Registers `bindings` as far as the platform allows, replacing the
+/// previous set, and returns one warning per shortcut it could not
+/// register. The next call tries a refused shortcut again.
+pub(super) fn replace_registrations(
+    cx: &mut App,
+    bindings: Vec<hotkeys::Binding>,
+) -> Vec<String> {
     if bindings.is_empty()
         && cx.global::<Desktop>().quake.registrations.is_none()
     {
-        return Ok(());
+        return Vec::new();
     }
     if cx.global::<Desktop>().quake.registrations.is_none() {
-        let registrations = hotkeys::Registrations::new()?;
+        let registrations = match hotkeys::Registrations::new() {
+            Ok(registrations) => registrations,
+            Err(error) => {
+                return vec![format!("global shortcuts unavailable: {error}")];
+            }
+        };
         let wakeups = registrations.wakeups.clone();
         cx.global_mut::<Desktop>().quake.registrations = Some(registrations);
         cx.spawn(async move |cx| {
@@ -391,8 +412,8 @@ pub(super) fn replace_registrations(
         .quake
         .registrations
         .as_mut()
-        .ok_or("global shortcut manager unavailable")?
-        .replace(bindings)
+        .map(|registrations| registrations.replace(bindings))
+        .unwrap_or_default()
 }
 
 pub(super) fn keep_alive(cx: &App) -> bool {

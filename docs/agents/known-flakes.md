@@ -337,7 +337,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   `e6ea878e`), which does not touch the Settings window. Both stopped at the
   same step with focus on `action:kon:u2`. #321's next head passed, and
   host runs of that step passed every time: 3 of 3 for #321 and 2 of 2 for
-  #322.
+  #322. A third occurrence came that day on PR #324 (run 40859661396, job
+  123399557169, head `617482b3`), which changes the global shortcut reload
+  path but not the rebind flow, with the same final state. Host runs of the
+  settings step on that head passed 2 of 3; the failure stopped at an
+  earlier, unrelated step waiting for `settings.focus=search`.
 - **Evidence:** the last state had `settings.focus=action:kon:u2`,
   `settings.list=none`, `settings.status="Saved"`, `settings.writing=false`,
   and `settings.drafts` still holding `when:u2=Terminal (`, so the

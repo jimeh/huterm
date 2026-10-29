@@ -123,6 +123,10 @@ impl GlobalHotKeyManager {
                     &mut hotkey_ref,
                 );
 
+                // eventHotKeyExistsErr: another application holds the shortcut.
+                if result == -9878 {
+                    return Err(crate::Error::AlreadyRegistered(hotkey));
+                }
                 if result != noErr as _ {
                     return Err(crate::Error::FailedToRegister(format!(
                         "RegisterEventHotKey failed for {}",
