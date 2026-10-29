@@ -5,7 +5,13 @@ use huterm_protocol::Modifiers;
 
 fn prefix(keys: &[&str]) -> Vec<Keystroke> {
     keys.iter()
-        .map(|key| Keystroke::parse(key).unwrap())
+        .map(|key| {
+            Keystroke::parse_with_os(
+                key,
+                crate::keymap::Platform::current().os(),
+            )
+            .unwrap()
+        })
         .collect()
 }
 

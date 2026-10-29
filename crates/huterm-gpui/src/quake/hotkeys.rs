@@ -102,7 +102,8 @@ fn parse_stroke(key: &str) -> Result<Keystroke, String> {
     if key.split_whitespace().count() != 1 || key.contains('+') {
         return Err("expected one stroke with modifiers joined by '-'".into());
     }
-    Keystroke::parse(key).map_err(|error| error.to_string())
+    Keystroke::parse_with_os(key, crate::keymap::Platform::current().os())
+        .map_err(|error| error.to_string())
 }
 fn native_key(stroke: &Keystroke) -> Result<HotKey, String> {
     let maximum_function_key = if cfg!(target_os = "macos") { 20 } else { 24 };

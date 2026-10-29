@@ -25,7 +25,7 @@
 
 use gpui::{
     AnyElement, Bounds, Context, Div, ElementId, Entity, ParentElement, Pixels,
-    ScrollHandle, ScrollWheelEvent, Styled, div, point, prelude::*,
+    ScrollEvent, ScrollHandle, Styled, div, point, prelude::*,
 };
 
 use crate::list_scrollbar::ListScrollbar;
@@ -124,7 +124,7 @@ impl ScrollArea {
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .when_some(self.max_height, Styled::max_h)
-                    .on_scroll_wheel(move |_: &ScrollWheelEvent, _, cx| {
+                    .on_scroll(move |_: &ScrollEvent, _, cx| {
                         wheel.update(cx, |view, cx| {
                             get(view).show();
                             cx.notify();
@@ -213,8 +213,8 @@ impl ParentElement for ScrollArea {
 mod tests {
     use gpui::{
         Bounds, Context, IntoElement, Modifiers, Render, ScrollDelta,
-        ScrollHandle, ScrollWheelEvent, TestAppContext, TouchPhase, Window,
-        div, point, prelude::*, px, size,
+        ScrollEvent, ScrollHandle, TestAppContext, TouchPhase, Window, div,
+        point, prelude::*, px, size,
     };
 
     use super::{ContentBounds, REVEAL_CLEARANCE, ScrollArea, reveal_offset};
@@ -318,11 +318,12 @@ mod tests {
             !view.read_with(cx, |view, _| view.scrollbar.indicator_visible())
         );
 
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: point(px(20.0), px(20.0)),
             delta: ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
             modifiers: Modifiers::none(),
             touch_phase: TouchPhase::Moved,
+            ..Default::default()
         });
         cx.run_until_parked();
         view.read_with(cx, |view, _| {

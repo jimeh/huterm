@@ -1,5 +1,5 @@
 diff --git a/src/linux/x11/client.rs b/src/linux/x11/client.rs
-index 4497e7cc92bc744e6a95fdbaa80f925f2ddd2c78..5d4a5d2d7d3387eaa1c7f5409349b4eef9b4cb56 100644
+index 0b1b311f13bd7b1bc090c9b81100633dc187e1c6..5cb09ba05bc545609829c827b0a1877357ceaae5 100644
 --- a/src/linux/x11/client.rs
 +++ b/src/linux/x11/client.rs
 @@ -1,6 +1,9 @@

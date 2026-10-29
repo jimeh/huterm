@@ -1,8 +1,8 @@
 diff --git a/src/window.rs b/src/window.rs
-index 1214b0351a2b9ef7d0099b26b1d0d3cb53dfb9d1..ed96a46d2b3a95a9f4e623dce10ab7ac88a4f03b 100644
+index c559412e56000e3c1b633bc323c67b6c7c64d845..fe5c7d3e9afba536d2e04af020fe8946344a6389 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -2119,7 +2119,9 @@ impl Window {
+@@ -2131,7 +2131,9 @@ impl Window {
              platform_window.set_app_id(&app_id);
          }
  

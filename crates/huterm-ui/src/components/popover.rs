@@ -38,8 +38,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, IntoElement, MouseDownEvent,
-    Pixels, Point, ScrollDelta, ScrollWheelEvent, Size, Window, anchored,
-    canvas, deferred, div, point, prelude::*, px,
+    Pixels, Point, ScrollDelta, ScrollEvent, Size, Window, anchored, canvas,
+    deferred, div, point, prelude::*, px,
 };
 
 use crate::focus;
@@ -237,7 +237,7 @@ impl Popover {
                     },
                 );
                 window.on_mouse_event(
-                    move |event: &ScrollWheelEvent, phase, window, cx| {
+                    move |event: &ScrollEvent, phase, window, cx| {
                         if phase != DispatchPhase::Capture {
                             return;
                         }
@@ -524,8 +524,8 @@ mod guard_tests {
 
     use gpui::{
         Context, IntoElement, Modifiers, MouseButton, Render, ScrollDelta,
-        ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext,
-        Window, div, point, prelude::*, px,
+        ScrollEvent, TestAppContext, TouchPhase, VisualTestContext, Window,
+        div, point, prelude::*, px,
     };
 
     use super::{Anchor, Placement, Popover};
@@ -663,11 +663,12 @@ mod guard_tests {
     fn a_wheel_outside_a_modal_popover_leaves_it_open(cx: &mut TestAppContext) {
         let (owner, log, cx) = owner(cx);
         open_and_draw(&owner, cx);
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: point(px(50.0), px(220.0)),
             delta: ScrollDelta::Pixels(point(px(0.0), px(-30.0))),
             modifiers: Modifiers::none(),
             touch_phase: TouchPhase::Moved,
+            ..Default::default()
         });
         cx.run_until_parked();
         assert_eq!(taken(&log), Vec::<String>::new());

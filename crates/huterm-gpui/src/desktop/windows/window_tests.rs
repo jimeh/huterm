@@ -367,8 +367,14 @@ impl DesktopHarness {
     /// Enter.
     fn type_line(&mut self, window: AnyWindowHandle, text: &str) {
         for key in text.chars().map(String::from).chain(["enter".into()]) {
-            self.cx
-                .dispatch_keystroke(window, Keystroke::parse(&key).unwrap());
+            self.cx.dispatch_keystroke(
+                window,
+                Keystroke::parse_with_os(
+                    &key,
+                    crate::keymap::Platform::current().os(),
+                )
+                .unwrap(),
+            );
         }
     }
 
@@ -377,8 +383,14 @@ impl DesktopHarness {
     /// must carry one, as Linux reports Alt keys, names it as `alt-j->j`.
     fn press(&mut self, window: AnyWindowHandle, keys: &str) {
         for key in keys.split(' ') {
-            self.cx
-                .dispatch_keystroke(window, Keystroke::parse(key).unwrap());
+            self.cx.dispatch_keystroke(
+                window,
+                Keystroke::parse_with_os(
+                    key,
+                    crate::keymap::Platform::current().os(),
+                )
+                .unwrap(),
+            );
         }
     }
 
@@ -3964,9 +3976,14 @@ fn the_palette_runs_commands_whose_arguments_are_all_unprompted(
             } else {
                 key.to_string()
             };
-            harness
-                .cx
-                .dispatch_keystroke(window, Keystroke::parse(&key).unwrap());
+            harness.cx.dispatch_keystroke(
+                window,
+                Keystroke::parse_with_os(
+                    &key,
+                    crate::keymap::Platform::current().os(),
+                )
+                .unwrap(),
+            );
         }
     };
     // Tab on a command with no prompted argument leaves the search open.
@@ -4800,7 +4817,7 @@ fn the_palette_and_licenses_lists_report_a_named_list_and_their_field(
 fn a_licenses_filter_scrolls_back_to_the_selected_component(
     cx: &mut TestAppContext,
 ) {
-    use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use gpui::{Modifiers, ScrollDelta, ScrollEvent, TouchPhase, point};
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_window();
@@ -4831,11 +4848,12 @@ fn a_licenses_filter_scrolls_back_to_the_selected_component(
     visual.simulate_mouse_move(center, None, Modifiers::none());
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();
-    visual.simulate_event(ScrollWheelEvent {
+    visual.simulate_event(ScrollEvent {
         position: center,
         delta: ScrollDelta::Pixels(point(px(0.0), px(-300.0))),
         modifiers: Modifiers::none(),
         touch_phase: TouchPhase::Moved,
+        ..Default::default()
     });
     harness.cx.run_until_parked();
     assert!(

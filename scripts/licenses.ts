@@ -485,6 +485,12 @@ function resolveVersion(value: string | undefined, packages: Map<string, CargoPa
     case "$ghostty": return (JSON.parse(readFileSync(join(repoRoot, "scripts/ghostty-source.json"), "utf8")) as { revision: string }).revision.slice(0, 7);
     case "$zig": return (JSON.parse(readFileSync(join(repoRoot, "scripts/ghostty-source.json"), "utf8")) as { zig: string }).zig;
     case "$sparkle": return (JSON.parse(readFileSync(join(repoRoot, "scripts/sparkle-source.json"), "utf8")) as { version: string }).version;
+    case "$lucide": {
+      const manifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { devDependencies?: Record<string, string> };
+      const version = manifest.devDependencies?.["lucide-static"];
+      if (!version || !/^\d+\.\d+\.\d+$/.test(version)) throw new Error("package.json must pin an exact lucide-static version");
+      return version;
+    }
     case "$rust": return toolchainChannel();
     case "$freetype": {
       const header = readFileSync(join(crateDirectory("freetype-sys", packages), "freetype2/include/freetype/freetype.h"), "utf8");

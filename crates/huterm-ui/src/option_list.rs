@@ -499,7 +499,7 @@ impl OptionList {
                             cx.stop_propagation();
                         }
                     })
-                    .on_scroll_wheel(cx.listener(|owner: &mut V, _, _, cx| {
+                    .on_scroll(cx.listener(|owner: &mut V, _, _, cx| {
                         owner.option_list().scrollbar.show();
                         cx.notify();
                     }))

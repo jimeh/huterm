@@ -1,16 +1,16 @@
 {
-  "version": "2.10.0",
-  "published_at": "2026-09-13T23:54:06Z",
+  "version": "2.10.1",
+  "published_at": "2026-10-25T14:36:36Z",
   "minimum_macos": "12.0",
   "source": {
-    "name": "Sparkle-2.10.0.tar.xz",
-    "url": "https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz",
-    "sha256": "c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c",
-    "tree_sha256": "d39db0aa295d617eef91a64bdb57b3dc9f43958846abe4509f4d3fe2e4e10d8d"
+    "name": "Sparkle-2.10.1.tar.xz",
+    "url": "https://github.com/sparkle-project/Sparkle/releases/download/2.10.1/Sparkle-2.10.1.tar.xz",
+    "sha256": "1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27",
+    "tree_sha256": "7b04ecac79e463f53e263842a6558661d7d4dfdf76da7e8b154a8a831dea8395"
   },
   "framework": {
     "identifier": "org.sparkle-project.Sparkle",
     "license_sha256": "389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
   },
-  "license_url": "https://github.com/sparkle-project/Sparkle/blob/2.10.0/LICENSE"
+  "license_url": "https://github.com/sparkle-project/Sparkle/blob/2.10.1/LICENSE"
 }

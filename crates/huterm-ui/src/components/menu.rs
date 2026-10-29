@@ -769,7 +769,7 @@ impl Render for Menu {
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll)
                             .when_some(self.max_height, Styled::max_h)
-                            .on_scroll_wheel(cx.listener(|menu, _, _, cx| {
+                            .on_scroll(cx.listener(|menu, _, _, cx| {
                                 menu.scrollbar.show();
                                 cx.notify();
                             }))

@@ -1612,8 +1612,9 @@ samples to GPUI's `Scene::finish`, against 409 for `TerminalRenderer::paint` and
 130 for `prepare`. The renderer benchmark does not time `finish`, which runs
 after every element has painted. It sorted each sprite list by draw order and
 atlas tile ID, although batching only needs draw order and texture, so every
-frame reordered about 7,000 glyph sprites. The vendored
-`scene-sprite-texture-order` patch sorts by draw order and texture index. In
+frame reordered about 7,000 glyph sprites. A vendored
+`scene-sprite-texture-order` patch sorted by draw order and texture index
+until `gpui-pre` 0.3.10 adopted the same key upstream (zed#65814). In
 the same 15-second sample, `Scene::finish` fell to 18 samples and
 `Window::draw` to 720, about 0.71 ms to 0.40 ms per 120 Hz frame. Paint rose
 from 409 to 522 samples in that run, and every paint component rose by the same

@@ -274,7 +274,9 @@ impl KeyRecorder {
         let Some(recording) = &mut self.recording else {
             return true;
         };
-        recording.strokes.push(keystroke.unparse());
+        recording
+            .strokes
+            .push(keystroke.unparse(cx.platform_info().os));
         if recording.strokes.len() >= self.max_strokes {
             self.finish(cx);
             return true;

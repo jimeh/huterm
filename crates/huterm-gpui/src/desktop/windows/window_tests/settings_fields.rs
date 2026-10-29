@@ -512,7 +512,11 @@ fn assert_keys_queue_no_write(harness: &mut DesktopHarness, keys: &str) {
         .cx
         .update(|cx| settings(cx).expect("Settings is open"));
     for key in keys.split(' ') {
-        let keystroke = Keystroke::parse(key).expect("a valid keystroke");
+        let keystroke = Keystroke::parse_with_os(
+            key,
+            crate::keymap::Platform::current().os(),
+        )
+        .expect("a valid keystroke");
         harness.cx.dispatch_keystroke(window.into(), keystroke);
         assert!(harness.cx.update(settled), "{key} queued a write");
     }

@@ -1,6 +1,6 @@
 # Sparkle provenance
 
-Huterm packages Sparkle 2.10.0 from the official binary release. The archive
+Huterm packages Sparkle 2.10.1 from the official binary release. The archive
 URL, release date, SHA-256 digest, extracted tree digest, framework identity,
 minimum macOS version, and upstream license digest are pinned in
 `scripts/sparkle-source.json`.

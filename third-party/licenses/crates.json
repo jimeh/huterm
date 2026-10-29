@@ -123,12 +123,12 @@
     },
     {
       "name": "taffy",
-      "version": "^0.13.0",
+      "version": "^0.15.1",
       "license": "MIT",
       "files": [
         {
-          "path": "third-party/licenses/crates/taffy-0.13.0/LICENSE",
-          "url": "https://github.com/DioxusLabs/taffy/blob/45a56299d366ddb383e593a1f0372158d00e8530/LICENSE",
+          "path": "third-party/licenses/crates/taffy-0.15.1/LICENSE",
+          "url": "https://github.com/DioxusLabs/taffy/blob/0064bd54cbe38bf1d8bcd6ec6ab0704d45fb048a/LICENSE",
           "sha256": "f97daf1a0124413dccf399a4e6626b4b74acd05282f80b6d64ac82225650b77a"
         }
       ]

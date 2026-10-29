@@ -337,11 +337,11 @@ fn active_notes(
     // What this key stops doing comes first; it matters most.
     if user
         && unconditional
-        && let Some(stroke) = binding
-            .key
-            .split_whitespace()
-            .next()
-            .and_then(|stroke| gpui::Keystroke::parse(stroke).ok())
+        && let Some(stroke) =
+            binding.key.split_whitespace().next().and_then(|stroke| {
+                gpui::Keystroke::parse_with_os(stroke, Platform::current().os())
+                    .ok()
+            })
     {
         let modifiers = stroke.modifiers;
         if !(modifiers.control

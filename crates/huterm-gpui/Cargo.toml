@@ -33,7 +33,7 @@ serde.workspace = true
 serde_json = "=1.0.154"
 async-channel.workspace = true
 nix.workspace = true
-notify = "=8.2.0"
+notify = "=8.2.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "=0.2.7"

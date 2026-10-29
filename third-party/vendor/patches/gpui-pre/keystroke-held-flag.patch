@@ -1,8 +1,8 @@
 diff --git a/src/app.rs b/src/app.rs
-index cdbd5593b11418b85d8344f59c047a02238b652b..bbdfa6298d81d02302d131f6a32afa2a63704d7c 100644
+index 0f1d59b4f6b6a230427485e1084ffc08e798d62d..77403564e7bf684573e583540cf7e767efa83d95 100644
 --- a/src/app.rs
 +++ b/src/app.rs
-@@ -3482,6 +3482,11 @@ pub struct KeystrokeEvent {
+@@ -3617,6 +3617,11 @@ pub struct KeystrokeEvent {
      /// even when this is [`InputPreference::CharacterInput`].
      pub input_preference: InputPreference,
  
@@ -15,10 +15,10 @@ index cdbd5593b11418b85d8344f59c047a02238b652b..bbdfa6298d81d02302d131f6a32afa2a
      pub action: Option<Box<dyn Action>>,
  
 diff --git a/src/window.rs b/src/window.rs
-index 7ffd348ea183c89ab2889c0dd26dc4f7298955db..a97c275fd9ef4c59fe9cc7c1827c193a1878a8d7 100644
+index 5069693482c81c8ecd23076fa1c52e26383f40cd..9809a4400c355f6a8b26f68742bd1370b5fd9575 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -2572,6 +2572,7 @@ impl Window {
+@@ -2584,6 +2584,7 @@ impl Window {
                  &KeystrokeEvent {
                      keystroke: keystroke.clone(),
                      input_preference,
@@ -26,7 +26,7 @@ index 7ffd348ea183c89ab2889c0dd26dc4f7298955db..a97c275fd9ef4c59fe9cc7c1827c193a
                      action: action.map(|action| action.boxed_clone()),
                      context_stack: context_stack.clone(),
                  },
-@@ -2585,6 +2586,7 @@ impl Window {
+@@ -2597,6 +2598,7 @@ impl Window {
          &mut self,
          keystroke: &Keystroke,
          input_preference: InputPreference,
@@ -34,7 +34,7 @@ index 7ffd348ea183c89ab2889c0dd26dc4f7298955db..a97c275fd9ef4c59fe9cc7c1827c193a
          context_stack: Vec<KeyContext>,
          cx: &mut App,
      ) {
-@@ -2595,6 +2597,7 @@ impl Window {
+@@ -2607,6 +2609,7 @@ impl Window {
                      &KeystrokeEvent {
                          keystroke: keystroke.clone(),
                          input_preference,
@@ -42,7 +42,7 @@ index 7ffd348ea183c89ab2889c0dd26dc4f7298955db..a97c275fd9ef4c59fe9cc7c1827c193a
                          action: None,
                          context_stack: context_stack.clone(),
                      },
-@@ -6082,10 +6085,14 @@ impl Window {
+@@ -6126,10 +6129,14 @@ impl Window {
  
          let input_preference = self.input_preference(event, cx);
  

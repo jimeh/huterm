@@ -510,12 +510,12 @@ export function validateRuntimeSpdx(value: unknown, version: string, ghosttyPatc
   }
   for (const [name, expectedVersion] of [
     ["huterm", version],
-    ["Sparkle", "2.10.0"],
+    ["Sparkle", "2.10.1"],
     ["ghostty", "83fb95624b0439ee660c2679b43b38c8b63769cd"],
     ["uucode", "0.2.0"],
     ["highway", "66486a10623fa0d72fe91260f96c892e41aceb06"],
     ["wuffs", "7411f488fe2e2c205c3d3b3d28638b7356522930"],
-    ["gpui-pre", "0.3.9"],
+    ["gpui-pre", "0.3.10"],
   ] as const) {
     if (!packages.some(pkg => pkg.name === name && pkg.versionInfo === expectedVersion)) {
       throw new Error(`SBOM lacks required runtime component ${name}@${expectedVersion}`);

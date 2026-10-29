@@ -24,10 +24,10 @@ index 5692b1e7cb81a80f5cf9393c68bab3f56448e3e3..5cb367ae779e82246866bd1ec75441cc
          self.0.lock().virtual_keyboard_requests += 1;
      }
 diff --git a/src/window.rs b/src/window.rs
-index 380cd0afea2c2b35e6dbc2a014242d5914c18a1c..7ffd348ea183c89ab2889c0dd26dc4f7298955db 100644
+index a6fa7cfa0d205f776f3f5c533b4716544d8f9b34..5069693482c81c8ecd23076fa1c52e26383f40cd 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -7039,6 +7039,14 @@ impl Window {
+@@ -7083,6 +7083,14 @@ impl Window {
              .push((action, Box::new(listener)));
      }
  

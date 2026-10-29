@@ -4,7 +4,7 @@ use std::rc::Rc;
 use gpui::{
     Action, App, Bounds, Context, Div, Entity, EntityInputHandler as _,
     FocusHandle, Focusable as _, KeyBinding, Modifiers, MouseButton, Pixels,
-    Point, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, TestAppContext,
+    Point, Render, ScrollDelta, ScrollEvent, ScrollHandle, TestAppContext,
     TouchPhase, VisualTestContext, Window, div, point, prelude::*, px, size,
 };
 
@@ -443,11 +443,12 @@ fn deliver_frames(cx: &mut VisualTestContext) {
 
 /// Turns the wheel `by` points over `position`.
 fn wheel(cx: &mut VisualTestContext, position: Point<Pixels>, by: f32) {
-    cx.simulate_event(ScrollWheelEvent {
+    cx.simulate_event(ScrollEvent {
         position,
         delta: ScrollDelta::Pixels(point(px(0.0), px(by))),
         modifiers: Modifiers::none(),
         touch_phase: TouchPhase::Moved,
+        ..Default::default()
     });
     cx.run_until_parked();
 }
@@ -943,11 +944,12 @@ fn a_trackpad_touch_that_has_not_moved_leaves_the_list_open(
     let (probe, cx) = setup(cx, Setup::default());
     type_text(cx, "mo");
     for touch_phase in [TouchPhase::Started, TouchPhase::Ended] {
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position: point(px(350.0), px(420.0)),
             delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
             modifiers: Modifiers::none(),
             touch_phase,
+            ..Default::default()
         });
         cx.run_until_parked();
         assert!(probe.open(cx), "{touch_phase:?} closed the list");

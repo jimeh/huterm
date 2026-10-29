@@ -1610,7 +1610,10 @@ impl SettingsView {
 /// Cmd, or a function key the platform registers (F1-F20 on macOS, F1-F24
 /// on X11, as `quake::hotkeys` accepts).
 fn global_key_allowed(key: &str) -> bool {
-    let Ok(stroke) = gpui::Keystroke::parse(key) else {
+    let Ok(stroke) = gpui::Keystroke::parse_with_os(
+        key,
+        crate::keymap::Platform::current().os(),
+    ) else {
         return false;
     };
     let modifiers = stroke.modifiers;

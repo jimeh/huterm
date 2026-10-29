@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use gpui::{
     DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, KeyContext,
-    Keystroke, Modifiers,
+    Keystroke, Modifiers, OperatingSystem,
 };
 use huterm_protocol::{
     ArgumentKind, CommandArgument, CommandId, CommandInvocation, CommandSpec,
@@ -35,6 +35,15 @@ impl Platform {
             Self::MacOs
         } else {
             Self::Linux
+        }
+    }
+
+    /// GPUI's name for this platform, which resolves `secondary-` and
+    /// spells modifiers when keystrokes are parsed or unparsed.
+    pub(crate) fn os(self) -> OperatingSystem {
+        match self {
+            Self::MacOs => OperatingSystem::Mac,
+            Self::Linux => OperatingSystem::Linux,
         }
     }
 }
@@ -207,12 +216,12 @@ pub(crate) fn compile(
         })?;
         entries.push(entry);
     }
-    compile_entries(&entries)
+    compile_entries(platform, &entries)
 }
 
 /// Compiles only the platform defaults; used when user entries fail.
 pub(crate) fn compile_defaults(platform: Platform) -> CompiledKeymap {
-    compile_entries(&defaults(platform))
+    compile_entries(platform, &defaults(platform))
         .unwrap_or_else(|error| panic!("default keymap must compile: {error}"))
 }
 
@@ -378,7 +387,7 @@ pub(crate) fn inventory(
         })?;
         entries.push(entry);
     }
-    let resolution = resolve_entries(&entries)?;
+    let resolution = resolve_entries(platform, &entries)?;
     Ok(Inventory {
         bindings: resolution
             .items
@@ -410,6 +419,7 @@ struct Resolution {
     reason = "resolution validates and preserves one ordered binding pipeline"
 )]
 fn resolve_entries(
+    platform: Platform,
     entries: &[BindingEntry],
 ) -> Result<Resolution, KeymapError> {
     let mut items: Vec<Item> = Vec::new();
@@ -432,7 +442,8 @@ fn resolve_entries(
                 }
             })
         };
-        let keystrokes = parse_keystrokes(&entry.key).map_err(fail)?;
+        let keystrokes =
+            parse_keystrokes(&entry.key, platform).map_err(fail)?;
         if entry.command == UNBIND {
             if !entry.args.is_empty() {
                 return Err(fail("unbind takes no args".to_owned()));
@@ -574,11 +585,12 @@ fn resolve_entries(
 }
 
 fn compile_entries(
+    platform: Platform,
     entries: &[BindingEntry],
 ) -> Result<CompiledKeymap, KeymapError> {
     let Resolution {
         items, conflicts, ..
-    } = resolve_entries(entries)?;
+    } = resolve_entries(platform, entries)?;
     let mut resolved: Vec<Resolved> = items
         .into_iter()
         .filter(|item| item.state == BindingState::Active)
@@ -594,13 +606,14 @@ fn compile_entries(
     resolved.sort_by_key(Resolved::dispatch_rank);
     let mut bindings = Vec::with_capacity(resolved.len());
     for binding in resolved {
-        let key_binding = KeyBinding::load(
+        let key_binding = KeyBinding::load_with_os(
             &binding.effective.key,
             binding.action.into_boxed(),
             binding.predicate,
             false,
             None,
             &DummyKeyboardMapper,
+            platform.os(),
         )
         .map_err(|error| {
             KeymapError(format!(
@@ -618,7 +631,10 @@ fn compile_entries(
     })
 }
 
-fn parse_keystrokes(key: &str) -> Result<Vec<Keystroke>, String> {
+fn parse_keystrokes(
+    key: &str,
+    platform: Platform,
+) -> Result<Vec<Keystroke>, String> {
     let keystrokes = key
         .split_whitespace()
         .map(|source| {
@@ -630,7 +646,7 @@ fn parse_keystrokes(key: &str) -> Result<Vec<Keystroke>, String> {
                     "invalid key {source:?}: join modifiers with `-`, not `+`"
                 ));
             }
-            Keystroke::parse(source)
+            Keystroke::parse_with_os(source, platform.os())
                 .map_err(|error| format!("invalid key: {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnyWindowHandle, Entity, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, Size, Task, TestAppContext,
+    MouseMoveEvent, MouseUpEvent, ScrollEvent, Size, Task, TestAppContext,
     TouchPhase, VisualTestContext,
 };
 use huterm_core::{TerminalRuntime, TerminalViewer, ViewerOptions};
@@ -560,11 +560,12 @@ fn the_background_beside_a_smaller_canonical_grid_reports_nothing(
     let inside = harness.cell_center(2, 1);
     harness.click(inside);
     harness.assert_received(&click(2, 1));
-    harness.cx.simulate_event(ScrollWheelEvent {
+    harness.cx.simulate_event(ScrollEvent {
         position: background,
         delta: ScrollDelta::Lines(gpui::point(0.0, 3.0)),
         modifiers: Modifiers::none(),
         touch_phase: TouchPhase::Moved,
+        ..Default::default()
     });
     let desired = harness.read(|view, _| view.scroll.desired());
     assert_eq!(desired, 3, "the wheel did not scroll the viewport locally");

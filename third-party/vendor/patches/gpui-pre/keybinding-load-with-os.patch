@@ -1,0 +1,42 @@
+diff --git a/src/keymap/binding.rs b/src/keymap/binding.rs
+index 1ca888b67bc592a742e6ab684e319872c91de420..b4e90159575d89709f6a71c69e61b1c5e7a56de2 100644
+--- a/src/keymap/binding.rs
++++ b/src/keymap/binding.rs
+@@ -2,7 +2,7 @@ use std::rc::Rc;
+ 
+ use crate::{
+     Action, AsKeystroke, DummyKeyboardMapper, InvalidKeystrokeError, KeyBindingContextPredicate,
+-    KeybindingKeystroke, Keystroke, PlatformKeyboardMapper, SharedString,
++    KeybindingKeystroke, Keystroke, OperatingSystem, PlatformKeyboardMapper, SharedString,
+ };
+ use smallvec::SmallVec;
+ 
+@@ -67,6 +67,28 @@ impl KeyBinding {
+         )
+     }
+ 
++    /// Load a keybinding from raw data without an [`App`](crate::App), with an
++    /// explicit keyboard mapper and the host OS that resolves `secondary-`.
++    pub fn load_with_os(
++        keystrokes: &str,
++        action: Box<dyn Action>,
++        context_predicate: Option<Rc<KeyBindingContextPredicate>>,
++        use_key_equivalents: bool,
++        action_input: Option<SharedString>,
++        keyboard_mapper: &dyn PlatformKeyboardMapper,
++        os: OperatingSystem,
++    ) -> std::result::Result<Self, InvalidKeystrokeError> {
++        Self::load_internal(
++            keystrokes,
++            action,
++            context_predicate,
++            use_key_equivalents,
++            action_input,
++            keyboard_mapper,
++            |source| Keystroke::parse_with_os(source, os),
++        )
++    }
++
+     fn load_internal<'a>(
+         keystrokes: &'a str,
+         action: Box<dyn Action>,

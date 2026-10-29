@@ -87,7 +87,7 @@
     {
       "id": "lucide",
       "name": "Lucide",
-      "version": "1.58.0",
+      "version": "$lucide",
       "kind": "Icons",
       "license": "ISC AND MIT",
       "url": "https://lucide.dev",

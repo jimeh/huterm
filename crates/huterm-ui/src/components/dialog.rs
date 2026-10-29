@@ -90,8 +90,8 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, Bounds, Corners, DispatchPhase, Div, ElementId, Empty,
     FocusHandle, IntoElement, MouseDownEvent, Pixels, Point, Refineable,
-    RenderOnce, ScrollWheelEvent, SharedString, StyleRefinement, Window,
-    canvas, div, prelude::*, px,
+    RenderOnce, ScrollEvent, SharedString, StyleRefinement, Window, canvas,
+    div, prelude::*, px,
 };
 
 use crate::a11y::States;
@@ -304,7 +304,7 @@ impl Modal {
                 );
                 let wheels = state.clone();
                 window.on_mouse_event(
-                    move |event: &ScrollWheelEvent, phase, _, cx| {
+                    move |event: &ScrollEvent, phase, _, cx| {
                         if phase == DispatchPhase::Capture
                             && wheels.borrow().guards(event.position)
                         {

@@ -143,8 +143,8 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
     packages: [
       cargoPackage("huterm", "0.4.0"),
-      cargoPackage("gpui-pre", "0.3.9"),
-      cargoPackage("gpui-pre-macos", "0.3.9"),
+      cargoPackage("gpui-pre", "0.3.10"),
+      cargoPackage("gpui-pre-macos", "0.3.10"),
     ],
     documentDescribes: ["SPDXRef-huterm"],
   };
@@ -194,8 +194,8 @@ test("SPDX augmentation preserves packages without optional version metadata", a
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
     packages: [
       cargoPackage("huterm", "0.4.0"),
-      cargoPackage("gpui-pre", "0.3.9"),
-      cargoPackage("gpui-pre-macos", "0.3.9"),
+      cargoPackage("gpui-pre", "0.3.10"),
+      cargoPackage("gpui-pre-macos", "0.3.10"),
       unversioned,
       blankVersion,
     ],
@@ -237,7 +237,7 @@ test("Ghostty SPDX source names the reviewed native patches", async () => {
     SPDXID: "SPDXRef-DOCUMENT",
     spdxVersion: "SPDX-2.3",
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
-    packages: [cargoPackage("huterm", "0.4.0"), cargoPackage("gpui-pre", "0.3.9"), cargoPackage("gpui-pre-macos", "0.3.9")],
+    packages: [cargoPackage("huterm", "0.4.0"), cargoPackage("gpui-pre", "0.3.10"), cargoPackage("gpui-pre-macos", "0.3.10")],
     documentDescribes: ["SPDXRef-huterm"],
   }, {
     arm64: { packages: [] },

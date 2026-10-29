@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    Bounds, FocusHandle, Modifiers, Pixels, ScrollDelta, ScrollWheelEvent,
+    Bounds, FocusHandle, Modifiers, Pixels, ScrollDelta, ScrollEvent,
     TouchPhase,
 };
 use huterm_config::settings::SectionId;
@@ -862,11 +862,12 @@ fn the_pane_shows_its_scrollbar_when_it_scrolls(cx: &mut TestAppContext) {
     // The wheel over the pane scrolls it and shows the indicator.
     let viewport = with_view(&mut harness, |view, _| view.pane_viewport());
     let mut wheel = visual(&harness);
-    wheel.simulate_event(ScrollWheelEvent {
+    wheel.simulate_event(ScrollEvent {
         position: viewport.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(-60.0))),
         modifiers: Modifiers::none(),
         touch_phase: TouchPhase::Moved,
+        ..Default::default()
     });
     wheel.run_until_parked();
     assert!(

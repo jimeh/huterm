@@ -1,5 +1,5 @@
 diff --git a/src/linux/x11/client.rs b/src/linux/x11/client.rs
-index 601eb938df45b4f3a85b54701ad6bcedc46e4616..4497e7cc92bc744e6a95fdbaa80f925f2ddd2c78 100644
+index e21f019c6493666b344ef6c8537e00ff7d29f543..0b1b311f13bd7b1bc090c9b81100633dc187e1c6 100644
 --- a/src/linux/x11/client.rs
 +++ b/src/linux/x11/client.rs
 @@ -1,3 +1,7 @@
@@ -270,7 +270,7 @@ index 601eb938df45b4f3a85b54701ad6bcedc46e4616..4497e7cc92bc744e6a95fdbaa80f925f
                  }
              }
              Event::ConfigureNotify(event) => {
-@@ -2369,16 +2423,7 @@ fn check_gtk_frame_extents_supported(
+@@ -2371,16 +2425,7 @@ fn check_gtk_frame_extents_supported(
      supported_atom_ids.contains(&atoms._GTK_FRAME_EXTENTS)
  }
  
@@ -288,7 +288,7 @@ index 601eb938df45b4f3a85b54701ad6bcedc46e4616..4497e7cc92bc744e6a95fdbaa80f925f
      xcb_connection: &XCBConnection,
      supported_atoms: &XcbAtoms,
      target: xproto::Window,
-@@ -2398,7 +2443,7 @@ fn xdnd_get_supported_atom(
+@@ -2400,7 +2445,7 @@ fn xdnd_get_supported_atom(
          && let Some(atoms) = reply.value32()
      {
          for atom in atoms {
@@ -297,7 +297,7 @@ index 601eb938df45b4f3a85b54701ad6bcedc46e4616..4497e7cc92bc744e6a95fdbaa80f925f
                  return atom;
              }
          }
-@@ -2406,17 +2451,87 @@ fn xdnd_get_supported_atom(
+@@ -2408,17 +2453,87 @@ fn xdnd_get_supported_atom(
      0
  }
  
@@ -386,7 +386,7 @@ index 601eb938df45b4f3a85b54701ad6bcedc46e4616..4497e7cc92bc744e6a95fdbaa80f925f
          sequence: 0,
          response_type: xproto::CLIENT_MESSAGE_EVENT,
      };
-@@ -2434,12 +2549,19 @@ fn xdnd_send_status(
+@@ -2436,12 +2551,19 @@ fn xdnd_send_status(
      source: xproto::Window,
      target: xproto::Window,
      action: u32,
