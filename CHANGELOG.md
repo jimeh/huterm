@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.24.0](https://github.com/jimeh/huterm/compare/v0.23.0...v0.24.0) (2026-10-29)
+
+
+### Features
+
+* define pane layouts and the layout cycle in the config file ([#298](https://github.com/jimeh/huterm/issues/298)) ([02829e0](https://github.com/jimeh/huterm/commit/02829e0106f5fb2d4297a06f78131949be3bb82a))
+* edit pane layouts and the layout cycle in Settings ([#316](https://github.com/jimeh/huterm/issues/316)) ([c401a5f](https://github.com/jimeh/huterm/commit/c401a5f8bb81c1c952d99589ce1677c5e8985c1c))
+* hold keyboard focus inside the close, About, and Licenses dialogs ([#314](https://github.com/jimeh/huterm/issues/314)) ([3de88ef](https://github.com/jimeh/huterm/commit/3de88ef1703f54c43b80e61d7d6db05801b8e3cc))
+* move between Settings sections with the arrow keys, and keep the focused control in view ([#313](https://github.com/jimeh/huterm/issues/313)) ([da41ed3](https://github.com/jimeh/huterm/commit/da41ed38f82ffcbd357732979915e664491e8bef))
+* name the palette and Licenses lists for screen readers, and page by the rows on screen ([#322](https://github.com/jimeh/huterm/issues/322)) ([3dd97f4](https://github.com/jimeh/huterm/commit/3dd97f4fadfe531432d424fded27506c7c65596a))
+* record one stroke for a held key, and keep a shortcut's drafts while recording ([#320](https://github.com/jimeh/huterm/issues/320)) ([7035df4](https://github.com/jimeh/huterm/commit/7035df4c9f6366e964c4a75ad1707a69ff413a89))
+* rename Quake profiles in Settings, and name new ones in a dialog ([#311](https://github.com/jimeh/huterm/issues/311)) ([948671b](https://github.com/jimeh/huterm/commit/948671bcc1849cdf9b50cfbf7ad61ef21834342e))
+* show a reset icon for modified settings ([#309](https://github.com/jimeh/huterm/issues/309)) ([01d0d27](https://github.com/jimeh/huterm/commit/01d0d27939d992886b736779dcc59dba1fc419ff))
+* suggest installed fonts and keybinding conditions as you type in Settings ([#318](https://github.com/jimeh/huterm/issues/318)) ([284b155](https://github.com/jimeh/huterm/commit/284b15588ab2557b07a3f75de517ca8e0b0af3b0))
+
+
+### Bug Fixes
+
+* build the terminal window's buttons from huterm-ui, with keyboard tooltips ([#305](https://github.com/jimeh/huterm/issues/305)) ([1974380](https://github.com/jimeh/huterm/commit/1974380eb80aee568ccfb81682d961ee8c146370))
+* clamp Settings number fields, scroll long values, and add sliders and text_cut ([#306](https://github.com/jimeh/huterm/issues/306)) ([2fe3b2b](https://github.com/jimeh/huterm/commit/2fe3b2b4aec9c8430bdfb290317754fad6daf563))
+* close Settings menus on outside and trigger presses ([#290](https://github.com/jimeh/huterm/issues/290)) ([2143cc9](https://github.com/jimeh/huterm/commit/2143cc9d9e95cab7978e76bcb6a49746cbb641f4))
+* confirm Quake profile deletion in a dialog whose Escape can be rebound ([#310](https://github.com/jimeh/huterm/issues/310)) ([468fc92](https://github.com/jimeh/huterm/commit/468fc921da303e096c6685a3dbee9d215b7cc252))
+* keep text and focus rings readable in every theme ([#294](https://github.com/jimeh/huterm/issues/294)) ([6d5ade7](https://github.com/jimeh/huterm/commit/6d5ade7bf1f028d84149490ff4817804475deeb0))
+* keep the Settings footer at "Saved" when the watcher reports its save ([#321](https://github.com/jimeh/huterm/issues/321)) ([ae51c84](https://github.com/jimeh/huterm/commit/ae51c84b8eecd13fe1463f9e4d3d890639e459f8))
+* press a focused dialog button with Space ([#319](https://github.com/jimeh/huterm/issues/319)) ([d146e66](https://github.com/jimeh/huterm/commit/d146e66bd2621b903a2ba2a719324732e66f98a8))
+* stop arrow keys from flipping Settings switches, and focus rings after clicks ([#304](https://github.com/jimeh/huterm/issues/304)) ([c4721e6](https://github.com/jimeh/huterm/commit/c4721e67ba54a4cfc7dd89a64024676ba93a2480))
+* stop the press that closes a terminal menu from reaching the terminal ([#302](https://github.com/jimeh/huterm/issues/302)) ([d75991d](https://github.com/jimeh/huterm/commit/d75991d395c26f408bb29eed3843fca39d62ff83))
+* widen overlay scrollbars only when the pointer rests on them ([#296](https://github.com/jimeh/huterm/issues/296)) ([1739532](https://github.com/jimeh/huterm/commit/173953287a14ebad21638224cb07dfb9466b0e90))
+
 ## [0.23.0](https://github.com/jimeh/huterm/compare/v0.22.0...v0.23.0) (2026-10-28)
 
 
