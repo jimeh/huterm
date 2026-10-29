@@ -8,7 +8,7 @@
 //! the background executor one at a time; a change made during one waits
 //! behind it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -50,6 +50,7 @@ use huterm_ui::components::number_field::{
 use huterm_ui::components::popover::{Anchor, Popover, place};
 use huterm_ui::components::scroll_area::{ContentBounds, ScrollArea};
 use huterm_ui::components::toggle_group::roving_target;
+use huterm_ui::list_scrollbar::ListScrollbar;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
@@ -58,6 +59,9 @@ use huterm_ui::roving::{self, Group, Move};
 use huterm_ui::steps::Steps;
 
 const SIDEBAR_WIDTH: f32 = 200.0;
+/// The height of the pane's section header and, on macOS, of the title
+/// strip it shares with the traffic lights over the sidebar.
+const HEADER_HEIGHT: f32 = 52.0;
 const WINDOW_SIZE: (f32, f32) = (860.0, 620.0);
 const MIN_SIZE: (f32, f32) = (640.0, 420.0);
 const SEGMENTED_MAX: usize = 3;
@@ -86,12 +90,19 @@ pub(super) fn open(cx: &mut App) {
     let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // On macOS the sidebar and the section header fill the title
+            // strip, so Huterm moves the window from their empty space
+            // (`render::title_strip`) and AppKit hides the title, which
+            // still names the window for accessibility and the Window menu.
             titlebar: Some(gpui::TitlebarOptions {
                 title: Some("Settings".into()),
-                appears_transparent: false,
+                appears_transparent: cfg!(target_os = "macos"),
                 traffic_light_position: None,
             }),
+            app_owns_titlebar_drag: cfg!(target_os = "macos"),
             window_min_size: Some(size(px(MIN_SIZE.0), px(MIN_SIZE.1))),
+            // Linux keeps the window manager's title bar, as terminal
+            // windows do unless their tabs move into it.
             window_decorations: Some(gpui::WindowDecorations::Server),
             kind: WindowKind::Normal,
             app_id: Some(APP_ID.into()),
@@ -100,6 +111,15 @@ pub(super) fn open(cx: &mut App) {
             ..WindowOptions::default()
         },
         |window, cx| {
+            // AppKit centres the buttons in its 28-point title bar; centre
+            // them in the header strip instead, at AppKit's left inset.
+            #[cfg(target_os = "macos")]
+            match crate::native_titlebar::close_button_frame(window) {
+                Ok(native) => {
+                    window.set_traffic_light_position(traffic_lights(native));
+                }
+                Err(error) => eprintln!("Traffic lights: {error}"),
+            }
             let view = cx.new(|cx| SettingsView::new(window, cx));
             view.read(cx).focus.clone().focus(window, cx);
             view
@@ -300,7 +320,8 @@ pub(super) struct SettingsView {
     menu_wake: Wake,
     /// The window size the open menu was placed for.
     menu_viewport: Option<gpui::Size<gpui::Pixels>>,
-    /// Wakes the window for the suggestion lists' scroll indicators.
+    /// Wakes the window for the pane's and the suggestion lists' scroll
+    /// indicators.
     list_wake: Wake,
     /// The Keybindings section.
     keys: Keys,
@@ -320,6 +341,13 @@ pub(super) struct SettingsView {
     /// Takes key-downs while a shortcut records.
     _recorder: gpui::Subscription,
     scroll: ScrollHandle,
+    /// The pane's overlay scrollbar.
+    scrollbar: ListScrollbar,
+    /// Whether a primary press on the title strip waits for the drag that
+    /// moves the window.
+    title_press: Rc<Cell<bool>>,
+    /// Where the header and the search field last painted, for smokes.
+    painted: Rc<RefCell<Painted>>,
     /// Every selectable theme with its colors, read when the window opens.
     themes: Vec<(String, Option<Theme>)>,
 }
@@ -369,6 +397,7 @@ impl SettingsView {
                 cx.stop_propagation();
             }
         });
+        let scroll = ScrollHandle::new();
         let mut view = Self {
             focus: cx.focus_handle(),
             keys,
@@ -424,7 +453,10 @@ impl SettingsView {
             menu_wake: Wake::default(),
             menu_viewport: None,
             list_wake: Wake::default(),
-            scroll: ScrollHandle::new(),
+            scrollbar: ListScrollbar::new(scroll.clone()),
+            scroll,
+            title_press: Rc::default(),
+            painted: Rc::default(),
         };
         view.create_and_load(cx);
         view.load_themes(cx);
@@ -502,6 +534,15 @@ impl SettingsView {
 
     fn swatch(cx: &App) -> Swatch {
         tokens(&cx.global::<Desktop>().config.theme)
+    }
+
+    /// The pane header's title: the section, or the search's results.
+    fn title(&self, cx: &App) -> &'static str {
+        if self.query(cx).is_empty() {
+            self.section.title()
+        } else {
+            "Search results"
+        }
     }
 
     fn query(&self, cx: &App) -> String {
@@ -1182,6 +1223,7 @@ impl SettingsView {
         // The pane has not scrolled since the ring painted.
         let target = ContentBounds::record(&self.scroll, painted);
         if ScrollArea::reveal(&self.scroll, target) {
+            self.scrollbar.show();
             cx.notify();
         }
     }
@@ -1423,15 +1465,16 @@ impl SettingsView {
             .render(placement, viewport, div().w(width).child(menu))
     }
 
-    /// Advances the suggestion lists' scroll indicators, asking for the
-    /// next frame or a wake at their next deadline.
+    /// Advances the pane's and the suggestion lists' scroll indicators,
+    /// asking for the next frame or a wake at their next deadline.
     fn animate_lists(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         let now = Instant::now();
-        let mut schedule = AnimationSchedule::IDLE;
+        self.scrollbar.advance(now);
+        let mut schedule = self.scrollbar.schedule(now);
         for list in self
             .font_lists
             .values()
@@ -1811,20 +1854,6 @@ impl SettingsView {
         } else {
             "none".to_owned()
         };
-        let rect = |bounds: Option<gpui::Bounds<gpui::Pixels>>| {
-            bounds.map_or_else(
-                || "none".to_owned(),
-                |bounds| {
-                    format!(
-                        "{},{},{},{}",
-                        f32::from(bounds.origin.x).round(),
-                        f32::from(bounds.origin.y).round(),
-                        f32::from(bounds.size.width).round(),
-                        f32::from(bounds.size.height).round()
-                    )
-                },
-            )
-        };
         // Whether the focused control's ring last painted inside the pane's
         // viewport, so a smoke can see that Tab scrolled it into view.
         let in_view = window
@@ -1863,11 +1892,17 @@ impl SettingsView {
             })
             .collect();
         drafts.sort();
+        let painted = *self.painted.borrow();
         format!(
-            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.dialog={} settings.list={list} settings.highlight={highlight:?} settings.scroll={} settings.in_view={in_view} settings.status={:?} settings.read_only={} settings.writing={} settings.drafts={:?}",
+            "settings.open=true settings.active={} settings.section={} settings.query={:?} settings.window={} settings.title={:?} settings.header={} settings.search_rect={} settings.traffic_lights={} settings.focus={focus} settings.menu={} settings.menu_rect={} settings.selects={} settings.dialog={} settings.list={list} settings.highlight={highlight:?} settings.scroll={} settings.scrollbar={} settings.in_view={in_view} settings.status={:?} settings.read_only={} settings.writing={} settings.drafts={:?}",
             window.is_window_active(),
             self.section.id(),
             self.query(cx),
+            rect(Some(window.bounds())),
+            self.title(cx),
+            rect(painted.header),
+            rect(painted.search),
+            traffic_lights_state(window),
             menu.is_some(),
             rect(self.popover.content_bounds()),
             if selects.is_empty() {
@@ -1877,6 +1912,7 @@ impl SettingsView {
             },
             self.dialog_name(),
             f32::from(-self.scroll.offset().y).round(),
+            self.scrollbar.indicator_visible(),
             self.status.line().text,
             self.locked(),
             self.busy(),
@@ -1889,6 +1925,61 @@ impl Focusable for SettingsView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
+}
+
+/// The window chrome's painted bounds, in window coordinates.
+#[derive(Clone, Copy, Debug, Default)]
+struct Painted {
+    header: Option<gpui::Bounds<gpui::Pixels>>,
+    search: Option<gpui::Bounds<gpui::Pixels>>,
+}
+
+/// `bounds` as smoke state reports a rect: `x,y,w,h` in whole points, or
+/// `none`.
+fn rect(bounds: Option<gpui::Bounds<gpui::Pixels>>) -> String {
+    bounds.map_or_else(
+        || "none".to_owned(),
+        |bounds| {
+            format!(
+                "{},{},{},{}",
+                f32::from(bounds.origin.x).round(),
+                f32::from(bounds.origin.y).round(),
+                f32::from(bounds.size.width).round(),
+                f32::from(bounds.size.height).round()
+            )
+        },
+    )
+}
+
+/// The traffic lights' span in window points, as smoke state reports it.
+fn traffic_lights_state(window: &Window) -> String {
+    #[cfg(target_os = "macos")]
+    if let Ok(lights) = crate::native_titlebar::buttons_in_window(window) {
+        return format!(
+            "{},{},{},{}",
+            lights.origin.x,
+            lights.origin.y,
+            lights.size.width,
+            lights.size.height
+        );
+    }
+    let _ = window;
+    "none".to_owned()
+}
+
+/// Where the traffic lights sit to centre in the header strip: `AppKit`'s
+/// left inset from `native`, the close button's frame, and the button's own
+/// height, so a change in their size keeps them centred.
+#[cfg_attr(
+    not(any(target_os = "macos", all(test, feature = "test-support"))),
+    expect(dead_code)
+)]
+pub(super) fn traffic_lights(
+    native: gpui::Bounds<f64>,
+) -> gpui::Point<gpui::Pixels> {
+    #[expect(clippy::cast_possible_truncation, reason = "point-sized geometry")]
+    let (left, height) = (native.origin.x as f32, native.size.height as f32);
+    point(px(left), px(((HEADER_HEIGHT - height) / 2.0).max(0.0)))
 }
 
 /// Every selectable theme with its preview colors.
@@ -2238,7 +2329,22 @@ impl Render for SettingsView {
             .child(sidebar)
             .child(main)
             .children(popover)
-            .children(dialog)
+            .children(dialog.map(|dialog| {
+                // On macOS the dialog's scrim leaves the title strip
+                // uncovered, as a sheet leaves the title bar, so a press
+                // there still moves the window.
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .top(px(if cfg!(target_os = "macos") {
+                        HEADER_HEIGHT
+                    } else {
+                        0.0
+                    }))
+                    .child(dialog)
+            }))
     }
 }
 
@@ -2422,6 +2528,27 @@ impl SettingsView {
     /// Every theme card's name, in order.
     pub(super) fn theme_names(&self) -> Vec<String> {
         self.themes.iter().map(|(name, _)| name.clone()).collect()
+    }
+
+    /// Whether the pane's scrollbar indicator draws.
+    pub(super) fn pane_scrollbar_shows(&self) -> bool {
+        self.scrollbar.indicator_visible()
+    }
+
+    /// Hides the pane's scrollbar indicator, as its fade would.
+    pub(super) fn hide_pane_scrollbar(&mut self) {
+        self.scrollbar = ListScrollbar::new(self.scroll.clone());
+    }
+
+    /// Whether a press on the title strip waits for the drag that moves
+    /// the window.
+    pub(super) fn title_strip_pressed(&self) -> bool {
+        self.title_press.get()
+    }
+
+    /// Where the sidebar's search field last painted.
+    pub(super) fn search_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.painted.borrow().search
     }
 
     /// How far the pane has scrolled down.

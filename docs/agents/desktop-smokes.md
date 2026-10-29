@@ -213,8 +213,11 @@ Alt-3 because Linux reserves Alt-1 through Alt-9 for tab selection.
 double-clicks, which NSEvents posted inside the app never reach. The Tart
 guest's display is 1024x768, and a login-time "App Background Activity" banner
 takes presses in its top-right corner, so the check first places the window
-through Accessibility. The window server can drop part of an app-started
-synthetic drag, so assert direction and a lower bound, not the exact delta.
+through Accessibility. The `macos-settings` step's title-strip drags do the
+same for the Settings window, which `hid-pointer place` reaches as the app's
+first Accessibility window while it is frontmost. The window server can drop
+part of an app-started synthetic drag, so assert direction and a lower bound,
+not the exact delta.
 
 AppKit's mouseEventWithType constructor leaves buttonNumber at zero for Right
 events. Rebuild fixture Right events from their CGEvent with the button-number

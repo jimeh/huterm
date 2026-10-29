@@ -918,7 +918,12 @@ painted inside the pane's columns, and no dialog or menu is open. A row whose
 label sits apart from its controls, such as a user layout's name above its
 template, Rename, and Delete, draws `reveal_group` over itself with their
 handles, and the reveal shows the row with the ring. Smoke state reports
-`settings.scroll` and `settings.in_view` for it.
+`settings.scroll` and `settings.in_view` for it. The pane is a
+`ScrollArea::fill` under a fixed header that names the section, or "Search
+results"; the view owns its `ListScrollbar`, advances it in `animate_lists`
+on the suggestion lists' wake, and shows it when a reveal scrolls. Its
+viewport starts under the header, so reveals and `settings.in_view` never
+count a control hidden behind the header as shown.
 
 The terminal window has one dialog slot too, `WorkspaceView::dialog`. The
 top dialog draws in it: the close confirmation, else Licenses, else About.

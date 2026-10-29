@@ -1,9 +1,12 @@
-//! The Settings window's layout: the sidebar, the banner, and the pane of
-//! grouped rows.
+//! The Settings window's layout: the sidebar, the section header, the
+//! banner, and the pane of grouped rows.
+
+use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Context, Div, ElementId, Entity, FocusHandle,
-    SharedString, Window, div, prelude::*, px, svg,
+    InteractiveElement, MouseButton, SharedString, Window, canvas, div,
+    prelude::*, px, svg,
 };
 use huterm_config::settings::{SectionId, Setting};
 use huterm_ui::components::alert::{Alert, Tone as AlertTone};
@@ -14,6 +17,7 @@ use huterm_ui::components::field::Field;
 use huterm_ui::components::input::Input;
 use huterm_ui::components::input_group::{Addon, InputGroup};
 use huterm_ui::components::item::Item;
+use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::components::tabs::Tabs;
 
 use super::super::super::overlay::{Swatch, mono_font_family};
@@ -21,7 +25,8 @@ use super::super::super::settings::status::Action;
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
 use super::{
-    SIDEBAR_WIDTH, SettingsView, apply_note, foreign_note, tone_color,
+    HEADER_HEIGHT, SIDEBAR_WIDTH, SettingsView, apply_note, foreign_note,
+    tone_color,
 };
 use crate::assets::Icon;
 
@@ -67,6 +72,41 @@ impl SettingsView {
         }
     }
 
+    /// The gestures of the title strip's empty space on macOS, where the
+    /// sidebar and the section header replace `AppKit`'s title bar, as a
+    /// terminal window's title row has: a primary drag moves the window
+    /// and a double-click runs the title-bar action. Elsewhere the window
+    /// manager's title bar does both.
+    ///
+    /// The move starts on the first drag motion after the press, not on
+    /// the press itself: `AppKit`'s window drag takes over the pointer, which
+    /// would swallow the release and keep a second press from counting as
+    /// the double-click.
+    fn title_strip<E: InteractiveElement>(&self, strip: E) -> E {
+        if !cfg!(target_os = "macos") {
+            return strip;
+        }
+        let pressed = Rc::clone(&self.title_press);
+        let dragged = Rc::clone(&self.title_press);
+        let released = Rc::clone(&self.title_press);
+        strip
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                if event.click_count == 2 {
+                    pressed.set(false);
+                    window.titlebar_double_click();
+                } else {
+                    pressed.set(true);
+                }
+                cx.stop_propagation();
+            })
+            .on_mouse_move(move |event, window, _| {
+                if event.dragging() && dragged.replace(false) {
+                    window.start_window_move();
+                }
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _, _| released.set(false))
+    }
+
     pub(super) fn render_sidebar(
         &mut self,
         swatch: Swatch,
@@ -80,6 +120,16 @@ impl SettingsView {
             swatch,
             cx,
         );
+        let painted = Rc::clone(&self.painted);
+        let probe = canvas(
+            |_, _, _| {},
+            move |bounds, (), _, _| painted.borrow_mut().search = Some(bounds),
+        )
+        .absolute()
+        .inset_0();
+        // On macOS the traffic lights sit over the strip above the search.
+        let strip = cfg!(target_os = "macos")
+            .then(|| self.title_strip(div().flex_none().h(px(HEADER_HEIGHT))));
         div()
             .flex()
             .flex_col()
@@ -89,10 +139,19 @@ impl SettingsView {
             .border_r_1()
             .border_color(swatch.line)
             .bg(swatch.surface)
+            .children(strip)
             .child(
                 div()
-                    .p(px(10.0))
-                    .child(div().key_context("Palette").child(search)),
+                    .px(px(10.0))
+                    .pb(px(10.0))
+                    .when(!cfg!(target_os = "macos"), |area| area.pt(px(10.0)))
+                    .child(
+                        div()
+                            .relative()
+                            .key_context("Palette")
+                            .child(search)
+                            .child(probe),
+                    ),
             )
             .child(
                 div()
@@ -560,8 +619,14 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let searching = !query.is_empty();
-        let mut body =
-            div().flex().flex_col().w_full().gap(px(6.0)).p(px(24.0));
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .gap(px(6.0))
+            .px(px(24.0))
+            .pt(px(8.0))
+            .pb(px(24.0));
         if let Some(banner) = self.render_banner(swatch, cx) {
             body = body.child(banner);
         }
@@ -600,18 +665,10 @@ impl SettingsView {
             }
         } else {
             let section = self.section;
-            body = body
-                .child(
-                    div()
-                        .text_size(px(20.0))
-                        .text_color(swatch.fg)
-                        .mb(px(8.0))
-                        .child(section.title()),
-                )
-                .children(
-                    (section == SectionId::General)
-                        .then(|| self.render_file_card(swatch, cx)),
-                );
+            body = body.children(
+                (section == SectionId::General)
+                    .then(|| self.render_file_card(swatch, cx)),
+            );
             body = if section == SectionId::Keybindings {
                 body.children(self.render_keybindings(swatch, window, cx))
             } else if section == SectionId::Quake {
@@ -623,15 +680,77 @@ impl SettingsView {
                 .children(self.render_advanced(section, swatch, cx))
             };
         }
+        let header = self.render_header(self.title(cx), swatch);
+        let view = cx.entity();
+        let area = ScrollArea::new("settings-main", &self.scroll)
+            .fill()
+            .child(body)
+            .render(
+                &mut self.scrollbar,
+                swatch.scrollbar,
+                &view,
+                |view| &mut view.scrollbar,
+                cx,
+            );
         div()
-            .id("settings-main")
+            .flex()
+            .flex_col()
             .flex_1()
             .min_w_0()
             .h_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .child(body)
+            .child(header)
+            .child(area)
             .into_any_element()
+    }
+
+    /// The pane's header: `title`, level with the traffic lights on macOS,
+    /// fixed above the scrolled content and parted from it by a hairline
+    /// once the content scrolls under it.
+    fn render_header(&self, title: &str, swatch: Swatch) -> AnyElement {
+        let scrolled = self.scroll.offset().y < px(0.0);
+        let painted = Rc::clone(&self.painted);
+        let probe = canvas(
+            |_, _, _| {},
+            move |bounds, (), _, _| painted.borrow_mut().header = Some(bounds),
+        )
+        .absolute()
+        .inset_0();
+        // The hairline overlays the header's bottom edge, so the title stays
+        // centred on the traffic lights.
+        let hairline = scrolled.then(|| {
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(1.0))
+                .bg(swatch.line)
+        });
+        self.title_strip(
+            div()
+                .relative()
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(px(HEADER_HEIGHT))
+                .px(px(24.0))
+                .debug_selector(|| "settings-header".to_owned())
+                .child(probe)
+                .children(hairline)
+                .child(
+                    div()
+                        .id("settings-title")
+                        .role(gpui::Role::Heading)
+                        .aria_label(SharedString::from(title.to_owned()))
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(15.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(swatch.fg)
+                        .child(title.to_owned()),
+                ),
+        )
+        .into_any_element()
     }
 
     /// Each group of `section` with a row that shows and matches `query`,

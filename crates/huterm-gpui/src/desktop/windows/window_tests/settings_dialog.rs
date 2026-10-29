@@ -352,6 +352,41 @@ fn caret(harness: &mut DesktopHarness) -> (usize, std::ops::Range<usize>) {
 }
 
 #[gpui::test]
+fn a_press_on_the_title_strip_under_a_dialog_keeps_the_dialog(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("dialog-title-strip", LOGS);
+    let mut harness = DesktopHarness::new(cx);
+    show_logs(&mut harness, &file);
+    press_button(&mut harness, "qnew");
+    assert_eq!(dialog(&mut harness), "new-profile");
+    let header = visual(&harness)
+        .debug_bounds("settings-header")
+        .expect("the header painted");
+    let mut pointer = visual(&harness);
+    pointer.simulate_mouse_down(
+        header.center(),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    // On macOS the scrim leaves the strip uncovered, as a sheet leaves the
+    // title bar, so the press reaches the strip that moves the window.
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.title_strip_pressed()),
+        cfg!(target_os = "macos")
+    );
+    let mut pointer = visual(&harness);
+    pointer.simulate_mouse_up(
+        header.center(),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    pointer.run_until_parked();
+    assert_eq!(dialog(&mut harness), "new-profile");
+    assert_eq!(focus(&mut harness), "dialog:field");
+}
+
+#[gpui::test]
 fn the_name_dialogs_open_with_focus_in_their_field(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("dialog-name-open", LOGS);
     let mut harness = DesktopHarness::new(cx);

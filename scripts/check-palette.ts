@@ -1140,12 +1140,12 @@ if (import.meta.main) {
       if (!only || only === "palette") await checkPalette(executable, "ghostty", wm);
       if (!only || only === "overlays") await checkOverlays(executable, wm);
       if (!only || only === "viewers") await checkViewers(executable);
-      if (!only || only === "settings") await checkSettings(executable, wm);
+      if (!only || only === "settings") await checkSettings(executable, wm, process.platform === "darwin" ? pointer : undefined);
     };
+    const pointer = resolve(Bun.argv[3] ?? "target/debug/hid-pointer");
     if (process.platform === "darwin") {
       await checks();
       if (!only || only === "titlebar") {
-        const pointer = resolve(Bun.argv[3] ?? "target/debug/hid-pointer");
         for (const position of ["titlebar", "top"] as const) await checkMacTitlebar(executable, pointer, position);
       }
     }

@@ -342,6 +342,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   path but not the rebind flow, with the same final state. Host runs of the
   settings step on that head passed 2 of 3; the failure stopped at an
   earlier, unrelated step waiting for `settings.focus=search`.
+  A fourth followed on PR #325 (run 40860855881, job 123403412885, head
+  `67d5c3a7`), which restyles the Settings window's chrome but not the
+  Keybindings section: same step, same focus, and the same
+  `when:u2=Terminal (` draft, after that PR's new title-strip checks had
+  passed. Host runs of the step passed 3 of 3 for that change, once a
+  leftover Huterm app in front of the window was stopped.
 - **Evidence:** the last state had `settings.focus=action:kon:u2`,
   `settings.list=none`, `settings.status="Saved"`, `settings.writing=false`,
   and `settings.drafts` still holding `when:u2=Terminal (`, so the
