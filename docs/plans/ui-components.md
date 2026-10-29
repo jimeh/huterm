@@ -1,92 +1,87 @@
 # UI components
 
-Status: implemented. Step 1 (the foundation), the components of steps 2
-through 8, and migrations 2a (Settings selects), 2b (terminal-window menus),
-3a (Settings buttons, links, switches, segmented controls, tri-states,
-modifier chips, tags, and counts), 3b (terminal-window buttons and
-tooltips), 4a (Settings text, search, and number fields, units, the
-Quake width and height sliders, and `text_cut`), 5a (the keybinding
-condition field and the font family field as `Combobox`es, which fixes D6
-and folds the "Installed" menu into the font field), 5b (the palette's
-results and slot pickers and the Licenses component list as `Command`s),
-6a (the Settings layout:
-the sidebar as vertical tabs, theme cards as a radio group, `Field`,
-`Item`, `Collapsible`, `Card`, `Alert`, and `Empty` rows, and Tab scrolling
-the focused control into view), 7a (the Settings delete-profile alert
-dialog, which fixes D17), 7b (the terminal window's close confirmation,
-About, and Licenses in one dialog slot, their buttons taking real focus),
-7c (the New profile and Rename profile dialogs, a rename written in one
-save), and 8a (the keybinding and global shortcut key recorders) are
-implemented; 2b removed `desktop/menu.rs` and its menu host
-(D13). 7b adds `Dialog::bare`, for content with its own header and footer,
-and `AlertDialog::initial_focus`, so the close confirmation still opens on
-its primary button. 3a also moved the Keybindings
-filter and shortcut switches, and the command search results are link
-`Item`s since 6a; since 8a no Settings control keeps a GPUI focus style.
-Step 8's `KeyRecorder` tells a held key's repeat by GPUI's `is_held`, which
-the vendored `keystroke-held-flag` patch passes to keystroke interceptors
-and the `x11-key-repeat` patch sets on X11 through XKB detectable
-auto-repeat, so a held key records one stroke; afterwards its repeats act
-nowhere until a fresh press. The owner's one interceptor feeds the recorder
-that started last, and a recorded key keeps the drafts in its shortcut's
-condition and argument fields. 6a adds `settings_next` and
+Status: implemented. Step 1 (the foundation), the components of steps 2 through
+8, and migrations 2a (Settings selects), 2b (terminal-window menus), 3a
+(Settings buttons, links, switches, segmented controls, tri-states, modifier
+chips, tags, and counts), 3b (terminal-window buttons and tooltips), 4a
+(Settings text, search, and number fields, units, the Quake width and height
+sliders, and `text_cut`), 5a (the keybinding condition field and the font family
+field as `Combobox`es, which fixes D6 and folds the "Installed" menu into the
+font field), 5b (the palette's results and slot pickers and the Licenses
+component list as `Command`s), 6a (the Settings layout: the sidebar as vertical
+tabs, theme cards as a radio group, `Field`, `Item`, `Collapsible`, `Card`,
+`Alert`, and `Empty` rows, and Tab scrolling the focused control into view), 7a
+(the Settings delete-profile alert dialog, which fixes D17), 7b (the terminal
+window's close confirmation, About, and Licenses in one dialog slot, their
+buttons taking real focus), 7c (the New profile and Rename profile dialogs, a
+rename written in one save), and 8a (the keybinding and global shortcut key
+recorders) are implemented; 2b removed `desktop/menu.rs` and its menu host
+(D13). 7b adds `Dialog::bare`, for content with its own header and footer, and
+`AlertDialog::initial_focus`, so the close confirmation still opens on its
+primary button. 3a also moved the Keybindings filter and shortcut switches, and
+the command search results are link `Item`s since 6a; since 8a no Settings
+control keeps a GPUI focus style. Step 8's `KeyRecorder` tells a held key's
+repeat by GPUI's `is_held`, which the vendored `keystroke-held-flag` patch
+passes to keystroke interceptors and the `x11-key-repeat` patch sets on X11
+through XKB detectable auto-repeat, so a held key records one stroke; afterwards
+its repeats act nowhere until a fresh press. The owner's one interceptor feeds
+the recorder that started last, and a recorded key keeps the drafts in its
+shortcut's condition and argument fields. 6a adds `settings_next` and
 `settings_previous`, bound to the arrows under their own `SettingsGroup`
-context, which the sidebar's tabs, the theme cards, and the modifier chips
-nest inside their `SettingsControl` one, so Down and Right move forward and
-Up and Left back in each, wrapping, and rebinding the stepping commands
-never reaches them; the chips' Up and Down reversed. 7a checks
-whether a global shortcut uses the profile before asking, so Delete profile
-opens a refusal alert with only OK instead; a refusal found on Delete, such
-as a file that turned invalid meanwhile, takes the question's place.
-4a binds Page Up and Page Down on number fields and sliders and Home and End
-on sliders alone (`settings_page_up`, `settings_page_down`,
-`settings_first`, and `settings_last` under `control == slider`; a number
-field pages through `palette_page_up` and `palette_page_down` and keeps Home
-and End for its text), and keybinding argument fields stay `Input`s with
-their own clamped stepping.
-Space presses the focused button of every Settings dialog, the close
-confirmation, and About: its `dialog_confirm` default binds under
-`control == button`, which each of those buttons sets beside `confirming`,
-so a dialog's text field still types a space. The Licenses buttons leave
-Space to the search.
-Step 5's `Combobox` runs its owner's filter on every edit the user
-makes, which `Input`'s new `Edited` event tells from the owner's writes,
-so typing opens and refilters the list and putting back a value does not;
-`Command` takes the items its owner filters and ranks, because the
-palette and Licenses search differently, and its `HighlightFallback::Clear`
-lets the palette's identity pickers lose a highlight whose item vanished
-rather than move it. Both draw `option_list`'s rows,
-and both report their field as an `EditableComboBox` (see Accessibility).
-Migration 5b moved the palette's results and slot pickers and the Licenses
-component list onto `Command`. Each owner keeps its search rules: the
-palette ranks the results and restarts the highlight at the first on each
-query, its pickers filter with their own matcher and take
-`HighlightFallback::Clear`, and Licenses filters by name, license, and
-kind. A palette page became the rows that show at once instead of eight.
-Both lists turn off the pointer highlight, so a row only hovers, as
-before: in the palette, Enter runs the row the keys highlighted, and in
-Licenses, the highlight shows the details. The palette mounts a new list,
-named "Commands" or for the slot, when its stage or slot changes;
-`Command` gained read-only `scroll_position`, `scrollbar`, and `hovered`
-accessors for the palette's smoke state, which keeps `hover` as the row
-under the pointer and adds `highlighted_row`; and both lists' scroll
-indicators fade on the terminal window's frame clock. In 5a, Settings routes `palette_select_next`,
-`palette_select_previous`, `palette_page_up`, `palette_page_down`,
-`palette_confirm`, and `palette_back` to a focused combobox field's list
-first, and a key the list leaves alone keeps the field's own behavior; Tab
-in a condition field also closes its open list first, as it did. The
-`Combobox` now also closes its list when it draws a field its owner
-disabled while rendering, as Settings does, because GPUI reports a
-notification made during a draw to no observer. No catalog command or
-default binding changed.
-Approved on 2026-10-27 after four Codex and Claude review rounds, then
-revised for a separate crate, the terminal window's adoption, and
-normalization against shadcn/ui, which three more review rounds checked.
-Follows [the settings plan](settings-ui.md), whose PR 3 built a control kit
-inside the Settings window, and folds in the open Settings follow-ups
-[#276][issue-276] and [#277][issue-277]. Migration 2a's running-app review
-covered the select defects; the running-app checks for the other controls are
-still owed (see Defects).
+context, which the sidebar's tabs, the theme cards, and the modifier chips nest
+inside their `SettingsControl` one, so Down and Right move forward and Up and
+Left back in each, wrapping, and rebinding the stepping commands never reaches
+them; the chips' Up and Down reversed. 7a checks whether a global shortcut uses
+the profile before asking, so Delete profile opens a refusal alert with only OK
+instead; a refusal found on Delete, such as a file that turned invalid
+meanwhile, takes the question's place. 4a binds Page Up and Page Down on number
+fields and sliders and Home and End on sliders alone (`settings_page_up`,
+`settings_page_down`, `settings_first`, and `settings_last` under `control ==
+slider`; a number field pages through `palette_page_up` and `palette_page_down`
+and keeps Home and End for its text), and keybinding argument fields stay
+`Input`s with their own clamped stepping. Space presses the focused button of
+every Settings dialog, the close confirmation, and About: its `dialog_confirm`
+default binds under `control == button`, which each of those buttons sets beside
+`confirming`, so a dialog's text field still types a space. The Licenses buttons
+leave Space to the search. Step 5's `Combobox` runs its owner's filter on every
+edit the user makes, which `Input`'s new `Edited` event tells from the owner's
+writes, so typing opens and refilters the list and putting back a value does
+not; `Command` takes the items its owner filters and ranks, because the palette
+and Licenses search differently, and its `HighlightFallback::Clear` lets the
+palette's identity pickers lose a highlight whose item vanished rather than move
+it. Both draw `option_list`'s rows, and both report their field as an
+`EditableComboBox` (see Accessibility). Migration 5b moved the palette's results
+and slot pickers and the Licenses component list onto `Command`. Each owner
+keeps its search rules: the palette ranks the results and restarts the highlight
+at the first on each query, its pickers filter with their own matcher and take
+`HighlightFallback::Clear`, and Licenses filters by name, license, and kind. A
+palette page became the rows that show at once instead of eight. Both lists turn
+off the pointer highlight, so a row only hovers, as before: in the palette,
+Enter runs the row the keys highlighted, and in Licenses, the highlight shows
+the details. The palette mounts a new list, named "Commands" or for the slot,
+when its stage or slot changes; `Command` gained read-only `scroll_position`,
+`scrollbar`, and `hovered` accessors for the palette's smoke state, which keeps
+`hover` as the row under the pointer and adds `highlighted_row`; and both lists'
+scroll indicators fade on the terminal window's frame clock. A list keeps the
+user's scroll position when its items are replaced and the highlight stays on
+its row, as when a retitle rebuilds a picker, and the palette calls
+`Command::reveal_highlight` after each query or filter, which scrolls to the
+highlight and shows the indicator. An unavailable command dims its content and
+keeps the full selection fill, so the keyboard's place stays plain. In 5a,
+Settings routes `palette_select_next`, `palette_select_previous`,
+`palette_page_up`, `palette_page_down`, `palette_confirm`, and `palette_back` to
+a focused combobox field's list first, and a key the list leaves alone keeps the
+field's own behavior; Tab in a condition field also closes its open list first,
+as it did. The `Combobox` now also closes its list when it draws a field its
+owner disabled while rendering, as Settings does, because GPUI reports a
+notification made during a draw to no observer. No catalog command or default
+binding changed. Approved on 2026-10-27 after four Codex and Claude review
+rounds, then revised for a separate crate, the terminal window's adoption, and
+normalization against shadcn/ui, which three more review rounds checked. Follows
+[the settings plan](settings-ui.md), whose PR 3 built a control kit inside the
+Settings window, and folds in the open Settings follow-ups [#276][issue-276] and
+[#277][issue-277]. Migration 2a's running-app review covered the select defects;
+the running-app checks for the other controls are still owed (see Defects).
 
 The Settings series (#269, #274, #275) built its controls one at a time,
 inside the window that uses them. Each works on its happy path, but the kit

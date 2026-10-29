@@ -294,10 +294,18 @@ impl OptionList {
     }
 
     /// Replaces the options, keeping the highlight on the same option
-    /// where it still is, and in view: the rows above it, or their height,
-    /// may have changed. Returns whether the highlighted option changed.
-    pub(crate) fn set_options(&mut self, options: Vec<ListOption>) -> bool {
+    /// where it still is. It scrolls into view when its row moved or the
+    /// rows' height changed, and with `reveal_kept` also when it stayed on
+    /// its row; otherwise the list keeps the user's scroll position, as
+    /// when the same options come back with another title. Returns whether
+    /// the highlighted option changed.
+    pub(crate) fn set_options(
+        &mut self,
+        options: Vec<ListOption>,
+        reveal_kept: bool,
+    ) -> bool {
         let before = self.highlighted().map(|option| option.id.clone());
+        let height = self.row_height();
         let highlight = remap(&self.options, self.highlight, &options);
         self.options = options;
         // An option that left the list is no longer under the pointer.
@@ -305,6 +313,7 @@ impl OptionList {
             self.hovered = None;
         }
         if !self.set_highlight(highlight)
+            && (reveal_kept || self.row_height() != height)
             && let Some(row) = self.highlight
         {
             self.reveal(row);
@@ -339,7 +348,7 @@ impl OptionList {
     /// beside it. The fixed row height gives its place before any layout,
     /// so the scrollbar drawn in the same frame already follows; without a
     /// known height, GPUI scrolls at the next layout.
-    fn reveal(&self, row: usize) {
+    pub(crate) fn reveal(&self, row: usize) {
         let Some(height) = self.visible_height() else {
             self.scroll.scroll_to_item(row);
             return;

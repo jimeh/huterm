@@ -18,7 +18,10 @@
 //! report an item other than the one the user highlighted. An owner that
 //! restarts at the first item on every query calls [`Command::select_first`]
 //! after [`Command::set_options`]; [`Command::clear_highlight`] removes the
-//! highlight.
+//! highlight. Replacing the items keeps the user's scroll position while
+//! the highlight stays on its row, as when a rebuild retitles them; after a
+//! new query, [`Command::reveal_highlight`] scrolls to the highlight and
+//! shows the scroll indicator.
 //!
 //! Keyboard: focus stays in the search field, which keeps every key. The
 //! owner routes its commands to [`Command::select_next`],
@@ -218,7 +221,7 @@ impl Command {
         cx: &mut Context<'_, Self>,
     ) {
         let before = self.list.highlighted().map(|option| option.id.clone());
-        self.list.set_options(options);
+        self.list.set_options(options, false);
         if self.fallback == HighlightFallback::First
             && self.list.highlight().is_none()
         {
@@ -320,6 +323,17 @@ impl Command {
     #[must_use]
     pub fn scrollbar(&self) -> &ListScrollbar {
         self.list.scrollbar()
+    }
+
+    /// Scrolls the highlighted item into view and shows the scroll
+    /// indicator, as after a new query: replacing the items keeps the
+    /// user's scroll position while the highlight stays on its row.
+    pub fn reveal_highlight(&mut self, cx: &mut Context<'_, Self>) {
+        if let Some(row) = self.list.highlight() {
+            self.list.reveal(row);
+        }
+        self.list.show_scrollbar();
+        cx.notify();
     }
 
     /// When the scroll indicator next needs a frame or a wake.

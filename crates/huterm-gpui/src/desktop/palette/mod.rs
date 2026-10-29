@@ -1004,6 +1004,7 @@ impl CommandPalette {
             list.set_empty(empty, cx);
             list.set_options(options, cx);
             list.select_first(cx);
+            list.reveal_highlight(cx);
         });
     }
 
@@ -1039,22 +1040,33 @@ impl CommandPalette {
     }
 
     /// Refilters the picker after a filter change or slot navigation, and
-    /// highlights its initial row: the slot's value when it is listed, else
-    /// the first row.
+    /// highlights its initial row, the slot's value when it is listed, else
+    /// the first row, in view.
     fn refresh_picker_rows(&mut self, cx: &mut Context<'_, Self>) {
         self.highlight_lost = false;
         self.show_picker_rows(cx);
         self.highlight_initial(cx);
+        if let Some(list) = &self.list {
+            list.update(cx, Command::reveal_highlight);
+        }
     }
 
     /// Refilters the picker after its domain changed. The highlighted row
     /// stays highlighted while it is still listed and is otherwise lost,
     /// never replaced by another row; a picker that had no row to
-    /// highlight takes its initial one.
+    /// highlight takes its initial one. Whether a row was highlighted comes
+    /// from the list, since the domain has already changed under the
+    /// rows' positions. The list keeps the user's scroll position.
     fn rebuild_picker_rows(&mut self, cx: &mut Context<'_, Self>) {
-        let had = self.picker_value(cx).is_some();
+        let highlighted = |palette: &Self, cx: &App| {
+            palette
+                .list
+                .as_ref()
+                .is_some_and(|list| list.read(cx).highlighted().is_some())
+        };
+        let had = highlighted(self, cx);
         self.show_picker_rows(cx);
-        let has = self.picker_value(cx).is_some();
+        let has = highlighted(self, cx);
         if had {
             self.highlight_lost = !has;
         } else if !self.highlight_lost {

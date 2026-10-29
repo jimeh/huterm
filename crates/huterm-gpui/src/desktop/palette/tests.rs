@@ -1160,6 +1160,141 @@ mod lists {
         );
     }
 
+    /// The list's scroll offset from its top.
+    fn scroll_offset(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+    ) -> Pixels {
+        palette.read_with(cx, |palette, cx| {
+            palette.list.as_ref().unwrap().read(cx).scroll_position().0
+        })
+    }
+
+    /// Scrolls the list down with the wheel over its first row.
+    fn wheel_down(
+        palette: &Entity<CommandPalette>,
+        cx: &mut VisualTestContext,
+    ) {
+        // The wheel scrolls what the pointer is over, as of a frame drawn
+        // after the pointer arrived.
+        let center = row_center(palette, cx, 0);
+        cx.simulate_mouse_move(center, None, Modifiers::none());
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: center,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-150.0))),
+            modifiers: Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn a_new_query_scrolls_back_to_its_first_result(cx: &mut TestAppContext) {
+        let (palette, cx, _) = open(cx, None);
+        let first = rows(&palette, cx).first().cloned().unwrap();
+        // A prefix of the first result's title that keeps it first, on the
+        // same row, among more results than show at once.
+        let title = huterm_protocol::lookup(&first).unwrap().title;
+        let query = (1..=title.len())
+            .filter_map(|end| title.get(..end))
+            .find(|prefix| {
+                type_query(&palette, cx, prefix);
+                let rows = rows(&palette, cx);
+                rows.first() == Some(&first) && rows.len() > 6
+            })
+            .expect("a prefix that keeps the first result first")
+            .to_owned();
+        type_query(&palette, cx, "");
+        wheel_down(&palette, cx);
+        assert!(
+            scroll_offset(&palette, cx) > px(0.0),
+            "the wheel scrolled nothing"
+        );
+        type_query(&palette, cx, &query);
+        assert_eq!(rows(&palette, cx).first(), Some(&first));
+        assert_eq!(scroll_offset(&palette, cx), px(0.0));
+    }
+
+    fn close_tab(value: u64) -> HierarchyState {
+        let mut state = projected();
+        apply(
+            &mut state,
+            huterm_protocol::HierarchyEvent::TabClosed {
+                tab: TabId::in_runtime(runtime(), value),
+            },
+        );
+        state
+    }
+
+    #[gpui::test]
+    fn a_rebuild_loses_only_a_highlighted_row_that_it_removes(
+        cx: &mut TestAppContext,
+    ) {
+        let request = CommandInvocation::new(ids::SELECT_TAB, Vec::new());
+        let (palette, cx, events) = open(cx, Some(request));
+        run(&palette, cx, ids::PALETTE_SELECT_NEXT);
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+        // Removing the row above keeps the highlight on its tab, now first.
+        rebuild(&palette, cx, &close_tab(1));
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+        rebuild(&palette, cx, &projected());
+        assert_eq!(highlighted(&palette, cx), Some(display_value(&tab(2))));
+        // Removing the highlighted last row never moves the highlight to
+        // the row that stays.
+        rebuild(&palette, cx, &close_tab(2));
+        assert_eq!(highlighted(&palette, cx), None);
+        run(&palette, cx, ids::PALETTE_CONFIRM);
+        assert_eq!(executed(&events), []);
+    }
+
+    #[gpui::test]
+    fn a_rebuild_keeps_a_scrolled_picker_where_the_user_left_it(
+        cx: &mut TestAppContext,
+    ) {
+        use huterm_protocol::{PaneId, PaneInfo, PaneLayout, TabInfo};
+        let request = CommandInvocation::new(ids::SELECT_TAB, Vec::new());
+        let (palette, cx, _) = open(cx, Some(request));
+        let mut many = projected();
+        for value in 3..=12_u64 {
+            apply(
+                &mut many,
+                huterm_protocol::HierarchyEvent::TabOpened {
+                    workspace: WorkspaceId::in_runtime(runtime(), 10),
+                    tab: TabInfo {
+                        id: TabId::in_runtime(runtime(), value),
+                        custom_name: None,
+                        layout: PaneLayout::single(PaneInfo {
+                            id: PaneId::in_runtime(runtime(), value),
+                            terminal_id: TerminalId::new(value),
+                            fallback_name: "sh".into(),
+                        }),
+                        zoomed: None,
+                    },
+                    index: u32::try_from(value - 1).unwrap(),
+                },
+            );
+        }
+        rebuild(&palette, cx, &many);
+        assert_eq!(rows(&palette, cx).len(), 12);
+        let highlight = highlighted(&palette, cx);
+        wheel_down(&palette, cx);
+        let scrolled = scroll_offset(&palette, cx);
+        assert!(scrolled > px(0.0), "the wheel scrolled nothing");
+        // Another tab's new title rebuilds the rows in place.
+        apply(
+            &mut many,
+            huterm_protocol::HierarchyEvent::TabRenamed {
+                tab: TabId::in_runtime(runtime(), 7),
+                custom_name: Some("logs".into()),
+            },
+        );
+        rebuild(&palette, cx, &many);
+        assert_eq!(highlighted(&palette, cx), highlight);
+        assert_eq!(scroll_offset(&palette, cx), scrolled);
+    }
+
     #[gpui::test]
     fn a_reopened_slot_highlights_its_value(cx: &mut TestAppContext) {
         // Rename's tab slot holds the active tab, the second row.
