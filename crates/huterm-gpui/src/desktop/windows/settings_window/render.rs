@@ -715,6 +715,17 @@ impl SettingsView {
         )
         .absolute()
         .inset_0();
+        // The hairline overlays the header's bottom edge, so the title stays
+        // centred on the traffic lights.
+        let hairline = scrolled.then(|| {
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(1.0))
+                .bg(swatch.line)
+        });
         self.title_strip(
             div()
                 .relative()
@@ -723,14 +734,9 @@ impl SettingsView {
                 .items_center()
                 .h(px(HEADER_HEIGHT))
                 .px(px(24.0))
-                .border_b_1()
-                .border_color(if scrolled {
-                    swatch.line
-                } else {
-                    gpui::transparent_black()
-                })
                 .debug_selector(|| "settings-header".to_owned())
                 .child(probe)
+                .children(hairline)
                 .child(
                     div()
                         .id("settings-title")

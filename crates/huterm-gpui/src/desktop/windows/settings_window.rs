@@ -1927,7 +1927,6 @@ impl Focusable for SettingsView {
     }
 }
 
-/// Every selectable theme with its preview colors.
 /// The window chrome's painted bounds, in window coordinates.
 #[derive(Clone, Copy, Debug, Default)]
 struct Painted {
@@ -1971,13 +1970,16 @@ fn traffic_lights_state(window: &Window) -> String {
 /// Where the traffic lights sit to centre in the header strip: `AppKit`'s
 /// left inset from `native`, the close button's frame, and the button's own
 /// height, so a change in their size keeps them centred.
-#[cfg_attr(not(target_os = "macos"), expect(dead_code))]
-fn traffic_lights(native: gpui::Bounds<f64>) -> gpui::Point<gpui::Pixels> {
+#[cfg_attr(not(any(target_os = "macos", test)), expect(dead_code))]
+pub(super) fn traffic_lights(
+    native: gpui::Bounds<f64>,
+) -> gpui::Point<gpui::Pixels> {
     #[expect(clippy::cast_possible_truncation, reason = "point-sized geometry")]
     let (left, height) = (native.origin.x as f32, native.size.height as f32);
     point(px(left), px(((HEADER_HEIGHT - height) / 2.0).max(0.0)))
 }
 
+/// Every selectable theme with its preview colors.
 fn themes(config: &std::path::Path) -> Vec<(String, Option<Theme>)> {
     let directory = config
         .parent()
@@ -2324,7 +2326,22 @@ impl Render for SettingsView {
             .child(sidebar)
             .child(main)
             .children(popover)
-            .children(dialog)
+            .children(dialog.map(|dialog| {
+                // On macOS the dialog's scrim leaves the title strip
+                // uncovered, as a sheet leaves the title bar, so a press
+                // there still moves the window.
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .top(px(if cfg!(target_os = "macos") {
+                        HEADER_HEIGHT
+                    } else {
+                        0.0
+                    }))
+                    .child(dialog)
+            }))
     }
 }
 
@@ -2518,6 +2535,12 @@ impl SettingsView {
     /// Hides the pane's scrollbar indicator, as its fade would.
     pub(super) fn hide_pane_scrollbar(&mut self) {
         self.scrollbar = ListScrollbar::new(self.scroll.clone());
+    }
+
+    /// Whether a press on the title strip waits for the drag that moves
+    /// the window.
+    pub(super) fn title_strip_pressed(&self) -> bool {
+        self.title_press.get()
     }
 
     /// Where the sidebar's search field last painted.

@@ -220,6 +220,27 @@ args = { layout = "smoke" }
       run(["xdotool", "click", "1"]);
     }
   }
+  /** A window point in screen points, from the window's reported frame. */
+  async function screen(x: number, y: number): Promise<[number, number]> {
+    const window = rectField(await current(), "window");
+    return [Math.round(window.x + x), Math.round(window.y + y)];
+  }
+  /** A real HID drag from the window point `from` that must move the window
+   * horizontally by most of `by`. */
+  async function titleDrag(helper: string, from: [number, number], by: number, label: string): Promise<void> {
+    const before = rectField(await current(), "window");
+    const [x, y] = await screen(...from);
+    // Posting slows while the window server runs a window drag.
+    run([helper, "drag", String(x), String(y), String(x + by), String(y)], 15_000);
+    let after = before;
+    // The window server can drop part of a synthetic drag.
+    await waitFor(async () => {
+      after = rectField(await current(), "window");
+      return after.w === before.w && after.h === before.h && (after.x - before.x) * Math.sign(by) >= Math.abs(by) / 2;
+    }, `${label} to move the window from ${JSON.stringify(before)}; last ${JSON.stringify(after)}`);
+  }
+  /** Empty header space near its right end, clear of the title. */
+  const headerSpace = (header: Rect): [number, number] => [header.x + header.w - 60, middle(header)];
   /**
    * The macOS title strip, with real pointer input: the window server
    * decides whether a press there moves the window, so posted NSEvents
@@ -228,6 +249,13 @@ args = { layout = "smoke" }
    * dragging the header or the sidebar's strip moves the window.
    */
   async function checkTitleStrip(helper: string): Promise<void> {
+    // Start clear of the menu bar and the top-right corner, where a small
+    // display's notification banners take real presses.
+    run([helper, "place", String(app.pid), "20", "250"]);
+    await waitFor(async () => {
+      const window = rectField(await current(), "window");
+      return window.x === 20 && window.y === 250;
+    }, "the Settings window placed at 20,250");
     const text = await current();
     const header = rectField(text, "header");
     const lights = rectField(text, "traffic_lights");
@@ -235,26 +263,11 @@ args = { layout = "smoke" }
     if (Math.abs(middle(lights) - middle(header)) > 1) throw new Error(`the traffic lights are off the header's centre: ${text}`);
     if (lights.x + lights.w > header.x) throw new Error(`the traffic lights reach the header: ${text}`);
     if (search.y < header.y + header.h) throw new Error(`the search sits in the title strip: ${text}`);
-    const screen = async (x: number, y: number): Promise<[number, number]> => {
-      const window = rectField(await current(), "window");
-      return [Math.round(window.x + x), Math.round(window.y + y)];
-    };
     const [searchX, searchY] = await screen(search.x + search.w / 2, middle(search));
     run([helper, "click", String(searchX), String(searchY)]);
     await state("settings.focus=search");
-    async function drag(from: [number, number], by: number, label: string): Promise<void> {
-      const before = rectField(await current(), "window");
-      const [x, y] = await screen(...from);
-      // Posting slows while the window server runs a window drag.
-      run([helper, "drag", String(x), String(y), String(x + by), String(y)], 15_000);
-      let after = before;
-      // The window server can drop part of a synthetic drag.
-      await waitFor(async () => {
-        after = rectField(await current(), "window");
-        return after.w === before.w && after.h === before.h && (after.x - before.x) * Math.sign(by) >= Math.abs(by) / 2;
-      }, `${label} to move the window from ${JSON.stringify(before)}; last ${JSON.stringify(after)}`);
-    }
-    await drag([header.x + header.w - 60, middle(header)], 120, "a drag on the header");
+    const drag = (from: [number, number], by: number, label: string) => titleDrag(helper, from, by, label);
+    await drag(headerSpace(header), 120, "a drag on the header");
     await drag([lights.x + lights.w + 24, middle(lights)], -120, "a drag on the sidebar's strip");
     await state("settings.active=true", "settings.focus=search");
   }
@@ -421,6 +434,12 @@ args = { layout = "smoke" }
     await tabTo("action:qren");
     await key("space");
     await state("settings.dialog=rename", "settings.focus=dialog:field");
+    if (process.platform === "darwin" && pointer) {
+      // The dialog leaves the title strip uncovered, as a sheet does: it
+      // still moves the window, and the dialog keeps its focus.
+      await titleDrag(pointer, headerSpace(rectField(await current(), "header")), 80, "a header drag under a dialog");
+      await state("settings.dialog=rename", "settings.focus=dialog:field");
+    }
     await typeText("work");
     await key("enter");
     await saved(
@@ -577,7 +596,7 @@ args = { layout = "smoke" }
     await key("enter");
     await state("ACK:ack back");
 
-    console.log(`SETTINGS_SMOKE native=${process.platform} header=title${process.platform === "darwin" && pointer ? " title-strip=drags,search-press" : ""} sidebar=arrows search=focus-first toggle=saved reset=removed tab=round-trip step=saved font=combobox condition=combobox reveal=in-view select=pointer-dismissal record=intercepted held=one-stroke draft=kept rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands layouts=saved close=terminal comments=kept`);
+    console.log(`SETTINGS_SMOKE native=${process.platform} header=title${process.platform === "darwin" && pointer ? " title-strip=drags,search-press,under-dialog" : ""} sidebar=arrows search=focus-first toggle=saved reset=removed tab=round-trip step=saved font=combobox condition=combobox reveal=in-view select=pointer-dismissal record=intercepted held=one-stroke draft=kept rebind=applied quake=saved global=recorded rename=dialog alert=dialog-commands layouts=saved close=terminal comments=kept`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

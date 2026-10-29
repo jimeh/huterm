@@ -892,6 +892,19 @@ fn the_pane_shows_its_scrollbar_when_it_scrolls(cx: &mut TestAppContext) {
     assert!(shows(&mut harness), "the reveal left the indicator hidden");
 }
 
+#[test]
+fn the_traffic_lights_centre_in_the_header_at_the_native_inset() {
+    use super::super::settings_window::traffic_lights;
+    let native = |x: f64, size: f64| Bounds {
+        origin: point(x, 5.0),
+        size: gpui::size(size, size),
+    };
+    assert_eq!(traffic_lights(native(9.0, 14.0)), point(px(9.0), px(19.0)));
+    assert_eq!(traffic_lights(native(7.0, 12.0)), point(px(7.0), px(20.0)));
+    // Buttons taller than the strip start at its top edge.
+    assert_eq!(traffic_lights(native(9.0, 60.0)), point(px(9.0), px(0.0)));
+}
+
 #[gpui::test]
 fn the_title_strip_leaves_the_search_its_clicks(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("layout-title-strip", "");

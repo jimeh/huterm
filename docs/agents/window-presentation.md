@@ -249,10 +249,13 @@ transparent title bar with `app_owns_titlebar_drag`, the title still
 centred in the 52-point section header strip (`HEADER_HEIGHT`) over the
 sidebar. Its header and the empty strip above the sidebar's search carry
 the same move-on-first-motion and double-click gestures. Keep controls out
-of that strip, since a press there never reaches them. The `macos-settings`
-smoke step drags both with real HID input and presses the search below
-them. On Linux it keeps server decorations and draws neither the strip nor
-the gestures.
+of that strip, since a press there never reaches them. A Settings dialog's
+scrim starts below the strip, as a sheet leaves the title bar, because the
+modal guard stops every press it covers and the window could not move while
+a dialog is open. The `macos-settings` smoke step drags both with real HID
+input, drags the header under a dialog, and presses the search below them.
+On Linux it keeps server decorations and draws neither the strip nor the
+gestures.
 
 X11 moves also need `start_window_move`. GPUI grants
 X11 client-side decorations only when, at client start, the window manager
