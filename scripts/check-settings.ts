@@ -220,6 +220,17 @@ args = { layout = "smoke" }
       run(["xdotool", "click", "1"]);
     }
   }
+  /** Waits until the Settings window's reported frame passes `check`, and
+   * names the last frame seen on timeout. */
+  async function windowWhere(check: (window: Rect) => boolean, label: string): Promise<Rect> {
+    let window = rectField(await current(), "window");
+    try {
+      await waitFor(async () => check((window = rectField(await current(), "window"))), label);
+    } catch (error) {
+      throw new Error(`${String(error)}; last frame ${JSON.stringify(window)}`, { cause: error });
+    }
+    return window;
+  }
   /** A window point in screen points, from the window's reported frame. */
   async function screen(x: number, y: number): Promise<[number, number]> {
     const window = rectField(await current(), "window");
@@ -232,12 +243,11 @@ args = { layout = "smoke" }
     const [x, y] = await screen(...from);
     // Posting slows while the window server runs a window drag.
     run([helper, "drag", String(x), String(y), String(x + by), String(y)], 15_000);
-    let after = before;
     // The window server can drop part of a synthetic drag.
-    await waitFor(async () => {
-      after = rectField(await current(), "window");
-      return after.w === before.w && after.h === before.h && (after.x - before.x) * Math.sign(by) >= Math.abs(by) / 2;
-    }, `${label} to move the window from ${JSON.stringify(before)}; last ${JSON.stringify(after)}`);
+    await windowWhere(
+      (after) => after.w === before.w && after.h === before.h && (after.x - before.x) * Math.sign(by) >= Math.abs(by) / 2,
+      `${label} to move the window from ${JSON.stringify(before)}`,
+    );
   }
   /** Empty header space near its right end, clear of the title. */
   const headerSpace = (header: Rect): [number, number] => [header.x + header.w - 60, middle(header)];
@@ -252,10 +262,7 @@ args = { layout = "smoke" }
     // Start clear of the menu bar and the top-right corner, where a small
     // display's notification banners take real presses.
     run([helper, "place", String(app.pid), "20", "250"]);
-    await waitFor(async () => {
-      const window = rectField(await current(), "window");
-      return window.x === 20 && window.y === 250;
-    }, "the Settings window placed at 20,250");
+    await windowWhere((window) => window.x === 20 && window.y === 250, "the Settings window placed at 20,250");
     const text = await current();
     const header = rectField(text, "header");
     const lights = rectField(text, "traffic_lights");

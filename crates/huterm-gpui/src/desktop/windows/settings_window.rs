@@ -1970,7 +1970,10 @@ fn traffic_lights_state(window: &Window) -> String {
 /// Where the traffic lights sit to centre in the header strip: `AppKit`'s
 /// left inset from `native`, the close button's frame, and the button's own
 /// height, so a change in their size keeps them centred.
-#[cfg_attr(not(any(target_os = "macos", test)), expect(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", all(test, feature = "test-support"))),
+    expect(dead_code)
+)]
 pub(super) fn traffic_lights(
     native: gpui::Bounds<f64>,
 ) -> gpui::Point<gpui::Pixels> {

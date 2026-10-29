@@ -215,9 +215,9 @@ guest's display is 1024x768, and a login-time "App Background Activity" banner
 takes presses in its top-right corner, so the check first places the window
 through Accessibility. The `macos-settings` step's title-strip drags do the
 same for the Settings window, which `hid-pointer place` reaches as the app's
-first Accessibility window while it is frontmost; a leftover Huterm app in
-front of it breaks that placement. The window server can drop part of an app-started
-synthetic drag, so assert direction and a lower bound, not the exact delta.
+first Accessibility window while it is frontmost. The window server can drop
+part of an app-started synthetic drag, so assert direction and a lower bound,
+not the exact delta.
 
 AppKit's mouseEventWithType constructor leaves buttonNumber at zero for Right
 events. Rebuild fixture Right events from their CGEvent with the button-number
