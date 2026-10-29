@@ -325,6 +325,27 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** rerun and record the run here. A hardening is to wait for
   `w0.dialog_focus=primary` before Enter, as the neighboring steps do.
 
+## `smoke:macos-settings` condition field loses focus after the rebind
+
+- **Label:** `Smoke macOS settings` in `Rust smoke (macOS arm64)`, in
+  `scripts/check-settings.ts` after `tabTo("key:when:")` in the rebind
+  flow: timed out waiting for `settings.list=key:when:` and
+  `settings.highlight="Terminal"`.
+- **Occurrences:** once, 2026-10-29, on PR #321 (run 40790568761, job
+  123174477208, head `8352a340`). The PR changed only the footer status;
+  its next head passed, and 3 of 3 host runs of that step passed.
+- **Evidence:** the last state had `settings.focus=action:kon:u2`,
+  `settings.list=none`, `settings.status="Saved"`, `settings.writing=false`,
+  and `settings.drafts` still holding `when:u2=Terminal (`, so the
+  select-all, Backspace, and typed text never reached the field. `tabTo`
+  had reached the condition field before focus moved to the replaced
+  default's switch on the same row. A reload that lands after the rebind
+  and draws the row again would fit, but the step's stdout was empty and
+  nothing recorded the focus history, so the cause is unconfirmed.
+- **Triage:** rerun and record the run here. If it recurs, record when
+  focus left the field relative to the rebind's reload and the watcher's
+  report.
+
 ## `smoke:macos-palette` stray DEL at an early step
 
 - **Label:** an early terminal-bytes check in `scripts/check-palette.ts`
