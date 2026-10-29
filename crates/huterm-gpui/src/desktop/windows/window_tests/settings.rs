@@ -157,6 +157,37 @@ fn a_change_and_a_reset_write_only_their_key_and_apply(
 }
 
 #[gpui::test]
+fn the_watchers_reload_of_another_editors_change_reports_itself_after_a_save(
+    cx: &mut TestAppContext,
+) {
+    let file =
+        ScratchConfig::new("own-save-then-edit", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_view(&mut harness, |view, cx| {
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+    });
+    harness
+        .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
+    harness.cx.run_until_parked();
+    // Another editor's change reaches a Settings read before the watcher's
+    // reload applies it.
+    std::fs::write(file.path(), "[font]\nsize = 17.0\n").unwrap();
+    with_view(&mut harness, SettingsView::reread);
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.status_text(), "Saved");
+    });
+    harness.cx.update(|cx| {
+        super::handle_watch_report(cx, super::config_changed());
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.status_text(), "Reloaded");
+    });
+}
+
+#[gpui::test]
 fn the_windows_own_save_is_not_an_edit_made_elsewhere(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("own-save", "[font]\nsize = 13.0\n");
     let mut harness = DesktopHarness::with_config(cx, |config| {
@@ -710,6 +741,13 @@ fn a_reload_refused_outside_the_file_keeps_settings_editable(
     let file = ScratchConfig::new("not-applied", "[font]\nsize = 13.0\n");
     let mut harness = DesktopHarness::new(cx);
     open_settings(&mut harness, &file.path());
+    // A save first, so the file stays as this window last wrote it.
+    with_view(&mut harness, |view, cx| {
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+    });
+    harness
+        .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
+    harness.cx.run_until_parked();
     with_view(&mut harness, |view, cx| {
         view.follow_failed_reload("ctrl-` is held by another application", cx);
     });
@@ -729,6 +767,15 @@ fn a_reload_refused_outside_the_file_keeps_settings_editable(
             view.status_text(),
             "Not applied: ctrl-` is held by another application"
         );
+    });
+    // The shortcut is released, and the watcher's reload of the same file
+    // applies it.
+    harness.cx.update(|cx| {
+        super::handle_watch_report(cx, super::config_changed());
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.status_text(), "Reloaded");
     });
 }
 

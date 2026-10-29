@@ -120,13 +120,17 @@ pub(super) fn open(cx: &mut App) {
 }
 
 /// Tells the Settings window that a reload finished, so it rereads the
-/// file and reports the outcome.
-pub(super) fn reloaded(cx: &mut App, outcome: Result<(), String>) {
+/// file and reports the outcome. `automatic` says the watcher started it.
+pub(super) fn reloaded(
+    cx: &mut App,
+    outcome: Result<(), String>,
+    automatic: bool,
+) {
     let Some(handle) = cx.global::<Desktop>().settings else {
         return;
     };
     let _ = handle.update(cx, |view, _, cx| {
-        view.reloaded(outcome, cx);
+        view.reloaded(outcome, automatic, cx);
     });
 }
 
@@ -266,6 +270,11 @@ pub(super) struct SettingsView {
     /// The last reload's error when the file itself validates, so the
     /// footer can say the settings were not applied.
     reload_error: Option<String>,
+    /// An automatic reload applied the file, and the reread it started
+    /// decides whether to report it (`loaded`).
+    reload_unreported: bool,
+    /// The file as this window's latest successful write left it.
+    written: Option<String>,
     /// Close was asked for while writes were pending.
     closing: bool,
     handle: gpui::AnyWindowHandle,
@@ -398,6 +407,8 @@ impl SettingsView {
             reread: false,
             fresh: None,
             reload_error: None,
+            reload_unreported: false,
+            written: None,
             closing: false,
             handle: window.window_handle(),
             menu: None,
@@ -2503,7 +2514,7 @@ impl SettingsView {
         message: &str,
         cx: &mut Context<'_, Self>,
     ) {
-        self.reloaded(Err(message.to_owned()), cx);
+        self.reloaded(Err(message.to_owned()), false, cx);
     }
 
     pub(super) fn status_text(&self) -> String {
@@ -2581,9 +2592,15 @@ impl SettingsView {
         self.keep_file(setting.path.as_str(), cx);
     }
 
+    /// Rereads the file without a reload, as the reread after a save's
+    /// reload or after a refused write does.
+    pub(super) fn reread(&mut self, cx: &mut Context<'_, Self>) {
+        self.load(cx);
+    }
+
     /// Follows a reload that applied the file.
     pub(super) fn follow_reload(&mut self, cx: &mut Context<'_, Self>) {
-        self.reloaded(Ok(()), cx);
+        self.reloaded(Ok(()), false, cx);
     }
 
     /// Looks for an edit made elsewhere, as coming forward does.
