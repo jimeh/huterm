@@ -420,6 +420,43 @@ impl Tokens {
             .unwrap_or_else(|| self.on_all(&unders))
     }
 
+    /// A segmented control's selected segment, and an unselected one held
+    /// down, inset in its track of [`Self::chip`]: the background, lifted
+    /// by [`Self::segment_shadow`], on a light theme. On a dark one it is a
+    /// lighter step over the track, outlined by [`Self::line`]: the
+    /// foreground at up to the chip's opacity, as strong as body text on
+    /// it allows, else no fill, leaving the outline to mark it.
+    #[must_use]
+    pub fn segment(&self) -> Hsla {
+        if self.is_light() {
+            return self.bg;
+        }
+        let tracks = [over(self.chip, self.bg), over(self.chip, self.surface)];
+        let alphas: Vec<f32> = [0.1, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04, 0.03]
+            .into_iter()
+            .filter(|alpha| *alpha <= self.chip.a + f32::EPSILON)
+            .collect();
+        gentlest(self.fg, &[self.fg], &tracks, &alphas)
+    }
+
+    /// The shadow that lifts a selected segment off its track: faint and
+    /// close on a light theme, and none on a dark one, where a shadow would
+    /// not show against the track.
+    #[must_use]
+    pub fn segment_shadow(&self) -> Vec<BoxShadow> {
+        if !self.is_light() {
+            return Vec::new();
+        }
+        let shadow = |y, blur, spread, alpha| BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, alpha),
+            offset: point(px(0.0), px(y)),
+            blur_radius: px(blur),
+            spread_radius: px(spread),
+            inset: false,
+        };
+        vec![shadow(1.0, 3.0, 0.0, 0.1), shadow(1.0, 2.0, -1.0, 0.1)]
+    }
+
     /// The dimming layer beneath a modal surface.
     #[must_use]
     pub fn scrim(&self) -> Hsla {

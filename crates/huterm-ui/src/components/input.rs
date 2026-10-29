@@ -1047,7 +1047,7 @@ impl Render for Input {
                     })
                 })
                 .when(enabled, |field| {
-                    field.on_mouse_down(
+                    field.cursor(gpui::CursorStyle::IBeam).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|field, event: &MouseDownEvent, _, cx| {
                             field.press(event, cx);

@@ -197,6 +197,13 @@ mod contrast {
         // Key caps and tags on rows and buttons draw outlined, so no chip
         // stacks on a hover or pressed fill.
 
+        // A segmented control's segments sit in a track of the chip; the
+        // selected one, and an unselected one held down, on its segment
+        // fill.
+        let segments: Vec<Hsla> = chips
+            .iter()
+            .map(|track| over(t.segment(), *track))
+            .collect();
         let selection_pressed = over_each(t.selection_pressed(), &plain);
         let primary = [t.accent, t.shade(t.accent, 0.1), t.accent_pressed()];
         let destructive =
@@ -218,6 +225,7 @@ mod contrast {
         text("fg hovered", t.fg, &hovered);
         text("muted hovered", t.muted, &hovered);
         text("fg on chip hover", t.fg, &chip_hovered);
+        text("fg on segment", t.fg, &segments);
         text("fg pressed", t.fg, &pressed);
         text("muted pressed", t.muted, &pressed);
         text("fg on selection pressed", t.fg, &selection_pressed);

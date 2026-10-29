@@ -193,7 +193,8 @@ impl Control {
     }
 }
 
-/// Shows a setting only while another setting holds `equals`.
+/// One condition under which a setting shows: another setting holds
+/// `equals`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VisibleWhen {
     pub setting: String,
@@ -222,7 +223,9 @@ pub struct Setting {
     pub apply: Apply,
     pub platform: Option<Platform>,
     pub advanced: bool,
-    pub visible_when: Option<VisibleWhen>,
+    /// The setting shows while any of these holds, and always when there
+    /// are none.
+    pub visible_when: Vec<VisibleWhen>,
     pub deprecated: bool,
 }
 
@@ -479,10 +482,15 @@ fn setting(
             return Err(error(path, "x-huterm-advanced must be a boolean"));
         }
     };
-    let visible_when = property
-        .get("x-huterm-visible-when")
-        .map(|condition| visible_when(path, condition))
-        .transpose()?;
+    let visible_when = match property.get("x-huterm-visible-when") {
+        None => Vec::new(),
+        // A list shows the setting while any of its conditions holds.
+        Some(Value::Array(conditions)) if !conditions.is_empty() => conditions
+            .iter()
+            .map(|condition| visible_when(path, condition))
+            .collect::<Result<_, _>>()?,
+        Some(condition) => vec![visible_when(path, condition)?],
+    };
     let field = |key: &str| property.get(key).or_else(|| target.get(key));
     let kind = kind(path, property, target)?;
     let step = step(path, property, &kind)?;
@@ -591,7 +599,7 @@ fn visible_when(
     let malformed = || {
         error(
             path,
-            "x-huterm-visible-when must be {\"setting\": <path>, \"equals\": <value>}",
+            "x-huterm-visible-when must be {\"setting\": <path>, \"equals\": <value>}, or a list of them",
         )
     };
     let fields = condition.as_object().ok_or_else(malformed)?;
@@ -757,10 +765,12 @@ fn check(settings: &[Setting]) -> Result<(), ModelError> {
             ));
         }
     }
-    for setting in settings {
-        let Some(condition) = &setting.visible_when else {
-            continue;
-        };
+    for (setting, condition) in settings.iter().flat_map(|setting| {
+        setting
+            .visible_when
+            .iter()
+            .map(move |condition| (setting, condition))
+    }) {
         let target = settings
             .iter()
             .find(|other| other.path == condition.setting)
@@ -845,10 +855,10 @@ mod tests {
         assert_eq!(model.setting("tabs.position").unwrap().default, None);
         assert_eq!(
             model.setting("tabs.pill_accent").unwrap().visible_when,
-            Some(VisibleWhen {
+            vec![VisibleWhen {
                 setting: "tabs.style".into(),
                 equals: toml::Value::String("pill".into()),
-            })
+            }]
         );
         assert_eq!(
             model.setting("terminal.bell.visual").unwrap().kind,
@@ -923,7 +933,7 @@ mod tests {
             assert_eq!(setting.section, SectionId::Quake);
             assert_eq!(setting.apply, Apply::LaterEvents);
         }
-        let width = &model.profile_settings()[1];
+        let width = &model.profile_settings()[2];
         assert_eq!(width.path, "width");
         // Each profile's copy carries the template's slider.
         assert_eq!(
@@ -932,10 +942,26 @@ mod tests {
         );
         assert_eq!(
             width.visible_when,
-            Some(VisibleWhen {
+            vec![VisibleWhen {
                 setting: "fullscreen".into(),
                 equals: toml::Value::Boolean(false),
-            })
+            }]
+        );
+        // A fullscreen window still slides from its position's edge.
+        let position = &model.profile_settings()[1];
+        assert_eq!(position.path, "position");
+        assert_eq!(
+            position.visible_when,
+            vec![
+                VisibleWhen {
+                    setting: "fullscreen".into(),
+                    equals: toml::Value::Boolean(false),
+                },
+                VisibleWhen {
+                    setting: "animation".into(),
+                    equals: toml::Value::String("slide".into()),
+                },
+            ]
         );
         assert_eq!(
             width.kind,

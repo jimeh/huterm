@@ -1312,13 +1312,13 @@
   {
     "name": "global disabled",
     "toml": "[[global_keybinding]]\nkey = \"ctrl-shift-f12\"\ncommand = \"toggle_quake\"\ndisabled = true",
-    "valid": false,
+    "valid": true,
     "theme": false
   },
   {
     "name": "global disabled false",
     "toml": "[[global_keybinding]]\nkey = \"ctrl-shift-f12\"\ncommand = \"toggle_quake\"\ndisabled = false",
-    "valid": false,
+    "valid": true,
     "theme": false
   }
 ]

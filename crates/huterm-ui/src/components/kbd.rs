@@ -31,7 +31,9 @@ pub enum Glyph {
     },
 }
 
-/// `glyphs` as a row in `color`, icons at `size`, without a chip.
+/// `glyphs` as a row in `color`, icons at `size`, without a chip. Callers
+/// draw text at about the icon size, so text glyphs lift by [`lift`] to sit
+/// centered on the icons.
 #[must_use]
 pub fn glyphs(glyphs: &[Glyph], size: Pixels, color: Hsla) -> Div {
     let mut row = div()
@@ -49,10 +51,31 @@ pub fn glyphs(glyphs: &[Glyph], size: Pixels, color: Hsla) -> Div {
                     .flex_none()
                     .text_color(color),
             ),
-            Glyph::Text(text) => row.child(text.clone()),
+            Glyph::Text(text) => row.child(
+                div().relative().top(-lift(text, size)).child(text.clone()),
+            ),
         };
     }
     row
+}
+
+/// How far to lift `text` beside icons `size` high so it looks centered
+/// on them. A line centers on its font's ascent and descent, and UI fonts
+/// ascend further than they descend, so capitals and digits sit below the
+/// icons' center: by 0.29pt for the macOS system font at 11.5pt, whose
+/// ascent, descent, and cap height are 0.967, 0.211, and 0.705 em. A lone
+/// bracket, brace, parenthesis, bar, or slash also hangs below the baseline,
+/// so it lifts by the center of its whole height instead, 1.13pt there.
+fn lift(text: &str, size: Pixels) -> Pixels {
+    let mut chars = text.chars();
+    let hangs = matches!(
+        (chars.next(), chars.next()),
+        (
+            Some('[' | ']' | '{' | '}' | '(' | ')' | '|' | '/' | '\\'),
+            None
+        )
+    );
+    size * if hangs { 0.1 } else { 0.026 }
 }
 
 /// The shortcut as plain text, icons replaced by the text they stand for.

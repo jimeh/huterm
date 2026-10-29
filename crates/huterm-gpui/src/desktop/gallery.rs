@@ -34,7 +34,7 @@ use huterm_ui::components::key_recorder::{
     KeyRecorder, KeyRecorderButton, KeyRecorderEvent,
 };
 use huterm_ui::components::menu::{
-    MIN_WIDTH, Menu, MenuEvent, Role as MenuRole,
+    MIN_WIDTH, Menu, MenuEvent, Role as MenuRole, select_width,
 };
 use huterm_ui::components::number_field::{Format, NumberField};
 use huterm_ui::components::popover::{Anchor, Popover, place};
@@ -1482,6 +1482,7 @@ impl Gallery {
         let menu = cx.new(|cx| {
             Menu::new("Density", Model::new(rows), swatch, true, cx)
                 .with_role(MenuRole::ListBox)
+                .with_min_width(px(0.0))
         });
         if let Some(value) = column.select {
             menu.update(cx, |menu, cx| menu.select_item(value, cx));
@@ -1567,7 +1568,12 @@ impl Gallery {
                 (column.select_popover.anchor(), column.select_menu.clone())
             {
                 let width = match anchor {
-                    Anchor::Trigger(bounds) => bounds.size.width.max(MIN_WIDTH),
+                    Anchor::Trigger(bounds) => select_width(
+                        bounds.size.width,
+                        menu.read(cx).model(),
+                        viewport.width,
+                        window,
+                    ),
                     Anchor::Pointer(_) => MIN_WIDTH,
                 };
                 let height = Menu::content_height(menu.read(cx).model());

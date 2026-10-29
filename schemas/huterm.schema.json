@@ -154,6 +154,10 @@
               "pattern": "\\S",
               "type": "string"
             },
+            "disabled": {
+              "description": "true keeps the shortcut in the file without registering it.",
+              "type": "boolean"
+            },
             "key": {
               "description": "One global keystroke in GPUI syntax. Native key support, duplicate grabs, local conflicts, and OS registration are checked at runtime.",
               "pattern": "^\\S+$",
@@ -200,6 +204,10 @@
               "description": {
                 "pattern": "\\S",
                 "type": "string"
+              },
+              "disabled": {
+                "description": "true keeps the shortcut in the file without registering it.",
+                "type": "boolean"
               },
               "key": {
                 "description": "One global keystroke in GPUI syntax. Native key support, duplicate grabs, local conflicts, and OS registration are checked at runtime.",
@@ -249,6 +257,10 @@
                 "pattern": "\\S",
                 "type": "string"
               },
+              "disabled": {
+                "description": "true keeps the shortcut in the file without registering it.",
+                "type": "boolean"
+              },
               "key": {
                 "description": "One global keystroke in GPUI syntax. Native key support, duplicate grabs, local conflicts, and OS registration are checked at runtime.",
                 "pattern": "^\\S+$",
@@ -296,6 +308,10 @@
               "description": {
                 "pattern": "\\S",
                 "type": "string"
+              },
+              "disabled": {
+                "description": "true keeps the shortcut in the file without registering it.",
+                "type": "boolean"
               },
               "key": {
                 "description": "One global keystroke in GPUI syntax. Native key support, duplicate grabs, local conflicts, and OS registration are checked at runtime.",
@@ -660,7 +676,7 @@
           "x-huterm-apply": "later_events",
           "x-huterm-group": "Profile",
           "x-huterm-label": "Fullscreen",
-          "x-huterm-order": 40,
+          "x-huterm-order": 10,
           "x-huterm-section": "quake"
         },
         "height": {
@@ -674,7 +690,7 @@
           "x-huterm-control": "slider",
           "x-huterm-group": "Profile",
           "x-huterm-label": "Height",
-          "x-huterm-order": 30,
+          "x-huterm-order": 40,
           "x-huterm-section": "quake",
           "x-huterm-step": 0.05,
           "x-huterm-visible-when": {
@@ -699,12 +715,22 @@
             }
           ],
           "default": "top",
-          "description": "The display edge the window sits against. Center centers it on both\naxes.",
+          "description": "The display edge the window sits against. Center centers it on both\naxes. A fullscreen window uses it only as the edge Slide animates\nfrom.",
           "x-huterm-apply": "later_events",
           "x-huterm-group": "Profile",
           "x-huterm-label": "Position",
-          "x-huterm-order": 10,
-          "x-huterm-section": "quake"
+          "x-huterm-order": 20,
+          "x-huterm-section": "quake",
+          "x-huterm-visible-when": [
+            {
+              "equals": false,
+              "setting": "fullscreen"
+            },
+            {
+              "equals": "slide",
+              "setting": "animation"
+            }
+          ]
         },
         "width": {
           "default": 1.0,
@@ -717,7 +743,7 @@
           "x-huterm-control": "slider",
           "x-huterm-group": "Profile",
           "x-huterm-label": "Width",
-          "x-huterm-order": 20,
+          "x-huterm-order": 30,
           "x-huterm-section": "quake",
           "x-huterm-step": 0.05,
           "x-huterm-visible-when": {

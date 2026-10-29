@@ -2098,6 +2098,9 @@ impl SettingsView {
             swatch,
         )
         .item(item)
+        // The summary is content, so the trigger spans it: the whole row
+        // hovers and toggles.
+        .actions_in_trigger()
         .corners(corners)
         .key_context("SettingsControl")
         .on_toggle(Self::listen(cx, move |view, _, window, cx| {
@@ -2126,6 +2129,7 @@ impl SettingsView {
             .flex_col()
             .gap(px(6.0))
             .px(px(14.0))
+            .pt(px(8.0))
             .pb(px(12.0))
             .pl(px(24.0));
         for (name, binding) in listed {
@@ -2666,6 +2670,9 @@ fn cap(key: &str, origin: Origin, swatch: Swatch) -> gpui::Div {
         } else {
             swatch.line_strong
         })
+        // Letters and digits sized to the icons beside them, as menus
+        // size their shortcuts; inherited text would dwarf the icons.
+        .text_size(px(11.5))
         .child(
             KeyHint::parse(key, Platform::current())
                 .element(px(11.0), swatch.fg),

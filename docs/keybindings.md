@@ -110,7 +110,8 @@ its arguments are still checked, so a typo fails like any other bad entry. A
 disabled entry that matches nothing does nothing, so one file can disable a
 macOS default and still load on Linux. Like every entry, it affects only
 entries before it: a later entry can bind the key again, and a later `unbind`
-still removes what remains. Global shortcuts reject `disabled`.
+still removes what remains. On a global shortcut, `disabled = true` keeps the
+entry in the file without registering it.
 
 The platform defaults apply first, then user entries in file order. A later
 entry wins over an earlier one with the same key and `when`. Two user entries

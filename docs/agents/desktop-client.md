@@ -907,23 +907,23 @@ section are `Item`s, as are the `unbind` rows, whose key caps draw through
 `Item::title_element` while the key's text names the row; a command search
 result is a link `Item` (`Item::link`) on its `kgo:` action stop, so it is
 one focusable, named `Link` that `settings_toggle` and a click run; a
-command row is a
-`Collapsible::item` whose shortcut summary is the item's action, outside the
-trigger; groups of rows are titled `Card`s (`group_card`, which uppercases
-the title); the invalid-file banner is a danger `Alert`; and an empty global
-shortcut list is an `Empty`. `render` notes a focus that moved since the last
-frame and defers `reveal_focused`, which scrolls the pane only when the ring
-shows (`focus::visible`, so a pointer press scrolls nothing), the ring
-painted inside the pane's columns, and no dialog or menu is open. A row whose
-label sits apart from its controls, such as a user layout's name above its
-template, Rename, and Delete, draws `reveal_group` over itself with their
-handles, and the reveal shows the row with the ring. Smoke state reports
+command row is a `Collapsible::item` whose shortcut summary is the item's
+action, drawn inside the trigger (`actions_in_trigger`) so the whole row
+hovers and toggles; groups of rows are titled `Card`s (`group_card`, which
+uppercases the title); the invalid-file banner is a danger `Alert`; and an
+empty global shortcut list is an `Empty`. `render` notes a focus that moved
+since the last frame and defers `reveal_focused`, which scrolls the pane only
+when the ring shows (`focus::visible`, so a pointer press scrolls nothing),
+the ring painted inside the pane's columns, and no dialog or menu is open. A
+row whose label sits apart from its controls, such as a user layout's name
+above its template, Rename, and Delete, draws `reveal_group` over itself with
+their handles, and the reveal shows the row with the ring. Smoke state reports
 `settings.scroll` and `settings.in_view` for it. The pane is a
 `ScrollArea::fill` under a fixed header that names the section, or "Search
-results"; the view owns its `ListScrollbar`, advances it in `animate_lists`
-on the suggestion lists' wake, and shows it when a reveal scrolls. Its
-viewport starts under the header, so reveals and `settings.in_view` never
-count a control hidden behind the header as shown.
+results"; the view owns its `ListScrollbar`, advances it in `animate_lists` on
+the suggestion lists' wake, and shows it when a reveal scrolls. Its viewport
+starts under the header, so reveals and `settings.in_view` never count a
+control hidden behind the header as shown.
 
 The terminal window has one dialog slot too, `WorkspaceView::dialog`. The
 top dialog draws in it: the close confirmation, else Licenses, else About.

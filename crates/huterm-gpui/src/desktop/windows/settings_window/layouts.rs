@@ -157,7 +157,7 @@ pub(super) fn template_setting(
         unit: None,
         step: None,
         control: None,
-        visible_when: None,
+        visible_when: Vec::new(),
         ..table.clone()
     };
     let setting: &'static Setting = Box::leak(Box::new(setting));

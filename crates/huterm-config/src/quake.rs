@@ -51,15 +51,20 @@ impl Config {
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
     /// The display edge the window sits against. Center centers it on both
-    /// axes.
+    /// axes. A fullscreen window uses it only as the edge Slide animates
+    /// from.
     #[cfg_attr(
         feature = "schema",
         schemars(extend(
             "x-huterm-section" = "quake",
             "x-huterm-group" = "Profile",
             "x-huterm-label" = "Position",
-            "x-huterm-order" = 10,
-            "x-huterm-apply" = "later_events"
+            "x-huterm-order" = 20,
+            "x-huterm-apply" = "later_events",
+            "x-huterm-visible-when" = [
+                {"setting": "fullscreen", "equals": false},
+                {"setting": "animation", "equals": "slide"}
+            ]
         ))
     )]
     pub position: Position,
@@ -93,7 +98,7 @@ pub struct Profile {
             "x-huterm-section" = "quake",
             "x-huterm-group" = "Profile",
             "x-huterm-label" = "Width",
-            "x-huterm-order" = 20,
+            "x-huterm-order" = 30,
             "x-huterm-apply" = "later_events",
             "x-huterm-step" = 0.05,
             "x-huterm-control" = "slider",
@@ -113,7 +118,7 @@ pub struct Profile {
             "x-huterm-section" = "quake",
             "x-huterm-group" = "Profile",
             "x-huterm-label" = "Height",
-            "x-huterm-order" = 30,
+            "x-huterm-order" = 40,
             "x-huterm-apply" = "later_events",
             "x-huterm-step" = 0.05,
             "x-huterm-control" = "slider",
@@ -128,7 +133,7 @@ pub struct Profile {
             "x-huterm-section" = "quake",
             "x-huterm-group" = "Profile",
             "x-huterm-label" = "Fullscreen",
-            "x-huterm-order" = 40,
+            "x-huterm-order" = 10,
             "x-huterm-apply" = "later_events"
         ))
     )]

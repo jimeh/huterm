@@ -15,7 +15,8 @@
 //! [`crate::components::collapsible::Collapsible`] (through its `item`):
 //! the collapsible's trigger covers the media, title, and description, and
 //! the actions sit beside the trigger, outside it, so a press on an action
-//! never toggles the row.
+//! never toggles the row. Actions that are content, such as key caps, may
+//! draw inside the trigger instead, which then spans the row.
 //!
 //! An item that leads somewhere, such as a search result, is one link, as
 //! shadcn/ui renders an Item as an anchor ([`Item::link`]). It takes focus,

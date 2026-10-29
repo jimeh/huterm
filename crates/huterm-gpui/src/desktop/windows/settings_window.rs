@@ -42,7 +42,7 @@ use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::components::menu::{
-    MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole,
+    MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole, select_width,
 };
 use huterm_ui::components::number_field::{
     self, Format as NumberFormat, NumberField,
@@ -996,12 +996,13 @@ impl SettingsView {
         {
             return false;
         }
-        setting.visible_when.as_ref().is_none_or(|condition| {
-            self.setting_at(&condition.setting).is_some_and(|other| {
-                shown(other, &self.file, &self.defaults).as_ref()
-                    == Some(&condition.equals)
+        setting.visible_when.is_empty()
+            || setting.visible_when.iter().any(|condition| {
+                self.setting_at(&condition.setting).is_some_and(|other| {
+                    shown(other, &self.file, &self.defaults).as_ref()
+                        == Some(&condition.equals)
+                })
             })
-        })
     }
 
     fn matches(setting: &Setting, query: &str) -> bool {
@@ -1351,6 +1352,8 @@ impl SettingsView {
         let menu = cx.new(|cx| {
             MenuView::new(label, model, swatch, true, cx)
                 .with_role(MenuRole::ListBox)
+                // `render_popover` sizes it to its trigger and rows.
+                .with_min_width(px(0.0))
         });
         // The menu opens on the value its control shows, so Return keeps it.
         if let Some(current) = self.menu_current(&target) {
@@ -1430,7 +1433,7 @@ impl SettingsView {
     }
 
     /// The open menu, placed against its trigger with room to scroll, at
-    /// least as wide as the trigger.
+    /// least as wide as the trigger and wider where its rows need it.
     fn render_popover(
         &mut self,
         window: &mut Window,
@@ -1449,7 +1452,12 @@ impl SettingsView {
             cx.defer_in(window, Self::close_menu);
         }
         let width = match anchor {
-            Anchor::Trigger(bounds) => bounds.size.width.max(MIN_WIDTH),
+            Anchor::Trigger(bounds) => select_width(
+                bounds.size.width,
+                menu.read(cx).model(),
+                viewport.width,
+                window,
+            ),
             Anchor::Pointer(_) => MIN_WIDTH,
         };
         let height = MenuView::content_height(menu.read(cx).model());
