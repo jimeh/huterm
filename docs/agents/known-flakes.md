@@ -331,9 +331,13 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   `scripts/check-settings.ts` after `tabTo("key:when:")` in the rebind
   flow: timed out waiting for `settings.list=key:when:` and
   `settings.highlight="Terminal"`.
-- **Occurrences:** once, 2026-10-29, on PR #321 (run 40790568761, job
-  123174477208, head `8352a340`). The PR changed only the footer status;
-  its next head passed, and 3 of 3 host runs of that step passed.
+- **Occurrences:** 2026-10-29 on PR #321 (run 40790568761, job
+  123174477208, head `8352a340`), which changed only the footer status,
+  and again that day on PR #322 (run 40802436265, job 123213458734, head
+  `e6ea878e`), which does not touch the Settings window. Both stopped at the
+  same step with focus on `action:kon:u2`. #321's next head passed, and
+  host runs of that step passed every time: 3 of 3 for #321 and 2 of 2 for
+  #322.
 - **Evidence:** the last state had `settings.focus=action:kon:u2`,
   `settings.list=none`, `settings.status="Saved"`, `settings.writing=false`,
   and `settings.drafts` still holding `when:u2=Terminal (`, so the
