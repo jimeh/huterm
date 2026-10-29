@@ -4797,6 +4797,64 @@ fn the_palette_and_licenses_lists_report_a_named_list_and_their_field(
 }
 
 #[gpui::test]
+fn a_licenses_filter_scrolls_back_to_the_selected_component(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    harness.cx.run_until_parked();
+    let scroll = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, cx| {
+            view.licenses.as_ref().unwrap().read(cx).list_scroll(cx)
+        })
+    };
+    let (_, first) = scroll(&mut harness);
+    let first = first.expect("a listed component");
+    let center = harness.update_view(window, |view, _, cx| {
+        view.licenses.as_ref().unwrap().read(cx).row_center(0, cx)
+    });
+    // The wheel scrolls what the pointer is over, as of a frame drawn after
+    // the pointer arrived.
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_move(center, None, Modifiers::none());
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    visual.simulate_event(ScrollWheelEvent {
+        position: center,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-300.0))),
+        modifiers: Modifiers::none(),
+        touch_phase: TouchPhase::Moved,
+    });
+    harness.cx.run_until_parked();
+    assert!(
+        scroll(&mut harness).0 > px(0.0),
+        "the wheel scrolled nothing"
+    );
+    // The list keeps the catalog's order, so a filter the first component
+    // matches keeps it selected on the first row.
+    let query = first.chars().next().unwrap().to_string();
+    harness.update_view(window, |view, _, cx| {
+        view.licenses.as_ref().unwrap().update(cx, |licenses, cx| {
+            licenses.set_search(&query, cx);
+        });
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(scroll(&mut harness), (px(0.0), Some(first)));
+}
+
+#[gpui::test]
 fn a_licenses_row_shows_its_component_on_a_click_not_a_hover(
     cx: &mut TestAppContext,
 ) {

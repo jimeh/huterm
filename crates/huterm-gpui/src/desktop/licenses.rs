@@ -376,7 +376,7 @@ impl LicensesView {
     }
 
     /// Recomputes the matches, keeping the selected component when it still
-    /// matches and otherwise selecting the first.
+    /// matches and otherwise selecting the first, in view.
     fn refilter(&mut self, cx: &mut Context<'_, Self>) {
         let options = self.catalog().map_or_else(Vec::new, |catalog| {
             catalog
@@ -400,6 +400,7 @@ impl LicensesView {
         self.list.update(cx, |list, cx| {
             list.set_empty(empty, cx);
             list.set_options(options, cx);
+            list.reveal_highlight(cx);
         });
         self.copied = None;
         cx.notify();
@@ -1179,6 +1180,17 @@ impl LicensesView {
     /// The search field.
     pub(super) fn search(&self) -> Entity<Input> {
         self.input.clone()
+    }
+
+    /// The component list's scroll offset from its top, and its first row's
+    /// label.
+    pub(super) fn list_scroll(
+        &self,
+        cx: &App,
+    ) -> (Pixels, Option<SharedString>) {
+        let list = self.list.read(cx);
+        let first = list.options().first().map(|option| option.label.clone());
+        (list.scroll_position().0, first)
     }
 
     /// The center of the component list's row at `row`, as last laid out.

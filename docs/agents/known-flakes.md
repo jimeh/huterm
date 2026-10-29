@@ -363,6 +363,28 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** keep the failing step, its expected and received bytes, and a
   list of what else was running on the host; record them here, then rerun.
 
+## Linux palette smoke wheel does not scroll the results
+
+- **Label:** `Smoke Linux command palette` in `Rust smoke (Linux aarch64)`,
+  at the wheel step of `scripts/check-palette.ts`: timed out waiting for
+  `palette wheel scroll` after `xdotool click 5`.
+- **Occurrences:** once, 2026-10-29, on PR #322 (run 40799335675, job
+  123203389902, head `0f2298e4`), the PR that moved the palette's results
+  onto `huterm-ui`'s `Command`. The x86_64 job passed the same step, and
+  both Linux jobs passed it on the next head, `11797d9e`, which did not
+  change the wheel path.
+- **Evidence:** the last state had `results=82`, `highlighted_row=Some(0)`,
+  `hover=Some(0)`, `wheel_events=1`, and `scroll_offset=0.0`: the wheel
+  reached the palette, and the pointer was over the first row, but the
+  list did not scroll. GPUI scrolls the element whose hitbox was under the
+  pointer in the last drawn frame, and `Command`'s rows record hover
+  without asking for a frame, so a wheel that arrives before a frame drawn
+  with the pointer there may miss the list. The palette's own list before
+  #322 redrew on hover. This is unconfirmed.
+- **Triage:** rerun and record the run here. If it recurs, have the smoke
+  wait for a frame drawn after `movePointerToRow` before the wheel, or make
+  a hover change in `option_list` request a frame.
+
 ## Linux palette smoke extra core tab
 
 - **Label:** `Smoke Linux command palette` in `Rust smoke (Linux x86_64)`,
