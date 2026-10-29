@@ -3512,6 +3512,24 @@ impl refresh::Animated for MenuView {
     }
 }
 
+/// The palette's and the Licenses view's lists fade their scroll
+/// indicators on the window's frame clock too.
+impl refresh::Animated for huterm_ui::components::command::Command {
+    fn animation_schedule(&self, now: Instant) -> AnimationSchedule {
+        self.schedule(now)
+    }
+
+    fn advance_animation(
+        &mut self,
+        now: Instant,
+        _frame: bool,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.advance(now, cx);
+    }
+}
+
 /// The dialog the window's dialog slot shows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ShownDialog {
@@ -7089,11 +7107,9 @@ impl WorkspaceView {
             retained_query,
             hierarchy,
             hierarchy_seq,
+            clock: Rc::clone(&self.frame_clock),
         };
-        let palette = cx.new(|cx| {
-            self.frame_clock.observe(cx);
-            CommandPalette::open(open, cx)
-        });
+        let palette = cx.new(|cx| CommandPalette::open(open, cx));
         cx.subscribe_in(&palette, window, Self::handle_palette_event)
             .detach();
         self.palette = Some(palette.clone());
@@ -8525,7 +8541,15 @@ impl WorkspaceView {
         let modal = self.dialog.clone();
         let licenses = cx.new(|cx| {
             self.frame_clock.observe(cx);
-            LicensesView::new(modal, colors, hints, load, window, cx)
+            LicensesView::new(
+                modal,
+                colors,
+                hints,
+                &self.frame_clock,
+                load,
+                window,
+                cx,
+            )
         });
         cx.subscribe_in(
             &licenses,
@@ -12801,7 +12825,7 @@ impl WorkspaceView {
             .and_then(|view| view.read(cx).focus(window, cx))
             .map_or("none", LicensesFocus::name);
         let (licenses, licenses_selected) =
-            match self.licenses.as_ref().map(|view| view.read(cx).state()) {
+            match self.licenses.as_ref().map(|view| view.read(cx).state(cx)) {
                 None => ("closed".to_owned(), None),
                 Some(LicensesState::Loading) => ("loading".to_owned(), None),
                 Some(LicensesState::Unavailable) => {

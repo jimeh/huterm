@@ -268,6 +268,16 @@ impl Probe {
         })
     }
 
+    fn hovered(&self, cx: &mut VisualTestContext) -> Option<String> {
+        let command = self.command(cx);
+        cx.read(|cx| {
+            command
+                .read(cx)
+                .hovered()
+                .map(|option| option.label.to_string())
+        })
+    }
+
     fn text(&self, cx: &mut VisualTestContext) -> String {
         cx.update(|_, cx| self.owner.read(cx).input.read(cx).text().to_owned())
     }
@@ -453,6 +463,40 @@ fn a_list_showing_details_keeps_its_highlight_under_the_pointer(
     hover_fourth(cx);
     assert_eq!(probe.highlighted(cx).as_deref(), Some("Menlo"));
     assert_eq!(probe.taken(cx), Vec::<CommandEvent>::new());
+}
+
+#[gpui::test]
+fn the_item_under_the_pointer_is_reported_until_it_leaves_the_items(
+    cx: &mut TestAppContext,
+) {
+    for pointer_highlights in [true, false] {
+        let (probe, cx) = setup(
+            cx,
+            Setup {
+                pointer_highlights,
+                ..Setup::default()
+            },
+        );
+        assert_eq!(probe.hovered(cx), None);
+        hover_fourth(cx);
+        assert_eq!(
+            probe.hovered(cx).as_deref(),
+            Some("Fira Code"),
+            "pointer highlights: {pointer_highlights}"
+        );
+        // Over the search field, above the items.
+        cx.simulate_mouse_move(
+            point(px(40.0), px(12.0)),
+            None,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+        assert_eq!(
+            probe.hovered(cx),
+            None,
+            "pointer highlights: {pointer_highlights}"
+        );
+    }
 }
 
 #[gpui::test]

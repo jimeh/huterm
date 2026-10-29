@@ -32,7 +32,9 @@
 //! that off with [`Command::with_pointer_highlight`] for a list whose
 //! highlight shows details, where rows only show a hover fill; a click
 //! highlights the item and reports it picked. A press on an item keeps
-//! focus in the search.
+//! focus in the search. In either mode, [`Command::hovered`] is the item
+//! under the pointer until the pointer leaves the items, for an owner that
+//! reports it.
 //!
 //! Events: [`CommandEvent::Highlighted`] whenever another item becomes
 //! highlighted, from any cause, and [`CommandEvent::Picked`] for Confirm or
@@ -40,7 +42,9 @@
 //! nothing and returns `false`.
 //!
 //! States: none of its own. A search field that is disabled takes no focus,
-//! so the owner's commands for it do not arrive.
+//! so the owner's commands for it do not arrive. An owner that reports the
+//! list's scrolling, as in smoke state, reads [`Command::scroll_position`]
+//! and [`Command::scrollbar`].
 //!
 //! Accessibility: the search field is an `EditableComboBox` whose list
 //! shows while it has items, with the highlighted item as its description;
@@ -56,13 +60,14 @@
 use std::time::Instant;
 
 use gpui::{
-    Context, ElementId, Entity, EventEmitter, Pixels, Render, SharedString,
-    Window, div, prelude::*,
+    Bounds, Context, ElementId, Entity, EventEmitter, Pixels, Render,
+    SharedString, Window, div, prelude::*,
 };
 
 use crate::animation::AnimationSchedule;
 use crate::components::empty::Empty;
 use crate::components::input::{Input, ListState};
+use crate::list_scrollbar::ListScrollbar;
 use crate::listbox::ItemId;
 use crate::option_list::{ListOption, Move, OptionList, Owner, RowContent};
 use crate::tokens::Tokens;
@@ -188,6 +193,13 @@ impl Command {
         self.list.highlighted()
     }
 
+    /// The item under the pointer, whether or not the pointer highlights;
+    /// `None` once the pointer leaves the items or the item leaves the list.
+    #[must_use]
+    pub fn hovered(&self) -> Option<&ListOption> {
+        self.list.hovered()
+    }
+
     /// Recolors the list, as after a theme change; unchanged tokens are
     /// ignored, so an owner may call this on every render.
     pub fn set_tokens(&mut self, tokens: Tokens, cx: &mut Context<'_, Self>) {
@@ -293,6 +305,21 @@ impl Command {
         };
         cx.emit(CommandEvent::Picked(id));
         true
+    }
+
+    /// How far the items are scrolled from the top, and the list's bounds
+    /// as last laid out, for an owner that reports them, such as in smoke
+    /// state.
+    #[must_use]
+    pub fn scroll_position(&self) -> (Pixels, Bounds<Pixels>) {
+        let scroll = self.list.scroll();
+        (-scroll.offset().y, scroll.bounds())
+    }
+
+    /// The list's scroll indicator, for an owner that reports its state.
+    #[must_use]
+    pub fn scrollbar(&self) -> &ListScrollbar {
+        self.list.scrollbar()
     }
 
     /// When the scroll indicator next needs a frame or a wake.

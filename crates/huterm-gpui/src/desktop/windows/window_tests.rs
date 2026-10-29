@@ -4471,7 +4471,7 @@ fn licenses_state(
             let view = view.read(cx);
             view.licenses
                 .as_ref()
-                .map(|licenses| licenses.read(cx).state())
+                .map(|licenses| licenses.read(cx).state(cx))
         })
         .ok()
         .flatten()
@@ -4722,6 +4722,54 @@ fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
     harness.press(window, "enter");
     assert!(harness.cx.update(|cx| licenses_state(cx, window)).is_some());
+}
+
+#[gpui::test]
+fn a_licenses_row_shows_its_component_on_a_click_not_a_hover(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.invoke(window, ids::ABOUT).unwrap();
+    harness.press(window, "tab enter");
+    harness.wait_for("the notices to load", |cx| {
+        matches!(
+            licenses_state(cx, window),
+            Some(LicensesState::Ready { .. })
+        )
+    });
+    for key in "ghostty".chars() {
+        harness.press(window, &key.to_string());
+    }
+    let selected = |harness: &mut DesktopHarness| match harness
+        .cx
+        .update(|cx| licenses_state(cx, window))
+    {
+        Some(LicensesState::Ready { selected, .. }) => selected,
+        state => panic!("the view is not ready: {state:?}"),
+    };
+    assert_eq!(selected(&mut harness).as_deref(), Some("Ghostty"));
+    harness.press(window, "tab tab tab");
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Done));
+    let second = harness.update_view(window, |view, _, cx| {
+        view.licenses.as_ref().unwrap().read(cx).row_center(1, cx)
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    // The highlight shows the details, so the pointer only hovers.
+    visual.simulate_mouse_move(second, None, gpui::Modifiers::none());
+    visual.run_until_parked();
+    assert_eq!(selected(&mut harness).as_deref(), Some("Ghostty"));
+    // A click selects and leaves keys in the search.
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_click(second, gpui::Modifiers::none());
+    assert_eq!(
+        selected(&mut harness).as_deref(),
+        Some("Ghostty sprite drawing")
+    );
+    assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
 }
 
 mod buttons;

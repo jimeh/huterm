@@ -4,9 +4,11 @@
 //!
 //! [`moved`] is the pure navigation. The crate's `OptionList` holds one
 //! list's state and draws it for the component that owns it, which decides
-//! what a hover and a pick do. Focus never enters the list: a press on an
-//! option prevents the default focus change, so the field that drives the
-//! list keeps focus and is not blurred.
+//! what a hover and a pick do. Whether or not a moving pointer highlights,
+//! the list tracks the option under the pointer until the pointer leaves
+//! the options, for an owner that reports it. Focus never enters the list:
+//! a press on an option prevents the default focus change, so the field
+//! that drives the list keeps focus and is not blurred.
 
 // User input picks positions here, so a stale index must not panic.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
@@ -163,6 +165,8 @@ pub(crate) struct OptionList {
     /// The laid-out height the highlight was last revealed in.
     viewport: Pixels,
     content: Option<RowContent>,
+    /// The option under the pointer, by id, so it follows the option.
+    hovered: Option<ItemId>,
 }
 
 impl OptionList {
@@ -177,6 +181,7 @@ impl OptionList {
             max_height: None,
             viewport: px(0.0),
             content: None,
+            hovered: None,
         }
     }
 
@@ -190,6 +195,22 @@ impl OptionList {
 
     pub(crate) fn highlighted(&self) -> Option<&ListOption> {
         self.options.get(self.highlight?)
+    }
+
+    /// The option under the pointer, if it is still listed.
+    pub(crate) fn hovered(&self) -> Option<&ListOption> {
+        let id = self.hovered.as_ref()?;
+        self.options.iter().find(|option| &option.id == id)
+    }
+
+    /// Records the pointer entering or leaving the option `id`. A leave
+    /// clears only that option, since the next one's enter may come first.
+    fn set_hovered(&mut self, id: &ItemId, hovering: bool) {
+        if hovering {
+            self.hovered = Some(id.clone());
+        } else if self.hovered.as_ref() == Some(id) {
+            self.hovered = None;
+        }
     }
 
     pub(crate) fn position(&self, id: &str) -> Option<usize> {
@@ -279,6 +300,10 @@ impl OptionList {
         let before = self.highlighted().map(|option| option.id.clone());
         let highlight = remap(&self.options, self.highlight, &options);
         self.options = options;
+        // An option that left the list is no longer under the pointer.
+        if self.hovered().is_none() {
+            self.hovered = None;
+        }
         if !self.set_highlight(highlight)
             && let Some(row) = self.highlight
         {
@@ -338,6 +363,14 @@ impl OptionList {
         };
         self.scroll
             .set_offset(Point::new(px(0.0), px(-shown.clamp(0.0, max))));
+    }
+
+    pub(crate) fn scroll(&self) -> &ScrollHandle {
+        &self.scroll
+    }
+
+    pub(crate) fn scrollbar(&self) -> &ListScrollbar {
+        &self.scrollbar
     }
 
     /// Shows the scroll indicator, as on opening.
@@ -486,7 +519,8 @@ fn option_row<V: Owner>(
     cx: &mut Context<'_, V>,
 ) -> AnyElement {
     let tokens = look.tokens;
-    let (hovered, picked) = (option.id.clone(), option.id.clone());
+    let (hovered, entered, picked) =
+        (option.id.clone(), option.id.clone(), option.id.clone());
     div()
         // Keyed by the option, so a press is not completed by whichever
         // option takes the row's place if the list changes before the
@@ -521,6 +555,9 @@ fn option_row<V: Owner>(
                 tokens.pressed()
             })
         })
+        .on_hover(cx.listener(move |owner, hovering: &bool, _, _| {
+            owner.option_list().set_hovered(&entered, *hovering);
+        }))
         // Only a moving pointer highlights: a list that opens or filters
         // under a resting pointer keeps its highlight.
         .when(look.pointer_highlights, |row| {
