@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.25.0](https://github.com/jimeh/huterm/compare/v0.24.0...v0.25.0) (2026-10-29)
+
+
+### Features
+
+* give Settings a full-height sidebar, a pinned section header, and a scrollbar ([#325](https://github.com/jimeh/huterm/issues/325)) ([9083875](https://github.com/jimeh/huterm/commit/908387512af76a4e99acdf3925769898f2f9d4b3))
+
+
+### Bug Fixes
+
+* apply the config when another app holds a global shortcut, and warn about that shortcut ([#324](https://github.com/jimeh/huterm/issues/324)) ([dda13ca](https://github.com/jimeh/huterm/commit/dda13ca6cce9bf0136eccace734b522e1b04cfc5))
+
 ## [0.24.0](https://github.com/jimeh/huterm/compare/v0.23.0...v0.24.0) (2026-10-29)
 
 
