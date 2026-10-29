@@ -741,6 +741,13 @@ fn a_reload_refused_outside_the_file_keeps_settings_editable(
     let file = ScratchConfig::new("not-applied", "[font]\nsize = 13.0\n");
     let mut harness = DesktopHarness::new(cx);
     open_settings(&mut harness, &file.path());
+    // A save first, so the file stays as this window last wrote it.
+    with_view(&mut harness, |view, cx| {
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+    });
+    harness
+        .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
+    harness.cx.run_until_parked();
     with_view(&mut harness, |view, cx| {
         view.follow_failed_reload("ctrl-` is held by another application", cx);
     });
