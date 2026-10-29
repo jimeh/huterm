@@ -536,10 +536,13 @@ IDs use CoreGraphics display UUIDs on macOS and RandR monitor names on X11.
 
 Global bindings use a single keystroke, no `when`, and only the three quake
 commands. They must not conflict with the first keystroke of a local binding.
-Huterm reports unsupported keys and conflicts with other applications' grabs;
-a rejected reload keeps the previous configuration and shortcuts. Global
-shortcuts work on macOS and native X11 sessions, but not on Wayland or
-XWayland.
+An unsupported key or an invalid binding is a configuration error, and a
+rejected reload keeps the previous configuration and shortcuts. A shortcut
+another application already holds is only a warning: the rest of the
+configuration applies, the other shortcuts register, and the next reload,
+including the one a save starts, tries it again. Global shortcuts work on macOS
+and native X11 sessions, but not on Wayland or XWayland, where configuring one
+warns the same way.
 
 ## Fonts and themes
 

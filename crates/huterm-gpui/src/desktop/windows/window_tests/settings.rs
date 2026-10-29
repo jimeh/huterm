@@ -749,7 +749,7 @@ fn a_reload_refused_outside_the_file_keeps_settings_editable(
         .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
     harness.cx.run_until_parked();
     with_view(&mut harness, |view, cx| {
-        view.follow_failed_reload("ctrl-` is held by another application", cx);
+        view.follow_failed_reload("font \"Nope\" is not installed", cx);
     });
     // The reload's read decides whether the file is to blame.
     harness.wait_for("the reload's read", |cx| {
@@ -765,10 +765,10 @@ fn a_reload_refused_outside_the_file_keeps_settings_editable(
         assert!(!view.read_only());
         assert_eq!(
             view.status_text(),
-            "Not applied: ctrl-` is held by another application"
+            "Not applied: font \"Nope\" is not installed"
         );
     });
-    // The shortcut is released, and the watcher's reload of the same file
+    // The font is installed, and the watcher's reload of the same file
     // applies it.
     harness.cx.update(|cx| {
         super::handle_watch_report(cx, super::config_changed());
@@ -776,6 +776,39 @@ fn a_reload_refused_outside_the_file_keeps_settings_editable(
     harness.cx.run_until_parked();
     with_view(&mut harness, |view, _| {
         assert_eq!(view.status_text(), "Reloaded");
+    });
+}
+
+#[gpui::test]
+fn a_refused_global_shortcut_warns_in_place_of_the_saves_report(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("applied-warning", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_view(&mut harness, |view, cx| {
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+    });
+    harness
+        .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
+    harness.cx.run_until_parked();
+    let warning = "cannot register cmd-shift-space: already in use by \
+                   another application";
+    with_view(&mut harness, |view, cx| {
+        view.follow_reload_with_warning(warning, cx);
+    });
+    harness.wait_for("the reload's read", |cx| {
+        settings(cx).is_some_and(|handle| {
+            handle
+                .read_with(cx, |view, _| {
+                    view.status_text().starts_with("Applied, but")
+                })
+                .unwrap_or(false)
+        })
+    });
+    with_view(&mut harness, |view, _| {
+        assert!(!view.read_only());
+        assert_eq!(view.status_text(), format!("Applied, but {warning}"));
     });
 }
 

@@ -107,7 +107,7 @@
         {
           "name": "macos-exclusive-registration",
           "file": "patches/global-hotkey/macos-exclusive-registration.patch",
-          "description": "Use exclusive Carbon hotkey registration so conflicting macOS grabs fail instead of succeeding without event delivery."
+          "description": "Use exclusive Carbon hotkey registration so conflicting macOS grabs fail instead of succeeding without event delivery, and report that conflict as AlreadyRegistered."
         }
       ]
     },

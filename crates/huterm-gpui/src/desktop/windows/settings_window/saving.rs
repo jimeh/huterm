@@ -315,8 +315,11 @@ impl SettingsView {
                         self.file = file;
                         if let Some(error) = self.reload_error.take() {
                             // The file is fine, so something else refused
-                            // the reload, such as a taken global shortcut.
+                            // the reload, such as a missing font.
                             self.status.not_applied(error);
+                        } else if let Some(warning) = self.reload_warning.take()
+                        {
+                            self.status.applied_with_warning(warning);
                         }
                     }
                     (Ok(file), Err(message)) => {
@@ -410,22 +413,26 @@ impl SettingsView {
     /// with the write, not with `base`.
     pub(super) fn reloaded(
         &mut self,
-        outcome: Result<(), String>,
+        outcome: Result<Option<String>, String>,
         automatic: bool,
         cx: &mut Context<'_, Self>,
     ) {
         self.status
             .watching(cx.global::<Desktop>().config.general.watch_config);
         match outcome {
-            Ok(()) => {
+            Ok(warning) => {
                 self.reload_error = None;
+                self.reload_warning = warning;
                 if automatic {
                     self.reload_unreported = true;
                 } else {
                     self.status.reloaded();
                 }
             }
-            Err(message) => self.reload_error = Some(message),
+            Err(message) => {
+                self.reload_error = Some(message);
+                self.reload_warning = None;
+            }
         }
         self.load(cx);
         self.load_themes(cx);

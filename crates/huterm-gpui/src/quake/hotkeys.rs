@@ -1,6 +1,6 @@
 //! Transactional registrations. Native callbacks only enqueue bounded events.
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
@@ -14,6 +14,8 @@ use crate::{config::KeybindingEntry, keymap::CompiledKeymap};
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Binding {
     pub key: HotKey,
+    /// The keystroke as configured, for messages.
+    pub keystroke: String,
     pub invocation: CommandInvocation,
 }
 
@@ -74,6 +76,7 @@ pub(crate) fn compile(
             }
             Ok(Binding {
                 key,
+                keystroke: entry.key.clone(),
                 invocation: CommandInvocation::new(
                     id,
                     vec![CommandArgument::new(
@@ -199,7 +202,14 @@ trait RegistrationBackend {
 }
 impl RegistrationBackend for GlobalHotKeyManager {
     fn register(&self, key: HotKey) -> Result<(), String> {
-        self.register(key).map_err(|error| error.to_string())
+        // Registrations never repeat an owned key, so the platform reports
+        // this only for a grab another application holds.
+        self.register(key).map_err(|error| match error {
+            global_hotkey::Error::AlreadyRegistered(_) => {
+                "already in use by another application".into()
+            }
+            error => error.to_string(),
+        })
     }
     fn unregister(&self, key: HotKey) -> Result<(), String> {
         self.unregister(key).map_err(|error| error.to_string())
@@ -214,51 +224,52 @@ impl OwnedKeys {
             .any(|binding| self.0.contains_key(&binding.key.id()))
     }
 
+    /// Grabs each binding's key and releases every other owned key, one key
+    /// at a time, and returns one message per key the backend refused. A
+    /// refusal skips only that key, and the next reconcile tries it again.
+    /// `self` holds exactly the backend's grabs, including one whose release
+    /// failed, so `Drop` can still release it.
     fn reconcile(
         &mut self,
         backend: &impl RegistrationBackend,
-        next: &HashMap<u32, HotKey>,
-    ) -> Result<(), String> {
-        let previous = self.0.clone();
-        if let Err(error) = self.apply(backend, next) {
-            let rollback = self.apply(backend, &previous);
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback) => format!(
-                    "{error}; rollback failed: {rollback}. Native ownership retained for cleanup; some previous shortcuts may be unavailable"
-                ),
-            });
-        }
-        Ok(())
-    }
-    fn apply(
-        &mut self,
-        backend: &impl RegistrationBackend,
-        next: &HashMap<u32, HotKey>,
-    ) -> Result<(), String> {
-        // Acquire first, preserving every unchanged grab and its key lifetime.
-        for (id, key) in next {
-            if self.0.contains_key(id) {
+        bindings: &[Binding],
+    ) -> Vec<String> {
+        let mut refused = Vec::new();
+        // An unchanged grab is kept, never released and grabbed again.
+        for binding in bindings {
+            let key = binding.key;
+            if self.0.contains_key(&key.id()) {
                 continue;
             }
-            backend
-                .register(*key)
-                .map_err(|error| format!("cannot register {key}: {error}"))?;
-            self.0.insert(*id, *key);
+            match backend.register(key) {
+                Ok(()) => {
+                    self.0.insert(key.id(), key);
+                }
+                Err(error) => refused.push(format!(
+                    "cannot register {}: {error}",
+                    binding.keystroke
+                )),
+            }
         }
-        let removed: Vec<_> = self
+        let wanted: HashSet<u32> =
+            bindings.iter().map(|binding| binding.key.id()).collect();
+        let removed: Vec<HotKey> = self
             .0
-            .iter()
-            .filter(|(id, _)| !next.contains_key(id))
-            .map(|(id, key)| (*id, *key))
+            .values()
+            .filter(|key| !wanted.contains(&key.id()))
+            .copied()
             .collect();
-        for (id, key) in removed {
-            backend
-                .unregister(key)
-                .map_err(|error| format!("cannot unregister {key}: {error}"))?;
-            self.0.remove(&id);
+        for key in removed {
+            match backend.unregister(key) {
+                Ok(()) => {
+                    self.0.remove(&key.id());
+                }
+                Err(error) => {
+                    refused.push(format!("cannot release {key}: {error}"));
+                }
+            }
         }
-        Ok(())
+        refused
     }
 }
 
@@ -305,19 +316,17 @@ impl Registrations {
             wakeups,
         })
     }
-    pub fn replace(&mut self, next: Vec<Binding>) -> Result<(), String> {
-        let keys = next
-            .iter()
-            .map(|binding| (binding.key.id(), binding.key))
-            .collect();
-        let result = self.owned.reconcile(&self.manager, &keys);
-        if result.is_ok() {
-            self.bindings = next;
-        }
+    /// Registers `next` as far as the platform allows and returns one
+    /// message per key it refused. Only registered keys dispatch.
+    pub fn replace(&mut self, next: Vec<Binding>) -> Vec<String> {
+        let refused = self.owned.reconcile(&self.manager, &next);
+        self.bindings = next;
         self.generation += 1;
+        // The callback cannot panic while holding the lock, and the state
+        // is replaced whole, so a poisoned lock still holds usable state.
         self.live
             .lock()
-            .map_err(|_| "global callback state poisoned")?
+            .unwrap_or_else(PoisonError::into_inner)
             .replace(
                 self.generation,
                 self.bindings
@@ -325,7 +334,7 @@ impl Registrations {
                     .map(|binding| binding.key.id())
                     .filter(|id| self.owned.0.contains_key(id)),
             );
-        result
+        refused
     }
     pub fn has_bindings(&self) -> bool {
         self.owned.has_bindings(&self.bindings)
@@ -410,85 +419,83 @@ mod tests {
     fn key(code: Code) -> HotKey {
         HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), code)
     }
+    fn binding(keystroke: &str, code: Code) -> Binding {
+        Binding {
+            key: key(code),
+            keystroke: keystroke.into(),
+            invocation: CommandInvocation::new(ids::TOGGLE_QUAKE, Vec::new()),
+        }
+    }
+    const NONE: [String; 0] = [];
+    fn owned_keys(bindings: &[&Binding]) -> HashMap<u32, HotKey> {
+        bindings
+            .iter()
+            .map(|binding| (binding.key.id(), binding.key))
+            .collect()
+    }
     #[test]
-    fn failed_initial_registration_with_stray_grab_does_not_keep_alive() {
-        let first = key(Code::KeyA);
-        let second = key(Code::KeyB);
-        let next = HashMap::from([(first.id(), first), (second.id(), second)]);
-        let mut order = next.values().copied();
-        let stray = order.next().unwrap();
-        let rejected = order.next().unwrap();
+    fn refused_grab_is_reported_while_the_rest_register_and_retried_later() {
+        let first = binding("ctrl-alt-a", Code::KeyA);
+        let taken = binding("ctrl-alt-b", Code::KeyB);
+        let last = binding("ctrl-alt-c", Code::KeyC);
+        let all = [first.clone(), taken.clone(), last.clone()];
         let backend = Fake::default();
-        backend.fail_register.borrow_mut().insert(rejected.id());
-        backend.fail_unregister.borrow_mut().insert(stray.id());
+        backend.fail_register.borrow_mut().insert(taken.key.id());
         let mut owned = OwnedKeys::default();
-        let error = owned.reconcile(&backend, &next).unwrap_err();
-        assert!(error.contains("rollback failed"));
-        assert_eq!(owned.0, HashMap::from([(stray.id(), stray)]));
+        assert_eq!(
+            owned.reconcile(&backend, &all),
+            ["cannot register ctrl-alt-b: registration rejected"]
+        );
+        assert_eq!(owned.0, owned_keys(&[&first, &last]));
+        assert_eq!(owned.0, *backend.keys.borrow());
+        assert!(!owned.has_bindings(std::slice::from_ref(&taken)));
+        backend.fail_register.borrow_mut().clear();
+        assert_eq!(owned.reconcile(&backend, &all), NONE);
+        assert_eq!(owned.0, owned_keys(&[&first, &taken, &last]));
+        assert_eq!(owned.0, *backend.keys.borrow());
+    }
+    #[test]
+    fn refused_replacement_still_releases_the_old_shortcut() {
+        let old = binding("ctrl-alt-a", Code::KeyA);
+        let new = binding("ctrl-alt-b", Code::KeyB);
+        let backend = Fake::default();
+        let mut owned = OwnedKeys::default();
+        assert_eq!(owned.reconcile(&backend, std::slice::from_ref(&old)), NONE);
+        backend.fail_register.borrow_mut().insert(new.key.id());
+        assert_eq!(
+            owned.reconcile(&backend, std::slice::from_ref(&new)),
+            ["cannot register ctrl-alt-b: registration rejected"]
+        );
+        assert_eq!(owned.0, HashMap::new());
+        assert_eq!(*backend.keys.borrow(), HashMap::new());
+    }
+    #[test]
+    fn failed_release_stays_owned_for_cleanup_without_keeping_alive() {
+        let stray = binding("ctrl-alt-a", Code::KeyA);
+        let backend = Fake::default();
+        let mut owned = OwnedKeys::default();
+        assert_eq!(
+            owned.reconcile(&backend, std::slice::from_ref(&stray)),
+            NONE
+        );
+        backend.fail_unregister.borrow_mut().insert(stray.key.id());
+        let refused = owned.reconcile(&backend, &[]);
+        assert_eq!(refused.len(), 1);
+        assert!(
+            refused[0].starts_with("cannot release ")
+                && refused[0].ends_with(": unregistration rejected"),
+            "{refused:?}"
+        );
+        assert_eq!(owned.0, owned_keys(&[&stray]));
         assert_eq!(owned.0, *backend.keys.borrow());
         assert!(
             !owned.has_bindings(&[]),
             "stray grabs cannot dispatch commands"
         );
-        let unavailable = Binding {
-            key: rejected,
-            invocation: CommandInvocation::new(ids::TOGGLE_QUAKE, Vec::new()),
-        };
-        assert!(!owned.has_bindings(&[unavailable]));
-    }
-    #[test]
-    fn failed_replacement_keeps_previous_registration_and_tracks_failed_rollback()
-     {
-        let old = key(Code::KeyA);
-        let new = key(Code::KeyB);
-        let backend = Fake::default();
-        let mut owned = OwnedKeys::default();
-        owned
-            .reconcile(&backend, &HashMap::from([(old.id(), old)]))
-            .unwrap();
-        backend.fail_unregister.borrow_mut().insert(old.id());
-        backend.fail_unregister.borrow_mut().insert(new.id());
-        let error = owned
-            .reconcile(&backend, &HashMap::from([(new.id(), new)]))
-            .unwrap_err();
-        assert!(error.contains("rollback failed"));
-        assert_eq!(owned.0, *backend.keys.borrow());
-        assert!(
-            owned.0.contains_key(&new.id()),
-            "failed rollback grab must remain owned for cleanup"
-        );
-        let previous = Binding {
-            key: old,
-            invocation: CommandInvocation::new(ids::TOGGLE_QUAKE, Vec::new()),
-        };
-        assert!(
-            owned.has_bindings(&[previous]),
-            "the previous shortcut still dispatches"
-        );
         backend.fail_unregister.borrow_mut().clear();
-        owned
-            .reconcile(&backend, &HashMap::from([(old.id(), old)]))
-            .unwrap();
-        assert_eq!(owned.0, HashMap::from([(old.id(), old)]));
-        assert_eq!(owned.0, *backend.keys.borrow());
-    }
-    #[test]
-    fn rejected_new_grab_leaves_old_shortcut_registered() {
-        let old = key(Code::KeyA);
-        let new = key(Code::KeyB);
-        let backend = Fake::default();
-        let mut owned = OwnedKeys::default();
-        owned
-            .reconcile(&backend, &HashMap::from([(old.id(), old)]))
-            .unwrap();
-        backend.fail_register.borrow_mut().insert(new.id());
-        assert!(
-            owned
-                .reconcile(&backend, &HashMap::from([(new.id(), new)]))
-                .is_err()
-        );
-        assert_eq!(owned.0, HashMap::from([(old.id(), old)]));
-        assert_eq!(owned.0, *backend.keys.borrow());
+        assert_eq!(owned.reconcile(&backend, &[]), NONE);
+        assert_eq!(owned.0, HashMap::new());
+        assert_eq!(*backend.keys.borrow(), HashMap::new());
     }
     #[test]
     fn compile_validates_profile_arguments_and_global_local_conflicts() {

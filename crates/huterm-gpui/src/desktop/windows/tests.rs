@@ -345,6 +345,38 @@ fn startup_diagnostics_become_separate_notices_that_reloads_replace() {
 }
 
 #[test]
+fn refused_global_shortcuts_warn_after_a_reload_with_reload_offered() {
+    let path = Path::new("/home/me/.config/huterm/config.toml");
+    let config = Config::default();
+    let compiled = keymap::compile_defaults(Platform::current());
+    assert_eq!(reload_diagnostics(path, &config, &compiled, &[]), []);
+    let refused = [
+        "cannot register cmd-shift-space: already in use by another \
+         application"
+            .to_owned(),
+        "cannot register f12: registration rejected".to_owned(),
+    ];
+    let diagnostics = reload_diagnostics(path, &config, &compiled, &refused);
+    let [notice] = diagnostics.as_slice() else {
+        panic!("one notice: {diagnostics:?}");
+    };
+    assert_eq!(
+        (notice.severity, &notice.source),
+        (Severity::Warning, &NoticeSource::Keymap)
+    );
+    assert_eq!(notice.message, refused.join("\n"));
+    assert_eq!(notice.location.as_deref(), path.to_str());
+    assert_eq!(
+        notice
+            .actions
+            .iter()
+            .map(|action| action.command.id)
+            .collect::<Vec<_>>(),
+        [ids::OPEN_CONFIG_FILE, ids::RELOAD_CONFIG]
+    );
+}
+
+#[test]
 fn a_failed_reload_keeps_the_active_configs_own_diagnostics() {
     let path = Path::new("/tmp/huterm.toml");
     let active = config_diagnostics(

@@ -1167,8 +1167,9 @@ for, because the worker fingerprinted the write against the older inputs, so
 an automatic reload whose reread finds the file as Settings last wrote it
 keeps a save's footer report. The comparison is with that write, not with the
 last read, which may already hold another editor's change. Such a reload
-still clears a "Not applied" or invalid report, since a theme or a shortcut
-outside the file may have changed.
+still clears a "Not applied" or invalid report, since a theme or a font
+outside the file may have changed. A reload that applied the file with refused
+global shortcuts reports "Applied, but ..." in place of a save's report.
 Every finished reload sends the watcher fresh `Settings`, including after a
 failure, which keeps the previous `watch_config`. An automatic reload that
 finds the file missing is skipped silently, since editors remove it while

@@ -123,9 +123,13 @@ keybinding schema restricts the shared command catalog to quake commands.
 Extend shared schema fixtures and the desktop global compiler parity check
 together; native key support and OS registration remain runtime checks.
 
-Global shortcut keepalive requires a dispatchable binding whose native grab is
-still owned. Grabs left by failed rollback remain tracked for cleanup but must
-not keep a zero-window application alive by themselves.
+Global shortcut registration is partial, never transactional: each refused
+grab or release is a warning naming the key, the rest of the configuration
+applies, and the next reconcile retries it. Only a compile error, such as an
+unknown profile or a duplicate, fails a reload. Keepalive requires a
+dispatchable binding whose native grab is still owned. A grab whose release
+failed stays tracked for cleanup but must not keep a zero-window application
+alive by itself.
 
 Restore the retained GPUI NSView as AppKit firstResponder after quake style
 changes and activation. setStyleMask can replace it while GPUI focus remains
@@ -148,7 +152,9 @@ progress or renewing the transition deadline.
 Carbon non-exclusive RegisterEventHotKey can succeed while delivering no events
 because another application owns the shortcut. Keep the global-hotkey patch using
 kEventHotKeyExclusive so startup/reload conflicts fail and cannot create a falsely
-usable keepalive registration.
+usable keepalive registration. The same patch maps `eventHotKeyExistsErr` to
+`AlreadyRegistered`, which Huterm reports as "already in use by another
+application".
 
 Keep quake titlebar visibility separate from fullscreen tab policy: partial quake
 windows are frameless but retain the configured tab bar. Resolve tab presentation

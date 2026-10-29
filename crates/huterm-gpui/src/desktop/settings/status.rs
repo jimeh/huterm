@@ -32,9 +32,12 @@ enum Event {
     Failed(String),
     /// A write replaced the file, but making that durable failed.
     SavedUnsure(String),
-    /// A reload failed for a reason outside the file, such as a global
-    /// shortcut another application holds.
+    /// A reload failed for a reason outside the file, such as a font that
+    /// is not installed.
     NotApplied(String),
+    /// A reload applied the file, but something it asks for is unavailable,
+    /// such as a global shortcut another application holds.
+    AppliedWithWarning(String),
     /// Creating or opening the file failed.
     FileError(String),
 }
@@ -108,6 +111,12 @@ impl FileStatus {
 
     pub(crate) fn not_applied(&mut self, message: impl Into<String>) {
         self.latest = Some(Event::NotApplied(message.into()));
+    }
+
+    /// A reload applied the file with a warning. It replaces even a save's
+    /// report, since the save took effect only in part.
+    pub(crate) fn applied_with_warning(&mut self, message: impl Into<String>) {
+        self.latest = Some(Event::AppliedWithWarning(message.into()));
     }
 
     pub(crate) fn changed_on_disk(&mut self) {
@@ -191,6 +200,12 @@ impl FileStatus {
                 text: format!("Not applied: {message}"),
                 action: Some(Action::Reload),
             },
+            // A reload tries a refused shortcut again.
+            Some(Event::AppliedWithWarning(message)) => Line {
+                tone: Tone::Warning,
+                text: format!("Applied, but {message}"),
+                action: Some(Action::Reload),
+            },
             None if self.watching => {
                 line(Tone::Ok, "Watching config.toml", None)
             }
@@ -245,12 +260,12 @@ mod tests {
                 None
             )
         );
-        status.not_applied("ctrl-` is taken");
+        status.not_applied("font \"Nope\" is not installed");
         assert_eq!(
             text(&status),
             (
                 Tone::Error,
-                "Not applied: ctrl-` is taken".into(),
+                "Not applied: font \"Nope\" is not installed".into(),
                 Some(Action::Reload)
             )
         );
@@ -299,14 +314,39 @@ mod tests {
         status.reloaded();
         status.reloaded_unchanged();
         assert_eq!(text(&status).0, Tone::Warning);
-        // A theme fixed elsewhere, or a shortcut released, applies the
-        // same file.
-        status.not_applied("ctrl-` is taken");
+        // A theme fixed elsewhere, or a font installed, applies the same
+        // file.
+        status.not_applied("font \"Nope\" is not installed");
         status.reloaded_unchanged();
         assert_eq!(text(&status), (Tone::Ok, "Reloaded".into(), None));
         status.invalid_file("missing theme");
         status.reloaded_unchanged();
         assert!(!status.invalid());
+    }
+
+    #[test]
+    fn a_refused_shortcut_replaces_a_saves_report_until_a_clean_reload() {
+        let mut status = FileStatus::new(true);
+        status.saved();
+        status.reloaded();
+        status.applied_with_warning(
+            "cannot register cmd-shift-space: already in use by another \
+             application",
+        );
+        assert_eq!(
+            text(&status),
+            (
+                Tone::Warning,
+                "Applied, but cannot register cmd-shift-space: already in use \
+                 by another application"
+                    .into(),
+                Some(Action::Reload)
+            )
+        );
+        // The other application released the shortcut, and the watcher's
+        // reload of the same file registers it.
+        status.reloaded_unchanged();
+        assert_eq!(text(&status), (Tone::Ok, "Reloaded".into(), None));
     }
 
     #[test]
