@@ -52,7 +52,7 @@
 use gpui::{
     AccessibleAction, App, Context, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, IntoElement, Render, SharedString, Subscription,
-    Window, div, prelude::*,
+    Window, div, prelude::*, px,
 };
 
 use crate::a11y::States;
@@ -469,12 +469,11 @@ impl Render for NumberField {
         let at_max = draft.is_some_and(|value| value >= steps.max());
         let stepper = |id: &'static str,
                        label: &'static str,
-                       glyph: &'static str,
                        blocked: bool,
                        cx: &mut Context<'_, Self>| {
             let button = Button::new(child_id(&self.id, id), label, tokens)
                 .variant(Variant::Ghost)
-                .icon(div().child(glyph))
+                .icon(glyph(id == "increment", tokens))
                 .icon_only();
             if !editable || blocked {
                 return button.disabled(None);
@@ -490,8 +489,8 @@ impl Render for NumberField {
                 });
             })
         };
-        let decrement = stepper("decrement", "Decrease", "−", at_min, cx);
-        let increment = stepper("increment", "Increase", "+", at_max, cx);
+        let decrement = stepper("decrement", "Decrease", at_min, cx);
+        let increment = stepper("increment", "Increase", at_max, cx);
         let group =
             InputGroup::new(child_id(&self.id, "group"), &self.input, tokens)
                 .when_some(self.unit.clone(), |group, unit| {
@@ -538,6 +537,29 @@ impl Render for NumberField {
         }
         .apply(spin)
     }
+}
+
+/// A stepper's minus, or plus when `plus`, drawn as bars rather than font
+/// glyphs, whose ink sits off the line box's center by an amount that
+/// varies with the font.
+fn glyph(plus: bool, tokens: Tokens) -> impl IntoElement {
+    const SIZE: f32 = 8.0;
+    const STROKE: f32 = 1.5;
+    let bar = |horizontal: bool| {
+        let bar = div().absolute().rounded_full().bg(tokens.fg);
+        let offset = px((SIZE - STROKE) / 2.0);
+        if horizontal {
+            bar.left_0().top(offset).w(px(SIZE)).h(px(STROKE))
+        } else {
+            bar.top_0().left(offset).h(px(SIZE)).w(px(STROKE))
+        }
+    };
+    div()
+        .relative()
+        .flex_none()
+        .size(px(SIZE))
+        .child(bar(true))
+        .when(plus, |glyph| glyph.child(bar(false)))
 }
 
 /// The id of `parent`'s part named `name`.

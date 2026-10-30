@@ -244,6 +244,12 @@ impl Button {
         self
     }
 
+    /// Whether the button shows its icon alone.
+    #[must_use]
+    pub(crate) fn is_icon_only(&self) -> bool {
+        self.icon_only
+    }
+
     /// Draws the button at [`size::SMALL_CONTROL_HEIGHT`], to fit inside
     /// another control such as an input group.
     #[must_use]

@@ -130,3 +130,41 @@ fn a_disabled_group_keeps_the_reason_its_owner_gave_a_button(
         assert_eq!(a11y_labelled(window, "Clear")["aria"]["disabled"], true);
     });
 }
+
+#[gpui::test]
+fn button_addons_keep_an_even_gap_to_the_border_and_each_other(
+    cx: &mut TestAppContext,
+) {
+    let input = cx.update(|cx| {
+        cx.new(|cx| {
+            Input::new("size", "Size", tokens(), cx)
+                .with_chrome(Chrome::Grouped)
+        })
+    });
+    let (_, cx) = host(cx, move |_, _| {
+        let stepper = |id: &'static str| {
+            Button::new(id, id, tokens())
+                .icon(div().size(px(8.0)))
+                .icon_only()
+                .debug_selector(move || id.to_owned())
+        };
+        div()
+            .w(px(200.0))
+            .child(
+                InputGroup::new("group", &input, tokens())
+                    .trailing(Addon::Button(stepper("decrement")))
+                    .trailing(Addon::Button(stepper("increment"))),
+            )
+            .into_any_element()
+    });
+    let decrement = cx.debug_bounds("decrement").expect("drawn");
+    let increment = cx.debug_bounds("increment").expect("drawn");
+    // Inside the 1-point border of the 24-point group, 2 points clear on
+    // the outer side, above, below, and between the buttons.
+    assert_eq!(increment.right(), px(197.0));
+    assert_eq!(increment.top(), px(3.0));
+    assert_eq!(increment.bottom(), px(21.0));
+    assert_eq!(increment.size.width, increment.size.height);
+    assert_eq!(increment.left() - decrement.right(), px(2.0));
+    assert_eq!((decrement.top(), decrement.bottom()), (px(3.0), px(21.0)));
+}
