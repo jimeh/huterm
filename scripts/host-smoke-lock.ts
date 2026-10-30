@@ -173,8 +173,9 @@ async function main(argv: string[]): Promise<number> {
   // reaches it once, through this handler, and so does anything it started.
   // Without the lock the command stays in this group, so a nested run is
   // still inside the cleanup of the wrapper that holds the lock. A hangup
-  // reaches the group as SIGTERM: harnesses such as runSmokeProcess stop the
-  // apps they put in other groups on SIGTERM, but die at once on SIGHUP.
+  // reaches the group as SIGTERM: most harnesses die at once on SIGHUP,
+  // and runSmokeProcess, which puts its app in another group, stops that
+  // group on either, taking SIGHUP as SIGTERM for a run without the wrapper.
   const forward = (signal: NodeJS.Signals) => {
     interrupted ??= signal;
     if (!child?.pid) return;

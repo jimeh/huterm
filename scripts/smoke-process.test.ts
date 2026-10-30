@@ -136,6 +136,47 @@ test("cancelling the supervisor terminates its child and cannot report success",
   expect(() => checkSmokeProcess(inner, "fixture")).toThrow("terminated by SIGTERM");
 });
 
+test.skipIf(process.platform === "win32")("a hung-up supervisor stops its smoke's process group and records the outcome despite EIO on its terminal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "huterm-hangup-"));
+  let group: number | undefined;
+  try {
+    const started = join(directory, "started");
+    const finished = join(directory, "finished");
+    const module = join(import.meta.dir, "smoke-process.ts");
+    // The smoke keeps printing, so the supervisor keeps streaming to the
+    // terminal after it hangs up, and ignores SIGTERM, so only the
+    // supervisor's SIGKILL after its grace period stops it.
+    const native = `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(started)}, String(process.pid)); setInterval(() => console.log("frame"), 5);`;
+    const supervisor = `
+      import { writeFileSync } from "node:fs";
+      import { runSmokeProcess } from ${JSON.stringify(module)};
+      const outcome = await runSmokeProcess([process.execPath, "-e", ${JSON.stringify(native)}], { timeoutMs: 20_000, graceMs: 500 });
+      writeFileSync(${JSON.stringify(finished)}, JSON.stringify({ signalCode: outcome.signalCode, timedOut: outcome.timedOut }));
+    `;
+    // The terminal makes the supervisor a session leader, so closing it
+    // hangs up the supervisor as a closed terminal window or dropped SSH
+    // session would.
+    const child = Bun.spawn([process.execPath, "-e", supervisor], { terminal: { data() {} } });
+    const deadline = Date.now() + 10_000;
+    while (!((group = Number(await readFile(started, "utf8").catch(() => ""))) > 0)) {
+      if (Date.now() > deadline) throw new Error("the smoke never started");
+      await Bun.sleep(10);
+    }
+    child.terminal!.close();
+    // Not its status: Bun can report a write already in flight when the
+    // terminal closed as an unhandled rejection, which fails the exit.
+    await child.exited;
+    const alive = () => { try { process.kill(-group!, 0); return true; } catch { return false; } };
+    const stopped = Date.now() + 5_000;
+    while (alive() && Date.now() < stopped) await Bun.sleep(10);
+    expect(alive()).toBe(false);
+    expect(JSON.parse(await readFile(finished, "utf8").catch(() => "null"))).toEqual({ signalCode: "SIGHUP", timedOut: false });
+  } finally {
+    if (group) { try { process.kill(-group, "SIGKILL"); } catch {} }
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 20_000);
+
 
 test("nested cancellation allows the inner supervisor to force native cleanup", async () => {
   const directory = await mkdtemp(join(tmpdir(), "huterm-nested-cancel-"));

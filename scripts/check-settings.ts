@@ -11,7 +11,7 @@
  * with real pointer input that the title strip moves the window and leaves
  * the search its press.
  */
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandFlag, controlFlag, macKeyEvents, optionFlag, shiftFlag } from "./macos-keys";
@@ -113,6 +113,12 @@ args = { layout = "smoke" }
   async function current(): Promise<string> {
     return readFile(join(directory, "state"), "utf8").catch(() => "");
   }
+  /** How many commands the app had read when it published `text`. The app
+   * publishes its state before it runs the next command, so the state read
+   * right after a command can predate it. */
+  function commandsRead(text: string): number {
+    return Number(text.match(/^command_sequence=(\d+)/)?.[1] ?? -1);
+  }
   async function state(...expected: string[]): Promise<string> {
     let text = "";
     await waitFor(async () => {
@@ -162,13 +168,17 @@ args = { layout = "smoke" }
       run(["xdotool", "type", "--clearmodifiers", "--delay", "8", text]);
     }
   }
-  /** Waits for a save to finish and for the file to satisfy `check`. */
+  /** Waits for a save to finish and for the file to satisfy `check`. Only a
+   * state published after the write counts: one published before the save
+   * began also reads `writing=false`, and its focus and drafts predate the
+   * save's changes. */
   async function saved(check: (text: string) => boolean, label: string): Promise<string> {
     let text = "";
     await waitFor(async () => {
       text = await readFile(config, "utf8");
-      const status = await current();
-      return check(text) && field(status, "writing") === "false";
+      if (!check(text)) return false;
+      const [written, published] = await Promise.all([stat(config), stat(join(directory, "state"))]);
+      return published.mtimeMs > written.mtimeMs && field(await current(), "writing") === "false";
     }, label);
     if (!text.startsWith("# Settings smoke fixture.\n") || !text.includes("close_on_exit = false # keep the shell")) {
       throw new Error(`a save lost the file's comments: ${JSON.stringify(text)}`);
@@ -177,7 +187,9 @@ args = { layout = "smoke" }
   }
   /** Presses Tab until `name` has focus, waiting for each press to move it.
    * A name ending in ":", such as `key:when:`, matches any control it
-   * starts, as `state` reads it. */
+   * starts, as `state` reads it. Only a state published after the app read
+   * the Tab shows its move; an earlier one can show focus that something
+   * else moved, and taking that for the Tab's move sends one Tab too many. */
   async function tabTo(name: string): Promise<void> {
     const reached = (focus: string) => focus === name || (name.endsWith(":") && focus.startsWith(name));
     for (let step = 0; step < 20; step++) {
@@ -185,9 +197,11 @@ args = { layout = "smoke" }
       await waitFor(async () => (focus = field(await current(), "focus")) !== undefined, "a readable focus");
       if (focus !== undefined && reached(focus)) return;
       await key("tab");
+      const pressed = sequence;
       await waitFor(async () => {
-        const now = field(await current(), "focus");
-        return now !== undefined && now !== focus;
+        const text = await current();
+        const now = field(text, "focus");
+        return commandsRead(text) >= pressed && now !== undefined && now !== focus;
       }, `focus to leave ${focus}`);
     }
     await state(`settings.focus=${name}`);
@@ -557,13 +571,13 @@ args = { layout = "smoke" }
       const text = await current();
       const focus = field(text, "focus") ?? "";
       const row = focus.replace("action:krec:", "");
-      return focus.startsWith("action:krec:") && (field(text, "drafts") ?? "").includes(`when:${row}=Terminal (`);
+      // The rebound shortcut is a user entry, `u<entry>`; the default's
+      // row held focus and the draft before the save landed.
+      return row.startsWith("u") && focus.startsWith("action:krec:") && (field(text, "drafts") ?? "").includes(`when:${row}=Terminal (`);
     }, "the condition draft on the rebound row");
     // The shortcut's condition field suggests contexts as you type, with the
     // first highlighted: Escape closes them, typing reopens them, Return
-    // completes the name, and the next Return saves it. The rebind's reload
-    // can add a row stop, such as the replaced default's switch, between
-    // the recorder and the field, so Tab until the field has focus.
+    // completes the name, and the next Return saves it.
     await tabTo("key:when:");
     // Clear the draft the recording kept before typing a fresh name.
     await key("select-all");

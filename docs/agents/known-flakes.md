@@ -337,49 +337,6 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** rerun and record the run here. A hardening is to wait for
   `w0.dialog_focus=primary` before Enter, as the neighboring steps do.
 
-## `smoke:macos-settings` condition field loses focus after the rebind
-
-- **Label:** `Smoke macOS settings` in `Rust smoke (macOS arm64)`, in
-  `scripts/check-settings.ts` after `tabTo("key:when:")` in the rebind
-  flow: timed out waiting for `settings.list=key:when:` and
-  `settings.highlight="Terminal"`.
-- **Occurrences:** 2026-10-29 on PR #321 (run 40790568761, job
-  123174477208, head `8352a340`), which changed only the footer status,
-  and again that day on PR #322 (run 40802436265, job 123213458734, head
-  `e6ea878e`), which does not touch the Settings window. Both stopped at the
-  same step with focus on `action:kon:u2`. #321's next head passed, and
-  host runs of that step passed every time: 3 of 3 for #321 and 2 of 2 for
-  #322. A third occurrence came that day on PR #324 (run 40859661396, job
-  123399557169, head `617482b3`), which changes the global shortcut reload
-  path but not the rebind flow, with the same final state. Host runs of the
-  settings step on that head passed 2 of 3; the failure stopped at an
-  earlier, unrelated step waiting for `settings.focus=search`.
-  A fourth followed on PR #325 (run 40860855881, job 123403412885, head
-  `67d5c3a7`), which restyles the Settings window's chrome but not the
-  Keybindings section: same step, same focus, and the same
-  `when:u2=Terminal (` draft, after that PR's new title-strip checks had
-  passed. Host runs of the step passed 3 of 3 for that change, once a
-  leftover Huterm app in front of the window was stopped. A fifth came on
-  2026-10-30 on PR #331 (run 41005288106, job 123898692917, head
-  `74d464b9`), which changes only smoke tooling: same step, same focus,
-  and the same draft. The same step had passed on that PR's previous head,
-  `3379810b`, whose tree differed only by main's #333. A sixth came that
-  day on PR #330 (run 41000212950, job 123882888597, head `4b7be1f5`),
-  which changes Settings' text fields and their focus handling: same step,
-  same focus, and the same draft, with `settings.status="Saved"`. Host runs
-  of the settings step on that head passed 2 of 2, and the CI rerun passed.
-- **Evidence:** the last state had `settings.focus=action:kon:u2`,
-  `settings.list=none`, `settings.status="Saved"`, `settings.writing=false`,
-  and `settings.drafts` still holding `when:u2=Terminal (`, so the
-  select-all, Backspace, and typed text never reached the field. `tabTo`
-  had reached the condition field before focus moved to the replaced
-  default's switch on the same row. A reload that lands after the rebind
-  and draws the row again would fit, but the step's stdout was empty and
-  nothing recorded the focus history, so the cause is unconfirmed.
-- **Triage:** rerun and record the run here. If it recurs, record when
-  focus left the field relative to the rebind's reload and the watcher's
-  report.
-
 ## `smoke:macos-palette` stray DEL at an early step
 
 - **Label:** an early terminal-bytes check in `scripts/check-palette.ts`
