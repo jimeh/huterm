@@ -322,3 +322,35 @@ fn a_native_pane_menu_closes_when_its_pane_loses_focus(
     });
     assert!(presenter.shown.borrow()[0].closed.get());
 }
+
+#[gpui::test]
+fn a_native_terminal_menu_closes_when_focus_leaves_its_pane(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, presenter) = harness.native_window();
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("the second pane's shell", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    let left = harness.terminal_centre(window);
+    harness.right_press(window, left);
+    harness.wait_shown(&presenter, 1);
+    harness.invoke(window, ids::FOCUS_PANE_RIGHT).unwrap();
+    harness.wait_for("the terminal menu to close", |cx| {
+        native_kind(cx, window).is_none()
+    });
+    assert!(presenter.shown.borrow()[0].closed.get());
+    // A pick that still arrives from the closed menu runs nothing, on
+    // either pane.
+    presenter.shown.borrow()[0].pick("select_all");
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        for pane in [first, second] {
+            let view = pane_view(cx, window, tab, pane).unwrap();
+            assert!(view.read(cx).selection.is_none(), "{pane:?} selected");
+        }
+    });
+}

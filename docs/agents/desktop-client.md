@@ -822,7 +822,9 @@ and picks from either go through `run_menu_pick`. The `AppKit` presenter
 pops the menu from a `performSelector:afterDelay:inModes:` perform in the
 common run-loop modes, and cancels it the same way. A
 `performSelectorOnMainThread:...modes:` perform queued from the main thread
-never ran there, so the menu never opened. Never pop it from a GPUI
+never ran there, so the menu never opened. A popup waits while another
+window's menu still tracks, because nested popups would share one pick
+slot. Never pop it from a GPUI
 foreground task: those run inside a main-queue block, the run loop drains
 no main-queue block while one runs, and every GPUI task and frame stalls
 until the menu closes. The menu tracks outside GPUI's

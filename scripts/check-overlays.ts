@@ -1027,14 +1027,14 @@ label = "title"
       for (let round = 0; round < 2; round++) {
         await command(["native", "mouse", 5, at.x, at.y].join("\t"));
         await command(["native", "mouse", 3, at.x, at.y].join("\t"));
-        await state("w0.native_menu=terminal", "w0.native_menu_tracking=true", "w0.menu=false");
+        await state("w0.native_menu=terminal", "native_menu_tracking=true", "w0.menu=false");
         if (await command("close-native-menu") !== "closed=true") throw new Error(`${engine}: no native menu to close`);
-        await state("w0.native_menu=none", "w0.native_menu_tracking=false", "w0.terminal_focused=true");
+        await state("w0.native_menu=none", "native_menu_tracking=false", "w0.terminal_focused=true");
       }
       await command(["native", "mouse", 3, at.x, at.y].join("\t"));
-      await state("w0.native_menu=terminal", "w0.native_menu_tracking=true");
+      await state("w0.native_menu=terminal", "native_menu_tracking=true");
       await invoke("next_tab");
-      await state("w0.native_menu=none", "w0.native_menu_tracking=false");
+      await state("w0.native_menu=none", "native_menu_tracking=false");
       await invoke("previous_tab");
       await state("w0.terminal_focused=true");
       await reloadedTitles(configDocument);

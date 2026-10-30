@@ -142,43 +142,75 @@ struct Close(u64);
 
 impl Drop for Close {
     fn drop(&mut self) {
-        POPUPS.with(|popups| {
+        // Decide under the registry borrow, act after it: releasing the
+        // view or menu must not run inside it.
+        let closing = POPUPS.with(|popups| {
             let mut popups = popups.borrow_mut();
             match popups.get(&self.0) {
                 Some(popup) if popup.tracking => {
-                    // SAFETY: The registry retains the tracking menu. The
-                    // cancel runs on a later run-loop pass, outside any
-                    // GPUI borrow; the perform retains the menu until then.
-                    unsafe {
-                        if let Ok(modes) = common_modes() {
-                            let _: () = msg_send![
-                                popup.menu,
-                                performSelector: sel!(cancelTracking)
-                                withObject: std::ptr::null_mut::<Object>()
-                                afterDelay: 0.0_f64
-                                inModes: modes
-                            ];
-                        }
-                    }
+                    Some(Closing::Cancel(popup.menu))
                 }
-                Some(_) => {
-                    if let Some(popup) = popups.remove(&self.0) {
-                        popup.release();
-                    }
-                }
-                None => {}
+                Some(_) => popups.remove(&self.0).map(Closing::Drop),
+                None => None,
             }
         });
+        match closing {
+            // SAFETY: The registry retains the tracking menu until its
+            // popup returns. The cancel runs on a later run-loop pass,
+            // outside any GPUI borrow, and the perform retains the menu.
+            Some(Closing::Cancel(menu)) => unsafe {
+                if let Ok(modes) = common_modes() {
+                    let _: () = msg_send![
+                        menu,
+                        performSelector: sel!(cancelTracking)
+                        withObject: std::ptr::null_mut::<Object>()
+                        afterDelay: 0.0_f64
+                        inModes: modes
+                    ];
+                }
+            },
+            Some(Closing::Drop(popup)) => popup.release(),
+            None => {}
+        }
     }
 }
 
+enum Closing {
+    Cancel(*mut Object),
+    /// A popup that never opened; its perform finds nothing to run.
+    Drop(Popup),
+}
+
 /// Runs the registered popup `token` names, from the run loop.
-extern "C" fn pop_up(_: &Object, _: Sel, number: *mut Object) {
+extern "C" fn pop_up(this: &Object, _: Sel, number: *mut Object) {
     if number.is_null() {
         return;
     }
     // SAFETY: performSelector passes the NSNumber registered with the popup.
     let token: u64 = unsafe { msg_send![number, unsignedLongLongValue] };
+    // Another window's menu can still be tracking, or ending after its
+    // cancel. A popup inside its loop would share `PICKED`, so wait for it.
+    let busy = POPUPS.with(|popups| {
+        popups
+            .borrow()
+            .iter()
+            .any(|(other, popup)| *other != token && popup.tracking)
+    });
+    if busy {
+        // SAFETY: Requeues this perform on the same target and token.
+        unsafe {
+            if let Ok(modes) = common_modes() {
+                let _: () = msg_send![
+                    this,
+                    performSelector: sel!(popUp:)
+                    withObject: number
+                    afterDelay: 0.05_f64
+                    inModes: modes
+                ];
+            }
+        }
+        return;
+    }
     let Some((menu, view, location)) = POPUPS.with(|popups| {
         let mut popups = popups.borrow_mut();
         let popup = popups.get_mut(&token)?;
@@ -334,9 +366,7 @@ fn mask(key: &KeyEquivalent) -> usize {
     .fold(0, |mask, (_, flag)| mask | flag)
 }
 
-/// Where the menu's top-left corner goes in `view`'s coordinates. GPUI's
-/// window coordinates run down from the top; the content view's run up
-/// unless it is flipped.
+/// Where the menu's top-left corner goes in `view`'s coordinates.
 ///
 /// # Safety
 /// Main thread only, with a live menu and view.
@@ -354,24 +384,30 @@ unsafe fn location(
         )
     };
     let [_, _, width, height] = bounds;
-    let (x, y) = match anchor {
-        MenuAnchor::Pointer(point) => {
-            (f64::from(f32::from(point.x)), f64::from(f32::from(point.y)))
-        }
-        MenuAnchor::Below(control) => {
-            let left = f64::from(f32::from(control.left()));
-            let right = f64::from(f32::from(control.right()));
-            let x = if f64::midpoint(left, right) > width / 2.0 {
-                (right - menu_size[0]).max(0.0)
-            } else {
-                left
-            };
-            (x, f64::from(f32::from(control.bottom())))
-        }
-    };
+    let (x, y) = origin(anchor, width, menu_size[0]);
     NativePoint {
         x,
         y: if flipped == YES { y } else { height - y },
+    }
+}
+
+/// The menu's top-left corner in window coordinates, which run down from
+/// the top: at the pointer, or below a control. Below a control in the
+/// view's right half, the menu's right edge lines up with the control's.
+fn origin(anchor: MenuAnchor, view_width: f64, menu_width: f64) -> (f64, f64) {
+    let points = |value: gpui::Pixels| f64::from(f32::from(value));
+    match anchor {
+        MenuAnchor::Pointer(point) => (points(point.x), points(point.y)),
+        MenuAnchor::Below(control) => {
+            let (left, right) =
+                (points(control.left()), points(control.right()));
+            let x = if f64::midpoint(left, right) > view_width / 2.0 {
+                (right - menu_width).max(0.0)
+            } else {
+                left
+            };
+            (x, points(control.bottom()))
+        }
     }
 }
 
@@ -420,7 +456,7 @@ fn is_main_thread() -> anyhow::Result<bool> {
 
 /// Builds the window menu `AppKit` would show and checks what its items
 /// carry: titles, key equivalents, enablement, separators, the notices
-/// badge, and the dark appearance. The menus smoke runs this.
+/// badge, and the dark and light appearances. The menus smoke runs this.
 pub(in crate::desktop) fn check_window_menu(
     keymap: &crate::keymap::InstalledKeymap,
 ) -> anyhow::Result<()> {
@@ -442,16 +478,19 @@ pub(in crate::desktop) fn check_window_menu(
         .map(gpui::KeyContext::parse)
         .collect::<anyhow::Result<Vec<_>>>()?;
     let spec = window_menu(&input, keymap, &contexts);
-    let native = spec.to_native(true);
     ensure!(is_main_thread()?, "menus are built on the main thread");
-    // SAFETY: The menu is built, read, and released on the main thread;
-    // every item read is bounded by its count.
-    unsafe {
-        let menu = build(&native, target()?)?;
-        let result = check_built(menu, &native);
-        let _: () = msg_send![menu, release];
-        result
+    for dark in [true, false] {
+        let native = spec.to_native(dark);
+        // SAFETY: The menu is built, read, and released on the main
+        // thread; every item read is bounded by its count.
+        unsafe {
+            let menu = build(&native, target()?)?;
+            let result = check_built(menu, &native);
+            let _: () = msg_send![menu, release];
+            result?;
+        }
     }
+    Ok(())
 }
 
 /// # Safety
@@ -471,10 +510,13 @@ unsafe fn check_built(
         let appearance: *mut Object = msg_send![menu, appearance];
         ensure!(!appearance.is_null(), "the menu has no appearance");
         let name: *mut Object = msg_send![appearance, name];
-        ensure!(
-            string(name)? == "NSAppearanceNameDarkAqua",
-            "the menu is not dark"
-        );
+        let expected = if native.dark {
+            "NSAppearanceNameDarkAqua"
+        } else {
+            "NSAppearanceNameAqua"
+        };
+        let name = string(name)?;
+        ensure!(name == expected, "the menu's appearance is {name}");
         let mut items = Vec::new();
         for index in 0..count {
             let item: *mut Object = msg_send![menu, itemAtIndex: index];
@@ -580,4 +622,39 @@ unsafe fn string(value: *mut Object) -> anyhow::Result<String> {
     Ok(unsafe { std::ffi::CStr::from_ptr(bytes) }
         .to_str()?
         .to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Bounds, point, px, size};
+
+    #[test]
+    fn menus_open_at_the_pointer_or_below_their_control() {
+        let control = |x: f32| {
+            MenuAnchor::Below(Bounds::new(
+                point(px(x), px(4.0)),
+                size(px(26.0), px(26.0)),
+            ))
+        };
+        assert_eq!(
+            origin(
+                MenuAnchor::Pointer(point(px(120.0), px(80.0))),
+                800.0,
+                230.0
+            ),
+            (120.0, 80.0)
+        );
+        assert_eq!(origin(control(20.0), 800.0, 230.0), (20.0, 30.0));
+        assert_eq!(
+            origin(control(770.0), 800.0, 230.0),
+            (566.0, 30.0),
+            "a control on the right lines the menu up with its right edge"
+        );
+        assert_eq!(
+            origin(control(500.0), 520.0, 600.0),
+            (0.0, 30.0),
+            "a menu wider than the room keeps its left edge in the view"
+        );
+    }
 }

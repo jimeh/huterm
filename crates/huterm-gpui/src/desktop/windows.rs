@@ -12924,12 +12924,8 @@ impl WorkspaceView {
             Some(MenuKind::Pane { .. }) => "pane",
             None => "none",
         };
-        #[cfg(target_os = "macos")]
-        let tracking = appkit_menu::tracking();
-        #[cfg(not(target_os = "macos"))]
-        let tracking = false;
         format!(
-            "{menu} {prefix}native_menu={native} {prefix}native_menu_tracking={tracking} {prefix}menu_button_open={} {prefix}menu_rect={}",
+            "{menu} {prefix}native_menu={native} {prefix}menu_button_open={} {prefix}menu_rect={}",
             self.menu_button_open(),
             self.popover.content_bounds().map_or_else(
                 || "none".to_owned(),

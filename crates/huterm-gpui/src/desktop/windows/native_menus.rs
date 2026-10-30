@@ -43,6 +43,19 @@ pub(super) struct PresentedMenu {
     pub(super) _close: Box<dyn std::any::Any>,
 }
 
+/// Whether an `AppKit` menu from any window is tracking, for smoke state.
+/// A menu keeps tracking for a moment after its window lets it go.
+pub(super) fn tracking() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        super::appkit_menu::tracking()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// The open native menu.
 pub(super) struct NativeMenuSession {
     pub(super) kind: MenuKind,
@@ -143,7 +156,7 @@ impl WorkspaceView {
         else {
             return;
         };
-        if self.menu_target_live(&session.kind, cx) {
+        if self.session_live(&session, cx) {
             self.run_menu_pick(&session.kind, &id, window, cx);
         }
     }
@@ -165,15 +178,32 @@ impl WorkspaceView {
     }
 
     /// Closes a native menu whose tab closed or, for a terminal or pane
-    /// menu, is no longer the active one.
+    /// menu, whose terminal or pane is no longer the focused one.
     pub(super) fn refresh_native_menu(&mut self, cx: &mut Context<'_, Self>) {
         if self
             .native_menu
             .as_ref()
-            .is_some_and(|session| !self.menu_target_live(&session.kind, cx))
+            .is_some_and(|session| !self.session_live(session, cx))
         {
             self.close_native_menu(cx);
         }
+    }
+
+    /// Whether `session`'s picks would still act on what it opened over. A
+    /// terminal menu's picks run on the active terminal, so that must still
+    /// be the one it opened from, not a sibling that took focus when its
+    /// pane closed.
+    fn session_live(
+        &self,
+        session: &NativeMenuSession,
+        cx: &gpui::App,
+    ) -> bool {
+        self.menu_target_live(&session.kind, cx)
+            && session.terminal.as_ref().is_none_or(|terminal| {
+                self.active_view(cx).is_some_and(|active| {
+                    active.entity_id() == terminal.entity_id()
+                })
+            })
     }
 
     /// Whether the target a menu of `kind` acts on still exists.

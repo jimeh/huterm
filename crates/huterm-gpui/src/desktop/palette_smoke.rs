@@ -814,9 +814,10 @@ fn read_state(cx: &mut App) -> String {
     // theirs as `w<i>.notices=` and `w<i>.notice<j>=` on their line.
     let desktop = cx.global::<Desktop>();
     let mut output = format!(
-        "windows={} quake_hotkeys={} config.warning={:?} {} model_titles={:?} reloads={} reload_titles={:?}\n",
+        "windows={} quake_hotkeys={} native_menu_tracking={} config.warning={:?} {} model_titles={:?} reloads={} reload_titles={:?}\n",
         cx.windows().len(),
         super::quake_windows::keep_alive(cx),
+        super::native_menus::tracking(),
         desktop.config.warning,
         smoke_notices(
             "desktop.",
