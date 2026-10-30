@@ -161,6 +161,8 @@ On Apple Silicon, the macOS desktop smokes can run in a disposable
 windows, focus changes, fullscreen Spaces, cursor warps, and global hotkeys off
 the host, so parallel sessions do not collide. Install Tart first; these
 tasks sit alongside the host `smoke:macos-*` tasks and do not replace them.
+The host tasks instead take turns through
+[the host smoke lock](desktop-smokes.md#host-smoke-lock).
 
 ```sh
 mise run vm:macos:smoke

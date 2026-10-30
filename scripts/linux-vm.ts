@@ -1,9 +1,9 @@
 /** Run Huterm's Linux desktop interactively in a persistent Tart VM. */
-import { dlopen } from "bun:ffi";
 import { createHash } from "node:crypto";
-import { closeSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, watch } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { tryLock } from "./flock";
 import { cacheNames, imageName as containerImage } from "./linux";
 import { DevSession, attachControls, stopWithFallback } from "./vm-dev-session";
 
@@ -63,23 +63,6 @@ function stateDirectory(): string {
   const directory = process.env.HUTERM_LINUX_VM_STATE ?? join(homedir(), "Library/Caches/huterm-linux-vm");
   mkdirSync(directory, { recursive: true });
   return directory;
-}
-
-let libc: ReturnType<typeof openLibc> | undefined;
-function openLibc() {
-  return dlopen("/usr/lib/libSystem.B.dylib", { flock: { args: ["i32", "i32"], returns: "i32" } });
-}
-
-/** Kernel-owned locks release automatically if the runner dies. */
-export function tryLock(path: string, shared = false): (() => void) | undefined {
-  libc ??= openLibc();
-  const fd = openSync(path, "a");
-  // LOCK_SH | LOCK_NB, or LOCK_EX | LOCK_NB
-  if (libc.symbols.flock(fd, shared ? 5 : 6) !== 0) {
-    closeSync(fd);
-    return undefined;
-  }
-  return () => closeSync(fd);
 }
 
 let interrupted = 0;

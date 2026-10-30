@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Runs a command against a display that delivers GPUI frames. Linux uses Xvfb
 # with twm: without a window manager the window is never reported visible and
-# GPUI stops after its first frame. Other platforms run the command directly.
+# GPUI stops after its first frame. Other platforms run the command on the host
+# display, under the host smoke lock.
 set -euo pipefail
 
 if [ "$(uname -s)" != Linux ]; then
-  exec "$@"
+  exec bun "$(dirname "$0")/host-smoke-lock.ts" "$@"
 fi
 if ! command -v twm >/dev/null 2>&1; then
   echo "headless.sh requires twm so Xvfb delivers frames to the GPUI window" >&2

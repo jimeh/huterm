@@ -1,9 +1,9 @@
 /** Run macOS desktop workflows in disposable Tart VMs so they never take over the host display. */
-import { dlopen } from "bun:ffi";
 import { createHash } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, watch } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, watch } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { tryLock } from "./flock";
 import { DevSession, attachControls, stopWithFallback } from "./vm-dev-session";
 
 const repository = resolve(import.meta.dir, "..");
@@ -57,23 +57,6 @@ function stateDirectory(): string {
   const directory = process.env.HUTERM_MACOS_VM_STATE ?? join(homedir(), "Library/Caches/huterm-macos-vm");
   mkdirSync(directory, { recursive: true });
   return directory;
-}
-
-let libc: ReturnType<typeof openLibc> | undefined;
-function openLibc() {
-  return dlopen("/usr/lib/libSystem.B.dylib", { flock: { args: ["i32", "i32"], returns: "i32" } });
-}
-
-/** Kernel-owned locks release automatically if the runner dies. */
-export function tryLock(path: string): (() => void) | undefined {
-  libc ??= openLibc();
-  const fd = openSync(path, "a");
-  // LOCK_EX | LOCK_NB
-  if (libc.symbols.flock(fd, 6) !== 0) {
-    closeSync(fd);
-    return undefined;
-  }
-  return () => closeSync(fd);
 }
 
 let interrupted = 0;

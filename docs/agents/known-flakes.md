@@ -353,7 +353,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   Keybindings section: same step, same focus, and the same
   `when:u2=Terminal (` draft, after that PR's new title-strip checks had
   passed. Host runs of the step passed 3 of 3 for that change, once a
-  leftover Huterm app in front of the window was stopped.
+  leftover Huterm app in front of the window was stopped. A fifth came on
+  2026-10-30 on PR #331 (run 41005288106, job 123898692917, head
+  `74d464b9`), which changes only smoke tooling: same step, same focus,
+  and the same draft. The same step had passed on that PR's previous head,
+  `3379810b`, whose tree differed only by main's #333.
 - **Evidence:** the last state had `settings.focus=action:kon:u2`,
   `settings.list=none`, `settings.status="Saved"`, `settings.writing=false`,
   and `settings.drafts` still holding `when:u2=Terminal (`, so the
@@ -414,7 +418,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   head `ad082c2b`); the rerun of the failed jobs passed on the same head. The
   PR does not change the palette smoke or the code it drives. No other failed
   CI run since 2026-10-21 has this signature, and neither does any first
-  attempt since 2026-10-26 that passed on rerun.
+  attempt since 2026-10-26 that passed on rerun. It recurred on 2026-10-30
+  on PR #331 (run 41006554547, job 123902649454, head `cad04bc4`), which
+  changes only smoke tooling and runs Linux smokes unchanged, with the
+  same third main-window tab active at `w0.active_index=2`.
 - **Evidence:** the count includes every core workspace's tabs: two in the
   main window and one in the quake window from step 2. The failure state
   shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux
@@ -438,7 +445,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   failures sit in the `busy-on` step, where `xdotool` input and the smoke's
   file commands are not ordered. It recurred on 2026-10-28 on x86_64 (PR
   #318 at `bbeb8be1`, run 40767320033, job 123094963780) with the same
-  state, `w0.busy=true` and `w0.palette=false`; the next head passed.
+  state, `w0.busy=true` and `w0.palette=false`; the next head passed. It
+  reached aarch64 on 2026-10-30 (PR #331 at `45219c47`, run 41007277899,
+  job 123905010885) with the same state.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused
