@@ -1053,6 +1053,22 @@ mod tests {
     }
 
     #[test]
+    fn the_title_bar_position_shows_while_bars_can_show() {
+        let model = SettingsModel::load().unwrap();
+        let mode = |value: &str| VisibleWhen {
+            setting: "panes.title_bar".into(),
+            equals: toml::Value::String(value.into()),
+        };
+        assert_eq!(
+            model
+                .setting("panes.title_bar_position")
+                .unwrap()
+                .visible_when,
+            vec![mode("visible"), mode("hover")]
+        );
+    }
+
+    #[test]
     fn malformed_metadata_names_the_setting() {
         let style = || {
             let mut style =

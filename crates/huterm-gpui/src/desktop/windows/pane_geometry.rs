@@ -40,12 +40,18 @@ impl TitleBars {
         }
     }
 
-    /// The height a bar takes from its pane's frame.
+    /// The height a bar takes from its pane's frame: a visible bar's, as a
+    /// hover bar draws over the terminal and a hidden one draws nowhere.
     fn reserved(self) -> Pixels {
         match self.mode {
             PaneTitleBar::Visible => TITLE_BAR_HEIGHT,
-            PaneTitleBar::Hidden => px(0.0),
+            PaneTitleBar::Hover | PaneTitleBar::Hidden => px(0.0),
         }
+    }
+
+    /// Whether a split tab's panes have a bar rectangle at all.
+    fn placed(self) -> bool {
+        self.mode != PaneTitleBar::Hidden
     }
 }
 
@@ -62,9 +68,10 @@ pub(super) struct PaneRect {
     /// The pane's whole share of the tab.
     pub(super) frame: Bounds<Pixels>,
     /// The title bar along the frame's top or bottom, in a split tab whose
-    /// bars are not hidden.
+    /// bars are not hidden. A hover bar's lies over the terminal.
     pub(super) title_bar: Option<Bounds<Pixels>>,
-    /// Where the terminal view sits: the frame beside its title bar.
+    /// Where the terminal view sits: the frame beside a visible title bar,
+    /// or the whole frame.
     pub(super) terminal: Bounds<Pixels>,
 }
 
@@ -328,26 +335,26 @@ fn pane_rect(
     frame: Bounds<Pixels>,
     bars: Option<TitleBars>,
 ) -> PaneRect {
-    let height = bars.map_or(px(0.0), TitleBars::reserved);
-    if height <= px(0.0) {
+    let Some(bars) = bars.filter(|bars| bars.placed()) else {
         return PaneRect {
             pane,
             frame,
             title_bar: None,
             terminal: frame,
         };
-    }
-    let height = height.min(frame.size.height);
-    let rest = size(frame.size.width, frame.size.height - height);
+    };
+    let height = TITLE_BAR_HEIGHT.min(frame.size.height);
+    let reserved = bars.reserved().min(height);
     let bar = size(frame.size.width, height);
-    let (title_bar, terminal) = match bars.map(|bars| bars.position) {
-        Some(PaneTitleBarPosition::Bottom) => (
+    let rest = size(frame.size.width, frame.size.height - reserved);
+    let (title_bar, terminal) = match bars.position {
+        PaneTitleBarPosition::Bottom => (
             Bounds::new(point(frame.origin.x, frame.bottom() - height), bar),
             Bounds::new(frame.origin, rest),
         ),
-        _ => (
+        PaneTitleBarPosition::Top => (
             Bounds::new(frame.origin, bar),
-            Bounds::new(point(frame.origin.x, frame.origin.y + height), rest),
+            Bounds::new(point(frame.origin.x, frame.origin.y + reserved), rest),
         ),
     };
     PaneRect {

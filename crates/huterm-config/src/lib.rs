@@ -820,6 +820,13 @@ pub enum PaneTitleBar {
         schemars(extend("x-huterm-label" = "Visible"))
     )]
     Visible,
+    /// A pane's title bar takes no space and fades in over its terminal
+    /// while the pointer rests where it would be.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "On hover"))
+    )]
+    Hover,
     /// No pane shows a title bar; close, zoom, and move remain commands.
     #[cfg_attr(
         feature = "schema",
@@ -855,7 +862,8 @@ pub const MAX_LAYOUTS: usize = 64;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct PanesConfig {
-    /// Whether a split tab's panes show title bars: `visible` or `hidden`.
+    /// Whether a split tab's panes show title bars: `visible`, `hover`, or
+    /// `hidden`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "window",
         "x-huterm-group" = "Panes",
@@ -871,7 +879,10 @@ pub struct PanesConfig {
         "x-huterm-label" = "Title bar position",
         "x-huterm-order" = 36,
         "x-huterm-apply" = "live",
-        "x-huterm-visible-when" = {"setting": "panes.title_bar", "equals": "visible"},
+        "x-huterm-visible-when" = [
+            {"setting": "panes.title_bar", "equals": "visible"},
+            {"setting": "panes.title_bar", "equals": "hover"}
+        ],
     )))]
     pub title_bar_position: PaneTitleBarPosition,
     /// Who owns a pane's zoom: `view` or `shared`.

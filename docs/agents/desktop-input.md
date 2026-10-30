@@ -222,7 +222,22 @@ sync alike, asks `zoom_shows`.
 A press on a pane title bar's title, not its buttons, focuses the pane and
 starts a `PaneDrag` once it moves past the tab drag threshold. With
 `[panes] title_bar = "hidden"` no pane has a bar, so panes move only by
-command; the bar's position never changes its drag or drop geometry. The window's
+command; the bar's position never changes its drag or drop geometry.
+
+Under `title_bar = "hover"` a bar has its rectangle but draws, and takes
+input, only while `PaneBarReveals` reveals it: after the pointer rests in its
+band for `HOVER_INTENT` (200 ms, the scrollbar's), while a pane drag or its
+menu, Huterm's or a native `NSMenu`, holds it, or for a second after a
+keyboard focus change. The window samples the pointer in the tab bar's
+deferred pointer refresh and treats it as nowhere while a terminal owns a
+gesture, during a pane drag, or over the fullscreen tab bar's trigger edge or
+revealed bar, so a selection crossing the band never reveals one. A
+revealed bar reaches its terminal as `PointerOverlays::pane_bar`, which every
+press, motion, link, and drop path reads like the tab bar's overlay; a
+gesture the terminal already owns still wins. The test platform never
+reports a hovered window, so window tests feed `pane_bar_pointer` directly.
+
+The window's
 capture listeners own its motion and release, as they do for a reorder, and
 the drag keeps terminal focus, so no application sees a focus report. Each
 motion resolves the target from the last drawn frame (`drawn_panes`, only

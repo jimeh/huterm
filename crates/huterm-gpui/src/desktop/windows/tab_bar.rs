@@ -33,7 +33,8 @@ const CLOSE_SIZE: Pixels = px(18.0);
 const PANE_TITLE_PADDING_RIGHT: Pixels = px(3.0);
 /// The space between a pane title bar's items.
 const PANE_TITLE_GAP: Pixels = px(6.0);
-/// The thickness of the focused pane's mark while title bars are hidden.
+/// The thickness of the focused pane's mark while its title bar is not
+/// shown.
 const PANE_FOCUS_CUE_HEIGHT: Pixels = px(2.0);
 
 /// What one pane's title bar shows.
@@ -625,14 +626,24 @@ fn pane_title_text(title: String, status: TabStatus) -> Div {
         .child(title)
 }
 
-/// The focused pane's mark while title bars are hidden: an accent line
-/// along the top of its `frame`, drawn over the terminal without taking
-/// pointer input.
-pub(super) fn pane_focus_cue(frame: Bounds<Pixels>, colors: TabColors) -> Div {
+/// The focused pane's mark while its title bar is hidden or waiting for
+/// hover: an accent line along the `bottom` or top edge of its `frame`,
+/// where the bar would be, drawn over the terminal without taking pointer
+/// input.
+pub(super) fn pane_focus_cue(
+    frame: Bounds<Pixels>,
+    bottom: bool,
+    colors: TabColors,
+) -> Div {
+    let top = if bottom {
+        frame.bottom() - PANE_FOCUS_CUE_HEIGHT
+    } else {
+        frame.origin.y
+    };
     div()
         .absolute()
         .left(frame.origin.x)
-        .top(frame.origin.y)
+        .top(top)
         .w(frame.size.width)
         .h(PANE_FOCUS_CUE_HEIGHT)
         .bg(colors.accent)

@@ -118,12 +118,18 @@ fn pane_title_bars_default_to_visible_at_the_top() {
     )
     .unwrap();
     assert_eq!(changed.panes.title_bar, PaneTitleBar::Hidden);
+    let hover = parse(
+        &DEFAULT_CONFIG
+            .replace("title_bar = \"visible\"", "title_bar = \"hover\""),
+    )
+    .unwrap();
+    assert_eq!(hover.panes.title_bar, PaneTitleBar::Hover);
     assert_eq!(
         changed.panes.title_bar_position,
         PaneTitleBarPosition::Bottom
     );
     for (known, unknown) in [
-        ("title_bar = \"visible\"", "title_bar = \"hover\""),
+        ("title_bar = \"visible\"", "title_bar = \"auto\""),
         (
             "title_bar_position = \"top\"",
             "title_bar_position = \"left\"",

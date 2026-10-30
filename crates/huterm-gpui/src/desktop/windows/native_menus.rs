@@ -173,6 +173,8 @@ impl WorkspaceView {
         {
             terminal.update(cx, |terminal, _| terminal.release_menu_press());
         }
+        // A pane bar the menu held may hide now.
+        self.refresh_pane_bars(cx);
         cx.notify();
         Some(session)
     }

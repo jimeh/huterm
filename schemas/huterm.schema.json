@@ -519,6 +519,12 @@
           "x-huterm-label": "Visible"
         },
         {
+          "const": "hover",
+          "description": "A pane's title bar takes no space and fades in over its terminal\nwhile the pointer rests where it would be.",
+          "type": "string",
+          "x-huterm-label": "On hover"
+        },
+        {
           "const": "hidden",
           "description": "No pane shows a title bar; close, zoom, and move remain commands.",
           "type": "string",
@@ -622,7 +628,7 @@
             }
           ],
           "default": "visible",
-          "description": "Whether a split tab's panes show title bars: `visible` or `hidden`.",
+          "description": "Whether a split tab's panes show title bars: `visible`, `hover`, or\n`hidden`.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Pane title bars",
@@ -642,10 +648,16 @@
           "x-huterm-label": "Title bar position",
           "x-huterm-order": 36,
           "x-huterm-section": "window",
-          "x-huterm-visible-when": {
-            "equals": "visible",
-            "setting": "panes.title_bar"
-          }
+          "x-huterm-visible-when": [
+            {
+              "equals": "visible",
+              "setting": "panes.title_bar"
+            },
+            {
+              "equals": "hover",
+              "setting": "panes.title_bar"
+            }
+          ]
         },
         "zoom": {
           "allOf": [

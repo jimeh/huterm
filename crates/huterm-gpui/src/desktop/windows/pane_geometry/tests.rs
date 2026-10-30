@@ -195,7 +195,8 @@ fn a_zoomed_pane_fills_the_tab_with_its_title_bar_and_no_dividers() {
 }
 
 #[test]
-fn bottom_bars_sit_under_the_terminal_and_hidden_bars_take_no_space() {
+fn bottom_bars_sit_under_the_terminal_and_hover_and_hidden_bars_take_no_space()
+{
     let layout = columns(&[500_000, 500_000]);
     let content = rect(0.0, 0.0, 401.0, 300.0);
     let bottom = TitleBars {
@@ -232,6 +233,22 @@ fn bottom_bars_sit_under_the_terminal_and_hidden_bars_take_no_space() {
     assert_eq!(without.dividers, at_bottom.dividers);
     let zoomed = layout_panes(&layout, content, 1.0, Some(id(2)), hidden);
     assert_eq!(zoomed.panes[0].terminal, content);
+    // Hover bars keep their rectangle at their edge, over a terminal that
+    // takes the whole frame.
+    let hover = TitleBars {
+        mode: PaneTitleBar::Hover,
+        ..bottom
+    };
+    let over = layout_panes(&layout, content, 1.0, None, hover);
+    assert_eq!(over.panes[0].title_bar, Some(rect(0.0, 276.0, 200.0, 24.0)));
+    assert_eq!(over.panes[0].terminal, over.panes[0].frame);
+    let top = TitleBars {
+        position: PaneTitleBarPosition::Top,
+        ..hover
+    };
+    let over = layout_panes(&layout, content, 1.0, None, top);
+    assert_eq!(over.panes[0].title_bar, Some(rect(0.0, 0.0, 200.0, 24.0)));
+    assert_eq!(over.panes[0].terminal, over.panes[0].frame);
 }
 
 #[test]
