@@ -509,7 +509,7 @@
         }
       ]
     },
-    "PaneTitleBar": {
+    "PaneTitleBarMode": {
       "description": "Whether a split tab's panes show their title bars.",
       "oneOf": [
         {
@@ -624,7 +624,7 @@
         "title_bar": {
           "allOf": [
             {
-              "$ref": "#/definitions/PaneTitleBar"
+              "$ref": "#/definitions/PaneTitleBarMode"
             }
           ],
           "default": "visible",

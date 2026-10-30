@@ -812,7 +812,7 @@ pub enum PaneZoomScope {
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
-pub enum PaneTitleBar {
+pub enum PaneTitleBarMode {
     /// Each pane shows its title bar, which takes space from its terminal.
     #[default]
     #[cfg_attr(
@@ -873,7 +873,7 @@ pub struct PanesConfig {
         "x-huterm-order" = 33,
         "x-huterm-apply" = "live",
     )))]
-    pub title_bar: PaneTitleBar,
+    pub title_bar: PaneTitleBarMode,
     /// Which edge of a pane its title bar runs along: `top` or `bottom`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "window",
@@ -933,7 +933,7 @@ pub struct PanesConfig {
 impl Default for PanesConfig {
     fn default() -> Self {
         Self {
-            title_bar: PaneTitleBar::default(),
+            title_bar: PaneTitleBarMode::default(),
             title_bar_position: PaneTitleBarPosition::default(),
             zoom: PaneZoomScope::default(),
             layouts: BTreeMap::new(),

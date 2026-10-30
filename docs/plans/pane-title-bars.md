@@ -166,7 +166,7 @@ argument.
 
 ### PR 2 approach
 
-**Config.** `PanesConfig` gains `title_bar: PaneTitleBar` (`visible`,
+**Config.** `PanesConfig` gains `title_bar: PaneTitleBarMode` (`visible`,
 `hover`, `hidden`) and `title_bar_position: PaneTitleBarPosition` (`top`,
 `bottom`), lowercase serde enums with schema labels, in Window › Panes before
 Pane zoom, both `x-huterm-apply = "live"`.

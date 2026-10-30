@@ -11,7 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 use gpui::{Bounds, Pixels, Size, point, px, size};
-use huterm_config::{PaneTitleBar, PaneTitleBarPosition, PanesConfig};
+use huterm_config::{PaneTitleBarMode, PaneTitleBarPosition, PanesConfig};
 use huterm_protocol::{
     Arrangement, PaneId, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis,
     SplitDirection, SplitId, SplitNode,
@@ -28,7 +28,7 @@ pub(super) const TITLE_BAR_HEIGHT: Pixels = px(24.0);
 /// Where a split tab's panes put their title bars, from `[panes]`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct TitleBars {
-    pub(super) mode: PaneTitleBar,
+    pub(super) mode: PaneTitleBarMode,
     pub(super) position: PaneTitleBarPosition,
 }
 
@@ -44,14 +44,14 @@ impl TitleBars {
     /// hover bar draws over the terminal and a hidden one draws nowhere.
     fn reserved(self) -> Pixels {
         match self.mode {
-            PaneTitleBar::Visible => TITLE_BAR_HEIGHT,
-            PaneTitleBar::Hover | PaneTitleBar::Hidden => px(0.0),
+            PaneTitleBarMode::Visible => TITLE_BAR_HEIGHT,
+            PaneTitleBarMode::Hover | PaneTitleBarMode::Hidden => px(0.0),
         }
     }
 
     /// Whether a split tab's panes have a bar rectangle at all.
     fn placed(self) -> bool {
-        self.mode != PaneTitleBar::Hidden
+        self.mode != PaneTitleBarMode::Hidden
     }
 }
 

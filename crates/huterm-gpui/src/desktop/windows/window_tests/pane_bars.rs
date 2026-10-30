@@ -3,9 +3,9 @@
 //! gives up, a bottom bar's buttons work, and hover bars reveal, hold, and
 //! fade.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use huterm_config::{PaneTitleBar, PaneTitleBarPosition, PanesConfig};
+use huterm_config::{PaneTitleBarMode, PaneTitleBarPosition, PanesConfig};
 
 use super::*;
 
@@ -101,7 +101,7 @@ fn a_reload_moves_title_bars_to_the_bottom_or_hides_them(
 
     // Hidden bars give each terminal its whole frame, and its grid grows.
     harness.reload_panes(window, |panes| {
-        panes.title_bar = PaneTitleBar::Hidden;
+        panes.title_bar = PaneTitleBarMode::Hidden;
     });
     harness.wait_for("the bars to hide and the grids to grow", |cx| {
         drawn(cx, window).is_some_and(|rects| {
@@ -121,6 +121,33 @@ fn a_reload_moves_title_bars_to_the_bottom_or_hides_them(
                     .is_some_and(|bar| bar.origin == rect.frame.origin)
             })
         }) && grid(cx, window, tab, first) == Some(top)
+    });
+
+    // A bottom bar's close button closes its pane.
+    harness.reload_panes(window, |panes| {
+        panes.title_bar_position = PaneTitleBarPosition::Bottom;
+    });
+    harness.wait_for("the bars to move to the bottom again", |cx| {
+        drawn(cx, window).is_some_and(|rects| {
+            rects.iter().all(|rect| {
+                rect.title_bar
+                    .is_some_and(|bar| bar.bottom() == rect.frame.bottom())
+            })
+        })
+    });
+    let close = harness.update_view(window, |view, _, _| {
+        view.drawn_panes
+            .borrow()
+            .as_ref()
+            .and_then(|(_, rects)| {
+                rects.iter().find(|rect| rect.pane == second)?.title_bar
+            })
+            .map(WorkspaceView::pane_close_center)
+    });
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_click(close.unwrap(), gpui::Modifiers::none());
+    harness.wait_for("the second pane to close", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![first], first))
     });
 }
 
@@ -202,7 +229,7 @@ fn hover_bars_reveal_after_the_intent_and_stay_while_held(
     let tab = harness.open_tab(ECHO);
     let (window, first, second) = harness.split_window(tab);
     harness.reload_panes(window, |panes| {
-        panes.title_bar = PaneTitleBar::Hover;
+        panes.title_bar = PaneTitleBarMode::Hover;
     });
     // The bars take no space and nothing shows yet.
     harness.wait_for("hover geometry", |cx| {
@@ -276,5 +303,79 @@ fn hover_bars_reveal_after_the_intent_and_stay_while_held(
     );
     harness.cx.update(|cx| {
         assert_eq!(bar_state(cx, window, second), Some((0.0, None)));
+    });
+}
+
+#[gpui::test]
+fn a_keyboard_reveal_out_of_a_zoomed_pane_shows_the_new_bar(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    harness.update_view(window, |view, window, cx| {
+        view.focus_pane(tab, first, window, cx);
+    });
+    harness.reload_panes(window, |panes| {
+        panes.title_bar = PaneTitleBarMode::Hover;
+    });
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_for("the first pane to zoom", |cx| {
+        pane_shown(cx, window, tab, second).is_some_and(|(visible, _)| !visible)
+            && drawn(cx, window).is_some_and(|rects| rects.len() == 1)
+    });
+    // Moving focus unzooms and reveals the second pane's bar, which the
+    // zoomed frame never drew.
+    harness.invoke(window, ids::FOCUS_NEXT_PANE).unwrap();
+    let moved = Instant::now();
+    harness.wait_for("both panes to draw again", |cx| {
+        drawn(cx, window).is_some_and(|rects| rects.len() == 2)
+    });
+    harness.animate_through(window, moved, moved + Duration::from_millis(300));
+    harness.cx.update(|cx| {
+        assert_eq!(
+            bar_state(cx, window, second).map(|state| state.0),
+            Some(1.0)
+        );
+    });
+}
+
+#[gpui::test]
+fn a_revealed_bars_overlay_follows_its_pane_through_a_resize(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, _) = harness.split_window(tab);
+    harness.update_view(window, |view, window, cx| {
+        view.focus_pane(tab, first, window, cx);
+    });
+    harness.reload_panes(window, |panes| {
+        panes.title_bar = PaneTitleBarMode::Hover;
+    });
+    harness.wait_for("hover geometry", |cx| {
+        drawn(cx, window).is_some_and(|rects| {
+            rects.iter().all(|rect| rect.terminal == rect.frame)
+        })
+    });
+    let bar = harness.bar_of(window, first);
+    let start = Instant::now();
+    harness.point_bars(window, Some(bar.center()));
+    harness.animate_through(window, start, start + Duration::from_millis(500));
+    harness.cx.update(|cx| {
+        assert_eq!(bar_state(cx, window, first), Some((1.0, Some(bar))));
+    });
+    // A resize by command widens the bar while the pointer rests on it;
+    // the terminal's overlay follows the bar as drawn.
+    harness.invoke(window, ids::RESIZE_PANE_RIGHT).unwrap();
+    harness.wait_for("the bar to widen and its overlay to follow", |cx| {
+        drawn(cx, window)
+            .and_then(|rects| {
+                rects.iter().find(|rect| rect.pane == first)?.title_bar
+            })
+            .is_some_and(|wider| {
+                wider.size.width > bar.size.width
+                    && bar_state(cx, window, first) == Some((1.0, Some(wider)))
+            })
     });
 }

@@ -204,7 +204,7 @@ fn bottom_bars_sit_under_the_terminal_and_hover_and_hidden_bars_take_no_space()
         ..TitleBars::default()
     };
     let hidden = TitleBars {
-        mode: PaneTitleBar::Hidden,
+        mode: PaneTitleBarMode::Hidden,
         ..bottom
     };
     let at_bottom = layout_panes(&layout, content, 1.0, None, bottom);
@@ -236,7 +236,7 @@ fn bottom_bars_sit_under_the_terminal_and_hover_and_hidden_bars_take_no_space()
     // Hover bars keep their rectangle at their edge, over a terminal that
     // takes the whole frame.
     let hover = TitleBars {
-        mode: PaneTitleBar::Hover,
+        mode: PaneTitleBarMode::Hover,
         ..bottom
     };
     let over = layout_panes(&layout, content, 1.0, None, hover);
@@ -257,7 +257,7 @@ fn hidden_bars_let_a_split_fit_one_bar_shorter() {
     let visible = metrics(scale, (0.0, 0.0));
     let hidden = PaneMetrics {
         bars: TitleBars {
-            mode: PaneTitleBar::Hidden,
+            mode: PaneTitleBarMode::Hidden,
             ..TitleBars::default()
         },
         ..visible

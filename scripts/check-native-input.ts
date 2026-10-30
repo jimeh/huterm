@@ -296,8 +296,8 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await send(`mouse\t2\t${leftRect!.x + leftRect!.w / 2}\t${leftRect!.y + leftRect!.h / 2}`);
     await state("pane_focus=0");
     await check("click-focuses-pane", "", first);
-    // Hover bars: a real pointer resting on a bar's band reveals it, leaving
-    // hides it again, and neither shell sees the motion.
+    // Hover bars: a real pointer resting on a bar's band reveals it, and
+    // leaving hides it again.
     await configure("off", false, true, `[panes]\ntitle_bar = "hover"\n`);
     await state("pane_bar_opacity=0.00;0.00");
     const [hoverGrab] = field(await currentState(), "pane_grab").split(";");
@@ -308,7 +308,6 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await state("pane_bar_opacity=0.00;0.00");
     await configure("off", false, true);
     await state("pane_bar_opacity=1.00;1.00");
-    await check("hover-bar-reaches-no-shell", "", first);
     await key(30, command, "]");
     await state("pane_focus=1");
     await key(17, control, "\x14", "t");

@@ -63,9 +63,11 @@ pub(super) struct PaneBarReveals {
 }
 
 impl PaneBarReveals {
-    /// Applies the sampled `inputs`, which name every bar the window draws;
-    /// bars it no longer draws are dropped. Disabled, every bar hides at
-    /// once. Returns whether a bar's reveal input changed.
+    /// Applies the sampled `inputs`, which name every bar the window last
+    /// drew. A bar it no longer draws is dropped, unless a keyboard reveal
+    /// still holds it: a focus move out of a zoomed pane reveals a bar the
+    /// next frame draws first. Disabled, every bar hides at once. Returns
+    /// whether a bar's reveal input changed.
     pub(super) fn update(
         &mut self,
         now: Instant,
@@ -73,8 +75,10 @@ impl PaneBarReveals {
         enabled: bool,
     ) -> bool {
         let before = self.bars.len();
-        self.bars
-            .retain(|pane, _| inputs.iter().any(|input| input.pane == *pane));
+        self.bars.retain(|pane, bar| {
+            inputs.iter().any(|input| input.pane == *pane)
+                || (enabled && bar.reveal.activity_pending(now))
+        });
         let mut changed = before != self.bars.len();
         for input in inputs {
             let bar = self.bars.entry(input.pane).or_default();
@@ -252,6 +256,22 @@ mod tests {
         assert!(bars.schedule(now).frame);
         run(&mut bars, now, now + Duration::from_millis(200));
         assert!((bars.progress(pane(3)) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_keyboard_reveal_survives_a_refresh_from_the_frame_before_its_bar() {
+        let now = Instant::now();
+        let mut bars = PaneBarReveals::default();
+        // A zoomed frame drew only pane 1; a focus move reveals pane 2.
+        bars.update(now, &[input(1, false, false)], true);
+        bars.reveal_for_activity(pane(2), now);
+        bars.update(now, &[input(1, false, false)], true);
+        run(&mut bars, now, now + Duration::from_millis(200));
+        assert!((bars.progress(pane(2)) - 1.0).abs() < f32::EPSILON);
+        // Once its second passes, an undrawn bar goes.
+        let later = now + Duration::from_secs(3);
+        bars.update(later, &[input(1, false, false)], true);
+        assert!(bars.progress(pane(2)).abs() < f32::EPSILON);
     }
 
     #[test]
