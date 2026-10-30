@@ -41,12 +41,15 @@ its holder in `owner` beside it, and runs its command while holding the lock.
   for that long, so agents run it in the background or with a short timeout.
 - The wrapper that takes the lock runs its command as the leader of a new
   process group and session, so the command has no controlling terminal;
-  its stdio is still the wrapper's. The wrapper forwards SIGINT, SIGTERM,
-  and SIGHUP to that group and keeps the lock until the command exits. It
-  then stops whatever is left in the group, with SIGKILL after two seconds,
-  so an app a harness orphaned cannot share the desktop with the next
-  holder. A nested wrapper, or one off macOS, keeps its command in its own
-  group, so the holder's cleanup covers it.
+  its stdio is still the wrapper's. The wrapper forwards SIGINT and SIGTERM
+  to that group, and SIGHUP as SIGTERM, because `runSmokeProcess` harnesses
+  stop the apps they start in other groups only on SIGINT or SIGTERM. It
+  keeps the lock until the command exits, then stops whatever is left in
+  the group, with SIGKILL after two seconds, and waits up to a second more
+  for the group to empty before releasing. An app a harness orphaned
+  therefore cannot share the desktop with the next holder. A nested
+  wrapper, or one off macOS, keeps its command in its own group, so the
+  holder's cleanup covers it.
 - A process that starts its own group or session is outside that cleanup
   and must be stopped by whatever started it: a tmux server,
   `smoke-process.ts` children, and the task shells of a `mise run` that is

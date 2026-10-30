@@ -24,6 +24,8 @@ const DEFAULT_TIMEOUT_SECONDS = 45 * 60;
 const POLL_MS = 250;
 /** How long processes the command leaves behind get to exit before SIGKILL. */
 const STRAY_GRACE_MS = 2_000;
+/** How long SIGKILLed processes get to finish exiting before the lock is released anyway. */
+const KILL_GRACE_MS = 1_000;
 const worktree = resolve(import.meta.dir, "..");
 
 class LockError extends Error {
@@ -105,10 +107,18 @@ function signalGroup(leader: number, signal: NodeJS.Signals | 0): boolean {
  * rest of the command's process group before releasing the lock.
  */
 async function stopGroup(leader: number): Promise<void> {
-  if (!signalGroup(leader, "SIGTERM")) return;
-  const deadline = performance.now() + STRAY_GRACE_MS;
-  while (signalGroup(leader, 0) && performance.now() < deadline) await Bun.sleep(50);
+  const emptied = async (graceMs: number) => {
+    const deadline = performance.now() + graceMs;
+    while (signalGroup(leader, 0)) {
+      if (performance.now() >= deadline) return false;
+      await Bun.sleep(50);
+    }
+    return true;
+  };
+  if (!signalGroup(leader, "SIGTERM") || await emptied(STRAY_GRACE_MS)) return;
   signalGroup(leader, "SIGKILL");
+  // A process stuck in the kernel must not keep the lock forever.
+  if (!await emptied(KILL_GRACE_MS)) console.error(`host smoke lock: process group ${leader} survived SIGKILL; releasing the lock anyway`);
 }
 
 let interrupted: NodeJS.Signals | undefined;
@@ -162,11 +172,13 @@ async function main(argv: string[]): Promise<number> {
   // A locked command leads its own process group, so a terminal's Ctrl-C
   // reaches it once, through this handler, and so does anything it started.
   // Without the lock the command stays in this group, so a nested run is
-  // still inside the cleanup of the wrapper that holds the lock.
+  // still inside the cleanup of the wrapper that holds the lock. A hangup
+  // reaches the group as SIGTERM: harnesses such as runSmokeProcess stop the
+  // apps they put in other groups on SIGTERM, but die at once on SIGHUP.
   const forward = (signal: NodeJS.Signals) => {
     interrupted ??= signal;
     if (!child?.pid) return;
-    if (locking) signalGroup(child.pid, signal);
+    if (locking) signalGroup(child.pid, signal === "SIGHUP" ? "SIGTERM" : signal);
     else child.kill(signal);
   };
   const handlers = (["SIGINT", "SIGTERM", "SIGHUP"] as const).map((signal) => [signal, () => forward(signal)] as const);

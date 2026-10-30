@@ -172,6 +172,22 @@ describe.skipIf(!darwin)("the host smoke lock", () => {
     expect(existsSync(join(files, "orphan-alive"))).toBe(false);
   });
 
+  test("a hung-up holder asks its command to stop as it would for SIGTERM", async () => {
+    const { state, files } = fixture();
+    // Like a runSmokeProcess harness: it stops the app it started in its own
+    // process group on SIGTERM, but SIGHUP would kill it before it could.
+    const first = start(state, ["sh", "-c", `set -m; sleep 30 & app=$!; echo $app > "$1/app"; trap 'kill $app; exit 0' TERM; : > "$1/a.started"; while :; do sleep 0.05; done`, "sh", files]);
+    await until(() => existsSync(join(files, "a.started")), "the first command", first.stderr);
+    pids.push(Number(readFileSync(join(files, "app"), "utf8")));
+    const second = start(state, ["sh", "-c", `read pid < "$1/app"; if kill -0 "$pid" 2>/dev/null; then touch "$1/app-alive"; fi; touch "$1/b.ran"`, "sh", files]);
+    await until(() => second.stderr().includes("Waiting for the host smoke lock"), "the waiting message", second.stderr);
+    first.child.kill("SIGHUP");
+    await first.child.exited;
+    expect(await second.exit).toBe(0);
+    expect(existsSync(join(files, "b.ran"))).toBe(true);
+    expect(existsSync(join(files, "app-alive"))).toBe(false);
+  });
+
   test("a holder stops what its command leaves behind after a normal exit", async () => {
     const { state, files } = fixture();
     const first = start(state, ["sh", "-c", `sleep 30 & echo $! > "$1/sleep"`, "sh", files]);
