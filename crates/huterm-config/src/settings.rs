@@ -1067,22 +1067,6 @@ mod tests {
     }
 
     #[test]
-    fn the_title_bar_position_shows_while_bars_can_show() {
-        let model = SettingsModel::load().unwrap();
-        let mode = |value: &str| VisibleWhen {
-            setting: "panes.title_bar".into(),
-            equals: toml::Value::String(value.into()),
-        };
-        assert_eq!(
-            model
-                .setting("panes.title_bar_position")
-                .unwrap()
-                .visible_when,
-            vec![mode("visible"), mode("hover")]
-        );
-    }
-
-    #[test]
     fn focus_indicators_are_sliders_that_read_off_at_zero() {
         let model = SettingsModel::load().unwrap();
         for (path, max) in
@@ -1110,10 +1094,15 @@ mod tests {
             model.setting("panes.focus_accent").unwrap().visible_when,
             vec![mode("hover"), mode("hidden")]
         );
-        assert_eq!(
-            model.setting("panes.inactive_dim").unwrap().visible_when,
-            Vec::new()
-        );
+        // The position also places the accent under hidden bars, so it
+        // shows in every mode, as dimming does.
+        for path in ["panes.title_bar_position", "panes.inactive_dim"] {
+            assert_eq!(
+                model.setting(path).unwrap().visible_when,
+                Vec::new(),
+                "{path}"
+            );
+        }
     }
 
     #[test]

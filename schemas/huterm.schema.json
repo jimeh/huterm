@@ -684,22 +684,12 @@
             }
           ],
           "default": "top",
-          "description": "Which edge of a pane its title bar runs along: `top` or `bottom`.",
+          "description": "Which edge of a pane its title bar, or the focus accent that stands\nin for a hidden bar, runs along: `top` or `bottom`.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Title bar position",
           "x-huterm-order": 36,
-          "x-huterm-section": "window",
-          "x-huterm-visible-when": [
-            {
-              "equals": "visible",
-              "setting": "panes.title_bar"
-            },
-            {
-              "equals": "hover",
-              "setting": "panes.title_bar"
-            }
-          ]
+          "x-huterm-section": "window"
         },
         "zoom": {
           "allOf": [

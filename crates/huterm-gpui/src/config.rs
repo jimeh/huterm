@@ -116,7 +116,8 @@ max_width = 240.0
 # rests where they would be; hidden bars never show, and close, zoom, and move
 # remain commands.
 title_bar = "visible"
-# Which edge of a pane its title bar runs along: top or bottom.
+# Which edge of a pane its title bar, or the focus accent, runs along: top or
+# bottom.
 title_bar_position = "top"
 # How strongly an accent line marks the focused pane while its title bar is
 # off screen under hover or hidden bars, from 0 (off) to 1.

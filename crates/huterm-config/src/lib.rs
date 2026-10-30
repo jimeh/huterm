@@ -877,17 +877,14 @@ pub struct PanesConfig {
         "x-huterm-apply" = "live",
     )))]
     pub title_bar: PaneTitleBarMode,
-    /// Which edge of a pane its title bar runs along: `top` or `bottom`.
+    /// Which edge of a pane its title bar, or the focus accent that stands
+    /// in for a hidden bar, runs along: `top` or `bottom`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "window",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Title bar position",
         "x-huterm-order" = 36,
         "x-huterm-apply" = "live",
-        "x-huterm-visible-when" = [
-            {"setting": "panes.title_bar", "equals": "visible"},
-            {"setting": "panes.title_bar", "equals": "hover"}
-        ],
     )))]
     pub title_bar_position: PaneTitleBarPosition,
     /// How strongly a thin accent line marks the focused pane while its

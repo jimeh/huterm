@@ -161,8 +161,8 @@ zoom = "view" # view or shared
 ```
 
 Each pane of a split tab has a title bar with its title, zoom and close
-buttons, a drag handle, and a context menu. `title_bar_position` puts the bars
-along the top or bottom of their panes.
+buttons, a drag handle, and a context menu. `title_bar_position` puts the bars,
+and the focus accent described below, along the top or bottom of their panes.
 
 `title_bar = "hover"` gives the terminals the bars' space and draws a pane's bar
 over its terminal only when you want it: rest the pointer where the bar would be
