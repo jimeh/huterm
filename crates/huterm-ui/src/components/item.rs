@@ -5,7 +5,8 @@
 //! [`crate::components::collapsible::chevron`]; the content (a title line
 //! that may carry elements before and after the title, and may draw the
 //! title as an element, such as key-cap glyphs; and a description
-//! truncated to one line, muted); and trailing actions, such as key caps
+//! truncated to one line, muted, whose code spans draw as outlined inline
+//! code); and trailing actions, such as key caps
 //! and buttons. It pads itself as a row of a
 //! [`crate::components::card::Card`]; an owner restyles it through
 //! `Styled`.
@@ -29,8 +30,9 @@
 //! cannot hide it; an owner rounds it through `Styled`, such as with
 //! [`crate::components::card::row_corners`] for a row of a card.
 //!
-//! Accessibility: a `Group` named by the title, with the description as
-//! its description; the actions report their own nodes. A link item is a
+//! Accessibility: a `Group` named by the title, with the description,
+//! without its code-span backticks, as its description; the actions report
+//! their own nodes. A link item is a
 //! `Link` named and described the same way. As a collapsible's header, the
 //! item reports no node of its own: the trigger carries its title and
 //! description.
@@ -43,6 +45,7 @@ use gpui::{
 };
 
 use crate::click::from_keyboard;
+use crate::components::prose::{Prose, plain};
 use crate::focus;
 use crate::tokens::{Tokens, size};
 
@@ -212,11 +215,12 @@ impl Item {
             .gap(px(2.0))
             .child(title)
             .children(self.description.clone().map(|text| {
+                // Items hover in rows and links, so code outlines.
                 div()
                     .text_size(size::TEXT_SMALL)
                     .text_color(tokens.muted)
                     .truncate()
-                    .child(text)
+                    .child(Prose::new(text, tokens).outlined())
             }));
         let lead = div()
             .flex()
@@ -236,7 +240,9 @@ impl Item {
         });
         Parts {
             title: self.title,
-            description: self.description,
+            description: self
+                .description
+                .map(|text| SharedString::from(plain(&text))),
             lead,
             actions,
             style: self.style,

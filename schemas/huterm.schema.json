@@ -582,7 +582,7 @@
           "x-huterm-group": "Panes",
           "x-huterm-label": "Focus accent",
           "x-huterm-order": 37,
-          "x-huterm-section": "window",
+          "x-huterm-section": "panes",
           "x-huterm-step": 0.05,
           "x-huterm-visible-when": [
             {
@@ -608,7 +608,7 @@
           "x-huterm-group": "Panes",
           "x-huterm-label": "Dim unfocused panes",
           "x-huterm-order": 38,
-          "x-huterm-section": "window",
+          "x-huterm-section": "panes",
           "x-huterm-step": 0.05,
           "x-huterm-zero-label": "Off"
         },
@@ -632,7 +632,7 @@
           "x-huterm-group": "Pane layouts",
           "x-huterm-label": "Layout cycle",
           "x-huterm-order": 60,
-          "x-huterm-section": "window"
+          "x-huterm-section": "panes"
         },
         "layouts": {
           "additionalProperties": {
@@ -661,7 +661,7 @@
           "x-huterm-group": "Pane layouts",
           "x-huterm-label": "Pane layouts",
           "x-huterm-order": 50,
-          "x-huterm-section": "window"
+          "x-huterm-section": "panes"
         },
         "title_bar": {
           "allOf": [
@@ -675,7 +675,7 @@
           "x-huterm-group": "Panes",
           "x-huterm-label": "Pane title bars",
           "x-huterm-order": 31,
-          "x-huterm-section": "window"
+          "x-huterm-section": "panes"
         },
         "title_bar_fade_ms": {
           "default": 75,
@@ -688,7 +688,7 @@
           "x-huterm-group": "Panes",
           "x-huterm-label": "Title bar fade",
           "x-huterm-order": 33,
-          "x-huterm-section": "window",
+          "x-huterm-section": "panes",
           "x-huterm-step": 25,
           "x-huterm-unit": "ms",
           "x-huterm-visible-when": {
@@ -707,7 +707,7 @@
           "x-huterm-group": "Panes",
           "x-huterm-label": "Title bar hide delay",
           "x-huterm-order": 34,
-          "x-huterm-section": "window",
+          "x-huterm-section": "panes",
           "x-huterm-step": 25,
           "x-huterm-unit": "ms",
           "x-huterm-visible-when": {
@@ -726,7 +726,7 @@
           "x-huterm-group": "Panes",
           "x-huterm-label": "Title bar reveal delay",
           "x-huterm-order": 32,
-          "x-huterm-section": "window",
+          "x-huterm-section": "panes",
           "x-huterm-step": 25,
           "x-huterm-unit": "ms",
           "x-huterm-visible-when": {
@@ -746,7 +746,7 @@
           "x-huterm-group": "Panes",
           "x-huterm-label": "Title bar position",
           "x-huterm-order": 36,
-          "x-huterm-section": "window"
+          "x-huterm-section": "panes"
         },
         "zoom": {
           "allOf": [
@@ -760,7 +760,7 @@
           "x-huterm-group": "Panes",
           "x-huterm-label": "Pane zoom",
           "x-huterm-order": 40,
-          "x-huterm-section": "window"
+          "x-huterm-section": "panes"
         }
       },
       "type": "object"
@@ -945,6 +945,31 @@
           "x-huterm-label": "Font size",
           "x-huterm-order": 20,
           "x-huterm-section": "appearance",
+          "x-huterm-unit": "pt"
+        },
+        "ui_family": {
+          "default": "",
+          "description": "The font family of Huterm's own interface: tabs, pane title bars,\nSettings, the command palette, menus, dialogs, and notices. Empty\nuses the system interface font. The terminal grid, native menus, and\ntext set in a monospace family, such as process names, keep their\nfonts.",
+          "type": "string",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Font",
+          "x-huterm-label": "Interface font family",
+          "x-huterm-order": 22,
+          "x-huterm-section": "appearance"
+        },
+        "ui_size": {
+          "default": 13.0,
+          "description": "The size of interface text, in points, from 10 to 16. At 13 the\ninterface draws at its design sizes; other sizes scale its text, and\nthe controls and rows that hold text, in proportion. Terminal\nwindows' tab and title bars keep their heights.",
+          "format": "float",
+          "maximum": 16,
+          "minimum": 10,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Font",
+          "x-huterm-label": "Interface font size",
+          "x-huterm-order": 24,
+          "x-huterm-section": "appearance",
+          "x-huterm-step": 0.5,
           "x-huterm-unit": "pt"
         }
       },
@@ -9503,7 +9528,7 @@
           "x-huterm-label": "Fullscreen mode",
           "x-huterm-order": 30,
           "x-huterm-platform": "macos",
-          "x-huterm-section": "window"
+          "x-huterm-section": "windows"
         },
         "macos_native_menus": {
           "default": true,
@@ -9514,7 +9539,7 @@
           "x-huterm-label": "Native menus",
           "x-huterm-order": 25,
           "x-huterm-platform": "macos",
-          "x-huterm-section": "window"
+          "x-huterm-section": "windows"
         },
         "menu_button": {
           "default": true,
@@ -9524,7 +9549,7 @@
           "x-huterm-group": "Window",
           "x-huterm-label": "Menu button",
           "x-huterm-order": 10,
-          "x-huterm-section": "window"
+          "x-huterm-section": "windows"
         },
         "padding_balance": {
           "default": false,
@@ -9569,7 +9594,7 @@
           "x-huterm-group": "Window",
           "x-huterm-label": "Shortcut hints",
           "x-huterm-order": 20,
-          "x-huterm-section": "window"
+          "x-huterm-section": "windows"
         },
         "size_indicator": {
           "allOf": [
@@ -9583,7 +9608,7 @@
           "x-huterm-group": "Window",
           "x-huterm-label": "Size indicator",
           "x-huterm-order": 26,
-          "x-huterm-section": "window"
+          "x-huterm-section": "windows"
         },
         "size_indicator_linger_ms": {
           "default": 2000,
@@ -9596,7 +9621,7 @@
           "x-huterm-group": "Window",
           "x-huterm-label": "Size indicator linger",
           "x-huterm-order": 27,
-          "x-huterm-section": "window",
+          "x-huterm-section": "windows",
           "x-huterm-step": 100,
           "x-huterm-unit": "ms",
           "x-huterm-visible-when": [

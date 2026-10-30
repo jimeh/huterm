@@ -18,6 +18,7 @@ use gpui::{
 };
 use huterm_protocol::{CommandInvocation, TabId};
 use huterm_ui::components::button::{Button, Variant};
+use huterm_ui::typography::ui;
 
 use super::overlay::{
     Swatch, accent_bar, mono_font_family, raised_panel, severity_mark,
@@ -508,7 +509,7 @@ pub(crate) fn render_notice_stack(
                 .bg(swatch.surface)
                 .border_1()
                 .border_color(swatch.line)
-                .text_size(px(11.5))
+                .text_size(ui(11.5))
                 .text_color(swatch.muted)
                 .child(format!("+{overflow} more")),
         );
@@ -536,7 +537,7 @@ fn toast_body(
         .flex_basis(px(0.0))
         .flex_grow_1()
         .min_w_0()
-        .text_size(px(12.5))
+        .text_size(ui(12.5))
         .child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -548,7 +549,7 @@ fn toast_body(
         body = body.child(
             div()
                 .font_family(mono_font_family())
-                .text_size(px(11.0))
+                .text_size(ui(11.0))
                 .text_color(swatch.muted)
                 .child(location.clone()),
         );
@@ -570,7 +571,7 @@ fn toast_body(
             // It runs a command rather than opening a page.
             .button_role()
             .h_auto()
-            .text_size(px(12.5))
+            .text_size(ui(12.5))
             .font_weight(gpui::FontWeight::MEDIUM)
             .cursor_pointer()
             .on_click(move |window, cx| {

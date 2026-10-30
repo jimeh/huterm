@@ -17,8 +17,10 @@ use huterm_ui::components::field::Field;
 use huterm_ui::components::input::Input;
 use huterm_ui::components::input_group::{Addon, InputGroup};
 use huterm_ui::components::item::Item;
+use huterm_ui::components::prose::Prose;
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::components::tabs::Tabs;
+use huterm_ui::typography::ui;
 
 use super::super::super::overlay::{Swatch, mono_font_family};
 use super::super::super::settings::status::{Action, Tone};
@@ -325,7 +327,7 @@ impl SettingsView {
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .text_size(px(11.5))
+                    .text_size(ui(11.5))
                     .text_color(swatch.muted)
                     .child(
                         div()
@@ -379,7 +381,7 @@ impl SettingsView {
                 .rounded(px(5.0))
                 .bg(swatch.bg)
                 .font_family(mono_font_family())
-                .text_size(px(11.5))
+                .text_size(ui(11.5))
                 .text_color(swatch.fg)
                 .child(message.trim_end().to_owned()),
         )
@@ -436,13 +438,18 @@ impl SettingsView {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .text_size(px(12.0))
+                        .text_size(ui(12.0))
                         .text_color(text)
                         .children(
                             notice
                                 .messages
                                 .iter()
-                                .map(|message| div().child(sentence(message))),
+                                // A chip's fill on the tone's wash would
+                                // cost the text its contrast.
+                                .map(|message| {
+                                    Prose::new(sentence(message), swatch)
+                                        .outlined()
+                                }),
                         ),
                 )
             });
@@ -514,12 +521,14 @@ impl SettingsView {
                 .child(reset)
         });
         let conflict = self.render_conflict(setting, swatch, cx);
-        // A conflict's alert says what the error would, and more.
+        // A conflict's alert says what the error would, and more. A family
+        // that saved but fell back says so where its error would.
         let error = self
             .errors
             .get(path)
-            .filter(|_| conflict.is_none())
             .cloned()
+            .or_else(|| self.fallback_note(setting, cx))
+            .filter(|_| conflict.is_none())
             .map(SharedString::from);
         // The theme picker's cards need the row's width.
         let wide = special(path) == Some(Special::ThemePicker);
@@ -638,7 +647,7 @@ impl SettingsView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(px(12.5))
+                    .text_size(ui(12.5))
                     .text_color(swatch.fg)
                     .child("Look for a newer version of Huterm now."),
             )
@@ -690,7 +699,7 @@ impl SettingsView {
                     .gap(px(2.0))
                     .child(
                         div()
-                            .text_size(px(12.5))
+                            .text_size(ui(12.5))
                             .text_color(swatch.fg)
                             .font_family(mono_font_family())
                             .truncate()
@@ -698,7 +707,7 @@ impl SettingsView {
                     )
                     .child(
                         div()
-                            .text_size(px(11.5))
+                            .text_size(ui(11.5))
                             .text_color(swatch.muted)
                             .child(
                                 "Settings changes only the lines a setting owns; comments, order, and formatting stay as you wrote them.",
@@ -753,7 +762,7 @@ impl SettingsView {
                 body = body
                     .child(
                         div()
-                            .text_size(px(14.0))
+                            .text_size(ui(14.0))
                             .text_color(swatch.fg)
                             .my(px(4.0))
                             .child(section.title()),
@@ -763,7 +772,7 @@ impl SettingsView {
             if !matched {
                 body = body.child(
                     div()
-                        .text_size(px(13.0))
+                        .text_size(ui(13.0))
                         .text_color(swatch.muted)
                         .child("No settings match."),
                 );
@@ -853,7 +862,7 @@ impl SettingsView {
                         .aria_label(SharedString::from(title.to_owned()))
                         .min_w_0()
                         .truncate()
-                        .text_size(px(15.0))
+                        .text_size(ui(15.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(swatch.fg)
                         .child(title.to_owned()),

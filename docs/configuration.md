@@ -261,7 +261,7 @@ runs, with a notice. A reload replaces the layouts and the cycle.
 The palette's layout picker and the Settings keybinding editor list your
 layouts after the built-ins.
 
-The Pane layouts card in the Window and panes section of Settings lists the
+The Pane layouts card in the Panes section of Settings lists the
 built-ins with their templates, and edits your layouts and the cycle. New
 layout asks for a name and writes the layout as `columns(*)`, which you then
 type over; it does not add the layout to the cycle. A template field checks
@@ -643,7 +643,24 @@ warns the same way.
 [font]
 family = "Menlo" # defaults to Menlo on macOS and monospace on Linux
 size = 14.0      # 6 through 96
+ui_family = ""   # empty uses the system interface font
+ui_size = 13.0   # 10 through 16
 ```
+
+`family` and `size` set the terminal grid. `ui_family` and `ui_size` set
+Huterm's own interface: tabs, pane title bars, Settings, the command palette,
+the menus and dialogs Huterm draws, notices, and other overlays. Native macOS
+menus keep the system font, and text set in a monospace family, such as
+process names, keeps that family. A family that is not installed falls back
+to the system interface font, and Settings says so under the field, as it does
+for a terminal `family` that falls back to the platform's monospace font.
+
+At the default `ui_size` of 13, the interface draws at its design sizes.
+Other sizes scale its text, and the controls, rows, and menus that hold text,
+in proportion, so 16 draws everything about 23% larger. Terminal windows'
+tab bars and pane title bars keep their heights, which is why the range stops
+at 16. A value outside 10 through 16 is an error that names the key. Both
+keys apply to open windows when the file reloads.
 
 Select a built-in theme and optionally override individual colors:
 

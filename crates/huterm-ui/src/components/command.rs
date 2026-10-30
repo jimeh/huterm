@@ -171,9 +171,10 @@ impl Command {
     }
 
     /// The command's rows `height` tall, in place of the height their
-    /// descriptions imply.
+    /// descriptions imply. Rows hold text, so the height is a
+    /// [`crate::typography::ui`] size.
     #[must_use]
-    pub fn with_row_height(mut self, height: Pixels) -> Self {
+    pub fn with_row_height(mut self, height: gpui::Rems) -> Self {
         self.list.set_row_height(Some(height));
         self
     }

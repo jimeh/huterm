@@ -16,6 +16,7 @@
 use gpui::{Div, Hsla, Pixels, SharedString, div, prelude::*, px, svg};
 
 use crate::tokens::Tokens;
+use crate::typography::ui;
 
 /// One drawn piece of a shortcut.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,8 +116,8 @@ fn chip(content: &[Glyph], color: Hsla) -> Div {
         .px(px(5.0))
         .py(px(1.0))
         .rounded(px(4.0))
-        .text_size(px(10.5))
-        .line_height(px(14.0))
+        .text_size(ui(10.5))
+        .line_height(ui(14.0))
         .text_color(color)
         .child(glyphs(content, px(10.0), color))
 }

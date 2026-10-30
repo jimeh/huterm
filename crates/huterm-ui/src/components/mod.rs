@@ -22,6 +22,7 @@ pub mod key_recorder;
 pub mod menu;
 pub mod number_field;
 pub mod popover;
+pub mod prose;
 pub mod radio_group;
 pub mod scroll_area;
 pub mod select;

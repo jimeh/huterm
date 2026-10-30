@@ -33,7 +33,7 @@
 
 use gpui::{
     AnyElement, App, ElementId, Entity, FocusHandle, Focusable as _,
-    IntoElement, MouseButton, RenderOnce, SharedString, Window, div,
+    IntoElement, MouseButton, Pixels, RenderOnce, SharedString, Window, div,
     prelude::*, px,
 };
 
@@ -67,6 +67,10 @@ impl std::fmt::Debug for Addon {
         }
     }
 }
+
+/// The gap around a button addon: to the group's border on its outer side,
+/// above, and below, and to the next addon.
+const ADDON_INSET: Pixels = px(2.0);
 
 /// Which side of the field an addon sits on.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -135,6 +139,7 @@ fn addon(
     focus: &FocusHandle,
     enabled: bool,
     tokens: Tokens,
+    rem: Pixels,
 ) -> AnyElement {
     let focus = focus.clone();
     let slot = div()
@@ -164,14 +169,25 @@ fn addon(
             .child(icon)
             .into_any_element(),
         Addon::Button(button) => {
-            let button = button.small();
+            // Square, with the same gap to the group's border on its outer
+            // side as above and below, and that gap again to its neighbor.
+            let extent = size::CONTROL_HEIGHT.to_pixels(rem)
+                - px(2.0)
+                - ADDON_INSET * 2.0;
+            let square = button.is_icon_only();
+            let button = button
+                .small()
+                .h(extent)
+                .when(square, |button| button.w(extent));
             // A button its owner disabled keeps its own reason.
             let button = if enabled || button.is_disabled() {
                 button
             } else {
                 button.disabled(None)
             };
-            slot.px(px(2.0)).child(button).into_any_element()
+            slot.map(|slot| inset(slot, side, ADDON_INSET))
+                .child(button)
+                .into_any_element()
         }
     }
 }
@@ -200,15 +216,20 @@ impl RenderOnce for InputGroup {
                 input.is_invalid(),
             )
         };
+        let rem = window.rem_size();
         let leading: Vec<AnyElement> = self
             .leading
             .into_iter()
-            .map(|item| addon(item, Side::Leading, &focus, enabled, tokens))
+            .map(|item| {
+                addon(item, Side::Leading, &focus, enabled, tokens, rem)
+            })
             .collect();
         let trailing: Vec<AnyElement> = self
             .trailing
             .into_iter()
-            .map(|item| addon(item, Side::Trailing, &focus, enabled, tokens))
+            .map(|item| {
+                addon(item, Side::Trailing, &focus, enabled, tokens, rem)
+            })
             .collect();
         let group = div()
             .id(self.id)

@@ -43,6 +43,7 @@ use crate::components::tooltip::Tooltip;
 use crate::focus;
 use crate::roving::{self, Move};
 use crate::tokens::{Tokens, size};
+use crate::typography::ui;
 
 /// Whether a group picks one item or toggles several.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -324,7 +325,7 @@ fn render_item(
         })
         .when(!single, |element| {
             element
-                .h(px(22.0))
+                .h(ui(22.0))
                 .text_color(tokens.fg)
                 .rounded(px(5.0))
                 .border_1()
@@ -382,7 +383,6 @@ fn segment_style(
     tokens: Tokens,
 ) -> Stateful<Div> {
     element
-        .h(size::CONTROL_HEIGHT - px(TRACK_INSET * 2.0))
         .rounded(px(size::CONTROL_RADIUS - TRACK_INSET))
         .border_1()
         .border_color(gpui::transparent_black())
@@ -475,8 +475,9 @@ impl RenderOnce for ToggleGroup {
             .flex()
             .flex_none()
             .when(single, |group| {
+                // Segments stretch to the track's height inside its inset.
                 group
-                    .items_center()
+                    .items_stretch()
                     .h(size::CONTROL_HEIGHT)
                     .p(px(TRACK_INSET))
                     .gap(px(TRACK_INSET))

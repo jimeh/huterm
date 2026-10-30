@@ -48,6 +48,7 @@ use huterm_ui::components::command::{
 use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::listbox::ItemId;
 use huterm_ui::option_list::ListOption;
+use huterm_ui::typography::{DESIGN_REM, ui};
 
 /// The text-field commands the palette and the Licenses view pass to their
 /// search field.
@@ -978,21 +979,15 @@ impl CommandPalette {
             Command::new("palette-list", label, &input, tokens, cx)
                 .with_pointer_highlight(false)
                 .with_highlight_fallback(fallback)
-                .with_row_height(px(ROW_HEIGHT))
+                .with_row_height(ui(ROW_HEIGHT))
                 .with_content(Rc::new(
                     move |option: &ListOption,
                           highlighted,
-                          window: &mut Window,
+                          _: &mut Window,
                           cx: &mut App| {
                         palette.upgrade().map_or_else(
                             || div().into_any_element(),
-                            |palette| {
-                                palette.read(cx).row(
-                                    option,
-                                    highlighted,
-                                    window,
-                                )
-                            },
+                            |palette| palette.read(cx).row(option, highlighted),
                         )
                     },
                 ))
@@ -1802,7 +1797,7 @@ fn tag(
         .when(!dashed, |tag| {
             tag.border_1().border_color(text.opacity(0.35))
         })
-        .text_size(px(10.0))
+        .text_size(ui(10.0))
         .text_color(text)
         .child(hint.element(px(9.5), text))
 }
@@ -1813,7 +1808,7 @@ fn band(message: String, swatch: Swatch, error: bool) -> gpui::AnyElement {
         .py(px(6.0))
         .border_b_1()
         .border_color(swatch.line)
-        .text_size(px(12.5))
+        .text_size(ui(12.5))
         .when(error, |band| {
             band.text_color(swatch.accent_text())
                 .bg(swatch.accent.opacity(0.05))
@@ -1827,7 +1822,7 @@ fn selection_bar(selected: bool, swatch: Swatch) -> impl IntoElement {
     div()
         .flex_none()
         .w(px(3.0))
-        .h(px(28.0))
+        .h(ui(28.0))
         .rounded(px(2.0))
         .when(selected, |bar| bar.bg(swatch.accent))
 }
@@ -1857,7 +1852,6 @@ fn highlighted_title(
     title: &str,
     indices: &[u32],
     swatch: Swatch,
-    window: &Window,
 ) -> gpui::AnyElement {
     let highlight = HighlightStyle {
         color: Some(swatch.accent_text()),
@@ -1869,10 +1863,11 @@ fn highlighted_title(
         .map(|range| (range, highlight));
     div()
         .truncate()
-        .text_size(px(13.5))
+        .text_size(ui(13.5))
         .child(
-            gpui::StyledText::new(title.to_owned())
-                .with_default_highlights(&window.text_style(), highlights),
+            // Runs resolve at layout, in the family and size inherited
+            // there.
+            gpui::StyledText::new(title.to_owned()).with_highlights(highlights),
         )
         .into_any_element()
 }
@@ -1887,12 +1882,7 @@ type SlotRender = (
 impl CommandPalette {
     /// The content of the list's row for `option`, which the list draws
     /// inside the row's fill.
-    fn row(
-        &self,
-        option: &ListOption,
-        highlighted: bool,
-        window: &Window,
-    ) -> AnyElement {
+    fn row(&self, option: &ListOption, highlighted: bool) -> AnyElement {
         let swatch = Swatch::new(self.colors);
         let row = match &self.stage {
             Stage::Search(search) => search
@@ -1905,7 +1895,6 @@ impl CommandPalette {
                         search.query.is_empty(),
                         highlighted,
                         swatch,
-                        window,
                     )
                 }),
             Stage::Slots(editor) => {
@@ -1923,7 +1912,6 @@ impl CommandPalette {
         unfiltered: bool,
         selected: bool,
         swatch: Swatch,
-        window: &Window,
     ) -> AnyElement {
         let spec = matched.spec;
         let unavailable = self.availability.get(&spec.id);
@@ -1972,7 +1960,7 @@ impl CommandPalette {
         }
         meta = meta.child(
             div()
-                .text_size(px(10.0))
+                .text_size(ui(10.0))
                 .text_color(secondary)
                 .child(format!("{:?}", spec.scope).to_uppercase()),
         );
@@ -1995,12 +1983,11 @@ impl CommandPalette {
                         &self.title(matched),
                         &matched.title_indices,
                         swatch,
-                        window,
                     ))
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(11.5))
+                            .text_size(ui(11.5))
                             .text_color(if unavailable.is_some() {
                                 swatch.accent_text()
                             } else {
@@ -2060,13 +2047,13 @@ impl CommandPalette {
                         .child(
                             div()
                                 .truncate()
-                                .text_size(px(13.5))
+                                .text_size(ui(13.5))
                                 .child(item.label.clone()),
                         )
                         .child(
                             div()
                                 .truncate()
-                                .text_size(px(11.5))
+                                .text_size(ui(11.5))
                                 .text_color(if selected {
                                     swatch.muted_on(swatch.selection)
                                 } else {
@@ -2135,13 +2122,13 @@ impl CommandPalette {
         let chip = div()
             .id(("palette-chip", index))
             .flex_none()
-            .h(px(24.0))
+            .h(ui(24.0))
             .px(px(8.0))
             .flex()
             .items_center()
             .gap(px(6.0))
             .rounded(px(6.0))
-            .text_size(px(12.5))
+            .text_size(ui(12.5))
             .when(dashed, |chip| {
                 chip.border_1()
                     .border_dashed()
@@ -2161,7 +2148,7 @@ impl CommandPalette {
             .when(hint, |chip| {
                 chip.child(
                     div()
-                        .text_size(px(9.5))
+                        .text_size(ui(9.5))
                         .px(px(3.0))
                         .rounded(px(3.0))
                         .border_1()
@@ -2192,7 +2179,7 @@ impl CommandPalette {
             div()
                 .id("palette-command-chip")
                 .flex_none()
-                .h(px(24.0))
+                .h(ui(24.0))
                 .px(px(8.0))
                 .flex()
                 .items_center()
@@ -2201,7 +2188,7 @@ impl CommandPalette {
                 .border_1()
                 .border_color(swatch.accent.opacity(0.4))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_size(px(12.5))
+                .text_size(ui(12.5))
                 .when(!requested, |chip| {
                     chip.cursor_pointer()
                         .active(|chip| chip.bg(swatch.selection_pressed()))
@@ -2221,7 +2208,7 @@ impl CommandPalette {
                 line.push(
                     div()
                         .flex_none()
-                        .text_size(px(12.5))
+                        .text_size(ui(12.5))
                         .text_color(swatch.muted)
                         .child(format!(
                             "{}{} ›",
@@ -2304,10 +2291,17 @@ impl Render for CommandPalette {
     ) -> impl IntoElement {
         let swatch = Swatch::new(self.colors);
         let viewport = f32::from(window.viewport_size().height);
-        let available = viewport - PANEL_TOP_INSET * 2.0 - PANEL_CHROME_HEIGHT;
-        let list_max =
-            available.clamp(ROW_HEIGHT + LIST_PADDING * 2.0, LIST_MAX_HEIGHT);
-        let panel_height = list_max + PANEL_CHROME_HEIGHT;
+        // Rows and the lines around them hold text, so they follow the
+        // interface scale; the list's padding keeps its points.
+        let scale = window.rem_size() / DESIGN_REM;
+        let row = ROW_HEIGHT * scale;
+        let chrome = PANEL_CHROME_HEIGHT * scale;
+        let available = viewport - PANEL_TOP_INSET * 2.0 - chrome;
+        let list_max = available.clamp(
+            row + LIST_PADDING * 2.0,
+            row * VISIBLE_ROWS + LIST_PADDING * 2.0,
+        );
+        let panel_height = list_max + chrome;
         let top = panel_top(self.placement, viewport, panel_height);
         // The field's line carries `Palette` beside `TextField`, so a text
         // binding whose `when` names `Palette` still matches in the palette.
@@ -2317,7 +2311,7 @@ impl Render for CommandPalette {
             .gap(px(6.0))
             .px(px(10.0))
             .py(px(6.0))
-            .min_h(px(42.0))
+            .min_h(ui(42.0))
             .border_b_1()
             .border_color(swatch.line);
         let (below, hints) = match &self.stage {
@@ -2330,7 +2324,7 @@ impl Render for CommandPalette {
                         div()
                             .ml_auto()
                             .flex_none()
-                            .text_size(px(11.0))
+                            .text_size(ui(11.0))
                             .text_color(swatch.muted)
                             .child(format!(
                                 "{} command{}",

@@ -713,16 +713,20 @@ fn luminance(color: Hsla) -> f32 {
     0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b)
 }
 
-/// The sizes components share, in points.
+/// The sizes components share, in points. Text sizes and the heights that
+/// hold a line of text are [`crate::typography::ui`] sizes, which follow
+/// the interface scale.
 pub mod size {
-    use gpui::{Pixels, px};
+    use gpui::{Pixels, Rems, px};
+
+    use crate::typography::ui;
 
     /// A control's height: buttons, fields, selects, and segments.
-    pub const CONTROL_HEIGHT: Pixels = px(24.0);
+    pub const CONTROL_HEIGHT: Rems = ui(24.0);
     /// A small control's height, such as a button inside an input group.
-    pub const SMALL_CONTROL_HEIGHT: Pixels = px(20.0);
+    pub const SMALL_CONTROL_HEIGHT: Rems = ui(20.0);
     /// A menu or list row's height.
-    pub const ROW_HEIGHT: Pixels = px(28.0);
+    pub const ROW_HEIGHT: Rems = ui(28.0);
     /// Corner radius of controls.
     pub const CONTROL_RADIUS: f32 = 6.0;
     /// Corner radius of raised panels such as menus.
@@ -730,13 +734,13 @@ pub mod size {
     /// The focus ring's spread.
     pub const FOCUS_RING: Pixels = px(2.0);
     /// Small labels: badges, key caps, and notes.
-    pub const TEXT_SMALL: Pixels = px(11.5);
+    pub const TEXT_SMALL: Rems = ui(11.5);
     /// Control labels.
-    pub const TEXT_CONTROL: Pixels = px(12.0);
+    pub const TEXT_CONTROL: Rems = ui(12.0);
     /// Body text in menus and rows.
-    pub const TEXT_BODY: Pixels = px(12.5);
+    pub const TEXT_BODY: Rems = ui(12.5);
     /// Dialog titles.
-    pub const TEXT_TITLE: Pixels = px(14.0);
+    pub const TEXT_TITLE: Rems = ui(14.0);
 }
 
 #[cfg(test)]

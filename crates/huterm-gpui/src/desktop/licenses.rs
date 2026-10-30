@@ -48,6 +48,7 @@ use huterm_ui::components::command::{Command, CommandEvent};
 use huterm_ui::components::dialog::{Dialog, Modal};
 use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::option_list::ListOption;
+use huterm_ui::typography::ui;
 
 const PANEL_WIDTH: f32 = 860.0;
 const PANEL_HEIGHT: f32 = 600.0;
@@ -174,7 +175,7 @@ impl LicensesView {
                 cx,
             )
             .with_pointer_highlight(false)
-            .with_row_height(px(ROW_HEIGHT))
+            .with_row_height(ui(ROW_HEIGHT))
             .with_content(Rc::new(
                 move |option: &ListOption,
                       highlighted,
@@ -749,7 +750,7 @@ fn message(swatch: Swatch, text: &str, detail: Option<String>) -> gpui::Div {
         .p(px(24.0))
         .child(
             div()
-                .text_size(px(13.0))
+                .text_size(ui(13.0))
                 .text_color(swatch.muted)
                 .child(text.to_owned()),
         )
@@ -757,7 +758,7 @@ fn message(swatch: Swatch, text: &str, detail: Option<String>) -> gpui::Div {
             message.child(
                 div()
                     .max_w(px(520.0))
-                    .text_size(px(11.5))
+                    .text_size(ui(11.5))
                     .text_color(swatch.muted)
                     .font_family(mono_font_family())
                     .child(detail),
@@ -784,7 +785,7 @@ fn component_row(
         .child(
             div()
                 .truncate()
-                .text_size(px(12.5))
+                .text_size(ui(12.5))
                 .text_color(swatch.fg)
                 .child(option.label.clone()),
         )
@@ -792,7 +793,7 @@ fn component_row(
             row.child(
                 div()
                     .truncate()
-                    .text_size(px(11.0))
+                    .text_size(ui(11.0))
                     .text_color(if highlighted {
                         swatch.muted_on(swatch.selection)
                     } else {
@@ -891,7 +892,7 @@ impl LicensesView {
                             .gap(px(8.0))
                             .child(
                                 div()
-                                    .text_size(px(15.0))
+                                    .text_size(ui(15.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(component.name.clone()),
                             )
@@ -901,7 +902,7 @@ impl LicensesView {
                                     line.child(
                                         div()
                                             .font_family(mono_font_family())
-                                            .text_size(px(11.5))
+                                            .text_size(ui(11.5))
                                             .text_color(swatch.muted)
                                             .child(version),
                                     )
@@ -910,7 +911,7 @@ impl LicensesView {
                     )
                     .child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(ui(12.0))
                             .text_color(swatch.muted)
                             .child(facts.join(" · ")),
                     ),
@@ -949,7 +950,7 @@ impl LicensesView {
                     .gap(px(8.0))
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(ui(11.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(swatch.muted)
                             .child(text.title.clone()),
@@ -957,8 +958,8 @@ impl LicensesView {
                     .child(
                         div()
                             .font_family(mono_font_family())
-                            .text_size(px(11.0))
-                            .line_height(px(15.0))
+                            .text_size(ui(11.0))
+                            .line_height(ui(15.0))
                             .text_color(swatch.fg)
                             .child(SharedString::from(Arc::clone(&text.body))),
                     ),
@@ -1014,7 +1015,7 @@ impl LicensesView {
             .min_w_0()
             .items_center()
             .gap(px(14.0))
-            .text_size(px(11.5))
+            .text_size(ui(11.5))
             .text_color(swatch.muted)
             .child(count);
         if self.hints {
@@ -1099,7 +1100,7 @@ impl Render for LicensesView {
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(14.0))
+                    .text_size(ui(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Open Source Licenses"),
             )
@@ -1109,7 +1110,7 @@ impl Render for LicensesView {
                     .min_w_0()
                     .max_w(px(320.0))
                     .ml_auto()
-                    .h(px(28.0))
+                    .h(ui(28.0))
                     .px(px(8.0))
                     .flex()
                     .items_center()
@@ -1121,7 +1122,7 @@ impl Render for LicensesView {
                     })
                     .relative()
                     .bg(swatch.bg)
-                    .text_size(px(12.5))
+                    .text_size(ui(12.5))
                     .child(self.input.clone())
                     .child(self.button_text_input(cx)),
             );
@@ -1198,7 +1199,9 @@ impl LicensesView {
     /// The center of the component list's row at `row`, as last laid out.
     pub(super) fn row_center(&self, row: u8, cx: &App) -> Point<Pixels> {
         let (offset, bounds) = self.list.read(cx).scroll_position();
-        let y = 4.0 + ROW_HEIGHT * (f32::from(row) + 0.5);
+        let row_height =
+            ROW_HEIGHT * huterm_ui::typography::Typography::of(cx).scale;
+        let y = 4.0 + row_height * (f32::from(row) + 0.5);
         point(bounds.center().x, bounds.top() + px(y) - offset)
     }
 

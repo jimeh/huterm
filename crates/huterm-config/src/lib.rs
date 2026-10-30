@@ -450,7 +450,7 @@ pub enum MacosOptionAsAlt {
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Fullscreen mode",
         "x-huterm-order" = 30,
@@ -488,7 +488,7 @@ pub struct WindowConfig {
     /// when the window has no title bar. Every item stays reachable through
     /// shortcuts or the command palette.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Menu button",
         "x-huterm-order" = 10,
@@ -498,7 +498,7 @@ pub struct WindowConfig {
     /// Show key hints on the scroll pill and on dialog and panel buttons.
     /// The command palette and menus always show their shortcuts.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Shortcut hints",
         "x-huterm-order" = 20,
@@ -509,7 +509,7 @@ pub struct WindowConfig {
     /// native macOS menus. Off draws them in Huterm's own style, as Linux
     /// always does.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Native menus",
         "x-huterm-order" = 25,
@@ -522,7 +522,7 @@ pub struct WindowConfig {
     /// badge in a small pane, `compact` always shows the badge, and `off`
     /// shows neither.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Size indicator",
         "x-huterm-order" = 26,
@@ -534,7 +534,7 @@ pub struct WindowConfig {
     /// still being dragged it stays regardless; on Linux a window edge
     /// drag counts from the last resize.
     #[cfg_attr(feature = "schema", schemars(range(max = 10000), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Size indicator linger",
         "x-huterm-order" = 27,
@@ -924,7 +924,7 @@ pub struct PanesConfig {
     /// rest the pointer along the pane's edge where the bar would be, and it
     /// fades in over the terminal. `hidden` bars never show.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Pane title bars",
         "x-huterm-order" = 31,
@@ -934,7 +934,7 @@ pub struct PanesConfig {
     /// How long, in milliseconds, the pointer rests along a pane's edge
     /// before a `hover` title bar fades in, from 0 to 2000.
     #[cfg_attr(feature = "schema", schemars(range(max = 2000), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Title bar reveal delay",
         "x-huterm-order" = 32,
@@ -947,7 +947,7 @@ pub struct PanesConfig {
     /// How long, in milliseconds, a `hover` title bar takes to fade in or
     /// out, from 0 to 1000.
     #[cfg_attr(feature = "schema", schemars(range(max = 1000), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Title bar fade",
         "x-huterm-order" = 33,
@@ -960,7 +960,7 @@ pub struct PanesConfig {
     /// How long, in milliseconds, a `hover` title bar stays after the
     /// pointer leaves it before it fades out, from 0 to 5000.
     #[cfg_attr(feature = "schema", schemars(range(max = 5000), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Title bar hide delay",
         "x-huterm-order" = 34,
@@ -973,7 +973,7 @@ pub struct PanesConfig {
     /// Which edge of a pane its title bar, or the focus accent that stands
     /// in for a hidden bar, runs along: `top` or `bottom`.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Title bar position",
         "x-huterm-order" = 36,
@@ -984,7 +984,7 @@ pub struct PanesConfig {
     /// title bar is not on screen, from 0 (off) to 1. It draws only under
     /// `hover` and `hidden` bars, and only while more than one pane shows.
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 1), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Focus accent",
         "x-huterm-order" = 37,
@@ -1001,7 +1001,7 @@ pub struct PanesConfig {
     /// How much the panes without focus dim, from 0 (off) to 0.8, while
     /// more than one pane shows. Their title bars stay as they are.
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 0.8), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Dim unfocused panes",
         "x-huterm-order" = 38,
@@ -1013,7 +1013,7 @@ pub struct PanesConfig {
     pub inactive_dim: f32,
     /// Who owns a pane's zoom: `view` or `shared`.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Pane zoom",
         "x-huterm-order" = 40,
@@ -1028,7 +1028,7 @@ pub struct PanesConfig {
     /// and underscores, starting with a letter, and may not be a built-in
     /// layout's name.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Pane layouts",
         "x-huterm-label" = "Pane layouts",
         "x-huterm-order" = 50,
@@ -1042,7 +1042,7 @@ pub struct PanesConfig {
     /// through, in order: built-in names (`columns`, `rows`, `main_left`,
     /// `main_top`, and `tiled`) or names from `[panes.layouts]`.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Pane layouts",
         "x-huterm-label" = "Layout cycle",
         "x-huterm-order" = 60,
@@ -1443,10 +1443,30 @@ impl TabPosition {
     }
 }
 
+/// The `[font] ui_size` at which Huterm's interface draws at its design
+/// sizes.
+pub const UI_FONT_SIZE: f32 = 13.0;
+/// The smallest `[font] ui_size`.
+pub const MIN_UI_FONT_SIZE: f32 = 10.0;
+/// The largest `[font] ui_size`. Terminal windows' bars keep their
+/// heights, and their text still fits at this size.
+pub const MAX_UI_FONT_SIZE: f32 = 16.0;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontConfig {
     pub family: String,
     pub size: f32,
+    /// The interface's family; `None` uses the system interface font.
+    pub ui_family: Option<String>,
+    pub ui_size: f32,
+}
+
+impl FontConfig {
+    /// The factor the interface draws its design sizes at.
+    #[must_use]
+    pub fn ui_scale(&self) -> f32 {
+        self.ui_size / UI_FONT_SIZE
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2099,6 +2119,33 @@ pub struct RawFont {
         "x-huterm-unit" = "pt",
     )))]
     pub size: f32,
+    /// The font family of Huterm's own interface: tabs, pane title bars,
+    /// Settings, the command palette, menus, dialogs, and notices. Empty
+    /// uses the system interface font. The terminal grid, native menus, and
+    /// text set in a monospace family, such as process names, keep their
+    /// fonts.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Font",
+        "x-huterm-label" = "Interface font family",
+        "x-huterm-order" = 22,
+        "x-huterm-apply" = "live",
+    )))]
+    pub ui_family: String,
+    /// The size of interface text, in points, from 10 to 16. At 13 the
+    /// interface draws at its design sizes; other sizes scale its text, and
+    /// the controls and rows that hold text, in proportion. Terminal
+    /// windows' tab and title bars keep their heights.
+    #[cfg_attr(feature = "schema", schemars(range(min = 10, max = 16), extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Font",
+        "x-huterm-label" = "Interface font size",
+        "x-huterm-order" = 24,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "pt",
+        "x-huterm-step" = 0.5,
+    )))]
+    pub ui_size: f32,
 }
 
 impl Default for RawFont {
@@ -2107,6 +2154,8 @@ impl Default for RawFont {
         Self {
             family: font.family,
             size: font.size,
+            ui_family: String::new(),
+            ui_size: font.ui_size,
         }
     }
 }
@@ -2157,6 +2206,8 @@ impl Default for FontConfig {
             }
             .into(),
             size: 14.0,
+            ui_family: None,
+            ui_size: UI_FONT_SIZE,
         }
     }
 }
@@ -2187,6 +2238,14 @@ impl RawConfig {
         {
             return Err(ConfigError::Invalid(
                 "font.size must be between 6 and 96",
+            ));
+        }
+        if !self.font.ui_size.is_finite()
+            || !(MIN_UI_FONT_SIZE..=MAX_UI_FONT_SIZE)
+                .contains(&self.font.ui_size)
+        {
+            return Err(ConfigError::Invalid(
+                "font.ui_size must be between 10 and 16",
             ));
         }
         for padding in [self.window.padding_x, self.window.padding_y] {

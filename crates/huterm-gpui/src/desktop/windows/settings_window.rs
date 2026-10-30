@@ -48,12 +48,13 @@ use huterm_ui::components::input::{
     Changed, Chrome, ContextMenu as FieldContextMenu, Input,
 };
 use huterm_ui::components::menu::{
-    MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole, select_width,
+    Menu as MenuView, MenuEvent, Role as MenuRole, min_width, select_width,
 };
 use huterm_ui::components::number_field::{
     self, Format as NumberFormat, NumberField,
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
+use huterm_ui::components::prose;
 use huterm_ui::components::scroll_area::{ContentBounds, ScrollArea};
 use huterm_ui::components::toggle_group::roving_target;
 use huterm_ui::list_scrollbar::ListScrollbar;
@@ -63,6 +64,7 @@ use huterm_ui::listbox::{
 use huterm_ui::option_list::ListOption;
 use huterm_ui::roving::{self, Group, Move};
 use huterm_ui::steps::Steps;
+use huterm_ui::typography::Typography;
 
 const SIDEBAR_WIDTH: f32 = 200.0;
 /// The height of the pane's section header and, on macOS, of the title
@@ -603,6 +605,9 @@ impl SettingsView {
         let template = layouts::is_template(path);
         let placeholder = if template {
             "Template"
+        } else if path == "font.ui_family" {
+            // Empty draws the interface in the system font.
+            "System font"
         } else if setting.default.is_none() && self.defaults.get(path).is_none()
         {
             "Default"
@@ -724,10 +729,7 @@ impl SettingsView {
             return list.clone();
         }
         let field = self.field(setting, window, cx);
-        #[cfg(test)]
-        let families = self.families.unwrap_or_else(|| installed_fonts(cx));
-        #[cfg(not(test))]
-        let families = installed_fonts(cx);
+        let families = self.families(cx);
         let swatch = Self::swatch(cx);
         let list = cx.new(|cx| {
             Combobox::new(
@@ -1068,10 +1070,10 @@ impl SettingsView {
         query.is_empty()
             || setting.label.to_lowercase().contains(query)
             || setting.path.to_lowercase().contains(query)
-            || setting
-                .description
-                .as_deref()
-                .is_some_and(|text| text.to_lowercase().contains(query))
+            // Descriptions match as they read, without code-span backticks.
+            || setting.description.as_deref().is_some_and(|text| {
+                prose::plain(text).to_lowercase().contains(query)
+            })
     }
 
     fn select_section(
@@ -1748,10 +1750,12 @@ impl SettingsView {
                 menu.read(cx).model(),
                 viewport.width,
                 window,
+                cx,
             ),
-            Anchor::Pointer(_) => MIN_WIDTH,
+            Anchor::Pointer(_) => min_width(window),
         };
-        let height = MenuView::content_height(menu.read(cx).model());
+        let height =
+            MenuView::content_height(menu.read(cx).model(), window.rem_size());
         let placement = place(anchor, size(width, height), viewport);
         let now = Instant::now();
         menu.update(cx, |menu, cx| {
@@ -2319,6 +2323,53 @@ fn themes(config: &std::path::Path) -> Vec<(String, Option<Theme>)> {
         .collect()
 }
 
+impl SettingsView {
+    /// The families font fields suggest and check against: the installed
+    /// ones, or a test's stand-ins.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "tests substitute the families")
+    )]
+    fn families(&self, cx: &App) -> &'static [&'static str] {
+        #[cfg(test)]
+        if let Some(families) = self.families {
+            return families;
+        }
+        installed_fonts(cx)
+    }
+
+    /// Why a font family row's applied family draws in another: the family
+    /// is not installed, so Huterm fell back, which the save alone does not
+    /// show.
+    pub(super) fn fallback_note(
+        &self,
+        setting: &Setting,
+        cx: &App,
+    ) -> Option<String> {
+        let font = &cx.global::<Desktop>().config.font;
+        let (family, fallback) = match setting.path.as_str() {
+            // `monospace` is a fontconfig alias, not an installed family.
+            "font.family" => (
+                Some(font.family.as_str())
+                    .filter(|family| *family != "monospace"),
+                if cfg!(target_os = "macos") {
+                    "terminals use Menlo"
+                } else {
+                    "terminals use the monospace font"
+                },
+            ),
+            "font.ui_family" => (
+                font.ui_family.as_deref(),
+                "the interface uses the system font",
+            ),
+            _ => return None,
+        };
+        let family = family?;
+        (!self.families(cx).contains(&family))
+            .then(|| format!("{family} is not installed, so {fallback}."))
+    }
+}
+
 /// The installed font families, read once and kept for every font field's
 /// suggestions.
 fn installed_fonts(cx: &App) -> &'static [&'static str] {
@@ -2558,6 +2609,9 @@ impl Render for SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        // Before anything measures or lays out text.
+        let typography = Typography::of(cx);
+        typography.apply(window);
         let swatch = Self::swatch(cx);
         let dark = theme_is_dark(&cx.global::<Desktop>().config.theme);
         self.frame_appearance.sync(dark, window, cx);
@@ -2647,6 +2701,7 @@ impl Render for SettingsView {
             .flex()
             .size_full()
             .bg(swatch.bg)
+            .font_family(typography.family)
             .text_color(swatch.fg)
             .child(huterm_ui::focus::tracker())
             .child(guard)

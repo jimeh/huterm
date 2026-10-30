@@ -6,7 +6,8 @@
 //! methods and builds the tokens from the terminal theme.
 //! [`docs/plans/ui-components.md`] records each component's contract.
 //!
-//! Primitives sit at the crate root: [`tokens`], [`focus`] visibility, the
+//! Primitives sit at the crate root: [`tokens`], the [`typography`] an
+//! owner sets as a global, [`focus`] visibility, the
 //! [`a11y`] state helper, the [`animation`] schedule, the [`scrollbar`]
 //! geometry with its [`list_scrollbar`] overlay, the [`listbox`] model
 //! behind menus, the [`option_list`] behind suggestions and command lists,
@@ -34,6 +35,7 @@ pub mod scrollbar;
 pub mod steps;
 pub mod text;
 pub mod tokens;
+pub mod typography;
 
 #[cfg(all(test, feature = "test-support"))]
 mod testing;

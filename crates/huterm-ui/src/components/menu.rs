@@ -48,6 +48,7 @@ use crate::listbox::{
     Button, Item, ItemId, Model, Row, Selection, remap_selection,
 };
 use crate::tokens::{Tokens, size};
+use crate::typography::{DESIGN_REM, Typography, ui};
 
 /// The key context a focused menu carries.
 pub const KEY_CONTEXT: &str = "menu";
@@ -86,9 +87,17 @@ const BUTTON_GAP: f32 = 6.0;
 const BUTTON_ROW_END: f32 = 4.0;
 /// A count badge's horizontal padding and border, beyond its digits.
 const BADGE_PADDING: f32 = 14.0;
-/// The menu's default minimum width; command labels never need more, so
-/// placement treats it as the width.
+/// The menu's default minimum width at the design size; command labels
+/// never need more, so placement treats it, at the window's interface
+/// scale ([`min_width`]), as the width.
 pub const MIN_WIDTH: Pixels = px(264.0);
+
+/// [`MIN_WIDTH`] at `window`'s interface scale: the width a menu with the
+/// default minimum draws at, and so the width to place it at.
+#[must_use]
+pub fn min_width(window: &Window) -> Pixels {
+    MIN_WIDTH * (window.rem_size() / DESIGN_REM)
+}
 
 /// Which accessibility roles a menu reports.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -115,6 +124,9 @@ pub struct Menu {
     scrollbar: ListScrollbar,
     max_height: Option<Pixels>,
     min_width: Pixels,
+    /// The window's rem size at the last render, which reveals scroll by
+    /// between renders.
+    rem: Pixels,
 }
 
 impl std::fmt::Debug for Menu {
@@ -164,6 +176,7 @@ impl Menu {
             scrollbar,
             max_height: None,
             min_width: MIN_WIDTH,
+            rem: DESIGN_REM,
         }
     }
 
@@ -176,7 +189,9 @@ impl Menu {
     }
 
     /// The menu at least `width` wide instead of [`MIN_WIDTH`], such as a
-    /// select's, which its owner sizes through [`select_width`].
+    /// select's, which its owner sizes through [`select_width`]. Like
+    /// [`MIN_WIDTH`], `width` is a design width that follows the interface
+    /// scale.
     #[must_use]
     pub fn with_min_width(mut self, width: Pixels) -> Self {
         self.min_width = width;
@@ -189,22 +204,28 @@ impl Menu {
         &self.model
     }
 
-    /// The content height before any scrolling: every row's fixed height
-    /// plus the panel's padding and border. Placement uses it, so the menu
-    /// sits flush against its anchor when it opens upward.
+    /// The content height before any scrolling: every row's height at the
+    /// window's rem size `rem` plus the panel's padding and border.
+    /// Placement uses it, so the menu sits flush against its anchor when
+    /// it opens upward.
     #[must_use]
-    pub fn content_height(model: &Model) -> Pixels {
-        let rows: f32 = model.rows.iter().map(row_height).sum();
-        px(rows + (PANEL_PADDING + PANEL_BORDER) * 2.0)
+    pub fn content_height(model: &Model, rem: Pixels) -> Pixels {
+        let rows = model
+            .rows
+            .iter()
+            .map(|row| row_height(row, rem))
+            .fold(Pixels::ZERO, |sum, height| sum + height);
+        rows + px((PANEL_PADDING + PANEL_BORDER) * 2.0)
     }
 
-    /// The width the rows ask for: the widest row's text, measured in
-    /// `window`'s current font, and what sits beside it, plus the row's and
-    /// the panel's padding. Read it while rendering, where the window's
-    /// text style is the one the menu inherits.
+    /// The width the rows ask for: the widest row's text, measured in the
+    /// interface family at `window`'s interface scale, and what sits beside
+    /// it, plus the row's and the panel's padding.
     #[must_use]
-    pub fn content_width(model: &Model, window: &Window) -> Pixels {
-        let style = window.text_style();
+    pub fn content_width(model: &Model, window: &Window, cx: &App) -> Pixels {
+        let mut style = window.text_style();
+        style.font_family = Typography::of(cx).family;
+        let rem = window.rem_size();
         let measure = |text: &str, size: f32| {
             if text.is_empty() {
                 return 0.0;
@@ -212,7 +233,7 @@ impl Menu {
             let run = style.to_run(text.len());
             let line = window.text_system().shape_line(
                 SharedString::from(text.to_owned()),
-                px(size),
+                ui(size).to_pixels(rem),
                 &[run],
                 None,
             );
@@ -222,7 +243,7 @@ impl Menu {
             Row::Item(item) => {
                 let side = if let Some(count) = item.badge {
                     ROW_GAP
-                        + measure(&count.to_string(), size::TEXT_SMALL.into())
+                        + measure(&count.to_string(), SIDE_TEXT_SIZE)
                         + BADGE_PADDING
                 } else if item.enabled && !item.shortcut.is_empty() {
                     ROW_GAP
@@ -282,15 +303,15 @@ impl Menu {
         if self.model == model {
             return;
         }
-        let before = self
-            .selection
-            .and_then(|selection| row_span(&self.model, selection.row));
+        let before = self.selection.and_then(|selection| {
+            row_span(&self.model, selection.row, self.rem)
+        });
         self.selection = remap_selection(&self.model, self.selection, &model);
         self.model = model;
         // Only a selection the new rows moved scrolls; a refresh leaves a
         // list the user scrolled away from where it is.
         if let Some(selection) = self.selection
-            && row_span(&self.model, selection.row) != before
+            && row_span(&self.model, selection.row, self.rem) != before
         {
             self.reveal(selection.row);
         }
@@ -323,13 +344,18 @@ impl Menu {
     /// old offset, and before the first frame it has no rows to scroll to.
     fn reveal(&self, row: usize) {
         let (Some(height), Some((top, bottom))) =
-            (self.max_height, row_span(&self.model, row))
+            (self.max_height, row_span(&self.model, row, self.rem))
         else {
             return;
         };
         let height = f32::from(height);
         let bottom = bottom + PANEL_PADDING * 2.0;
-        let rows: f32 = self.model.rows.iter().map(row_height).sum();
+        let rows: f32 = self
+            .model
+            .rows
+            .iter()
+            .map(|row| f32::from(row_height(row, self.rem)))
+            .sum();
         let max = (rows + PANEL_PADDING * 2.0 - height).max(0.0);
         let shown = -f32::from(self.scroll.offset().y);
         let shown = if top < shown {
@@ -489,7 +515,7 @@ impl Menu {
                 div()
                     .ml_auto()
                     .pl(px(SIDE_INSET))
-                    .text_size(px(SIDE_TEXT_SIZE))
+                    .text_size(ui(SIDE_TEXT_SIZE))
                     .text_color(side_text)
                     .whitespace_nowrap()
                     .child(content)
@@ -525,7 +551,7 @@ impl Menu {
             .flex_none()
             .items_center()
             .gap(px(ROW_GAP))
-            .h(px(ROW_HEIGHT))
+            .h(ui(ROW_HEIGHT))
             .px(px(ROW_PADDING))
             .rounded(px(6.0))
             .text_color(text)
@@ -604,7 +630,7 @@ impl Menu {
                             })
                         })
                         .flex_none()
-                        .h(px(24.0))
+                        .h(ui(24.0))
                         .px(px(10.0))
                         .rounded(px(6.0))
                         .border_1()
@@ -613,8 +639,8 @@ impl Menu {
                         } else {
                             tokens.line
                         })
-                        .text_size(px(BUTTON_TEXT_SIZE))
-                        .line_height(px(22.0))
+                        .text_size(ui(BUTTON_TEXT_SIZE))
+                        .line_height(ui(22.0))
                         .text_color(if selected {
                             tokens.on_accent()
                         } else if enabled {
@@ -653,7 +679,7 @@ impl Menu {
             .flex_none()
             .items_center()
             .gap(px(BUTTON_GAP))
-            .h(px(30.0))
+            .h(ui(BUTTON_ROW_HEIGHT))
             .pl(px(ROW_PADDING))
             .pr(px(BUTTON_ROW_END))
             .child(
@@ -742,10 +768,14 @@ impl EntityInputHandler for Menu {
     }
 }
 
-/// Where `row` sits in `model`'s rows, top and bottom, before scrolling.
-fn row_span(model: &Model, row: usize) -> Option<(f32, f32)> {
-    let height = row_height(model.rows.get(row)?);
-    let top: f32 = model.rows[..row].iter().map(row_height).sum();
+/// Where `row` sits in `model`'s rows at the rem size `rem`, top and
+/// bottom, before scrolling.
+fn row_span(model: &Model, row: usize, rem: Pixels) -> Option<(f32, f32)> {
+    let height = f32::from(row_height(model.rows.get(row)?, rem));
+    let top: f32 = model.rows[..row]
+        .iter()
+        .map(|row| f32::from(row_height(row, rem)))
+        .sum();
     Some((top, top + height))
 }
 
@@ -758,27 +788,32 @@ pub fn select_width(
     model: &Model,
     viewport: Pixels,
     window: &Window,
+    cx: &App,
 ) -> Pixels {
     let room =
         (viewport - crate::components::popover::MARGIN * 2.0).max(px(0.0));
-    trigger.max(Menu::content_width(model, window)).min(room)
+    trigger
+        .max(Menu::content_width(model, window, cx))
+        .min(room)
 }
 
-/// A row's fixed height.
-fn row_height(row: &Row) -> f32 {
+/// A row's height at the rem size `rem`: text rows follow the interface
+/// scale, and separators keep their hairline and margins.
+fn row_height(row: &Row, rem: Pixels) -> Pixels {
     match row {
-        Row::Item(_) => ROW_HEIGHT,
-        Row::Separator => SEPARATOR_HEIGHT,
-        Row::Buttons { .. } => BUTTON_ROW_HEIGHT,
+        Row::Item(_) => ui(ROW_HEIGHT).to_pixels(rem),
+        Row::Separator => px(SEPARATOR_HEIGHT),
+        Row::Buttons { .. } => ui(BUTTON_ROW_HEIGHT).to_pixels(rem),
     }
 }
 
 impl Render for Menu {
     fn render(
         &mut self,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        self.rem = window.rem_size();
         let tokens = self.tokens;
         // Items and buttons form one set: AccessKit positions are
         // zero-based, and adapters read the set's size from the container.
@@ -826,8 +861,8 @@ impl Render for Menu {
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .occlude()
-            .min_w(self.min_width)
-            .text_size(px(TEXT_SIZE))
+            .min_w(self.min_width * (self.rem / DESIGN_REM))
+            .text_size(ui(TEXT_SIZE))
             .text_color(tokens.fg)
             .flex()
             .flex_col()
@@ -891,6 +926,7 @@ mod height_tests {
 
     use super::Menu;
     use crate::listbox::{Button, Item, Model, Row};
+    use crate::typography::DESIGN_REM;
 
     #[test]
     fn the_content_height_sums_fixed_row_heights_and_panel_chrome() {
@@ -906,10 +942,19 @@ mod height_tests {
         // Two items, one separator, one button row, plus 5pt padding and a
         // 1pt border on both sides.
         assert_eq!(
-            Menu::content_height(&model),
+            Menu::content_height(&model, DESIGN_REM),
             px(2.0 * 28.0 + 9.0 + 30.0 + 12.0)
         );
-        assert_eq!(Menu::content_height(&Model::default()), px(12.0));
+        assert_eq!(
+            Menu::content_height(&Model::default(), DESIGN_REM),
+            px(12.0)
+        );
+        // At twice the scale the text rows double; the separator and the
+        // panel chrome keep their points.
+        assert_eq!(
+            Menu::content_height(&model, DESIGN_REM * 2.0),
+            px(2.0 * 56.0 + 9.0 + 60.0 + 12.0)
+        );
     }
 }
 
@@ -927,6 +972,7 @@ mod tests {
     use super::{Menu, MenuEvent, Role, select_width};
     use crate::listbox::{Button, Item, Model, Row};
     use crate::testing::{a11y_node, tokens};
+    use crate::typography::DESIGN_REM;
 
     fn model() -> Model {
         Model::new(vec![
@@ -983,6 +1029,55 @@ mod tests {
         (menu, cx)
     }
 
+    /// A menu at its own width, inside a box tests measure.
+    struct Sized {
+        menu: Entity<Menu>,
+    }
+
+    impl Render for Sized {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            _: &mut Context<'_, Self>,
+        ) -> impl IntoElement {
+            div().flex().items_start().child(
+                div()
+                    .debug_selector(|| "menu-box".into())
+                    .child(self.menu.clone()),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn the_default_minimum_width_follows_the_interface_scale(
+        cx: &mut TestAppContext,
+    ) {
+        let (host, cx) = cx.add_window_view(|_, cx| Sized {
+            menu: cx.new(|cx| {
+                let short = Model::new(vec![Row::Item(Item::new("a", "A"))]);
+                Menu::new("Actions", short, tokens(), true, cx)
+            }),
+        });
+        cx.run_until_parked();
+        let width = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("menu-box").expect("drawn").size.width
+        };
+        let placed = cx.update(|window, _| super::min_width(window));
+        assert_eq!((width(cx), placed), (px(264.0), px(264.0)));
+        // Below the design size the menu shrinks with its text, so it
+        // draws at the width its owner placed it at.
+        let small = DESIGN_REM * (10.0 / 13.0);
+        cx.update(|window, cx| {
+            window.set_rem_size(small);
+            host.update(cx, |_, cx| cx.notify());
+        });
+        cx.run_until_parked();
+        let placed = cx.update(|window, _| super::min_width(window));
+        assert!((f32::from(placed) - 264.0 * 10.0 / 13.0).abs() < 1e-3);
+        // Layout rounds to whole pixels.
+        assert!((width(cx) - placed).abs() < px(0.5), "{:?}", width(cx));
+    }
+
     #[gpui::test]
     fn a_select_menu_is_as_wide_as_its_trigger_or_its_widest_row(
         cx: &mut TestAppContext,
@@ -997,12 +1092,12 @@ mod tests {
             )),
         ]);
         let trigger = px(150.0);
-        let (narrow, wide, capped, measured) = cx.update(|window, _| {
+        let (narrow, wide, capped, measured) = cx.update(|window, cx| {
             (
-                select_width(trigger, &short, px(1000.0), window),
-                select_width(trigger, &long, px(1000.0), window),
-                select_width(trigger, &long, px(240.0), window),
-                Menu::content_width(&long, window),
+                select_width(trigger, &short, px(1000.0), window, cx),
+                select_width(trigger, &long, px(1000.0), window, cx),
+                select_width(trigger, &long, px(240.0), window, cx),
+                Menu::content_width(&long, window, cx),
             )
         });
         assert_eq!(narrow, trigger, "short rows keep the trigger's width");

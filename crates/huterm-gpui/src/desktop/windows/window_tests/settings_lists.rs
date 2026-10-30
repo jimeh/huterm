@@ -760,3 +760,45 @@ fn a_condition_draft_saves_when_focus_leaves_its_context_menu(
         settled(cx) && file.text().contains("when = \"Terminal\"")
     });
 }
+
+#[gpui::test]
+fn a_family_that_is_not_installed_says_what_draws_instead(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "lists-font-fallback",
+        "[font]\nfamily = \"Monaco\"\nui_family = \"Missing Sans\"\n",
+    );
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.font.family = "Monaco".into();
+        config.font.ui_family = Some("Missing Sans".into());
+    });
+    open_settings(&mut harness, &file.path());
+    with_view(&mut harness, |view, _| view.set_families(FAMILIES));
+    with_window(&mut harness, |view, window, cx| {
+        view.show_section(SectionId::Appearance, cx);
+        window.refresh();
+    });
+    visual(&harness).run_until_parked();
+    let description = |harness: &mut DesktopHarness, path: &str| {
+        a11y_node(harness, &format!("settings-row-{path}"))["aria"]
+            ["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // The interface family saved but draws in the system font, and the
+    // row says so; an installed terminal family needs no note.
+    assert!(
+        description(&mut harness, "font.ui_family").ends_with(
+            "Missing Sans is not installed, so the interface uses the system font."
+        ),
+        "{}",
+        description(&mut harness, "font.ui_family")
+    );
+    assert!(
+        !description(&mut harness, FAMILY).contains("not installed"),
+        "{}",
+        description(&mut harness, FAMILY)
+    );
+}

@@ -28,7 +28,7 @@ new evidence.
   About. It is a new window kind with no session, workspace, or terminal.
   `open_settings` focuses the existing window instead of opening a second.
 - The layout follows mockup variant A1: a sidebar of sections (General,
-  Appearance, Tabs, Window and panes, Terminal, Scrollback, Command palette,
+  Appearance, Tabs, Windows, Panes, Terminal, Scrollback, Command palette,
   Quake windows, Keybindings, and Updates on macOS) and grouped cards of rows.
   The window's colors derive from the active theme, as overlays do through
   `Swatch`.

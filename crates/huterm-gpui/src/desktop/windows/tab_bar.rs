@@ -1,8 +1,9 @@
 //! Theme-derived tab bar colors and tab item presentation.
 
-use gpui::{Div, Hsla, Point, Stateful, Svg, TextRun, point, svg};
+use gpui::{Div, Hsla, Point, Rems, Stateful, Svg, TextRun, point, svg};
 use huterm_config::{Rgba, TabCloseButton, TabStyle, TabWidth, TabsConfig};
 use huterm_ui::components::button::{Button, Colors as ButtonColors};
+use huterm_ui::typography::{Typography, ui};
 
 use crate::assets::Icon;
 use crate::desktop::overlay::{Swatch, accent_bar};
@@ -66,8 +67,9 @@ pub(super) const PILL_MARGIN_RIGHT: Pixels = px(2.0);
 /// align in the column.
 pub(super) const VERTICAL_ROW_MARGIN_X: Pixels = px(6.0);
 pub(super) const VERTICAL_ROW_MARGIN_Y: Pixels = px(1.0);
-/// Title text size used both to render and to measure Fit tabs.
-pub(super) const TAB_TEXT_SIZE: Pixels = px(13.0);
+/// Title text size used both to render and to measure Fit tabs, and the
+/// terminal window's base text size.
+pub(super) const TAB_TEXT_SIZE: Rems = ui(13.0);
 
 #[derive(Clone, Copy)]
 pub(super) struct TabColors {
@@ -381,7 +383,11 @@ impl WorkspaceView {
         if self.title_widths.len() > TITLE_WIDTH_CACHE_LIMIT {
             self.title_widths.clear();
         }
-        let font = window.text_style().font();
+        // Measured before the root applies the interface family, so it is
+        // named here.
+        let mut font = window.text_style().font();
+        font.family = Typography::of(cx).family;
+        let text_size = TAB_TEXT_SIZE.to_pixels(window.rem_size());
         let mut widths = Vec::with_capacity(self.tabs.len());
         for tab in &self.tabs {
             let (title, status) = tab.label(self.config.tabs, cx);
@@ -398,7 +404,7 @@ impl WorkspaceView {
                 };
                 let width = window
                     .text_system()
-                    .layout_line(&title, TAB_TEXT_SIZE, &[run], None)
+                    .layout_line(&title, text_size, &[run], None)
                     .width;
                 self.title_widths.insert(title, width);
                 width

@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Context, Div, ElementId, MouseButton, MouseMoveEvent,
-    Pixels, Point, ScrollHandle, SharedString, Window, canvas, div, prelude::*,
-    px,
+    Pixels, Point, Rems, ScrollHandle, SharedString, Window, canvas, div,
+    prelude::*, px,
 };
 
 use crate::animation::AnimationSchedule;
@@ -27,6 +27,7 @@ use crate::click::from_keyboard;
 use crate::list_scrollbar::ListScrollbar;
 use crate::listbox::ItemId;
 use crate::tokens::{Tokens, size};
+use crate::typography::{DESIGN_REM, ui};
 
 /// One option: a label and an optional second line.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,9 +136,9 @@ pub fn remap(
 }
 
 /// A one-line option's height.
-const ROW_HEIGHT: Pixels = size::ROW_HEIGHT;
+const ROW_HEIGHT: Rems = size::ROW_HEIGHT;
 /// An option with a description's height.
-const DESCRIBED_ROW_HEIGHT: Pixels = px(40.0);
+const DESCRIBED_ROW_HEIGHT: Rems = ui(40.0);
 /// The space between the list's edge and its options.
 pub(crate) const PADDING: f32 = 4.0;
 
@@ -159,7 +160,10 @@ pub(crate) struct OptionList {
     /// The fading indicator shown while options overflow the list.
     scrollbar: ListScrollbar,
     /// The owner's row height, in place of the one the options imply.
-    row_height: Option<Pixels>,
+    row_height: Option<Rems>,
+    /// The window's rem size at the last render, which rows are measured
+    /// at between renders.
+    rem: Pixels,
     /// The height beyond which the options scroll, padding included.
     max_height: Option<Pixels>,
     /// The laid-out height the highlight was last revealed in.
@@ -178,6 +182,7 @@ impl OptionList {
             scrollbar: ListScrollbar::new(scroll.clone()),
             scroll,
             row_height: None,
+            rem: DESIGN_REM,
             max_height: None,
             viewport: px(0.0),
             content: None,
@@ -217,7 +222,7 @@ impl OptionList {
         self.options.iter().position(|option| option.id == id)
     }
 
-    pub(crate) fn set_row_height(&mut self, height: Option<Pixels>) {
+    pub(crate) fn set_row_height(&mut self, height: Option<Rems>) {
         self.row_height = height;
     }
 
@@ -243,17 +248,19 @@ impl OptionList {
     /// Every option's height: the owner's, else taller when any option has
     /// a description, so all rows match and a page is whole rows.
     pub(crate) fn row_height(&self) -> Pixels {
-        self.row_height.unwrap_or_else(|| {
-            if self
-                .options
-                .iter()
-                .any(|option| option.description.is_some())
-            {
-                DESCRIBED_ROW_HEIGHT
-            } else {
-                ROW_HEIGHT
-            }
-        })
+        self.row_height
+            .unwrap_or_else(|| {
+                if self
+                    .options
+                    .iter()
+                    .any(|option| option.description.is_some())
+                {
+                    DESCRIBED_ROW_HEIGHT
+                } else {
+                    ROW_HEIGHT
+                }
+            })
+            .to_pixels(self.rem)
     }
 
     /// The options' height before any scrolling, padding included.
@@ -419,6 +426,14 @@ impl OptionList {
         window: &mut Window,
         cx: &mut Context<'_, V>,
     ) -> Div {
+        // A new interface scale moves every row, so the highlight is
+        // revealed again at the new rem size.
+        if window.rem_size() != self.rem {
+            self.rem = window.rem_size();
+            if let Some(row) = self.highlight {
+                self.reveal(row);
+            }
+        }
         // A parent may resize the list without a change here, so a frame
         // whose layout differs from the last asks for another, which
         // reveals the highlight in the new height.

@@ -78,10 +78,11 @@ use huterm_ui::components::button::{Button, Colors as ButtonColors};
 use huterm_ui::components::dialog::Modal;
 use huterm_ui::components::input::{ContextMenu as FieldContextMenu, Input};
 use huterm_ui::components::menu::{
-    MIN_WIDTH as MENU_MIN_WIDTH, Menu as MenuView, MenuEvent,
+    Menu as MenuView, MenuEvent, min_width as menu_min_width,
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
 use huterm_ui::listbox::{Model as MenuModel, Row as MenuRow};
+use huterm_ui::typography::Typography;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -1601,6 +1602,7 @@ fn install_desktop(
         #[cfg(all(target_os = "macos", feature = "macos-updater"))]
         updater,
     });
+    apply_typography(cx);
     start_hierarchy_drain(cx);
     cx.on_window_closed(|cx, window| {
         let desktop = cx.global_mut::<Desktop>();
@@ -1626,6 +1628,40 @@ fn install_desktop(
     })
     .detach();
     cx.observe_keystrokes(observe_keystroke).detach();
+}
+
+/// Sets the interface's typography from the configuration's `[font]`
+/// table and redraws every window in it. A family that is not installed
+/// falls back to the system interface font, as an unavailable terminal
+/// font falls back to the platform's monospace one.
+fn apply_typography(cx: &mut App) {
+    let font = &cx.global::<Desktop>().config.font;
+    let scale = font.ui_scale();
+    let family = font.ui_family.clone().filter(|family| {
+        let installed = cx
+            .text_system()
+            .all_font_names()
+            .iter()
+            .any(|name| name == family);
+        if !installed {
+            eprintln!(
+                "Huterm interface font {family:?} is unavailable; using the system font"
+            );
+        }
+        installed
+    });
+    let typography = Typography {
+        family: family.map_or_else(
+            || huterm_ui::typography::SYSTEM_FAMILY.into(),
+            gpui::SharedString::from,
+        ),
+        mono: Typography::platform_mono(),
+        scale,
+    };
+    if cx.try_global::<Typography>() != Some(&typography) {
+        cx.set_global(typography);
+        cx.refresh_windows();
+    }
 }
 
 /// Follows the desktop's window-button layout, relaying each change to
@@ -10541,6 +10577,7 @@ fn finish_reload(
             desktop.config_report =
                 ConfigReport::reloaded(&config, &compiled, refused);
             desktop.latched.clear();
+            apply_typography(cx);
             quake_windows::reconcile(cx, renames);
             let keymap = bind_keymap(cx, compiled);
             cx.global_mut::<Desktop>().keymap = keymap;
@@ -11237,6 +11274,9 @@ impl Render for WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        // Before anything measures or lays out chrome text.
+        let typography = Typography::of(cx);
+        typography.apply(window);
         let active_tab = self.active_tab(cx);
         // A pane drag whose pane left its tab, or under a tab switch it did
         // not make, ends even while the pointer rests.
@@ -11288,6 +11328,7 @@ impl Render for WorkspaceView {
             .relative()
             .when(!decorated, |root| root.bg(background))
             .text_color(foreground)
+            .font_family(typography.family)
             .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
             .track_focus(&self.focus)
@@ -13470,20 +13511,21 @@ impl WorkspaceView {
         let open = self.menu.as_ref()?;
         let menu = open.view.clone();
         let viewport = window.viewport_size();
-        let height = MenuView::content_height(menu.read(cx).model());
+        let height =
+            MenuView::content_height(menu.read(cx).model(), window.rem_size());
         let anchor = match open.pointer {
             Some(pointer) => Anchor::Pointer(pointer),
             None => Anchor::Trigger(self.menu_anchor(layout)),
         };
-        let placement = place(anchor, size(MENU_MIN_WIDTH, height), viewport);
+        // The menu's labels follow the interface scale, and so does its
+        // width.
+        let width = menu_min_width(window);
+        let placement = place(anchor, size(width, height), viewport);
         menu.update(cx, |menu, cx| {
             menu.set_max_height(Some(placement.max_height), cx);
         });
-        self.popover.render(
-            placement,
-            viewport,
-            div().w(MENU_MIN_WIDTH).child(menu),
-        )
+        self.popover
+            .render(placement, viewport, div().w(width).child(menu))
     }
 
     /// The open menu's smoke fields: kind, focus, selection, items with

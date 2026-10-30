@@ -24,7 +24,8 @@ use gpui::{
     Window, canvas, div, point, prelude::*, px,
 };
 
-use crate::tokens::Tokens;
+use crate::tokens::{Tokens, size};
+use crate::typography::Typography;
 
 /// The gap between a focused control and the tooltip below it.
 const FOCUS_GAP: f32 = 4.0;
@@ -82,11 +83,14 @@ impl Render for Tooltip {
     fn render(
         &mut self,
         _: &mut Window,
-        _: &mut Context<'_, Self>,
+        cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let tokens = self.tokens;
+        // GPUI lays tooltips out outside the window's tree, so the text
+        // inherits no family from its root.
         div()
             .debug_selector(|| "tooltip".to_owned())
+            .font_family(Typography::of(cx).family)
             .px(px(8.0))
             .py(px(4.0))
             .rounded(px(6.0))
@@ -94,7 +98,7 @@ impl Render for Tooltip {
             .border_1()
             .border_color(tokens.line_strong)
             .shadow(tokens.shadow())
-            .text_size(px(11.5))
+            .text_size(size::TEXT_SMALL)
             .text_color(tokens.fg)
             .whitespace_nowrap()
             .child(self.text.clone())
