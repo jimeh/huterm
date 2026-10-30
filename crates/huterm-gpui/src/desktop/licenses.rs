@@ -368,6 +368,11 @@ impl LicensesView {
         self.catalog()?.components.get(index)
     }
 
+    /// The search field.
+    pub(super) fn search(&self) -> Entity<Input> {
+        self.input.clone()
+    }
+
     /// Moves focus to the search from a button, so it shows the edit that
     /// follows.
     fn focus_search(&self, window: &mut Window, cx: &mut App) {
@@ -1177,11 +1182,6 @@ impl LicensesView {
     /// Sets the search's text as an edit that arrives without moving focus.
     pub(super) fn set_search(&self, text: &str, cx: &mut Context<'_, Self>) {
         self.input.update(cx, |input, cx| input.set_text(text, cx));
-    }
-
-    /// The search field.
-    pub(super) fn search(&self) -> Entity<Input> {
-        self.input.clone()
     }
 
     /// The component list's scroll offset from its top, and its first row's

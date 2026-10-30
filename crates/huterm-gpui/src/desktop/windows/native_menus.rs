@@ -220,7 +220,15 @@ impl WorkspaceView {
                     view.id == *tab && view.focused().pane == *pane
                 })
             }
-            MenuKind::Field(field) => field.upgrade().is_some(),
+            // The palette or Licenses must still show the field.
+            MenuKind::Field(field) => {
+                let id = field.entity_id();
+                self.palette.as_ref().is_some_and(|palette| {
+                    palette.read(cx).field().entity_id() == id
+                }) || self.licenses.as_ref().is_some_and(|licenses| {
+                    licenses.read(cx).search().entity_id() == id
+                })
+            }
         }
     }
 

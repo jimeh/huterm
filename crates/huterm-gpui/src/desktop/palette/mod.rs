@@ -1581,7 +1581,6 @@ impl CommandPalette {
     }
 
     /// The search and argument field.
-    #[cfg(all(test, feature = "test-support"))]
     pub(super) fn field(&self) -> Entity<Input> {
         self.input.clone()
     }

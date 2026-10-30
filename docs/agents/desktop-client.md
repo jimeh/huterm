@@ -732,13 +732,18 @@ itself through `Desktop::menu_presenter`), else in their one popover,
 returning focus to the field on a pick, Escape, or an outside press. Picks
 run on the field through `ui::input::run`; the terminal window routes them
 through `run_menu_pick`. A native menu leaves GPUI focus on the field, so
-nothing below applies to it. Opening the popover blurs the field, so a
-Settings field's blur listener skips its commit while the field's own menu
-is open. Every close that does not hand focus back to the field goes
-through `drop_menu`, which leaves the field in `field_menus.left`, and
-`settle_menu_left` runs the skipped commit: the menu's blur close, a section
-change, or the next frame for a caller without a context. `request_close`
-closes the menu onto the field instead, so the focused field's own save,
+nothing below applies to it. A native field menu closes once its window no
+longer shows the field: `menu_target_live` checks the palette's and
+Licenses' fields, and Settings closes its own on a section change and,
+from `render`, once `owns_field` no longer finds the field, such as a
+keybinding row a reload removed or a closed dialog's field. Opening the
+popover blurs the field, so a Settings field's blur listener skips its
+commit while the field's own menu is open. Every close that does not hand
+focus back to the field goes through `drop_menu`, which leaves the field in
+`field_menus.left`, and `settle_menu_left` runs the skipped commit: the menu's
+blur close, a section change, or the next frame for a caller without a
+context. `request_close` closes the menu onto the field instead, so the
+focused field's own save,
 or its refusal that keeps focus there, applies. `run_command` refuses
 commands
 while the palette is open but lets menu commands through, and Settings' `run`
@@ -874,7 +879,8 @@ the terminal to cancel it.
 On macOS those menus, the pane title bar menu, and text fields' menus open
 as native `NSMenu` popups by default (`window.macos_native_menus`). Their
 builders return a `menu_spec::MenuSpec` that lowers to the listbox model or
-to a `NativeMenu`, and picks from either go through `run_menu_pick`. The
+to a `NativeMenu`, and the terminal window's picks from either go through
+`run_menu_pick`; Settings runs its field menus' picks itself. The
 `AppKit` presenter pops the menu from a
 `performSelector:afterDelay:inModes:` perform in the common run-loop modes,
 and cancels it the same way. A

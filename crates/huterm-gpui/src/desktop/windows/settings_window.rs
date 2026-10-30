@@ -1077,6 +1077,8 @@ impl SettingsView {
             self.keys.stranded = true;
             self.settle_menu_left(cx);
         }
+        // Dropping a native field menu closes it.
+        self.field_menus.native = None;
         self.section = section;
         self.search.update(cx, |search, cx| search.set_text("", cx));
         self.scroll.set_offset(point(px(0.0), px(0.0)));
@@ -1505,6 +1507,53 @@ impl SettingsView {
         });
         cx.notify();
         true
+    }
+
+    /// Whether `id` is one of the fields Settings draws: a setting's, a
+    /// keybinding's, a search, or the open dialog's.
+    fn owns_field(&self, id: gpui::EntityId) -> bool {
+        self.fields
+            .values()
+            .chain(self.keys.fields.values())
+            .chain([&self.search, &self.keys.search])
+            .chain(self.dialog.field())
+            .any(|field| field.entity_id() == id)
+    }
+
+    /// After a frame: closes a native field menu whose field went away,
+    /// and settles a field menu dropped where no context could settle its
+    /// field. Both wait for the draw to end.
+    fn tidy_field_menus(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let native = self.field_menus.native.as_ref();
+        if native
+            .is_some_and(|session| !self.owns_field(session.field.entity_id()))
+        {
+            cx.defer_in(window, |view, _, cx| view.prune_native_field_menu(cx));
+        }
+        if self.field_menus.left.is_some() {
+            cx.defer_in(window, |view, _, cx| {
+                view.settle_menu_left(cx);
+            });
+        }
+    }
+
+    /// Closes a native field menu whose field Settings no longer draws,
+    /// such as a keybinding row a reload removed, as the terminal window's
+    /// `refresh_native_menu` does; a late pick then finds no session.
+    fn prune_native_field_menu(&mut self, cx: &mut Context<'_, Self>) {
+        if self
+            .field_menus
+            .native
+            .as_ref()
+            .is_some_and(|session| !self.owns_field(session.field.entity_id()))
+        {
+            self.field_menus.native = None;
+            cx.notify();
+        }
     }
 
     /// Runs the pick of the native field menu `token` names on its field.
@@ -2536,12 +2585,7 @@ impl Render for SettingsView {
         let neighbour = stranded
             .then(|| self.layout_neighbour(window, cx))
             .flatten();
-        // A field menu dropped where no context could settle its field.
-        if self.field_menus.left.is_some() {
-            cx.defer_in(window, |view, _, cx| {
-                view.settle_menu_left(cx);
-            });
-        }
+        self.tidy_field_menus(window, cx);
         if self.keys.follow.is_some() || stranded {
             cx.defer_in(window, move |view, window, cx| {
                 if view.keys.follow.is_some() {

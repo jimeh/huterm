@@ -482,8 +482,14 @@ fn a_settings_fields_menu_opens_natively_and_keeps_the_draft(
     pressing.run_until_parked();
     harness.wait_shown(&presenter, 1);
     assert_eq!(
-        presenter.shown.borrow()[0].ids()[..2],
-        ["text_cut", "text_copy"]
+        presenter.shown.borrow()[0].ids(),
+        [
+            "text_cut",
+            "text_copy",
+            "text_paste",
+            "-",
+            "text_select_all"
+        ]
     );
     assert!(!with_view(&mut harness, |view, _| view.field_menu_shown()));
     assert_eq!(focus(&mut harness), path, "the field keeps focus");
@@ -503,4 +509,140 @@ fn a_settings_fields_menu_opens_natively_and_keeps_the_draft(
         ""
     );
     assert_eq!(focus(&mut harness), path);
+}
+
+/// A Settings harness whose menus open through the returned presenter,
+/// showing `section` of `file`.
+fn native_settings(
+    harness: &mut DesktopHarness,
+    file: &super::settings::ScratchConfig,
+    section: huterm_config::settings::SectionId,
+) -> Rc<FakePresenter> {
+    let presenter = Rc::new(FakePresenter::default());
+    let shared: Rc<dyn MenuPresenter> = presenter.clone();
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().menu_presenter = Some(shared);
+    });
+    super::settings_controls::show(harness, file, section);
+    presenter
+}
+
+/// Right-presses the first character the field shows in `bounds`.
+fn right_press_field(harness: &DesktopHarness, bounds: Bounds<Pixels>) {
+    let mut visual = super::settings_controls::visual(harness);
+    visual.simulate_event(MouseDownEvent {
+        button: MouseButton::Right,
+        position: gpui::point(bounds.left() + px(2.0), bounds.center().y),
+        modifiers: Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    visual.run_until_parked();
+}
+
+/// A Settings field's native menu closes when its field goes, whether its
+/// section changes or its dialog closes, and a pick that arrives after
+/// that edits nothing.
+#[gpui::test]
+fn a_settings_native_field_menu_closes_when_its_field_goes(
+    cx: &mut TestAppContext,
+) {
+    use super::settings::{ScratchConfig, with_view, with_window};
+    use huterm_config::settings::SectionId;
+
+    let path = "terminal.scrollback_rows";
+    let file = ScratchConfig::new("native-field-menu-goes", "");
+    let mut harness = DesktopHarness::new(cx);
+    let presenter = native_settings(&mut harness, &file, SectionId::Scrollback);
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field(path, window, cx);
+    });
+    let (_, bounds) =
+        with_window(&mut harness, |view, _, cx| view.field_caret(path, cx))
+            .expect("the field painted");
+    let before =
+        with_window(&mut harness, |view, _, cx| view.field_value(path, cx));
+    right_press_field(&harness, bounds);
+    harness.wait_shown(&presenter, 1);
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::NEXT_TAB, window, cx).unwrap();
+    });
+    harness.cx.run_until_parked();
+    assert!(presenter.shown.borrow()[0].closed.get(), "section change");
+    presenter.shown.borrow()[0].pick("text_select_all");
+    presenter.shown.borrow()[0].pick.close();
+    harness.cx.run_until_parked();
+    assert_eq!(
+        with_window(&mut harness, |view, _, cx| view.field_value(path, cx)),
+        before
+    );
+    // A dialog's field goes with its dialog.
+    with_window(&mut harness, |view, window, cx| {
+        view.type_profile_name("scratch", window, cx);
+    });
+    super::settings_controls::visual(&harness).run_until_parked();
+    let (_, bounds) =
+        with_window(&mut harness, |view, _, cx| view.dialog_field_caret(cx))
+            .expect("the dialog's field painted");
+    right_press_field(&harness, bounds);
+    harness.wait_shown(&presenter, 2);
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::DIALOG_CANCEL, window, cx).unwrap();
+    });
+    harness.cx.run_until_parked();
+    assert!(with_view(&mut harness, |view, _| view.quake_prompts()
+        == (false, false)));
+    assert!(presenter.shown.borrow()[1].closed.get(), "dialog close");
+}
+
+/// With native menus off, a Settings field's menu is Huterm's own even
+/// where a presenter exists.
+#[gpui::test]
+fn turning_native_menus_off_draws_settings_field_menus(
+    cx: &mut TestAppContext,
+) {
+    use super::settings::{ScratchConfig, with_view, with_window};
+    use huterm_config::settings::SectionId;
+
+    let path = "terminal.scrollback_rows";
+    let file = ScratchConfig::new("native-field-menu-off", "");
+    let mut harness = DesktopHarness::new(cx);
+    let presenter = native_settings(&mut harness, &file, SectionId::Scrollback);
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().config.window.macos_native_menus = false;
+    });
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field(path, window, cx);
+    });
+    let (_, bounds) =
+        with_window(&mut harness, |view, _, cx| view.field_caret(path, cx))
+            .expect("the field painted");
+    right_press_field(&harness, bounds);
+    assert!(with_view(&mut harness, |view, _| view.field_menu_shown()));
+    assert!(presenter.shown.borrow().is_empty());
+}
+
+/// Closing the palette closes its field's native menu, as a terminal
+/// window's other native menus close with their target.
+#[gpui::test]
+fn closing_the_palette_closes_its_fields_native_menu(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _, presenter) = harness.native_window();
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    harness.press(window, "a b c");
+    let field = harness.cx.update(|cx| palette_field(cx, window));
+    let (_, bounds) = harness
+        .cx
+        .update(|cx| field.read(cx).painted_caret())
+        .expect("the field painted");
+    harness.right_press(
+        window,
+        gpui::point(bounds.left() + px(1.0), bounds.center().y),
+    );
+    harness.wait_shown(&presenter, 1);
+    harness.press(window, "escape");
+    harness.wait_for("the palette and its menu to close", |cx| {
+        palette_state(cx, window).is_none() && native_kind(cx, window).is_none()
+    });
+    assert!(presenter.shown.borrow()[0].closed.get());
 }
