@@ -486,7 +486,9 @@ Shift-Tab are not bound here, so they reach `settings_focus_next`, a dialog's
 `dialog_focus_next`, or `palette_expand`.
 
 A right-click on a text field opens its menu: Cut, Copy, Paste, and Select
-All, with the shortcuts the field's bindings give them. Cut and Copy are
+All, with the shortcuts the field's bindings give them. On macOS it is a
+native menu, as the other context menus are, unless
+`[window] macos_native_menus = false`. Cut and Copy are
 disabled with nothing selected, Cut and Paste in a read-only field, and Select
 All in an empty one. A right-click on the selection keeps it; anywhere else it
 moves the caret there first, as on macOS. On macOS the Edit menu's Cut is

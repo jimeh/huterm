@@ -9317,7 +9317,7 @@
         },
         "macos_native_menus": {
           "default": true,
-          "description": "Open the window, tab, pane, and terminal menus as native macOS\nmenus. Off draws them in Huterm's own style, as Linux always does.",
+          "description": "Open the window, tab, pane, terminal, and text field menus as\nnative macOS menus. Off draws them in Huterm's own style, as Linux\nalways does.",
           "type": "boolean",
           "x-huterm-apply": "live",
           "x-huterm-group": "Window",

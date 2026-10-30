@@ -1,6 +1,6 @@
-//! The window, tab, pane, and terminal menus as native macOS menus. A
-//! [`MenuPresenter`] shows a [`NativeMenu`] and reports the pick; the
-//! `AppKit` presenter runs on macOS, and tests stand in for it.
+//! The window, tab, pane, terminal, and text field menus as native macOS
+//! menus. A [`MenuPresenter`] shows a [`NativeMenu`] and reports the pick;
+//! the `AppKit` presenter runs on macOS, and tests stand in for it.
 //!
 //! The menu is a snapshot of the rows when it opened. While it tracks, its
 //! run loop keeps GPUI running, so the window repaints and a refresh can
@@ -220,6 +220,7 @@ impl WorkspaceView {
                     view.id == *tab && view.focused().pane == *pane
                 })
             }
+            MenuKind::Field(field) => field.upgrade().is_some(),
         }
     }
 

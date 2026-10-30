@@ -505,8 +505,9 @@ pub struct WindowConfig {
         "x-huterm-apply" = "live",
     )))]
     pub shortcut_hints: bool,
-    /// Open the window, tab, pane, and terminal menus as native macOS
-    /// menus. Off draws them in Huterm's own style, as Linux always does.
+    /// Open the window, tab, pane, terminal, and text field menus as
+    /// native macOS menus. Off draws them in Huterm's own style, as Linux
+    /// always does.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "window",
         "x-huterm-group" = "Window",

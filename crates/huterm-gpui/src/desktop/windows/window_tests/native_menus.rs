@@ -354,3 +354,153 @@ fn a_native_terminal_menu_closes_when_focus_leaves_its_pane(
         }
     });
 }
+
+/// The open palette's field in `window`.
+fn palette_field(cx: &mut App, window: AnyWindowHandle) -> Entity<Input> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().unwrap();
+            let palette = view.read(cx).palette.clone().expect("open");
+            palette.read(cx).field()
+        })
+        .unwrap()
+}
+
+/// A right-click on the palette's field opens its Edit menu natively, as
+/// the terminal's menus open. The field keeps focus while the menu tracks,
+/// and the pick edits the field.
+#[gpui::test]
+fn a_palette_fields_menu_opens_natively_and_edits_the_field(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _, presenter) = harness.native_window();
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    harness.press(window, "a b c");
+    let field = harness.cx.update(|cx| palette_field(cx, window));
+    let (_, bounds) = harness
+        .cx
+        .update(|cx| field.read(cx).painted_caret())
+        .expect("the field painted");
+    let on_text = gpui::point(bounds.left() + px(1.0), bounds.center().y);
+    harness.right_press(window, on_text);
+    harness.wait_shown(&presenter, 1);
+    let field_focused = |cx: &mut App| {
+        window
+            .update(cx, |_, window, cx| {
+                field.read(cx).focus_handle(cx).is_focused(window)
+            })
+            .unwrap()
+    };
+    harness.cx.update(|cx| {
+        assert!(!huterm_menu_open(cx, window), "no Huterm menu draws");
+        assert!(matches!(native_kind(cx, window), Some(MenuKind::Field(_))));
+        assert!(field_focused(cx), "the field keeps focus");
+    });
+    {
+        let shown = presenter.shown.borrow();
+        assert_eq!(shown[0].anchor, MenuAnchor::Pointer(on_text));
+        assert_eq!(
+            shown[0].ids(),
+            [
+                "text_cut!",
+                "text_copy!",
+                "text_paste",
+                "-",
+                "text_select_all"
+            ]
+        );
+        shown[0].pick("text_select_all");
+    }
+    harness.wait_for("the pick to select the text", |cx| {
+        native_kind(cx, window).is_none()
+            && field.read(cx).selection() == (0..3)
+    });
+    harness.cx.update(|cx| {
+        assert!(field_focused(cx));
+        assert!(palette_state(cx, window).is_some(), "the palette stays");
+    });
+}
+
+/// A Settings field's Edit menu opens natively too. Focus never leaves the
+/// field, so its draft is not saved while the menu tracks, and the pick
+/// edits the field.
+#[gpui::test]
+fn a_settings_fields_menu_opens_natively_and_keeps_the_draft(
+    cx: &mut TestAppContext,
+) {
+    use super::settings::{ScratchConfig, settled, with_view, with_window};
+    use super::settings_controls::{focus, keys, show, visual};
+
+    let path = "terminal.scrollback_rows";
+    let file = ScratchConfig::new("native-field-menu", "");
+    let mut harness = DesktopHarness::new(cx);
+    let presenter = Rc::new(FakePresenter::default());
+    let shared: Rc<dyn MenuPresenter> = presenter.clone();
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().menu_presenter = Some(shared);
+    });
+    show(
+        &mut harness,
+        &file,
+        huterm_config::settings::SectionId::Scrollback,
+    );
+    with_window(&mut harness, |view, window, cx| {
+        window.activate_window();
+        view.focus_field(path, window, cx);
+    });
+    keys(
+        &harness,
+        if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        },
+    );
+    let mut typing = visual(&harness);
+    typing.simulate_input("5000");
+    typing.run_until_parked();
+    keys(
+        &harness,
+        if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        },
+    );
+    let (_, bounds) =
+        with_window(&mut harness, |view, _, cx| view.field_caret(path, cx))
+            .expect("the field painted");
+    let mut pressing = visual(&harness);
+    pressing.simulate_event(MouseDownEvent {
+        button: MouseButton::Right,
+        position: gpui::point(bounds.left() + px(2.0), bounds.center().y),
+        modifiers: Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    pressing.run_until_parked();
+    harness.wait_shown(&presenter, 1);
+    assert_eq!(
+        presenter.shown.borrow()[0].ids()[..2],
+        ["text_cut", "text_copy"]
+    );
+    assert!(!with_view(&mut harness, |view, _| view.field_menu_shown()));
+    assert_eq!(focus(&mut harness), path, "the field keeps focus");
+    assert!(
+        harness.cx.update(settled) && file.text().is_empty(),
+        "opening the menu saved"
+    );
+    presenter.shown.borrow()[0].pick("text_cut");
+    harness.wait_for("the pick to cut the text", |cx| {
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref()
+            == Some("5000")
+    });
+    assert_eq!(
+        with_window(&mut harness, |view, _, cx| view.field_value(path, cx)),
+        ""
+    );
+    assert_eq!(focus(&mut harness), path);
+}

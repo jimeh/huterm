@@ -12343,14 +12343,22 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.native_menu.is_some() {
+            return;
+        }
         self.close_menu(MenuFocusReturn::Keep, window, cx);
         let contexts = window.context_stack();
         let kind = MenuKind::Field(request.field.clone());
-        let Some(model) = Self::field_menu_model(&kind, &contexts, cx) else {
+        let Some(spec) = Self::field_menu_spec(&kind, &contexts, cx) else {
             return;
         };
+        // A native menu leaves GPUI focus on the field while it tracks.
+        let anchor = MenuAnchor::Pointer(request.position);
+        if self.open_native_menu(kind.clone(), &spec, anchor, window, cx) {
+            return;
+        }
         self.mount_menu(
-            model,
+            spec.to_listbox(Platform::current()),
             kind,
             Some(request.position),
             contexts,
@@ -12361,16 +12369,16 @@ impl WorkspaceView {
     }
 
     /// A field menu's rows, or `None` once its field is gone.
-    fn field_menu_model(
+    fn field_menu_spec(
         kind: &MenuKind,
         contexts: &[KeyContext],
         cx: &App,
-    ) -> Option<MenuModel> {
+    ) -> Option<MenuSpec> {
         let MenuKind::Field(field) = kind else {
             return None;
         };
         let field = field.upgrade()?;
-        Some(field_menu::field_menu_model(
+        Some(field_menu::field_menu(
             field_menu::FieldMenuInput::of(field.read(cx)),
             &cx.global::<Desktop>().keymap,
             contexts,
@@ -12672,6 +12680,13 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // A field menu's picks edit its field, not the window.
+        if let MenuKind::Field(field) = kind {
+            if let Some(field) = field.upgrade() {
+                field_menu::run_pick(&field, id, cx);
+            }
+            return;
+        }
         if let MenuKind::Terminal {
             link: Some(link), ..
         } = kind
@@ -13082,6 +13097,7 @@ impl WorkspaceView {
             Some(MenuKind::Tab(_)) => "tab",
             Some(MenuKind::Terminal { .. }) => "terminal",
             Some(MenuKind::Pane { .. }) => "pane",
+            Some(MenuKind::Field(_)) => "field",
             None => "none",
         };
         format!(

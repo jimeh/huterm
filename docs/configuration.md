@@ -400,8 +400,9 @@ and the arrows drawn as icons on both. The scroll pill, the close
 confirmation's buttons, the About panel, and the Licenses view show key hints
 only with `shortcut_hints = true`.
 
-On macOS the window, tab, pane, and terminal menus open as native macOS
-menus while `macos_native_menus = true`, the default. They list the same
+On macOS the window, tab, pane, and terminal menus, and a text field's
+right-click menu, open as native macOS menus while
+`macos_native_menus = true`, the default. They list the same
 items with the same shortcuts, follow the theme's light or dark appearance,
 and use the system's keys and dismissal. The Edit row becomes separate
 **Copy** and **Paste** items, and a disabled item shows no reason. A native

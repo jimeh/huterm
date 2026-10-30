@@ -726,15 +726,21 @@ through `crate::ui::input::run`. Draw every field inside
 enabled field keeps a selection under the pointer, else places the caret,
 focuses the field, and dispatches `huterm_ui`'s `ContextMenu` action from
 it, deferred so the handler can read the field. The window roots handle it
-and open `windows/field_menu.rs`'s model in their one popover, returning
-focus to the field on a pick, Escape, or an outside press; picks run on the
-field through `ui::input::run`. Opening the menu blurs the field, so a
+and open `windows/field_menu.rs`'s `MenuSpec` as the other context menus
+open: natively under `window.macos_native_menus` (Settings presents it
+itself through `Desktop::menu_presenter`), else in their one popover,
+returning focus to the field on a pick, Escape, or an outside press. Picks
+run on the field through `ui::input::run`; the terminal window routes them
+through `run_menu_pick`. A native menu leaves GPUI focus on the field, so
+nothing below applies to it. Opening the popover blurs the field, so a
 Settings field's blur listener skips its commit while the field's own menu
 is open. Every close that does not hand focus back to the field goes
-through `drop_menu`, which leaves the field in `menu_left`, and
+through `drop_menu`, which leaves the field in `field_menus.left`, and
 `settle_menu_left` runs the skipped commit: the menu's blur close, a section
-change, `request_close` (with the draft's error check), or the next frame
-for a caller without a context. `run_command` refuses commands
+change, or the next frame for a caller without a context. `request_close`
+closes the menu onto the field instead, so the focused field's own save,
+or its refusal that keeps focus there, applies. `run_command` refuses
+commands
 while the palette is open but lets menu commands through, and Settings' `run`
 gives an open menu its commands before an open dialog takes every command.
 `Input` refuses typing, composition, paste,
@@ -865,12 +871,13 @@ focus on a dropped menu. Opening a menu drops a right-click still waiting for
 its link lookup, because the press that dismisses the menu no longer reaches
 the terminal to cancel it.
 
-On macOS those menus and the pane title bar menu open as native `NSMenu`
-popups by default (`window.macos_native_menus`). Their builders return a
-`menu_spec::MenuSpec` that lowers to the listbox model or to a `NativeMenu`,
-and picks from either go through `run_menu_pick`. The `AppKit` presenter
-pops the menu from a `performSelector:afterDelay:inModes:` perform in the
-common run-loop modes, and cancels it the same way. A
+On macOS those menus, the pane title bar menu, and text fields' menus open
+as native `NSMenu` popups by default (`window.macos_native_menus`). Their
+builders return a `menu_spec::MenuSpec` that lowers to the listbox model or
+to a `NativeMenu`, and picks from either go through `run_menu_pick`. The
+`AppKit` presenter pops the menu from a
+`performSelector:afterDelay:inModes:` perform in the common run-loop modes,
+and cancels it the same way. A
 `performSelectorOnMainThread:...modes:` perform queued from the main thread
 never ran there, so the menu never opened. A popup waits while another
 window's menu still tracks, because nested popups would share one pick

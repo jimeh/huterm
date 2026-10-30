@@ -328,6 +328,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   state had `w0.confirming=true`, `w0.dialog_focus=primary`, and
   `w0.tabs=3`: the dialog stayed open, which fits Enter arriving before the
   dialog's first frame.
+- **Third occurrence:** 2026-10-30 on PR #330 (run 41000212950, job
+  123882888482, head `4b7be1f5`), aarch64 only; x86_64 passed on the same
+  head and the rerun passed. The PR changes text fields and their menus,
+  not the close dialog. The last state matched the first occurrence:
+  `w0.confirming=false`, `w0.tabs=3`, `w0.active_index=2`, and
+  `w0.terminal_focused=false`.
 - **Triage:** rerun and record the run here. A hardening is to wait for
   `w0.dialog_focus=primary` before Enter, as the neighboring steps do.
 
@@ -357,7 +363,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   2026-10-30 on PR #331 (run 41005288106, job 123898692917, head
   `74d464b9`), which changes only smoke tooling: same step, same focus,
   and the same draft. The same step had passed on that PR's previous head,
-  `3379810b`, whose tree differed only by main's #333.
+  `3379810b`, whose tree differed only by main's #333. A sixth came that
+  day on PR #330 (run 41000212950, job 123882888597, head `4b7be1f5`),
+  which changes Settings' text fields and their focus handling: same step,
+  same focus, and the same draft, with `settings.status="Saved"`. Host runs
+  of the settings step on that head passed 2 of 2, and the CI rerun passed.
 - **Evidence:** the last state had `settings.focus=action:kon:u2`,
   `settings.list=none`, `settings.status="Saved"`, `settings.writing=false`,
   and `settings.drafts` still holding `when:u2=Terminal (`, so the

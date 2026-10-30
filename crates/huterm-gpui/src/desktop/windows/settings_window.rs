@@ -36,6 +36,8 @@ use super::super::settings::values::{
 use super::super::settings::{Special, file_only, special};
 use super::Desktop;
 use super::field_menu;
+use super::menu_spec::{MenuSpec, NativeMenu};
+use super::native_menus::{MenuAnchor, PresentedMenu};
 use crate::APP_ID;
 use crate::commands::{InvokeFocused, InvokeWindow};
 use crate::config::Theme;
@@ -231,6 +233,29 @@ impl MenuFor {
     }
 }
 
+/// What text fields' context menus leave behind them.
+#[derive(Default)]
+struct FieldMenus {
+    /// A field whose popover menu closed without handing focus back: its
+    /// blur skipped the commit, which `settle_menu_left` runs.
+    left: Option<WeakEntity<Input>>,
+    /// A field's menu open as a native macOS menu, which leaves focus on
+    /// the field.
+    native: Option<NativeFieldMenu>,
+    /// Names the latest native menu, so a pick from a replaced one is
+    /// ignored.
+    token: u64,
+}
+
+/// A field's context menu shown natively: the field its pick edits, the
+/// rows it opened with, and the menu, which closes when dropped.
+struct NativeFieldMenu {
+    field: WeakEntity<Input>,
+    menu: NativeMenu,
+    token: u64,
+    _opened: PresentedMenu,
+}
+
 pub(super) struct SettingsView {
     focus: FocusHandle,
     model: &'static SettingsModel,
@@ -308,9 +333,7 @@ pub(super) struct SettingsView {
     /// An open select's menu, what it sets, and the control that opened
     /// it, which takes focus back.
     menu: Option<(Entity<MenuView>, MenuFor, FocusHandle)>,
-    /// A field whose context menu closed without handing focus back: its
-    /// blur skipped the commit, which `settle_menu_left` runs.
-    menu_left: Option<WeakEntity<Input>>,
+    field_menus: FieldMenus,
     /// Where the open menu draws, and the guard that closes it on a press
     /// outside it or on its trigger.
     popover: Popover,
@@ -454,7 +477,7 @@ impl SettingsView {
             closing: false,
             handle: window.window_handle(),
             menu: None,
-            menu_left: None,
+            field_menus: FieldMenus::default(),
             popover: Popover::new(),
             triggers: Rc::default(),
             focus_group: Rc::default(),
@@ -1411,13 +1434,20 @@ impl SettingsView {
         let Some(field) = request.field.upgrade() else {
             return;
         };
+        if self.field_menus.native.is_some() {
+            return;
+        }
         self.drop_menu();
         self.settle_menu_left(cx);
-        let model = field_menu::field_menu_model(
+        let spec = field_menu::field_menu(
             field_menu::FieldMenuInput::of(field.read(cx)),
             &cx.global::<Desktop>().keymap,
             &window.context_stack(),
         );
+        if self.open_native_field_menu(request, &spec, window, cx) {
+            return;
+        }
+        let model = spec.to_listbox(crate::keymap::Platform::current());
         let swatch = Self::swatch(cx);
         let menu = cx.new(|cx| MenuView::new("Edit", model, swatch, false, cx));
         let opener = field.read(cx).focus_handle(cx);
@@ -1431,6 +1461,80 @@ impl SettingsView {
         );
     }
 
+    /// Opens `spec` for the field `request` names as a native macOS menu,
+    /// as the terminal window's context menus open, when the configuration
+    /// asks for native menus and a presenter exists. Focus stays on the
+    /// field while it tracks, so the field's blur commit never runs and
+    /// nothing has to settle. `false` leaves the menu to Huterm's popover,
+    /// including when presenting fails: Settings has no notices to report
+    /// it in.
+    fn open_native_field_menu(
+        &mut self,
+        request: &FieldContextMenu,
+        spec: &MenuSpec,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let desktop = cx.global::<Desktop>();
+        if !desktop.config.window.macos_native_menus {
+            return false;
+        }
+        let Some(presenter) = desktop.menu_presenter.clone() else {
+            return false;
+        };
+        let menu = spec.to_native(!Self::swatch(cx).is_light());
+        let anchor = MenuAnchor::Pointer(request.position);
+        let Ok(opened) = presenter.present(&menu, anchor, window) else {
+            return false;
+        };
+        self.field_menus.token = self.field_menus.token.wrapping_add(1);
+        let token = self.field_menus.token;
+        let picked = opened.picked.clone();
+        cx.spawn_in(window, async move |view, cx| {
+            let picked = picked.recv().await.ok().flatten();
+            let _ = view.update(cx, |view, cx| {
+                view.finish_native_field_menu(token, picked, cx);
+            });
+        })
+        .detach();
+        self.field_menus.native = Some(NativeFieldMenu {
+            field: request.field.clone(),
+            menu,
+            token,
+            _opened: opened,
+        });
+        cx.notify();
+        true
+    }
+
+    /// Runs the pick of the native field menu `token` names on its field.
+    fn finish_native_field_menu(
+        &mut self,
+        token: u64,
+        picked: Option<usize>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self
+            .field_menus
+            .native
+            .as_ref()
+            .is_none_or(|session| session.token != token)
+        {
+            return;
+        }
+        let Some(session) = self.field_menus.native.take() else {
+            return;
+        };
+        cx.notify();
+        let Some(id) = picked.and_then(|index| session.menu.id_at(index))
+        else {
+            return;
+        };
+        if let Some(field) = session.field.upgrade() {
+            field_menu::run_pick(&field, &id, cx);
+        }
+    }
+
     /// Whether the open menu is the context menu of the field `id`.
     fn field_menu_open(&self, id: gpui::EntityId) -> bool {
         matches!(
@@ -1440,10 +1544,10 @@ impl SettingsView {
     }
 
     /// Runs the commit a field's blur skipped while its menu was open, for
-    /// a menu that closed without handing focus back (`menu_left`). Returns
-    /// whether the field saved cleanly, or had nothing to save.
+    /// a menu that closed without handing focus back (`field_menus.left`).
+    /// Returns whether the field saved cleanly, or had nothing to save.
     fn settle_menu_left(&mut self, cx: &mut Context<'_, Self>) -> bool {
-        let Some(field) = self.menu_left.take() else {
+        let Some(field) = self.field_menus.left.take() else {
             return true;
         };
         let id = field.entity_id();
@@ -1635,15 +1739,15 @@ impl SettingsView {
 
     /// Closes the menu without moving focus, for when focus has already
     /// gone elsewhere or the menu's control is gone. True when one was open.
-    /// A field's menu leaves its field's skipped commit in `menu_left`,
-    /// which the caller settles, or the next frame does.
+    /// A field's menu leaves its field's skipped commit in
+    /// `field_menus.left`, which the caller settles, or the next frame does.
     fn drop_menu(&mut self) -> bool {
         let _ = self.popover.close();
         let Some((_, target, _)) = self.menu.take() else {
             return false;
         };
         if let MenuFor::Field(field) = target {
-            self.menu_left = Some(field);
+            self.field_menus.left = Some(field);
         }
         true
     }
@@ -2433,7 +2537,7 @@ impl Render for SettingsView {
             .then(|| self.layout_neighbour(window, cx))
             .flatten();
         // A field menu dropped where no context could settle its field.
-        if self.menu_left.is_some() {
+        if self.field_menus.left.is_some() {
             cx.defer_in(window, |view, _, cx| {
                 view.settle_menu_left(cx);
             });

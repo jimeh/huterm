@@ -1,18 +1,18 @@
 //! A text field's context menu: Cut, Copy, and Paste, then Select All,
 //! with the shortcuts the field's own context binds. Rows stay in place and
-//! disable with a reason. The model is pure so it can be tested without a
-//! window; both the terminal window and Settings open it for the field a
-//! right press asked for through `huterm_ui`'s `ContextMenu`.
+//! disable with a reason. The spec is pure so it can be tested without a
+//! window. Both the terminal window and Settings open it for the field a
+//! right press asked for through `huterm_ui`'s `ContextMenu`: as a native
+//! macOS menu when the window's other context menus are native, else in
+//! Huterm's own popover.
 
 use gpui::{App, Entity, KeyContext};
 use huterm_protocol::{CommandId, CommandInvocation, ids};
 use huterm_ui::components::input::Input;
-use huterm_ui::listbox::{
-    Item as MenuItem, Model as MenuModel, Row as MenuRow,
-};
 
-use super::window_menu::shortcut_hint;
-use crate::keymap::{InstalledKeymap, Platform};
+use super::menu_spec::{Item as MenuItem, MenuSpec, Row as MenuRow};
+use super::window_menu::shortcut_key;
+use crate::keymap::InstalledKeymap;
 
 /// The rows' commands and labels, in order; a separator follows Paste.
 const ROWS: [(CommandId, &str); 4] = [
@@ -25,7 +25,6 @@ const ROWS: [(CommandId, &str); 4] = [
 /// The state the field menu's rows depend on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct FieldMenuInput {
-    pub(super) platform: Platform,
     /// Text is selected for Cut and Copy.
     pub(super) selection: bool,
     /// The field refuses edits, so Cut and Paste have nowhere to go.
@@ -38,7 +37,6 @@ impl FieldMenuInput {
     /// What `field` offers now.
     pub(super) fn of(field: &Input) -> Self {
         Self {
-            platform: Platform::current(),
             selection: !field.selection().is_empty(),
             read_only: field.is_read_only(),
             empty: field.is_empty(),
@@ -48,11 +46,11 @@ impl FieldMenuInput {
 
 /// The rows for `input`, with shortcuts from `keymap` as seen from
 /// `contexts`, the field's stack when the menu opened.
-pub(super) fn field_menu_model(
+pub(super) fn field_menu(
     input: FieldMenuInput,
     keymap: &InstalledKeymap,
     contexts: &[KeyContext],
-) -> MenuModel {
+) -> MenuSpec {
     let refusal = |id: CommandId| match id {
         ids::TEXT_CUT | ids::TEXT_PASTE if input.read_only => Some("Read-only"),
         ids::TEXT_CUT | ids::TEXT_COPY if !input.selection => {
@@ -66,18 +64,14 @@ pub(super) fn field_menu_model(
         if id == ids::TEXT_SELECT_ALL {
             rows.push(MenuRow::Separator);
         }
-        let item = MenuItem::new(id.as_str(), label).shortcut(shortcut_hint(
-            keymap,
-            contexts,
-            input.platform,
-            id,
-        ));
+        let item = MenuItem::new(id.as_str(), label)
+            .shortcut(shortcut_key(keymap, contexts, id));
         rows.push(MenuRow::Item(match refusal(id) {
             Some(reason) => item.disabled(Some(reason.to_owned())),
             None => item,
         }));
     }
-    MenuModel::new(rows)
+    MenuSpec::new(rows)
 }
 
 /// Runs the picked row `id` on `field`; `false` when the menu offers no
@@ -99,12 +93,10 @@ pub(super) fn run_pick(field: &Entity<Input>, id: &str, cx: &mut App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::key_hint::KeyHint;
-    use crate::keymap::compile;
+    use crate::keymap::{Platform, compile};
 
     fn input() -> FieldMenuInput {
         FieldMenuInput {
-            platform: Platform::MacOs,
             selection: true,
             read_only: false,
             empty: false,
@@ -114,15 +106,15 @@ mod tests {
     fn model(
         input: FieldMenuInput,
         user: &[huterm_config::KeybindingEntry],
-    ) -> MenuModel {
+    ) -> MenuSpec {
         let (bindings, keymap) =
-            compile(input.platform, user).unwrap().install_parts();
+            compile(Platform::MacOs, user).unwrap().install_parts();
         drop(bindings);
         let contexts = [
             KeyContext::parse("Settings").unwrap(),
             KeyContext::parse("TextField").unwrap(),
         ];
-        field_menu_model(input, &keymap, &contexts)
+        field_menu(input, &keymap, &contexts)
     }
 
     /// Item ids in order, with the disabled reason after `!`, and `-` for
@@ -139,7 +131,7 @@ mod tests {
                     item.disabled_hint.as_deref().unwrap_or_default()
                 ),
                 MenuRow::Separator => "-".to_owned(),
-                MenuRow::Buttons { .. } => "buttons".to_owned(),
+                MenuRow::Group { .. } => "group".to_owned(),
             })
             .collect()
     }
@@ -179,7 +171,6 @@ mod tests {
                 selection: false,
                 read_only: true,
                 empty: true,
-                ..input()
             }),
             [
                 "text_cut!Read-only",
@@ -193,7 +184,7 @@ mod tests {
 
     #[test]
     fn shortcuts_follow_the_field_bindings_including_the_users() {
-        let shortcuts = |model: &MenuModel| {
+        let shortcuts = |model: &MenuSpec| {
             model
                 .rows
                 .iter()
@@ -203,10 +194,8 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let hints = |keys: [&str; 4]| {
-            keys.map(|key| KeyHint::parse(key, Platform::MacOs).glyphs())
-                .to_vec()
-        };
+        let hints =
+            |keys: [&str; 4]| keys.map(|key| Some(key.to_owned())).to_vec();
         assert_eq!(
             shortcuts(&model(input(), &[])),
             hints(["cmd-x", "cmd-c", "cmd-v", "cmd-a"])
