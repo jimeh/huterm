@@ -13,7 +13,9 @@ that are bound elsewhere, so `cmd-w` records instead of closing the window.
 When the new shortcut would take its key from another command with the same
 `when`, Settings asks first. Reassign removes your own entries that bind that
 key under the same `when` to other commands, and Cancel leaves both commands as
-they were. Each
+they were. A recorded shortcut moves to the end of the file when a later entry
+with the same key and `when`, or a later `unbind` of the key, would otherwise
+take it back. Each
 shortcut also has a `when` field that completes context names and checks
 the condition before saving, its argument values, and a switch. Changing or
 switching off a default writes a `disabled = true` entry for exactly that

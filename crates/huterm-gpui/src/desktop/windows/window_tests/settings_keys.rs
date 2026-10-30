@@ -292,6 +292,71 @@ fn reassigning_removes_a_holder_that_a_removed_one_had_replaced(
 }
 
 #[gpui::test]
+fn a_row_takes_back_its_own_key_from_an_entry_a_reread_added(
+    cx: &mut TestAppContext,
+) {
+    let own =
+        "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_window\"\n";
+    let file = ScratchConfig::new("keys-reassign-reread", own);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let window = row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-a");
+    press(&mut harness, &format!("krec:{window}"));
+    keystrokes(&mut harness, "ctrl-alt-a");
+    // Another editor gives the key to Close Window while the recording
+    // waits for a second stroke.
+    std::fs::write(
+        file.path(),
+        format!(
+            "{own}\n[[keybinding]]\nkey = \"ctrl-alt-a\"\n\
+             command = \"close_window\"\n"
+        ),
+    )
+    .unwrap();
+    with_view(&mut harness, SettingsView::reread);
+    harness.cx.run_until_parked();
+    harness
+        .cx
+        .executor()
+        .advance_clock(super::super::settings_window::CHORD_TIMEOUT);
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.dialog_name(), "reassign-key");
+    });
+    keystrokes(&mut harness, "tab enter");
+    saved(&mut harness, &file, |text| !text.contains("close_window"));
+    assert_eq!(file.text(), own);
+}
+
+#[gpui::test]
+fn a_recorded_row_moves_after_an_entry_that_would_take_its_key(
+    cx: &mut TestAppContext,
+) {
+    // Close Window's later entry is switched off, so nothing holds the
+    // key, but written in place New Window's would lose to it.
+    let file = ScratchConfig::new(
+        "keys-record-moves",
+        "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"new_window\"\n\n\
+         [[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"close_window\"\n\n\
+         [[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"close_window\"\n\
+         disabled = true\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let window = row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-a");
+    record(&mut harness, &window, "ctrl-alt-b");
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.dialog_name(), "none");
+    });
+    saved(&mut harness, &file, |text| !text.contains("ctrl-alt-a"));
+    harness.cx.run_until_parked();
+    // New Window now holds the key.
+    with_view(&mut harness, |view, _| {
+        assert!(view.key_active(ids::NEW_WINDOW, "ctrl-alt-b"));
+    });
+}
+
+#[gpui::test]
 fn a_reassignment_whose_row_a_queued_write_removes_writes_nothing(
     cx: &mut TestAppContext,
 ) {
@@ -340,10 +405,10 @@ fn a_reassign_prompt_that_a_read_overtook_writes_nothing(
     assert_eq!(file.text(), moved);
     with_view(&mut harness, |view, _| {
         assert_eq!(view.dialog_name(), "none");
-        assert!(
-            view.notice_text().contains("Record it again"),
-            "{}",
-            view.notice_text()
+        assert_eq!(
+            view.notice_text(),
+            "config.toml changed while Settings asked about the shortcut. \
+             Record it again."
         );
     });
 }

@@ -2788,6 +2788,21 @@ impl SettingsView {
         self.keys.row_named(command, key)
     }
 
+    /// Whether `command`'s binding on `key` is the one that holds the key.
+    pub(super) fn key_active(
+        &self,
+        command: huterm_protocol::CommandId,
+        key: &str,
+    ) -> bool {
+        self.keys.inventory.as_ref().is_some_and(|inventory| {
+            inventory.bindings.iter().any(|listed| {
+                listed.binding.command == command
+                    && listed.binding.key == key
+                    && listed.state == crate::keymap::BindingState::Active
+            })
+        })
+    }
+
     /// Types into a keybinding field, creating it as its row would.
     pub(super) fn type_key(
         &mut self,

@@ -693,6 +693,15 @@ pub(crate) fn would_replace(
         )
 }
 
+/// Whether two keys name the same keystrokes, as an `unbind` entry
+/// matches them.
+pub(crate) fn same_keys(platform: Platform, left: &str, right: &str) -> bool {
+    matches!(
+        (parse_keystrokes(left, platform), parse_keystrokes(right, platform)),
+        (Ok(left), Ok(right)) if same_keystrokes(&left, &right)
+    )
+}
+
 fn same_keystrokes(left: &[Keystroke], right: &[Keystroke]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {

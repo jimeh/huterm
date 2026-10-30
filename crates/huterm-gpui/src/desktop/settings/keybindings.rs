@@ -521,6 +521,9 @@ pub(crate) enum Edit {
         field: Field,
         value: Option<Value>,
     },
+    /// Give a user entry `key` and make it the last entry, after anything
+    /// that could replace, disable, or unbind it.
+    MoveUser { entry: usize, key: String },
     /// Add a binding for a command.
     Add { key: String, command: CommandId },
     /// Remove user entries: one, or every entry for a command.
@@ -626,6 +629,12 @@ impl Edit {
                 vec![append(
                     Binding::new(key, *command, None, &[]).entry(false),
                 )]
+            }
+            Self::MoveUser { entry, key } => {
+                let locator = locate(*entry)?;
+                let mut moved = locator.content().clone();
+                moved.insert("key".into(), Value::String(key.clone()));
+                vec![Patch::RemoveEntry { locator }, append(moved)]
             }
             Self::AddGlobal { .. }
             | Self::ChangeGlobal { .. }

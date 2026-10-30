@@ -660,7 +660,9 @@ impl SettingsView {
         let patches = match edit
             .patches(&self.keys.entries, &self.keys.globals)
             .and_then(|mut patches| {
-                if !remove.is_empty() {
+                // A moved row's removal and re-addition stand or fall
+                // together, as do a reassignment's removals with its edit.
+                if !remove.is_empty() || matches!(edit, Edit::MoveUser { .. }) {
                     required = patches.len();
                 }
                 patches.extend(
