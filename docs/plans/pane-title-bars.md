@@ -1,9 +1,9 @@
 # Pane title bars
 
 Status: in progress. Jim approved the configuration and hover design on
-2026-10-30. PR 1 (pane names and the title bar menu) is in progress; PR 2
-(position and `hidden`) and PR 3 (`hover`) follow, each from `main` after the
-previous one merges.
+2026-10-30. PR 1 (pane names and the title bar menu) merged in #329; PR 2
+(position and `hidden`) is in progress, and PR 3 (`hover`) follows from
+`main` after it merges.
 
 Split panes gain names and a context menu on their title bars, and the bars
 gain a position and a visibility mode:
@@ -140,7 +140,9 @@ argument.
 | Catalog, schema, and keybinding docs stay aligned | slot tests over every command, schema generation check |
 | The bar menu and rename flow look and behave right on macOS | Codex computer-use UX review on a scratch bundle |
 
-## PR 2: position and `hidden` (agreed design)
+## PR 2: position and `hidden`
+
+### PR 2 agreed design
 
 - `[panes] title_bar_position = "top" | "bottom"`, default `top`, live, with a
   new position enum rather than `TabPosition`.
@@ -151,6 +153,77 @@ argument.
 - Settings: Window › Panes rows, the position row hidden while the bar is
   `hidden` (`x-huterm-visible-when`, as for `pill_accent`).
 - The focused pane gets a thin accent line on its edge while bars are hidden.
+
+### PR 2 approach
+
+**Config.** `PanesConfig` gains `title_bar: PaneTitleBar` (`visible`,
+`hidden`) and `title_bar_position: PaneTitleBarPosition` (`top`, `bottom`),
+lowercase serde enums with schema labels, in Window › Panes before Pane zoom,
+both `x-huterm-apply = "live"`. `hover` joins `PaneTitleBar` in PR 3, not
+before, so no setting accepts a mode that does nothing.
+
+**Settings condition.** `x-huterm-visible-when` gains a `not_equals` form,
+`{"setting": ..., "not_equals": ...}`, because the position row must show for
+`visible` and, after PR 3, `hover`. `VisibleWhen` holds the compared value and
+whether a match shows or hides the setting; validation checks the value
+against the target's choices either way.
+
+**Geometry.** `pane_geometry::TitleBars`, built from `[panes]`, says where a
+split tab's bars go and how much each takes from its pane's frame.
+`layout_panes` takes it; `pane_rect` puts a visible bar along the frame's top
+or bottom and the terminal in the rest, or, hidden, gives the terminal the
+whole frame. `PaneMetrics` carries it, so `fit`'s minimum pane height
+subtracts only a reserved bar. Every caller (`tab_panes`, `pane_grids`, the
+resize span, the layout commands) builds it from the window's config, so a
+reload re-syncs every view's geometry and applies the keys live. A tab of one
+pane still draws no bar.
+
+**Drawing.** A bottom bar draws its border along its top edge. While bars are
+hidden, the focused pane of a split tab that shows more than one pane draws a
+2-point accent line along its frame's top edge, above the terminal, which
+takes no pointer input. A zoomed pane shows none.
+
+**Docs.** `docs/configuration.md` describes both keys; the desktop input guide
+notes that hidden bars leave panes no drag handle or bar menu, so they move
+and rename by command.
+
+### PR 2 observable success
+
+- `title_bar_position = "bottom"` draws every split pane's bar at its bottom,
+  with its title, buttons, drag, and menu working as at the top.
+- `title_bar = "hidden"` draws no bars, gives terminals the full pane height,
+  and marks the focused pane with an accent line.
+- Both keys apply on reload without restarting, and Settings shows the
+  position row only while the bar is not `hidden`.
+- The defaults draw exactly what `main` draws today.
+
+### PR 2 failure paths and risks
+
+- A pane shorter than a bar keeps the bar clipped to its frame and an empty
+  terminal, at either edge, as the top bar does today.
+- Minimum-size checks use the reserved height, so `hidden` lets a split go one
+  bar's height smaller, and a reload to `visible` can leave panes under the
+  minimum until resized, as a font change can today.
+- A reload during a divider drag re-syncs geometry through the normal path.
+
+### PR 2 non-goals
+
+- `hover` and its overlay pointer filtering (PR 3).
+- A `toggle_pane_title_bars` command or per-layout overrides.
+
+### PR 2 verification
+
+| Concern | Evidence |
+| --- | --- |
+| Top, bottom, hidden, zoomed, and one-pane rectangles | `pane_geometry` unit tests |
+| `fit` minimums with and without a reserved bar | `pane_geometry` unit tests |
+| Config defaults, round trip, unknown values | `huterm-config` tests |
+| `not_equals` parsing, validation, and the position row's condition | settings model tests |
+| The position row hides for `hidden` in Settings | the model test of `VisibleWhen::shows`, which Settings calls with the shown value, and the UX review |
+| Reload to bottom and hidden moves bars, resizes grids, shows the cue | GPUI window test |
+| Pane close and zoom buttons at the bottom | GPUI window test |
+| Defaults unchanged for native input | `smoke:macos-input` under the host lock |
+| The bars and cue look right in both themes | Codex computer-use UX review |
 
 ## PR 3: `hover` (agreed design)
 
