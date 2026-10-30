@@ -1237,6 +1237,12 @@ impl SettingsView {
                 continue;
             }
             taking.last |= after(other.entry);
+            // A `disabled = true` entry that turned a binding off shows only
+            // in that binding's state; after the row, it would turn the
+            // recorded binding off too.
+            if let BindingState::Disabled(by) = &other.state {
+                taking.last |= by.iter().any(|entry| after(Some(*entry)));
+            }
             if binding.command == command && same_arguments(&binding.args, args)
             {
                 continue;

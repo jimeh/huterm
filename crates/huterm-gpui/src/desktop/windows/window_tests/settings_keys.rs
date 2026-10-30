@@ -357,6 +357,30 @@ fn a_recorded_row_moves_after_an_entry_that_would_take_its_key(
 }
 
 #[gpui::test]
+fn a_recorded_row_moves_after_an_entry_that_switches_its_key_off(
+    cx: &mut TestAppContext,
+) {
+    // The later entry switches off Next Tab's default on the key; it shows
+    // only in the default's state, yet it would switch the recorded row
+    // off too.
+    let file = ScratchConfig::new(
+        "keys-record-disabled",
+        "[[keybinding]]\nkey = \"ctrl-alt-a\"\ncommand = \"next_tab\"\n\n\
+         [[keybinding]]\nkey = \"ctrl-tab\"\ncommand = \"next_tab\"\n\
+         disabled = true\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let next = row(&mut harness, ids::NEXT_TAB, "ctrl-alt-a");
+    record(&mut harness, &next, "ctrl-tab");
+    saved(&mut harness, &file, |text| !text.contains("ctrl-alt-a"));
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert!(view.key_active(ids::NEXT_TAB, "ctrl-tab"));
+    });
+}
+
+#[gpui::test]
 fn a_reassignment_whose_row_a_queued_write_removes_writes_nothing(
     cx: &mut TestAppContext,
 ) {
