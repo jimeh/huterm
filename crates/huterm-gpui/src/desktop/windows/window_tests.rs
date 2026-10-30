@@ -91,6 +91,9 @@ impl DesktopHarness {
                 Projection::new(state, subscription),
                 loaded,
             );
+            // Test windows have no AppKit view: menus draw in Huterm's own
+            // style unless a test installs a presenter.
+            cx.global_mut::<Desktop>().menu_presenter = None;
         });
         let (session, workspace) = {
             let mut mux = runtime.lock();
@@ -4924,9 +4927,11 @@ mod buttons;
 mod dialogs;
 mod layout_undo;
 mod menus;
+mod native_menus;
 mod pane_drags;
 mod pane_layouts;
 mod pane_moves;
+mod pane_names;
 mod settings;
 mod settings_controls;
 mod settings_dialog;

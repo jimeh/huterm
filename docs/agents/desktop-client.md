@@ -364,8 +364,10 @@ swallow interrupts when the predicate is false. Per-scope
 wrapper actions (`InvokeApp`, `InvokeWindow`, `InvokeTerminal`) route catalog
 commands; anything that needs a window, such as about and open_settings, must
 be Window scope because global action handlers receive only `App`. Runtime
-rename commands fill omitted tab/workspace targets on the UI thread and resolve
-the session under the Mux lock on the worker. Rebuild menus on reload so macOS
+rename commands fill omitted tab, pane, and workspace targets on the UI thread
+and resolve the session under the Mux lock on the worker. A pane menu pick
+gets the menu's pane only for a command whose `pane` argument is optional: a
+required `pane` is a move's destination. Rebuild menus on reload so macOS
 shortcut display follows user bindings. GPUI menus show the earliest binding
 for an action and equal-depth dispatch ties go to the latest, so the compiled
 keymap lists unconditional user bindings first and conditional ones last.
@@ -814,7 +816,28 @@ The activation observer runs first and closes the menu onto the terminal;
 the deferred blur close also skips an inactive window, so it can never strand
 focus on a dropped menu. Opening a menu drops a right-click still waiting for
 its link lookup, because the press that dismisses the menu no longer reaches
-the terminal to cancel it. Component
+the terminal to cancel it.
+
+On macOS those menus and the pane title bar menu open as native `NSMenu`
+popups by default (`window.macos_native_menus`). Their builders return a
+`menu_spec::MenuSpec` that lowers to the listbox model or to a `NativeMenu`,
+and picks from either go through `run_menu_pick`. The `AppKit` presenter
+pops the menu from a `performSelector:afterDelay:inModes:` perform in the
+common run-loop modes, and cancels it the same way. A
+`performSelectorOnMainThread:...modes:` perform queued from the main thread
+never ran there, so the menu never opened. A popup waits while another
+window's menu still tracks, because nested popups would share one pick
+slot. Never pop it from a GPUI
+foreground task: those run inside a main-queue block, the run loop drains
+no main-queue block while one runs, and every GPUI task and frame stalls
+until the menu closes. The menu tracks outside GPUI's
+borrows, so GPUI keeps painting and `refresh_menu` can cancel a menu whose tab
+went away. Window tests cannot run `AppKit`: the harness clears
+`Desktop::menu_presenter`, and `window_tests/native_menus.rs` installs a fake.
+`smoke:macos-menus` checks the built `NSMenu` items, and the overlays smoke
+opens and cancels a real popup through `native_menu_tracking`.
+
+Component
 click listeners ignore `ClickEvent::Keyboard` through
 `huterm_ui::click::from_keyboard`, so a removed Enter or Space binding really
 removes the key.

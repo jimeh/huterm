@@ -47,7 +47,9 @@ use super::palette::{
     QuakeProfileRow, RecentCommands,
 };
 use super::*;
-use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
+use crate::commands::{
+    RenameContext, Route, fill_rename_target, route, select_tab_slot,
+};
 use crate::config::TabPosition;
 use crate::fullscreen::{Effect, FullscreenController, ToggleIntent};
 #[cfg(target_os = "macos")]
@@ -162,15 +164,22 @@ fn fits_minimum(grids: &[(PaneId, GridSize)]) -> bool {
     })
 }
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
+#[cfg(target_os = "macos")]
+mod appkit_menu;
+#[cfg(target_os = "macos")]
+pub(super) use appkit_menu::check_window_menu as check_native_window_menu;
 mod button_layout;
 mod client_frame;
 mod exit_closes;
 mod layout_history;
 mod layout_undo;
+mod menu_spec;
 mod model;
+mod native_menus;
 mod pane_drag;
 mod pane_geometry;
 mod pane_layouts;
+mod pane_menu;
 mod pane_moves;
 mod projection;
 mod settings_window;
@@ -198,15 +207,18 @@ use client_frame::{
     ClientFrame, FRAME_RADIUS, FrameState, requested_decorations, resize_cursor,
 };
 use exit_closes::{CommitOutcome, ExitCloses};
+use menu_spec::MenuSpec;
 use model::{
     PaneTitle, QuakeRecord, TabEntry, TitleScope, WindowLayout, WindowModel,
     WindowRecord, WindowRestore, apply_tab_order,
 };
+use native_menus::{MenuAnchor, MenuPresenter, NativeMenuSession};
 use pane_drag::{DropTarget, PaneDrag, PaneMode};
 use pane_geometry::{
     Divider, PaneRect, TabPanes, boundary_position, dragged_weights,
     layout_panes, with_boundary,
 };
+use pane_menu::{PaneMenuInput, pane_menu};
 use projection::{
     Drained, Install, PendingInstalls, Projection, ReconcileTarget, Resolution,
     TabNames, TitleConsumers, Wait, WindowChange, holds_no_tabs,
@@ -218,15 +230,15 @@ use tab_bar::{
     TabColors, TabItem, TabStatus, VERTICAL_ROW_MARGIN_X,
     VERTICAL_ROW_MARGIN_Y, icon_element, tab_bar_height, top_chrome_uses_bar,
 };
-use tab_menu::{TabMenuInput, tab_menu_model};
+use tab_menu::{TabMenuInput, tab_menu};
 use tab_position::{TabHost, resolve_tab_position};
 use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
-use terminal_menu::{DirectoryState, TerminalMenuInput, terminal_menu_model};
+use terminal_menu::{DirectoryState, TerminalMenuInput, terminal_menu};
 use views::{Views, broadcast, update_windows};
 use window_menu::{
     MenuButtonPlacement, WindowMenuInput, menu_button_placement,
-    split_new_tab_row, window_menu_model,
+    split_new_tab_row, window_menu,
 };
 /// Space the tab strip reserves for the new-tab control on its axis.
 const CONTROL_SLOT: Pixels = TAB_HEIGHT;
@@ -852,6 +864,8 @@ struct Desktop {
     external_drag_window: Option<gpui::WindowId>,
     /// The window buttons the desktop asks title rows to draw.
     button_layout: ButtonLayout,
+    /// Shows native menus; `None` where windows draw every menu themselves.
+    menu_presenter: Option<Rc<dyn MenuPresenter>>,
     /// Close failures reported in any window, including windows since
     /// removed.
     #[cfg(test)]
@@ -1569,6 +1583,10 @@ fn install_desktop(
         quit_pending: false,
         external_drag_window: None,
         button_layout: ButtonLayout::standard(),
+        #[cfg(target_os = "macos")]
+        menu_presenter: Some(Rc::new(appkit_menu::AppKitPresenter)),
+        #[cfg(not(target_os = "macos"))]
+        menu_presenter: None,
         #[cfg(test)]
         close_failures: 0,
         #[cfg(all(target_os = "macos", feature = "macos-updater"))]
@@ -2423,6 +2441,8 @@ fn open_window_with_profile(
                 recent: RecentCommands::default(),
                 startup_reporter: reporter.clone(),
                 menu: None,
+                native_menu: None,
+                native_menu_token: 0,
                 menu_button_bounds: Rc::new(Cell::new(None)),
                 popover: Popover::new(),
                 window_button_bounds: Rc::default(),
@@ -3045,15 +3065,19 @@ impl PaneView {
         drop(std::mem::replace(&mut self.activity_task, task));
     }
 
-    /// The pane's title without status text: what its tab would show if
-    /// this were its only pane, through the tab label settings but without
-    /// the tab's custom name.
+    /// The pane's title without status text: its custom name, else what
+    /// its tab would show if this were its only pane, through the tab label
+    /// settings but without the tab's custom name.
     fn label(
         &self,
+        custom: Option<&str>,
         fallback: &str,
         tabs: huterm_config::TabsConfig,
         cx: &App,
     ) -> String {
+        if let Some(custom) = custom {
+            return custom.to_owned();
+        }
         let terminal = self.view.read(cx);
         resolve_tab_label(
             tabs.label,
@@ -3207,27 +3231,46 @@ impl TabView {
             .iter()
             .map(|pane| PaneTitle {
                 terminal: pane.terminal,
-                title: pane.label(self.fallback_name(pane.pane, cx), tabs, cx),
+                title: self.pane_label(pane, tabs, cx),
             })
             .collect()
     }
 
-    /// The launched program name of `pane`, from the projection while it
-    /// holds the tab, else the tab's remembered fallback name.
-    fn fallback_name<'a>(&'a self, pane: PaneId, cx: &'a App) -> &'a str {
+    /// The custom and launched program names of `pane`, from the
+    /// projection while it holds the tab, else no custom name and the tab's
+    /// remembered fallback name.
+    fn pane_names<'a>(
+        &'a self,
+        pane: PaneId,
+        cx: &'a App,
+    ) -> (Option<&'a str>, &'a str) {
         let state = cx.global::<Desktop>().hierarchy.state();
         state
             .tab(self.id)
             .and_then(|info| info.layout.pane(pane))
             .map_or_else(
-                || tab_names(state, self.id, &self.names).1,
-                |pane| pane.fallback_name.as_str(),
+                || (None, tab_names(state, self.id, &self.names).1),
+                |pane| {
+                    (pane.custom_name.as_deref(), pane.fallback_name.as_str())
+                },
             )
+    }
+
+    /// The title of `pane`, one of this tab's, without status text.
+    fn pane_label(
+        &self,
+        pane: &PaneView,
+        tabs: huterm_config::TabsConfig,
+        cx: &App,
+    ) -> String {
+        let (custom, fallback) = self.pane_names(pane.pane, cx);
+        pane.label(custom, fallback, tabs, cx)
     }
 
     /// Returns the display name without status text, and the status its
     /// indicator reports. The name is the tab's custom name, else the
-    /// focused pane's title; the status is the focused pane's, except that
+    /// focused pane's title, which is that pane's custom name when it has
+    /// one; the status is the focused pane's, except that
     /// a failure or bell in any pane shows. Names come from the hierarchy
     /// projection by identity; a tab the projection no longer holds keeps
     /// the names it last held.
@@ -3242,10 +3285,8 @@ impl TabView {
             self.id,
             &self.names,
         );
-        let label = custom.map_or_else(
-            || focused.label(self.fallback_name(focused.pane, cx), tabs, cx),
-            str::to_owned,
-        );
+        let label = custom
+            .map_or_else(|| self.pane_label(focused, tabs, cx), str::to_owned);
         let status = focused.status(cx);
         let others = self
             .panes
@@ -3534,6 +3575,10 @@ struct WorkspaceView {
     startup_reporter: Option<WeakEntity<WorkspaceView>>,
     /// The open window, tab, or terminal menu.
     menu: Option<OpenMenu>,
+    /// The open native menu, which shows instead of `menu` on macOS.
+    native_menu: Option<NativeMenuSession>,
+    /// Names each native menu, so a late pick from a closed one is ignored.
+    native_menu_token: u64,
     /// Where the open menu draws, and the guard that closes it on a press
     /// outside its painted content. Its content bounds are smoke state's
     /// `menu_rect`.
@@ -3583,6 +3628,8 @@ enum MenuKind {
     /// The context menu of the terminal in `tab`, with the destination of
     /// the link under the pointer when it opened.
     Terminal { tab: TabId, link: Option<String> },
+    /// The context menu of a pane's title bar in `tab`.
+    Pane { tab: TabId, pane: PaneId },
 }
 
 impl MenuKind {
@@ -3590,7 +3637,17 @@ impl MenuKind {
     fn tab(&self) -> Option<TabId> {
         match self {
             Self::Window => None,
-            Self::Tab(tab) | Self::Terminal { tab, .. } => Some(*tab),
+            Self::Tab(tab)
+            | Self::Terminal { tab, .. }
+            | Self::Pane { tab, .. } => Some(*tab),
+        }
+    }
+
+    /// The pane the menu's pane-targeted picks act on.
+    fn pane(&self) -> Option<PaneId> {
+        match self {
+            Self::Pane { pane, .. } => Some(*pane),
+            Self::Window | Self::Tab(_) | Self::Terminal { .. } => None,
         }
     }
 }
@@ -4499,8 +4556,7 @@ impl WorkspaceView {
                     .into_any_element(),
             );
             if let Some(title_bar) = rect.and_then(|rect| rect.title_bar) {
-                let title =
-                    pane.label(tab.fallback_name(id, cx), self.config.tabs, cx);
+                let title = tab.pane_label(pane, self.config.tabs, cx);
                 elements.push(
                     Self::pane_title_bar(
                         tab_bar::PaneTitleBar {
@@ -5311,11 +5367,20 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
     }
 
     fn publish_title(&mut self, tab: TabId, title: &str) -> bool {
-        self.cx.global_mut::<Desktop>().windows.set_tab_title(
-            self.view.window,
-            tab,
-            title,
-        )
+        // A pane rename touches only its tab, and may leave the tab's own
+        // title as it was.
+        let panes = self
+            .view
+            .tabs
+            .iter()
+            .find(|view| view.id == tab)
+            .map(|view| view.pane_titles(self.view.config.tabs, self.cx));
+        let windows = &mut self.cx.global_mut::<Desktop>().windows;
+        let tab_changed = windows.set_tab_title(self.view.window, tab, title);
+        let panes_changed = panes.is_some_and(|panes| {
+            windows.set_pane_titles(self.view.window, tab, panes)
+        });
+        tab_changed || panes_changed
     }
 
     fn pending_installs(&mut self) -> &mut PendingInstalls {
@@ -6369,7 +6434,7 @@ impl WorkspaceView {
         let (title, status) = tab.label(self.config.tabs, cx);
         // An exit notice names the pane in a split tab.
         let exit_title = if tab.panes.len() > 1 {
-            pane.label(tab.fallback_name(pane_id, cx), self.config.tabs, cx)
+            tab.pane_label(pane, self.config.tabs, cx)
         } else {
             title.clone()
         };
@@ -6674,6 +6739,7 @@ impl WorkspaceView {
                     id: added,
                     terminal_id: TerminalId::new(u64::MAX),
                     fallback_name: String::new(),
+                    custom_name: None,
                 },
                 SplitId::in_runtime(probe, u64::MAX),
             )
@@ -7630,6 +7696,9 @@ impl WorkspaceView {
                     ids::RENAME_TAB if target.tab.is_none() => Err(
                         CommandError::Unavailable("window has no tab".into()),
                     ),
+                    ids::RENAME_PANE if target.terminal.is_none() => Err(
+                        CommandError::Unavailable("window has no pane".into()),
+                    ),
                     ids::RENAME_WORKSPACE if target.workspace.is_none() => {
                         Err(CommandError::Unavailable(
                             "window has no workspace".into(),
@@ -8273,12 +8342,12 @@ impl WorkspaceView {
             }
             ids::ABOUT => self.show_about(window, cx),
             ids::OPEN_COMMAND_PALETTE => self.open_palette(window, cx),
-            ids::RENAME_TAB | ids::RENAME_WORKSPACE | ids::RENAME_SESSION => {
-                let invocation = fill_rename_target(
-                    invocation,
-                    self.active_tab(cx),
-                    self.workspace_id(cx),
-                )?;
+            ids::RENAME_TAB
+            | ids::RENAME_PANE
+            | ids::RENAME_WORKSPACE
+            | ids::RENAME_SESSION => {
+                let invocation =
+                    fill_rename_target(invocation, self.rename_context(cx))?;
                 Ok(run_on_runtime(invocation, cx))
             }
             other => Err(CommandError::UnknownCommand(other)),
@@ -8287,6 +8356,15 @@ impl WorkspaceView {
 }
 
 impl WorkspaceView {
+    /// The targets a rename that omits its own takes from this window.
+    fn rename_context(&self, cx: &App) -> RenameContext {
+        RenameContext {
+            tab: self.active_tab(cx),
+            pane: self.active_tab_view(cx).map(|tab| tab.focused().pane),
+            workspace: self.workspace_id(cx),
+        }
+    }
+
     /// The showing close dialog's quoted title and its busy groups' tab
     /// headings, for smoke state.
     fn dialog_smoke_fields(&self, cx: &App) -> (String, String) {
@@ -8349,11 +8427,7 @@ impl WorkspaceView {
                 })
                 .and_then(|view| {
                     let pane = view.pane(*pane)?;
-                    Some(pane.label(
-                        view.fallback_name(pane.pane, cx),
-                        self.config.tabs,
-                        cx,
-                    ))
+                    Some(view.pane_label(pane, self.config.tabs, cx))
                 }),
             _ => None,
         };
@@ -11319,28 +11393,26 @@ impl Render for WorkspaceView {
                         size(strip.tab_extent(index), layout.tabs.size.height),
                     )
                 };
-                let item =
-                    TabItem {
-                        id: tab.id,
-                        index,
-                        title,
-                        status,
-                        activity: if Some(tab.id) == active_tab {
-                            Activity::Active
-                        } else if index > 0
-                            && Some(self.tabs[index - 1].id) == active_tab
-                        {
-                            Activity::FollowsActive
-                        } else {
-                            Activity::Inactive
-                        },
-                        flush_start: index == 0 && strip.offset == px(0.0),
-                        targeted: self.menu.as_ref().is_some_and(|menu| {
-                            menu.kind == MenuKind::Tab(tab.id)
-                        }) || self.pane_drag.as_ref().is_some_and(
-                            |drag| drag.spring.tab() == Some(tab.id),
-                        ),
-                    };
+                let item = TabItem {
+                    id: tab.id,
+                    index,
+                    title,
+                    status,
+                    activity: if Some(tab.id) == active_tab {
+                        Activity::Active
+                    } else if index > 0
+                        && Some(self.tabs[index - 1].id) == active_tab
+                    {
+                        Activity::FollowsActive
+                    } else {
+                        Activity::Inactive
+                    },
+                    flush_start: index == 0 && strip.offset == px(0.0),
+                    targeted: self.menu_targets_tab(tab.id)
+                        || self.pane_drag.as_ref().is_some_and(|drag| {
+                            drag.spring.tab() == Some(tab.id)
+                        }),
+                };
                 bar = bar.child(Self::tab_element(
                     &item, bounds, tabs, colors, swatch, cx,
                 ));
@@ -11994,7 +12066,21 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        self.open_window_menu(from_keyboard, None, window, cx)
+    }
+
+    /// [`Self::open_menu`], at `pointer` for a context menu.
+    fn open_window_menu(
+        &mut self,
+        from_keyboard: bool,
+        pointer: Option<gpui::Point<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
         self.check_available(false)?;
+        if self.native_menu.is_some() {
+            return Err(CommandError::Unavailable("a menu is open".to_owned()));
+        }
         if let Some(menu) = &self.menu
             && menu.kind == MenuKind::Window
         {
@@ -12012,15 +12098,22 @@ impl WorkspaceView {
             terminal.update(cx, TerminalView::clear_composition);
         }
         let contexts = window.context_stack();
-        let model = window_menu_model(
+        let spec = window_menu(
             &self.window_menu_input(cx),
             &cx.global::<Desktop>().keymap,
             &contexts,
         );
+        let anchor = pointer.map_or_else(
+            || MenuAnchor::Below(self.menu_anchor(&self.chrome_layout(window))),
+            MenuAnchor::Pointer,
+        );
+        if self.open_native_menu(MenuKind::Window, &spec, anchor, window, cx) {
+            return Ok(CommandOutcome::Completed);
+        }
         self.mount_menu(
-            model,
+            spec.to_listbox(Platform::current()),
             MenuKind::Window,
-            None,
+            pointer,
             contexts,
             from_keyboard,
             window,
@@ -12042,13 +12135,10 @@ impl WorkspaceView {
             return;
         }
         self.close_menu(MenuFocusReturn::Keep, window, cx);
-        if let Err(error) = self.open_menu(false, window, cx) {
+        if let Err(error) =
+            self.open_window_menu(false, Some(pointer), window, cx)
+        {
             self.report_failure("Open Menu", error.to_string(), cx);
-            return;
-        }
-        if let Some(menu) = &mut self.menu {
-            menu.pointer = Some(pointer);
-            self.popover.open(Anchor::Pointer(pointer), true);
         }
     }
 
@@ -12065,6 +12155,7 @@ impl WorkspaceView {
     ) {
         if self.check_available(true).is_err()
             || self.palette.is_some()
+            || self.native_menu.is_some()
             || !self.tabs.iter().any(|record| record.id == tab)
         {
             return;
@@ -12074,11 +12165,16 @@ impl WorkspaceView {
             terminal.update(cx, TerminalView::clear_composition);
         }
         let contexts = window.context_stack();
-        let Some(model) = self.tab_menu_model(tab, &contexts, cx) else {
+        let Some(spec) = self.tab_menu_spec(tab, &contexts, cx) else {
             return;
         };
+        let anchor = MenuAnchor::Pointer(pointer);
+        if self.open_native_menu(MenuKind::Tab(tab), &spec, anchor, window, cx)
+        {
+            return;
+        }
         self.mount_menu(
-            model,
+            spec.to_listbox(Platform::current()),
             MenuKind::Tab(tab),
             Some(pointer),
             contexts,
@@ -12086,6 +12182,81 @@ impl WorkspaceView {
             window,
             cx,
         );
+    }
+
+    /// Opens the context menu of `pane`'s title bar at `pointer`, replacing
+    /// any open menu. The pane takes focus first, as a left press gives it,
+    /// so the menu's focused-pane commands act on it. It refuses where the
+    /// tab menu does, and for a pane the active tab does not show.
+    fn open_pane_menu(
+        &mut self,
+        tab: TabId,
+        pane: PaneId,
+        pointer: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.check_available(true).is_err()
+            || self.palette.is_some()
+            || self.native_menu.is_some()
+            || self.active_tab(cx) != Some(tab)
+            || self
+                .active_tab_view(cx)
+                .is_none_or(|view| view.pane(pane).is_none())
+        {
+            return;
+        }
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
+        // The pane typing went to, before the press moves focus.
+        if let Some(terminal) = self.active_view(cx) {
+            terminal.update(cx, TerminalView::clear_composition);
+        }
+        self.focus_pane(tab, pane, window, cx);
+        let contexts = window.context_stack();
+        let kind = MenuKind::Pane { tab, pane };
+        let Some(spec) = self.pane_menu_spec(&kind, &contexts, cx) else {
+            return;
+        };
+        let anchor = MenuAnchor::Pointer(pointer);
+        if self.open_native_menu(kind.clone(), &spec, anchor, window, cx) {
+            return;
+        }
+        self.mount_menu(
+            spec.to_listbox(Platform::current()),
+            kind,
+            Some(pointer),
+            contexts,
+            false,
+            window,
+            cx,
+        );
+    }
+
+    /// The pane menu's rows, or `None` once its pane is no longer the
+    /// active tab's focused pane, which its picks act on.
+    fn pane_menu_spec(
+        &self,
+        kind: &MenuKind,
+        contexts: &[KeyContext],
+        cx: &App,
+    ) -> Option<MenuSpec> {
+        let MenuKind::Pane { tab, pane } = *kind else {
+            return None;
+        };
+        let view = self.active_tab_view(cx).filter(|view| view.id == tab)?;
+        let focused = view.focused();
+        if focused.pane != pane {
+            return None;
+        }
+        let input = PaneMenuInput {
+            platform: Platform::current(),
+            zoomed: self.shown_zoom(view, cx) == Some(pane),
+            directory_known: tab_directory_path(
+                &focused.view.read(cx).metadata,
+            )
+            .is_some(),
+        };
+        Some(pane_menu(input, &cx.global::<Desktop>().keymap, contexts))
     }
 
     /// Opens the active terminal's context menu at `pointer`, replacing any
@@ -12101,7 +12272,10 @@ impl WorkspaceView {
         let Some(tab) = self.active_tab(cx) else {
             return;
         };
-        if self.check_available(true).is_err() || self.palette.is_some() {
+        if self.check_available(true).is_err()
+            || self.palette.is_some()
+            || self.native_menu.is_some()
+        {
             return;
         }
         self.close_menu(MenuFocusReturn::Keep, window, cx);
@@ -12110,11 +12284,15 @@ impl WorkspaceView {
         }
         let contexts = window.context_stack();
         let kind = MenuKind::Terminal { tab, link };
-        let Some(model) = self.terminal_menu_model(&kind, &contexts, cx) else {
+        let Some(spec) = self.terminal_menu_spec(&kind, &contexts, cx) else {
             return;
         };
+        let anchor = MenuAnchor::Pointer(pointer);
+        if self.open_native_menu(kind.clone(), &spec, anchor, window, cx) {
+            return;
+        }
         self.mount_menu(
-            model,
+            spec.to_listbox(Platform::current()),
             kind,
             Some(pointer),
             contexts,
@@ -12138,6 +12316,7 @@ impl WorkspaceView {
         // click; a lookup that finished late must not replace it.
         if self.active_view(cx).as_ref() == Some(terminal)
             && self.menu.is_none()
+            && self.native_menu.is_none()
         {
             self.open_terminal_menu(
                 request.position,
@@ -12150,12 +12329,12 @@ impl WorkspaceView {
 
     /// The terminal menu's rows, or `None` once its tab is no longer the
     /// active one.
-    fn terminal_menu_model(
+    fn terminal_menu_spec(
         &self,
         kind: &MenuKind,
         contexts: &[KeyContext],
         cx: &App,
-    ) -> Option<MenuModel> {
+    ) -> Option<MenuSpec> {
         let MenuKind::Terminal { tab, link } = kind else {
             return None;
         };
@@ -12179,7 +12358,7 @@ impl WorkspaceView {
                 .is_some_and(|tab| tab.panes.len() > 1),
             directory,
         };
-        Some(terminal_menu_model(
+        Some(terminal_menu(
             input,
             &cx.global::<Desktop>().keymap,
             contexts,
@@ -12187,12 +12366,12 @@ impl WorkspaceView {
     }
 
     /// The tab menu's rows for `tab`, or `None` once the tab is gone.
-    fn tab_menu_model(
+    fn tab_menu_spec(
         &self,
         tab: TabId,
         contexts: &[KeyContext],
         cx: &App,
-    ) -> Option<MenuModel> {
+    ) -> Option<MenuSpec> {
         let (index, view) = self
             .tabs
             .iter()
@@ -12209,28 +12388,28 @@ impl WorkspaceView {
             vertical: self.layout_tabs().position.vertical(),
             directory_known,
         };
-        Some(tab_menu_model(
-            &input,
-            &cx.global::<Desktop>().keymap,
-            contexts,
-        ))
+        Some(tab_menu(&input, &cx.global::<Desktop>().keymap, contexts))
     }
 
     /// The rows for whichever menu is open, or `None` once its target is
     /// gone.
     fn current_menu_model(&self, cx: &App) -> Option<MenuModel> {
         let menu = self.menu.as_ref()?;
-        match &menu.kind {
-            MenuKind::Window => Some(window_menu_model(
+        let spec = match &menu.kind {
+            MenuKind::Window => Some(window_menu(
                 &self.window_menu_input(cx),
                 &cx.global::<Desktop>().keymap,
                 &menu.contexts,
             )),
-            MenuKind::Tab(tab) => self.tab_menu_model(*tab, &menu.contexts, cx),
+            MenuKind::Tab(tab) => self.tab_menu_spec(*tab, &menu.contexts, cx),
             kind @ MenuKind::Terminal { .. } => {
-                self.terminal_menu_model(kind, &menu.contexts, cx)
+                self.terminal_menu_spec(kind, &menu.contexts, cx)
             }
-        }
+            kind @ MenuKind::Pane { .. } => {
+                self.pane_menu_spec(kind, &menu.contexts, cx)
+            }
+        };
+        spec.map(|spec| spec.to_listbox(Platform::current()))
     }
 
     /// Creates the menu entity over `model`, subscribes to its events, and
@@ -12258,6 +12437,7 @@ impl WorkspaceView {
             MenuKind::Window => "Menu",
             MenuKind::Tab(_) => "Tab",
             MenuKind::Terminal { .. } => "Terminal",
+            MenuKind::Pane { .. } => "Pane",
         };
         let view = cx.new(|cx| {
             clock.observe(cx);
@@ -12359,6 +12539,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        self.refresh_native_menu(cx);
         let Some(menu) = self.menu.as_ref().map(|menu| menu.view.clone())
         else {
             return;
@@ -12394,64 +12575,75 @@ impl WorkspaceView {
             }
             MenuEvent::Picked(id) => {
                 self.close_menu(MenuFocusReturn::Terminal, window, cx);
-                if let MenuKind::Terminal {
-                    link: Some(link), ..
-                } = &kind
-                    && self.run_link_pick(id, link, cx)
-                {
-                    return;
-                }
-                let Some(spec) = huterm_protocol::lookup(id.as_ref()) else {
-                    self.report_failure(
-                        "Command failed",
-                        format!("unknown command `{id}`"),
-                        cx,
-                    );
-                    return;
-                };
-                // Context menu picks that take a tab act on the menu's tab.
-                let args = kind
-                    .tab()
-                    .filter(|_| spec.args.iter().any(|arg| arg.name == "tab"))
-                    .map(|tab| {
-                        vec![CommandArgument::new(
-                            "tab",
-                            CommandValue::Tab(tab),
-                        )]
-                    })
-                    .unwrap_or_default();
-                let invocation = CommandInvocation::new(spec.id, args);
-                let result = match spec.scope {
-                    CommandScope::Terminal => self
-                        .active_view(cx)
-                        .ok_or_else(|| {
-                            CommandError::Unavailable(
-                                "window has no active terminal".to_owned(),
-                            )
-                        })
-                        .and_then(|terminal| {
-                            terminal.update(cx, |terminal, cx| {
-                                terminal.run_command(&invocation, window, cx)
-                            })
-                        }),
-                    _ => self.invoke_interactive(&invocation, window, cx),
-                };
-                match result {
-                    Ok(_) => {
-                        self.recent.record(spec.id);
-                        cx.global_mut::<Desktop>().frequency.record(spec.id);
-                    }
-                    Err(error) => {
-                        self.report_failure(
-                            "Command failed",
-                            error.to_string(),
-                            cx,
-                        );
-                    }
-                }
-                cx.notify();
+                self.run_menu_pick(&kind, id, window, cx);
             }
         }
+    }
+
+    /// Runs the item `id` picked from a menu of `kind`.
+    fn run_menu_pick(
+        &mut self,
+        kind: &MenuKind,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let MenuKind::Terminal {
+            link: Some(link), ..
+        } = kind
+            && self.run_link_pick(id, link, cx)
+        {
+            return;
+        }
+        let Some(spec) = huterm_protocol::lookup(id) else {
+            self.report_failure(
+                "Command failed",
+                format!("unknown command `{id}`"),
+                cx,
+            );
+            return;
+        };
+        // Context menu picks that take a tab act on the menu's tab, and a
+        // pane menu's picks that take an optional pane act on its pane. A
+        // required pane is a move's destination.
+        let takes_tab = spec.args.iter().any(|arg| arg.name == "tab");
+        let takes_pane = spec.args.iter().any(|arg| {
+            arg.name == "pane"
+                && arg.required == huterm_protocol::Requirement::Optional
+        });
+        let mut args = Vec::new();
+        if let Some(tab) = kind.tab().filter(|_| takes_tab) {
+            args.push(CommandArgument::new("tab", CommandValue::Tab(tab)));
+        }
+        if let Some(pane) = kind.pane().filter(|_| takes_pane) {
+            args.push(CommandArgument::new("pane", CommandValue::Pane(pane)));
+        }
+        let invocation = CommandInvocation::new(spec.id, args);
+        let result = match spec.scope {
+            CommandScope::Terminal => self
+                .active_view(cx)
+                .ok_or_else(|| {
+                    CommandError::Unavailable(
+                        "window has no active terminal".to_owned(),
+                    )
+                })
+                .and_then(|terminal| {
+                    terminal.update(cx, |terminal, cx| {
+                        terminal.run_command(&invocation, window, cx)
+                    })
+                }),
+            _ => self.invoke_interactive(&invocation, window, cx),
+        };
+        match result {
+            Ok(_) => {
+                self.recent.record(spec.id);
+                cx.global_mut::<Desktop>().frequency.record(spec.id);
+            }
+            Err(error) => {
+                self.report_failure("Command failed", error.to_string(), cx);
+            }
+        }
+        cx.notify();
     }
 
     /// Opens or copies the link a terminal menu opened over; `false` when
@@ -12537,7 +12729,10 @@ impl WorkspaceView {
     fn menu_button_open(&self) -> bool {
         self.menu.as_ref().is_some_and(|menu| {
             menu.kind == MenuKind::Window && menu.pointer.is_none()
-        })
+        }) || self
+            .native_menu
+            .as_ref()
+            .is_some_and(|session| session.from_button)
     }
 
     /// The menu control: a 14-point icon in the 26-point control with the
@@ -12784,6 +12979,7 @@ impl WorkspaceView {
                     MenuKind::Window => "window",
                     MenuKind::Tab(_) => "tab",
                     MenuKind::Terminal { .. } => "terminal",
+                    MenuKind::Pane { .. } => "pane",
                 };
                 let (overflow, indicator) = menu.scroll_state();
                 format!(
@@ -12796,8 +12992,15 @@ impl WorkspaceView {
                 "{prefix}menu=false {prefix}menu_kind=none {prefix}menu_focused=false {prefix}menu_selection=none {prefix}menu_items=none {prefix}menu_overflow=false {prefix}menu_indicator=false"
             ),
         };
+        let native = match self.native_menu_kind() {
+            Some(MenuKind::Window) => "window",
+            Some(MenuKind::Tab(_)) => "tab",
+            Some(MenuKind::Terminal { .. }) => "terminal",
+            Some(MenuKind::Pane { .. }) => "pane",
+            None => "none",
+        };
         format!(
-            "{menu} {prefix}menu_button_open={} {prefix}menu_rect={}",
+            "{menu} {prefix}native_menu={native} {prefix}menu_button_open={} {prefix}menu_rect={}",
             self.menu_button_open(),
             self.popover.content_bounds().map_or_else(
                 || "none".to_owned(),
@@ -12976,7 +13179,9 @@ impl WorkspaceView {
             .as_ref()
             .and_then(|menu| match menu.kind {
                 MenuKind::Tab(tab) => Some(tab),
-                MenuKind::Window | MenuKind::Terminal { .. } => None,
+                MenuKind::Window
+                | MenuKind::Terminal { .. }
+                | MenuKind::Pane { .. } => None,
             })
             .and_then(|tab| {
                 self.tabs.iter().position(|record| record.id == tab)

@@ -19,8 +19,9 @@ views.
 _Avoid_: Session, tab group.
 
 **Custom name**:
-An optional display-name override for a session, workspace, or tab. Names can be
-duplicated and do not identify objects.
+An optional display-name override for a session, workspace, tab, or pane. Names
+can be duplicated and do not identify objects. A pane's custom name moves to the
+tab it becomes, and a tab's to its only pane when that pane joins another tab.
 
 **Tab**:
 An ordered container within a workspace, containing one pane layout.

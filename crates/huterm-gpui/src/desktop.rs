@@ -224,6 +224,7 @@ fn install_menus(cx: &mut App) {
                 MenuItem::separator(),
                 item(ids::FOCUS_NEXT_PANE),
                 item(ids::FOCUS_PREVIOUS_PANE),
+                item(ids::RENAME_PANE),
                 item(ids::MOVE_PANE_TO_NEW_TAB),
                 item(ids::ARRANGE_PANES),
                 item(ids::NEXT_PANE_LAYOUT),
@@ -2045,6 +2046,13 @@ impl TerminalView {
     /// opens its menu.
     fn cancel_context_lookup(&mut self) {
         self.context_lookup = None;
+    }
+
+    /// Forgets the right press that opened a native menu. The menu takes
+    /// its release, and a press still held would stop the next right-click
+    /// from opening anything.
+    fn release_menu_press(&mut self) {
+        self.mouse.forget_local(ProtocolMouseButton::Right);
     }
 
     /// Asks the window for the context menu at `position`, first looking

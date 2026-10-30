@@ -230,7 +230,12 @@ done
   // always shown so the window menu button sits at its end from the start.
   // The geometry below is a top bar's; macOS defaults to the title-bar row,
   // which check-macos-titlebar.ts covers.
-  const configDocument = `[terminal]
+  // The menu steps check Huterm's own menus, which macOS replaces with
+  // native ones by default.
+  const configDocument = `[window]
+macos_native_menus = false
+
+[terminal]
 close_on_exit = false
 
 [tabs]
@@ -1008,7 +1013,35 @@ label = "title"
     }
     await reloadedTitles(configDocument);
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard pane-drags=edge-centre-escape-spring-back-drop undo=tab-drop layouts=arrange-sizes-moved-origin-keys-resize`);
+    // 14. Native macOS menus: with the setting on, a right press opens an
+    // AppKit menu, and closing it ends AppKit's tracking. The press sends no
+    // release, as the open menu would take it, so a second round proves the
+    // terminal let go of the press. Switching tabs also cancels the menu.
+    // That hides the terminal, which forgets its presses anyway, so it runs
+    // last.
+    let nativeMenus = "skipped";
+    if (process.platform === "darwin") {
+      await reloadedTitles(configDocument.replace("macos_native_menus = false", "macos_native_menus = true"));
+      const nativeGrid = parseRect(field(await current(), "grid_bounds"));
+      const at = { x: nativeGrid.x + nativeGrid.w / 2, y: nativeGrid.y + nativeGrid.h / 2 };
+      for (let round = 0; round < 2; round++) {
+        await command(["native", "mouse", 5, at.x, at.y].join("\t"));
+        await command(["native", "mouse", 3, at.x, at.y].join("\t"));
+        await state("w0.native_menu=terminal", "native_menu_tracking=true", "w0.menu=false");
+        if (await command("close-native-menu") !== "closed=true") throw new Error(`${engine}: no native menu to close`);
+        await state("w0.native_menu=none", "native_menu_tracking=false", "w0.terminal_focused=true");
+      }
+      await command(["native", "mouse", 3, at.x, at.y].join("\t"));
+      await state("w0.native_menu=terminal", "native_menu_tracking=true");
+      await invoke("next_tab");
+      await state("w0.native_menu=none", "native_menu_tracking=false");
+      await invoke("previous_tab");
+      await state("w0.terminal_focused=true");
+      await reloadedTitles(configDocument);
+      nativeMenus = "open-cancel-reopen";
+    }
+
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard pane-drags=edge-centre-escape-spring-back-drop undo=tab-drop layouts=arrange-sizes-moved-origin-keys-resize native-menus=${nativeMenus}`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

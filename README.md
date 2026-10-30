@@ -30,7 +30,8 @@ GPUI for rendering.
   focus between panes in order or by direction, dividers drag or step to
   resize the panes beside them, and a pane zooms across its tab. Panes swap,
   move between tabs, and open in tabs of their own by command or by dragging
-  their title bars, and a tab dragged onto a pane joins it as a split.
+  their title bars, and a tab dragged onto a pane joins it as a split. Panes
+  can be renamed, and a name moves with a pane that becomes a tab.
 - **Commands:** every action is a catalog command with typed arguments. The
   command palette finds commands by fuzzy search and prompts for arguments, and
   keybindings can bind any command with arguments and `when` conditions.

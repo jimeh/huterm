@@ -830,6 +830,7 @@
                 "rename_tab",
                 "rename_workspace",
                 "rename_session",
+                "rename_pane",
                 "select_recent_tab",
                 "split_right",
                 "split_down",
@@ -2796,6 +2797,61 @@
               "command": {
                 "const": "rename_session",
                 "description": "Set a custom name for a session; a blank name restores the default.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "rename_pane"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Set a custom name for a pane; a blank name restores the default.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "rename_pane",
+                "description": "Set a custom name for a pane; a blank name restores the default.",
                 "type": "string"
               },
               "description": {
@@ -8944,6 +9000,17 @@
           "x-huterm-group": "Window",
           "x-huterm-label": "Fullscreen mode",
           "x-huterm-order": 30,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "window"
+        },
+        "macos_native_menus": {
+          "default": true,
+          "description": "Open the window, tab, pane, and terminal menus as native macOS\nmenus. Off draws them in Huterm's own style, as Linux always does.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Native menus",
+          "x-huterm-order": 25,
           "x-huterm-platform": "macos",
           "x-huterm-section": "window"
         },

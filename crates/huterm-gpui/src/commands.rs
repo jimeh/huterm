@@ -11,7 +11,7 @@
 use gpui::{Action, App, MenuItem};
 use huterm_protocol::{
     CommandArgument, CommandError, CommandId, CommandInvocation, CommandScope,
-    CommandValue, TabId, WorkspaceId, ids, lookup, validate_supplied,
+    CommandValue, PaneId, TabId, WorkspaceId, ids, lookup, validate_supplied,
 };
 
 /// Application-scope command carried through GPUI's global action handlers.
@@ -200,6 +200,17 @@ pub(crate) fn fill_target(
     Ok(filled)
 }
 
+/// The invoking window's targets for a rename that omits its own.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RenameContext {
+    /// The active tab.
+    pub(crate) tab: Option<TabId>,
+    /// The active tab's focused pane.
+    pub(crate) pane: Option<PaneId>,
+    /// The window's workspace.
+    pub(crate) workspace: Option<WorkspaceId>,
+}
+
 /// Fills the target a rename command omits from the invoking window.
 ///
 /// An explicit target always wins. `rename_session` without a session carries
@@ -211,20 +222,24 @@ pub(crate) fn fill_target(
 /// omitted target, and [`CommandError::UnknownCommand`] for other commands.
 pub(crate) fn fill_rename_target(
     invocation: &CommandInvocation,
-    active_tab: Option<TabId>,
-    workspace: Option<WorkspaceId>,
+    context: RenameContext,
 ) -> Result<CommandInvocation, CommandError> {
     match invocation.id {
         ids::RENAME_TAB => {
-            fill_target(invocation, "tab", active_tab.map(CommandValue::Tab))
+            fill_target(invocation, "tab", context.tab.map(CommandValue::Tab))
         }
+        ids::RENAME_PANE => fill_target(
+            invocation,
+            "pane",
+            context.pane.map(CommandValue::Pane),
+        ),
         ids::RENAME_SESSION if invocation.argument("session").is_some() => {
             Ok(invocation.clone())
         }
         ids::RENAME_WORKSPACE | ids::RENAME_SESSION => fill_target(
             invocation,
             "workspace",
-            workspace.map(CommandValue::Workspace),
+            context.workspace.map(CommandValue::Workspace),
         ),
         other => Err(CommandError::UnknownCommand(other)),
     }
@@ -419,6 +434,29 @@ mod tests {
     }
 
     #[test]
+    fn rename_pane_fills_the_focused_pane_unless_one_is_given() {
+        let name = ("name", CommandValue::Text("logs".into()));
+        let focused = PaneId::new(5);
+        let context = RenameContext {
+            pane: Some(focused),
+            ..RenameContext::default()
+        };
+        let omitted = invocation(ids::RENAME_PANE, std::slice::from_ref(&name));
+        let filled = fill_rename_target(&omitted, context).unwrap();
+        assert_eq!(filled.pane("pane"), Some(focused));
+        assert!(validate(&filled).is_ok());
+        let explicit = invocation(
+            ids::RENAME_PANE,
+            &[name, ("pane", CommandValue::Pane(PaneId::new(6)))],
+        );
+        assert_eq!(fill_rename_target(&explicit, context), Ok(explicit));
+        assert!(matches!(
+            fill_rename_target(&omitted, RenameContext::default()),
+            Err(CommandError::Unavailable(_))
+        ));
+    }
+
+    #[test]
     fn explicit_session_target_skips_the_workspace_fill() {
         let name = ("name", CommandValue::Text("work".into()));
         let explicit = invocation(
@@ -429,19 +467,24 @@ mod tests {
             ],
         );
         assert_eq!(
-            fill_rename_target(&explicit, None, None),
+            fill_rename_target(&explicit, RenameContext::default()),
             Ok(explicit.clone())
         );
         assert!(validate(&explicit).is_ok());
 
         let omitted = invocation(ids::RENAME_SESSION, &[name]);
         assert!(matches!(
-            fill_rename_target(&omitted, None, None),
+            fill_rename_target(&omitted, RenameContext::default()),
             Err(CommandError::Unavailable(_))
         ));
-        let filled =
-            fill_rename_target(&omitted, None, Some(WorkspaceId::new(4)))
-                .unwrap();
+        let filled = fill_rename_target(
+            &omitted,
+            RenameContext {
+                workspace: Some(WorkspaceId::new(4)),
+                ..RenameContext::default()
+            },
+        )
+        .unwrap();
         assert_eq!(filled.workspace("workspace"), Some(WorkspaceId::new(4)));
         assert_eq!(filled.session("session"), None);
     }

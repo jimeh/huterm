@@ -298,6 +298,7 @@ them need no `when`.
 | `rename_tab` | Runtime | `name`; `tab` defaults to the active tab. |
 | `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace. |
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session. |
+| `rename_pane` | Runtime | `name`; `pane` defaults to the active tab's focused pane. |
 | `dialog_confirm` | Window | Bound only while `confirming`. |
 | `dialog_cancel` | Window | Bound only while `confirming`. |
 | `dialog_focus_next` | Window | Bound only while `confirming`. |

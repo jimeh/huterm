@@ -256,6 +256,7 @@ padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 menu_button = true # the window menu button in the title bar or tab bar
 shortcut_hints = false # key hints on the scroll pill and dialog buttons
+macos_native_menus = true # native macOS menus; ignored on Linux
 
 [tabs]
 label = "smart" # smart, title, process, directory, or process_and_directory
@@ -399,6 +400,15 @@ and the arrows drawn as icons on both. The scroll pill, the close
 confirmation's buttons, the About panel, and the Licenses view show key hints
 only with `shortcut_hints = true`.
 
+On macOS the window, tab, pane, and terminal menus open as native macOS
+menus while `macos_native_menus = true`, the default. They list the same
+items with the same shortcuts, follow the theme's light or dark appearance,
+and use the system's keys and dismissal. The Edit row becomes separate
+**Copy** and **Paste** items, and a disabled item shows no reason. A native
+menu shows the state from when it opened, and closes if its tab or pane
+goes away. Set `macos_native_menus = false` for Huterm's own menus, which
+Linux always uses.
+
 Right-clicking any tab opens its context menu without activating it, and
 outlines the tab while the menu is open. The menu has:
 
@@ -412,6 +422,23 @@ outlines the tab while the menu is open. The menu has:
 
 The tab menu does not open during a tab drag or while a close confirmation is
 showing. It uses the same keys, dismissal, and focus return as the window menu.
+
+Right-clicking a pane's title bar in a split tab focuses the pane and opens its
+context menu:
+
+- **Rename Pane…**, which sets the name the title bar shows in place of the
+  pane's title. A blank name restores the title.
+- **Copy Directory Path**, disabled with "Directory unknown" until the pane
+  reports a working directory.
+- **Split Right** and **Split Down**.
+- **Zoom Pane**, or **Unzoom Pane** while the pane is zoomed.
+- **Move Pane to New Tab** and **Move Pane to Another Pane…**
+- **Close Pane**.
+
+A tab without a custom name shows its focused pane's name. A named pane that
+moves to a tab of its own gives the new tab its name, and a named tab of one
+pane that joins another tab as a pane gives that pane its name. Undo puts a
+moved name back.
 
 **About Huterm** (`about`) opens a panel with the version, identifier,
 platform, terminal engine, and build profile, plus the short source revision

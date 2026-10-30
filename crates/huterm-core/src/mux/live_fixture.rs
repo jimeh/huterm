@@ -70,6 +70,18 @@ pub(super) fn pane_ref(mux: &Mux, pane: PaneId) -> PaneRef {
     }
 }
 
+/// A pane's custom name, wherever its tab is.
+pub(super) fn pane_name(mux: &Mux, pane: PaneId) -> Option<String> {
+    let tab = mux.select_pane(pane).unwrap().tab.unwrap();
+    mux.tab(tab)
+        .unwrap()
+        .layout()
+        .pane(pane)
+        .unwrap()
+        .custom_name
+        .clone()
+}
+
 pub(super) fn beside(
     mux: &Mux,
     pane: PaneId,

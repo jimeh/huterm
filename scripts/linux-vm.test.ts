@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { BASE_IMAGE, argumentsFor, imageName, tryLock, vmName } from "./linux-vm";
+import { tryLock } from "./flock";
+import { BASE_IMAGE, argumentsFor, imageName, vmName } from "./linux-vm";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });

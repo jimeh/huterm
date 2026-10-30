@@ -5,12 +5,8 @@
 
 use gpui::{KeyContext, Pixels, px};
 use huterm_protocol::{CommandId, ids, lookup};
-use huterm_ui::components::kbd::Glyph;
-use huterm_ui::listbox::{
-    Button as MenuButton, Item as MenuItem, Model as MenuModel, Row as MenuRow,
-};
 
-use super::super::key_hint::KeyHint;
+use super::menu_spec::{Item as MenuItem, MenuSpec, Row as MenuRow};
 use super::{CONTROL_SIZE, TabPosition};
 use crate::keymap::{InstalledKeymap, Origin, Platform};
 
@@ -127,23 +123,21 @@ impl WindowMenuInput {
     }
 }
 
-/// `id`'s shortcut as seen from `contexts`, the key-context stack captured
+/// `id`'s binding as seen from `contexts`, the key-context stack captured
 /// when a menu opened. A user binding is shown ahead of a default for the
 /// same command, as the macOS menu bar shows it; bindings that carry
-/// arguments run something else and are skipped. Empty when unbound.
-pub(super) fn shortcut_hint(
+/// arguments run something else and are skipped. `None` when unbound.
+pub(super) fn shortcut_key(
     keymap: &InstalledKeymap,
     contexts: &[KeyContext],
-    platform: Platform,
     id: CommandId,
-) -> Vec<Glyph> {
+) -> Option<String> {
     keymap
         .shortcuts(id, contexts, None)
         .into_iter()
         .filter(|binding| binding.args.is_empty())
         .min_by_key(|binding| binding.origin != Origin::User)
-        .map(|binding| KeyHint::parse(&binding.key, platform).glyphs())
-        .unwrap_or_default()
+        .map(|binding| binding.key.clone())
 }
 
 /// Labels the plan words differently from the catalog: prompting items end
@@ -165,17 +159,16 @@ pub(super) fn label(id: CommandId) -> String {
     }
 }
 
-/// The window menu's rows for `input`, with shortcut text from `keymap` as
+/// The window menu's rows for `input`, with shortcuts from `keymap` as
 /// seen from `contexts` (the stack captured when the menu opened). A user
 /// binding is shown ahead of a default for the same command, as the macOS
 /// menu bar shows it; items with no binding show none.
-pub(super) fn window_menu_model(
+pub(super) fn window_menu(
     input: &WindowMenuInput,
     keymap: &InstalledKeymap,
     contexts: &[KeyContext],
-) -> MenuModel {
-    let shortcut =
-        |id: CommandId| shortcut_hint(keymap, contexts, input.platform, id);
+) -> MenuSpec {
+    let shortcut = |id: CommandId| shortcut_key(keymap, contexts, id);
     let item = |id: CommandId| {
         MenuRow::Item(
             MenuItem::new(id.as_str(), label(id)).shortcut(shortcut(id)),
@@ -207,19 +200,21 @@ pub(super) fn window_menu_model(
         MenuRow::Separator,
         restore_item(ids::UNDO, input.restorable.undo, "Nothing to undo"),
         restore_item(ids::REDO, input.restorable.redo, "Nothing to redo"),
-        MenuRow::Buttons {
+        MenuRow::Group {
             label: "Edit".to_owned(),
-            buttons: vec![
+            items: vec![
                 {
                     let copy =
-                        MenuButton::new(ids::COPY.as_str(), label(ids::COPY));
+                        MenuItem::new(ids::COPY.as_str(), label(ids::COPY))
+                            .shortcut(shortcut(ids::COPY));
                     if input.selection {
                         copy
                     } else {
                         copy.disabled(Some("Nothing selected".to_owned()))
                     }
                 },
-                MenuButton::new(ids::PASTE.as_str(), label(ids::PASTE)),
+                MenuItem::new(ids::PASTE.as_str(), label(ids::PASTE))
+                    .shortcut(shortcut(ids::PASTE)),
             ],
         },
         item(ids::TOGGLE_FULLSCREEN),
@@ -243,7 +238,7 @@ pub(super) fn window_menu_model(
     }
     rows.push(MenuRow::Separator);
     rows.push(item(ids::QUIT));
-    MenuModel::new(rows)
+    MenuSpec::new(rows)
 }
 
 #[cfg(test)]

@@ -53,6 +53,7 @@ fn layout_of(arrangement: &Arrangement) -> PaneLayout {
                 id: *pane,
                 terminal_id: TerminalId::new(pane.get()),
                 fallback_name: format!("p{}", pane.get()),
+                custom_name: None,
             }),
             Arrangement::Split { axis, children } => {
                 *next += 1;

@@ -2,14 +2,11 @@
 //! enablement decided from the tab's position and directory. Everything
 //! here is pure so it can be tested without a window.
 
+use super::menu_spec::{Item as MenuItem, MenuSpec, Row as MenuRow};
+use super::window_menu::{label, shortcut_key};
+use crate::keymap::{InstalledKeymap, Platform};
 use gpui::KeyContext;
 use huterm_protocol::{CommandId, ids};
-use huterm_ui::listbox::{
-    Item as MenuItem, Model as MenuModel, Row as MenuRow,
-};
-
-use super::window_menu::{label, shortcut_hint};
-use crate::keymap::{InstalledKeymap, Platform};
 
 /// The state the tab menu's rows depend on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,13 +27,12 @@ pub(super) struct TabMenuInput {
 /// The rows for `input`, with Close Tab's shortcut from `keymap` as seen from
 /// `contexts` (the stack captured when the menu opened), preferring a user
 /// binding as the window menu does.
-pub(super) fn tab_menu_model(
+pub(super) fn tab_menu(
     input: &TabMenuInput,
     keymap: &InstalledKeymap,
     contexts: &[KeyContext],
-) -> MenuModel {
-    let shortcut =
-        |id: CommandId| shortcut_hint(keymap, contexts, input.platform, id);
+) -> MenuSpec {
+    let shortcut = |id: CommandId| shortcut_key(keymap, contexts, id);
     let item = |id: CommandId| MenuItem::new(id.as_str(), label(id));
     let last = input.count == 0 || input.index + 1 >= input.count;
     let copy_directory = item(ids::COPY_TAB_DIRECTORY);
@@ -48,7 +44,7 @@ pub(super) fn tab_menu_model(
     let close_tab = item(ids::CLOSE_TAB).shortcut(if input.active {
         shortcut(ids::CLOSE_TAB)
     } else {
-        Vec::new()
+        None
     });
     let close_others = item(ids::CLOSE_OTHER_TABS);
     let close_others = if input.count > 1 {
@@ -69,7 +65,7 @@ pub(super) fn tab_menu_model(
     } else {
         close_after
     };
-    MenuModel::new(vec![
+    MenuSpec::new(vec![
         MenuRow::Item(item(ids::RENAME_TAB)),
         MenuRow::Item(copy_directory),
         MenuRow::Separator,
@@ -90,6 +86,18 @@ mod tests {
     use crate::config::KeybindingEntry;
     use crate::keymap::compile;
     use huterm_ui::components::kbd;
+    use huterm_ui::listbox::{
+        Item as MenuItem, Model as MenuModel, Row as MenuRow,
+    };
+
+    /// The rows Huterm's own menu draws for `input`.
+    fn tab_menu_model(
+        input: &TabMenuInput,
+        keymap: &InstalledKeymap,
+        contexts: &[KeyContext],
+    ) -> MenuModel {
+        tab_menu(input, keymap, contexts).to_listbox(input.platform)
+    }
 
     fn keymap(platform: Platform, user: &[KeybindingEntry]) -> InstalledKeymap {
         let (bindings, installed) =

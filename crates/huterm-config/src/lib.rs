@@ -441,6 +441,10 @@ pub enum MacosOptionAsAlt {
     Both,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent window setting"
+)]
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
@@ -501,6 +505,17 @@ pub struct WindowConfig {
         "x-huterm-apply" = "live",
     )))]
     pub shortcut_hints: bool,
+    /// Open the window, tab, pane, and terminal menus as native macOS
+    /// menus. Off draws them in Huterm's own style, as Linux always does.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Window",
+        "x-huterm-label" = "Native menus",
+        "x-huterm-order" = 25,
+        "x-huterm-apply" = "live",
+        "x-huterm-platform" = "macos",
+    )))]
+    pub macos_native_menus: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -664,6 +679,7 @@ impl Default for WindowConfig {
             padding_balance: false,
             menu_button: true,
             shortcut_hints: false,
+            macos_native_menus: true,
         }
     }
 }

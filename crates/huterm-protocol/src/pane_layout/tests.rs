@@ -17,6 +17,7 @@ fn info(value: u64) -> PaneInfo {
         id: pane_id(value),
         terminal_id: TerminalId::new(value),
         fallback_name: format!("p{value}"),
+        custom_name: None,
     }
 }
 

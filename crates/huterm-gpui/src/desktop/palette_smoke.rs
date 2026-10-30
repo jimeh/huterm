@@ -472,6 +472,10 @@ async fn attach_window(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of the smoke's window commands"
+)]
 fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     if command == "quake-state" {
         return quake_state(cx);
@@ -528,6 +532,10 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                 view.busy = false;
                 cx.notify();
                 Ok("idle".to_owned())
+            }
+            // Closes a native menu as a pick or Escape would.
+            "close-native-menu" => {
+                Ok(format!("closed={}", view.close_native_menu(cx).is_some()))
             }
             "dismiss-notices" => {
                 view.notices.dismiss_all();
@@ -807,9 +815,10 @@ fn read_state(cx: &mut App) -> String {
     let desktop = cx.global::<Desktop>();
     let diagnostics = desktop.config_report.notices(&desktop.config_path);
     let mut output = format!(
-        "windows={} quake_hotkeys={} config.warning={:?} {} model_titles={:?} reloads={} reload_titles={:?}\n",
+        "windows={} quake_hotkeys={} native_menu_tracking={} config.warning={:?} {} model_titles={:?} reloads={} reload_titles={:?}\n",
         cx.windows().len(),
         super::quake_windows::keep_alive(cx),
+        super::native_menus::tracking(),
         desktop.config.warning,
         smoke_notices("desktop.", diagnostics.iter().chain(&desktop.latched)),
         model_titles(cx).join(";"),

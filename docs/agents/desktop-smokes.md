@@ -4,6 +4,64 @@ Rules for desktop smoke fixtures, their harnesses, and benchmarks. Discover the
 tasks with `mise tasks`; [the development guide](development.md) describes what
 each smoke covers and how to run it through Docker or Tart.
 
+## Host smoke lock
+
+Host desktop tasks on macOS share one display, pointer, keyboard, focus, and
+set of global shortcuts, so two worktrees running them at once fail like
+flakes. `scripts/host-smoke-lock.ts` serializes them: it waits for one
+per-user kernel `flock` on `~/Library/Caches/huterm-host-smoke/lock`, records
+its holder in `owner` beside it, and runs its command while holding the lock.
+`HUTERM_HOST_SMOKE_STATE` moves both files, which the tests use.
+
+- Every `smoke:macos-*` task, `smoke:renderer`, `smoke:presentation-queries`,
+  `smoke:manual-*`, `bench:scroll`, `bench:idle`, `ci:smoke:run`, and
+  `ci:smoke:step` wrap their desktop phase in it; `scripts/headless.sh` does
+  so for the macOS benchmarks it runs. Cargo builds and `build:swift` run
+  before the lock, so other worktrees keep compiling while one holds it;
+  `bench:idle` builds inside it.
+- `scripts/host-smoke-tasks.test.ts` checks each desktop harness command in
+  `mise.toml` (`check-*`, `manual-*`, and the window-opening `run-*`
+  scripts). Each must follow the wrapper or `headless.sh` on its command
+  line, run under `xvfb-run`, belong to a task that reruns itself under the
+  wrapper, or sit in a task the test lists with a reason. Every
+  `smoke:macos-*` task must use the wrapper. Run a harness such as
+  `bun scripts/check-palette.ts` directly on the host only under
+  `bun scripts/host-smoke-lock.ts`.
+- The command inherits `HUTERM_HOST_SMOKE_LOCK_HELD`, and a wrapper that
+  finds it set for the same lock runs its command directly; `--held` asks
+  the same question for a shell script. `ci:smoke:run` uses it to rerun
+  itself under the lock once, so every step shares one hold, and
+  `ci:smoke:step` takes the lock outside its supervisor's deadline. Anything
+  between two wrappers must pass that variable through; a wrapper that finds
+  its own ancestor holding the lock fails at once instead of waiting.
+- A waiting run prints the holder's task, worktree, PID, and start time once
+  per holder, and gives up after 45 minutes with exit status 75; set
+  `HUTERM_HOST_SMOKE_LOCK_TIMEOUT` in seconds, `0` to try once. Ctrl-C while
+  waiting exits 130 without running the command. A contended smoke can block
+  for that long, so agents run it in the background or with a short timeout.
+- The wrapper that takes the lock runs its command as the leader of a new
+  process group and session, so the command has no controlling terminal;
+  its stdio is still the wrapper's. The wrapper forwards SIGINT and SIGTERM
+  to that group, and SIGHUP as SIGTERM, because `runSmokeProcess` harnesses
+  stop the apps they start in other groups only on SIGINT or SIGTERM. It
+  keeps the lock until the command exits, then stops whatever is left in
+  the group, with SIGKILL after two seconds, and waits up to a second more
+  for the group to empty before releasing. An app a harness orphaned
+  therefore cannot share the desktop with the next holder. A nested
+  wrapper, or one off macOS, keeps its command in its own group, so the
+  holder's cleanup covers it.
+- A process that starts its own group or session is outside that cleanup
+  and must be stopped by whatever started it: a tmux server,
+  `smoke-process.ts` children, and the task shells of a `mise run` that is
+  not the wrapper's direct command. The kernel releases the lock if the
+  wrapper dies, and Bun closes the lock descriptor in every child, so such
+  a process cannot keep the lock. A wrapper killed with SIGKILL leaves its
+  smoke running without the lock.
+- A `smoke:manual-*` session holds the lock until it ends.
+- On GitHub's macOS runners and in the Tart guest the lock is uncontended
+  and costs one Bun start per step. Off macOS the wrapper runs its command
+  directly; Linux smokes use private Xvfb displays.
+
 ## Benchmarks
 
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports

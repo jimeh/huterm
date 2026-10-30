@@ -139,6 +139,9 @@ for uncovered behavior, visual checks, and investigation, then turn useful
 manual reproductions into automated regression checks where practical. Physical
 device behavior and unsupported IMEs may still require manual testing; state
 those coverage limits explicitly.
+Host macOS smokes and window-opening benchmarks wait for each other across
+worktrees through [the host smoke lock](docs/agents/desktop-smokes.md#host-smoke-lock),
+for up to 45 minutes; run them through their tasks, not their scripts directly.
 
 The pre-commit hook checks staged files where a check can work per file, runs
 only fast script tests that a staged path affects, and runs whole-project checks
