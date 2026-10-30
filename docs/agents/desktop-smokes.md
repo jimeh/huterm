@@ -39,14 +39,16 @@ its holder in `owner` beside it, and runs its command while holding the lock.
   `HUTERM_HOST_SMOKE_LOCK_TIMEOUT` in seconds, `0` to try once. Ctrl-C while
   waiting exits 130 without running the command. A contended smoke can block
   for that long, so agents run it in the background or with a short timeout.
-- The wrapper forwards SIGINT, SIGTERM, and SIGHUP and keeps the lock until
-  its command exits. It records the command's descendants when it forwards
-  a signal, and after the command exits it stops any still running, SIGKILL
-  after two seconds, so an app a cancelled harness orphaned cannot share the
-  desktop with the next holder. The kernel releases the lock if the wrapper
-  dies, and Bun closes the lock descriptor in every child, so a leftover tmux
-  server cannot keep it. A wrapper killed with SIGKILL leaves its smoke
-  running without the lock.
+- The command runs as the leader of its own process group and session, so
+  it has no controlling terminal; its stdio is still the wrapper's. The
+  wrapper forwards SIGINT, SIGTERM, and SIGHUP to that group and keeps the
+  lock until the command exits. It then stops whatever is left in the group,
+  with SIGKILL after two seconds, so an app a harness orphaned cannot share
+  the desktop with the next holder. A process that starts its own group or
+  session, such as a tmux server, is outside that cleanup. The kernel
+  releases the lock if the wrapper dies, and Bun closes the lock descriptor
+  in every child, so such a process cannot keep the lock. A wrapper killed
+  with SIGKILL leaves its smoke running without the lock.
 - A `smoke:manual-*` session holds the lock until it ends.
 - On GitHub's macOS runners and in the Tart guest the lock is uncontended
   and costs one Bun start per step. Off macOS the wrapper runs its command

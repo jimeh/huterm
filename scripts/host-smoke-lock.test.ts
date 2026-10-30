@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -153,16 +153,23 @@ describe.skipIf(!darwin)("the host smoke lock", () => {
     expect(existsSync(join(state, "owner"))).toBe(false);
   });
 
-  test("a terminated holder stops the processes its command leaves behind before releasing", async () => {
+  test("a terminated holder stops what its command leaves behind before the next holder starts", async () => {
     const { state, files } = fixture();
-    // The shell exits on SIGTERM and orphans its background child.
-    const first = start(state, ["sh", "-c", `sleep 30 & echo $! > "$1/sleep"; touch "$1/a.started"; wait`, "sh", files]);
+    // No ps on PATH: cleanup must not depend on reading the process table.
+    const empty = join(files, "empty");
+    mkdirSync(empty);
+    // The shell exits on SIGTERM and orphans a child that ignores SIGTERM.
+    const first = start(state, ["/bin/sh", "-c", `(trap '' TERM; exec /bin/sleep 30) & echo $! > "$1/sleep"; : > "$1/a.started"; wait`, "sh", files], { PATH: empty });
     await until(() => existsSync(join(files, "a.started")), "the first command", first.stderr);
     const orphan = Number(readFileSync(join(files, "sleep"), "utf8"));
     pids.push(orphan);
+    const second = start(state, ["sh", "-c", `read pid < "$1/sleep"; if kill -0 "$pid" 2>/dev/null; then touch "$1/orphan-alive"; fi; touch "$1/b.ran"`, "sh", files]);
+    await until(() => second.stderr().includes("Waiting for the host smoke lock"), "the waiting message", second.stderr);
     first.child.kill("SIGTERM");
     expect(await first.child.exited).toBe(143);
-    expect(() => process.kill(orphan, 0)).toThrow();
+    expect(await second.exit).toBe(0);
+    expect(existsSync(join(files, "b.ran"))).toBe(true);
+    expect(existsSync(join(files, "orphan-alive"))).toBe(false);
   });
 
   test("--held answers whether this run already holds the same lock", async () => {

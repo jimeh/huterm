@@ -20,7 +20,7 @@ const COMPOSITE = /\bmise run ([\w:-]+)/g;
 const runText = (run: string | string[] | undefined) => [run ?? []].flat().join("\n");
 
 /** The command line holding `index`, with backslash continuations joined, up to `index`. */
-function commandBefore(text: string, index: number): string {
+function lineBefore(text: string, index: number): string {
   const start = text.lastIndexOf("\n", index - 1) + 1;
   let line = text.slice(start, index);
   for (let end = start - 1; end > 0 && text[end - 1] === "\\"; ) {
@@ -29,6 +29,23 @@ function commandBefore(text: string, index: number): string {
     end = previous - 1;
   }
   return line;
+}
+
+/** The simple command holding `index`, up to `index`: the line after its last unquoted `;`, `&`, `|`, or parenthesis. */
+function commandBefore(text: string, index: number): string {
+  const line = lineBefore(text, index);
+  let quote = "";
+  let start = 0;
+  for (let at = 0; at < line.length; at++) {
+    const char = line[at]!;
+    if (quote) {
+      if (char === quote) quote = "";
+      else if (char === "\\" && quote === '"') at++;
+    } else if (char === "'" || char === '"') quote = char;
+    else if (char === "\\") at++;
+    else if (";&|()".includes(char)) start = at + 1;
+  }
+  return line.slice(start);
 }
 
 /** Xvfb gives a harness a private display: on the same command, or inside its quoted `sh -c` script. */
@@ -78,6 +95,8 @@ test("the classification checks each harness command, not each task", () => {
     "smoke:macos-new": { run: "cargo build\nbun scripts/check-new.ts target/debug/examples/new_smoke" },
     "smoke:macos-added": { run: "bun scripts/host-smoke-lock.ts bun scripts/check-one.ts a\nbun scripts/check-two.ts b" },
     "smoke:macos-wrapped": { run: "cargo build\nbun scripts/host-smoke-lock.ts bun scripts/check-one.ts a" },
+    "smoke:macos-chained": { run: "bun scripts/host-smoke-lock.ts bun scripts/check-one.ts a; bun scripts/check-two.ts b && bun scripts/check-three.ts c" },
+    "smoke:macos-quoted": { run: "cargo build && bun scripts/host-smoke-lock.ts sh -c 'true; bun scripts/check-one.ts a'" },
     "smoke:linux-new": { run: "xvfb-run -a -s '-screen 0 1x1x24' \\\n  bun scripts/check-new.ts a\nxvfb-run sh -c '\n  bun scripts/run-scroll-benchmark.ts \"$1\"\n' sh x" },
     "bench:window": { run: ["cargo build", "bun scripts/run-scroll-benchmark.ts report"] },
     "bench:headless": { run: ["bash scripts/headless.sh bun scripts/run-output-latency.ts a"] },
@@ -88,6 +107,7 @@ test("the classification checks each harness command, not each task", () => {
   expect(unclassified(tasks, { "smoke:macos-new": "listed", "release:notes": "stale", "smoke:gone": "removed" })).toEqual([
     "smoke:macos-new drives the macOS desktop without the host smoke lock",
     "smoke:macos-added runs scripts/check-two.ts without the host smoke lock",
+    "smoke:macos-chained runs scripts/check-two.ts, scripts/check-three.ts without the host smoke lock",
     "bench:window runs scripts/run-scroll-benchmark.ts without the host smoke lock",
     "ci:all runs mise run bench:window without the host smoke lock",
     "release:notes is listed as unlocked but runs no unlocked desktop harness",

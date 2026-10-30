@@ -12,6 +12,7 @@
  * `--held` exits 0 when this process needs no lock of its own, for a shell
  * script that reruns itself under the wrapper.
  */
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { constants as os, homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -21,7 +22,7 @@ export const HELD = "HUTERM_HOST_SMOKE_LOCK_HELD";
 const TIMEOUT = "HUTERM_HOST_SMOKE_LOCK_TIMEOUT";
 const DEFAULT_TIMEOUT_SECONDS = 45 * 60;
 const POLL_MS = 250;
-/** How long processes a cancelled command leaves behind get to exit before SIGKILL. */
+/** How long processes the command leaves behind get to exit before SIGKILL. */
 const STRAY_GRACE_MS = 2_000;
 const worktree = resolve(import.meta.dir, "..");
 
@@ -88,29 +89,26 @@ function isAncestor(pid: number): boolean {
   return false;
 }
 
-function descendants(root: number): number[] {
-  const children = new Map<number, number[]>();
-  for (const [pid, parent] of parents()) children.set(parent, [...(children.get(parent) ?? []), pid]);
-  const found: number[] = [];
-  for (let queue = [root]; queue.length > 0; ) {
-    for (const pid of children.get(queue.shift()!) ?? []) {
-      found.push(pid);
-      queue.push(pid);
-    }
+/** Signals every process left in the command's process group; false once the group is empty. */
+function signalGroup(leader: number, signal: NodeJS.Signals | 0): boolean {
+  try {
+    process.kill(-leader, signal);
+    return true;
+  } catch {
+    return false;
   }
-  return found;
 }
 
 /**
- * A harness killed by a signal can orphan the app it launched, which would
- * then share the desktop with the next holder. Stop whatever is left.
+ * A harness can exit, or die from a signal, while an app it launched keeps
+ * running. The next holder must not share the desktop with it, so stop the
+ * rest of the command's process group before releasing the lock.
  */
-async function stopStrays(pids: Iterable<number>): Promise<void> {
-  const strays = [...pids].filter(alive);
-  for (const pid of strays) { try { process.kill(pid, "SIGTERM"); } catch {} }
+async function stopGroup(leader: number): Promise<void> {
+  if (!signalGroup(leader, "SIGTERM")) return;
   const deadline = performance.now() + STRAY_GRACE_MS;
-  while (strays.some(alive) && performance.now() < deadline) await Bun.sleep(50);
-  for (const pid of strays.filter(alive)) { try { process.kill(pid, "SIGKILL"); } catch {} }
+  while (signalGroup(leader, 0) && performance.now() < deadline) await Bun.sleep(50);
+  signalGroup(leader, "SIGKILL");
 }
 
 let interrupted: NodeJS.Signals | undefined;
@@ -160,16 +158,12 @@ async function main(argv: string[]): Promise<number> {
   const directory = stateDirectory();
   const locking = process.platform === "darwin" && process.env[HELD] !== directory;
 
-  let child: ReturnType<typeof Bun.spawn> | undefined;
-  const strays = new Set<number>();
-  // The child usually shares the terminal's process group and receives a
-  // terminal signal directly too; a repeat is harmless to the smoke harnesses.
-  // Its descendants are recorded first: once it exits, orphans lose their parent.
+  let child: ChildProcess | undefined;
+  // The command leads its own process group, so a terminal's Ctrl-C reaches
+  // it once, through this handler, and so does anything it started.
   const forward = (signal: NodeJS.Signals) => {
     interrupted ??= signal;
-    if (!child) return;
-    for (const pid of descendants(child.pid)) strays.add(pid);
-    child.kill(signal);
+    if (child?.pid) signalGroup(child.pid, signal);
   };
   const handlers = (["SIGINT", "SIGTERM", "SIGHUP"] as const).map((signal) => [signal, () => forward(signal)] as const);
   for (const [signal, handler] of handlers) process.on(signal, handler);
@@ -188,16 +182,18 @@ async function main(argv: string[]): Promise<number> {
       release = () => { rmSync(owner, { force: true }); unlock(); };
       if (interrupted) throw new LockError(`host smoke lock: interrupted before starting ${command.join(" ")}`, 128 + os.signals[interrupted]);
     }
-    try {
-      child = Bun.spawn(command, { stdio: ["inherit", "inherit", "inherit"], env: locking ? { ...process.env, [HELD]: directory } : process.env });
-    } catch (error) {
-      throw new LockError(`host smoke lock: could not start ${command[0]}: ${error instanceof Error ? error.message : String(error)}`, 127);
-    }
-    const status = await child.exited;
-    await stopStrays(strays);
-    const signal = child.signalCode;
-    if (signal === null) return status;
-    return 128 + (typeof signal === "number" ? signal : os.signals[signal]);
+    const spawned = spawn(command[0]!, command.slice(1), {
+      stdio: "inherit",
+      detached: true,
+      env: locking ? { ...process.env, [HELD]: directory } : process.env,
+    });
+    child = spawned;
+    const [status, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve, reject) => {
+      spawned.once("error", (error) => reject(new LockError(`host smoke lock: could not start ${command[0]}: ${error.message}`, 127)));
+      spawned.once("exit", (code, signal) => resolve([code, signal]));
+    });
+    await stopGroup(spawned.pid!);
+    return signal ? 128 + os.signals[signal] : status ?? 1;
   } finally {
     release?.();
     for (const [signal, handler] of handlers) process.off(signal, handler);
