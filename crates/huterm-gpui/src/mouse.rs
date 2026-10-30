@@ -113,6 +113,11 @@ impl MouseState {
         self.wheel = [0.0; 2];
     }
 
+    /// Whether a held button's gesture belongs to the program.
+    pub(super) fn application_held(&self) -> bool {
+        self.buttons.contains(&Ownership::Application)
+    }
+
     pub(super) fn held(&self, button: MouseButton) -> bool {
         self.buttons[index(button)] != Ownership::Up
     }

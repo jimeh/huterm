@@ -136,8 +136,12 @@ link result: no snapshot follows it while another viewer controls.
 GPUI shows the cursor of the last-painted hovered hitbox that set one, and
 only an occluding hitbox hides those beneath it. The terminal root sets
 `terminal_cursor`: the I-beam, the arrow on the scrollbar or while the
-program takes the mouse under `application_mouse`'s own focus and
-window-active rule, unless Shift is held, and a hand on a link. Anything
+program takes the mouse, unless Shift is held, and a hand on a link. Focus
+does not count, because a press focuses its pane before `application_mouse`
+routes it; an unfocused pane over vim shows the arrow. A held gesture
+keeps its owner's cursor until release, whatever Shift does meanwhile, as
+it keeps its owner, and a scrollbar drag keeps the arrow off the strip.
+Anything
 drawn over a terminal that takes input without occluding, such as a revealed
 pane bar, a toast, or the palette scrim, sets its own cursor, or the I-beam
 shows through it. Huterm's own drags do not use GPUI's drag, so

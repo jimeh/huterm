@@ -663,18 +663,10 @@ impl TerminalView {
                 if view.visible && view.enqueue_focus(true) {
                     cx.notify();
                 }
-                view.refresh_cursor(
-                    window.mouse_position(),
-                    window.modifiers(),
-                    window,
-                    cx,
-                );
             },
         );
-        let blur_subscription = cx.on_blur(
-            &focus,
-            window,
-            |view: &mut TerminalView, window, cx| {
+        let blur_subscription =
+            cx.on_blur(&focus, window, |view: &mut TerminalView, _, cx| {
                 // GPUI cancels pending shortcuts when focus changes. Window
                 // deactivation alone does not, so retain replay tracking there.
                 #[cfg(target_os = "macos")]
@@ -684,14 +676,7 @@ impl TerminalView {
                 if view.enqueue_focus(false) {
                     cx.notify();
                 }
-                view.refresh_cursor(
-                    window.mouse_position(),
-                    window.modifiers(),
-                    window,
-                    cx,
-                );
-            },
-        );
+            });
         let activation_subscription = cx.observe_window_activation(
             window,
             |view: &mut TerminalView, window, cx| {
@@ -700,12 +685,6 @@ impl TerminalView {
                         if view.bell.viewed(true) {
                             cx.notify();
                         }
-                        view.refresh_cursor(
-                            window.mouse_position(),
-                            window.modifiers(),
-                            window,
-                            cx,
-                        );
                     } else {
                         view.clear_composition(cx);
                         view.blur_mouse(cx);
@@ -1808,21 +1787,30 @@ impl TerminalView {
         window: &Window,
     ) -> gpui::CursorStyle {
         let local = position - self.content_bounds(window).origin;
+        // A held gesture keeps its owner's cursor until release, as it keeps
+        // its owner, whatever Shift does meanwhile.
+        let (application, shift) = if self.selecting {
+            (false, false)
+        } else if self.mouse.application_held() {
+            (true, false)
+        } else {
+            // Focus and window activity do not count: a press focuses the
+            // pane before `application_mouse` routes it.
+            let tracks = self.snapshot.as_ref().is_some_and(|snapshot| {
+                application_tracks(
+                    (!self.exited).then_some(snapshot.modes.mouse_tracking),
+                    self.scroll.displayed(),
+                    self.scroll.desired(),
+                )
+            });
+            (tracks, modifiers.shift)
+        };
         terminal_cursor(PointerTarget {
             link: self.links.hover().is_some(),
-            scrollbar: !self.selecting && self.over_scrollbar(local, window),
-            // As `application_mouse` routes: a press in an unfocused pane
-            // or inactive window selects locally.
-            application: window.is_window_active()
-                && self.focus.is_focused(window)
-                && self.snapshot.as_ref().is_some_and(|snapshot| {
-                    application_tracks(
-                        (!self.exited).then_some(snapshot.modes.mouse_tracking),
-                        self.scroll.displayed(),
-                        self.scroll.desired(),
-                    )
-                }),
-            shift: modifiers.shift,
+            scrollbar: self.scrollbars.dragging()
+                || (!self.selecting && self.over_scrollbar(local, window)),
+            application,
+            shift,
         })
     }
 

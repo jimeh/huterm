@@ -69,7 +69,7 @@ use huterm_core::{
 };
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, HierarchyState, NodeId,
-    PaneId, PaneInfo, PaneLayout, RuntimeId, SessionId, SplitAxis,
+    PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis,
     SplitDirection, SplitId, SplitNode, TerminalId, Touched,
     ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name, validate,
     validate_supplied,
@@ -6074,10 +6074,10 @@ impl WorkspaceView {
             });
         let pane_bars = self.revealed_pane_bars(window, cx);
         // A drag that resizes the panes holds their size indicators until
-        // it ends.
-        let resize_held = self.divider_drag.is_some()
-            || self.resizing_sidebar
-            || self.live_resize.active;
+        // it ends: every pane for the window edge or the sidebar, and only
+        // the panes in its split for a divider.
+        let resize_held = self.resizing_sidebar || self.live_resize.active;
+        let divider_held = self.divider_drag_views(cx);
         let mut changed_any = false;
         for (view, geometry, placement) in views {
             let pane_bar = pane_bars
@@ -6106,7 +6106,10 @@ impl WorkspaceView {
                 terminal.overlays.pane_bar = pane_bar;
                 terminal.geometry = geometry;
                 terminal.quiet_resize = quake_presenting;
-                terminal.hold_size_indicator(resize_held, cx);
+                terminal.hold_size_indicator(
+                    resize_held || divider_held.contains(&view.entity_id()),
+                    cx,
+                );
                 if geometry_changed || changed || scale_changed || cell_changed
                 {
                     terminal.resize_to_layout(window, bar_toggled);
@@ -6117,6 +6120,38 @@ impl WorkspaceView {
         if changed_any {
             cx.notify();
         }
+    }
+
+    /// The views of the panes in the split whose divider is being dragged.
+    fn divider_drag_views(&self, cx: &App) -> HashSet<EntityId> {
+        fn collect(node: &PaneNode, panes: &mut Vec<PaneId>) {
+            match node {
+                PaneNode::Pane(pane) => panes.push(pane.id),
+                PaneNode::Split(split) => {
+                    for child in &split.children {
+                        collect(&child.node, panes);
+                    }
+                }
+            }
+        }
+        let Some(drag) = &self.divider_drag else {
+            return HashSet::new();
+        };
+        let mut panes = Vec::new();
+        if let Some(layout) = self.shown_layout(drag.tab, cx)
+            && let Some(split) = layout.split_node(drag.split)
+        {
+            for child in &split.children {
+                collect(&child.node, &mut panes);
+            }
+        }
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == drag.tab) else {
+            return HashSet::new();
+        };
+        panes
+            .into_iter()
+            .filter_map(|pane| tab.pane(pane).map(|pane| pane.view.entity_id()))
+            .collect()
     }
 
     /// A Quake window is still showing, settling, or hiding; its layout

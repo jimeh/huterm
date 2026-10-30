@@ -667,6 +667,104 @@ fn balancing_cancels_this_windows_divider_drag_first(cx: &mut TestAppContext) {
     assert_eq!(harness.runtime.worker_hooks.entered(Stage::Layout), 1);
 }
 
+/// The size indicator of `pane`'s view in `window`: its opacity, and
+/// whether it waits for nothing, as a held indicator does.
+fn indicator(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    tab: TabId,
+    pane: PaneId,
+) -> (f32, bool) {
+    let view = pane_view(cx, window, tab, pane).unwrap();
+    let indicator = &view.read(cx).resize_visibility;
+    (
+        indicator.opacity,
+        indicator.schedule(Instant::now())
+            == crate::ui::animation::AnimationSchedule::IDLE,
+    )
+}
+
+#[gpui::test]
+fn a_divider_drag_holds_the_size_indicator_until_its_release(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, panes) = harness.three_panes(ECHO);
+    let start = harness.divider_center(window);
+    let moved = start + gpui::point(px(-40.0), px(0.0));
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(
+        start,
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_move(
+        moved,
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    // The resized pane shows its size, and the drag holds it with no fade
+    // due however long the pointer rests.
+    harness.wait_for("the drag to show the left pane's size", |cx| {
+        dragging(cx, window)
+            && indicator(cx, window, tab, panes[0]) == (1.0, true)
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_up(moved, MouseButton::Left, gpui::Modifiers::none());
+    harness.wait_for("the release to start the linger", |cx| {
+        !dragging(cx, window)
+            && indicator(cx, window, tab, panes[0]) == (1.0, false)
+    });
+}
+
+#[gpui::test]
+fn a_divider_drag_holds_only_the_panes_in_its_split(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, panes) = harness.three_panes(ECHO);
+    // A, beside the dragged split, still shows its size from earlier.
+    harness.cx.update(|cx| {
+        let view = pane_view(cx, window, tab, panes[0]).unwrap();
+        view.update(cx, |view, _| {
+            view.resize_visibility
+                .resized(Instant::now(), Duration::from_secs(60));
+        });
+    });
+    // The divider between B and C, inside the right-hand split.
+    let start = harness.update_view(window, |view, _, _| {
+        view.drawn_dividers
+            .borrow()
+            .iter()
+            .find(|divider| divider.axis == SplitAxis::Rows)
+            .map(|divider| divider.grab.center())
+            .expect("the rows divider")
+    });
+    let moved = start + gpui::point(px(0.0), px(-30.0));
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(
+        start,
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_move(
+        moved,
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    harness.wait_for("the drag to hold B's size", |cx| {
+        dragging(cx, window)
+            && indicator(cx, window, tab, panes[1]) == (1.0, true)
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(
+            indicator(cx, window, tab, panes[0]),
+            (1.0, false),
+            "A keeps its own linger"
+        );
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_up(moved, MouseButton::Left, gpui::Modifiers::none());
+}
+
 #[gpui::test]
 fn an_earlier_drop_completing_first_keeps_its_undo_entry(
     cx: &mut TestAppContext,

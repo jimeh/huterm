@@ -396,7 +396,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   attempt since 2026-10-26 that passed on rerun. It recurred on 2026-10-30
   on PR #331 (run 41006554547, job 123902649454, head `cad04bc4`), which
   changes only smoke tooling and runs Linux smokes unchanged, with the
-  same third main-window tab active at `w0.active_index=2`.
+  same third main-window tab active at `w0.active_index=2`. It recurred
+  again on 2026-10-30 on PR #343 (run 41108259656, job 124243665211, head
+  `10dcb4e7`), which does not touch the palette, with extra tab 16 below
+  `fixture-session` 19 and active at `w0.active_index=2`.
 - **Evidence:** the count includes every core workspace's tabs: two in the
   main window and one in the quake window from step 2. The failure state
   shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux
@@ -443,6 +446,23 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** compare the suite's wall time with a passing run. If it
   recurs on a normal-speed run, the harness wait or the close path needs a
   closer look; otherwise record the run here and rerun.
+
+## huterm-gpui Edit menu Select All on hosted macOS
+
+- **Label:** `desktop::windows::window_tests::menus::the_edit_menus_cut_needs_a_field_and_copy_follows_focus`
+  in `Checks (macOS arm64)` fails at `menus.rs:407` with "Select All
+  selected the terminal".
+- **Occurrences:** 2026-10-30 (PR #343 at `10dcb4e7`, run 41108259656, job
+  124243665182). The test passed six times in a row locally on the same
+  code, and the PR does not touch menus, selection, or snapshots.
+- **Evidence:** the failed run's `huterm-gpui` suite took 116.14 seconds
+  against about 14 locally. `select_all` sets the selection synchronously
+  from the current snapshot, so a missing selection after
+  `run_until_parked` suggests a later snapshot cleared it or the action
+  reached another focus target; neither is confirmed.
+- **Triage:** compare the suite's wall time with a passing run. If it
+  recurs on a normal-speed run, log the terminal's selection and snapshot
+  generation around the dispatch; otherwise record the run here and rerun.
 
 ## `smoke-process.test.ts` retained-pipe deadline
 
