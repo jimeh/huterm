@@ -81,6 +81,11 @@ can collapse into one logical button, so their physical release order cannot be
 recovered. Do not extend this fallback to Middle or Linux. Finalize local
 selection text on blur as well as release before stopping the drag.
 
+A native context menu takes the release of the right press that opened it,
+so the terminal never sees it. `MouseState` records a local right press as
+held, and the next right press would return early as a duplicate; the menu's
+session calls `TerminalView::release_menu_press` when it closes.
+
 Application mouse coordinates use ChromeLayout's full terminal origin, including
 horizontal offsets from vertical tabs. When hiding a retained TerminalView,
 release accepted application gestures, finalize selection, and forget canceled

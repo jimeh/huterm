@@ -813,7 +813,23 @@ The activation observer runs first and closes the menu onto the terminal;
 the deferred blur close also skips an inactive window, so it can never strand
 focus on a dropped menu. Opening a menu drops a right-click still waiting for
 its link lookup, because the press that dismisses the menu no longer reaches
-the terminal to cancel it. Component
+the terminal to cancel it.
+
+On macOS those three menus open as native `NSMenu` popups by default
+(`window.macos_native_menus`). Their builders return a `menu_spec::MenuSpec`
+that lowers to the listbox model or to a `NativeMenu`, and picks from either
+go through `run_menu_pick`. The `AppKit` presenter pops the menu from a
+`performSelector:afterDelay:inModes:` perform in the common run-loop modes.
+Never pop it from a GPUI foreground task: those run inside a main-queue
+block, the run loop drains no main-queue block while one runs, and every GPUI
+task and frame stalls until the menu closes. The menu tracks outside GPUI's
+borrows, so GPUI keeps painting and `refresh_menu` can cancel a menu whose tab
+went away. Window tests cannot run `AppKit`: the harness clears
+`Desktop::menu_presenter`, and `window_tests/native_menus.rs` installs a fake.
+`smoke:macos-menus` checks the built `NSMenu` items; only a real popup shows
+the tracking loop.
+
+Component
 click listeners ignore `ClickEvent::Keyboard` through
 `huterm_ui::click::from_keyboard`, so a removed Enter or Space binding really
 removes the key.
