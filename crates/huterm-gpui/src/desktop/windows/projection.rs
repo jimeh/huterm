@@ -536,7 +536,8 @@ pub(super) trait ReconcileTarget {
     fn remember_names(&mut self, tab: TabId);
     /// The tab's current display title.
     fn title(&self, tab: TabId) -> String;
-    /// Publishes a title; returns whether it changed.
+    /// Publishes a tab's title and its panes' titles; returns whether any
+    /// changed.
     fn publish_title(&mut self, tab: TabId, title: &str) -> bool;
     fn pending_installs(&mut self) -> &mut PendingInstalls;
     /// Starts installing views for `tabs`, which reconcile has recorded as

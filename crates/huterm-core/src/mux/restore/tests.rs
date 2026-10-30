@@ -619,3 +619,38 @@ fn restores_return_carried_names_and_keep_later_renames() {
     assert_eq!(pane_name(&mux, b).as_deref(), Some("later"));
     mux.shutdown().unwrap();
 }
+
+#[test]
+fn a_name_given_since_a_carry_moves_back_across_the_tab_boundary() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let alpha = mux.create_workspace(session, None).unwrap();
+    let (one, a) = open(&mut mux, alpha);
+    let b = split(&mut mux, alpha, one, a);
+    mux.rename_pane(b, Some("bee")).unwrap();
+    let extract = mux
+        .move_pane(
+            pane_ref(&mux, b),
+            MoveDestination::NewTab {
+                workspace: alpha,
+                before: None,
+            },
+        )
+        .unwrap();
+    let extracted = opened_tab(&extract);
+
+    // Renaming the tab the pane became, then undoing, gives the pane the
+    // new name rather than dropping it with the tab.
+    mux.rename_tab(extracted, Some("later")).unwrap();
+    mux.restore_tabs(&extract, Undo).unwrap();
+    assert!(mux.tab(extracted).is_none());
+    assert_eq!(pane_name(&mux, b).as_deref(), Some("later"));
+
+    // Renaming the pane, then redoing, gives the reopened tab that name and
+    // leaves the pane none, rather than naming both.
+    mux.rename_pane(b, Some("again")).unwrap();
+    mux.restore_tabs(&extract, Redo).unwrap();
+    assert_eq!(mux.tab(extracted).unwrap().custom_name(), Some("again"));
+    assert_eq!(pane_name(&mux, b), None);
+    mux.shutdown().unwrap();
+}

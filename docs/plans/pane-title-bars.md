@@ -76,10 +76,14 @@ the custom name first and prefill it for Rename Pane.
 | A multi-pane tab nests into another tab | The tab's name is dropped, as today; pane names travel. |
 | A lone pane moves to a new tab in another workspace | The whole tab moves; no name changes. |
 
-**Undo.** A restore gives each pane the name the change left it when nobody
-renamed it since, else its current name, the rule `restored_zoom` applies to
+**Undo.** A restore gives each pane its recorded name unless it was renamed
+since, when it keeps its current name, the rule `restored_zoom` applies to
 zoom. Undoing a pane-to-tab move therefore returns the name to the pane, and a
-rename made after the move survives an undo.
+rename made after the move survives an undo. The rule crosses the boundary a
+move carried the name over: a single-pane tab that the restore removes passes
+a name given to it since to its pane, and a named tab that the restore reopens
+around one pane takes a name the pane was given since, so a name is never
+dropped or copied.
 
 **Menu.** A right press on a pane title bar, including its buttons, focuses
 the pane and opens the pane menu at the pointer, as a left press focuses it

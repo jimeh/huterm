@@ -5267,11 +5267,20 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
     }
 
     fn publish_title(&mut self, tab: TabId, title: &str) -> bool {
-        self.cx.global_mut::<Desktop>().windows.set_tab_title(
-            self.view.window,
-            tab,
-            title,
-        )
+        // A pane rename touches only its tab, and may leave the tab's own
+        // title as it was.
+        let panes = self
+            .view
+            .tabs
+            .iter()
+            .find(|view| view.id == tab)
+            .map(|view| view.pane_titles(self.view.config.tabs, self.cx));
+        let windows = &mut self.cx.global_mut::<Desktop>().windows;
+        let tab_changed = windows.set_tab_title(self.view.window, tab, title);
+        let panes_changed = panes.is_some_and(|panes| {
+            windows.set_pane_titles(self.view.window, tab, panes)
+        });
+        tab_changed || panes_changed
     }
 
     fn pending_installs(&mut self) -> &mut PendingInstalls {
@@ -12080,10 +12089,11 @@ impl WorkspaceView {
             return;
         }
         self.close_menu(MenuFocusReturn::Keep, window, cx);
-        self.focus_pane(tab, pane, window, cx);
+        // The pane typing went to, before the press moves focus.
         if let Some(terminal) = self.active_view(cx) {
             terminal.update(cx, TerminalView::clear_composition);
         }
+        self.focus_pane(tab, pane, window, cx);
         let contexts = window.context_stack();
         let kind = MenuKind::Pane { tab, pane };
         let Some(model) = self.pane_menu_model(&kind, &contexts, cx) else {

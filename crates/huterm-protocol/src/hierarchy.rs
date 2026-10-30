@@ -714,9 +714,9 @@ impl HierarchyState {
     /// - Workspace: `b'W'`, ID, custom name, automatic name, tab count.
     /// - Tab: `b'T'`, ID, custom name, shared zoom (`0`, or `1` and the pane
     ///   ID), then its layout in traversal order: for a pane, `b'P'`, pane
-    ///   ID, terminal ID, fallback name, custom name; for a split, `b'X'`, split ID, axis
-    ///   (`0` columns, `1` rows), child count, then each child's weight
-    ///   followed by the child.
+    ///   ID, terminal ID, fallback name, custom name; for a split, `b'X'`,
+    ///   split ID, axis (`0` columns, `1` rows), child count, then each
+    ///   child's weight followed by the child.
     ///
     /// The stream and sequence are not part of the digest. The cost is
     /// proportional to the hierarchy, so do not compute it per event.

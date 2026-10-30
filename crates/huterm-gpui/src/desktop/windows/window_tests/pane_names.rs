@@ -161,3 +161,58 @@ fn the_pane_menu_closes_when_its_pane_leaves_the_tab(cx: &mut TestAppContext) {
             && panes_shown(cx, window, tab) == Some((vec![left], left))
     });
 }
+
+/// The pane title the window model publishes for `terminal`, which close
+/// dialogs and the palette's pane rows read.
+fn published(cx: &mut App, terminal: TerminalId) -> Option<String> {
+    cx.global::<Desktop>()
+        .windows
+        .published_pane_titles()
+        .find(|(published, _)| *published == terminal)
+        .map(|(_, title)| title.to_owned())
+}
+
+#[gpui::test]
+fn renaming_an_unfocused_pane_republishes_its_title(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, left, right) = harness.split_window(tab);
+    harness.update_view(window, |view, window, cx| {
+        view.focus_pane(tab, left, window, cx);
+    });
+    let terminal = {
+        let mux = harness.runtime.lock();
+        mux.tab(tab)
+            .unwrap()
+            .layout()
+            .pane(right)
+            .unwrap()
+            .terminal_id
+    };
+    // The tab's own name keeps its title the same through the renames, so
+    // only the pane titles change.
+    harness
+        .runtime
+        .lock()
+        .rename_tab(tab, Some("work"))
+        .unwrap();
+    harness.wait_for("the tab to show its name", |cx| {
+        labels(cx, window, tab, left).is_some_and(|(_, tab)| tab == "work")
+    });
+    let (default_label, _) = harness
+        .cx
+        .update(|cx| labels(cx, window, tab, right))
+        .unwrap();
+    harness
+        .runtime
+        .lock()
+        .rename_pane(right, Some("logs"))
+        .unwrap();
+    harness.wait_for("the pane's name to publish", |cx| {
+        published(cx, terminal).as_deref() == Some("logs")
+    });
+    harness.runtime.lock().rename_pane(right, None).unwrap();
+    harness.wait_for("the cleared name to leave the published title", |cx| {
+        published(cx, terminal).as_deref() == Some(default_label.as_str())
+    });
+}
