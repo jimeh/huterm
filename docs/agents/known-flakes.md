@@ -418,7 +418,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   head `ad082c2b`); the rerun of the failed jobs passed on the same head. The
   PR does not change the palette smoke or the code it drives. No other failed
   CI run since 2026-10-21 has this signature, and neither does any first
-  attempt since 2026-10-26 that passed on rerun.
+  attempt since 2026-10-26 that passed on rerun. It recurred on 2026-10-30
+  on PR #331 (run 41006554547, job 123902649454, head `cad04bc4`), which
+  changes only smoke tooling and runs Linux smokes unchanged, with the
+  same third main-window tab active at `w0.active_index=2`.
 - **Evidence:** the count includes every core workspace's tabs: two in the
   main window and one in the quake window from step 2. The failure state
   shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux
