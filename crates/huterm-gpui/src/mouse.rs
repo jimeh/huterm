@@ -160,6 +160,15 @@ impl MouseState {
         releases
     }
 
+    /// Forgets `button`'s local press, whose release went to something
+    /// else. A press an application owns keeps waiting for its release.
+    pub(super) fn forget_local(&mut self, button: MouseButton) {
+        let ownership = &mut self.buttons[index(button)];
+        if *ownership == Ownership::Local {
+            *ownership = Ownership::Up;
+        }
+    }
+
     // Hidden tabs no longer receive the physical releases. Call after cancel
     // has emitted releases for every accepted application button.
     pub(super) fn forget_released_buttons(&mut self) {

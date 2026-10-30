@@ -10,6 +10,7 @@ const markers = [
   "untouched-default-shortcut",
   "startup-palette-shortcut",
   "startup-special-shortcuts",
+  "native-window-menu-items",
   "reloaded-update-command",
   "reloaded-user-shortcut",
   "reloaded-palette-shortcut",

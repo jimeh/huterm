@@ -695,6 +695,7 @@ fn window_padding_rejects_invalid_values_and_accepts_zero() {
             macos_fullscreen_mode: MacosFullscreenMode::NonNative,
             menu_button: true,
             shortcut_hints: false,
+            macos_native_menus: true,
         }
     );
 }

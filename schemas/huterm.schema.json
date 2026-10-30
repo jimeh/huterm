@@ -8977,6 +8977,17 @@
           "x-huterm-platform": "macos",
           "x-huterm-section": "window"
         },
+        "macos_native_menus": {
+          "default": true,
+          "description": "Open the window, tab, pane, and terminal menus as native macOS\nmenus. Off draws them in Huterm's own style, as Linux always does.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Native menus",
+          "x-huterm-order": 25,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "window"
+        },
         "menu_button": {
           "default": true,
           "description": "Show the window menu button in the title bar, or in the tab bar\nwhen the window has no title bar. Every item stays reachable through\nshortcuts or the command palette.",

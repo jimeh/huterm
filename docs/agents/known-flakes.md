@@ -322,6 +322,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   it do, before sending Enter, and since 7b Enter before a dialog's first
   frame does nothing. That alone would leave the dialog open, so the cause
   is unconfirmed.
+- **Second occurrence:** 2026-10-30 on PR #333 (run 41002162507, job
+  123888961905, head `9a732f70`), aarch64 only; x86_64 passed on the same
+  head. The PR changes menus, not the close dialog. This time the last
+  state had `w0.confirming=true`, `w0.dialog_focus=primary`, and
+  `w0.tabs=3`: the dialog stayed open, which fits Enter arriving before the
+  dialog's first frame.
 - **Triage:** rerun and record the run here. A hardening is to wait for
   `w0.dialog_focus=primary` before Enter, as the neighboring steps do.
 

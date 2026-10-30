@@ -75,6 +75,9 @@ padding_balance = false
 menu_button = true
 # Show key hints on the scroll pill and on dialog and panel buttons.
 shortcut_hints = false
+# Open the window, tab, pane, and terminal menus as native macOS menus. Linux
+# ignores it and always draws them in Huterm's style.
+macos_native_menus = true
 
 [tabs]
 # Automatic label: smart, title, process, directory, or process_and_directory.

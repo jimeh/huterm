@@ -3,14 +3,11 @@
 //! it and their shortcuts apply. Everything here is pure so it can be tested
 //! without a window.
 
+use super::menu_spec::{Item as MenuItem, MenuSpec, Row as MenuRow};
+use super::window_menu::{label, shortcut_key};
+use crate::keymap::{InstalledKeymap, Platform};
 use gpui::KeyContext;
 use huterm_protocol::{CommandId, ids};
-use huterm_ui::listbox::{
-    Item as MenuItem, Model as MenuModel, Row as MenuRow,
-};
-
-use super::window_menu::{label, shortcut_hint};
-use crate::keymap::{InstalledKeymap, Platform};
 
 /// The state the pane menu's rows depend on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,22 +22,18 @@ pub(super) struct PaneMenuInput {
 
 /// The rows for `input`, with shortcuts from `keymap` as seen from
 /// `contexts`, the stack captured when the menu opened.
-pub(super) fn pane_menu_model(
+pub(super) fn pane_menu(
     input: PaneMenuInput,
     keymap: &InstalledKeymap,
     contexts: &[KeyContext],
-) -> MenuModel {
+) -> MenuSpec {
     let item = |id: CommandId, label: String| {
-        MenuItem::new(id.as_str(), label).shortcut(shortcut_hint(
-            keymap,
-            contexts,
-            input.platform,
-            id,
-        ))
+        MenuItem::new(id.as_str(), label)
+            .shortcut(shortcut_key(keymap, contexts, id))
     };
     let catalog = |id: CommandId| item(id, label(id));
     let copy_directory = catalog(ids::COPY_TAB_DIRECTORY);
-    MenuModel::new(vec![
+    MenuSpec::new(vec![
         MenuRow::Item(item(ids::RENAME_PANE, "Rename Pane…".to_owned())),
         MenuRow::Item(if input.directory_known {
             copy_directory
@@ -76,6 +69,7 @@ mod tests {
     use crate::config::KeybindingEntry;
     use crate::keymap::compile;
     use huterm_ui::components::kbd;
+    use huterm_ui::listbox::{Model as MenuModel, Row as MenuRow};
 
     fn model(input: PaneMenuInput, user: &[KeybindingEntry]) -> MenuModel {
         let (bindings, keymap) =
@@ -85,7 +79,7 @@ mod tests {
             KeyContext::parse("Workspace").unwrap(),
             KeyContext::parse("Terminal").unwrap(),
         ];
-        pane_menu_model(input, &keymap, &contexts)
+        pane_menu(input, &keymap, &contexts).to_listbox(input.platform)
     }
 
     fn input() -> PaneMenuInput {
