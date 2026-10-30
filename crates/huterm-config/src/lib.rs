@@ -857,8 +857,11 @@ pub enum PaneTitleBarPosition {
 /// The most user-defined layouts `[panes.layouts]` holds.
 pub const MAX_LAYOUTS: usize = 64;
 
+/// The most `[panes] inactive_dim` dims a pane, so it never goes dark.
+pub const MAX_INACTIVE_DIM: f32 = 0.8;
+
 /// Split pane behavior.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct PanesConfig {
@@ -887,6 +890,37 @@ pub struct PanesConfig {
         ],
     )))]
     pub title_bar_position: PaneTitleBarPosition,
+    /// How strongly a thin accent line marks the focused pane while its
+    /// title bar is not on screen, from 0 (off) to 1. It draws only under
+    /// `hover` and `hidden` bars, and only while more than one pane shows.
+    #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 1), extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Focus accent",
+        "x-huterm-order" = 37,
+        "x-huterm-apply" = "live",
+        "x-huterm-step" = 0.05,
+        "x-huterm-control" = "slider",
+        "x-huterm-zero-label" = "Off",
+        "x-huterm-visible-when" = [
+            {"setting": "panes.title_bar", "equals": "hover"},
+            {"setting": "panes.title_bar", "equals": "hidden"}
+        ],
+    )))]
+    pub focus_accent: f32,
+    /// How much the panes without focus dim, from 0 (off) to 0.8, while
+    /// more than one pane shows. Their title bars stay as they are.
+    #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 0.8), extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Dim unfocused panes",
+        "x-huterm-order" = 38,
+        "x-huterm-apply" = "live",
+        "x-huterm-step" = 0.05,
+        "x-huterm-control" = "slider",
+        "x-huterm-zero-label" = "Off",
+    )))]
+    pub inactive_dim: f32,
     /// Who owns a pane's zoom: `view` or `shared`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "window",
@@ -935,6 +969,8 @@ impl Default for PanesConfig {
         Self {
             title_bar: PaneTitleBarMode::default(),
             title_bar_position: PaneTitleBarPosition::default(),
+            focus_accent: 0.0,
+            inactive_dim: 0.0,
             zoom: PaneZoomScope::default(),
             layouts: BTreeMap::new(),
             layout_cycle: BUILT_IN_LAYOUTS
@@ -946,11 +982,20 @@ impl Default for PanesConfig {
 }
 
 impl PanesConfig {
-    /// Checks the user layouts and the cycle.
+    /// Checks the focus indicator amounts, the user layouts, and the cycle.
     ///
     /// # Errors
-    /// Returns the first invalid layout or cycle entry, with its key path.
+    /// Returns the first invalid amount, layout, or cycle entry, with its
+    /// key path.
     pub fn validate(&self) -> Result<(), String> {
+        if !(0.0..=1.0).contains(&self.focus_accent) {
+            return Err("panes.focus_accent must be between 0 and 1".into());
+        }
+        if !(0.0..=MAX_INACTIVE_DIM).contains(&self.inactive_dim) {
+            return Err(format!(
+                "panes.inactive_dim must be between 0 and {MAX_INACTIVE_DIM}"
+            ));
+        }
         if self.layouts.len() > MAX_LAYOUTS {
             return Err(format!(
                 "panes.layouts holds at most {MAX_LAYOUTS} layouts"
@@ -2699,6 +2744,43 @@ mod panes_tests {
             ),
         ];
         for (source, message) in cases {
+            assert_eq!(panes(source).unwrap_err(), message, "{source}");
+        }
+    }
+
+    #[test]
+    fn focus_indicator_amounts_accept_their_range_and_reject_the_rest() {
+        let defaults = panes("").unwrap();
+        assert_eq!((defaults.focus_accent, defaults.inactive_dim), (0.0, 0.0));
+        let ends =
+            panes("[panes]\nfocus_accent = 1\ninactive_dim = 0.8").unwrap();
+        assert_eq!((ends.focus_accent, ends.inactive_dim), (1.0, 0.8));
+        for (source, message) in [
+            (
+                "[panes]\nfocus_accent = 1.01",
+                "panes.focus_accent must be between 0 and 1",
+            ),
+            (
+                "[panes]\nfocus_accent = -0.01",
+                "panes.focus_accent must be between 0 and 1",
+            ),
+            (
+                "[panes]\nfocus_accent = nan",
+                "panes.focus_accent must be between 0 and 1",
+            ),
+            (
+                "[panes]\ninactive_dim = 0.81",
+                "panes.inactive_dim must be between 0 and 0.8",
+            ),
+            (
+                "[panes]\ninactive_dim = -0.01",
+                "panes.inactive_dim must be between 0 and 0.8",
+            ),
+            (
+                "[panes]\ninactive_dim = inf",
+                "panes.inactive_dim must be between 0 and 0.8",
+            ),
+        ] {
             assert_eq!(panes(source).unwrap_err(), message, "{source}");
         }
     }

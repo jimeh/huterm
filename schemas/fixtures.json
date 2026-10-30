@@ -858,6 +858,30 @@
     "theme": false
   },
   {
+    "name": "pane focus indicators at their maximums",
+    "toml": "[panes]\nfocus_accent = 1\ninactive_dim = 0.8",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "pane focus accent above 1",
+    "toml": "[panes]\nfocus_accent = 1.5",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "pane inactive dim above 0.8",
+    "toml": "[panes]\ninactive_dim = 0.9",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "pane inactive dim below 0",
+    "toml": "[panes]\ninactive_dim = -0.1",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "quake defaults",
     "toml": "[quake.profiles.default]",
     "valid": true

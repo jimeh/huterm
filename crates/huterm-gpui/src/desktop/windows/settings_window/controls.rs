@@ -725,9 +725,12 @@ fn theme_preview(theme: &Theme) -> gpui::Div {
         .child(bar(36.0, theme.ansi[4]))
 }
 
-/// A slider's readout: the value with its unit, or without one a percent,
-/// as the Quake window's fractions read.
+/// A slider's readout: its zero label at 0, else the value with its unit,
+/// or without one a percent, as the Quake window's fractions read.
 fn readout(setting: &Setting, value: f64) -> String {
+    if let Some(label) = setting.zero_label.as_ref().filter(|_| value == 0.0) {
+        return label.clone();
+    }
     if let Some(unit) = &setting.unit {
         return format!("{} {unit}", number(value));
     }
@@ -744,4 +747,24 @@ fn segmented(choices: &[Choice]) -> bool {
         && choices.iter().all(|choice| {
             option_label(choice).chars().count() <= SEGMENT_LABEL_MAX
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use huterm_config::settings::SettingsModel;
+
+    use super::*;
+
+    #[test]
+    fn a_slider_reads_its_zero_label_at_zero_and_a_percent_elsewhere() {
+        let model = SettingsModel::load().unwrap();
+        let dim = model.setting("panes.inactive_dim").unwrap();
+        assert_eq!(readout(dim, 0.0), "Off");
+        assert_eq!(readout(dim, 0.05), "5%");
+        assert_eq!(readout(dim, 0.8), "80%");
+        // Without a zero label, 0 reads as a value.
+        let mut plain = dim.clone();
+        plain.zero_label = None;
+        assert_eq!(readout(&plain, 0.0), "0%");
+    }
 }

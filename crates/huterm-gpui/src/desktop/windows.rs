@@ -182,6 +182,7 @@ mod model;
 mod native_menus;
 mod pane_bars;
 mod pane_drag;
+mod pane_focus;
 mod pane_geometry;
 mod pane_layouts;
 mod pane_menu;
@@ -4546,6 +4547,7 @@ impl WorkspaceView {
         );
         let focused = tab.focused().pane;
         let bars = self.title_bars();
+        let shown = Self::panes_shown(tab, rects.as_ref());
         *self.drawn_dividers.borrow_mut() = rects
             .as_ref()
             .map(|rects| rects.dividers.clone())
@@ -4584,22 +4586,10 @@ impl WorkspaceView {
                         },
                     ))
                     .child(pane.view.clone())
+                    .children(self.inactive_dim(id == focused, shown, colors))
                     .into_any_element(),
             );
             let bottom = bars.position == PaneTitleBarPosition::Bottom;
-            // Without a visible bar, only this marks which pane has focus,
-            // and only while more than one pane shows. A revealed hover bar
-            // covers it.
-            if let Some(rect) = rect.filter(|_| {
-                id == focused
-                    && bars.mode != PaneTitleBarMode::Visible
-                    && rects.as_ref().is_some_and(|rects| rects.panes.len() > 1)
-            }) {
-                elements.push(
-                    tab_bar::pane_focus_cue(rect.frame, bottom, colors)
-                        .into_any_element(),
-                );
-            }
             // A hover bar draws only while it reveals, at its reveal's
             // opacity; until then the terminal beneath keeps the pointer.
             let opacity = if bars.mode == PaneTitleBarMode::Hover {
@@ -4632,6 +4622,12 @@ impl WorkspaceView {
                 );
             }
         }
+        elements.extend(self.focus_accent(
+            rects.as_ref(),
+            focused,
+            shown,
+            colors,
+        ));
         if let Some(rects) = &rects {
             elements.extend(Self::divider_elements(
                 &rects.dividers,
@@ -4640,6 +4636,54 @@ impl WorkspaceView {
             ));
         }
         elements
+    }
+
+    /// The `focused` pane's accent line, while `[panes] focus_accent` draws
+    /// one. It draws only while the pane's bar is off screen, so no bar
+    /// covers it.
+    fn focus_accent(
+        &self,
+        rects: Option<&TabPanes>,
+        focused: PaneId,
+        shown: usize,
+        colors: TabColors,
+    ) -> Option<gpui::AnyElement> {
+        let bars = self.title_bars();
+        let alpha = pane_focus::focus_accent(
+            bars.mode,
+            self.pane_bars.progress(focused),
+            shown,
+            self.config.panes.focus_accent,
+        )?;
+        let frame = rects?.pane(focused)?.frame;
+        let bottom = bars.position == PaneTitleBarPosition::Bottom;
+        Some(
+            tab_bar::pane_focus_cue(frame, bottom, colors, alpha)
+                .into_any_element(),
+        )
+    }
+
+    /// The layer dimming a pane's terminal, while `[panes] inactive_dim`
+    /// dims it.
+    fn inactive_dim(
+        &self,
+        focused: bool,
+        shown: usize,
+        colors: TabColors,
+    ) -> Option<gpui::Div> {
+        pane_focus::inactive_dim(focused, shown, self.config.panes.inactive_dim)
+            .map(|alpha| tab_bar::pane_dim(colors, alpha))
+    }
+
+    /// How many of `tab`'s panes `pane_elements` draws: each installed view
+    /// the layout places, or the focused pane alone without a layout.
+    fn panes_shown(tab: &TabView, rects: Option<&TabPanes>) -> usize {
+        rects.map_or(1, |rects| {
+            tab.panes
+                .iter()
+                .filter(|pane| rects.pane(pane.pane).is_some())
+                .count()
+        })
     }
 
     /// Gives `pane` of `tab` keyboard focus in this window: the tab's

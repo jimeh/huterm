@@ -1,12 +1,14 @@
 //! Tier 2 tests for `[panes] title_bar` and `title_bar_position`: a reload
 //! moves the title bars or hides them, the terminals take the space a bar
 //! gives up, a bottom bar's buttons work, and hover bars reveal, hold, and
-//! fade.
+//! fade. Also `inactive_dim`, whose layer leaves pointer input to the pane
+//! beneath it.
 
 use std::time::{Duration, Instant};
 
 use huterm_config::{PaneTitleBarMode, PaneTitleBarPosition, PanesConfig};
 
+use super::pane_moves::pane_focused;
 use super::*;
 
 /// The rectangles `window` last drew for its active tab's panes.
@@ -377,5 +379,67 @@ fn a_revealed_bars_overlay_follows_its_pane_through_a_resize(
                 wider.size.width > bar.size.width
                     && bar_state(cx, window, first) == Some((1.0, Some(wider)))
             })
+    });
+}
+
+#[gpui::test]
+fn a_dimmed_pane_takes_the_wheel_and_a_selection_through_its_dim_layer(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{Modifiers, ScrollDelta, ScrollEvent, TouchPhase, point};
+    let mut harness = DesktopHarness::new(cx);
+    // The first pane holds scrollback for the wheel to scroll.
+    let tab = harness.open_tab(&format!("seq 1 200; {ECHO}"));
+    let (window, first, second) = harness.split_window(tab);
+    harness.invoke(window, ids::FOCUS_PANE_RIGHT).unwrap();
+    harness.reload_panes(window, |panes| panes.inactive_dim = 0.5);
+    harness.wait_for("the second pane to take focus", |cx| {
+        pane_focused(cx, window, tab, second)
+    });
+    let centre = harness.cx.update(|cx| {
+        drawn(cx, window)
+            .and_then(|rects| rects.into_iter().find(|rect| rect.pane == first))
+            .map(|rect| rect.terminal.center())
+            .unwrap()
+    });
+    let scrolled = |cx: &mut App| {
+        pane_view(cx, window, tab, first)
+            .map_or(0, |view| view.read(cx).scroll.desired())
+    };
+    // The wheel scrolls what the pointer is over, as of a frame drawn after
+    // the pointer arrived, and leaves focus where it was.
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_move(centre, None, Modifiers::none());
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    visual.simulate_event(ScrollEvent {
+        position: centre,
+        delta: ScrollDelta::Lines(point(0.0, 3.0)),
+        modifiers: Modifiers::none(),
+        touch_phase: TouchPhase::Moved,
+        ..Default::default()
+    });
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert_eq!(scrolled(cx), 3, "the wheel did not reach the dimmed pane");
+        assert!(pane_focused(cx, window, tab, second));
+    });
+    // A drag selects in the dimmed pane and focuses it.
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(centre, MouseButton::Left, Modifiers::none());
+    visual.simulate_mouse_move(
+        centre + point(px(48.0), px(0.0)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    visual.simulate_mouse_up(
+        centre + point(px(48.0), px(0.0)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    harness.wait_for("the dimmed pane to focus and select", |cx| {
+        pane_focused(cx, window, tab, first)
+            && pane_view(cx, window, tab, first)
+                .is_some_and(|view| view.read(cx).selection.is_some())
     });
 }

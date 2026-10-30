@@ -459,6 +459,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   parallel, timed out `smoke process drains both pipes and records the real
   exit` at Bun's 5,000ms test timeout. That fixture only prints and exits.
   The file passed three times alone, and the next `mise run check` passed.
+- **Fourth signature:** a local `mise run check` on macOS, 2026-10-30, while
+  Clippy compiled the workspace in parallel, failed `success output does not
+  forgive a stuck exit or ignored TERM` at its `stdout` assertion after
+  978.75ms, before the fixture's 1,500ms deadline. The next
+  `mise run check` passed it.
 - **Triage:** rerun the file alone. If it recurs, record whether the
   descendant started, for example by having it write a marker file.
 

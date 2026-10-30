@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 pub const SCHEMA: &str = include_str!("../../../schemas/huterm.schema.json");
 
 const PREFIX: &str = "x-huterm-";
-const KEYS: [&str; 11] = [
+const KEYS: [&str; 12] = [
     "section",
     "group",
     "label",
@@ -27,6 +27,7 @@ const KEYS: [&str; 11] = [
     "platform",
     "advanced",
     "visible-when",
+    "zero-label",
 ];
 
 /// A sidebar section, in sidebar order.
@@ -220,6 +221,9 @@ pub struct Setting {
     pub step: Option<f64>,
     /// The control `x-huterm-control` asks for, if any.
     pub control: Option<Control>,
+    /// What a number shows at 0 in place of its value, from
+    /// `x-huterm-zero-label`, such as "Off".
+    pub zero_label: Option<String>,
     pub apply: Apply,
     pub platform: Option<Platform>,
     pub advanced: bool,
@@ -496,6 +500,15 @@ fn setting(
     let step = step(path, property, &kind)?;
     let unit = text("unit")?;
     let control = control(path, property, &kind, step, unit.as_deref())?;
+    let zero_label = text("zero-label")?;
+    if zero_label.is_some()
+        && !matches!(
+            kind,
+            SettingKind::Integer { .. } | SettingKind::Number { .. }
+        )
+    {
+        return Err(error(path, "x-huterm-zero-label needs a number setting"));
+    }
     Ok(Setting {
         path: path.into(),
         section,
@@ -510,6 +523,7 @@ fn setting(
         unit,
         step,
         control,
+        zero_label,
         apply,
         platform,
         advanced,
@@ -1069,6 +1083,40 @@ mod tests {
     }
 
     #[test]
+    fn focus_indicators_are_sliders_that_read_off_at_zero() {
+        let model = SettingsModel::load().unwrap();
+        for (path, max) in
+            [("panes.focus_accent", 1.0), ("panes.inactive_dim", 0.8)]
+        {
+            let setting = model.setting(path).unwrap();
+            assert_eq!(setting.control, Some(Control::Slider), "{path}");
+            assert_eq!(setting.zero_label.as_deref(), Some("Off"), "{path}");
+            assert!(
+                matches!(
+                    setting.kind,
+                    SettingKind::Number { min: Some(0.0), max: Some(found), .. }
+                        if (found - max).abs() < 1e-6
+                ),
+                "{path}: {:?}",
+                setting.kind
+            );
+        }
+        // The accent draws only where a bar can be off screen.
+        let mode = |value: &str| VisibleWhen {
+            setting: "panes.title_bar".into(),
+            equals: toml::Value::String(value.into()),
+        };
+        assert_eq!(
+            model.setting("panes.focus_accent").unwrap().visible_when,
+            vec![mode("hover"), mode("hidden")]
+        );
+        assert_eq!(
+            model.setting("panes.inactive_dim").unwrap().visible_when,
+            Vec::new()
+        );
+    }
+
+    #[test]
     fn malformed_metadata_names_the_setting() {
         let style = || {
             let mut style =
@@ -1219,6 +1267,18 @@ mod tests {
                 }))}),
                 "a",
                 "a slider without x-huterm-unit shows a percent, so its range must lie within 0 to 1",
+            ),
+            (
+                json!({"a": setting(&json!({
+                    "type": "number", "x-huterm-zero-label": " "
+                }))}),
+                "a",
+                "x-huterm-zero-label must be non-blank text",
+            ),
+            (
+                json!({"a": setting(&json!({"x-huterm-zero-label": "Off"}))}),
+                "a",
+                "x-huterm-zero-label needs a number setting",
             ),
         ] {
             assert_eq!(

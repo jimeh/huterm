@@ -495,6 +495,7 @@ Every setting carries its metadata on the field that defines it, through
 | `x-huterm-platform` | `macos` or `linux` | no |
 | `x-huterm-advanced` | `true` | no |
 | `x-huterm-visible-when` | `{"setting": "<path>", "equals": <value>}` | no |
+| `x-huterm-zero-label` | Text a number shows at 0, such as `"Off"` | no |
 
 Enum variants carry `x-huterm-label` too, so a select shows "Title bar"
 rather than `titlebar`. A variant's doc comment stays its description.
