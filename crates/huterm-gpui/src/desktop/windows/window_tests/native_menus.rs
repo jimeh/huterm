@@ -569,7 +569,10 @@ fn a_settings_native_field_menu_closes_when_its_field_goes(
     });
     harness.cx.run_until_parked();
     assert!(presenter.shown.borrow()[0].closed.get(), "section change");
-    presenter.shown.borrow()[0].pick("text_select_all");
+    harness
+        .cx
+        .write_to_clipboard(gpui::ClipboardItem::new_string("9999".to_owned()));
+    presenter.shown.borrow()[0].pick("text_paste");
     presenter.shown.borrow()[0].pick.close();
     harness.cx.run_until_parked();
     assert_eq!(
@@ -645,4 +648,35 @@ fn closing_the_palette_closes_its_fields_native_menu(cx: &mut TestAppContext) {
         palette_state(cx, window).is_none() && native_kind(cx, window).is_none()
     });
     assert!(presenter.shown.borrow()[0].closed.get());
+}
+
+/// A Settings field's native menu closes when a reload hides the field's
+/// row, though Settings keeps the field for when the row shows again.
+#[gpui::test]
+fn a_settings_native_field_menu_closes_when_a_reload_hides_its_row(
+    cx: &mut TestAppContext,
+) {
+    use super::settings::{ScratchConfig, with_window};
+    use huterm_config::settings::SectionId;
+
+    let path = "palette.retain_query_seconds";
+    let file = ScratchConfig::new(
+        "native-field-menu-hidden",
+        "[palette]\nretain_query = true\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    let presenter = native_settings(&mut harness, &file, SectionId::Palette);
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_field(path, window, cx);
+    });
+    let (_, bounds) =
+        with_window(&mut harness, |view, _, cx| view.field_caret(path, cx))
+            .expect("the field painted");
+    right_press_field(&harness, bounds);
+    harness.wait_shown(&presenter, 1);
+    std::fs::write(file.path(), "[palette]\nretain_query = false\n").unwrap();
+    with_window(&mut harness, |view, _, cx| view.follow_reload(cx));
+    harness.wait_for("the hidden row's menu to close", |_| {
+        presenter.shown.borrow()[0].closed.get()
+    });
 }

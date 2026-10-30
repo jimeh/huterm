@@ -1494,8 +1494,8 @@ impl SettingsView {
         let picked = opened.picked.clone();
         cx.spawn_in(window, async move |view, cx| {
             let picked = picked.recv().await.ok().flatten();
-            let _ = view.update(cx, |view, cx| {
-                view.finish_native_field_menu(token, picked, cx);
+            let _ = view.update_in(cx, |view, window, cx| {
+                view.finish_native_field_menu(token, picked, window, cx);
             });
         })
         .detach();
@@ -1509,30 +1509,33 @@ impl SettingsView {
         true
     }
 
-    /// Whether `id` is one of the fields Settings draws: a setting's, a
-    /// keybinding's, a search, or the open dialog's.
-    fn owns_field(&self, id: gpui::EntityId) -> bool {
-        self.fields
-            .values()
-            .chain(self.keys.fields.values())
-            .chain([&self.search, &self.keys.search])
-            .chain(self.dialog.field())
-            .any(|field| field.entity_id() == id)
+    /// Whether the last frame drew `field` in this window. Settings keeps
+    /// fields for rows it is not showing, such as another section's or one
+    /// a setting's condition hides, so holding the field proves nothing;
+    /// the drawn frame's focus tree does.
+    fn shows_field(
+        &self,
+        field: &WeakEntity<Input>,
+        window: &Window,
+        cx: &App,
+    ) -> bool {
+        field.upgrade().is_some_and(|field| {
+            self.focus
+                .contains(&field.read(cx).focus_handle(cx), window)
+        })
     }
 
-    /// After a frame: closes a native field menu whose field went away,
-    /// and settles a field menu dropped where no context could settle its
-    /// field. Both wait for the draw to end.
+    /// After a frame: closes a native field menu whose field that frame
+    /// no longer drew, and settles a field menu dropped where no context
+    /// could settle its field. Both wait for the draw to end, so they read
+    /// the frame just drawn.
     fn tidy_field_menus(
         &self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let native = self.field_menus.native.as_ref();
-        if native
-            .is_some_and(|session| !self.owns_field(session.field.entity_id()))
-        {
-            cx.defer_in(window, |view, _, cx| view.prune_native_field_menu(cx));
+        if self.field_menus.native.is_some() {
+            cx.defer_in(window, Self::prune_native_field_menu);
         }
         if self.field_menus.left.is_some() {
             cx.defer_in(window, |view, _, cx| {
@@ -1542,25 +1545,28 @@ impl SettingsView {
     }
 
     /// Closes a native field menu whose field Settings no longer draws,
-    /// such as a keybinding row a reload removed, as the terminal window's
+    /// such as a row a reload hid or removed, as the terminal window's
     /// `refresh_native_menu` does; a late pick then finds no session.
-    fn prune_native_field_menu(&mut self, cx: &mut Context<'_, Self>) {
-        if self
-            .field_menus
-            .native
-            .as_ref()
-            .is_some_and(|session| !self.owns_field(session.field.entity_id()))
-        {
+    fn prune_native_field_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.field_menus.native.as_ref().is_some_and(|session| {
+            !self.shows_field(&session.field, window, cx)
+        }) {
             self.field_menus.native = None;
             cx.notify();
         }
     }
 
-    /// Runs the pick of the native field menu `token` names on its field.
+    /// Runs the pick of the native field menu `token` names on its field,
+    /// unless the last frame no longer drew the field.
     fn finish_native_field_menu(
         &mut self,
         token: u64,
         picked: Option<usize>,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         if self
@@ -1579,6 +1585,9 @@ impl SettingsView {
         else {
             return;
         };
+        if !self.shows_field(&session.field, window, cx) {
+            return;
+        }
         if let Some(field) = session.field.upgrade() {
             field_menu::run_pick(&field, &id, cx);
         }

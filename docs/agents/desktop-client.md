@@ -735,8 +735,10 @@ through `run_menu_pick`. A native menu leaves GPUI focus on the field, so
 nothing below applies to it. A native field menu closes once its window no
 longer shows the field: `menu_target_live` checks the palette's and
 Licenses' fields, and Settings closes its own on a section change and,
-from `render`, once `owns_field` no longer finds the field, such as a
-keybinding row a reload removed or a closed dialog's field. Opening the
+after each frame, once that frame's focus tree no longer holds the field
+(`shows_field`), such as a row a reload hid or removed or a closed dialog's
+field. Holding the field proves nothing: Settings keeps fields for rows it
+is not showing. Opening the
 popover blurs the field, so a Settings field's blur listener skips its
 commit while the field's own menu is open. Every close that does not hand
 focus back to the field goes through `drop_menu`, which leaves the field in
