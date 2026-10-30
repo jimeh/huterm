@@ -59,11 +59,30 @@ export async function runSmokeProcess(command: string[], options: {
     signal(value);
     if (!force) force = setTimeout(() => { event("force-kill"); signal("SIGKILL"); }, options.graceMs ?? 1_000);
   };
-  const onTerm = () => { interrupted = "SIGTERM"; event("interrupted", { signal: interrupted }); terminate(interrupted); };
-  const onInt = () => { interrupted = "SIGINT"; event("interrupted", { signal: interrupted }); terminate(interrupted); };
+  let hungUp = false;
+  // Writes to a terminal that hung up fail with EIO, and one can fail before
+  // the SIGHUP arrives; the terminal never comes back, so streaming stops.
+  const ignoreHangup = (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EIO") throw error;
+    hungUp = true;
+  };
+  // A hangup stops the smoke with SIGTERM, as host-smoke-lock.ts forwards
+  // one when it holds the lock, so a smoke run directly or under the
+  // wrapper stops the same way.
+  const interrupt = (received: NodeJS.Signals) => {
+    interrupted = received;
+    if (received === "SIGHUP") hungUp = true;
+    event("interrupted", { signal: received });
+    terminate(received === "SIGHUP" ? "SIGTERM" : received);
+  };
+  const echo = (stream: NodeJS.WriteStream, chunk: string) => {
+    if (options.stream !== false && !hungUp) stream.write(chunk);
+  };
+  const handlers = (["SIGINT", "SIGTERM", "SIGHUP"] as const).map((received) => [received, () => interrupt(received)] as const);
   // A child can signal us as soon as spawn starts it. Install handlers first.
-  process.on("SIGTERM", onTerm);
-  process.on("SIGINT", onInt);
+  for (const [received, handler] of handlers) process.on(received, handler);
+  const outputs = [process.stdout, process.stderr];
+  for (const output of outputs) output.on("error", ignoreHangup);
   try {
     // A private process group lets the deadline also stop Xvfb, window managers,
     // and fixture helpers when a harness is stuck in its own cleanup.
@@ -78,13 +97,13 @@ export async function runSmokeProcess(command: string[], options: {
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       stdout += chunk;
-      if (options.stream !== false) process.stdout.write(chunk);
+      echo(process.stdout, chunk);
       if (directory) appendFileSync(join(directory, "stdout.log"), chunk);
       event("stdout", { text: chunk });
     });
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
-      if (options.stream !== false) process.stderr.write(chunk);
+      echo(process.stderr, chunk);
       if (directory) appendFileSync(join(directory, "stderr.log"), chunk);
       event("stderr", { text: chunk });
       if (!stopped && !timedOut && options.stopWhen?.(stderr)) {
@@ -113,8 +132,9 @@ export async function runSmokeProcess(command: string[], options: {
     event("error", { message: String(error) });
     throw error;
   } finally {
-    process.off("SIGTERM", onTerm);
-    process.off("SIGINT", onInt);
+    for (const [received, handler] of handlers) process.off(received, handler);
+    // Writes still queued to a terminal that hung up can fail after this.
+    if (!hungUp) for (const output of outputs) output.off("error", ignoreHangup);
     clearTimeout(deadline);
     clearTimeout(force);
     signal("SIGKILL");

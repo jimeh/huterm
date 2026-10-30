@@ -42,8 +42,11 @@ its holder in `owner` beside it, and runs its command while holding the lock.
 - The wrapper that takes the lock runs its command as the leader of a new
   process group and session, so the command has no controlling terminal;
   its stdio is still the wrapper's. The wrapper forwards SIGINT and SIGTERM
-  to that group, and SIGHUP as SIGTERM, because `runSmokeProcess` harnesses
-  stop the apps they start in other groups only on SIGINT or SIGTERM. It
+  to that group, and SIGHUP as SIGTERM, because most harnesses die at once
+  on SIGHUP. `runSmokeProcess` stops the app's group with SIGTERM on its own
+  SIGHUP too, so a harness run directly stops its app when its terminal
+  closes, and stops streaming to that terminal, whose writes fail with
+  `EIO`. It
   keeps the lock until the command exits, then stops whatever is left in
   the group, with SIGKILL after two seconds, and waits up to a second more
   for the group to empty before releasing. An app a harness orphaned
@@ -208,6 +211,20 @@ Smoke state is sampled from the model, which can run ahead of the drawn frame.
 Before a smoke presses on a newly opened overlay, wait for a field set during
 render or paint, such as `dialog_drawn_groups` or `menu_rect`, not only for the
 model flag.
+
+Smoke state can also lag the app. The palette smoke fixture publishes `state`
+every 10ms, before it runs the next file command, so the state read right
+after a command's result can predate that command, and a state can predate a
+save whose file is already on disk. A step that waits for focus or a value to
+change must not take a change something else made for its own: gate on
+`command_sequence` past the command, as `check-settings.ts`'s `tabTo` and
+`check-fullscreen.ts` do, and compare a save's file with a state published
+after it, as `saved` does. Without that, the settings smoke's rebind step
+read the focus that followed the rebound shortcut to its new row as its
+Tab's move, sent a second Tab, and left focus on the row's switch. On X11,
+keys go through `xdotool` rather than file commands, so `command_sequence`
+does not order them; wait first for anything else that moves focus, as the
+rebind step waits for the rebound row.
 
 Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
