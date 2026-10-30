@@ -922,7 +922,6 @@ fn the_validator_guards_patch_service_writes_without_side_effects() {
     for invalid in [
         "[[keybinding]]\nkey = 'cmd-h'\ncommand = 'unbind'\ndisabled = true",
         "[[keybinding]]\nkey = 'cmd-h'\ncommand = 'hyde'",
-        "[[global_keybinding]]\nkey = 'ctrl-shift-f12'\ncommand = 'toggle_quake'\ndisabled = false",
         "[theme]\nname = 'missing-theme'",
         "[tabs]\nmin_width = 300\nmax_width = 200",
     ] {

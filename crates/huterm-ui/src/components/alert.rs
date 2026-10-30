@@ -1,9 +1,11 @@
 //! Alert: a banner that tells the user about a state of the app, after
 //! shadcn/ui's Alert, such as an invalid configuration file or a conflict.
 //!
-//! Anatomy: a bordered band in one of three [`Tone`]s with a title, an
-//! optional description under it, and any further content, such as the
-//! error text and action buttons.
+//! Anatomy: a bordered band in one of three [`Tone`]s with a title, any
+//! actions at the end of the title's row, an optional description under
+//! it, and any further content, such as the error text and action buttons.
+//! A compact alert ([`Alert::compact`]) is one short row, such as a warning
+//! whose details wait behind a button.
 //!
 //! Behavior: none of its own; its buttons keep their own. The owner shows
 //! and removes it with the state it reports.
@@ -83,6 +85,8 @@ pub struct Alert {
     tokens: Tokens,
     tone: Tone,
     description: Option<SharedString>,
+    actions: Vec<AnyElement>,
+    compact: bool,
     content: Vec<AnyElement>,
 }
 
@@ -111,6 +115,8 @@ impl Alert {
             tokens,
             tone: Tone::Neutral,
             description: None,
+            actions: Vec::new(),
+            compact: false,
             content: Vec::new(),
         }
     }
@@ -126,6 +132,21 @@ impl Alert {
     #[must_use]
     pub fn description(mut self, text: impl Into<SharedString>) -> Self {
         self.description = Some(text.into());
+        self
+    }
+
+    /// An element at the end of the title's row, such as a button that
+    /// shows the details or retries.
+    #[must_use]
+    pub fn action(mut self, element: impl IntoElement) -> Self {
+        self.actions.push(element.into_any_element());
+        self
+    }
+
+    /// Draws the alert as one short row, with less padding.
+    #[must_use]
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
         self
     }
 }
@@ -149,16 +170,31 @@ impl RenderOnce for Alert {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .p(px(12.0))
+            .map(|alert| {
+                if self.compact {
+                    alert.px(px(12.0)).py(px(6.0))
+                } else {
+                    alert.p(px(12.0))
+                }
+            })
             .rounded(px(8.0))
             .border_1()
             .border_color(colors.border)
             .bg(colors.fill)
             .child(
                 div()
-                    .text_size(size::TEXT_BODY)
-                    .text_color(colors.title)
-                    .child(self.title),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(size::TEXT_BODY)
+                            .text_color(colors.title)
+                            .child(self.title),
+                    )
+                    .children(self.actions),
             )
             .children(self.description.map(|text| {
                 div()

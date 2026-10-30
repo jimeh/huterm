@@ -28,7 +28,7 @@ pub struct KeybindingEntry {
     pub when: Option<String>,
     pub description: Option<String>,
     /// Kept as written: `false` is ordinary, but any value is an error on
-    /// `unbind` and on global shortcuts.
+    /// `unbind`. A disabled global shortcut registers nothing.
     pub disabled: Option<bool>,
 }
 

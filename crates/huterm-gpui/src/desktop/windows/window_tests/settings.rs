@@ -475,7 +475,7 @@ fn settings_reports_a_file_it_cannot_create_or_open(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
     open_settings(&mut harness, &file.path());
     let status = |harness: &mut DesktopHarness| {
-        with_view(harness, |view, _| view.status_text())
+        with_view(harness, |view, _| view.notice_text())
     };
     assert!(status(&mut harness).starts_with("Cannot create "));
     // Open config.toml in the footer reports its failure here too.
@@ -648,7 +648,7 @@ fn a_save_that_is_not_durable_shows_its_value_without_a_conflict(
         .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
     std::fs::set_permissions(&file.0, mode(0o700)).unwrap();
     with_window(&mut harness, |view, _, cx| {
-        assert!(view.status_text().starts_with("Saved, but"));
+        assert_eq!(view.status_text(), "Saved with a warning");
         assert!(!view.conflicted("font.size"));
         assert_eq!(view.field_value("font.size", cx), "15");
     });
@@ -763,10 +763,8 @@ fn a_reload_refused_outside_the_file_keeps_settings_editable(
     });
     with_view(&mut harness, |view, _| {
         assert!(!view.read_only());
-        assert_eq!(
-            view.status_text(),
-            "Not applied: font \"Nope\" is not installed"
-        );
+        assert_eq!(view.status_text(), "Not applied");
+        assert_eq!(view.notice_text(), "font \"Nope\" is not installed");
     });
     // The font is installed, and the watcher's reload of the same file
     // applies it.
@@ -792,24 +790,144 @@ fn a_refused_global_shortcut_warns_in_place_of_the_saves_report(
     harness
         .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
     harness.cx.run_until_parked();
-    let warning = "cannot register cmd-shift-space: already in use by \
-                   another application";
+    let warnings = [
+        "cannot register cmd-shift-space: already in use by another \
+         application",
+        "cannot register ctrl-alt-t: registration rejected",
+    ];
     with_view(&mut harness, |view, cx| {
-        view.follow_reload_with_warning(warning, cx);
+        view.follow_reload_with_warnings(&warnings, cx);
     });
     harness.wait_for("the reload's read", |cx| {
         settings(cx).is_some_and(|handle| {
             handle
                 .read_with(cx, |view, _| {
-                    view.status_text().starts_with("Applied, but")
+                    view.status_text().starts_with("Applied with")
                 })
                 .unwrap_or(false)
         })
     });
     with_view(&mut harness, |view, _| {
         assert!(!view.read_only());
-        assert_eq!(view.status_text(), format!("Applied, but {warning}"));
+        assert_eq!(view.status_text(), "Applied with 2 warnings");
+        assert_eq!(view.notice_text(), warnings.join("\n"));
     });
+}
+
+#[gpui::test]
+fn settings_opens_with_the_warnings_the_desktop_already_reported(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("opens-warned", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    let refused = "cannot register ctrl-alt-t: registration rejected";
+    // Startup registered the global shortcuts before any window opened.
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>()
+            .config_report
+            .refuse(vec![refused.to_owned()]);
+    });
+    open_settings(&mut harness, &file.path());
+    harness.wait_for("the first read", settled);
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.status_text(), "Applied with a warning");
+        assert_eq!(view.notice_text(), refused);
+    });
+}
+
+#[gpui::test]
+fn a_warning_holds_its_place_through_a_save_until_a_clean_reload(
+    cx: &mut TestAppContext,
+) {
+    use super::settings_controls::{a11y_node, visual};
+    let file = ScratchConfig::new("notice-holds", "[font]\nsize = 13.0\n");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    harness.wait_for("the first read", settled);
+    let refused = "cannot register ctrl-alt-t: registration rejected";
+    let warn = |harness: &mut DesktopHarness| {
+        with_view(harness, |view, cx| {
+            view.follow_reload_with_warnings(&[refused], cx);
+        });
+        harness.wait_for("the reload's read", |cx| {
+            settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| {
+                        view.status_text().starts_with("Applied with")
+                    })
+                    .unwrap_or(false)
+            })
+        });
+    };
+    let shown = |harness: &mut DesktopHarness| {
+        with_window(harness, |_, window, _| window.refresh());
+        harness.cx.run_until_parked();
+        let details = a11y_node(harness, "settings-notice-details");
+        let drawn = visual(harness)
+            .debug_bounds("settings-notice-messages")
+            .is_some();
+        assert_eq!(details["aria"]["expanded"], drawn, "{details}");
+        drawn
+    };
+    warn(&mut harness);
+    assert!(!shown(&mut harness), "a warning starts folded");
+    with_window(&mut harness, |view, window, cx| {
+        view.press("notice:details", window, cx);
+    });
+    assert!(shown(&mut harness), "Details shows the messages");
+    // Changing a setting leaves the notice in place while it saves. The
+    // save's reload applies the file in full here, which settles it.
+    with_view(&mut harness, |view, cx| {
+        view.set("font.size", Some(toml::Value::Float(15.0)), cx);
+        assert_eq!(view.status_text(), "Saving…");
+        assert_eq!(view.notice_text(), refused);
+    });
+    harness
+        .wait_for("the save", |cx| settled(cx) && file.text().contains("15.0"));
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.status_text(), "Saved");
+        assert_eq!(view.notice_text(), "");
+    });
+    warn(&mut harness);
+    assert!(!shown(&mut harness), "a new warning starts folded");
+    with_window(&mut harness, |view, window, cx| {
+        view.press("notice:details", window, cx);
+    });
+    warn(&mut harness);
+    assert!(shown(&mut harness), "a reload's update keeps it unfolded");
+    // A clean reload clears it only once its reread finishes.
+    with_view(&mut harness, |view, cx| {
+        view.follow_reload(cx);
+        assert_eq!(view.notice_text(), refused);
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.status_text(), "Reloaded");
+        assert_eq!(view.notice_text(), "");
+    });
+}
+
+#[gpui::test]
+fn check_for_updates_says_why_a_build_cannot(cx: &mut TestAppContext) {
+    use super::settings_controls::a11y_node;
+    let file = ScratchConfig::new("updates-check", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.show_section(huterm_config::settings::SectionId::Updates, cx);
+        window.refresh();
+    });
+    harness.cx.run_until_parked();
+    // Test builds have no updater.
+    let check = a11y_node(&mut harness, "settings-updates-check");
+    assert_eq!(check["aria"]["disabled"], true, "{check}");
+    assert_eq!(
+        check["aria"]["description"],
+        "self-updates are available only in updater-enabled macOS release \
+         builds",
+        "{check}"
+    );
 }
 
 #[gpui::test]

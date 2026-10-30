@@ -240,7 +240,11 @@ fn keybindings(base: &Value, global: bool) -> Value {
 fn global_fields(schema: &mut Value) {
     if let Some(fields) = schema["properties"].as_object_mut() {
         fields.remove("when");
-        fields.remove("disabled");
+    }
+    if schema["properties"].get("disabled").is_some() {
+        schema["properties"]["disabled"]["description"] = json!(
+            "true keeps the shortcut in the file without registering it."
+        );
     }
     schema["properties"]["key"]["pattern"] = json!("^\\S+$");
     schema["properties"]["key"]["description"] = json!(

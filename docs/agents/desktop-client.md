@@ -551,7 +551,10 @@ the new command.
 
 Notices replace both status strings. Configuration and keymap diagnostics are
 persistent notices keyed by source, and every reload replaces that source, so
-a still-failing file raises them again after dismissal. Command and terminal
+a still-failing file raises them again after dismissal. `Desktop::config_report`
+holds the active configuration's problems as data, from startup and each
+reload, and both the persistent notices and the Settings notice derive from
+it, so a window opened later reports what startup found. Command and terminal
 failures expire on the window's single earliest-deadline timer; persistent
 notices schedule nothing. Terminal failures reach the window through the tab's
 activity drain, including hidden tabs. Root-shell exit is not a failure: only a
@@ -930,23 +933,23 @@ section are `Item`s, as are the `unbind` rows, whose key caps draw through
 `Item::title_element` while the key's text names the row; a command search
 result is a link `Item` (`Item::link`) on its `kgo:` action stop, so it is
 one focusable, named `Link` that `settings_toggle` and a click run; a
-command row is a
-`Collapsible::item` whose shortcut summary is the item's action, outside the
-trigger; groups of rows are titled `Card`s (`group_card`, which uppercases
-the title); the invalid-file banner is a danger `Alert`; and an empty global
-shortcut list is an `Empty`. `render` notes a focus that moved since the last
-frame and defers `reveal_focused`, which scrolls the pane only when the ring
-shows (`focus::visible`, so a pointer press scrolls nothing), the ring
-painted inside the pane's columns, and no dialog or menu is open. A row whose
-label sits apart from its controls, such as a user layout's name above its
-template, Rename, and Delete, draws `reveal_group` over itself with their
-handles, and the reveal shows the row with the ring. Smoke state reports
+command row is a `Collapsible::item` whose shortcut summary is the item's
+action, drawn inside the trigger (`actions_in_trigger`) so the whole row
+hovers and toggles; groups of rows are titled `Card`s (`group_card`, which
+uppercases the title); the invalid-file banner is a danger `Alert`; and an
+empty global shortcut list is an `Empty`. `render` notes a focus that moved
+since the last frame and defers `reveal_focused`, which scrolls the pane only
+when the ring shows (`focus::visible`, so a pointer press scrolls nothing),
+the ring painted inside the pane's columns, and no dialog or menu is open. A
+row whose label sits apart from its controls, such as a user layout's name
+above its template, Rename, and Delete, draws `reveal_group` over itself with
+their handles, and the reveal shows the row with the ring. Smoke state reports
 `settings.scroll` and `settings.in_view` for it. The pane is a
 `ScrollArea::fill` under a fixed header that names the section, or "Search
-results"; the view owns its `ListScrollbar`, advances it in `animate_lists`
-on the suggestion lists' wake, and shows it when a reveal scrolls. Its
-viewport starts under the header, so reveals and `settings.in_view` never
-count a control hidden behind the header as shown.
+results"; the view owns its `ListScrollbar`, advances it in `animate_lists` on
+the suggestion lists' wake, and shows it when a reveal scrolls. Its viewport
+starts under the header, so reveals and `settings.in_view` never count a
+control hidden behind the header as shown.
 
 The terminal window has one dialog slot too, `WorkspaceView::dialog`. The
 top dialog draws in it: the close confirmation, else Licenses, else About.
@@ -1197,7 +1200,16 @@ keeps a save's footer report. The comparison is with that write, not with the
 last read, which may already hold another editor's change. Such a reload
 still clears a "Not applied" or invalid report, since a theme or a font
 outside the file may have changed. A reload that applied the file with refused
-global shortcuts reports "Applied, but ..." in place of a save's report.
+global shortcuts reports "Applied with a warning" in place of a save's report.
+The footer line shows only such a summary; `FileStatus::notice` spells out a
+warning or failure above the section from its first read on, one message per
+binding conflict, config warning, or refused shortcut, and a
+warning starts folded until Details shows it, so it never pushes the section
+down unasked. The notice outlasts the saves and reloads that follow it, so it
+never vanishes and returns while they run: a write's problem lasts until a
+write succeeds, and a reload's until a later reload's reread applies the file
+in full. A reread that finds problems again updates the notice in place and
+keeps it unfolded if the user unfolded it.
 Every finished reload sends the watcher fresh `Settings`, including after a
 failure, which keeps the previous `watch_config`. An automatic reload that
 finds the file missing is skipped silently, since editors remove it while

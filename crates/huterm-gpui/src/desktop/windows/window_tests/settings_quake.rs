@@ -199,6 +199,59 @@ fn global_shortcuts_record_change_and_go(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_global_shortcuts_switch_sets_and_clears_disabled(cx: &mut TestAppContext) {
+    let globals = "[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+                   command = \"toggle_quake\"\n";
+    let file = ScratchConfig::new("quake-global-switch", globals);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    let switch = a11y_node(&mut harness, "settings-gon-0");
+    assert_eq!(switch["aria"]["toggled"], "True", "{switch}");
+    press(&mut harness, "gon:0");
+    saved(&mut harness, &file, |text| text.contains("disabled"));
+    assert_eq!(file.text(), format!("{globals}disabled = true\n"));
+    let switch = a11y_node(&mut harness, "settings-gon-0");
+    assert_eq!(switch["aria"]["toggled"], "False", "{switch}");
+    press(&mut harness, "gon:0");
+    saved(&mut harness, &file, |text| !text.contains("disabled"));
+    assert_eq!(file.text(), globals);
+}
+
+#[gpui::test]
+fn position_shows_while_windowed_or_sliding(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("quake-position", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    let shown = |harness: &mut DesktopHarness| {
+        with_window(harness, |_, window, _| window.refresh());
+        harness.cx.run_until_parked();
+        visual(harness)
+            .debug_bounds("settings-row-quake.profiles.default.position")
+            .is_some()
+    };
+    assert!(shown(&mut harness), "a windowed profile shows its position");
+    with_view(&mut harness, |view, cx| {
+        view.set(
+            "quake.profiles.default.fullscreen",
+            Some(Value::Boolean(true)),
+            cx,
+        );
+    });
+    saved(&mut harness, &file, |text| text.contains("fullscreen"));
+    assert!(!shown(&mut harness), "fullscreen covers the display");
+    // Slide still moves a fullscreen window from the position's edge.
+    with_view(&mut harness, |view, cx| {
+        view.set(
+            "quake.profiles.default.animation",
+            Some(Value::String("slide".into())),
+            cx,
+        );
+    });
+    saved(&mut harness, &file, |text| text.contains("slide"));
+    assert!(shown(&mut harness), "a sliding profile shows its position");
+}
+
+#[gpui::test]
 fn a_held_key_records_one_global_shortcut(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("quake-held", LOGS);
     let mut harness = DesktopHarness::new(cx);
@@ -1193,12 +1246,12 @@ fn a_refused_rename_behind_another_dialog_leaves_the_new_name_and_says_why(
     with_view(&mut harness, |view, _| {
         assert_eq!(view.dialog_name(), "new-profile");
         assert_eq!(view.shown_profile_name(), "logs");
-        let status = view.status_text();
+        let notice = view.notice_text();
         assert!(
-            status.ends_with(
+            notice.ends_with(
                 "The changes made to work meanwhile were not saved."
             ),
-            "{status}"
+            "{notice}"
         );
     });
 }

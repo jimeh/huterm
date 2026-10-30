@@ -10,7 +10,13 @@ expands to its shortcuts: click a key, or press Space on it, then press the new
 shortcut. A second key within a second makes a chord, Return saves at once,
 and Escape cancels. Holding a key records it once. The recorder takes keys
 that are bound elsewhere, so `cmd-w` records instead of closing the window.
-Each shortcut also has a `when` field that completes context names and checks
+When the new shortcut would take its key from another command with the same
+`when`, Settings asks first. Reassign removes your own entries that bind that
+key under the same `when` to other commands, and Cancel leaves both commands as
+they were. A recorded shortcut moves to the end of the file when a later entry
+with the same key and `when`, or a later `unbind` of the key, would otherwise
+take it back. Each
+shortcut also has a `when` field that completes context names and checks
 the condition before saving, its argument values, and a switch. Changing or
 switching off a default writes a `disabled = true` entry for exactly that
 shortcut, plus the changed binding; Restore defaults removes the command's
@@ -110,7 +116,8 @@ its arguments are still checked, so a typo fails like any other bad entry. A
 disabled entry that matches nothing does nothing, so one file can disable a
 macOS default and still load on Linux. Like every entry, it affects only
 entries before it: a later entry can bind the key again, and a later `unbind`
-still removes what remains. Global shortcuts reject `disabled`.
+still removes what remains. On a global shortcut, `disabled = true` keeps the
+entry in the file without registering it.
 
 The platform defaults apply first, then user entries in file order. A later
 entry wins over an earlier one with the same key and `when`. Two user entries

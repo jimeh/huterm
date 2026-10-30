@@ -331,8 +331,8 @@ fn read_state(cx: &mut App) -> String {
     // raise, then failures still latched for want of a window, as
     // `desktop.notices=<n>` and `desktop.notice<i>=<severity>|<source>|<message>`.
     let desktop = cx.global::<Desktop>();
-    let global: Vec<_> =
-        desktop.diagnostics.iter().chain(&desktop.latched).collect();
+    let diagnostics = desktop.config_report.notices(&desktop.config_path);
+    let global: Vec<_> = diagnostics.iter().chain(&desktop.latched).collect();
     output
         .push_str(&super::notices::smoke_lines("desktop.", global.into_iter()));
     match quake_windows::inspect_return_focus(cx) {

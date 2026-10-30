@@ -473,22 +473,8 @@ fn resolve_entries(
         }
         let (spec, action, mut effective) =
             resolve_command(entry).map_err(fail)?;
-        let predicate_source = match (spec.context, entry.when.as_deref()) {
-            (Some(context), Some(when)) => {
-                Some(format!("({context}) && ({when})"))
-            }
-            (Some(context), None) => Some(context.to_owned()),
-            (None, Some(when)) => Some(when.to_owned()),
-            (None, None) => None,
-        };
-        let predicate = predicate_source
-            .as_deref()
-            .map(|source| {
-                KeyBindingContextPredicate::parse(source)
-                    .map(Rc::new)
-                    .map_err(|error| fail(format!("invalid when: {error}")))
-            })
-            .transpose()?;
+        let predicate = combined_predicate(spec.context, entry.when.as_deref())
+            .map_err(|error| fail(format!("invalid when: {error}")))?;
         effective.predicate.clone_from(&predicate);
         let resolved = Resolved {
             keystrokes,
@@ -657,9 +643,63 @@ fn parse_keystrokes(
 }
 
 /// Argument lists with the same names and values, in any order.
-fn same_arguments(left: &[CommandArgument], right: &[CommandArgument]) -> bool {
+pub(crate) fn same_arguments(
+    left: &[CommandArgument],
+    right: &[CommandArgument],
+) -> bool {
     left.len() == right.len()
         && left.iter().all(|argument| right.contains(argument))
+}
+
+/// A binding's command `context` and its `when`, combined as dispatch
+/// matches them.
+fn combined_predicate(
+    context: Option<&str>,
+    when: Option<&str>,
+) -> Result<Option<Rc<KeyBindingContextPredicate>>, anyhow::Error> {
+    let source = match (context, when) {
+        (Some(context), Some(when)) => format!("({context}) && ({when})"),
+        (Some(context), None) => context.to_owned(),
+        (None, Some(when)) => when.to_owned(),
+        (None, None) => return Ok(None),
+    };
+    KeyBindingContextPredicate::parse(&source)
+        .map(|predicate| Some(Rc::new(predicate)))
+}
+
+/// Whether a user binding of `key` for a command in `context`, with
+/// `when`, would replace `other` were it added after it: the two have the
+/// same keys and combined predicate, as [`inventory`] decides.
+pub(crate) fn would_replace(
+    platform: Platform,
+    key: &str,
+    context: Option<&str>,
+    when: Option<&str>,
+    other: &Bound,
+) -> bool {
+    let (Ok(keys), Ok(other_keys)) = (
+        parse_keystrokes(key, platform),
+        parse_keystrokes(&other.key, platform),
+    ) else {
+        return false;
+    };
+    same_keystrokes(&keys, &other_keys)
+        && matches!(
+            (
+                combined_predicate(context, when),
+                combined_predicate(other.context, other.when.as_deref()),
+            ),
+            (Ok(predicate), Ok(other_predicate)) if predicate == other_predicate
+        )
+}
+
+/// Whether two keys name the same keystrokes, as an `unbind` entry
+/// matches them.
+pub(crate) fn same_keys(platform: Platform, left: &str, right: &str) -> bool {
+    matches!(
+        (parse_keystrokes(left, platform), parse_keystrokes(right, platform)),
+        (Ok(left), Ok(right)) if same_keystrokes(&left, &right)
+    )
 }
 
 fn same_keystrokes(left: &[Keystroke], right: &[Keystroke]) -> bool {

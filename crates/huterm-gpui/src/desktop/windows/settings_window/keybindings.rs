@@ -30,13 +30,16 @@ use super::super::super::settings::keybindings::{
 };
 use super::super::Desktop;
 use super::controls::Opener;
+use super::dialog::Prompt;
 use super::render::{changed_dot, group_card};
 use super::saving::Queued;
 use super::{MenuFor, SettingsView};
 use crate::assets::Icon;
 use crate::keymap::{
     BindingState, Bound, Inventory, ListedBinding, Origin, Platform,
+    same_arguments, same_keys, would_replace,
 };
+use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::badge::{Tone as BadgeTone, badge};
 use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::card;
@@ -106,6 +109,27 @@ impl Target {
             _ => None,
         }
     }
+}
+
+/// What a recorded shortcut takes its key from, as the reassign prompt
+/// asked about it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct Taking {
+    /// The titles of the commands that lose the key.
+    pub(super) from: Vec<String>,
+    /// Every user entry for another command with the same keys and
+    /// predicate, whatever became of it, which Reassign removes so the
+    /// file keeps no entry that only loses to the recorded one.
+    entries: Vec<usize>,
+    /// Something after the recorded user row could take the keys back
+    /// from it: an entry with the same keys and predicate, which replaces
+    /// or disables it, or an `unbind` of the keys. The recording then
+    /// moves the row to the end of the file, after all of them, so the
+    /// recorded binding is the one that holds the keys.
+    last: bool,
+    /// The recorded row's binding, which Reassign checks is still where
+    /// the prompt found it.
+    row: Option<Identity>,
 }
 
 /// The section's state, held by the view.
@@ -224,7 +248,7 @@ impl Keys {
 }
 
 /// A row's binding, to recognize it when the entries move.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Identity {
     whole: String,
     /// The binding without its key.
@@ -690,6 +714,8 @@ impl SettingsView {
                     self.open_argument_menu(row, name, window, cx);
                 }
             }
+            "kreyes" => self.reassign(window, cx),
+            "kreno" => self.close_dialog(window, cx),
             _ => return false,
         }
         true
@@ -753,6 +779,20 @@ impl SettingsView {
         origin: Option<(String, Option<String>)>,
         cx: &mut Context<'_, Self>,
     ) -> bool {
+        self.edit_row_removing(name, field, value, origin, &[], cx)
+    }
+
+    /// [`Self::edit_row`], removing the user entries `remove` in the same
+    /// write.
+    fn edit_row_removing(
+        &mut self,
+        name: &str,
+        field: Field,
+        value: Option<Value>,
+        origin: Option<(String, Option<String>)>,
+        remove: &[usize],
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
         let Some(listed) = self
             .keys
             .inventory
@@ -777,7 +817,13 @@ impl SettingsView {
                 value,
             },
         };
-        self.submit_keys(edit, Some(name.to_owned()), origin, cx)
+        self.submit_keys_removing(
+            edit,
+            Some(name.to_owned()),
+            origin,
+            remove,
+            cx,
+        )
     }
 
     /// Whether `row` shows a default with a change queued or being
@@ -799,8 +845,8 @@ impl SettingsView {
                 }))
     }
 
-    /// After a changed default lands, the changed binding is the file's
-    /// last entry; when focus is still on the control that changed it,
+    /// After a changed default or a moved row lands, its binding is the
+    /// file's last entry; when focus is still on the control that changed it,
     /// focus moves to the same control on the new row, so further typing
     /// edits that row rather than the default it replaced. A recorded key
     /// also keeps the drafts in its shortcut's other fields
@@ -812,9 +858,7 @@ impl SettingsView {
         patches: &[Patch],
     ) {
         self.keep_drafts_for_new_key(edit, row, patches);
-        let (Edit::ChangeDefault { default, field, .. }, Some(row)) =
-            (edit, row)
-        else {
+        let Some(row) = row else {
             return;
         };
         let Some(last) = self.keys.inventory.as_ref().and_then(|inventory| {
@@ -824,6 +868,15 @@ impl SettingsView {
                 .filter_map(|listed| listed.entry)
                 .max()
         }) else {
+            return;
+        };
+        // A row moved to the end of the file is its last entry too.
+        if let Edit::MoveUser { .. } = edit {
+            self.keys.follow =
+                Some((format!("krec:u{last}"), format!("krec:{row}")));
+            return;
+        }
+        let Edit::ChangeDefault { default, field, .. } = edit else {
             return;
         };
         let control = |row: &str| match field {
@@ -926,7 +979,8 @@ impl SettingsView {
                 field: Field::Key,
                 value: Some(Value::String(key)),
                 ..
-            } => {
+            }
+            | Edit::MoveUser { key, .. } => {
                 let (Some(from), Some(last)) = (
                     changed,
                     inventory
@@ -1107,33 +1161,197 @@ impl SettingsView {
         })
     }
 
+    /// Applies a recorded shortcut, or first asks whether it should take
+    /// its key from the commands that hold it.
     fn finish_recording(
         &mut self,
         target: Target,
         key: String,
         cx: &mut Context<'_, Self>,
     ) {
+        let taking = self.taken_by(&target, &key);
+        if taking.from.is_empty() {
+            self.apply_recording(target, key, &[], taking.last, cx);
+            return;
+        }
+        let Some(stop) = self.recorder_key().map(str::to_owned) else {
+            return;
+        };
+        let return_to = self.action_stop(stop, cx);
+        self.open_dialog(
+            Prompt::Reassign {
+                target,
+                key,
+                taking,
+            },
+            &return_to,
+        );
+    }
+
+    /// What a recording of `key` for `target` takes the key from: the
+    /// bindings with the same keys and predicate, other than the row itself
+    /// and those that run the same command with the same arguments. The
+    /// prompt names the active ones; the user entries among them go.
+    fn taken_by(&self, target: &Target, key: &str) -> Taking {
+        let Some(inventory) = self.keys.inventory.as_ref() else {
+            return Taking::default();
+        };
+        let (own, command, args, when) = match target {
+            Target::Row(name) => {
+                let Some(listed) = row(inventory, name) else {
+                    return Taking::default();
+                };
+                let binding = &listed.binding;
+                (
+                    Some(listed),
+                    binding.command,
+                    binding.args.as_slice(),
+                    binding.when.as_deref(),
+                )
+            }
+            Target::Add(command) => (None, *command, &[][..], None),
+            Target::Global(_) | Target::AddGlobal => return Taking::default(),
+        };
+        let context = lookup(command.as_str()).and_then(|spec| spec.context);
+        let mut taking = Taking {
+            row: own.map(Identity::of),
+            ..Taking::default()
+        };
+        let own_entry = own
+            .filter(|own| own.binding.origin == Origin::User)
+            .and_then(|own| own.entry);
+        let after = |entry: Option<usize>| {
+            own_entry.zip(entry).is_some_and(|(own, other)| other > own)
+        };
+        for other in &inventory.bindings {
+            let binding = &other.binding;
+            if own.is_some_and(|own| std::ptr::eq(own, other))
+                || !would_replace(
+                    Platform::current(),
+                    key,
+                    context,
+                    when,
+                    binding,
+                )
+            {
+                continue;
+            }
+            taking.last |= after(other.entry);
+            // A `disabled = true` entry that turned a binding off shows only
+            // in that binding's state; after the row, it would turn the
+            // recorded binding off too.
+            if let BindingState::Disabled(by) = &other.state {
+                taking.last |= by.iter().any(|entry| after(Some(*entry)));
+            }
+            if binding.command == command && same_arguments(&binding.args, args)
+            {
+                continue;
+            }
+            let title = lookup(binding.command.as_str()).map_or_else(
+                || binding.command.as_str().to_owned(),
+                |spec| spec.title.to_owned(),
+            );
+            if other.state == BindingState::Active
+                && !taking.from.contains(&title)
+            {
+                taking.from.push(title);
+            }
+            if other.binding.origin == Origin::User
+                && let Some(entry) = other.entry
+            {
+                taking.entries.push(entry);
+            }
+        }
+        taking.last |= inventory.unbinds.iter().any(|(entry, unbound)| {
+            after(Some(*entry)) && same_keys(Platform::current(), unbound, key)
+        });
+        taking
+    }
+
+    /// Answers the reassign prompt: applies the recording it holds, unless
+    /// a read since it opened moved the recorded row or changed what the
+    /// key would be taken from, since the prompt's answer covered only
+    /// what it showed.
+    fn reassign(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let Some(Prompt::Reassign {
+            target,
+            key,
+            taking,
+        }) = self.dialog.prompt().cloned()
+        else {
+            return;
+        };
+        self.close_dialog(window, cx);
+        if self.taken_by(&target, &key) != taking {
+            self.status.failed(
+                "config.toml changed while Settings asked about the \
+                 shortcut. Record it again.",
+            );
+            return;
+        }
+        self.apply_recording(target, key, &taking.entries, taking.last, cx);
+    }
+
+    /// Applies a recorded shortcut, removing the user entries `remove`
+    /// that hold its key in the same write. A user row that something
+    /// later could take the key back from moves to the end of the file
+    /// (`last`); a default's change and a new binding land there anyway.
+    /// The write happens even when the key is the row's own, since a read
+    /// during the recording can have given it to another entry since.
+    fn apply_recording(
+        &mut self,
+        target: Target,
+        key: String,
+        remove: &[usize],
+        last: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
         match target {
             Target::Row(name) => {
-                let current = self
+                let Some((current, user_entry)) = self
                     .keys
                     .inventory
                     .as_ref()
                     .and_then(|inventory| row(inventory, &name))
-                    .map(|listed| listed.binding.key.clone());
-                if current.as_deref() != Some(key.as_str()) {
-                    self.edit_row(
+                    .map(|listed| {
+                        (
+                            listed.binding.key.clone(),
+                            listed.entry.filter(|_| {
+                                listed.binding.origin == Origin::User
+                            }),
+                        )
+                    })
+                else {
+                    return;
+                };
+                if let (true, Some(entry)) = (last, user_entry) {
+                    self.submit_keys_removing(
+                        Edit::MoveUser { entry, key },
+                        Some(name),
+                        None,
+                        remove,
+                        cx,
+                    );
+                } else if current != key || !remove.is_empty() {
+                    self.edit_row_removing(
                         &name,
                         Field::Key,
                         Some(Value::String(key)),
                         None,
+                        remove,
                         cx,
                     );
                 }
             }
             Target::Add(command) => {
                 self.keys.open.insert(command);
-                self.submit_keys(Edit::Add { key, command }, None, None, cx);
+                self.submit_keys_removing(
+                    Edit::Add { key, command },
+                    None,
+                    None,
+                    remove,
+                    cx,
+                );
             }
             Target::Global(entry) => self.finish_global(Some(entry), key, cx),
             Target::AddGlobal => self.finish_global(None, key, cx),
@@ -2098,6 +2316,9 @@ impl SettingsView {
             swatch,
         )
         .item(item)
+        // The summary is content, so the trigger spans it: the whole row
+        // hovers and toggles.
+        .actions_in_trigger()
         .corners(corners)
         .key_context("SettingsControl")
         .on_toggle(Self::listen(cx, move |view, _, window, cx| {
@@ -2126,6 +2347,7 @@ impl SettingsView {
             .flex_col()
             .gap(px(6.0))
             .px(px(14.0))
+            .pt(px(8.0))
             .pb(px(12.0))
             .pl(px(24.0));
         for (name, binding) in listed {
@@ -2526,6 +2748,60 @@ impl SettingsView {
             .collect()
     }
 
+    /// The prompt that asks whether a recorded shortcut takes its key from
+    /// the commands in `from`. Reassign applies it; Cancel leaves every
+    /// binding as it was.
+    pub(super) fn render_reassign(
+        &mut self,
+        target: &Target,
+        key: &str,
+        from: &[String],
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let command = match target {
+            Target::Row(name) => self
+                .keys
+                .inventory
+                .as_ref()
+                .and_then(|inventory| row(inventory, name))
+                .map(|listed| listed.binding.command),
+            Target::Add(command) => Some(*command),
+            Target::Global(_) | Target::AddGlobal => None,
+        };
+        let title = command
+            .and_then(|command| lookup(command.as_str()))
+            .map_or("this command", |spec| spec.title);
+        let holders = match from {
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+            [] => String::new(),
+        };
+        let keys = KeyHint::parse(key, Platform::current()).text();
+        let (cancel, cancel_focus) =
+            self.dialog_button("settings-kreno", "Cancel", "kreno", swatch, cx);
+        let (reassign, reassign_focus) = self.dialog_button(
+            "settings-kreyes",
+            "Reassign",
+            "kreyes",
+            swatch,
+            cx,
+        );
+        AlertDialog::new(
+            "settings-reassign-key",
+            format!("{keys} is assigned to {holders}"),
+            self.dialog.modal(),
+            swatch,
+        )
+        .description(format!(
+            "Reassign it to {title}? {holders} will no longer have this \
+             shortcut."
+        ))
+        .cancel(cancel, &cancel_focus)
+        .action(reassign.variant(Variant::Primary), &reassign_focus)
+        .into_any_element()
+    }
+
     /// Commands matching the sidebar search, as links into the section.
     pub(super) fn render_key_results(
         &mut self,
@@ -2666,8 +2942,34 @@ fn cap(key: &str, origin: Origin, swatch: Swatch) -> gpui::Div {
         } else {
             swatch.line_strong
         })
+        // Letters and digits sized to the icons beside them, as menus
+        // size their shortcuts; inherited text would dwarf the icons.
+        .text_size(px(11.5))
         .child(
             KeyHint::parse(key, Platform::current())
                 .element(px(11.0), swatch.fg),
         )
+}
+
+/// What desktop tests drive in the keybindings section.
+#[cfg(all(test, feature = "test-support"))]
+impl SettingsView {
+    /// Applies a recording of `key` on `row` as Reassign does, without the
+    /// prompt, so a test can queue it behind another write.
+    pub(in crate::desktop::windows) fn reassign_row(
+        &mut self,
+        row: &str,
+        key: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let target = Target::Row(row.to_owned());
+        let taking = self.taken_by(&target, key);
+        self.apply_recording(
+            target,
+            key.to_owned(),
+            &taking.entries,
+            taking.last,
+            cx,
+        );
+    }
 }

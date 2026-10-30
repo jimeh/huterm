@@ -77,6 +77,10 @@ pub(super) struct KeyChange {
     /// another one; this window's own writes rebase them
     /// (`rebase_queued_keys`).
     patches: Vec<Patch>,
+    /// How many of the leading patches the rest depend on: when a rebase
+    /// drops one of them, the whole change goes. A reassignment's removals
+    /// of the entries holding a key mean nothing once its own edit is gone.
+    required: usize,
     /// The field that made the edit and the text it last saved, put back
     /// when the write fails so the entered text stays a draft to retry.
     pub(super) field: Option<(String, Option<String>)>,
@@ -298,6 +302,7 @@ impl SettingsView {
                 valid,
                 keys,
             }) => {
+                self.status.read();
                 if std::mem::take(&mut self.reload_unreported) {
                     if snapshot.text().is_some_and(|text| {
                         self.written.as_deref() == Some(text)
@@ -313,13 +318,15 @@ impl SettingsView {
                 match (file, valid) {
                     (Ok(file), Ok(())) => {
                         self.file = file;
-                        if let Some(error) = self.reload_error.take() {
+                        match self.reload_outcome.take() {
                             // The file is fine, so something else refused
                             // the reload, such as a missing font.
-                            self.status.not_applied(error);
-                        } else if let Some(warning) = self.reload_warning.take()
-                        {
-                            self.status.applied_with_warning(warning);
+                            Some(Err(error)) => self.status.not_applied(error),
+                            Some(Ok(warnings)) if !warnings.is_empty() => {
+                                self.status.applied_with_warnings(warnings);
+                            }
+                            Some(Ok(_)) => self.status.applied(),
+                            None => {}
                         }
                     }
                     (Ok(file), Err(message)) => {
@@ -335,7 +342,7 @@ impl SettingsView {
             }
             Err(error) => {
                 self.reload_unreported = false;
-                self.status.failed(error.to_string());
+                self.status.read_failed(error.to_string());
             }
         }
     }
@@ -413,27 +420,20 @@ impl SettingsView {
     /// with the write, not with `base`.
     pub(super) fn reloaded(
         &mut self,
-        outcome: Result<Option<String>, String>,
+        outcome: Result<Vec<String>, String>,
         automatic: bool,
         cx: &mut Context<'_, Self>,
     ) {
         self.status
             .watching(cx.global::<Desktop>().config.general.watch_config);
-        match outcome {
-            Ok(warning) => {
-                self.reload_error = None;
-                self.reload_warning = warning;
-                if automatic {
-                    self.reload_unreported = true;
-                } else {
-                    self.status.reloaded();
-                }
-            }
-            Err(message) => {
-                self.reload_error = Some(message);
-                self.reload_warning = None;
+        if outcome.is_ok() {
+            if automatic {
+                self.reload_unreported = true;
+            } else {
+                self.status.reloaded();
             }
         }
+        self.reload_outcome = Some(outcome);
         self.load(cx);
         self.load_themes(cx);
     }
@@ -633,6 +633,19 @@ impl SettingsView {
         field: Option<(String, Option<String>)>,
         cx: &mut Context<'_, Self>,
     ) -> bool {
+        self.submit_keys_removing(edit, row, field, &[], cx)
+    }
+
+    /// [`Self::submit_keys`], removing the user entries `remove` in the
+    /// same write.
+    pub(super) fn submit_keys_removing(
+        &mut self,
+        edit: Edit,
+        row: Option<String>,
+        field: Option<(String, Option<String>)>,
+        remove: &[usize],
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
         if self.locked() {
             return false;
         }
@@ -642,8 +655,21 @@ impl SettingsView {
         if let Some(row) = &row {
             self.keys.errors.remove(row);
         }
-        let patches = match edit.patches(&self.keys.entries, &self.keys.globals)
-        {
+        let removal = Edit::Remove(remove.to_vec());
+        let mut required = 0;
+        let patches = match edit
+            .patches(&self.keys.entries, &self.keys.globals)
+            .and_then(|mut patches| {
+                // A moved row's removal and re-addition stand or fall
+                // together, as do a reassignment's removals with its edit.
+                if !remove.is_empty() || matches!(edit, Edit::MoveUser { .. }) {
+                    required = patches.len();
+                }
+                patches.extend(
+                    removal.patches(&self.keys.entries, &self.keys.globals)?,
+                );
+                Ok(patches)
+            }) {
             Ok(patches) => patches,
             Err(message) => {
                 self.status.failed(message);
@@ -655,6 +681,7 @@ impl SettingsView {
             edit,
             row,
             patches,
+            required,
             field,
         };
         if self.writing.is_some() {
@@ -1467,7 +1494,11 @@ impl SettingsView {
                 return true;
             };
             let had = change.patches.len();
+            let mut position = 0;
+            let mut orphaned = false;
             change.patches.retain_mut(|patch| {
+                let required = position < change.required;
+                position += 1;
                 let (Patch::SetEntryField { locator, .. }
                 | Patch::ClearEntryField { locator, .. }
                 | Patch::RemoveEntry { locator }
@@ -1482,7 +1513,10 @@ impl SettingsView {
                             && *at == index
                             && before == locator.content()
                     }) {
-                        Some((.., None)) => return false,
+                        Some((.., None)) => {
+                            orphaned |= required;
+                            return false;
+                        }
                         Some((.., Some(after))) => after.clone(),
                         None => locator.content().clone(),
                     };
@@ -1496,7 +1530,7 @@ impl SettingsView {
                 *locator = locator.rebased(moved, content);
                 true
             });
-            had == 0 || !change.patches.is_empty()
+            !orphaned && (had == 0 || !change.patches.is_empty())
         });
     }
 

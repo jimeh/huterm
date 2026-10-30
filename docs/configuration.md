@@ -496,12 +496,14 @@ animation_ms = 150          # 0 through 1000; zero is immediate
 key = "ctrl-alt-t"
 command = "toggle_quake"
 # args = { profile = "default" }
+# disabled = true           # keep the entry without registering it
 ```
 
 The `default` profile exists without configuration. Add named tables, such as
 `[quake.profiles.logs]`, for independent windows. The Quake windows section of
 Settings picks a profile from a dropdown, adds, renames, and deletes named
-profiles, and records global shortcuts. It edits profiles whose names are bare
+profiles, and records global shortcuts, each with a switch that sets
+`disabled`. It edits profiles whose names are bare
 TOML keys (letters, digits, `-`, and `_`); others, such as
 `[quake.profiles."my logs"]`, are listed but stay in the file, where you edit,
 rename, or delete them. `show_quake`, `hide_quake`, and `toggle_quake` accept

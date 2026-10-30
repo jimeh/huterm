@@ -1,4 +1,5 @@
-//! The file status in the Settings sidebar footer, without GPUI.
+//! The file status in the Settings sidebar footer, and the notice that
+//! spells out a warning or failure above the section, without GPUI.
 
 /// How the footer colors its status dot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,14 +31,17 @@ enum Event {
     Invalid(String),
     /// A write failed and left the file as it was.
     Failed(String),
+    /// Reading the file failed, so the controls show an older read.
+    ReadFailed(String),
     /// A write replaced the file, but making that durable failed.
     SavedUnsure(String),
     /// A reload failed for a reason outside the file, such as a font that
     /// is not installed.
     NotApplied(String),
-    /// A reload applied the file, but something it asks for is unavailable,
-    /// such as a global shortcut another application holds.
-    AppliedWithWarning(String),
+    /// A reload applied the file, but some of what it asks for is
+    /// unavailable, such as global shortcuts other applications hold: one
+    /// message each.
+    AppliedWithWarning(Vec<String>),
     /// Creating or opening the file failed.
     FileError(String),
 }
@@ -50,10 +54,42 @@ pub(crate) struct Line {
     pub(crate) action: Option<Action>,
 }
 
+/// A warning or failure spelled out above the section, since the footer
+/// line has room for only its summary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Notice {
+    /// [`Tone::Warning`] or [`Tone::Error`].
+    pub(crate) tone: Tone,
+    /// The summary the footer line shows too.
+    pub(crate) title: String,
+    /// What went wrong, one message per problem.
+    pub(crate) messages: Vec<String>,
+    pub(crate) action: Option<Action>,
+    /// Whether it shows its messages: a failure always does, a warning
+    /// once the user unfolds it.
+    pub(crate) open: bool,
+}
+
+impl Notice {
+    /// Whether it starts with its messages hidden: a warning, which the
+    /// user may deal with later, unlike a failure.
+    pub(crate) fn collapsible(&self) -> bool {
+        self.tone == Tone::Warning
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FileStatus {
     watching: bool,
     latest: Option<Event>,
+    /// The warning or failure the notice spells out. The saves and reloads
+    /// that follow it leave it in place until their outcome settles or
+    /// replaces it, so the notice never vanishes and returns while they
+    /// run.
+    problem: Option<Event>,
+    /// The user unfolded the warning; it stays unfolded while the problem
+    /// lasts, even as a reload updates its messages.
+    notice_open: bool,
     /// The next reload is the one a save asked for, so it keeps "Saved".
     own_reload: bool,
 }
@@ -63,7 +99,28 @@ impl FileStatus {
         Self {
             watching,
             latest: None,
+            problem: None,
+            notice_open: false,
             own_reload: false,
+        }
+    }
+
+    fn report(&mut self, event: Event) {
+        self.latest = Some(event);
+    }
+
+    /// Reports a warning or failure, which the notice spells out.
+    fn report_problem(&mut self, event: Event) {
+        self.problem = Some(event.clone());
+        self.report(event);
+    }
+
+    /// Drops the notice's problem when `settles` says this outcome settles
+    /// it.
+    fn settle_problem(&mut self, settles: impl Fn(&Event) -> bool) {
+        if self.problem.as_ref().is_some_and(settles) {
+            self.problem = None;
+            self.notice_open = false;
         }
     }
 
@@ -72,23 +129,38 @@ impl FileStatus {
     }
 
     pub(crate) fn saving(&mut self) {
-        self.latest = Some(Event::Saving);
+        self.report(Event::Saving);
     }
 
+    /// A write succeeded, which settles a write's problem. A reload's
+    /// problem waits for the reload the save asks for.
     pub(crate) fn saved(&mut self) {
-        self.latest = Some(Event::Saved);
+        self.report(Event::Saved);
+        self.settle_problem(|problem| {
+            matches!(
+                problem,
+                Event::Failed(_)
+                    | Event::ReadFailed(_)
+                    | Event::SavedUnsure(_)
+                    | Event::FileError(_)
+            )
+        });
         self.own_reload = true;
     }
 
     /// A reload applied the file. The reload a save asked for keeps
     /// reporting the save, as does one while a save is running.
     pub(crate) fn reloaded(&mut self) {
+        // A failure to create or open the file, or to run a command, lasts
+        // until the next reload, whose report replaced it before the
+        // notice held its place.
+        self.settle_problem(|problem| matches!(problem, Event::FileError(_)));
         let own = std::mem::take(&mut self.own_reload);
         let saving = matches!(self.latest, Some(Event::Saving));
         let saved =
             matches!(self.latest, Some(Event::Saved | Event::SavedUnsure(_)));
         if !(saving || own && saved) {
-            self.latest = Some(Event::Reloaded);
+            self.report(Event::Reloaded);
         }
     }
 
@@ -105,40 +177,68 @@ impl FileStatus {
     /// A write replaced the file but could not make it durable. Like
     /// "Saved", the warning stays through the reload the save asks for.
     pub(crate) fn saved_with_warning(&mut self, message: impl Into<String>) {
-        self.latest = Some(Event::SavedUnsure(message.into()));
+        self.report_problem(Event::SavedUnsure(message.into()));
         self.own_reload = true;
     }
 
     pub(crate) fn not_applied(&mut self, message: impl Into<String>) {
-        self.latest = Some(Event::NotApplied(message.into()));
+        self.report_problem(Event::NotApplied(message.into()));
     }
 
-    /// A reload applied the file with a warning. It replaces even a save's
+    /// A reload applied the file with `warnings`. It replaces even a save's
     /// report, since the save took effect only in part.
-    pub(crate) fn applied_with_warning(&mut self, message: impl Into<String>) {
-        self.latest = Some(Event::AppliedWithWarning(message.into()));
+    pub(crate) fn applied_with_warnings(&mut self, warnings: Vec<String>) {
+        self.report_problem(Event::AppliedWithWarning(warnings));
+    }
+
+    /// A reload's reread found that it applied the file in full, which
+    /// settles a reload's problem. The footer reports the reload through
+    /// [`Self::reloaded`].
+    pub(crate) fn applied(&mut self) {
+        self.settle_problem(|problem| {
+            matches!(
+                problem,
+                Event::NotApplied(_) | Event::AppliedWithWarning(_)
+            )
+        });
+    }
+
+    /// Reading the file failed.
+    pub(crate) fn read_failed(&mut self, message: impl Into<String>) {
+        self.report_problem(Event::ReadFailed(message.into()));
+    }
+
+    /// A read succeeded, which settles a failed one.
+    pub(crate) fn read(&mut self) {
+        if matches!(self.latest, Some(Event::ReadFailed(_))) {
+            self.latest = None;
+        }
+        self.settle_problem(|problem| matches!(problem, Event::ReadFailed(_)));
     }
 
     pub(crate) fn changed_on_disk(&mut self) {
         if !self.invalid() {
-            self.latest = Some(Event::ChangedOnDisk);
+            self.report(Event::ChangedOnDisk);
         }
     }
 
+    /// The file does not parse or validate. Its banner replaces the
+    /// notice.
     pub(crate) fn invalid_file(&mut self, message: impl Into<String>) {
-        self.latest = Some(Event::Invalid(message.into()));
+        self.report(Event::Invalid(message.into()));
+        self.settle_problem(|_| true);
     }
 
     /// Creating or opening the file failed. An invalid file keeps its
     /// report, which also keeps the controls read-only.
     pub(crate) fn file_error(&mut self, message: impl Into<String>) {
         if !self.invalid() {
-            self.latest = Some(Event::FileError(message.into()));
+            self.report_problem(Event::FileError(message.into()));
         }
     }
 
     pub(crate) fn failed(&mut self, message: impl Into<String>) {
-        self.latest = Some(Event::Failed(message.into()));
+        self.report_problem(Event::Failed(message.into()));
     }
 
     /// Drops a failed write's report once the user settles it by keeping
@@ -147,6 +247,12 @@ impl FileStatus {
         if matches!(self.latest, Some(Event::Failed(_))) {
             self.latest = None;
         }
+        self.settle_problem(|problem| matches!(problem, Event::Failed(_)));
+    }
+
+    /// Shows or hides a warning's messages.
+    pub(crate) fn toggle_notice(&mut self) {
+        self.notice_open = !self.notice_open;
     }
 
     /// Whether the file failed to parse or validate, which makes every
@@ -180,32 +286,23 @@ impl FileStatus {
                     Action::Reload
                 }),
             ),
-            Some(Event::Failed(message)) => Line {
-                tone: Tone::Error,
-                text: format!("Not saved: {message}"),
-                action: None,
-            },
-            Some(Event::FileError(message)) => Line {
-                tone: Tone::Error,
-                text: message.clone(),
-                action: None,
-            },
-            Some(Event::SavedUnsure(message)) => Line {
-                tone: Tone::Warning,
-                text: format!("Saved, but {message}"),
-                action: None,
-            },
-            Some(Event::NotApplied(message)) => Line {
-                tone: Tone::Error,
-                text: format!("Not applied: {message}"),
-                action: Some(Action::Reload),
-            },
-            // A reload tries a refused shortcut again.
-            Some(Event::AppliedWithWarning(message)) => Line {
-                tone: Tone::Warning,
-                text: format!("Applied, but {message}"),
-                action: Some(Action::Reload),
-            },
+            // The notice carries the action, which leaves the line room
+            // for its summary.
+            Some(
+                event @ (Event::Failed(_)
+                | Event::ReadFailed(_)
+                | Event::FileError(_)
+                | Event::SavedUnsure(_)
+                | Event::NotApplied(_)
+                | Event::AppliedWithWarning(_)),
+            ) => {
+                let notice = self.notice_of(event).expect("a problem");
+                Line {
+                    tone: notice.tone,
+                    text: notice.title,
+                    action: None,
+                }
+            }
             None if self.watching => {
                 line(Tone::Ok, "Watching config.toml", None)
             }
@@ -215,6 +312,69 @@ impl FileStatus {
                 Some(Action::Reload),
             ),
         }
+    }
+
+    /// The standing warning or failure with its messages, for the notice
+    /// above the section. An invalid file has its own banner instead.
+    pub(crate) fn notice(&self) -> Option<Notice> {
+        self.notice_of(self.problem.as_ref()?)
+    }
+
+    fn notice_of(&self, event: &Event) -> Option<Notice> {
+        let notice = |tone, title: &str, messages: &[String], action| Notice {
+            tone,
+            title: title.to_owned(),
+            messages: messages.to_vec(),
+            action,
+            open: tone != Tone::Warning || self.notice_open,
+        };
+        Some(match event {
+            Event::Failed(message) => notice(
+                Tone::Error,
+                "Not saved",
+                std::slice::from_ref(message),
+                None,
+            ),
+            Event::FileError(message) => notice(
+                Tone::Error,
+                "Failed",
+                std::slice::from_ref(message),
+                None,
+            ),
+            Event::ReadFailed(message) => notice(
+                Tone::Error,
+                "Not read",
+                std::slice::from_ref(message),
+                Some(Action::Reload),
+            ),
+            Event::SavedUnsure(message) => notice(
+                Tone::Warning,
+                "Saved with a warning",
+                std::slice::from_ref(message),
+                None,
+            ),
+            Event::NotApplied(message) => notice(
+                Tone::Error,
+                "Not applied",
+                std::slice::from_ref(message),
+                Some(Action::Reload),
+            ),
+            // A reload tries a refused shortcut again.
+            Event::AppliedWithWarning(warnings) => notice(
+                Tone::Warning,
+                &match warnings.len() {
+                    1 => "Applied with a warning".to_owned(),
+                    count => format!("Applied with {count} warnings"),
+                },
+                warnings,
+                Some(Action::Reload),
+            ),
+            Event::Saving
+            | Event::Saved
+            | Event::Reloaded
+            | Event::ChangedOnDisk
+            | Event::Invalid(_) => return None,
+        })
     }
 
     /// The parser's message while the file is invalid, for the banner.
@@ -254,26 +414,13 @@ mod tests {
         status.reloaded();
         assert_eq!(
             text(&status),
-            (
-                Tone::Warning,
-                "Saved, but the disk did not confirm it".into(),
-                None
-            )
+            (Tone::Warning, "Saved with a warning".into(), None)
         );
+        // The notice above the section carries Reload.
         status.not_applied("font \"Nope\" is not installed");
-        assert_eq!(
-            text(&status),
-            (
-                Tone::Error,
-                "Not applied: font \"Nope\" is not installed".into(),
-                Some(Action::Reload)
-            )
-        );
+        assert_eq!(text(&status), (Tone::Error, "Not applied".into(), None));
         status.failed("permission denied");
-        assert_eq!(
-            text(&status),
-            (Tone::Error, "Not saved: permission denied".into(), None)
-        );
+        assert_eq!(text(&status), (Tone::Error, "Not saved".into(), None));
         status.reloaded();
         assert_eq!(text(&status), (Tone::Ok, "Reloaded".into(), None));
         status.failed("config.toml changed on disk");
@@ -329,24 +476,110 @@ mod tests {
         let mut status = FileStatus::new(true);
         status.saved();
         status.reloaded();
-        status.applied_with_warning(
+        status.applied_with_warnings(vec![
             "cannot register cmd-shift-space: already in use by another \
-             application",
-        );
+             application"
+                .to_owned(),
+        ]);
         assert_eq!(
             text(&status),
-            (
-                Tone::Warning,
-                "Applied, but cannot register cmd-shift-space: already in use \
-                 by another application"
-                    .into(),
-                Some(Action::Reload)
-            )
+            (Tone::Warning, "Applied with a warning".into(), None)
         );
         // The other application released the shortcut, and the watcher's
         // reload of the same file registers it.
         status.reloaded_unchanged();
         assert_eq!(text(&status), (Tone::Ok, "Reloaded".into(), None));
+    }
+
+    #[test]
+    fn a_notice_spells_out_each_problem_and_folds_only_warnings() {
+        let mut status = FileStatus::new(true);
+        status.saved();
+        assert_eq!(status.notice(), None);
+        let refused = vec![
+            "cannot register cmd-shift-space: already in use".to_owned(),
+            "cannot register ctrl-alt-t: registration rejected".to_owned(),
+        ];
+        status.applied_with_warnings(refused.clone());
+        let notice = status.notice().expect("a notice");
+        assert_eq!(notice.title, "Applied with 2 warnings");
+        assert_eq!(notice.messages, refused);
+        assert_eq!(notice.action, Some(Action::Reload));
+        assert!(notice.collapsible() && !notice.open);
+        status.failed("permission denied");
+        let notice = status.notice().expect("a notice");
+        assert!(!notice.collapsible() && notice.open);
+        assert_eq!(
+            (notice.tone, notice.title.as_str(), notice.messages),
+            (
+                Tone::Error,
+                "Not saved",
+                vec!["permission denied".to_owned()]
+            )
+        );
+        // An invalid file has its own banner.
+        status.invalid_file("expected `=` at line 14");
+        assert_eq!(status.notice(), None);
+    }
+
+    #[test]
+    fn a_notice_holds_its_place_and_fold_until_an_outcome_settles_it() {
+        let refused = |key: &str| vec![format!("cannot register {key}")];
+        let mut status = FileStatus::new(true);
+        status.applied_with_warnings(refused("ctrl-alt-t"));
+        status.toggle_notice();
+        // A change saves, and the save's reload finds the same problem.
+        status.saving();
+        assert_eq!(text(&status).1, "Saving…");
+        status.saved();
+        status.reloaded();
+        let held = status.notice().expect("the notice holds");
+        assert_eq!(held.messages, refused("ctrl-alt-t"));
+        assert!(held.open);
+        status.applied_with_warnings(refused("cmd-shift-space"));
+        let updated = status.notice().expect("an updated notice");
+        assert_eq!(updated.messages, refused("cmd-shift-space"));
+        assert!(updated.open, "an update keeps the notice unfolded");
+        // A reload that applies the file in full settles it, and the next
+        // warning starts folded.
+        status.applied();
+        assert_eq!(status.notice(), None);
+        status.applied_with_warnings(refused("ctrl-alt-t"));
+        assert!(!status.notice().expect("a new notice").open);
+
+        // A write's failure lasts until a write succeeds.
+        status.failed("permission denied");
+        status.saving();
+        status.applied();
+        assert_eq!(
+            status.notice().map(|notice| notice.title),
+            Some("Not saved".into())
+        );
+        status.saved();
+        assert_eq!(status.notice(), None);
+    }
+
+    #[test]
+    fn a_failed_read_holds_until_a_read_succeeds() {
+        let mut status = FileStatus::new(true);
+        status.read_failed("permission denied");
+        assert_eq!(text(&status), (Tone::Error, "Not read".into(), None));
+        // A reload applying the file leaves an unread file's notice.
+        status.reloaded();
+        status.applied();
+        assert_eq!(
+            status.notice().map(|notice| notice.messages),
+            Some(vec!["permission denied".to_owned()])
+        );
+        status.read();
+        assert_eq!(status.notice(), None);
+        // A failure to create the file, or a command's, lasts until the
+        // next reload.
+        status.file_error("Cannot create config.toml");
+        status.applied();
+        assert!(status.notice().is_some());
+        status.reloaded();
+        assert_eq!(status.notice(), None);
     }
 
     #[test]

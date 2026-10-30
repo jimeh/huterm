@@ -34,11 +34,6 @@ pub(crate) fn compile(
                     "global shortcuts cannot have a when predicate".into()
                 );
             }
-            if entry.disabled.is_some() {
-                return Err("global shortcuts cannot be disabled; remove the \
-                     entry instead"
-                    .into());
-            }
             let id = match entry.command.as_str() {
                 "show_quake" => ids::SHOW_QUAKE,
                 "hide_quake" => ids::HIDE_QUAKE,
@@ -60,6 +55,12 @@ pub(crate) fn compile(
                 return Err(format!("unknown quake profile {profile:?}"));
             }
             let stroke = parse_stroke(&entry.key)?;
+            let key = native_key(&stroke)?;
+            // A disabled shortcut is checked but registers nothing, so its
+            // key stays free for in-app bindings and other shortcuts.
+            if entry.is_disabled() {
+                return Ok(None);
+            }
             for binding in &local.bindings {
                 if binding.keystrokes().first().is_some_and(|other| {
                     *other.modifiers() == stroke.modifiers
@@ -71,11 +72,10 @@ pub(crate) fn compile(
                     );
                 }
             }
-            let key = native_key(&stroke)?;
             if !keys.insert(key.id()) {
                 return Err("duplicate global shortcut".into());
             }
-            Ok(Binding {
+            Ok(Some(Binding {
                 key,
                 keystroke: entry.key.clone(),
                 invocation: CommandInvocation::new(
@@ -85,9 +85,9 @@ pub(crate) fn compile(
                         CommandValue::Text(profile.into()),
                     )],
                 ),
-            })
+            }))
         })();
-        result.push(parsed.map_err(|error: String| {
+        result.extend(parsed.map_err(|error: String| {
             format!(
                 "global_keybinding {} ({:?}): {error}",
                 index + 1,
@@ -547,19 +547,37 @@ mod tests {
         ] {
             assert!(compile(&[invalid], &profiles, &local).is_err());
         }
-        // Global shortcuts cannot be disabled, whatever the value.
-        for value in [true, false] {
-            let error = compile(
-                &[KeybindingEntry {
-                    disabled: Some(value),
+        // A disabled shortcut registers nothing and leaves its key free for
+        // another, but its fields still have to be valid.
+        let disabled = KeybindingEntry {
+            disabled: Some(true),
+            ..entry.clone()
+        };
+        let compiled = compile(
+            &[
+                disabled.clone(),
+                KeybindingEntry {
+                    disabled: Some(false),
                     ..entry.clone()
+                },
+            ],
+            &profiles,
+            &local,
+        )
+        .unwrap();
+        assert_eq!(compiled.len(), 1);
+        assert_eq!(compiled[0].keystroke, "ctrl-alt-t");
+        assert!(
+            compile(
+                &[KeybindingEntry {
+                    command: "quit".into(),
+                    ..disabled.clone()
                 }],
                 &profiles,
-                &local,
+                &local
             )
-            .unwrap_err();
-            assert!(error.contains("cannot be disabled"), "{error}");
-        }
+            .is_err()
+        );
         let mut local = local;
         local.bindings.push(gpui::KeyBinding::new(
             "ctrl-alt-t x",
@@ -570,9 +588,10 @@ mod tests {
             None,
         ));
         assert!(
-            compile(&[entry], &profiles, &local)
+            compile(std::slice::from_ref(&entry), &profiles, &local)
                 .unwrap_err()
                 .contains("conflicts")
         );
+        assert_eq!(compile(&[disabled], &profiles, &local), Ok(Vec::new()));
     }
 }

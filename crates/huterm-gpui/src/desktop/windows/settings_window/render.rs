@@ -21,7 +21,7 @@ use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::components::tabs::Tabs;
 
 use super::super::super::overlay::{Swatch, mono_font_family};
-use super::super::super::settings::status::Action;
+use super::super::super::settings::status::{Action, Tone};
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
 use super::{
@@ -388,6 +388,68 @@ impl SettingsView {
         Some(div().mb(px(14.0)).child(alert).into_any_element())
     }
 
+    /// The latest warning or failure, spelled out above the section. A
+    /// warning starts as one short row whose Details button shows its
+    /// messages, so the user can carry on and look later; a failure shows
+    /// them at once.
+    fn render_notice(
+        &mut self,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let notice = self.status.notice()?;
+        let open = notice.open;
+        let tone = match notice.tone {
+            Tone::Warning => AlertTone::Warning,
+            _ => AlertTone::Danger,
+        };
+        let details = notice.collapsible().then(|| {
+            self.action_button(
+                "settings-notice-details".to_owned(),
+                if open { "Hide details" } else { "Details" },
+                "notice:details".to_owned(),
+                swatch,
+                cx,
+            )
+            .small()
+            .expanded(open)
+        });
+        let reload = (notice.action == Some(Action::Reload)).then(|| {
+            self.action_button(
+                "settings-notice-reload".to_owned(),
+                "Reload",
+                "reload:notice".to_owned(),
+                swatch,
+                cx,
+            )
+            .small()
+        });
+        let text = tone.colors(swatch).title;
+        let alert = Alert::new("settings-notice", notice.title, swatch)
+            .tone(tone)
+            .when_some(details, Alert::action)
+            .when_some(reload, Alert::action)
+            .when(!open, Alert::compact)
+            .when(open, |alert| {
+                alert.child(
+                    div()
+                        .debug_selector(|| "settings-notice-messages".into())
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .text_size(px(12.0))
+                        .text_color(text)
+                        .children(
+                            notice
+                                .messages
+                                .iter()
+                                .map(|message| div().child(sentence(message))),
+                        ),
+                )
+            });
+        Some(div().mb(px(14.0)).child(alert).into_any_element())
+    }
+
     /// A setting's row: a `Field` with the setting's name, a dot when the
     /// file sets it, its descriptions and error, Reset while it is changed,
     /// and its control, then any conflict with the file. The rows that
@@ -547,6 +609,47 @@ impl SettingsView {
         )
     }
 
+    /// Check for Updates, which runs the command the app menu has, so the
+    /// section that schedules checks can also start one. A build without
+    /// an updater disables it with the reason.
+    fn render_update_check(
+        &mut self,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let refusal = super::super::update_check_refusal(cx);
+        let check = self
+            .action_button(
+                "settings-updates-check".to_owned(),
+                "Check for Updates",
+                "updates:card".to_owned(),
+                swatch,
+                cx,
+            )
+            .when_some(refusal, |button, reason| {
+                button.disabled(Some(reason.into()))
+            });
+        let row = div()
+            .flex()
+            .items_center()
+            .gap(px(12.0))
+            .px(px(14.0))
+            .py(px(10.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(12.5))
+                    .text_color(swatch.fg)
+                    .child("Look for a newer version of Huterm now."),
+            )
+            .child(check);
+        div()
+            .mb(px(12.0))
+            .child(Card::new("settings-updates", swatch).child(row))
+            .into_any_element()
+    }
+
     /// The file's path, with buttons that open it and show it in the file
     /// manager.
     fn render_file_card(
@@ -630,6 +733,9 @@ impl SettingsView {
         if let Some(banner) = self.render_banner(swatch, cx) {
             body = body.child(banner);
         }
+        if let Some(notice) = self.render_notice(swatch, cx) {
+            body = body.child(notice);
+        }
         if searching {
             let mut matched = false;
             for section in self.visible_sections() {
@@ -668,6 +774,10 @@ impl SettingsView {
             body = body.children(
                 (section == SectionId::General)
                     .then(|| self.render_file_card(swatch, cx)),
+            );
+            body = body.children(
+                (section == SectionId::Updates)
+                    .then(|| self.render_update_check(swatch, cx)),
             );
             body = if section == SectionId::Keybindings {
                 body.children(self.render_keybindings(swatch, window, cx))
@@ -834,6 +944,15 @@ impl SettingsView {
             .into_any_element(),
         )
     }
+}
+
+/// `message` with a capital first letter: messages are written as clauses,
+/// such as "cannot register …".
+fn sentence(message: &str) -> String {
+    let mut chars = message.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// A titled card of `rows`, as each group of the pane draws, with the space

@@ -33,6 +33,7 @@ use huterm_ui::components::field::Field;
 use huterm_ui::components::input::{Chrome, Input};
 use huterm_ui::components::input_group::InputGroup;
 use huterm_ui::components::key_recorder::KeyRecorderButton;
+use huterm_ui::components::switch::Switch;
 use huterm_ui::listbox::{
     Item as MenuItem, Model as MenuModel, Row as MenuRow,
 };
@@ -126,7 +127,7 @@ pub(super) fn profile_setting(
             kind: SettingKind::Compound,
             default: None,
             unit: None,
-            visible_when: None,
+            visible_when: Vec::new(),
             ..table.clone()
         },
         Some(field) => {
@@ -136,7 +137,7 @@ pub(super) fn profile_setting(
                 .find(|setting| setting.path == field)?
                 .clone();
             path.clone_into(&mut setting.path);
-            if let Some(condition) = &mut setting.visible_when {
+            for condition in &mut setting.visible_when {
                 condition.setting =
                     format!("{PREFIX}{name}.{}", condition.setting);
             }
@@ -173,6 +174,8 @@ struct Global {
     command: String,
     /// `None` runs the default profile.
     profile: Option<String>,
+    /// Whether `disabled = true` keeps it from registering.
+    disabled: bool,
 }
 
 impl Global {
@@ -188,6 +191,8 @@ impl Global {
                 .and_then(|args| args.get("profile"))
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            disabled: content.get("disabled").and_then(Value::as_bool)
+                == Some(true),
         }
     }
 }
@@ -368,6 +373,11 @@ impl SettingsView {
             "gcmd" | "gprofile" => {
                 if let Ok(entry) = argument.parse() {
                     self.open_global_menu(entry, kind == "gcmd", window, cx);
+                }
+            }
+            "gon" => {
+                if let Ok(entry) = argument.parse() {
+                    self.switch_global(entry, cx);
                 }
             }
             "gdel" => {
@@ -870,6 +880,24 @@ impl SettingsView {
         );
     }
 
+    /// Switches a global shortcut on or off. Switching on clears its
+    /// `disabled` rather than writing `false`, as a binding's switch does.
+    fn switch_global(&mut self, entry: usize, cx: &mut Context<'_, Self>) {
+        let Some(global) = self.globals().into_iter().nth(entry) else {
+            return;
+        };
+        self.submit_keys(
+            Edit::ChangeGlobal {
+                entry,
+                field: "disabled",
+                value: (!global.disabled).then_some(Value::Boolean(true)),
+            },
+            Some(format!("g{entry}")),
+            None,
+            cx,
+        );
+    }
+
     /// Writes a recorded key for a global shortcut, or adds one.
     pub(super) fn finish_global(
         &mut self,
@@ -1159,7 +1187,8 @@ impl SettingsView {
             | Prompt::LayoutRenameRefused { .. }
             | Prompt::DeleteLayout(_)
             | Prompt::LayoutDeleteRefused { .. }
-            | Prompt::CycleRefused(_) => return None,
+            | Prompt::CycleRefused(_)
+            | Prompt::Reassign { .. } => return None,
         };
         Some(alert.into_any_element())
     }
@@ -1416,6 +1445,25 @@ impl SettingsView {
             swatch,
             cx,
         );
+        let switch_key = format!("gon:{index}");
+        let handle = self.action_stop(switch_key.clone(), cx);
+        let focus = handle.clone();
+        let toggle = Switch::new(
+            gpui::ElementId::Name(format!("settings-gon-{index}").into()),
+            format!(
+                "Global shortcut {}",
+                KeyHint::parse(&global.key, Platform::current()).text()
+            ),
+            !global.disabled,
+            &handle,
+            swatch,
+        )
+        .key_context("SettingsControl")
+        .when(read_only, |switch| switch.disabled(self.keys_lock_reason()))
+        .on_toggle(Self::listen(cx, move |view, _, window, cx| {
+            focus.focus(window, cx);
+            view.act(&switch_key, window, cx);
+        }));
         let error = self.keys.errors.get(&format!("g{index}")).cloned();
         div()
             .flex()
@@ -1432,6 +1480,7 @@ impl SettingsView {
                     .child(command)
                     .child(profile)
                     .child(div().flex_1())
+                    .child(toggle)
                     // A read-only row draws no remove button.
                     .when(!read_only, |row| {
                         row.child(self.remove_button(

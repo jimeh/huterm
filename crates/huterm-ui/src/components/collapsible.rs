@@ -7,8 +7,11 @@
 //! [`crate::components::item::Item`] given through [`Collapsible::item`]:
 //! the trigger then covers the item's media, title, and description, and
 //! the item's actions, such as key caps and buttons, sit beside the
-//! trigger, outside it. [`chevron`] draws the usual disclosure arrow for
-//! the item's media, pointing down while open.
+//! trigger, outside it. Actions that are content rather than controls,
+//! such as a summary of key caps, can draw inside the trigger instead
+//! ([`Collapsible::actions_in_trigger`]), so it spans the whole header.
+//! [`chevron`] draws the usual disclosure arrow for the item's media,
+//! pointing down while open.
 //!
 //! Keyboard: the trigger takes focus; the owner toggles it on its
 //! activation command (Space and Return by default) with the state
@@ -61,6 +64,7 @@ pub struct Collapsible {
     focus: FocusHandle,
     tokens: Tokens,
     item: Option<Item>,
+    actions_in_trigger: bool,
     corners: Option<Corners<Pixels>>,
     disabled: Option<SharedString>,
     key_context: Option<SharedString>,
@@ -98,6 +102,7 @@ impl Collapsible {
             focus: focus.clone(),
             tokens,
             item: None,
+            actions_in_trigger: false,
             corners: None,
             disabled: None,
             key_context: None,
@@ -112,6 +117,16 @@ impl Collapsible {
     #[must_use]
     pub fn item(mut self, item: Item) -> Self {
         self.item = Some(item);
+        self
+    }
+
+    /// Draws the item's actions inside the trigger, for actions that are
+    /// content rather than controls, such as a summary of key caps: the
+    /// trigger then spans the header, so it hovers, presses, and toggles
+    /// across the whole row.
+    #[must_use]
+    pub fn actions_in_trigger(mut self) -> Self {
+        self.actions_in_trigger = true;
         self
     }
 
@@ -210,11 +225,12 @@ fn trigger_corners(
 }
 
 /// The trigger filled with the item's media and content, padded as the
-/// item's row, with the item's actions and style; or, with no item, the
-/// trigger drawing `label`.
+/// item's row, with the item's actions, drawn inside it when `inside`, and
+/// style; or, with no item, the trigger drawing `label`.
 fn lay_out(
     trigger: Stateful<Div>,
     parts: Option<Parts>,
+    inside: bool,
     label: SharedString,
     tokens: Tokens,
 ) -> (Stateful<Div>, Option<Div>, StyleRefinement) {
@@ -226,6 +242,17 @@ fn lay_out(
             .child(label);
         return (trigger, None, StyleRefinement::default());
     };
+    if inside {
+        let trigger = trigger
+            .flex()
+            .items_center()
+            .gap(px(item::GAP))
+            .px(px(item::PADDING_X))
+            .py(px(item::PADDING_Y))
+            .child(parts.lead)
+            .children(parts.actions);
+        return (trigger, None, parts.style);
+    }
     let actions = parts.actions.is_some();
     let trigger = trigger
         .flex()
@@ -251,8 +278,9 @@ impl RenderOnce for Collapsible {
         let focus = self.focus.clone().tab_stop(enabled);
         let reason = self.disabled.clone().filter(|reason| !reason.is_empty());
         let parts = self.item.map(Item::into_parts);
-        let actions =
-            parts.as_ref().is_some_and(|parts| parts.actions.is_some());
+        let inside = self.actions_in_trigger;
+        let actions = !inside
+            && parts.as_ref().is_some_and(|parts| parts.actions.is_some());
         let corners = trigger_corners(self.corners, actions);
         let (label, description) = match &parts {
             Some(parts) => (parts.title.clone(), parts.description.clone()),
@@ -305,7 +333,7 @@ impl RenderOnce for Collapsible {
                 },
             );
         let (trigger, actions, style) =
-            lay_out(trigger, parts, self.label, tokens);
+            lay_out(trigger, parts, inside, self.label, tokens);
         let trigger = focus::ring_inset(trigger, &focus, tokens, window, cx);
         let trigger = States {
             disabled: !enabled,

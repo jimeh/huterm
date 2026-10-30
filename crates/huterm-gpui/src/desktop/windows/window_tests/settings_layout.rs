@@ -935,7 +935,7 @@ fn the_title_strip_leaves_the_search_its_clicks(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_command_row_toggles_from_its_trigger_and_not_from_its_shortcuts(
+fn a_command_row_toggles_from_its_title_and_from_its_shortcuts(
     cx: &mut TestAppContext,
 ) {
     let file = ScratchConfig::new("layout-command-row", "");
@@ -953,16 +953,14 @@ fn a_command_row_toggles_from_its_trigger_and_not_from_its_shortcuts(
     let trigger = a11y_node(&mut harness, id);
     a11y_click(&mut harness, &trigger);
     assert_eq!(expanded(&mut harness)["expanded"], true);
-    // A press on the shortcuts beside the trigger leaves the row open.
+    // The shortcut summary is content inside the trigger, which spans the
+    // row, so a press on it toggles too.
     let summary = visual(&harness)
         .debug_bounds("settings-ksummary-new_tab")
         .expect("the summary drew");
     let mut pointer = visual(&harness);
     pointer.simulate_click(summary.center(), Modifiers::none());
     pointer.run_until_parked();
-    assert_eq!(expanded(&mut harness)["expanded"], true);
-    let trigger = a11y_node(&mut harness, id);
-    a11y_click(&mut harness, &trigger);
     assert_eq!(expanded(&mut harness)["expanded"], false);
 }
 

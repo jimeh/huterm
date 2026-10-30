@@ -64,8 +64,11 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
         fatal: false,
         inputs: config::Inputs::default(),
     };
-    let (installed, error) = windows::install_startup_keymap(cx, &loaded);
-    anyhow::ensure!(error.is_empty(), "startup keymap: {error:?}");
+    let (installed, report) = windows::install_startup_keymap(cx, &loaded);
+    anyhow::ensure!(
+        report == windows::ConfigReport::default(),
+        "startup keymap: {report:?}"
+    );
     unbound_menu_item("Check for Updates...")?;
     marker("startup-update-command");
     shortcut("Reload Configuration", "r")?;

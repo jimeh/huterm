@@ -157,7 +157,7 @@ pub(super) fn template_setting(
         unit: None,
         step: None,
         control: None,
-        visible_when: None,
+        visible_when: Vec::new(),
         ..table.clone()
     };
     let setting: &'static Setting = Box::leak(Box::new(setting));
@@ -1443,7 +1443,8 @@ impl SettingsView {
             | Prompt::RenameProfile(_)
             | Prompt::RenameRefused { .. }
             | Prompt::NewLayout
-            | Prompt::RenameLayout(_) => return None,
+            | Prompt::RenameLayout(_)
+            | Prompt::Reassign { .. } => return None,
         };
         Some(alert.into_any_element())
     }

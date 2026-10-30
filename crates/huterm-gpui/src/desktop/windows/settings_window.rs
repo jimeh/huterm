@@ -42,7 +42,7 @@ use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 use huterm_ui::components::input::{Changed, Chrome, Input};
 use huterm_ui::components::menu::{
-    MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole,
+    MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole, select_width,
 };
 use huterm_ui::components::number_field::{
     self, Format as NumberFormat, NumberField,
@@ -140,17 +140,14 @@ pub(super) fn open(cx: &mut App) {
 }
 
 /// Tells the Settings window that a reload finished, so it rereads the
-/// file and reports the outcome: `Ok` with any warning about what the
-/// applied file asks for, or the error. `automatic` says the watcher
-/// started it.
-pub(super) fn reloaded(
-    cx: &mut App,
-    outcome: Result<Option<String>, String>,
-    automatic: bool,
-) {
-    let Some(handle) = cx.global::<Desktop>().settings else {
+/// file and reports the desktop's new [`super::ConfigReport`]. `automatic`
+/// says the watcher started it.
+pub(super) fn reloaded(cx: &mut App, automatic: bool) {
+    let desktop = cx.global::<Desktop>();
+    let Some(handle) = desktop.settings else {
         return;
     };
+    let outcome = desktop.config_report.for_settings();
     let _ = handle.update(cx, |view, _, cx| {
         view.reloaded(outcome, automatic, cx);
     });
@@ -289,12 +286,11 @@ pub(super) struct SettingsView {
     /// A setting whose next change reads the file afresh: after Use mine,
     /// or a profile's deletion.
     fresh: Option<&'static str>,
-    /// The last reload's error when the file itself validates, so the
-    /// footer can say the settings were not applied.
-    reload_error: Option<String>,
-    /// The last reload's warning when it applied the file, such as a global
-    /// shortcut another application holds.
-    reload_warning: Option<String>,
+    /// The last reload's outcome until a reread finds the file valid and
+    /// reports it: its error, so the footer can say the settings were not
+    /// applied, or what it applied with but could not honour, such as
+    /// refused global shortcuts.
+    reload_outcome: Option<Result<Vec<String>, String>>,
     /// An automatic reload applied the file, and the reread it started
     /// decides whether to report it (`loaded`).
     reload_unreported: bool,
@@ -380,6 +376,9 @@ impl SettingsView {
         let path = desktop.config_path.clone();
         let watching = desktop.config.general.watch_config;
         let swatch = tokens(&desktop.config.theme);
+        // The window reports the active configuration's problems from its
+        // first read, not only after a reload.
+        let report = desktop.config_report.for_settings();
         let search = Self::search_field(swatch, cx);
         let keys = Keys::new(swatch, cx);
         // While a shortcut records, its keys reach no binding, menu, or
@@ -440,8 +439,7 @@ impl SettingsView {
             loading: 0,
             reread: false,
             fresh: None,
-            reload_error: None,
-            reload_warning: None,
+            reload_outcome: Some(report),
             reload_unreported: false,
             written: None,
             closing: false,
@@ -887,6 +885,20 @@ impl SettingsView {
                 });
             }
             "open" => cx.defer(super::open_config_file),
+            // The command reports its own failures, such as Sparkle's, but
+            // not a refusal before it runs.
+            "updates" => cx.defer(|cx| {
+                let invocation =
+                    CommandInvocation::new(ids::CHECK_FOR_UPDATES, Vec::new());
+                if let Err(error) = Desktop::invoke(cx, &invocation, None) {
+                    let message = match error {
+                        CommandError::Unavailable(reason) => reason,
+                        error => error.to_string(),
+                    };
+                    show_failure(cx, &message);
+                }
+            }),
+            "notice" => self.status.toggle_notice(),
             "reveal" => cx.reveal_path(&self.path),
             _ => {}
         }
@@ -996,12 +1008,13 @@ impl SettingsView {
         {
             return false;
         }
-        setting.visible_when.as_ref().is_none_or(|condition| {
-            self.setting_at(&condition.setting).is_some_and(|other| {
-                shown(other, &self.file, &self.defaults).as_ref()
-                    == Some(&condition.equals)
+        setting.visible_when.is_empty()
+            || setting.visible_when.iter().any(|condition| {
+                self.setting_at(&condition.setting).is_some_and(|other| {
+                    shown(other, &self.file, &self.defaults).as_ref()
+                        == Some(&condition.equals)
+                })
             })
-        })
     }
 
     fn matches(setting: &Setting, query: &str) -> bool {
@@ -1351,6 +1364,8 @@ impl SettingsView {
         let menu = cx.new(|cx| {
             MenuView::new(label, model, swatch, true, cx)
                 .with_role(MenuRole::ListBox)
+                // `render_popover` sizes it to its trigger and rows.
+                .with_min_width(px(0.0))
         });
         // The menu opens on the value its control shows, so Return keeps it.
         if let Some(current) = self.menu_current(&target) {
@@ -1430,7 +1445,7 @@ impl SettingsView {
     }
 
     /// The open menu, placed against its trigger with room to scroll, at
-    /// least as wide as the trigger.
+    /// least as wide as the trigger and wider where its rows need it.
     fn render_popover(
         &mut self,
         window: &mut Window,
@@ -1449,7 +1464,12 @@ impl SettingsView {
             cx.defer_in(window, Self::close_menu);
         }
         let width = match anchor {
-            Anchor::Trigger(bounds) => bounds.size.width.max(MIN_WIDTH),
+            Anchor::Trigger(bounds) => select_width(
+                bounds.size.width,
+                menu.read(cx).model(),
+                viewport.width,
+                window,
+            ),
             Anchor::Pointer(_) => MIN_WIDTH,
         };
         let height = MenuView::content_height(menu.read(cx).model());
@@ -2650,17 +2670,26 @@ impl SettingsView {
         self.reloaded(Err(message.to_owned()), false, cx);
     }
 
-    /// Follows an automatic reload that applied the file with `warning`.
-    pub(super) fn follow_reload_with_warning(
+    /// Follows an automatic reload that applied the file with `warnings`.
+    pub(super) fn follow_reload_with_warnings(
         &mut self,
-        warning: &str,
+        warnings: &[&str],
         cx: &mut Context<'_, Self>,
     ) {
-        self.reloaded(Ok(Some(warning.to_owned())), true, cx);
+        let warnings = warnings.iter().map(|&warning| warning.to_owned());
+        self.reloaded(Ok(warnings.collect()), true, cx);
     }
 
     pub(super) fn status_text(&self) -> String {
         self.status.line().text
+    }
+
+    /// The notice's messages, one per line, or nothing without a notice.
+    pub(super) fn notice_text(&self) -> String {
+        self.status
+            .notice()
+            .map(|notice| notice.messages.join("\n"))
+            .unwrap_or_default()
     }
 
     pub(super) fn read_only(&self) -> bool {
@@ -2742,7 +2771,7 @@ impl SettingsView {
 
     /// Follows a reload that applied the file.
     pub(super) fn follow_reload(&mut self, cx: &mut Context<'_, Self>) {
-        self.reloaded(Ok(None), false, cx);
+        self.reloaded(Ok(Vec::new()), false, cx);
     }
 
     /// Looks for an edit made elsewhere, as coming forward does.
@@ -2757,6 +2786,21 @@ impl SettingsView {
         key: &str,
     ) -> Option<String> {
         self.keys.row_named(command, key)
+    }
+
+    /// Whether `command`'s binding on `key` is the one that holds the key.
+    pub(super) fn key_active(
+        &self,
+        command: huterm_protocol::CommandId,
+        key: &str,
+    ) -> bool {
+        self.keys.inventory.as_ref().is_some_and(|inventory| {
+            inventory.bindings.iter().any(|listed| {
+                listed.binding.command == command
+                    && listed.binding.key == key
+                    && listed.state == crate::keymap::BindingState::Active
+            })
+        })
     }
 
     /// Types into a keybinding field, creating it as its row would.
