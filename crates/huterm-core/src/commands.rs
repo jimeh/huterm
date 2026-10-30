@@ -44,6 +44,11 @@ pub fn execute(
             let tab = invocation.tab("tab").ok_or_else(|| missing("tab"))?;
             mux.rename_tab(tab, name()?)
         }
+        ids::RENAME_PANE => {
+            let pane =
+                invocation.pane("pane").ok_or_else(|| missing("pane"))?;
+            mux.rename_pane(pane, name()?)
+        }
         ids::RENAME_WORKSPACE => {
             let workspace = invocation
                 .workspace("workspace")
@@ -72,7 +77,8 @@ fn map_error(error: MuxError) -> CommandError {
         MuxError::ForeignRuntime(_)
         | MuxError::UnknownSession(_)
         | MuxError::UnknownWorkspace(_)
-        | MuxError::UnknownTab(_) => CommandError::StaleTarget,
+        | MuxError::UnknownTab(_)
+        | MuxError::UnknownPane(_) => CommandError::StaleTarget,
         other => CommandError::Runtime(other.to_string()),
     }
 }
@@ -81,7 +87,7 @@ fn map_error(error: MuxError) -> CommandError {
 mod tests {
     use super::*;
     use huterm_protocol::{
-        CellSize, CommandArgument, CommandValue, GridSize, TabId,
+        CellSize, CommandArgument, CommandValue, GridSize, PaneId, TabId,
         TerminalCommand,
     };
 
@@ -154,6 +160,51 @@ mod tests {
             Err(CommandError::StaleTarget)
         );
         assert_eq!(mux.workspace(workspace).unwrap().tabs, Vec::new());
+        mux.close_session(session).unwrap();
+    }
+
+    #[test]
+    fn renames_panes_and_reports_a_vanished_pane_as_stale() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let tab = mux.open_tab(workspace, &command()).unwrap().tab;
+        let pane = tab.first_pane().id;
+        let rename = |name: &str, pane: Option<PaneId>| {
+            let mut args = vec![CommandArgument::new(
+                "name",
+                CommandValue::Text(name.into()),
+            )];
+            args.extend(pane.map(|pane| {
+                CommandArgument::new("pane", CommandValue::Pane(pane))
+            }));
+            CommandInvocation::new(ids::RENAME_PANE, args)
+        };
+        let name = |mux: &Mux| {
+            mux.tab(tab.id).unwrap().first_pane().custom_name.clone()
+        };
+        assert_eq!(
+            execute(&mut mux, &rename("pane", Some(pane))),
+            Ok(CommandOutcome::Completed)
+        );
+        assert_eq!(name(&mux).as_deref(), Some("pane"));
+        assert_eq!(
+            execute(&mut mux, &rename("later", None)),
+            Err(CommandError::MissingArgument {
+                command: ids::RENAME_PANE,
+                name: "pane"
+            })
+        );
+        assert_eq!(
+            execute(&mut mux, &rename(" ", Some(pane))),
+            Ok(CommandOutcome::Completed)
+        );
+        assert_eq!(name(&mux), None);
+        mux.close_tab(workspace, tab.id).unwrap();
+        assert_eq!(
+            execute(&mut mux, &rename("gone", Some(pane))),
+            Err(CommandError::StaleTarget)
+        );
         mux.close_session(session).unwrap();
     }
 

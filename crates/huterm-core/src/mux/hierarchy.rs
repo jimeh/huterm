@@ -383,6 +383,23 @@ mod tests {
         step(&mut mux, &mut state);
         let below = split(&mut mux, alpha, one, right, SplitDirection::Down);
         step(&mut mux, &mut state);
+        mux.rename_pane(right, Some("right")).unwrap();
+        step(&mut mux, &mut state);
+        assert_eq!(
+            state
+                .tab(one)
+                .unwrap()
+                .layout
+                .pane(right)
+                .unwrap()
+                .custom_name
+                .as_deref(),
+            Some("right")
+        );
+        mux.rename_pane(right, None).unwrap();
+        step(&mut mux, &mut state);
+        mux.rename_pane(below, Some("below")).unwrap();
+        step(&mut mux, &mut state);
         let (root, children) = root_split(&mux, one);
         mux.resize_split(alpha, one, root, &children, &[300_000, 700_000])
             .unwrap();
@@ -509,6 +526,11 @@ mod tests {
         let a = mux.tab(one).unwrap().first_pane().id;
         let b = split(&mut mux, alpha, one, a, SplitDirection::Right);
         let c = split(&mut mux, alpha, one, b, SplitDirection::Down);
+        step(&mut mux, &mut state);
+        // Names ride along, and move between a pane and its tab.
+        mux.rename_pane(a, Some("a")).unwrap();
+        mux.rename_pane(c, Some("c")).unwrap();
+        mux.rename_tab(two, Some("two")).unwrap();
         step(&mut mux, &mut state);
         let at = |mux: &Mux, pane: PaneId| {
             let target = mux.select_pane(pane).unwrap();
@@ -670,6 +692,18 @@ mod tests {
         assert!(mux.close_session(stale_session).is_err());
         let pane = mux.tab(tab).unwrap().first_pane().id;
         let stale_pane = PaneId::in_runtime(mux.runtime_id(), u64::MAX);
+        assert!(matches!(
+            mux.rename_pane(stale_pane, Some("x")),
+            Err(crate::MuxError::UnknownPane(_))
+        ));
+        assert!(matches!(
+            mux.rename_pane(pane, Some(" ")),
+            Err(crate::MuxError::InvalidName)
+        ));
+        assert!(matches!(
+            mux.rename_pane(PaneId::new(pane.get()), Some("x")),
+            Err(crate::MuxError::ForeignRuntime(_))
+        ));
         let right = SplitDirection::Right;
         assert!(
             mux.split_pane(workspace, tab, stale_pane, right, &command(""))
@@ -697,6 +731,7 @@ mod tests {
         mux.rename_session(session, None).unwrap();
         mux.rename_workspace(workspace, None).unwrap();
         mux.rename_tab(tab, None).unwrap();
+        mux.rename_pane(pane, None).unwrap();
         assert_eq!(mux.revision, revision);
         mux.rename_tab(tab, Some("same")).unwrap();
         assert_eq!(mux.hierarchy_seq(), seq + 1);

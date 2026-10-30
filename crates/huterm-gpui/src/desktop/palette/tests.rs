@@ -192,7 +192,7 @@ fn window_scoped_commands_list_only_this_windows_tabs() {
         layouts: &[],
         target: &target,
         window_only: true,
-        moving_tab: None,
+        pane_exclusion: PaneExclusion::OwnPane,
     };
     assert_eq!(
         window_only.values(ArgumentKind::Tab),
@@ -246,7 +246,7 @@ fn identity_replacement_and_duplicate_labels_keep_scoped_ids() {
         layouts: &[],
         target: &target,
         window_only: false,
-        moving_tab: None,
+        pane_exclusion: PaneExclusion::OwnPane,
     };
     let mut editor = SlotEditor::new(rename, &[], &domain, false).unwrap();
     editor.set_text("chosen");
@@ -283,7 +283,7 @@ fn rename_targets_prefill_from_the_projected_session_and_workspace() {
         layouts: &[],
         target: &target,
         window_only: false,
-        moving_tab: None,
+        pane_exclusion: PaneExclusion::OwnPane,
     };
     for (command, kind, name) in [
         (ids::RENAME_SESSION, ArgumentKind::Session, "named session"),
@@ -332,7 +332,7 @@ fn palette_invocation_renames_exact_tab_and_stale_target_changes_nothing() {
         layouts: &[],
         target: &target,
         window_only: false,
-        moving_tab: None,
+        pane_exclusion: PaneExclusion::OwnPane,
     };
     let mut editor = SlotEditor::new(rename, &[], &domain, false).unwrap();
     editor.set_text("chosen");
@@ -375,7 +375,7 @@ fn quake_profiles_form_a_strict_domain_with_a_default() {
         layouts: &[],
         target: &target,
         window_only: false,
-        moving_tab: None,
+        pane_exclusion: PaneExclusion::OwnPane,
     };
     let toggle = huterm_protocol::lookup(ids::TOGGLE_QUAKE.as_str()).unwrap();
     assert!(slots::runs_without_prompt(toggle, &domain));
@@ -435,6 +435,7 @@ fn projected() -> HierarchyState {
                     id: PaneId::in_runtime(runtime, value),
                     terminal_id: TerminalId::new(value),
                     fallback_name: "sh".into(),
+                    custom_name: None,
                 }),
                 zoomed: None,
             },
@@ -618,7 +619,7 @@ fn a_rebuild_moves_window_scoped_pickers_and_defaults_to_the_current_scope() {
         layouts: &[],
         target: &target,
         window_only: true,
-        moving_tab: None,
+        pane_exclusion: PaneExclusion::OwnPane,
     };
     assert_eq!(
         domain.values(ArgumentKind::Tab),
@@ -703,7 +704,7 @@ fn pane_and_side_pickers_build_the_explicit_move_invocation() {
         layouts: &[],
         target: &target,
         window_only: true,
-        moving_tab: None,
+        pane_exclusion: PaneExclusion::OwnPane,
     };
     // The pane being moved is never offered; another pane is labelled by
     // its published title, else its program name.
@@ -718,7 +719,7 @@ fn pane_and_side_pickers_build_the_explicit_move_invocation() {
     // A tab move leaves out the moving tab's own panes instead, so moving
     // an inactive tab offers the focused pane.
     let moving = |tab: TabId| DomainView {
-        moving_tab: Some(tab),
+        pane_exclusion: PaneExclusion::OwnTab(tab),
         ..domain
     };
     assert_eq!(
@@ -769,6 +770,79 @@ fn pane_and_side_pickers_build_the_explicit_move_invocation() {
 }
 
 #[test]
+fn rename_pane_defaults_to_the_focused_pane_and_prefills_its_custom_name() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let tab = mux.open_tab(workspace, &terminal_command()).unwrap().tab;
+    let focused = tab.first_pane().clone();
+    let other = mux
+        .split_pane(
+            workspace,
+            tab.id,
+            focused.id,
+            huterm_protocol::SplitDirection::Right,
+            &terminal_command(),
+        )
+        .unwrap()
+        .pane;
+    mux.rename_pane(focused.id, Some("logs")).unwrap();
+    let (state, _) = mux.subscribe_hierarchy();
+    // A custom name wins over the title a window published.
+    let hierarchy = PaletteHierarchy::from_projection_with(
+        &state,
+        |_| None,
+        |_| Some("vim"),
+        &[],
+    );
+    let target = PaletteTarget {
+        session: Some(session),
+        workspace: Some(workspace),
+        tab: Some(tab.id),
+        terminal: Some(focused.terminal_id),
+        ..target()
+    };
+    let spec = huterm_protocol::lookup(ids::RENAME_PANE.as_str()).unwrap();
+    let domain = DomainView {
+        hierarchy: &hierarchy,
+        profiles: &[],
+        layouts: &[],
+        target: &target,
+        window_only: false,
+        pane_exclusion: PaneExclusion::Nothing,
+    };
+    assert_eq!(
+        domain.values(ArgumentKind::Pane),
+        [focused.id, other.id].map(CommandValue::Pane),
+        "a rename offers the focused pane too"
+    );
+    assert_eq!(
+        domain.label(ArgumentKind::Pane, &CommandValue::Pane(focused.id)),
+        Some("logs".to_owned())
+    );
+    assert_eq!(
+        domain.label(ArgumentKind::Pane, &CommandValue::Pane(other.id)),
+        Some("vim".to_owned())
+    );
+    let editor = SlotEditor::new(spec, &[], &domain, false).unwrap();
+    assert_eq!(editor.active().spec.name, "name");
+    assert_eq!(
+        current_custom_name(&editor, &domain).as_deref(),
+        Some("logs")
+    );
+    // The move picker still leaves the focused pane out.
+    let moving = DomainView {
+        pane_exclusion: PaneExclusion::OwnPane,
+        ..domain
+    };
+    assert_eq!(
+        moving.values(ArgumentKind::Pane),
+        vec![CommandValue::Pane(other.id)]
+    );
+    mux.close_session(session).unwrap();
+}
+
+#[test]
 fn the_layout_picker_lists_built_ins_by_title_then_user_layouts_by_name() {
     let hierarchy = PaletteHierarchy::default();
     let target = target();
@@ -790,7 +864,7 @@ fn the_layout_picker_lists_built_ins_by_title_then_user_layouts_by_name() {
         layouts: &layouts,
         target: &target,
         window_only: true,
-        moving_tab: None,
+        pane_exclusion: PaneExclusion::OwnPane,
     };
     let rows: Vec<(&str, &str)> = domain
         .rows(ArgumentKind::Layout)
@@ -1270,6 +1344,7 @@ mod lists {
                             id: PaneId::in_runtime(runtime(), value),
                             terminal_id: TerminalId::new(value),
                             fallback_name: "sh".into(),
+                            custom_name: None,
                         }),
                         zoomed: None,
                     },

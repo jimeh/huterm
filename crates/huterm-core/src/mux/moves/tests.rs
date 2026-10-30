@@ -1,5 +1,7 @@
 use super::*;
-use crate::mux::live_fixture::{ECHO, Live, beside, opened_tab, pane_ref};
+use crate::mux::live_fixture::{
+    ECHO, Live, beside, opened_tab, pane_name, pane_ref,
+};
 use crate::mux::tests::command;
 use crate::test_support::TestClient;
 use crate::{CloseRequest, MuxError};
@@ -479,6 +481,120 @@ fn moves_make_close_assessments_stale_and_swaps_do_not() {
         assessment
             .terminals()
             .contains(&other.first_pane().terminal_id)
+    );
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn custom_names_move_between_a_pane_and_its_tab() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let alpha = mux.create_workspace(session, None).unwrap();
+    let script = command("read value");
+    let open = |mux: &mut Mux| mux.open_tab(alpha, &script).unwrap().tab;
+    let split = |mux: &mut Mux, tab: TabId, pane: PaneId| {
+        mux.split_pane(alpha, tab, pane, SplitDirection::Right, &script)
+            .unwrap()
+            .pane
+            .id
+    };
+    let tab_name = |mux: &Mux, tab: TabId| {
+        mux.tab(tab).unwrap().custom_name().map(str::to_owned)
+    };
+    let new_tab = MoveDestination::NewTab {
+        workspace: alpha,
+        before: None,
+    };
+    // Tab one: [anchor | named | plain].
+    let one = open(&mut mux).id;
+    let anchor = mux.tab(one).unwrap().first_pane().id;
+    let named = split(&mut mux, one, anchor);
+    let plain = split(&mut mux, one, named);
+    mux.rename_pane(named, Some("bee")).unwrap();
+
+    // A pane extracted into a new tab gives the tab its name.
+    let change = mux.move_pane(pane_ref(&mux, named), new_tab).unwrap();
+    let extracted = opened_tab(&change);
+    assert_eq!(tab_name(&mux, extracted).as_deref(), Some("bee"));
+    assert_eq!(pane_name(&mux, named), None);
+    // An unnamed pane gives its new tab no name.
+    let change = mux.move_pane(pane_ref(&mux, plain), new_tab).unwrap();
+    assert_eq!(tab_name(&mux, opened_tab(&change)), None);
+
+    // A single-pane tab nested into a pane gives the pane its name.
+    mux.move_tab_to_pane(
+        alpha,
+        extracted,
+        Beside {
+            target: pane_ref(&mux, anchor),
+            side: SplitDirection::Right,
+        },
+    )
+    .unwrap();
+    assert!(mux.tab(extracted).is_none());
+    assert_eq!(pane_name(&mux, named).as_deref(), Some("bee"));
+
+    // A tab's name wins over its only pane's; without one the pane keeps
+    // its own. Both hold for a nest and for a move of that pane.
+    let two = open(&mut mux);
+    let tabbed = two.first_pane().id;
+    mux.rename_pane(tabbed, Some("own")).unwrap();
+    mux.rename_tab(two.id, Some("two")).unwrap();
+    mux.move_tab_to_pane(
+        alpha,
+        two.id,
+        Beside {
+            target: pane_ref(&mux, anchor),
+            side: SplitDirection::Down,
+        },
+    )
+    .unwrap();
+    assert_eq!(pane_name(&mux, tabbed).as_deref(), Some("two"));
+    let three = open(&mut mux);
+    let kept = three.first_pane().id;
+    mux.rename_pane(kept, Some("own")).unwrap();
+    mux.move_pane(
+        pane_ref(&mux, kept),
+        beside(&mux, anchor, SplitDirection::Up),
+    )
+    .unwrap();
+    assert!(mux.tab(three.id).is_none());
+    assert_eq!(pane_name(&mux, kept).as_deref(), Some("own"));
+    let four = open(&mut mux);
+    let inherited = four.first_pane().id;
+    mux.rename_tab(four.id, Some("four")).unwrap();
+    mux.move_pane(
+        pane_ref(&mux, inherited),
+        beside(&mux, anchor, SplitDirection::Left),
+    )
+    .unwrap();
+    assert_eq!(pane_name(&mux, inherited).as_deref(), Some("four"));
+
+    // A multi-pane tab nested into a pane drops its own name; its panes
+    // keep theirs.
+    let five = open(&mut mux).id;
+    let eff = mux.tab(five).unwrap().first_pane().id;
+    let sibling = split(&mut mux, five, eff);
+    mux.rename_pane(eff, Some("eff")).unwrap();
+    mux.rename_tab(five, Some("five")).unwrap();
+    mux.move_tab_to_pane(
+        alpha,
+        five,
+        Beside {
+            target: pane_ref(&mux, anchor),
+            side: SplitDirection::Right,
+        },
+    )
+    .unwrap();
+    assert_eq!(pane_name(&mux, eff).as_deref(), Some("eff"));
+    assert_eq!(pane_name(&mux, sibling), None);
+    assert!(
+        mux.tab(one)
+            .unwrap()
+            .layout()
+            .panes()
+            .iter()
+            .all(|pane| pane.custom_name.as_deref() != Some("five"))
     );
     mux.shutdown().unwrap();
 }

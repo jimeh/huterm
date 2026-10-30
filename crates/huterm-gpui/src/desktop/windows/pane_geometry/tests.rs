@@ -28,6 +28,7 @@ fn info(value: u64) -> PaneInfo {
         id: id(value),
         terminal_id: TerminalId::new(value),
         fallback_name: "sh".into(),
+        custom_name: None,
     }
 }
 

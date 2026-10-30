@@ -9,9 +9,8 @@
 use std::collections::{HashMap, HashSet};
 
 use huterm_protocol::{
-    HierarchyEvent, LayoutChange, PaneId, PaneInfo, PaneLayout, RuntimeId,
-    SessionId, TabChange, TabId, TabRecord, TabSnapshot, TerminalId,
-    WorkspaceId,
+    HierarchyEvent, LayoutChange, PaneId, PaneLayout, RuntimeId, SessionId,
+    TabChange, TabId, TabRecord, TabSnapshot, TerminalId, WorkspaceId,
 };
 
 use super::{Mux, MuxError, Tab, position};
@@ -76,12 +75,21 @@ impl Mux {
     /// same splits, panes, and terminals, ignoring weights, in the same
     /// session, and a tab in `placed` is still in the same workspace. Each
     /// restored tab takes its recorded layout, weights included, and keeps
-    /// its current name. Its zoom returns to the recorded one only when the
-    /// change set it and nobody changed it since; otherwise its current
+    /// its current name. A tab's zoom returns to the recorded one only when
+    /// the change set it and nobody changed it since; otherwise its current
     /// zoom stays while its pane remains. Only a tab in `placed` returns to
     /// its recorded workspace and position. A tab the restore reopens keeps
     /// its identity and gets its recorded name and zoom, at its recorded
     /// position clamped to its workspace's current length.
+    ///
+    /// Each pane takes its recorded name unless it was renamed since the
+    /// side the restore leaves, when it keeps its current one. A name a move
+    /// carried between a pane and its single-pane tab moves back the same
+    /// way. The only pane of a tab the restore removes takes the tab's name
+    /// when the tab was renamed since, unless that rename cleared the name
+    /// and the pane was renamed since too. A named tab the restore reopens
+    /// around one pane takes that pane's name when the pane was renamed
+    /// since, leaving the pane its recorded name.
     /// # Errors
     /// Returns [`MuxError::LayoutChanged`] when a touched tab no longer
     /// matches, a recorded workspace is gone or in another session, or a
@@ -122,6 +130,7 @@ impl Mux {
         }
         self.check_restored_splits(&tabs, to)?;
         let was = pane_homes(&current);
+        let names = RestoredNames::new(from, &current, to);
         let mut restore = Restore {
             tabs,
             removed: Vec::new(),
@@ -145,8 +154,9 @@ impl Mux {
                         workspace: to.workspace,
                         tab: Tab {
                             id: tab,
-                            custom_name: to.custom_name.clone(),
-                            layout: to.layout.clone(),
+                            custom_name: names
+                                .tab(tab, to.custom_name.as_deref()),
+                            layout: names.restored(&to.layout),
                             zoomed: to.zoomed.filter(|_| valid_zoom(to)),
                         },
                         index: to.index,
@@ -156,11 +166,12 @@ impl Mux {
                 }
                 (Some(now), Some(to)) => {
                     let zoomed = restored_zoom(from, now, to);
-                    if now.layout != to.layout || now.zoomed != zoomed {
+                    let layout = names.restored(&to.layout);
+                    if now.layout != layout || now.zoomed != zoomed {
                         restore.layouts.push((
                             now.workspace,
                             tab,
-                            to.layout.clone(),
+                            layout,
                             zoomed,
                         ));
                     }
@@ -381,14 +392,14 @@ impl Mux {
 }
 
 /// Every pane the snapshots hold, in identity order.
-fn sorted_panes(snapshots: &[TabSnapshot]) -> Vec<PaneInfo> {
-    let mut panes: Vec<PaneInfo> = snapshots
+fn sorted_panes(snapshots: &[TabSnapshot]) -> Vec<(PaneId, TerminalId)> {
+    let mut panes: Vec<(PaneId, TerminalId)> = snapshots
         .iter()
         .filter_map(|snapshot| snapshot.record.as_ref())
         .flat_map(|record| record.layout.panes())
-        .cloned()
+        .map(|pane| (pane.id, pane.terminal_id))
         .collect();
-    panes.sort_by_key(|pane| pane.id);
+    panes.sort_by_key(|(pane, _)| *pane);
     panes
 }
 
@@ -427,6 +438,93 @@ fn restored_zoom(
     zoomed.filter(|pane| {
         to.layout.pane_count() > 1 && to.layout.pane(*pane).is_some()
     })
+}
+
+/// The names a restore gives panes and the tabs it reopens, by the rules
+/// [`Mux::restore_tabs`] documents.
+struct RestoredNames {
+    panes: HashMap<PaneId, Option<String>>,
+    tabs: HashMap<TabId, Option<String>>,
+}
+
+impl RestoredNames {
+    fn new(
+        from: &[TabSnapshot],
+        now: &[TabSnapshot],
+        to: &[TabSnapshot],
+    ) -> Self {
+        let recorded = pane_names(from);
+        let current = pane_names(now);
+        let renamed = |pane: PaneId| {
+            current
+                .get(&pane)
+                .filter(|name| recorded.get(&pane) != Some(*name))
+        };
+        let mut panes: HashMap<PaneId, Option<String>> = pane_names(to)
+            .into_iter()
+            .map(|(pane, name)| {
+                let name = renamed(pane).cloned().unwrap_or(name);
+                (pane, name)
+            })
+            .collect();
+        let mut tabs = HashMap::new();
+        for ((from, now), to) in from.iter().zip(now).zip(to) {
+            let tab = to.tab;
+            match (&from.record, &now.record, &to.record) {
+                (Some(from), Some(now), None)
+                    if now.layout.pane_count() == 1
+                        && from.custom_name != now.custom_name =>
+                {
+                    // A cleared tab name gives way to a name the pane was
+                    // given since.
+                    let pane = now.layout.first_pane().id;
+                    if now.custom_name.is_some() || renamed(pane).is_none() {
+                        panes.insert(pane, now.custom_name.clone());
+                    }
+                }
+                (_, None, Some(to))
+                    if to.layout.pane_count() == 1
+                        && to.custom_name.is_some() =>
+                {
+                    let pane = to.layout.first_pane();
+                    if let Some(name) = renamed(pane.id) {
+                        tabs.insert(tab, name.clone());
+                        panes.insert(pane.id, pane.custom_name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self { panes, tabs }
+    }
+
+    /// `layout` with each pane's restored name.
+    fn restored(&self, layout: &PaneLayout) -> PaneLayout {
+        let mut restored = layout.clone();
+        for pane in layout.panes() {
+            if let Some(name) = self.panes.get(&pane.id) {
+                restored.rename_pane(pane.id, name.clone());
+            }
+        }
+        restored
+    }
+
+    /// The name of a tab the restore reopens, which `recorded` named.
+    fn tab(&self, tab: TabId, recorded: Option<&str>) -> Option<String> {
+        self.tabs
+            .get(&tab)
+            .map_or_else(|| recorded.map(str::to_owned), Clone::clone)
+    }
+}
+
+/// Every pane's custom name across `snapshots`.
+fn pane_names(snapshots: &[TabSnapshot]) -> HashMap<PaneId, Option<String>> {
+    snapshots
+        .iter()
+        .filter_map(|snapshot| snapshot.record.as_ref())
+        .flat_map(|record| record.layout.panes())
+        .map(|pane| (pane.id, pane.custom_name.clone()))
+        .collect()
 }
 
 /// Whether a record's zoom is valid over its layout.

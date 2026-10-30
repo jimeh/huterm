@@ -498,6 +498,36 @@ impl Mux {
         });
         Ok(())
     }
+    /// Sets a pane's custom name, wherever its tab is; `None` resumes the
+    /// pane's own label.
+    /// # Errors
+    /// Rejects blank names and foreign/missing targets.
+    pub fn rename_pane(
+        &mut self,
+        id: PaneId,
+        name: Option<&str>,
+    ) -> Result<(), MuxError> {
+        let target = self.select_pane(id)?;
+        validate_name(name)?;
+        let (Some(workspace), Some(tab)) = (target.workspace, target.tab)
+        else {
+            return Err(MuxError::UnknownPane(id));
+        };
+        let changed = self
+            .tab_record_mut(workspace, tab)?
+            .layout
+            .rename_pane(id, name.map(str::to_owned))
+            .ok_or(MuxError::UnknownPane(id))?;
+        if !changed {
+            return Ok(());
+        }
+        self.changed();
+        self.emit_hierarchy(|_| HierarchyEvent::PaneRenamed {
+            pane: id,
+            custom_name: name.map(str::to_owned),
+        });
+        Ok(())
+    }
     /// Creates and appends a tab only after PTY creation succeeds.
     /// # Errors
     /// Rejects foreign/missing workspaces, exhausted IDs, or failed spawns.
@@ -548,6 +578,7 @@ impl Mux {
                 .unwrap_or(command.program.as_os_str())
                 .to_string_lossy()
                 .into_owned(),
+            custom_name: None,
         })
     }
     /// Splits `pane` toward `direction` with a new terminal running

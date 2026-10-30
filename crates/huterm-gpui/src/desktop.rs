@@ -224,6 +224,7 @@ fn install_menus(cx: &mut App) {
                 MenuItem::separator(),
                 item(ids::FOCUS_NEXT_PANE),
                 item(ids::FOCUS_PREVIOUS_PANE),
+                item(ids::RENAME_PANE),
                 item(ids::MOVE_PANE_TO_NEW_TAB),
                 item(ids::ARRANGE_PANES),
                 item(ids::NEXT_PANE_LAYOUT),

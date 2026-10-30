@@ -8,6 +8,11 @@
 //! nothing, emits nothing, and leaves [`Mux::revision`] alone. A change
 //! that touches one tab emits `PaneLayoutChanged`; a change across tabs
 //! emits one `PanesRearranged`.
+//!
+//! A custom name moves between a pane and its tab rather than being
+//! copied: a pane extracted into a new tab gives that tab its name, and the
+//! only pane of a tab removed into another tab takes the tab's name when it
+//! has one. A multi-pane tab nested into another tab loses its own name.
 
 use huterm_protocol::{
     HierarchyEvent, LayoutChange, LayoutError, PaneId, PaneInfo, PaneLayout,
@@ -145,8 +150,11 @@ impl Mux {
             return Err(MuxError::InvalidLayout(LayoutError::SelfTarget));
         }
         let source = self.tab_record(workspace, tab)?.clone();
-        let (layout, allocates) =
-            self.inserted(target, to.side, source.layout.root().clone())?;
+        let mut node = source.layout.root().clone();
+        if let PaneNode::Pane(pane) = &mut node {
+            take_tab_name(pane, &source);
+        }
+        let (layout, allocates) = self.inserted(target, to.side, node)?;
         self.preflight(allocates)?;
         let terminals = source.terminals();
         self.revoke_if_session_changes(workspace, target.workspace, &terminals);
@@ -219,12 +227,15 @@ impl Mux {
         to: Beside,
     ) -> Result<LayoutChange, MuxError> {
         let source = self.tab_record(from.workspace, from.tab)?.clone();
-        let pane = moved_pane(source.layout(), from.pane)?;
+        let mut pane = moved_pane(source.layout(), from.pane)?;
         let remaining = match source.layout.without_pane(from.pane) {
             Ok(layout) => Some(layout),
             Err(LayoutError::LastPane) => None,
             Err(error) => return Err(layout_error(error, from.pane)),
         };
+        if remaining.is_none() {
+            take_tab_name(&mut pane, &source);
+        }
         let terminal = pane.terminal_id;
         let (layout, allocates) =
             self.inserted(to.target, to.side, PaneNode::Pane(pane))?;
@@ -284,7 +295,7 @@ impl Mux {
         if source.layout.pane_count() == 1 {
             return self.place_lone_pane(from, workspace, before);
         }
-        let pane = moved_pane(source.layout(), from.pane)?;
+        let mut pane = moved_pane(source.layout(), from.pane)?;
         let remaining = source
             .layout
             .without_pane(from.pane)
@@ -307,9 +318,10 @@ impl Mux {
         let record = self.tab_record_mut(from.workspace, from.tab)?;
         record.layout = remaining.clone();
         record.zoomed = zoomed;
+        // The pane's name moves up to the tab it becomes.
         let opened = Tab {
             id,
-            custom_name: None,
+            custom_name: pane.custom_name.take(),
             layout: PaneLayout::single(pane),
             zoomed: None,
         };
@@ -500,6 +512,14 @@ fn moved_pane(layout: &PaneLayout, pane: PaneId) -> Result<PaneInfo, MuxError> {
         .pane(pane)
         .cloned()
         .ok_or(MuxError::UnknownPane(pane))
+}
+
+/// Gives the only pane of a tab that is about to be removed the tab's
+/// custom name; without one, the pane keeps its own.
+fn take_tab_name(pane: &mut PaneInfo, tab: &Tab) {
+    if let Some(name) = tab.custom_name() {
+        pane.custom_name = Some(name.to_owned());
+    }
 }
 
 /// A source tab's shared zoom once a pane left it: kept while its pane

@@ -1,5 +1,7 @@
 use super::*;
-use crate::mux::live_fixture::{ECHO, Live, beside, opened_tab, pane_ref};
+use crate::mux::live_fixture::{
+    ECHO, Live, beside, opened_tab, pane_name, pane_ref,
+};
 use crate::mux::tests::command;
 use crate::mux::{Beside, MoveDestination};
 use crate::test_support::TestClient;
@@ -560,5 +562,131 @@ fn refused_restores_change_nothing() {
         &format!("ForeignRuntime({:?})", other.runtime_id),
     );
     other.shutdown().unwrap();
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn restores_return_carried_names_and_keep_later_renames() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let alpha = mux.create_workspace(session, None).unwrap();
+    let (one, a) = open(&mut mux, alpha);
+    let b = split(&mut mux, alpha, one, a);
+    mux.rename_pane(b, Some("bee")).unwrap();
+
+    // The round trips compare exact records, names included: undo returns
+    // the name to the pane and redo moves it to the tab again.
+    let extract = mux
+        .move_pane(
+            pane_ref(&mux, b),
+            MoveDestination::NewTab {
+                workspace: alpha,
+                before: None,
+            },
+        )
+        .unwrap();
+    let extracted = opened_tab(&extract);
+    round_trip(&mut mux, &extract, |_| {});
+    assert_eq!(
+        mux.tab(extracted).unwrap().custom_name(),
+        Some("bee"),
+        "redo leaves the name on the tab"
+    );
+    let nest = mux
+        .move_tab_to_pane(
+            alpha,
+            extracted,
+            Beside {
+                target: pane_ref(&mux, a),
+                side: SplitDirection::Down,
+            },
+        )
+        .unwrap();
+    round_trip(&mut mux, &nest, |_| {});
+    assert_eq!(pane_name(&mux, b).as_deref(), Some("bee"));
+
+    // A rename made after the change survives the restore.
+    mux.restore_tabs(&nest, Undo).unwrap();
+    assert_eq!(pane_name(&mux, b), None);
+    mux.rename_pane(b, Some("later")).unwrap();
+    mux.restore_tabs(&nest, Redo).unwrap();
+    assert!(mux.tab(extracted).is_none());
+    assert_eq!(pane_name(&mux, b).as_deref(), Some("later"));
+    let swap = mux.swap_panes(alpha, one, a, b).unwrap();
+    mux.rename_pane(a, Some("ay")).unwrap();
+    mux.restore_tabs(&swap, Undo).unwrap();
+    assert_eq!(pane_name(&mux, a).as_deref(), Some("ay"));
+    assert_eq!(pane_name(&mux, b).as_deref(), Some("later"));
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_name_given_since_a_carry_moves_back_across_the_tab_boundary() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let alpha = mux.create_workspace(session, None).unwrap();
+    let (one, a) = open(&mut mux, alpha);
+    let b = split(&mut mux, alpha, one, a);
+    mux.rename_pane(b, Some("bee")).unwrap();
+    let extract = mux
+        .move_pane(
+            pane_ref(&mux, b),
+            MoveDestination::NewTab {
+                workspace: alpha,
+                before: None,
+            },
+        )
+        .unwrap();
+    let extracted = opened_tab(&extract);
+
+    // Renaming the tab the pane became, then undoing, gives the pane the
+    // new name rather than dropping it with the tab.
+    mux.rename_tab(extracted, Some("later")).unwrap();
+    mux.restore_tabs(&extract, Undo).unwrap();
+    assert!(mux.tab(extracted).is_none());
+    assert_eq!(pane_name(&mux, b).as_deref(), Some("later"));
+
+    // Renaming the pane, then redoing, gives the reopened tab that name and
+    // leaves the pane none, rather than naming both.
+    mux.rename_pane(b, Some("again")).unwrap();
+    mux.restore_tabs(&extract, Redo).unwrap();
+    assert_eq!(mux.tab(extracted).unwrap().custom_name(), Some("again"));
+    assert_eq!(pane_name(&mux, b), None);
+
+    // Clearing the tab's name gives the pane no name to take, so it keeps
+    // the one it was given since.
+    mux.rename_pane(b, Some("own")).unwrap();
+    mux.rename_tab(extracted, None).unwrap();
+    mux.restore_tabs(&extract, Undo).unwrap();
+    assert!(mux.tab(extracted).is_none());
+    assert_eq!(pane_name(&mux, b).as_deref(), Some("own"));
+    // Clearing it with no newer pane name carries the clear back, as a
+    // clear counts as a rename everywhere else.
+    mux.restore_tabs(&extract, Redo).unwrap();
+    assert_eq!(mux.tab(extracted).unwrap().custom_name(), Some("own"));
+    mux.rename_tab(extracted, None).unwrap();
+    mux.restore_tabs(&extract, Undo).unwrap();
+    assert_eq!(pane_name(&mux, b), None);
+
+    // The other direction: a named tab nested into a pane gives the pane
+    // its name, and undoing after renaming the pane hands that name back
+    // to the reopened tab.
+    let (lone, c) = open(&mut mux, alpha);
+    mux.rename_tab(lone, Some("tee")).unwrap();
+    let nest = mux
+        .move_tab_to_pane(
+            alpha,
+            lone,
+            Beside {
+                target: pane_ref(&mux, a),
+                side: SplitDirection::Down,
+            },
+        )
+        .unwrap();
+    assert_eq!(pane_name(&mux, c).as_deref(), Some("tee"));
+    mux.rename_pane(c, Some("later")).unwrap();
+    mux.restore_tabs(&nest, Undo).unwrap();
+    assert_eq!(mux.tab(lone).unwrap().custom_name(), Some("later"));
+    assert_eq!(pane_name(&mux, c), None);
     mux.shutdown().unwrap();
 }

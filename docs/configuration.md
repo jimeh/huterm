@@ -413,6 +413,23 @@ outlines the tab while the menu is open. The menu has:
 The tab menu does not open during a tab drag or while a close confirmation is
 showing. It uses the same keys, dismissal, and focus return as the window menu.
 
+Right-clicking a pane's title bar in a split tab focuses the pane and opens its
+context menu:
+
+- **Rename Pane…**, which sets the name the title bar shows in place of the
+  pane's title. A blank name restores the title.
+- **Copy Directory Path**, disabled with "Directory unknown" until the pane
+  reports a working directory.
+- **Split Right** and **Split Down**.
+- **Zoom Pane**, or **Unzoom Pane** while the pane is zoomed.
+- **Move Pane to New Tab** and **Move Pane to Another Pane…**
+- **Close Pane**.
+
+A tab without a custom name shows its focused pane's name. A named pane that
+moves to a tab of its own gives the new tab its name, and a named tab of one
+pane that joins another tab as a pane gives that pane its name. Undo puts a
+moved name back.
+
 **About Huterm** (`about`) opens a panel with the version, identifier,
 platform, terminal engine, and build profile, plus the short source revision
 when the build embedded one. On Linux the platform line includes the display
