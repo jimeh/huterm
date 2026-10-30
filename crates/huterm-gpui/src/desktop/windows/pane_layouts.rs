@@ -549,6 +549,7 @@ mod tests {
                     id: *id,
                     terminal_id: TerminalId::new(id.get()),
                     fallback_name: "sh".into(),
+                    custom_name: None,
                 }),
                 Arrangement::Split { axis, children } => {
                     *next += 1;

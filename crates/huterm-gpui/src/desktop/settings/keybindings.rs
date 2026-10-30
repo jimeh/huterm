@@ -40,6 +40,7 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
             ids::SPLIT_LEFT,
             ids::SPLIT_UP,
             ids::CLOSE_PANE,
+            ids::RENAME_PANE,
             ids::FOCUS_NEXT_PANE,
             ids::FOCUS_PREVIOUS_PANE,
             ids::FOCUS_PANE_LEFT,

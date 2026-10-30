@@ -804,6 +804,7 @@
                 "rename_tab",
                 "rename_workspace",
                 "rename_session",
+                "rename_pane",
                 "select_recent_tab",
                 "split_right",
                 "split_down",
@@ -2770,6 +2771,61 @@
               "command": {
                 "const": "rename_session",
                 "description": "Set a custom name for a session; a blank name restores the default.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "rename_pane"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Set a custom name for a pane; a blank name restores the default.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "rename_pane",
+                "description": "Set a custom name for a pane; a blank name restores the default.",
                 "type": "string"
               },
               "description": {

@@ -25,6 +25,7 @@ fn menu_kind(cx: &mut App, window: AnyWindowHandle) -> Option<&'static str> {
                 MenuKind::Window => "window",
                 MenuKind::Tab(_) => "tab",
                 MenuKind::Terminal { .. } => "terminal",
+                MenuKind::Pane { .. } => "pane",
             })
         })
         .ok()

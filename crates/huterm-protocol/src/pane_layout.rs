@@ -73,6 +73,16 @@ pub struct PaneInfo {
     pub terminal_id: TerminalId,
     /// Launched program name used when the terminal has no title.
     pub fallback_name: String,
+    /// Custom override, if set.
+    pub custom_name: Option<String>,
+}
+
+impl PaneInfo {
+    /// Whether `other` is the same pane showing the same terminal, whatever
+    /// its name.
+    fn same_pane(&self, other: &Self) -> bool {
+        self.id == other.id && self.terminal_id == other.terminal_id
+    }
 }
 
 /// A node of a layout: a pane, or a split of further nodes.
@@ -340,6 +350,21 @@ impl PaneLayout {
         self.panes().into_iter().find(|pane| pane.id == id)
     }
 
+    /// Sets a pane's custom name; returns whether it changed, or `None`
+    /// when the layout has no such pane.
+    pub fn rename_pane(
+        &mut self,
+        pane: PaneId,
+        custom_name: Option<String>,
+    ) -> Option<bool> {
+        let info = find_pane_mut(&mut self.root, pane)?;
+        if info.custom_name == custom_name {
+            return Some(false);
+        }
+        info.custom_name = custom_name;
+        Some(true)
+    }
+
     /// The number of panes.
     #[must_use]
     pub fn pane_count(&self) -> usize {
@@ -469,15 +494,15 @@ impl PaneLayout {
     }
 
     /// Whether `other` has the same tree of splits, axes, and child counts,
-    /// with the same panes in the same places, ignoring split identities
-    /// and weights.
+    /// with the same panes and terminals in the same places, ignoring split
+    /// identities, weights, and pane names.
     #[must_use]
     pub fn same_shape(&self, other: &Self) -> bool {
         same_shape(&self.root, &other.root, false)
     }
 
     /// Whether `other` has the same shape and the same split identities,
-    /// ignoring only weights.
+    /// ignoring weights and pane names.
     #[must_use]
     pub fn same_structure(&self, other: &Self) -> bool {
         same_shape(&self.root, &other.root, true)
@@ -943,6 +968,16 @@ fn collect_panes<'a>(node: &'a PaneNode, panes: &mut Vec<&'a PaneInfo>) {
     }
 }
 
+fn find_pane_mut(node: &mut PaneNode, id: PaneId) -> Option<&mut PaneInfo> {
+    match node {
+        PaneNode::Pane(pane) => (pane.id == id).then_some(pane),
+        PaneNode::Split(split) => split
+            .children
+            .iter_mut()
+            .find_map(|child| find_pane_mut(&mut child.node, id)),
+    }
+}
+
 fn count_panes(node: &PaneNode) -> usize {
     match node {
         PaneNode::Pane(_) => 1,
@@ -1027,7 +1062,7 @@ fn swap_leaves(node: &mut PaneNode, a: &PaneInfo, b: &PaneInfo) {
 /// the same split identities.
 fn same_shape(a: &PaneNode, b: &PaneNode, splits: bool) -> bool {
     match (a, b) {
-        (PaneNode::Pane(a), PaneNode::Pane(b)) => a == b,
+        (PaneNode::Pane(a), PaneNode::Pane(b)) => a.same_pane(b),
         (PaneNode::Split(a), PaneNode::Split(b)) => {
             (!splits || a.id == b.id)
                 && a.axis == b.axis

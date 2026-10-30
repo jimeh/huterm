@@ -728,6 +728,8 @@ pub mod ids {
     pub const RENAME_WORKSPACE: CommandId = CommandId::new("rename_workspace");
     /// Renames a session.
     pub const RENAME_SESSION: CommandId = CommandId::new("rename_session");
+    /// Renames a pane.
+    pub const RENAME_PANE: CommandId = CommandId::new("rename_pane");
     /// Activates the most recently used tab.
     pub const SELECT_RECENT_TAB: CommandId =
         CommandId::new("select_recent_tab");
@@ -1347,6 +1349,21 @@ const CATALOG: &[CommandSpec] = &[
             ArgumentSpec {
                 name: "session",
                 kind: ArgumentKind::Session,
+                required: Requirement::Optional,
+                prompt: true,
+            },
+        ],
+    ),
+    spec(
+        ids::RENAME_PANE,
+        CommandScope::Runtime,
+        "Rename Pane",
+        "Set a custom name for a pane; a blank name restores the default.",
+        &[
+            NAME,
+            ArgumentSpec {
+                name: "pane",
+                kind: ArgumentKind::Pane,
                 required: Requirement::Optional,
                 prompt: true,
             },

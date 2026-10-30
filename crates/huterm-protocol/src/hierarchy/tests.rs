@@ -43,6 +43,7 @@ fn pane(value: u64) -> PaneInfo {
         id: pane_id(value),
         terminal_id: TerminalId::new(value + 100),
         fallback_name: "sh".into(),
+        custom_name: None,
     }
 }
 
@@ -183,6 +184,27 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
         touched(false, &[], &[22])
     );
     assert_eq!(state.tab(tab_id(22)).unwrap().display_name("vim"), "logs");
+    // A pane rename touches its tab but not its layout, so no client
+    // recomputes geometry; an unchanged name touches nothing.
+    let renamed = HierarchyEvent::PaneRenamed {
+        pane: pane_id(122),
+        custom_name: Some("tail".into()),
+    };
+    assert_eq!(
+        apply(&mut state, renamed.clone()),
+        touched(false, &[], &[22])
+    );
+    assert_eq!(
+        state
+            .tab(tab_id(22))
+            .unwrap()
+            .layout
+            .first_pane()
+            .custom_name
+            .as_deref(),
+        Some("tail")
+    );
+    assert_eq!(apply(&mut state, renamed), touched(false, &[], &[]));
     assert_eq!(
         apply(
             &mut state,
@@ -416,6 +438,10 @@ fn gaps_foreign_streams_and_contradictions_require_resync() {
         },
         HierarchyEvent::TabRenamed {
             tab: tab_id(99),
+            custom_name: None,
+        },
+        HierarchyEvent::PaneRenamed {
+            pane: pane_id(99),
             custom_name: None,
         },
         HierarchyEvent::WorkspaceClosed {
@@ -741,7 +767,7 @@ fn digest_is_stable_and_sensitive_to_every_structural_difference() {
     let state = seeded(1);
     // Fixed value, cross-checked against an independent implementation of
     // the documented encoding: the digest must not vary by process.
-    assert_eq!(state.digest(), 0x1309_9f2a_2f37_cbc0);
+    assert_eq!(state.digest(), 0x43e8_caa9_4013_6e70);
     assert_eq!(seeded(9).digest(), state.digest());
     assert_eq!(HierarchyState::new(STREAM).digest(), FNV_OFFSET);
 
@@ -760,6 +786,10 @@ fn digest_is_stable_and_sensitive_to_every_structural_difference() {
         variant(HierarchyEvent::WorkspaceRenamed {
             workspace: workspace_id(10),
             custom_name: Some("Workspace 10".into()),
+        }),
+        variant(HierarchyEvent::PaneRenamed {
+            pane: pane_id(120),
+            custom_name: Some("sh".into()),
         }),
         variant(HierarchyEvent::TabMoved {
             tab: tab_id(20),

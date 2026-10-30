@@ -327,17 +327,7 @@ impl WorkspaceView {
                 )
             });
         let parts = TabParts {
-            status: match item.status {
-                TabStatus::Exited | TabStatus::Failed => Some(
-                    icon_element(Icon::CircleAlert, colors.error)
-                        .into_any_element(),
-                ),
-                TabStatus::Bell => Some(
-                    icon_element(Icon::Bell, colors.accent).into_any_element(),
-                ),
-                TabStatus::Busy => Some(running_dot(colors).into_any_element()),
-                TabStatus::Idle => None,
-            },
+            status: status_icon(item.status, colors),
             // GPUI caches nowrap text at its first measured width, which
             // skips truncation; a one-line clamp truncates at the final width.
             title: div()
@@ -532,17 +522,16 @@ impl WorkspaceView {
                     cx.stop_propagation();
                 }),
             )
-            .children(match status {
-                TabStatus::Exited | TabStatus::Failed => Some(
-                    icon_element(Icon::CircleAlert, colors.error)
-                        .into_any_element(),
-                ),
-                TabStatus::Bell => Some(
-                    icon_element(Icon::Bell, colors.accent).into_any_element(),
-                ),
-                TabStatus::Busy => Some(running_dot(colors).into_any_element()),
-                TabStatus::Idle => None,
-            })
+            // A right press, on the title or a button, focuses the pane and
+            // opens its menu at the pointer.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    view.open_pane_menu(tab, pane, event.position, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .children(status_icon(status, colors))
             .child(
                 div()
                     .flex_1()
@@ -640,6 +629,23 @@ fn close_button_shown(mode: TabCloseButton, active: bool) -> bool {
 /// The accent bar inset along the left edge of an active row or pill.
 fn tab_accent_bar(colors: TabColors, inset: Pixels) -> Div {
     accent_bar(colors.accent, px(5.0), inset)
+}
+
+/// The indicator a tab or pane title shows before its text for `status`.
+fn status_icon(
+    status: TabStatus,
+    colors: TabColors,
+) -> Option<gpui::AnyElement> {
+    match status {
+        TabStatus::Exited | TabStatus::Failed => Some(
+            icon_element(Icon::CircleAlert, colors.error).into_any_element(),
+        ),
+        TabStatus::Bell => {
+            Some(icon_element(Icon::Bell, colors.accent).into_any_element())
+        }
+        TabStatus::Busy => Some(running_dot(colors).into_any_element()),
+        TabStatus::Idle => None,
+    }
 }
 
 /// The running dot: a small yellow circle before the title.

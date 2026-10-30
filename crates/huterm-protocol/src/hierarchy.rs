@@ -4,8 +4,8 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis,
-    TabId, TerminalId, WorkspaceId,
+    PaneId, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis, TabId,
+    TerminalId, WorkspaceId,
 };
 
 /// Identifies one ordered hierarchy stream.
@@ -321,6 +321,13 @@ pub enum HierarchyEvent {
         /// Renamed tab.
         tab: TabId,
         /// New override; `None` resumes the terminal title.
+        custom_name: Option<String>,
+    },
+    /// A pane's custom name changed, wherever its tab is.
+    PaneRenamed {
+        /// Renamed pane.
+        pane: PaneId,
+        /// New override; `None` resumes the pane's own label.
         custom_name: Option<String>,
     },
     /// A tab moved within or between workspaces.
@@ -707,7 +714,7 @@ impl HierarchyState {
     /// - Workspace: `b'W'`, ID, custom name, automatic name, tab count.
     /// - Tab: `b'T'`, ID, custom name, shared zoom (`0`, or `1` and the pane
     ///   ID), then its layout in traversal order: for a pane, `b'P'`, pane
-    ///   ID, terminal ID, fallback name; for a split, `b'X'`, split ID, axis
+    ///   ID, terminal ID, fallback name, custom name; for a split, `b'X'`, split ID, axis
     ///   (`0` columns, `1` rows), child count, then each child's weight
     ///   followed by the child.
     ///
@@ -822,6 +829,13 @@ impl HierarchyState {
             HierarchyEvent::TabRenamed { tab, custom_name } => {
                 let info = &mut self.tabs.get_mut(&tab)?.info;
                 if rename(&mut info.custom_name, custom_name) {
+                    touched.tabs.insert(tab);
+                }
+            }
+            HierarchyEvent::PaneRenamed { pane, custom_name } => {
+                let tab = *self.panes.get(&pane)?;
+                let layout = &mut self.tabs.get_mut(&tab)?.info.layout;
+                if layout.rename_pane(pane, custom_name)? {
                     touched.tabs.insert(tab);
                 }
             }
@@ -1128,15 +1142,16 @@ impl HierarchyState {
 
     /// Whether the scratch tabs hold exactly the panes, each with its own
     /// terminal, that the same tabs hold now, with valid zooms and splits
-    /// of this stream.
+    /// of this stream. A move may carry a name between a pane and its tab,
+    /// so names are not compared.
     fn conserves(&self, tabs: &HashMap<TabId, Option<TabEntry>>) -> bool {
         let sorted = |entries: Vec<&TabEntry>| {
-            let mut panes: Vec<PaneInfo> = entries
+            let mut panes: Vec<(PaneId, TerminalId)> = entries
                 .into_iter()
                 .flat_map(|entry| entry.info.layout.panes())
-                .cloned()
+                .map(|pane| (pane.id, pane.terminal_id))
                 .collect();
-            panes.sort_by_key(|pane| pane.id);
+            panes.sort_by_key(|(pane, _)| *pane);
             panes
         };
         let before =
@@ -1342,6 +1357,7 @@ impl Fnv1a {
                 self.number(pane.id.get());
                 self.number(pane.terminal_id.get());
                 self.text(&pane.fallback_name);
+                self.optional(pane.custom_name.as_deref());
             }
             PaneNode::Split(split) => {
                 self.byte(b'X');

@@ -705,11 +705,7 @@ impl WorkspaceView {
             let title = tab
                 .and_then(|tab| {
                     let pane = tab.pane(drag.pane)?;
-                    Some(pane.label(
-                        tab.fallback_name(drag.pane, cx),
-                        self.config.tabs,
-                        cx,
-                    ))
+                    Some(tab.pane_label(pane, self.config.tabs, cx))
                 })
                 .unwrap_or_default();
             (

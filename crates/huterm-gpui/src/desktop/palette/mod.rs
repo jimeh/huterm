@@ -290,12 +290,16 @@ impl PaletteHierarchy {
 
     /// Builds rows from a hierarchy projection, in session, workspace, and
     /// tab order. A tab is labelled by its custom name, then `title`, the
-    /// title its window published, then its fallback name; a pane by
-    /// `pane_title`, the title a window published for its terminal, then
-    /// its fallback name. Tabs follow `tab_order`, most recently used
-    /// first, and tabs it omits keep their structural order after the
-    /// ordered ones; panes follow their tabs, in traversal order within
-    /// each.
+    /// title its window published, then its fallback name; a pane by its
+    /// custom name, then `pane_title`, the title a window published for its
+    /// terminal, then its fallback name. Tabs follow `tab_order`, most
+    /// recently used first, and tabs it omits keep their structural order
+    /// after the ordered ones; panes follow their tabs, in traversal order
+    /// within each.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one walk of the projection builds every identity domain"
+    )]
     pub(super) fn from_projection_with<'t>(
         state: &HierarchyState,
         title: impl Fn(TabId) -> Option<&'t str>,
@@ -366,7 +370,10 @@ impl PaletteHierarchy {
                     for pane in tab.layout.panes() {
                         panes.push(IdentityRow {
                             value: CommandValue::Pane(pane.id),
-                            label: pane_title(pane.terminal_id)
+                            label: pane
+                                .custom_name
+                                .as_deref()
+                                .or_else(|| pane_title(pane.terminal_id))
                                 .unwrap_or(&pane.fallback_name)
                                 .to_owned(),
                             detail: format!(
@@ -378,7 +385,7 @@ impl PaletteHierarchy {
                             workspace: Some(workspace_id),
                             terminal: Some(pane.terminal_id),
                             tab: Some(tab_id),
-                            custom_name: false,
+                            custom_name: pane.custom_name.is_some(),
                         });
                     }
                 }
@@ -434,8 +441,19 @@ struct DomainView<'a> {
     target: &'a PaletteTarget,
     /// Window-scoped commands can only act on this window's tabs.
     window_only: bool,
-    /// The tab a tab move moves, whose own panes are no destination.
-    moving_tab: Option<TabId>,
+    /// The panes a pane picker leaves out.
+    pane_exclusion: PaneExclusion,
+}
+
+/// Which panes a pane picker leaves out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PaneExclusion {
+    /// The invoking pane: a pane is never moved beside itself.
+    OwnPane,
+    /// The panes of the tab a tab move moves, which are no destination.
+    OwnTab(TabId),
+    /// None: a rename can target any pane, the focused one included.
+    Nothing,
 }
 
 impl DomainView<'_> {
@@ -451,9 +469,12 @@ impl DomainView<'_> {
                 .hierarchy
                 .rows(kind)
                 .iter()
-                .filter(|row| match self.moving_tab {
-                    Some(tab) => row.tab != Some(tab),
-                    None => row.terminal != self.target.terminal,
+                .filter(|row| match self.pane_exclusion {
+                    PaneExclusion::OwnPane => {
+                        row.terminal != self.target.terminal
+                    }
+                    PaneExclusion::OwnTab(tab) => row.tab != Some(tab),
+                    PaneExclusion::Nothing => true,
                 })
                 .collect(),
             ArgumentKind::Session
@@ -502,11 +523,21 @@ impl SlotDomain for DomainView<'_> {
                 self.target.workspace.map(CommandValue::Workspace)
             }
             ArgumentKind::Tab => self.target.tab.map(CommandValue::Tab),
+            // An optional pane, such as a rename's, defaults to the focused
+            // pane.
+            ArgumentKind::Pane => self
+                .hierarchy
+                .panes
+                .iter()
+                .find(|row| {
+                    self.target.terminal.is_some()
+                        && row.terminal == self.target.terminal
+                })
+                .map(|row| row.value.clone()),
             ArgumentKind::QuakeProfile => {
                 Some(CommandValue::Text("default".to_owned()))
             }
-            ArgumentKind::Pane
-            | ArgumentKind::Side
+            ArgumentKind::Side
             | ArgumentKind::Layout
             | ArgumentKind::Bool
             | ArgumentKind::Integer { .. }
@@ -845,20 +876,25 @@ impl CommandPalette {
             layouts: &self.layouts,
             target: &self.target,
             window_only: spec.scope == CommandScope::Window,
-            moving_tab: self.moving_tab(spec, tab),
+            pane_exclusion: self.pane_exclusion(spec, tab),
         }
     }
 
-    /// The tab `spec` moves when it is a tab move: its `tab` argument, else
-    /// the active tab.
-    fn moving_tab(
+    /// The panes `spec`'s pane picker leaves out: a tab move's own tab,
+    /// from its `tab` argument, else the active tab; nothing for a rename;
+    /// otherwise the invoking pane.
+    fn pane_exclusion(
         &self,
         spec: &CommandSpec,
         tab: Option<TabId>,
-    ) -> Option<TabId> {
-        (spec.id == ids::MOVE_TAB_TO_PANE)
-            .then(|| tab.or(self.target.tab))
-            .flatten()
+    ) -> PaneExclusion {
+        match spec.id {
+            ids::MOVE_TAB_TO_PANE => tab
+                .or(self.target.tab)
+                .map_or(PaneExclusion::OwnPane, PaneExclusion::OwnTab),
+            ids::RENAME_PANE => PaneExclusion::Nothing,
+            _ => PaneExclusion::OwnPane,
+        }
     }
 
     /// Whether the slot stage's command may only target this window.
@@ -871,7 +907,7 @@ impl CommandPalette {
 
     /// The domain for the slot stage's command.
     fn domain(&self) -> DomainView<'_> {
-        let moving_tab = match &self.stage {
+        let pane_exclusion = match &self.stage {
             Stage::Slots(editor) => {
                 let tab =
                     editor.slots().iter().find_map(|slot| match slot.value {
@@ -882,9 +918,9 @@ impl CommandPalette {
                         }
                         _ => None,
                     });
-                self.moving_tab(editor.spec(), tab)
+                self.pane_exclusion(editor.spec(), tab)
             }
-            Stage::Search(_) => None,
+            Stage::Search(_) => PaneExclusion::OwnPane,
         };
         DomainView {
             hierarchy: &self.hierarchy,
@@ -892,7 +928,7 @@ impl CommandPalette {
             layouts: &self.layouts,
             target: &self.target,
             window_only: self.window_only(),
-            moving_tab,
+            pane_exclusion,
         }
     }
 
