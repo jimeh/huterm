@@ -201,6 +201,7 @@ impl WorkspaceView {
         let metrics = PaneMetrics {
             cell: size(grid.cell_width, grid.cell_height),
             window: self.config.window,
+            bars: self.title_bars(),
         };
         let fitted = |arrangement: &Arrangement| {
             fit(&committed, arrangement, bounds, scale, metrics)

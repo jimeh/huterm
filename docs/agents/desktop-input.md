@@ -220,7 +220,9 @@ sync alike, asks `zoom_shows`.
 ## Pane drags, tab nesting, and spring-loaded tabs
 
 A press on a pane title bar's title, not its buttons, focuses the pane and
-starts a `PaneDrag` once it moves past the tab drag threshold. The window's
+starts a `PaneDrag` once it moves past the tab drag threshold. With
+`[panes] title_bar = "hidden"` no pane has a bar, so panes move only by
+command; the bar's position never changes its drag or drop geometry. The window's
 capture listeners own its motion and release, as they do for a reorder, and
 the drag keeps terminal focus, so no application sees a focus report. Each
 motion resolves the target from the last drawn frame (`drawn_panes`, only

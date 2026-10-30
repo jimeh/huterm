@@ -103,6 +103,37 @@ fn pane_zoom_defaults_to_the_view_and_can_be_shared() {
 }
 
 #[test]
+fn pane_title_bars_default_to_visible_at_the_top() {
+    use huterm_config::{PaneTitleBar, PaneTitleBarPosition};
+    let config = parse(DEFAULT_CONFIG).unwrap();
+    assert_eq!(config.panes.title_bar, PaneTitleBar::Visible);
+    assert_eq!(config.panes.title_bar_position, PaneTitleBarPosition::Top);
+    let changed = parse(
+        &DEFAULT_CONFIG
+            .replace("title_bar = \"visible\"", "title_bar = \"hidden\"")
+            .replace(
+                "title_bar_position = \"top\"",
+                "title_bar_position = \"bottom\"",
+            ),
+    )
+    .unwrap();
+    assert_eq!(changed.panes.title_bar, PaneTitleBar::Hidden);
+    assert_eq!(
+        changed.panes.title_bar_position,
+        PaneTitleBarPosition::Bottom
+    );
+    for (known, unknown) in [
+        ("title_bar = \"visible\"", "title_bar = \"hover\""),
+        (
+            "title_bar_position = \"top\"",
+            "title_bar_position = \"left\"",
+        ),
+    ] {
+        assert!(parse(&DEFAULT_CONFIG.replace(known, unknown)).is_err());
+    }
+}
+
+#[test]
 fn tab_settings_default_and_override_every_field() {
     let config = parse(DEFAULT_CONFIG).unwrap();
     assert_eq!(config.tabs, TabsConfig::default());

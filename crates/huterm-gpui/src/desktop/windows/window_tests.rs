@@ -4969,6 +4969,7 @@ mod dialogs;
 mod layout_undo;
 mod menus;
 mod native_menus;
+mod pane_bars;
 mod pane_drags;
 mod pane_layouts;
 mod pane_moves;

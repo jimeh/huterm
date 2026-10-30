@@ -160,6 +160,19 @@ same zoomed pane:
 zoom = "view" # view or shared
 ```
 
+Each pane of a split tab has a title bar with its title, zoom and close
+buttons, a drag handle, and a context menu. `title_bar_position` puts the bars
+along the top or bottom of their panes. `title_bar = "hidden"` removes them and
+gives their space to the terminals; the focused pane is then marked by a thin
+accent line along its top edge, and closing, zooming, moving, and renaming
+panes stay available as commands. Both settings apply on reload:
+
+```toml
+[panes]
+title_bar = "visible" # visible or hidden
+title_bar_position = "top" # top or bottom
+```
+
 ### Pane layouts
 
 `arrange_panes` and the layout cycle start with five built-in layouts,

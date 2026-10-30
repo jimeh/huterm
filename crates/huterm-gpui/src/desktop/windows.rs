@@ -57,7 +57,9 @@ use crate::native_quit;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 use crate::native_updater;
 use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
-use huterm_config::{TabStyle, TabWidth, TabsConfig};
+use huterm_config::{
+    PaneTitleBar, PaneTitleBarPosition, TabStyle, TabWidth, TabsConfig,
+};
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
     HierarchySubscription, HostEffectRecipientOptions, HostEffectViewerOptions,
@@ -217,7 +219,7 @@ use model::{
 use native_menus::{MenuAnchor, MenuPresenter, NativeMenuSession};
 use pane_drag::{DropTarget, PaneDrag, PaneMode};
 use pane_geometry::{
-    Divider, PaneRect, TabPanes, boundary_position, dragged_weights,
+    Divider, PaneRect, TabPanes, TitleBars, boundary_position, dragged_weights,
     layout_panes, with_boundary,
 };
 use pane_menu::{PaneMenuInput, pane_menu};
@@ -4525,6 +4527,7 @@ impl WorkspaceView {
             },
         );
         let focused = tab.focused().pane;
+        let bars = self.title_bars();
         *self.drawn_dividers.borrow_mut() = rects
             .as_ref()
             .map(|rects| rects.dividers.clone())
@@ -4577,11 +4580,25 @@ impl WorkspaceView {
                             status: pane.status(cx),
                             focused: id == focused,
                             zoomed: zoomed == Some(id),
+                            bottom: bars.position
+                                == PaneTitleBarPosition::Bottom,
                         },
                         colors,
                         cx,
                     )
                     .into_any_element(),
+                );
+            }
+            // Without bars, only this marks which pane has focus, and only
+            // while more than one pane shows.
+            if let Some(rect) = rect.filter(|_| {
+                id == focused
+                    && bars.mode == PaneTitleBar::Hidden
+                    && rects.as_ref().is_some_and(|rects| rects.panes.len() > 1)
+            }) {
+                elements.push(
+                    tab_bar::pane_focus_cue(rect.frame, colors)
+                        .into_any_element(),
                 );
             }
         }
@@ -5076,13 +5093,18 @@ impl WorkspaceView {
                 let (split, index) = pane_geometry::resize_boundary(
                     &layout, pane, axis, leading,
                 )?;
-                let divider =
-                    layout_panes(&layout, bounds, window.scale_factor(), None)
-                        .dividers
-                        .into_iter()
-                        .find(|divider| {
-                            divider.split == split.id && divider.index == index
-                        })?;
+                let divider = layout_panes(
+                    &layout,
+                    bounds,
+                    window.scale_factor(),
+                    None,
+                    self.title_bars(),
+                )
+                .dividers
+                .into_iter()
+                .find(|divider| {
+                    divider.split == split.id && divider.index == index
+                })?;
                 Some((split.clone(), index, divider.span))
             })
         else {
@@ -5615,7 +5637,18 @@ impl WorkspaceView {
         cx: &App,
     ) -> Option<TabPanes> {
         let layout = self.shown_layout(tab, cx)?;
-        Some(layout_panes(&layout, base, window.scale_factor(), zoomed))
+        Some(layout_panes(
+            &layout,
+            base,
+            window.scale_factor(),
+            zoomed,
+            self.title_bars(),
+        ))
+    }
+
+    /// Where this window's split tabs put their panes' title bars.
+    fn title_bars(&self) -> TitleBars {
+        TitleBars::new(&self.config.panes)
     }
 
     /// `tab`'s layout as this window shows it: the projection's, with the
@@ -6776,7 +6809,13 @@ impl WorkspaceView {
         let bounds = self.terminal_geometry(window).bounds?;
         let metrics = self.metrics.at_scale(window.scale_factor());
         let cell = size(metrics.cell_width, metrics.cell_height);
-        let rects = layout_panes(layout, bounds, window.scale_factor(), None);
+        let rects = layout_panes(
+            layout,
+            bounds,
+            window.scale_factor(),
+            None,
+            self.title_bars(),
+        );
         Some(
             rects
                 .panes

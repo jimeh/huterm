@@ -33,6 +33,8 @@ const CLOSE_SIZE: Pixels = px(18.0);
 const PANE_TITLE_PADDING_RIGHT: Pixels = px(3.0);
 /// The space between a pane title bar's items.
 const PANE_TITLE_GAP: Pixels = px(6.0);
+/// The thickness of the focused pane's mark while title bars are hidden.
+const PANE_FOCUS_CUE_HEIGHT: Pixels = px(2.0);
 
 /// What one pane's title bar shows.
 pub(super) struct PaneTitleBar {
@@ -43,6 +45,8 @@ pub(super) struct PaneTitleBar {
     pub(super) status: TabStatus,
     pub(super) focused: bool,
     pub(super) zoomed: bool,
+    /// The bar runs along its pane's bottom edge, so its border is on top.
+    pub(super) bottom: bool,
 }
 const STRIP_GAP: Pixels = px(7.0);
 const STRIP_PADDING_LEFT: Pixels = px(12.0);
@@ -491,6 +495,7 @@ impl WorkspaceView {
             status,
             focused,
             zoomed,
+            bottom,
         } = bar;
         div()
             .id(("pane-title", pane.get()))
@@ -507,7 +512,8 @@ impl WorkspaceView {
             .pr(PANE_TITLE_PADDING_RIGHT)
             .overflow_hidden()
             .bg(if focused { colors.active } else { colors.bar })
-            .border_b_1()
+            .when(bottom, gpui::Styled::border_t_1)
+            .when(!bottom, gpui::Styled::border_b_1)
             .border_color(colors.border)
             .text_color(if focused {
                 colors.foreground
@@ -532,18 +538,7 @@ impl WorkspaceView {
                 }),
             )
             .children(status_icon(status, colors))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .line_clamp(1)
-                    .when(status == TabStatus::Exited, |title| {
-                        title.opacity(0.6)
-                    })
-                    .child(title),
-            )
+            .child(pane_title_text(title, status))
             .child(
                 Self::pane_title_button(
                     ("zoom-pane", pane.get()),
@@ -615,6 +610,32 @@ impl WorkspaceView {
                 .group_hover(id.0, |style| style.text_color(foreground)),
             )
     }
+}
+
+/// A pane title bar's title, truncated to its space and dimmed once the
+/// pane's shell exits.
+fn pane_title_text(title: String, status: TabStatus) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .text_ellipsis()
+        .line_clamp(1)
+        .when(status == TabStatus::Exited, |title| title.opacity(0.6))
+        .child(title)
+}
+
+/// The focused pane's mark while title bars are hidden: an accent line
+/// along the top of its `frame`, drawn over the terminal without taking
+/// pointer input.
+pub(super) fn pane_focus_cue(frame: Bounds<Pixels>, colors: TabColors) -> Div {
+    div()
+        .absolute()
+        .left(frame.origin.x)
+        .top(frame.origin.y)
+        .w(frame.size.width)
+        .h(PANE_FOCUS_CUE_HEIGHT)
+        .bg(colors.accent)
 }
 
 /// Whether a tab shows its close button without being hovered.
