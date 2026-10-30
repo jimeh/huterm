@@ -12481,14 +12481,14 @@ impl WorkspaceView {
         contexts: &[KeyContext],
         cx: &App,
     ) -> Option<MenuSpec> {
-        let MenuKind::Pane { tab, pane } = *kind else {
+        let MenuKind::Pane { pane, .. } = *kind else {
             return None;
         };
-        let view = self.active_tab_view(cx).filter(|view| view.id == tab)?;
-        let focused = view.focused();
-        if focused.pane != pane {
+        if !self.menu_target_live(kind, cx) {
             return None;
         }
+        let view = self.active_tab_view(cx)?;
+        let focused = view.focused();
         let input = PaneMenuInput {
             platform: Platform::current(),
             zoomed: self.shown_zoom(view, cx) == Some(pane),

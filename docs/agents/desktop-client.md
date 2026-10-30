@@ -546,10 +546,10 @@ menu's kind names the terminal it opened over, and a pane menu's its pane,
 because their picks act on whatever is focused: `menu_target_live` closes
 either renderer's menu once focus leaves that target, such as when its pane
 closes and a sibling takes focus, and drops a pick that arrives first. A
-second open while a native menu is still waiting for its popup is dropped
-quietly; the first menu opens. A terminal
-right-click's link rides on the next snapshot request and opens the menu when
-it answers or after a bounded wait. `MouseState::down` records a local press as
+second open while a native menu is open or still waiting for its popup is
+dropped quietly; the first menu opens. A terminal right-click's link rides
+on the next snapshot request and opens the menu when it answers or after a
+bounded wait. `MouseState::down` records a local press as
 held, so sample `owns_pointer_gesture` before it; a right press during another
 gesture must not open a menu. Emulator-side edits such as Clear Scrollback's
 `CSI 3 J` reach the emulator only while the native stream is at ground.

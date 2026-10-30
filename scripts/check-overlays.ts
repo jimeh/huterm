@@ -245,7 +245,7 @@ label = "title"
 
 # A real key opens the terminal menu for the typing-after-Escape steps.
 [[keybinding]]
-key = "cmd-shift-y"
+key = "cmd-shift-j"
 command = "open_context_menu"
 `;
   await writeFile(config, configDocument);
@@ -324,7 +324,7 @@ command = "open_context_menu"
    * to reach the shell.
    */
   async function typeAfterEscape(opened: () => Promise<unknown>, token: string): Promise<void> {
-    await command(["native", 16, commandFlag | shiftFlag, "Y", "y"].join("\t"));
+    await command(["native", 38, commandFlag | shiftFlag, "J", "j"].join("\t"));
     await opened();
     const keys = [[53, 0, "\x1b", "\x1b"], ...macKeyEvents(token).map((event) => [event.code, event.flags, event.text, event.plain]), [36, 0, "\r", "\r"]];
     await command(["native-batch", keys.map((event) => event.join("\t")).join("\n")].join("\t"));
