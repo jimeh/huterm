@@ -258,6 +258,33 @@ the sprung tab is still active, without taking focus from an overlay. A
 render that finds the dragged pane gone from its tab, or an unexpected
 active tab, defers the cancel, so a drag also ends while the pointer rests.
 
+## Pane title bar modes
+
+With `[panes] title_bar = "hidden"` no pane has a bar, so panes move only by
+command; a bar's position never changes its drag or drop geometry. Under
+`title_bar = "hover"` a bar has its rectangle but draws, and takes input,
+only while `PaneBarReveals` reveals it: after the pointer rests in its band
+for `HOVER_INTENT` (200 ms, the scrollbar's), while a pane drag or its menu,
+Huterm's or a native `NSMenu`, holds it, or for a second after a keyboard
+focus change. A keyboard reveal survives a refresh against the frame before
+its bar draws, as when the focus move also unzooms.
+
+The window samples the pointer in the tab bar's deferred pointer refresh and
+treats it as nowhere while a terminal owns a gesture, during a pane, divider,
+reorder, or sidebar drag, under any menu or dialog, and over the fullscreen
+tab bar's trigger edge or revealed bar, so a selection crossing a band never
+reveals one. `sync_tab_layout` gives the active tab's revealed bars to their
+terminals as `PointerOverlays::pane_bar` from the layout each frame draws,
+and every other view none, so a resize or tab switch never leaves a stale
+band; every press, motion, link, and drop path reads it like the tab bar's
+overlay, and a gesture the terminal already owns still wins.
+
+GPUI reports a macOS window as hovered only while it is active, so hover bars
+reveal only in the active window. The Linux test platform never reports a
+hovered window, so window tests feed `pane_bar_pointer` directly;
+`smoke:macos-input` covers the real pointer path with injected mouse-moved
+events.
+
 ## Links and file drops
 
 GPUI suppresses hitbox hover while the last input was a key press. Native file

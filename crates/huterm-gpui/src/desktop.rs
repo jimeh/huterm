@@ -476,7 +476,7 @@ struct TerminalView {
     /// the window's chrome and pushes it.
     geometry: TerminalGeometry,
     pane: PanePlacement,
-    tab_overlay: Option<Bounds<Pixels>>,
+    overlays: PointerOverlays,
     theme: Theme,
     /// Failures waiting for the window's notice stack, oldest first. The
     /// tab's activity drain collects them with [`TerminalView::refresh`].
@@ -778,7 +778,7 @@ impl TerminalView {
             window_config: config.window,
             geometry: TerminalGeometry::default(),
             pane: PanePlacement::default(),
-            tab_overlay: None,
+            overlays: PointerOverlays::default(),
             theme,
             failures: Vec::new(),
             failure_wake,
@@ -1498,9 +1498,7 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         if !self.visible
-            || self
-                .tab_overlay
-                .is_some_and(|bounds| bounds.contains(&event.position))
+            || self.overlays.contains(event.position)
             || windows::modal_showing(window, cx)
         {
             return;
@@ -1753,9 +1751,7 @@ impl TerminalView {
     ) {
         let point = self.link_cell(position, window);
         let enabled = self.effective_link_modifiers(modifiers, window)
-            && !self
-                .tab_overlay
-                .is_some_and(|bounds| bounds.contains(&position))
+            && !self.overlays.contains(position)
             && !self.external_drag
             && !self.selecting
             && !self.scrollbars.dragging()
@@ -1775,9 +1771,7 @@ impl TerminalView {
     }
 
     fn can_drop_paths(&self, window: &Window) -> bool {
-        !self
-            .tab_overlay
-            .is_some_and(|bounds| bounds.contains(&window.mouse_position()))
+        !self.overlays.contains(window.mouse_position())
             && self.visible
             && !self.exited
             && self.focus.is_focused(window)
@@ -1860,11 +1854,7 @@ impl TerminalView {
             window.prevent_default();
             return;
         }
-        if !self.visible
-            || self
-                .tab_overlay
-                .is_some_and(|bounds| bounds.contains(&event.position))
-        {
+        if !self.visible || self.overlays.contains(event.position) {
             return;
         }
         self.external_drag = false;
@@ -2122,7 +2112,7 @@ impl TerminalView {
     ) {
         if !self.visible
             || overlay_blocks_pointer(
-                self.tab_overlay,
+                self.overlays,
                 event.position,
                 self.owns_pointer_gesture(),
             )
@@ -2211,7 +2201,7 @@ impl TerminalView {
     ) {
         if !self.visible
             || overlay_blocks_pointer(
-                self.tab_overlay,
+                self.overlays,
                 event.position,
                 self.owns_pointer_gesture(),
             )
@@ -2931,14 +2921,31 @@ impl ScrollBenchmark {
     }
 }
 
+/// Window areas drawn over a terminal that keep its pointer input: the
+/// fullscreen tab bar's overlay and its pane's revealed hover title bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct PointerOverlays {
+    pub(super) tab_bar: Option<Bounds<Pixels>>,
+    pub(super) pane_bar: Option<Bounds<Pixels>>,
+}
+
+impl PointerOverlays {
+    fn contains(&self, pointer: gpui::Point<Pixels>) -> bool {
+        [self.tab_bar, self.pane_bar]
+            .into_iter()
+            .flatten()
+            .any(|bounds| bounds.contains(&pointer))
+    }
+}
+
 fn overlay_blocks_pointer(
-    overlay: Option<Bounds<Pixels>>,
+    overlays: PointerOverlays,
     pointer: gpui::Point<Pixels>,
     owns_gesture: bool,
 ) -> bool {
     // The release can precede the window refresh that hides an overlay after
     // a terminal press. Existing terminal ownership wins during that interval.
-    !owns_gesture && overlay.is_some_and(|bounds| bounds.contains(&pointer))
+    !owns_gesture && overlays.contains(pointer)
 }
 
 fn benchmark_environment(name: &str) -> String {
@@ -4052,10 +4059,13 @@ mod tests {
 
     #[test]
     fn terminal_gesture_retains_motion_and_release_under_an_overlay() {
-        let overlay = Some(Bounds::new(
-            point(px(0.0), px(0.0)),
-            size(px(800.0), px(32.0)),
-        ));
+        let overlay = PointerOverlays {
+            tab_bar: Some(Bounds::new(
+                point(px(0.0), px(0.0)),
+                size(px(800.0), px(32.0)),
+            )),
+            pane_bar: None,
+        };
         let on_bar = point(px(100.0), px(12.0));
         assert!(overlay_blocks_pointer(overlay, on_bar, false));
         assert!(!overlay_blocks_pointer(overlay, on_bar, true));
@@ -4064,7 +4074,23 @@ mod tests {
             point(px(100.0), px(100.0)),
             false
         ));
-        assert!(!overlay_blocks_pointer(None, on_bar, false));
+        assert!(!overlay_blocks_pointer(
+            PointerOverlays::default(),
+            on_bar,
+            false
+        ));
+        // A revealed pane bar blocks its own area the same way.
+        let pane_bar = PointerOverlays {
+            tab_bar: None,
+            pane_bar: Some(Bounds::new(
+                point(px(0.0), px(300.0)),
+                size(px(400.0), px(24.0)),
+            )),
+        };
+        let on_pane_bar = point(px(50.0), px(310.0));
+        assert!(overlay_blocks_pointer(pane_bar, on_pane_bar, false));
+        assert!(!overlay_blocks_pointer(pane_bar, on_pane_bar, true));
+        assert!(!overlay_blocks_pointer(pane_bar, on_bar, false));
     }
 
     #[test]

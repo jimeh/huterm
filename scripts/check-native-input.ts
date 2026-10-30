@@ -59,8 +59,8 @@ command = "copy"
    * Saves the configuration as editors do, by renaming over it. Most steps
    * turn watching off so only the Reload they press applies the change.
    */
-  async function configure(policy: string, withConditional = true, watch = false) {
-    await writeFile(`${config}.tmp`, `[general]\nwatch_config = ${watch}\n[terminal]\nclose_on_exit = false\nmacos_option_as_alt = "${policy}"\n[tabs]\nposition = "top"\nwidth = "fill"\n${bindings}${withConditional ? conditional : ""}`);
+  async function configure(policy: string, withConditional = true, watch = false, panes = "") {
+    await writeFile(`${config}.tmp`, `[general]\nwatch_config = ${watch}\n[terminal]\nclose_on_exit = false\nmacos_option_as_alt = "${policy}"\n[tabs]\nposition = "top"\nwidth = "fill"\n${panes}${bindings}${withConditional ? conditional : ""}`);
     await rename(`${config}.tmp`, config);
   }
   /** Reloads with Cmd-<. */
@@ -296,6 +296,18 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await send(`mouse\t2\t${leftRect!.x + leftRect!.w / 2}\t${leftRect!.y + leftRect!.h / 2}`);
     await state("pane_focus=0");
     await check("click-focuses-pane", "", first);
+    // Hover bars: a real pointer resting on a bar's band reveals it, and
+    // leaving hides it again.
+    await configure("off", false, true, `[panes]\ntitle_bar = "hover"\n`);
+    await state("pane_bar_opacity=0.00;0.00");
+    const [hoverGrab] = field(await currentState(), "pane_grab").split(";");
+    const [hoverX, hoverY] = hoverGrab!.split(",").map(Number);
+    await send(`mouse\t5\t${hoverX}\t${hoverY}`);
+    await state("pane_bar_opacity=1.00;0.00");
+    await send(`mouse\t5\t${leftRect!.x + leftRect!.w / 2}\t${leftRect!.y + leftRect!.h / 2}`);
+    await state("pane_bar_opacity=0.00;0.00");
+    await configure("off", false, true);
+    await state("pane_bar_opacity=1.00;1.00");
     await key(30, command, "]");
     await state("pane_focus=1");
     await key(17, control, "\x14", "t");

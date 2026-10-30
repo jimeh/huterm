@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 use gpui::{Bounds, Pixels, Size, point, px, size};
+use huterm_config::{PaneTitleBarMode, PaneTitleBarPosition, PanesConfig};
 use huterm_protocol::{
     Arrangement, PaneId, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis,
     SplitDirection, SplitId, SplitNode,
@@ -24,6 +25,36 @@ use crate::config::WindowConfig;
 /// Height of a pane title bar.
 pub(super) const TITLE_BAR_HEIGHT: Pixels = px(24.0);
 
+/// Where a split tab's panes put their title bars, from `[panes]`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct TitleBars {
+    pub(super) mode: PaneTitleBarMode,
+    pub(super) position: PaneTitleBarPosition,
+}
+
+impl TitleBars {
+    pub(super) fn new(panes: &PanesConfig) -> Self {
+        Self {
+            mode: panes.title_bar,
+            position: panes.title_bar_position,
+        }
+    }
+
+    /// The height a bar takes from its pane's frame: a visible bar's, as a
+    /// hover bar draws over the terminal and a hidden one draws nowhere.
+    fn reserved(self) -> Pixels {
+        match self.mode {
+            PaneTitleBarMode::Visible => TITLE_BAR_HEIGHT,
+            PaneTitleBarMode::Hover | PaneTitleBarMode::Hidden => px(0.0),
+        }
+    }
+
+    /// Whether a split tab's panes have a bar rectangle at all.
+    fn placed(self) -> bool {
+        self.mode != PaneTitleBarMode::Hidden
+    }
+}
+
 /// Width of the line between two panes.
 pub(super) const DIVIDER_WIDTH: Pixels = px(1.0);
 
@@ -36,9 +67,11 @@ pub(super) struct PaneRect {
     pub(super) pane: PaneId,
     /// The pane's whole share of the tab.
     pub(super) frame: Bounds<Pixels>,
-    /// The title bar along the frame's top, in a split tab.
+    /// The title bar along the frame's top or bottom, in a split tab whose
+    /// bars are not hidden. A hover bar's lies over the terminal.
     pub(super) title_bar: Option<Bounds<Pixels>>,
-    /// Where the terminal view sits: the frame below its title bar.
+    /// Where the terminal view sits: the frame beside a visible title bar,
+    /// or the whole frame.
     pub(super) terminal: Bounds<Pixels>,
 }
 
@@ -71,26 +104,28 @@ impl TabPanes {
     }
 }
 
-/// Lays out `layout` inside `content`. A tab of one pane fills `content`
-/// with no title bar, as an unsplit tab always has. A `zoomed` pane of a
-/// split tab fills `content` alone, with its title bar and no dividers.
-/// Boundaries round to physical pixels at `scale`; space too small for the
-/// dividers leaves panes empty rather than overlapping.
+/// Lays out `layout` inside `content`, with title bars placed as `bars`
+/// says. A tab of one pane fills `content` with no title bar, as an unsplit
+/// tab always has. A `zoomed` pane of a split tab fills `content` alone,
+/// with its title bar and no dividers. Boundaries round to physical pixels
+/// at `scale`; space too small for the dividers leaves panes empty rather
+/// than overlapping.
 pub(super) fn layout_panes(
     layout: &PaneLayout,
     content: Bounds<Pixels>,
     scale: f32,
     zoomed: Option<PaneId>,
+    bars: TitleBars,
 ) -> TabPanes {
     let mut panes = TabPanes::default();
-    let title_bars = layout.pane_count() > 1;
+    let bars = (layout.pane_count() > 1).then_some(bars);
     if let Some(pane) =
-        zoomed.filter(|pane| title_bars && layout.pane(*pane).is_some())
+        zoomed.filter(|pane| bars.is_some() && layout.pane(*pane).is_some())
     {
-        panes.panes.push(pane_rect(pane, content, true));
+        panes.panes.push(pane_rect(pane, content, bars));
         return panes;
     }
-    place(layout.root(), content, scale, title_bars, &mut panes);
+    place(layout.root(), content, scale, bars, &mut panes);
     panes
 }
 
@@ -222,12 +257,12 @@ fn place(
     node: &PaneNode,
     bounds: Bounds<Pixels>,
     scale: f32,
-    title_bars: bool,
+    bars: Option<TitleBars>,
     out: &mut TabPanes,
 ) {
     match node {
         PaneNode::Pane(pane) => {
-            out.panes.push(pane_rect(pane.id, bounds, title_bars));
+            out.panes.push(pane_rect(pane.id, bounds, bars));
         }
         PaneNode::Split(split) => {
             let weights: Vec<u32> =
@@ -236,7 +271,7 @@ fn place(
             for (index, (child, child_bounds)) in
                 split.children.iter().zip(&spans).enumerate()
             {
-                place(&child.node, *child_bounds, scale, title_bars, out);
+                place(&child.node, *child_bounds, scale, bars, out);
                 if index + 1 < split.children.len() {
                     let far = axis_range(*child_bounds, split.axis);
                     let far = far.0 + far.1;
@@ -293,31 +328,40 @@ fn child_spans(
         .collect()
 }
 
+/// One pane's rectangles in `frame`; `bars` is `None` in a tab of one
+/// pane, which never shows a title bar.
 fn pane_rect(
     pane: PaneId,
     frame: Bounds<Pixels>,
-    title_bars: bool,
+    bars: Option<TitleBars>,
 ) -> PaneRect {
-    if !title_bars {
+    let Some(bars) = bars.filter(|bars| bars.placed()) else {
         return PaneRect {
             pane,
             frame,
             title_bar: None,
             terminal: frame,
         };
-    }
+    };
     let height = TITLE_BAR_HEIGHT.min(frame.size.height);
+    let reserved = bars.reserved().min(height);
+    let bar = size(frame.size.width, height);
+    let rest = size(frame.size.width, frame.size.height - reserved);
+    let (title_bar, terminal) = match bars.position {
+        PaneTitleBarPosition::Bottom => (
+            Bounds::new(point(frame.origin.x, frame.bottom() - height), bar),
+            Bounds::new(frame.origin, rest),
+        ),
+        PaneTitleBarPosition::Top => (
+            Bounds::new(frame.origin, bar),
+            Bounds::new(point(frame.origin.x, frame.origin.y + reserved), rest),
+        ),
+    };
     PaneRect {
         pane,
         frame,
-        title_bar: Some(Bounds::new(
-            frame.origin,
-            size(frame.size.width, height),
-        )),
-        terminal: Bounds::new(
-            point(frame.origin.x, frame.origin.y + height),
-            size(frame.size.width, frame.size.height - height),
-        ),
+        title_bar: Some(title_bar),
+        terminal,
     }
 }
 
@@ -374,11 +418,13 @@ pub(super) enum Fit {
 }
 
 /// What a view's panes need to hold the minimum grid: its cell size and
-/// window padding, through [`TerminalLayout`].
+/// window padding, through [`TerminalLayout`], and the space its title bars
+/// take.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PaneMetrics {
     pub(super) cell: Size<Pixels>,
     pub(super) window: WindowConfig,
+    pub(super) bars: TitleBars,
 }
 
 impl PaneMetrics {
@@ -413,11 +459,14 @@ pub(super) fn fit(
         layout
             .arranged(arrangement, probe_splits())
             .is_ok_and(|placed| {
-                let grids: Vec<_> = layout_panes(&placed, content, scale, None)
-                    .panes
-                    .iter()
-                    .map(|rect| (rect.pane, metrics.grid(rect.terminal.size)))
-                    .collect();
+                let grids: Vec<_> =
+                    layout_panes(&placed, content, scale, None, metrics.bars)
+                        .panes
+                        .iter()
+                        .map(|rect| {
+                            (rect.pane, metrics.grid(rect.terminal.size))
+                        })
+                        .collect();
                 fits_minimum(&grids)
             })
     };
@@ -433,9 +482,10 @@ pub(super) fn fit(
     }
 }
 
-/// The smallest pane frame that holds the minimum grid on each axis, title
-/// bar included, exactly rather than rounded to physical pixels: at a
-/// fractional scale the dividers leave child extents off the pixel grid.
+/// The smallest pane frame that holds the minimum grid on each axis, a
+/// reserved title bar included, exactly rather than rounded to physical
+/// pixels: at a fractional scale the dividers leave child extents off the
+/// pixel grid.
 struct Minimums {
     width: Pixels,
     height: Pixels,
@@ -447,8 +497,9 @@ impl Minimums {
         let columns = |width: Pixels| {
             metrics.grid(size(width, large)).columns >= MIN_PANE_COLUMNS
         };
+        let bar = metrics.bars.reserved();
         let rows = |height: Pixels| {
-            let terminal = height - TITLE_BAR_HEIGHT.min(height);
+            let terminal = height - bar.min(height);
             metrics.grid(size(large, terminal)).rows >= MIN_PANE_ROWS
         };
         let padding = |value: f32| px(value) * 2.0;
@@ -459,8 +510,7 @@ impl Minimums {
                 columns,
             ),
             height: smallest(
-                TITLE_BAR_HEIGHT
-                    + padding(metrics.window.padding_y)
+                bar + padding(metrics.window.padding_y)
                     + metrics.cell.height * f32::from(MIN_PANE_ROWS),
                 rows,
             ),

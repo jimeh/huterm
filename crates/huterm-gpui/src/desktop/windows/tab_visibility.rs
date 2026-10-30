@@ -120,6 +120,11 @@ impl Reveal {
         self.advance(now, self.hover, self.enabled)
     }
 
+    /// Whether an activity reveal still holds at `now`.
+    pub(super) fn activity_pending(&self, now: Instant) -> bool {
+        self.activity_until.is_some_and(|until| now < until)
+    }
+
     pub(super) fn reveal_for_activity(&mut self, now: Instant) {
         self.activity_until = Some(now + Duration::from_secs(1));
         self.leave = None;

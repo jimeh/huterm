@@ -806,6 +806,54 @@ pub enum PaneZoomScope {
     Shared,
 }
 
+/// Whether a split tab's panes show their title bars.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum PaneTitleBarMode {
+    /// Each pane shows its title bar, which takes space from its terminal.
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Visible"))
+    )]
+    Visible,
+    /// A pane's title bar takes no space and fades in over its terminal
+    /// while the pointer rests where it would be.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "On hover"))
+    )]
+    Hover,
+    /// No pane shows a title bar; close, zoom, and move remain commands.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Hidden"))
+    )]
+    Hidden,
+}
+
+/// Which edge of a pane its title bar runs along.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum PaneTitleBarPosition {
+    /// Along the pane's top edge.
+    #[default]
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Top")))]
+    Top,
+    /// Along the pane's bottom edge.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Bottom"))
+    )]
+    Bottom,
+}
+
 /// The most user-defined layouts `[panes.layouts]` holds.
 pub const MAX_LAYOUTS: usize = 64;
 
@@ -814,6 +862,31 @@ pub const MAX_LAYOUTS: usize = 64;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct PanesConfig {
+    /// How a split tab's panes show their title bars. `visible` bars always
+    /// show and take space from the terminal. `hover` bars take no space:
+    /// rest the pointer along the pane's edge where the bar would be, and it
+    /// fades in over the terminal. `hidden` bars never show.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Pane title bars",
+        "x-huterm-order" = 33,
+        "x-huterm-apply" = "live",
+    )))]
+    pub title_bar: PaneTitleBarMode,
+    /// Which edge of a pane its title bar runs along: `top` or `bottom`.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Title bar position",
+        "x-huterm-order" = 36,
+        "x-huterm-apply" = "live",
+        "x-huterm-visible-when" = [
+            {"setting": "panes.title_bar", "equals": "visible"},
+            {"setting": "panes.title_bar", "equals": "hover"}
+        ],
+    )))]
+    pub title_bar_position: PaneTitleBarPosition,
     /// Who owns a pane's zoom: `view` or `shared`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "window",
@@ -860,6 +933,8 @@ pub struct PanesConfig {
 impl Default for PanesConfig {
     fn default() -> Self {
         Self {
+            title_bar: PaneTitleBarMode::default(),
+            title_bar_position: PaneTitleBarPosition::default(),
             zoom: PaneZoomScope::default(),
             layouts: BTreeMap::new(),
             layout_cycle: BUILT_IN_LAYOUTS

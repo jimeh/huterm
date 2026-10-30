@@ -57,7 +57,9 @@ use crate::native_quit;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 use crate::native_updater;
 use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
-use huterm_config::{TabStyle, TabWidth, TabsConfig};
+use huterm_config::{
+    PaneTitleBarMode, PaneTitleBarPosition, TabStyle, TabWidth, TabsConfig,
+};
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
     HierarchySubscription, HostEffectRecipientOptions, HostEffectViewerOptions,
@@ -178,6 +180,7 @@ mod layout_undo;
 mod menu_spec;
 mod model;
 mod native_menus;
+mod pane_bars;
 mod pane_drag;
 mod pane_geometry;
 mod pane_layouts;
@@ -215,9 +218,10 @@ use model::{
     WindowRecord, WindowRestore, apply_tab_order,
 };
 use native_menus::{MenuAnchor, MenuPresenter, NativeMenuSession};
+use pane_bars::{BarInput, PaneBarReveals};
 use pane_drag::{DropTarget, PaneDrag, PaneMode};
 use pane_geometry::{
-    Divider, PaneRect, TabPanes, boundary_position, dragged_weights,
+    Divider, PaneRect, TabPanes, TitleBars, boundary_position, dragged_weights,
     layout_panes, with_boundary,
 };
 use pane_menu::{PaneMenuInput, pane_menu};
@@ -2422,6 +2426,8 @@ fn open_window_with_profile(
                 reveal: Reveal::default(),
                 reveal_context: None,
                 pointer_reveal: PointerReveal::default(),
+                pane_bars: PaneBarReveals::default(),
+                pane_bar_pointer: None,
                 layout_pending: false,
                 synced_presentation: None,
                 reorder: None,
@@ -2627,7 +2633,8 @@ impl refresh::Animated for WorkspaceView {
         let mut next = self
             .tab_scrollbars
             .schedule(now)
-            .merge(self.reveal.schedule(now));
+            .merge(self.reveal.schedule(now))
+            .merge(self.pane_bars.schedule(now));
         if let Some(at) = self.pointer_reveal.probe_at {
             next = next.merge(AnimationSchedule::at(at));
         }
@@ -2684,6 +2691,9 @@ impl refresh::Animated for WorkspaceView {
         }
         if scrolled | self.tab_scrollbars.advance(now) | self.reveal.tick(now) {
             self.sync_tab_layout(window, cx);
+            cx.notify();
+        }
+        if self.pane_bars.tick(now, self.hover_bars()) {
             cx.notify();
         }
         self.advance_spring(now, window, cx);
@@ -3544,6 +3554,12 @@ struct WorkspaceView {
     reveal: Reveal,
     reveal_context: Option<(TabPosition, bool, bool)>,
     pointer_reveal: PointerReveal,
+    /// Each drawn pane title bar's reveal under `title_bar = "hover"`.
+    pane_bars: PaneBarReveals,
+    /// The pointer at the last pointer refresh, for the hover bars; `None`
+    /// while it is outside the window, a terminal gesture or pane drag owns
+    /// it, or the fullscreen tab bar claims it.
+    pane_bar_pointer: Option<gpui::Point<Pixels>>,
     layout_pending: bool,
     /// The tab bar presentation the last layout sync pushed, so a sync can
     /// tell the bar appearing or hiding from a resize.
@@ -4525,6 +4541,7 @@ impl WorkspaceView {
             },
         );
         let focused = tab.focused().pane;
+        let bars = self.title_bars();
         *self.drawn_dividers.borrow_mut() = rects
             .as_ref()
             .map(|rects| rects.dividers.clone())
@@ -4565,7 +4582,31 @@ impl WorkspaceView {
                     .child(pane.view.clone())
                     .into_any_element(),
             );
-            if let Some(title_bar) = rect.and_then(|rect| rect.title_bar) {
+            let bottom = bars.position == PaneTitleBarPosition::Bottom;
+            // Without a visible bar, only this marks which pane has focus,
+            // and only while more than one pane shows. A revealed hover bar
+            // covers it.
+            if let Some(rect) = rect.filter(|_| {
+                id == focused
+                    && bars.mode != PaneTitleBarMode::Visible
+                    && rects.as_ref().is_some_and(|rects| rects.panes.len() > 1)
+            }) {
+                elements.push(
+                    tab_bar::pane_focus_cue(rect.frame, bottom, colors)
+                        .into_any_element(),
+                );
+            }
+            // A hover bar draws only while it reveals, at its reveal's
+            // opacity; until then the terminal beneath keeps the pointer.
+            let opacity = if bars.mode == PaneTitleBarMode::Hover {
+                self.pane_bars.progress(id)
+            } else {
+                1.0
+            };
+            if let Some(title_bar) = rect
+                .and_then(|rect| rect.title_bar)
+                .filter(|_| opacity > 0.0)
+            {
                 let title = tab.pane_label(pane, self.config.tabs, cx);
                 elements.push(
                     Self::pane_title_bar(
@@ -4577,10 +4618,12 @@ impl WorkspaceView {
                             status: pane.status(cx),
                             focused: id == focused,
                             zoomed: zoomed == Some(id),
+                            bottom,
                         },
                         colors,
                         cx,
                     )
+                    .opacity(opacity)
                     .into_any_element(),
                 );
             }
@@ -5076,13 +5119,18 @@ impl WorkspaceView {
                 let (split, index) = pane_geometry::resize_boundary(
                     &layout, pane, axis, leading,
                 )?;
-                let divider =
-                    layout_panes(&layout, bounds, window.scale_factor(), None)
-                        .dividers
-                        .into_iter()
-                        .find(|divider| {
-                            divider.split == split.id && divider.index == index
-                        })?;
+                let divider = layout_panes(
+                    &layout,
+                    bounds,
+                    window.scale_factor(),
+                    None,
+                    self.title_bars(),
+                )
+                .dividers
+                .into_iter()
+                .find(|divider| {
+                    divider.split == split.id && divider.index == index
+                })?;
                 Some((split.clone(), index, divider.span))
             })
         else {
@@ -5615,7 +5663,129 @@ impl WorkspaceView {
         cx: &App,
     ) -> Option<TabPanes> {
         let layout = self.shown_layout(tab, cx)?;
-        Some(layout_panes(&layout, base, window.scale_factor(), zoomed))
+        Some(layout_panes(
+            &layout,
+            base,
+            window.scale_factor(),
+            zoomed,
+            self.title_bars(),
+        ))
+    }
+
+    /// Where this window's split tabs put their panes' title bars.
+    fn title_bars(&self) -> TitleBars {
+        TitleBars::new(&self.config.panes)
+    }
+
+    /// Whether pane title bars reveal on hover.
+    fn hover_bars(&self) -> bool {
+        self.config.panes.title_bar == PaneTitleBarMode::Hover
+    }
+
+    /// How opaque `rect`'s bar draws, for smoke state: a hover bar's reveal,
+    /// else fully, or `none` without a bar.
+    fn pane_bar_opacity(&self, rect: &PaneRect) -> String {
+        if rect.title_bar.is_none() {
+            return "none".to_owned();
+        }
+        let opacity = if self.hover_bars() {
+            self.pane_bars.progress(rect.pane)
+        } else {
+            1.0
+        };
+        format!("{opacity:.2}")
+    }
+
+    /// Feeds the hover bars what the last pointer refresh saw and what holds
+    /// each drawn bar, and schedules their fades and intents.
+    fn refresh_pane_bars(&mut self, cx: &mut Context<'_, Self>) {
+        let now = Instant::now();
+        // Other modes keep no reveal state, so the default path stays idle.
+        let drawn = self
+            .hover_bars()
+            .then(|| self.drawn_panes.borrow().clone())
+            .flatten();
+        let inputs: Vec<BarInput> = drawn
+            .iter()
+            .flat_map(|(tab, rects)| {
+                rects.iter().filter_map(|rect| {
+                    let bar = rect.title_bar?;
+                    Some(BarInput {
+                        pane: rect.pane,
+                        pointed: self
+                            .pane_bar_pointer
+                            .is_some_and(|pointer| bar.contains(&pointer)),
+                        held: self.holds_pane_bar(*tab, rect.pane),
+                    })
+                })
+            })
+            .collect();
+        // The render that follows syncs each terminal's overlay.
+        if self.pane_bars.update(now, &inputs, self.hover_bars()) {
+            cx.notify();
+        }
+        self.frame_clock.animate(
+            cx.entity().downgrade(),
+            refresh::Animated::animation_schedule(self, now),
+            cx,
+        );
+    }
+
+    /// Whether a pane drag or the pane's open menu, Huterm's or native,
+    /// keeps `pane`'s hover bar revealed.
+    fn holds_pane_bar(&self, tab: TabId, pane: PaneId) -> bool {
+        let kind = MenuKind::Pane { tab, pane };
+        self.pane_drag
+            .as_ref()
+            .is_some_and(|drag| drag.dragging && drag.pane == pane)
+            || self.menu.as_ref().is_some_and(|menu| menu.kind == kind)
+            || self.native_menu_kind() == Some(&kind)
+    }
+
+    /// Reveals `pane`'s hover bar for a moment, as a keyboard focus change
+    /// does.
+    fn reveal_pane_bar(&mut self, pane: PaneId, cx: &mut Context<'_, Self>) {
+        if !self.hover_bars() {
+            return;
+        }
+        self.pane_bars.reveal_for_activity(pane, Instant::now());
+        self.refresh_pane_bars(cx);
+    }
+
+    /// The active tab's revealed hover bars, by terminal view, from the
+    /// layout this frame draws: each one's terminal leaves the bar its
+    /// pointer input. Every other view gets none.
+    fn revealed_pane_bars(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Vec<(gpui::EntityId, Bounds<Pixels>)> {
+        if !self.hover_bars() {
+            return Vec::new();
+        }
+        let Some(tab) = self.active_tab_view(cx).filter(|tab| {
+            tab.panes
+                .iter()
+                .any(|pane| self.pane_bars.progress(pane.pane) > 0.0)
+        }) else {
+            return Vec::new();
+        };
+        let Some(bounds) = self.terminal_geometry(window).bounds else {
+            return Vec::new();
+        };
+        let zoomed = self.shown_zoom(tab, cx);
+        let Some(rects) = self.tab_panes(tab.id, bounds, zoomed, window, cx)
+        else {
+            return Vec::new();
+        };
+        tab.panes
+            .iter()
+            .filter(|pane| self.pane_bars.progress(pane.pane) > 0.0)
+            .filter_map(|pane| {
+                let bar = rects.pane(pane.pane)?.title_bar?;
+                Some((pane.view.entity_id(), bar))
+            })
+            .collect()
     }
 
     /// `tab`'s layout as this window shows it: the projection's, with the
@@ -5804,8 +5974,13 @@ impl WorkspaceView {
                 let layout = self.chrome_layout(window);
                 layout.tabs.intersect(&layout.terminal)
             });
+        let pane_bars = self.revealed_pane_bars(window, cx);
         let mut changed_any = false;
         for (view, geometry, placement) in views {
+            let pane_bar = pane_bars
+                .iter()
+                .find(|(entity, _)| *entity == view.entity_id())
+                .map(|(_, bar)| *bar);
             view.update(cx, |terminal, cx| {
                 // Key contexts render with the view, so a layout or zoom
                 // change notifies every pane it moves, even one whose
@@ -5824,7 +5999,8 @@ impl WorkspaceView {
                     || changed
                     || scale_changed
                     || cell_changed;
-                terminal.tab_overlay = overlay;
+                terminal.overlays.tab_bar = overlay;
+                terminal.overlays.pane_bar = pane_bar;
                 terminal.geometry = geometry;
                 terminal.quiet_resize = quake_presenting;
                 if geometry_changed || changed || scale_changed || cell_changed
@@ -5946,6 +6122,23 @@ impl WorkspaceView {
         {
             cx.notify();
         }
+        // The fullscreen tab bar's trigger edge and revealed bar win over
+        // the pane bars beneath them.
+        let tab_claims = self.presentation() == Presentation::Overlay
+            && (edge
+                || (self.reveal.progress > 0.0
+                    && layout.tabs.contains(&pointer)));
+        // Another drag, or a menu or dialog over the bands, claims the
+        // pointer too; a bar's own menu holds it through `holds_pane_bar`.
+        let claimed = self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+            || self.divider_drag.is_some()
+            || self.reorder.is_some()
+            || self.resizing_sidebar
+            || self.native_menu.is_some()
+            || self.overlay_holds_focus();
+        self.pane_bar_pointer =
+            (hovered && !gesture && !claimed && !tab_claims).then_some(pointer);
+        self.refresh_pane_bars(cx);
         self.update_pointer_probe(Instant::now(), window);
         self.frame_clock.animate(
             cx.entity().downgrade(),
@@ -6691,6 +6884,7 @@ impl WorkspaceView {
         if let Some(next) = next {
             self.unzoom(tab, window, cx);
             self.focus_pane(tab, next, window, cx);
+            self.reveal_pane_bar(next, cx);
         }
         Ok(CommandOutcome::Completed)
     }
@@ -6712,6 +6906,7 @@ impl WorkspaceView {
         if let Some(next) = next {
             self.unzoom(tab, window, cx);
             self.focus_pane(tab, next, window, cx);
+            self.reveal_pane_bar(next, cx);
         }
         Ok(CommandOutcome::Completed)
     }
@@ -6776,7 +6971,13 @@ impl WorkspaceView {
         let bounds = self.terminal_geometry(window).bounds?;
         let metrics = self.metrics.at_scale(window.scale_factor());
         let cell = size(metrics.cell_width, metrics.cell_height);
-        let rects = layout_panes(layout, bounds, window.scale_factor(), None);
+        let rects = layout_panes(
+            layout,
+            bounds,
+            window.scale_factor(),
+            None,
+            self.title_bars(),
+        );
         Some(
             rects
                 .panes
@@ -10261,6 +10462,8 @@ impl WorkspaceView {
                 window.request_decorations(requested);
             }
             self.config = config.clone();
+            // A change of bar mode reveals or hides the hover bars.
+            self.refresh_pane_bars(cx);
             self.sync_frame(window);
             self.layout_pending = true;
             self.title_widths.clear();
@@ -12610,6 +12813,8 @@ impl WorkspaceView {
             (MenuFocusReturn::Terminal, _) => self.focus_terminal(window, cx),
             (MenuFocusReturn::Keep, _) => {}
         }
+        // A pane bar the menu held may hide now.
+        self.refresh_pane_bars(cx);
         cx.notify();
         true
     }
@@ -13200,6 +13405,7 @@ impl WorkspaceView {
         // Where a press grabs each title bar for a drag: its title text.
         let grabs =
             button(|bar| gpui::point(bar.origin.x + px(40.0), bar.center().y));
+        let opacities = joined(&|rect, _| self.pane_bar_opacity(rect));
         let drop = self
             .drawn_drop
             .borrow()
@@ -13219,7 +13425,7 @@ impl WorkspaceView {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}drop={drop} {prefix}spring={spring} {} {prefix}pane_dividers={}",
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}drop={drop} {prefix}spring={spring} {} {prefix}pane_dividers={}",
             panes.len(),
             self.layout_smoke_state(prefix, cx),
             if dividers.is_empty() {

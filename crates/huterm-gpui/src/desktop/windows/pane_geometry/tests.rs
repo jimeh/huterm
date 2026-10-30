@@ -14,6 +14,16 @@ fn columns(weights: &[u32]) -> PaneLayout {
     .unwrap()
 }
 
+/// `layout`'s rectangles with the default title bars: visible, at the top.
+fn default_panes(
+    layout: &PaneLayout,
+    content: Bounds<Pixels>,
+    scale: f32,
+    zoomed: Option<PaneId>,
+) -> TabPanes {
+    layout_panes(layout, content, scale, zoomed, TitleBars::default())
+}
+
 fn root_split(layout: &PaneLayout) -> &SplitNode {
     match layout.root() {
         PaneNode::Split(split) => split,
@@ -58,7 +68,7 @@ fn id(value: u64) -> PaneId {
 #[test]
 fn a_lone_pane_fills_the_tab_without_a_title_bar() {
     let content = rect(10.0, 20.0, 400.0, 300.0);
-    let panes = layout_panes(&PaneLayout::single(info(1)), content, 2.0, None);
+    let panes = default_panes(&PaneLayout::single(info(1)), content, 2.0, None);
     assert_eq!(
         panes.panes,
         [PaneRect {
@@ -91,7 +101,7 @@ fn split_panes_share_the_tab_with_dividers_and_title_bars() {
     ))
     .unwrap();
     let content = rect(0.0, 0.0, 401.0, 301.0);
-    let panes = layout_panes(&layout, content, 1.0, None);
+    let panes = default_panes(&layout, content, 1.0, None);
     let [first, second, third] = panes.panes.as_slice() else {
         panic!("{panes:?}");
     };
@@ -134,7 +144,7 @@ fn boundaries_round_to_physical_pixels_and_never_overlap_in_short_space() {
         vec![(333_333, pane(1)), (333_333, pane(2)), (333_334, pane(3))],
     ))
     .unwrap();
-    let panes = layout_panes(&layout, rect(0.0, 0.0, 100.0, 50.0), 2.0, None);
+    let panes = default_panes(&layout, rect(0.0, 0.0, 100.0, 50.0), 2.0, None);
     for pane in &panes.panes {
         let edges = [pane.frame.origin.x, pane.frame.right()];
         assert!(
@@ -147,7 +157,7 @@ fn boundaries_round_to_physical_pixels_and_never_overlap_in_short_space() {
     }
     // Less room than the dividers need leaves empty panes, not negative
     // or overlapping ones.
-    let tiny = layout_panes(&layout, rect(0.0, 0.0, 1.0, 50.0), 1.0, None);
+    let tiny = default_panes(&layout, rect(0.0, 0.0, 1.0, 50.0), 1.0, None);
     assert!(
         tiny.panes
             .iter()
@@ -164,7 +174,7 @@ fn boundaries_round_to_physical_pixels_and_never_overlap_in_short_space() {
 fn a_zoomed_pane_fills_the_tab_with_its_title_bar_and_no_dividers() {
     let layout = columns(&[500_000, 500_000]);
     let content = rect(0.0, 0.0, 401.0, 300.0);
-    let zoomed = layout_panes(&layout, content, 1.0, Some(id(2)));
+    let zoomed = default_panes(&layout, content, 1.0, Some(id(2)));
     assert_eq!(
         zoomed.panes,
         [PaneRect {
@@ -177,18 +187,106 @@ fn a_zoomed_pane_fills_the_tab_with_its_title_bar_and_no_dividers() {
     assert_eq!(zoomed.dividers, []);
     // A zoom naming a pane the layout does not hold is ignored, and so is
     // zoom in a tab of one pane.
-    let stale = layout_panes(&layout, content, 1.0, Some(id(9)));
-    assert_eq!(stale, layout_panes(&layout, content, 1.0, None));
+    let stale = default_panes(&layout, content, 1.0, Some(id(9)));
+    assert_eq!(stale, default_panes(&layout, content, 1.0, None));
     let lone =
-        layout_panes(&PaneLayout::single(info(1)), content, 1.0, Some(id(1)));
+        default_panes(&PaneLayout::single(info(1)), content, 1.0, Some(id(1)));
     assert_eq!(lone.panes[0].title_bar, None);
+}
+
+#[test]
+fn bottom_bars_sit_under_the_terminal_and_hover_and_hidden_bars_take_no_space()
+{
+    let layout = columns(&[500_000, 500_000]);
+    let content = rect(0.0, 0.0, 401.0, 300.0);
+    let bottom = TitleBars {
+        position: PaneTitleBarPosition::Bottom,
+        ..TitleBars::default()
+    };
+    let hidden = TitleBars {
+        mode: PaneTitleBarMode::Hidden,
+        ..bottom
+    };
+    let at_bottom = layout_panes(&layout, content, 1.0, None, bottom);
+    let first = at_bottom.panes[0];
+    assert_eq!(first.frame, rect(0.0, 0.0, 200.0, 300.0));
+    assert_eq!(first.title_bar, Some(rect(0.0, 276.0, 200.0, 24.0)));
+    assert_eq!(first.terminal, rect(0.0, 0.0, 200.0, 276.0));
+    // A zoomed pane keeps its bar at the bottom.
+    let zoomed = layout_panes(&layout, content, 1.0, Some(id(2)), bottom);
+    assert_eq!(
+        zoomed.panes[0].title_bar,
+        Some(rect(0.0, 276.0, 401.0, 24.0))
+    );
+    // A frame shorter than a bar keeps the bar inside it.
+    let short =
+        layout_panes(&layout, rect(0.0, 0.0, 401.0, 10.0), 1.0, None, bottom);
+    assert_eq!(short.panes[0].title_bar, Some(rect(0.0, 0.0, 200.0, 10.0)));
+    assert_eq!(short.panes[0].terminal, rect(0.0, 0.0, 200.0, 0.0));
+    // Hidden bars leave every terminal its whole frame, zoomed or not, and
+    // the dividers where they were.
+    let without = layout_panes(&layout, content, 1.0, None, hidden);
+    for pane in &without.panes {
+        assert_eq!(pane.title_bar, None);
+        assert_eq!(pane.terminal, pane.frame);
+    }
+    assert_eq!(without.dividers, at_bottom.dividers);
+    let zoomed = layout_panes(&layout, content, 1.0, Some(id(2)), hidden);
+    assert_eq!(zoomed.panes[0].terminal, content);
+    // Hover bars keep their rectangle at their edge, over a terminal that
+    // takes the whole frame.
+    let hover = TitleBars {
+        mode: PaneTitleBarMode::Hover,
+        ..bottom
+    };
+    let over = layout_panes(&layout, content, 1.0, None, hover);
+    assert_eq!(over.panes[0].title_bar, Some(rect(0.0, 276.0, 200.0, 24.0)));
+    assert_eq!(over.panes[0].terminal, over.panes[0].frame);
+    let top = TitleBars {
+        position: PaneTitleBarPosition::Top,
+        ..hover
+    };
+    let over = layout_panes(&layout, content, 1.0, None, top);
+    assert_eq!(over.panes[0].title_bar, Some(rect(0.0, 0.0, 200.0, 24.0)));
+    assert_eq!(over.panes[0].terminal, over.panes[0].frame);
+}
+
+#[test]
+fn hidden_bars_let_a_split_fit_one_bar_shorter() {
+    let scale = 1.0;
+    let visible = metrics(scale, (0.0, 0.0));
+    let hidden = PaneMetrics {
+        bars: TitleBars {
+            mode: PaneTitleBarMode::Hidden,
+            ..TitleBars::default()
+        },
+        ..visible
+    };
+    let layout = PaneLayout::new(split(
+        10,
+        SplitAxis::Rows,
+        vec![(500_000, pane(1)), (500_000, pane(2))],
+    ))
+    .unwrap();
+    // Tall enough for two minimum grids, but not for their bars too.
+    let rows = f32::from(visible.cell.height) * f32::from(MIN_PANE_ROWS);
+    let content = rect(0.0, 28.0, 400.0, rows * 2.0 + 1.0);
+    let ideal = layout.balanced();
+    assert!(matches!(
+        fit(&layout, &ideal, content, scale, visible),
+        Fit::Short(_)
+    ));
+    assert_eq!(
+        fit(&layout, &ideal, content, scale, hidden),
+        Fit::Fits(ideal)
+    );
 }
 
 #[test]
 fn a_dividers_grab_zone_straddles_its_line_inside_the_split() {
     let layout = columns(&[500_000, 500_000]);
     let content = rect(0.0, 0.0, 401.0, 300.0);
-    let panes = layout_panes(&layout, content, 1.0, None);
+    let panes = default_panes(&layout, content, 1.0, None);
     let [divider] = panes.dividers.as_slice() else {
         panic!("{panes:?}");
     };
@@ -196,7 +294,7 @@ fn a_dividers_grab_zone_straddles_its_line_inside_the_split() {
     assert_eq!(divider.grab, rect(196.5, 0.0, 8.0, 300.0));
     assert_eq!(divider.span, content);
     // Near the split's edge the zone is clipped to the split.
-    let skewed = layout_panes(&columns(&[1, 999_999]), content, 1.0, None);
+    let skewed = default_panes(&columns(&[1, 999_999]), content, 1.0, None);
     assert_eq!(skewed.dividers[0].grab.origin.x, px(0.0));
 }
 
@@ -364,6 +462,7 @@ fn metrics(scale: f32, padding: (f32, f32)) -> PaneMetrics {
             padding_y: padding.1,
             ..WindowConfig::default()
         },
+        bars: TitleBars::default(),
     }
 }
 
@@ -375,7 +474,7 @@ fn grids(
     scale: f32,
     metrics: PaneMetrics,
 ) -> Vec<(PaneId, huterm_protocol::GridSize)> {
-    layout_panes(layout, content, scale, None)
+    layout_panes(layout, content, scale, None, metrics.bars)
         .panes
         .iter()
         .map(|rect| (rect.pane, metrics.grid(rect.terminal.size)))

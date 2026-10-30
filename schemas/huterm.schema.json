@@ -509,6 +509,46 @@
         }
       ]
     },
+    "PaneTitleBarMode": {
+      "description": "Whether a split tab's panes show their title bars.",
+      "oneOf": [
+        {
+          "const": "visible",
+          "description": "Each pane shows its title bar, which takes space from its terminal.",
+          "type": "string",
+          "x-huterm-label": "Visible"
+        },
+        {
+          "const": "hover",
+          "description": "A pane's title bar takes no space and fades in over its terminal\nwhile the pointer rests where it would be.",
+          "type": "string",
+          "x-huterm-label": "On hover"
+        },
+        {
+          "const": "hidden",
+          "description": "No pane shows a title bar; close, zoom, and move remain commands.",
+          "type": "string",
+          "x-huterm-label": "Hidden"
+        }
+      ]
+    },
+    "PaneTitleBarPosition": {
+      "description": "Which edge of a pane its title bar runs along.",
+      "oneOf": [
+        {
+          "const": "top",
+          "description": "Along the pane's top edge.",
+          "type": "string",
+          "x-huterm-label": "Top"
+        },
+        {
+          "const": "bottom",
+          "description": "Along the pane's bottom edge.",
+          "type": "string",
+          "x-huterm-label": "Bottom"
+        }
+      ]
+    },
     "PaneZoomScope": {
       "description": "Who owns a pane's zoom.",
       "oneOf": [
@@ -580,6 +620,44 @@
           "x-huterm-label": "Pane layouts",
           "x-huterm-order": 50,
           "x-huterm-section": "window"
+        },
+        "title_bar": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PaneTitleBarMode"
+            }
+          ],
+          "default": "visible",
+          "description": "How a split tab's panes show their title bars. `visible` bars always\nshow and take space from the terminal. `hover` bars take no space:\nrest the pointer along the pane's edge where the bar would be, and it\nfades in over the terminal. `hidden` bars never show.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Pane title bars",
+          "x-huterm-order": 33,
+          "x-huterm-section": "window"
+        },
+        "title_bar_position": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PaneTitleBarPosition"
+            }
+          ],
+          "default": "top",
+          "description": "Which edge of a pane its title bar runs along: `top` or `bottom`.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Title bar position",
+          "x-huterm-order": 36,
+          "x-huterm-section": "window",
+          "x-huterm-visible-when": [
+            {
+              "equals": "visible",
+              "setting": "panes.title_bar"
+            },
+            {
+              "equals": "hover",
+              "setting": "panes.title_bar"
+            }
+          ]
         },
         "zoom": {
           "allOf": [

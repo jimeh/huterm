@@ -111,6 +111,13 @@ min_width = 96.0
 max_width = 240.0
 
 [panes]
+# Whether a split tab's panes show title bars: visible, hover, or hidden.
+# Hover bars take no space and fade in over the terminal while the pointer
+# rests where they would be; hidden bars never show, and close, zoom, and move
+# remain commands.
+title_bar = "visible"
+# Which edge of a pane its title bar runs along: top or bottom.
+title_bar_position = "top"
 # Who owns a pane's zoom: view, where each window zooms on its own, or
 # shared, where the tab owns it and every window set to shared shows it.
 zoom = "view"
