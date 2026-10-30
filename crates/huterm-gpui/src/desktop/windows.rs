@@ -5763,7 +5763,11 @@ impl WorkspaceView {
         if !self.hover_bars() {
             return Vec::new();
         }
-        let Some(tab) = self.active_tab_view(cx) else {
+        let Some(tab) = self.active_tab_view(cx).filter(|tab| {
+            tab.panes
+                .iter()
+                .any(|pane| self.pane_bars.progress(pane.pane) > 0.0)
+        }) else {
             return Vec::new();
         };
         let Some(bounds) = self.terminal_geometry(window).bounds else {
