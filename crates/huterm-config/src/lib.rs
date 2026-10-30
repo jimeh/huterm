@@ -450,7 +450,7 @@ pub enum MacosOptionAsAlt {
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Fullscreen mode",
         "x-huterm-order" = 30,
@@ -488,7 +488,7 @@ pub struct WindowConfig {
     /// when the window has no title bar. Every item stays reachable through
     /// shortcuts or the command palette.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Menu button",
         "x-huterm-order" = 10,
@@ -498,7 +498,7 @@ pub struct WindowConfig {
     /// Show key hints on the scroll pill and on dialog and panel buttons.
     /// The command palette and menus always show their shortcuts.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Shortcut hints",
         "x-huterm-order" = 20,
@@ -509,7 +509,7 @@ pub struct WindowConfig {
     /// native macOS menus. Off draws them in Huterm's own style, as Linux
     /// always does.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Native menus",
         "x-huterm-order" = 25,
@@ -522,7 +522,7 @@ pub struct WindowConfig {
     /// badge in a small pane, `compact` always shows the badge, and `off`
     /// shows neither.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Size indicator",
         "x-huterm-order" = 26,
@@ -534,7 +534,7 @@ pub struct WindowConfig {
     /// still being dragged it stays regardless; on Linux a window edge
     /// drag counts from the last resize.
     #[cfg_attr(feature = "schema", schemars(range(max = 10000), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
         "x-huterm-label" = "Size indicator linger",
         "x-huterm-order" = 27,
@@ -924,7 +924,7 @@ pub struct PanesConfig {
     /// rest the pointer along the pane's edge where the bar would be, and it
     /// fades in over the terminal. `hidden` bars never show.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Pane title bars",
         "x-huterm-order" = 31,
@@ -934,7 +934,7 @@ pub struct PanesConfig {
     /// How long, in milliseconds, the pointer rests along a pane's edge
     /// before a `hover` title bar fades in, from 0 to 2000.
     #[cfg_attr(feature = "schema", schemars(range(max = 2000), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Title bar reveal delay",
         "x-huterm-order" = 32,
@@ -947,7 +947,7 @@ pub struct PanesConfig {
     /// How long, in milliseconds, a `hover` title bar takes to fade in or
     /// out, from 0 to 1000.
     #[cfg_attr(feature = "schema", schemars(range(max = 1000), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Title bar fade",
         "x-huterm-order" = 33,
@@ -960,7 +960,7 @@ pub struct PanesConfig {
     /// How long, in milliseconds, a `hover` title bar stays after the
     /// pointer leaves it before it fades out, from 0 to 5000.
     #[cfg_attr(feature = "schema", schemars(range(max = 5000), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Title bar hide delay",
         "x-huterm-order" = 34,
@@ -973,7 +973,7 @@ pub struct PanesConfig {
     /// Which edge of a pane its title bar, or the focus accent that stands
     /// in for a hidden bar, runs along: `top` or `bottom`.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Title bar position",
         "x-huterm-order" = 36,
@@ -984,7 +984,7 @@ pub struct PanesConfig {
     /// title bar is not on screen, from 0 (off) to 1. It draws only under
     /// `hover` and `hidden` bars, and only while more than one pane shows.
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 1), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Focus accent",
         "x-huterm-order" = 37,
@@ -1001,7 +1001,7 @@ pub struct PanesConfig {
     /// How much the panes without focus dim, from 0 (off) to 0.8, while
     /// more than one pane shows. Their title bars stay as they are.
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 0.8), extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Dim unfocused panes",
         "x-huterm-order" = 38,
@@ -1013,7 +1013,7 @@ pub struct PanesConfig {
     pub inactive_dim: f32,
     /// Who owns a pane's zoom: `view` or `shared`.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Pane zoom",
         "x-huterm-order" = 40,
@@ -1028,7 +1028,7 @@ pub struct PanesConfig {
     /// and underscores, starting with a letter, and may not be a built-in
     /// layout's name.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Pane layouts",
         "x-huterm-label" = "Pane layouts",
         "x-huterm-order" = 50,
@@ -1042,7 +1042,7 @@ pub struct PanesConfig {
     /// through, in order: built-in names (`columns`, `rows`, `main_left`,
     /// `main_top`, and `tiled`) or names from `[panes.layouts]`.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "window",
+        "x-huterm-section" = "panes",
         "x-huterm-group" = "Pane layouts",
         "x-huterm-label" = "Layout cycle",
         "x-huterm-order" = 60,

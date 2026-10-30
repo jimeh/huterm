@@ -1,4 +1,4 @@
-//! The Pane layouts card of the Window and panes section: the built-in
+//! The Pane layouts card of the Panes section: the built-in
 //! layouts, the user layouts of `[panes.layouts]` with their template
 //! fields, new, renamed, and deleted layouts, and the layout cycle.
 //!

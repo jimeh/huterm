@@ -16,9 +16,9 @@ const DEV: &str = "panes.layouts.dev";
 const WORK: &str = "panes.layouts.work";
 const CYCLE: &str = "panes.layout_cycle";
 
-/// Opens Settings on the Window and panes section.
+/// Opens Settings on the Panes section.
 fn open_window_section(harness: &mut DesktopHarness, file: &ScratchConfig) {
-    show(harness, file, SectionId::Window);
+    show(harness, file, SectionId::Panes);
 }
 
 /// Waits for every save to finish and for the file to satisfy `check`.

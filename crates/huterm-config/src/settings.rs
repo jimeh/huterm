@@ -36,7 +36,8 @@ pub enum SectionId {
     General,
     Appearance,
     Tabs,
-    Window,
+    Windows,
+    Panes,
     Terminal,
     Scrollback,
     Palette,
@@ -46,11 +47,12 @@ pub enum SectionId {
 }
 
 impl SectionId {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::General,
         Self::Appearance,
         Self::Tabs,
-        Self::Window,
+        Self::Windows,
+        Self::Panes,
         Self::Terminal,
         Self::Scrollback,
         Self::Palette,
@@ -66,7 +68,8 @@ impl SectionId {
             Self::General => "general",
             Self::Appearance => "appearance",
             Self::Tabs => "tabs",
-            Self::Window => "window",
+            Self::Windows => "windows",
+            Self::Panes => "panes",
             Self::Terminal => "terminal",
             Self::Scrollback => "scrollback",
             Self::Palette => "palette",
@@ -82,7 +85,8 @@ impl SectionId {
             Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Tabs => "Tabs",
-            Self::Window => "Window and panes",
+            Self::Windows => "Windows",
+            Self::Panes => "Panes",
             Self::Terminal => "Terminal",
             Self::Scrollback => "Scrollback",
             Self::Palette => "Command palette",
@@ -335,7 +339,7 @@ impl SettingsModel {
         Ok(Self { sections, profile })
     }
 
-    /// The ten sections in sidebar order, including any without settings.
+    /// The sections in sidebar order, including any without settings.
     #[must_use]
     pub fn sections(&self) -> &[Section] {
         &self.sections
@@ -917,6 +921,46 @@ mod tests {
         let rows = rows.description.as_deref().unwrap();
         assert!(rows.starts_with("Live history each terminal keeps"));
         assert!(!rows.contains('\n'), "wrapped lines join: {rows}");
+    }
+
+    #[test]
+    fn window_and_pane_settings_have_their_own_sections() {
+        let model = SettingsModel::load().unwrap();
+        let mut paths = BTreeMap::new();
+        for section in model.sections() {
+            for setting in section.groups.iter().flat_map(|g| &g.settings) {
+                assert_eq!(setting.section, section.id, "{}", setting.path);
+                let seen = paths.insert(setting.path.as_str(), section.id);
+                assert_eq!(seen, None, "{} is listed twice", setting.path);
+                let expected = match setting.path.split_once('.') {
+                    // Padding draws with the terminal's appearance.
+                    Some(("window", key)) if key.starts_with("padding_") => {
+                        SectionId::Appearance
+                    }
+                    Some(("window", _)) => SectionId::Windows,
+                    Some(("panes", _)) => SectionId::Panes,
+                    _ => continue,
+                };
+                assert_eq!(setting.section, expected, "{}", setting.path);
+            }
+        }
+        assert_eq!(paths.len(), model.settings().count());
+        let groups = |id: SectionId| -> Vec<&str> {
+            model.sections()[id as usize]
+                .groups
+                .iter()
+                .map(|group| group.title.as_str())
+                .collect()
+        };
+        assert_eq!(groups(SectionId::Windows), ["Window"]);
+        assert_eq!(groups(SectionId::Panes), ["Panes", "Pane layouts"]);
+        // Linux hides macOS-only settings, and Windows keeps others there.
+        assert!(
+            model.sections()[SectionId::Windows as usize].groups[0]
+                .settings
+                .iter()
+                .any(|setting| setting.platform.is_none())
+        );
     }
 
     #[test]

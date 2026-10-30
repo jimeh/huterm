@@ -261,7 +261,7 @@ runs, with a notice. A reload replaces the layouts and the cycle.
 The palette's layout picker and the Settings keybinding editor list your
 layouts after the built-ins.
 
-The Pane layouts card in the Window and panes section of Settings lists the
+The Pane layouts card in the Panes section of Settings lists the
 built-ins with their templates, and edits your layouts and the cycle. New
 layout asks for a name and writes the layout as `columns(*)`, which you then
 type over; it does not add the layout to the cycle. A template field checks
