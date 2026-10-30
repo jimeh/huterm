@@ -145,18 +145,22 @@ test.skipIf(process.platform === "win32")("a hung-up supervisor stops its smoke'
     const module = join(import.meta.dir, "smoke-process.ts");
     // The smoke keeps printing, so the supervisor keeps streaming to the
     // terminal after it hangs up, and ignores SIGTERM, so only the
-    // supervisor's SIGKILL after its grace period stops it.
-    const native = `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(started)}, String(process.pid)); setInterval(() => console.log("frame"), 5);`;
+    // supervisor's SIGKILL after its grace period stops it. Both scripts
+    // read their paths from the environment.
+    const native = 'process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(process.env.HANGUP_STARTED, String(process.pid)); setInterval(() => console.log("frame"), 5);';
     const supervisor = `
       import { writeFileSync } from "node:fs";
-      import { runSmokeProcess } from ${JSON.stringify(module)};
-      const outcome = await runSmokeProcess([process.execPath, "-e", ${JSON.stringify(native)}], { timeoutMs: 20_000, graceMs: 500 });
-      writeFileSync(${JSON.stringify(finished)}, JSON.stringify({ signalCode: outcome.signalCode, timedOut: outcome.timedOut }));
+      const { runSmokeProcess } = await import(process.env.HANGUP_MODULE);
+      const outcome = await runSmokeProcess([process.execPath, "-e", process.env.HANGUP_SMOKE], { timeoutMs: 20_000, graceMs: 500 });
+      writeFileSync(process.env.HANGUP_FINISHED, JSON.stringify({ signalCode: outcome.signalCode, timedOut: outcome.timedOut }));
     `;
     // The terminal makes the supervisor a session leader, so closing it
     // hangs up the supervisor as a closed terminal window or dropped SSH
     // session would.
-    const child = Bun.spawn([process.execPath, "-e", supervisor], { terminal: { data() {} } });
+    const child = Bun.spawn([process.execPath, "-e", supervisor], {
+      env: { ...process.env, HANGUP_MODULE: module, HANGUP_SMOKE: native, HANGUP_STARTED: started, HANGUP_FINISHED: finished },
+      terminal: { data() {} },
+    });
     const deadline = Date.now() + 10_000;
     while (!((group = Number(await readFile(started, "utf8").catch(() => ""))) > 0)) {
       if (Date.now() > deadline) throw new Error("the smoke never started");
