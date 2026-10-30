@@ -30,6 +30,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   awaited `focus` command is its only request. Every witness also logs
   activation requests and active/resign notifications with uptime to
   `witness-events`, and departed-block failures print that log.
+- **Other block:** on 2026-10-30 a local host run on a busy shared desktop
+  failed the same way inside the animation matrix (`show_quake` then
+  `settled(true)`, about line 667), with `activation_seen=true` and
+  `active=false`, after "focus restoration failed after hiding: previous
+  application disappeared". The immediate rerun on the same head passed.
 - **Triage:** if the label recurs, read the "departed witness activation
   events" in the failure. A `became_active` after Huterm summoned the quake
   confirms a late activation; its absence refutes the hypothesis. Remove this
