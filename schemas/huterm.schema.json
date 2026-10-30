@@ -570,6 +570,16 @@
       "additionalProperties": false,
       "description": "Split pane behavior.",
       "properties": {
+        "drag_modifier": {
+          "description": "The modifiers that, while held, let a press anywhere in a split\ntab's pane drag the pane as its title bar does, joined with hyphens:\n`cmd` (or `super`), `ctrl`, `alt`, and `shift`. Unset, the default,\nturns modifier drags off. `cmd-ctrl` suits macOS and `ctrl-alt`\nLinux. A combination needs at least two modifiers, macOS rejects\n`ctrl-alt` and `ctrl-shift`, and it may not be\n`terminal.link_modifiers` alone or plus `shift`; these checks run\nwhen the file loads.",
+          "pattern": "^(cmd|super|ctrl|alt|shift)(-(cmd|super|ctrl|alt|shift)){1,3}$",
+          "type": "string",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Drag panes with",
+          "x-huterm-order": 39,
+          "x-huterm-section": "panes"
+        },
         "focus_accent": {
           "default": 0.0,
           "description": "How strongly a thin accent line marks the focused pane while its\ntitle bar is not on screen, from 0 (off) to 1. It draws only under\n`hover` and `hidden` bars, and only while more than one pane shows.",

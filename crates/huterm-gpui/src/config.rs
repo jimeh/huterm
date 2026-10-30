@@ -128,6 +128,10 @@ title_bar_position = "top"
 focus_accent = 0.0
 # How much panes without focus dim, from 0 (off) to 0.8.
 inactive_dim = 0.0
+# Hold these modifiers and press anywhere in a split tab's pane to drag the
+# pane, as its title bar does. Off when unset; cmd-ctrl suits macOS and
+# ctrl-alt Linux.
+# drag_modifier = "cmd-ctrl"
 # Who owns a pane's zoom: view, where each window zooms on its own, or
 # shared, where the tab owns it and every window set to shared shows it.
 zoom = "view"
@@ -627,6 +631,17 @@ impl fmt::Display for ConfigFileError {
     }
 }
 
+/// `modifiers` as the bits pointer modifier settings number them, or
+/// `None` while Fn is held, which no setting names.
+pub(super) fn modifier_bits(modifiers: gpui::Modifiers) -> Option<u8> {
+    (!modifiers.function).then(|| {
+        u8::from(modifiers.platform)
+            | (u8::from(modifiers.control) << 1)
+            | (u8::from(modifiers.alt) << 2)
+            | (u8::from(modifiers.shift) << 3)
+    })
+}
+
 /// Matches native modifiers without exposing GPUI through portable config.
 pub(super) trait LinkModifiersExt {
     fn matches(self, modifiers: gpui::Modifiers, mouse_reporting: bool)
@@ -638,11 +653,8 @@ impl LinkModifiersExt for LinkModifiers {
         modifiers: gpui::Modifiers,
         mouse_reporting: bool,
     ) -> bool {
-        let actual = u8::from(modifiers.platform)
-            | (u8::from(modifiers.control) << 1)
-            | (u8::from(modifiers.alt) << 2)
-            | (u8::from(modifiers.shift) << 3);
-        !modifiers.function && self.matches_bits(actual, mouse_reporting)
+        modifier_bits(modifiers)
+            .is_some_and(|actual| self.matches_bits(actual, mouse_reporting))
     }
 }
 
@@ -705,6 +717,50 @@ mod link_config_tests {
                 Path::new("config.toml")
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn a_drag_modifier_on_the_link_chord_fails_load_and_the_settings_check() {
+        let validate = validator(PathBuf::from("config.toml"));
+        let load = |source: &str| {
+            let loaded = parse_at(source, Path::new("config.toml"))
+                .map_err(|error| error.to_string());
+            // Settings refuses a write that a reload would refuse.
+            assert_eq!(
+                validate(source),
+                loaded.as_ref().map(|_| ()).map_err(Clone::clone)
+            );
+            loaded
+        };
+        // A custom chord, plainly and plus Shift.
+        let custom = "[terminal]\nlink_modifiers = 'cmd-alt'\n";
+        for drag in ["alt-cmd", "cmd-alt-shift"] {
+            let message =
+                load(&format!("{custom}[panes]\ndrag_modifier = '{drag}'\n"))
+                    .unwrap_err();
+            assert!(
+                message.contains("panes.drag_modifier")
+                    && message.contains("terminal.link_modifiers"),
+                "{message}"
+            );
+        }
+        let moved = load(&format!(
+            "{custom}[panes]\ndrag_modifier = 'ctrl-alt-shift'\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            moved
+                .panes
+                .drag_modifier
+                .map(huterm_config::PaneDragModifiers::bits),
+            Some(14)
+        );
+        // Keeping the link chord unchanged keeps its own messages.
+        assert!(
+            load("[terminal]\nlink_modifiers = 'cmd-cmd'\n")
+                .unwrap_err()
+                .contains("terminal.link_modifiers cannot contain duplicate")
         );
     }
 }

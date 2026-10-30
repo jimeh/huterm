@@ -175,6 +175,9 @@ impl WorkspaceView {
         {
             terminal.update(cx, |terminal, _| terminal.release_menu_press());
         }
+        // AppKit's menu loop swallows modifier changes, so the held record
+        // starts empty again; the next modifier or pointer event fills it.
+        self.pane_grab.record(0, std::time::Instant::now());
         // A pane bar the menu held may hide now.
         self.refresh_pane_bars(cx);
         cx.notify();

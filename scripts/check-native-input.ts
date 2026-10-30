@@ -119,8 +119,17 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await rename(join(directory, "event-next"), join(directory, `event-${index}`));
     await waitFor(() => Bun.file(join(directory, `posted-${index}`)).exists(), `event ${index}`);
   }
+  /**
+   * The smoke's state. The app rewrites the file in place every 10 ms, so a
+   * read can land after the truncation; retry until it holds the state.
+   */
   async function currentState(): Promise<string> {
-    return readFile(join(directory, "state"), "utf8").catch(() => "");
+    let text = "";
+    await waitFor(async () => {
+      text = await readFile(join(directory, "state"), "utf8").catch(() => "");
+      return text !== "";
+    }, "a nonempty state read");
+    return text;
   }
   /** A `name=` field of the state, which holds no spaces. */
   function field(text: string, name: string): string {
@@ -351,7 +360,33 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await zoomAt();
     await state("pane_zoomed=none");
     await check("zoom-button-reaches-no-shell", "");
-    const [, close] = field(await currentState(), "pane_close").split(";");
+    // A modifier drag: with Cmd and Control held, a Left press in the
+    // reporting pane, which GPUI turns into a Right press without Control,
+    // drags the pane onto the other pane's left edge, and the Right release
+    // drops it there. The reporting pane sees no press or release, no menu
+    // opens, and it keeps focus as the first pane.
+    await configure("off", false, true, `[panes]\ndrag_modifier = "cmd-ctrl"\n`);
+    const beforeDrag = await currentState();
+    const [dragLeft, dragRight] = rects(field(beforeDrag, "pane_rects"));
+    const pressX = dragRight!.x + dragRight!.w / 2;
+    const pressY = dragRight!.y + dragRight!.h / 2;
+    const dropX = dragLeft!.x + 8;
+    await send(`mouse\t5\t${pressX}\t${pressY}`);
+    await key(55, command, "");
+    await key(59, command | control, "");
+    await state("grab_armed=true");
+    await send(`mouse\t1\t${pressX}\t${pressY}\t${command | control}`);
+    await send(`mouse\t6\t${(pressX + dropX) / 2}\t${pressY}\t${command | control}`);
+    await send(`mouse\t6\t${dropX}\t${pressY}\t${command | control}`);
+    await state("drop=pane:0:left", "drag_remapped=true");
+    await send(`mouse\t2\t${dropX}\t${pressY}\t${command | control}`);
+    await state("drop=none", "pane_focus=0");
+    await key(59, command, "");
+    await key(55, 0, "");
+    await state("grab_armed=false");
+    await check("modifier-drag-reaches-no-shell", "");
+    // The reporting pane, whose recorder is a foreground job, is now first.
+    const [close] = field(await currentState(), "pane_close").split(";");
     const [closeX, closeY] = close!.split(",").map(Number);
     await send(`mouse\t1\t${closeX}\t${closeY}`);
     await send(`mouse\t2\t${closeX}\t${closeY}`);

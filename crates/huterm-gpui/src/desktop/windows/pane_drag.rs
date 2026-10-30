@@ -120,7 +120,8 @@ pub(super) struct SpringBack {
     pub(super) sprung: TabId,
 }
 
-/// A press on a pane's title bar, which becomes a drag past the threshold.
+/// A press on a pane's title bar, or a modifier press in its terminal,
+/// which becomes a drag past the threshold.
 pub(super) struct PaneDrag {
     /// The tab holding the pane, active when the press began.
     pub(super) tab: TabId,
@@ -137,9 +138,16 @@ pub(super) struct PaneDrag {
     original_scroll: Pixels,
     /// The strip as of the last motion, for autoscroll between frames.
     strip: TabStrip,
+    /// The press was a macOS Control-left that GPUI turned into Right, so
+    /// a Right release ends the drag as well as a Left one.
+    remapped: bool,
 }
 
 impl PaneDrag {
+    pub(super) fn remapped(&self) -> bool {
+        self.remapped
+    }
+
     /// The tab the drag expects active: the one it spring-loaded, else its
     /// own. Any other active tab means something else switched tabs.
     pub(super) fn expected_active(&self) -> TabId {
@@ -176,13 +184,15 @@ impl PaneDrag {
 }
 
 impl WorkspaceView {
-    /// Starts tracking a press on `pane`'s title bar in `tab`; motion past
-    /// the threshold makes it a drag.
+    /// Starts tracking a press on `pane`'s title bar, or a modifier press in
+    /// its terminal, in `tab`; motion past the threshold makes it a drag.
+    /// `remapped` marks a macOS Control-left press that arrived as Right.
     pub(super) fn begin_pane_drag(
         &mut self,
         tab: TabId,
         pane: PaneId,
         pointer: gpui::Point<Pixels>,
+        remapped: bool,
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -204,6 +214,7 @@ impl WorkspaceView {
             over_bar: false,
             original_scroll: self.tab_scroll,
             strip: self.tab_strip(window),
+            remapped,
         });
     }
 

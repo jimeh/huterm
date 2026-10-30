@@ -4971,6 +4971,7 @@ mod menus;
 mod native_menus;
 mod pane_bars;
 mod pane_drags;
+mod pane_grabs;
 mod pane_layouts;
 mod pane_moves;
 mod pane_names;

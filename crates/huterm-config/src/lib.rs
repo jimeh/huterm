@@ -383,6 +383,19 @@ impl TryFrom<String> for LinkModifiers {
         Self::parse(&value, cfg!(target_os = "macos"))
     }
 }
+/// Modifier tokens and the bits pointer modifier settings use for them.
+/// Cmd is the platform key: Command on macOS and Super on Linux.
+const MODIFIER_BITS: [(&str, u8); 4] =
+    [("cmd", 1), ("ctrl", 2), ("alt", 4), ("shift", 8)];
+
+/// The bit of a modifier token, as [`MODIFIER_BITS`] names them.
+fn modifier_bit(token: &str) -> Option<u8> {
+    MODIFIER_BITS
+        .iter()
+        .find(|(name, _)| *name == token)
+        .map(|(_, bit)| *bit)
+}
+
 impl LinkModifiers {
     /// Parses a modifier combination for the selected platform.
     ///
@@ -391,16 +404,10 @@ impl LinkModifiers {
     pub fn parse(value: &str, macos: bool) -> Result<Self, &'static str> {
         let mut bits = 0;
         for token in value.split('-') {
-            let bit = match token {
-                "cmd" => 1,
-                "ctrl" => 2,
-                "alt" => 4,
-                "shift" => 8,
-                _ => {
-                    return Err(
-                        "terminal.link_modifiers must contain only cmd, ctrl, alt, or shift",
-                    );
-                }
+            let Some(bit) = modifier_bit(token) else {
+                return Err(
+                    "terminal.link_modifiers must contain only cmd, ctrl, alt, or shift",
+                );
             };
             if bits & bit != 0 {
                 return Err(
@@ -420,6 +427,164 @@ impl LinkModifiers {
     pub fn matches_bits(self, actual: u8, mouse_reporting: bool) -> bool {
         actual == (self.0 | if mouse_reporting { 8 } else { 0 })
     }
+}
+
+/// The modifiers `[panes] drag_modifier` names: while they are held, a
+/// press anywhere in a split tab's pane starts the pane drag its title bar
+/// starts. A combination takes at least two modifiers, so it claims no
+/// single modifier's pointer gesture, and [`RawConfig::validate_values`]
+/// keeps it off the link chord.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PaneDragModifiers(u8);
+
+impl TryFrom<String> for PaneDragModifiers {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value, cfg!(target_os = "macos"))
+    }
+}
+
+impl From<PaneDragModifiers> for String {
+    fn from(value: PaneDragModifiers) -> Self {
+        value.spelled(cfg!(target_os = "macos"))
+    }
+}
+
+impl PaneDragModifiers {
+    const CTRL: u8 = 2;
+    const ALT: u8 = 4;
+    const SHIFT: u8 = 8;
+
+    /// Parses a combination for the selected platform. `super` spells
+    /// `cmd`, as the Linux keybinding defaults do.
+    ///
+    /// # Errors
+    /// Returns a message naming what is wrong: an unknown or repeated
+    /// token, a single modifier and the gesture it already has, or a
+    /// combination macOS keeps for itself.
+    pub fn parse(value: &str, macos: bool) -> Result<Self, String> {
+        if value.is_empty() {
+            return Err(
+                "panes.drag_modifier must name modifiers, such as cmd-ctrl; remove it to turn modifier drags off"
+                    .into(),
+            );
+        }
+        let mut bits = 0;
+        for token in value.split('-') {
+            let bit = if token == "super" {
+                modifier_bit("cmd")
+            } else {
+                modifier_bit(token)
+            };
+            let Some(bit) = bit else {
+                return Err(format!(
+                    "panes.drag_modifier must contain only cmd (or super), ctrl, alt, or shift, not {token:?}"
+                ));
+            };
+            if bits & bit != 0 {
+                return Err(
+                    "panes.drag_modifier cannot contain duplicate modifiers"
+                        .into(),
+                );
+            }
+            bits |= bit;
+        }
+        Self::checked(bits, macos)
+    }
+
+    /// The combination of `bits` when the platform accepts it.
+    fn checked(bits: u8, macos: bool) -> Result<Self, String> {
+        let single = match bits {
+            1 => Some("Cmd-click opens links on macOS"),
+            2 => Some(
+                "Ctrl-click opens links on Linux and is a right-click on macOS",
+            ),
+            4 => Some(
+                "Option and Alt clicks stay free for pointer conventions such as rectangular selection",
+            ),
+            8 => Some("Shift-click bypasses a program's mouse reporting"),
+            _ => None,
+        };
+        if let Some(gesture) = single {
+            return Err(format!(
+                "panes.drag_modifier needs at least two modifiers: {gesture}"
+            ));
+        }
+        if macos && bits == Self::CTRL | Self::ALT {
+            return Err(
+                "panes.drag_modifier cannot be ctrl-alt on macOS: VoiceOver uses Control-Option"
+                    .into(),
+            );
+        }
+        if macos && bits == Self::CTRL | Self::SHIFT {
+            return Err(
+                "panes.drag_modifier cannot be ctrl-shift on macOS: Shift-Control-click opens the terminal menu while a program such as vim or tmux takes the mouse"
+                    .into(),
+            );
+        }
+        Ok(Self(bits))
+    }
+
+    /// Every combination the platform accepts, fewest modifiers first.
+    pub fn accepted(macos: bool) -> impl Iterator<Item = Self> {
+        let mut all: Vec<u8> = (1..16).collect();
+        all.sort_by_key(|bits| bits.count_ones());
+        all.into_iter()
+            .filter_map(move |bits| Self::checked(bits, macos).ok())
+    }
+
+    /// The combination's bits, numbered as `LinkModifiers` numbers them.
+    #[must_use]
+    pub fn bits(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub fn has_ctrl(self) -> bool {
+        self.0 & Self::CTRL != 0
+    }
+
+    /// Whether `actual` modifiers are exactly this combination.
+    #[must_use]
+    pub fn matches_bits(self, actual: u8) -> bool {
+        actual == self.0
+    }
+
+    /// The combination as `config.toml` spells it, with `cmd` as `super`
+    /// off macOS.
+    #[must_use]
+    pub fn spelled(self, macos: bool) -> String {
+        MODIFIER_BITS
+            .iter()
+            .filter(|(_, bit)| self.0 & bit != 0)
+            .map(|(name, bit)| if *bit == 1 && !macos { "super" } else { name })
+            .collect::<Vec<_>>()
+            .join("-")
+    }
+
+    /// Whether a press with these modifiers is also a link press: the link
+    /// chord, or the chord plus Shift, which opens links while a program
+    /// takes the mouse. `None` when it is neither.
+    #[must_use]
+    pub fn link_collision(self, link: LinkModifiers) -> Option<LinkCollision> {
+        if self.0 == link.0 {
+            Some(LinkCollision::Same)
+        } else if self.0 == link.0 | Self::SHIFT {
+            Some(LinkCollision::WithShift)
+        } else {
+            None
+        }
+    }
+}
+
+/// How a pane drag combination collides with the link chord.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LinkCollision {
+    /// It is the link chord.
+    Same,
+    /// It is the link chord plus Shift.
+    WithShift,
 }
 
 #[derive(
@@ -1011,6 +1176,22 @@ pub struct PanesConfig {
         "x-huterm-zero-label" = "Off",
     )))]
     pub inactive_dim: f32,
+    /// The modifiers that, while held, let a press anywhere in a split
+    /// tab's pane drag the pane as its title bar does, joined with hyphens:
+    /// `cmd` (or `super`), `ctrl`, `alt`, and `shift`. Unset, the default,
+    /// turns modifier drags off. `cmd-ctrl` suits macOS and `ctrl-alt`
+    /// Linux. A combination needs at least two modifiers, macOS rejects
+    /// `ctrl-alt` and `ctrl-shift`, and it may not be
+    /// `terminal.link_modifiers` alone or plus `shift`; these checks run
+    /// when the file loads.
+    #[cfg_attr(feature = "schema", schemars(with = "PaneDragModifiers", extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Drag panes with",
+        "x-huterm-order" = 39,
+        "x-huterm-apply" = "live",
+    )))]
+    pub drag_modifier: Option<PaneDragModifiers>,
     /// Who owns a pane's zoom: `view` or `shared`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "panes",
@@ -1064,6 +1245,7 @@ impl Default for PanesConfig {
             title_bar_hide_delay_ms: 400,
             focus_accent: 0.0,
             inactive_dim: 0.0,
+            drag_modifier: None,
             zoom: PaneZoomScope::default(),
             layouts: BTreeMap::new(),
             layout_cycle: BUILT_IN_LAYOUTS
@@ -2220,6 +2402,20 @@ impl RawConfig {
     pub fn validate_values(&self) -> Result<(), ConfigError> {
         self.quake.validate().map_err(ConfigError::Quake)?;
         self.panes.validate().map_err(ConfigError::Panes)?;
+        if let Some(drag) = self.panes.drag_modifier
+            && let Some(collision) =
+                drag.link_collision(self.terminal.link_modifiers)
+        {
+            let value = String::from(drag);
+            return Err(ConfigError::Panes(match collision {
+                LinkCollision::Same => format!(
+                    "panes.drag_modifier {value:?} is terminal.link_modifiers, whose click opens links"
+                ),
+                LinkCollision::WithShift => format!(
+                    "panes.drag_modifier {value:?} is terminal.link_modifiers plus shift, whose click opens links while a program takes the mouse"
+                ),
+            }));
+        }
         if self.window.size_indicator_linger_ms > 10_000 {
             return Err(ConfigError::Invalid(
                 "window.size_indicator_linger_ms must be between 0 and 10000",
@@ -3061,5 +3257,120 @@ mod panes_tests {
             panes(&format!("[panes.layouts]\ndeep = '{deep}'")).unwrap_err(),
             "panes.layouts.deep: splits nest at most 16 levels deep at column 105 of the template"
         );
+    }
+
+    #[test]
+    fn drag_modifiers_parse_both_cmd_spellings_and_reject_by_platform() {
+        let bits = |value: &str, macos: bool| {
+            PaneDragModifiers::parse(value, macos).map(PaneDragModifiers::bits)
+        };
+        for macos in [true, false] {
+            assert_eq!(bits("cmd-ctrl", macos), Ok(3));
+            assert_eq!(bits("ctrl-super", macos), Ok(3));
+            assert_eq!(bits("shift-alt-cmd", macos), Ok(13));
+            assert!(bits("", macos).unwrap_err().contains("must name"));
+            for value in ["cmd-", "fn-ctrl", "win-ctrl", "secondary-alt"] {
+                let message = bits(value, macos).unwrap_err();
+                assert!(message.contains("must contain only"), "{message}");
+            }
+            for value in ["cmd-cmd", "cmd-super-ctrl", "ctrl-alt-ctrl"] {
+                assert_eq!(
+                    bits(value, macos).unwrap_err(),
+                    "panes.drag_modifier cannot contain duplicate modifiers",
+                    "{value}"
+                );
+            }
+            for (value, gesture) in [
+                ("cmd", "opens links on macOS"),
+                ("super", "opens links on macOS"),
+                ("ctrl", "right-click on macOS"),
+                ("alt", "rectangular selection"),
+                ("shift", "mouse reporting"),
+            ] {
+                let message = bits(value, macos).unwrap_err();
+                assert!(
+                    message.starts_with(
+                        "panes.drag_modifier needs at least two modifiers: "
+                    ) && message.contains(gesture),
+                    "{value}: {message}"
+                );
+            }
+        }
+        // macOS keeps Control-Option for VoiceOver, and Shift-Control-click
+        // opens the menu inside a program that takes the mouse.
+        assert!(bits("ctrl-alt", true).unwrap_err().contains("VoiceOver"));
+        assert!(bits("alt-ctrl", true).unwrap_err().contains("VoiceOver"));
+        assert!(bits("ctrl-shift", true).unwrap_err().contains("vim"));
+        assert_eq!(bits("ctrl-alt", false), Ok(6));
+        assert_eq!(bits("ctrl-shift", false), Ok(10));
+        assert_eq!(bits("ctrl-alt-shift", true), Ok(14));
+        // Every combination of two or more, less the two on macOS.
+        assert_eq!(PaneDragModifiers::accepted(true).count(), 9);
+        assert_eq!(PaneDragModifiers::accepted(false).count(), 11);
+        let spelled = |value: &str, macos: bool| {
+            PaneDragModifiers::parse(value, macos)
+                .unwrap()
+                .spelled(macos)
+        };
+        assert_eq!(spelled("ctrl-cmd", true), "cmd-ctrl");
+        assert_eq!(spelled("ctrl-cmd", false), "super-ctrl");
+    }
+
+    #[test]
+    fn a_drag_modifier_may_not_be_the_link_chord_or_it_plus_shift() {
+        let chord = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+        let other = if cfg!(target_os = "macos") {
+            "ctrl"
+        } else {
+            "cmd"
+        };
+        let load = |source: String| -> Result<PanesConfig, String> {
+            let raw: RawConfig =
+                toml::from_str(&source).map_err(|error| error.to_string())?;
+            raw.validate_values().map_err(|error| error.to_string())?;
+            Ok(raw.panes)
+        };
+        // The default chord plus Shift opens links over a program that
+        // takes the mouse.
+        let message =
+            load(format!("[panes]\ndrag_modifier = '{chord}-shift'\n"))
+                .unwrap_err();
+        assert!(
+            message.starts_with("panes.drag_modifier ")
+                && message.contains("terminal.link_modifiers plus shift"),
+            "{message}"
+        );
+        // A custom chord is checked too, plainly and with Shift.
+        let custom = "[terminal]\nlink_modifiers = 'alt-shift'\n";
+        let message =
+            load(format!("{custom}[panes]\ndrag_modifier = 'shift-alt'\n"))
+                .unwrap_err();
+        assert_eq!(
+            message,
+            "panes.drag_modifier \"alt-shift\" is terminal.link_modifiers, whose click opens links"
+        );
+        let custom = "[terminal]\nlink_modifiers = 'cmd-alt'\n";
+        assert!(
+            load(format!(
+                "{custom}[panes]\ndrag_modifier = 'cmd-alt-shift'\n"
+            ))
+            .unwrap_err()
+            .contains("plus shift")
+        );
+        // Moving the chord frees the combination.
+        let loaded = load(format!(
+            "{custom}[panes]\ndrag_modifier = '{chord}-shift'\n"
+        ))
+        .unwrap();
+        assert!(loaded.drag_modifier.is_some());
+        assert!(
+            load(format!("[panes]\ndrag_modifier = '{other}-alt-shift'\n"))
+                .is_ok()
+        );
+        assert_eq!(load(String::new()).unwrap().drag_modifier, None);
     }
 }

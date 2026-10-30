@@ -205,7 +205,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   `foreground_exit_and_unavailable_runtime_are_assessed_conservatively`,
   `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`, and
   `job_titles_apply_only_while_the_job_holds_the_foreground`. The rerun
-  passed, at a load average near 9.
+  passed, at a load average near 9. On 2026-10-30, during the modifier pane
+  drag work, which changes no `huterm-core` code, one local `mise run
+  verify` failed `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
+  ("terminal child did not report exit"); the rerun passed at a load
+  average near 22.
 - **Cause:** the system shell's job control, not Huterm. These tests already
   poll their conditions. With the load average around 90 on a 16-core Mac
   (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.
@@ -309,9 +313,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   (`desktop/input_smoke.rs`), which truncates the file before writing it,
   so a read that lands in between sees it empty. `currentState()` turns a
   failed read into an empty string as well.
-- **Triage:** rerun. A fix writes the state to a temporary file and renames
-  it into place, as the smoke's own command files do, or has the script
-  retry an empty read.
+  Seen locally on 2026-10-30 as "no pane_grids in" at the divider step,
+  while adding the modifier drag step.
+- **Fix:** `currentState()` now retries an empty read until the file holds
+  the state. If the error returns, the read is failing in another way.
 
 ## Linux overlays smoke: Enter on "Close 2 tabs?" closes no tabs
 

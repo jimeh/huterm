@@ -201,6 +201,48 @@ focus_accent = 0.0 # 0 (off) to 1
 inactive_dim = 0.0 # 0 (off) to 0.8
 ```
 
+### Modifier pane drags
+
+`drag_modifier` lets you drag a pane by pressing anywhere in it while you hold
+a modifier combination, which helps when title bars are hidden or out of
+reach. It is off unless you set it. Name two or more of `cmd` (or `super`, its
+Linux spelling), `ctrl`, `alt`, and `shift`, joined with hyphens. `cmd-ctrl`
+suits macOS. On Linux `ctrl-alt` is a good choice, since many desktops move
+windows with a Super combination:
+
+```toml
+[panes]
+drag_modifier = "cmd-ctrl" # off when unset; Linux: "ctrl-alt"
+```
+
+While the combination is held over a pane of a split tab in the active window,
+the pointer shows an open hand, and after a moment every pane shows its title
+in a badge at its centre. A key press while the combination is held, such as a
+pane keybinding, hides the badges until the modifiers change. A press then
+starts the same drag a title bar does, with a closed hand, the same drop
+targets, and Escape to cancel; letting the modifiers go mid-drag changes
+nothing. A press without movement only focuses the pane.
+
+The combination's click no longer reaches the terminal of a split tab: no
+selection, link, or mouse report. On macOS `cmd-ctrl` replaces the
+Command-Control-click context menu there; a right-click or a plain
+Control-click still opens it. A tab of one pane cannot be dragged this way,
+so the combination's press reaches its terminal as before, and so does the
+press that activates an inactive window. Title bars, dividers, notices, and
+menus over a pane keep their own presses. A desktop's own window-move modifier,
+such as Super on GNOME, takes the press before Huterm sees it.
+
+Huterm refuses a combination that would take another gesture. A single
+modifier is refused: Command opens links on macOS and Control on Linux,
+Control-click is a right-click on macOS, Shift bypasses mouse reporting, and
+Option and Alt clicks stay free for pointer conventions. macOS also refuses
+`ctrl-alt`, which VoiceOver uses, and `ctrl-shift`, whose click opens the menu
+inside programs that take the mouse. The combination may not be
+`terminal.link_modifiers`, or that chord plus `shift`. A file that breaks
+these rules does not load, and a reload keeps the running settings. Settings
+offers only the combinations that pass, and writes `cmd` on macOS and `super`
+on Linux.
+
 ### Pane layouts
 
 `arrange_panes` and the layout cycle start with five built-in layouts,
@@ -862,6 +904,10 @@ while the view shows history. The menu also offers **Copy Directory Path**,
 **Show in Finder** or **Open in File Manager** for a local working directory,
 and **New Tab**, **Rename Tab…**, and **Close Tab**. `open_context_menu` opens
 the menu at the text cursor from the keyboard.
+
+With [`panes.drag_modifier`](#modifier-pane-drags) set, a press made while
+holding that combination in a split tab's pane drags the pane instead of
+reaching the terminal.
 
 When a program such as vim or tmux has the mouse, a plain right-click goes to
 the program and Shift+right-click opens the menu. `terminal.right_click`

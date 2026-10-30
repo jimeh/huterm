@@ -25,6 +25,7 @@ use huterm_config::settings::{
     Apply, Choice, Control, Platform as SettingPlatform, SectionId, Setting,
     SettingKind, SettingsModel,
 };
+use huterm_config::{LinkModifiers, PaneDragModifiers};
 use huterm_protocol::{ArgumentKind, CommandError, CommandInvocation, ids};
 use toml::Value;
 
@@ -73,6 +74,8 @@ const HEADER_HEIGHT: f32 = 52.0;
 const WINDOW_SIZE: (f32, f32) = (860.0, 620.0);
 const MIN_SIZE: (f32, f32) = (640.0, 420.0);
 const SEGMENTED_MAX: usize = 3;
+/// The drag modifier menu's first item, which removes the key.
+const DRAG_OFF: &str = "off";
 
 /// Opens the Settings window, or brings the open one forward.
 pub(super) fn open(cx: &mut App) {
@@ -1018,7 +1021,9 @@ impl SettingsView {
             {
                 return None;
             }
-            None => return Some(self.stop(path, cx)),
+            Some(Special::DragModifiers) | None => {
+                return Some(self.stop(path, cx));
+            }
         };
         Some(self.action_stop(key, cx))
     }
@@ -1364,6 +1369,9 @@ impl SettingsView {
                 self.write(setting, Some(Value::Boolean(!on)), cx);
             }
             SettingKind::Choice(_) => self.open_select(setting, window, cx),
+            _ if special(&setting.path) == Some(Special::DragModifiers) => {
+                self.open_select(setting, window, cx);
+            }
             _ => {}
         }
     }
@@ -1374,6 +1382,27 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if special(&setting.path) == Some(Special::DragModifiers) {
+            let rows = self
+                .drag_modifier_choices()
+                .into_iter()
+                .map(|(value, label)| {
+                    MenuRow::Item(MenuItem::new(
+                        keybindings::interned(&value),
+                        label,
+                    ))
+                })
+                .collect();
+            let opener = self.stop(setting.path.as_str(), cx);
+            self.show_menu(
+                MenuFor::Setting(setting),
+                MenuModel::new(rows),
+                opener,
+                window,
+                cx,
+            );
+            return;
+        }
         let SettingKind::Choice(choices) = &setting.kind else {
             return;
         };
@@ -1401,6 +1430,37 @@ impl SettingsView {
             window,
             cx,
         );
+    }
+
+    /// The drag modifier menu's items: Off, then every combination this
+    /// platform accepts that the link chord Settings shows does not take.
+    fn drag_modifier_choices(&self) -> Vec<(String, String)> {
+        let macos = cfg!(target_os = "macos");
+        let link = self
+            .setting_at("terminal.link_modifiers")
+            .and_then(|setting| match self.value(setting) {
+                Some(Value::String(text)) => {
+                    LinkModifiers::parse(&text, macos).ok()
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        drag_modifier_choices(link, macos)
+    }
+
+    /// The drag modifier item the file's value names: Off when unset, the
+    /// platform's spelling of a combination it accepts, or the value as
+    /// written.
+    fn drag_modifier_current(&self, setting: &Setting) -> String {
+        match self.value(setting) {
+            Some(Value::String(text)) => {
+                PaneDragModifiers::parse(&text, cfg!(target_os = "macos"))
+                    .map_or(text, |combination| {
+                        combination.spelled(cfg!(target_os = "macos"))
+                    })
+            }
+            _ => DRAG_OFF.to_owned(),
+        }
     }
 
     fn show_menu(
@@ -1657,6 +1717,18 @@ impl SettingsView {
                     // default still writes.
                     Some(MenuFor::Setting(setting)) => {
                         let setting = *setting;
+                        // Off removes the drag modifier's key.
+                        if special(&setting.path)
+                            == Some(Special::DragModifiers)
+                            && *value == DRAG_OFF
+                        {
+                            if view.value(setting).is_none() {
+                                view.errors.remove(setting.path.as_str());
+                            } else {
+                                view.write(setting, None, cx);
+                            }
+                            return;
+                        }
                         let picked = Value::String(value.to_string());
                         if view.holds(setting, &picked) {
                             view.errors.remove(setting.path.as_str());
@@ -1792,6 +1864,11 @@ impl SettingsView {
     /// The item a menu for `target` opens on: the value its control shows.
     fn menu_current(&self, target: &MenuFor) -> Option<String> {
         match target {
+            MenuFor::Setting(setting)
+                if special(&setting.path) == Some(Special::DragModifiers) =>
+            {
+                Some(self.drag_modifier_current(setting))
+            }
             MenuFor::Setting(setting) => match self.value(setting)? {
                 Value::String(value) => Some(value),
                 _ => None,
@@ -2591,6 +2668,53 @@ fn foreign_note(setting: &Setting) -> Option<String> {
     Some(format!("{name} only. Set in config.toml and ignored here."))
 }
 
+/// Off and every combination `[panes] drag_modifier` accepts on this
+/// platform, less `link`'s chord and that chord plus Shift, as the value
+/// Settings writes and its label.
+fn drag_modifier_choices(
+    link: LinkModifiers,
+    macos: bool,
+) -> Vec<(String, String)> {
+    std::iter::once((DRAG_OFF.to_owned(), "Off".to_owned()))
+        .chain(
+            PaneDragModifiers::accepted(macos)
+                .filter(|combination| {
+                    combination.link_collision(link).is_none()
+                })
+                .map(|combination| {
+                    (
+                        combination.spelled(macos),
+                        drag_modifier_label(combination, macos),
+                    )
+                }),
+        )
+        .collect()
+}
+
+/// A combination's name: its symbols in Apple's order and their names on
+/// macOS, as "⌃⌘ Control-Command", or "Ctrl+Alt" on Linux.
+fn drag_modifier_label(combination: PaneDragModifiers, macos: bool) -> String {
+    const ORDER: [(u8, &str, &str, &str); 4] = [
+        (2, "⌃", "Control", "Ctrl"),
+        (4, "⌥", "Option", "Alt"),
+        (8, "⇧", "Shift", "Shift"),
+        (1, "⌘", "Command", "Super"),
+    ];
+    let held = || {
+        ORDER
+            .iter()
+            .filter(|(bit, ..)| combination.bits() & bit != 0)
+    };
+    if macos {
+        let symbols: String = held().map(|(_, symbol, ..)| *symbol).collect();
+        let names: Vec<&str> = held().map(|(_, _, name, _)| *name).collect();
+        format!("{symbols} {}", names.join("-"))
+    } else {
+        let names: Vec<&str> = held().map(|(.., name)| *name).collect();
+        names.join("+")
+    }
+}
+
 fn modifier_label(modifier: &str) -> &'static str {
     match (modifier, cfg!(target_os = "macos")) {
         ("cmd", true) => "⌘ Cmd",
@@ -2863,6 +2987,20 @@ impl SettingsView {
                 })
                 .collect()
         })
+    }
+
+    /// Picks the open menu's item `id`, as a press on it does.
+    pub(super) fn pick_menu_item(
+        &mut self,
+        id: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some((menu, _, _)) = &self.menu {
+            menu.update(cx, |menu, cx| {
+                menu.select_item(id, cx);
+                menu.confirm(cx);
+            });
+        }
     }
 
     /// The open menu's item identities, in order: what a pick writes.
