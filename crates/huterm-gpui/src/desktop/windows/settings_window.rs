@@ -16,9 +16,9 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, Hsla, KeyContext, Render,
-    ScrollHandle, SharedString, Window, WindowBounds, WindowKind,
-    WindowOptions, div, point, prelude::*, px, size,
+    App, Context, Div, Entity, FocusHandle, Focusable, Hsla, KeyContext,
+    Render, ScrollHandle, SharedString, WeakEntity, Window, WindowBounds,
+    WindowKind, WindowOptions, div, point, prelude::*, px, size,
 };
 use huterm_config::document::Snapshot;
 use huterm_config::settings::{
@@ -35,12 +35,15 @@ use super::super::settings::values::{
 };
 use super::super::settings::{Special, file_only, special};
 use super::Desktop;
+use super::field_menu;
 use crate::APP_ID;
-use crate::commands::{InvokePalette, InvokeWindow};
+use crate::commands::{InvokeFocused, InvokeWindow};
 use crate::config::Theme;
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
-use huterm_ui::components::input::{Changed, Chrome, Input};
+use huterm_ui::components::input::{
+    Changed, Chrome, ContextMenu as FieldContextMenu, Input,
+};
 use huterm_ui::components::menu::{
     MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole, select_width,
 };
@@ -207,6 +210,8 @@ pub(super) enum MenuFor {
         entry: usize,
         field: &'static str,
     },
+    /// A text field's context menu, opened where its right press landed.
+    Field(WeakEntity<Input>),
 }
 
 impl MenuFor {
@@ -221,6 +226,7 @@ impl MenuFor {
                 field: "command",
             } => format!("gcmd:{entry}"),
             Self::Global { entry, .. } => format!("gprofile:{entry}"),
+            Self::Field(field) => format!("field:{}", field.entity_id()),
         }
     }
 }
@@ -456,6 +462,8 @@ impl SettingsView {
             title_press: Rc::default(),
             painted: Rc::default(),
         };
+        // A field's menu over a dialog reaches past the panel.
+        view.dialog.modal().beneath(&view.popover);
         view.create_and_load(cx);
         view.load_themes(cx);
         // Closing waits for pending writes, so none is lost.
@@ -600,8 +608,13 @@ impl SettingsView {
         }
         field.update(cx, |field, _| field.set_placeholder(placeholder));
         let handle = field.read(cx).focus_handle(cx).tab_stop(true);
+        let id = field.entity_id();
         cx.on_blur(&handle, window, move |view, _, cx| {
-            view.field_blurred(setting, cx);
+            // The field's own menu keeps its draft; the menu commits it if
+            // focus goes elsewhere (`field_menu_left`).
+            if !view.field_menu_open(id) {
+                view.field_blurred(setting, cx);
+            }
         })
         .detach();
         self.fields.insert(path, field.clone());
@@ -1371,6 +1384,89 @@ impl SettingsView {
         if let Some(current) = self.menu_current(&target) {
             menu.update(cx, |menu, cx| menu.select_item(&current, cx));
         }
+        // A trigger draws before it can be used, so its bounds are known;
+        // the window's top left is only a fallback.
+        let anchor =
+            self.triggers.borrow().get(&target.key()).copied().map_or(
+                Anchor::Pointer(point(px(0.0), px(0.0))),
+                Anchor::Trigger,
+            );
+        self.mount_menu(menu, target, anchor, opener, window, cx);
+    }
+
+    /// Opens a text field's context menu where its right press landed,
+    /// replacing any open menu. It opens with nothing selected, as a
+    /// pointer-opened menu does, and returns focus to the field.
+    fn open_field_menu(
+        &mut self,
+        request: &FieldContextMenu,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(field) = request.field.upgrade() else {
+            return;
+        };
+        self.drop_menu();
+        let model = field_menu::field_menu_model(
+            field_menu::FieldMenuInput::of(field.read(cx)),
+            &cx.global::<Desktop>().keymap,
+            &window.context_stack(),
+        );
+        let swatch = Self::swatch(cx);
+        let menu = cx.new(|cx| MenuView::new("Edit", model, swatch, false, cx));
+        let opener = field.read(cx).focus_handle(cx);
+        self.mount_menu(
+            menu,
+            MenuFor::Field(request.field.clone()),
+            Anchor::Pointer(request.position),
+            opener,
+            window,
+            cx,
+        );
+    }
+
+    /// Whether the open menu is the context menu of the field `id`.
+    fn field_menu_open(&self, id: gpui::EntityId) -> bool {
+        matches!(
+            &self.menu,
+            Some((_, MenuFor::Field(field), _)) if field.entity_id() == id
+        )
+    }
+
+    /// A field menu closed because focus went elsewhere: the field lost
+    /// focus when the menu took it, so it does now what its blur skipped.
+    fn field_menu_left(
+        &mut self,
+        field: &WeakEntity<Input>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let id = field.entity_id();
+        let setting = self
+            .fields
+            .iter()
+            .find(|(_, field)| field.entity_id() == id)
+            .and_then(|(path, _)| self.setting_at(path));
+        if let Some(setting) = setting {
+            self.field_blurred(setting, cx);
+        } else if let Some(key) = self.keys.key_of(id) {
+            if self.keys.editing.as_ref() == Some(&key) {
+                self.keys.editing = None;
+            }
+            self.commit_key_field(&key, cx);
+        }
+    }
+
+    /// Shows `menu` for `target` at `anchor`, focused, and returns focus to
+    /// `opener` when a pick or Escape closes it.
+    fn mount_menu(
+        &mut self,
+        menu: Entity<MenuView>,
+        target: MenuFor,
+        anchor: Anchor,
+        opener: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         cx.subscribe_in(&menu, window, move |view, _, event, window, cx| {
             if let MenuEvent::Picked(value) = event {
                 match view.menu.as_ref().map(|(_, target, _)| target) {
@@ -1395,6 +1491,11 @@ impl SettingsView {
                         let (entry, field) = (*entry, *field);
                         view.pick_global(entry, field, value, cx);
                     }
+                    Some(MenuFor::Field(field)) => {
+                        if let Some(field) = field.upgrade() {
+                            field_menu::run_pick(&field, value, cx);
+                        }
+                    }
                     None => {}
                 }
             }
@@ -1412,20 +1513,23 @@ impl SettingsView {
             cx.defer_in(window, move |view, _, cx| {
                 let current =
                     view.menu.as_ref().map(|(menu, _, _)| menu.entity_id());
-                if current == Some(menu_id) && view.drop_menu() {
+                if current != Some(menu_id) {
+                    return;
+                }
+                let field = match &view.menu {
+                    Some((_, MenuFor::Field(field), _)) => Some(field.clone()),
+                    _ => None,
+                };
+                if view.drop_menu() {
+                    if let Some(field) = field {
+                        view.field_menu_left(&field, cx);
+                    }
                     cx.notify();
                 }
             });
         })
         .detach();
         menu_focus.focus(window, cx);
-        // A trigger draws before it can be used, so its bounds are known;
-        // the window's top left is only a fallback.
-        let anchor =
-            self.triggers.borrow().get(&target.key()).copied().map_or(
-                Anchor::Pointer(point(px(0.0), px(0.0))),
-                Anchor::Trigger,
-            );
         self.popover.open(anchor, true);
         self.menu_viewport = Some(window.viewport_size());
         self.menu = Some((menu, target, opener));
@@ -1441,6 +1545,7 @@ impl SettingsView {
                 field: "command", ..
             } => "Command".to_owned(),
             MenuFor::Profile | MenuFor::Global { .. } => "Profile".to_owned(),
+            MenuFor::Field(_) => "Edit".to_owned(),
         }
     }
 
@@ -1520,6 +1625,7 @@ impl SettingsView {
             MenuFor::Global { entry, field } => {
                 self.global_choice(*entry, field)
             }
+            MenuFor::Field(_) => None,
         }
     }
 
@@ -1545,9 +1651,8 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<(), CommandError> {
-        if self.run_dialog(invocation.id, window, cx) {
-            return Ok(());
-        }
+        // A field's menu can open over a dialog, so the menu takes its
+        // keys before the dialog takes every command.
         if let Some((menu, _, _)) = &self.menu
             && super::is_menu_command(invocation.id)
         {
@@ -1560,6 +1665,9 @@ impl SettingsView {
                 ids::MENU_CONFIRM => menu.confirm(cx),
                 _ => MenuView::dismiss(cx),
             });
+            return Ok(());
+        }
+        if self.run_dialog(invocation.id, window, cx) {
             return Ok(());
         }
         match invocation.id {
@@ -1578,6 +1686,10 @@ impl SettingsView {
             // The window's tabs are its sections.
             ids::NEXT_TAB => self.step_section(true, cx),
             ids::PREVIOUS_TAB => self.step_section(false, cx),
+            // Tab closes a `when` field's open suggestions first, as Escape
+            // does, keeping the text; a suggestion takes Return or a click.
+            ids::SETTINGS_FOCUS_NEXT if self.close_focused_list(window, cx) => {
+            }
             ids::SETTINGS_FOCUS_NEXT => window.focus_next(cx),
             ids::SETTINGS_FOCUS_PREVIOUS => window.focus_prev(cx),
             ids::SETTINGS_TOGGLE => {
@@ -1643,9 +1755,22 @@ impl SettingsView {
         Ok(())
     }
 
-    /// Text editing reaches the focused field; Enter commits it, Tab moves
-    /// on, and Escape clears the search. An open dialog takes every such
-    /// command.
+    /// The `TextField` context around a field, which runs the field's
+    /// focused-scope commands. Only fields send them here, so the window
+    /// handles them only while one has focus, and the Edit menu's Cut,
+    /// which is `text_cut`, is enabled only then.
+    pub(super) fn text_field(cx: &mut Context<'_, Self>) -> Div {
+        crate::ui::input::context().on_action(cx.listener(
+            |view, action: &InvokeFocused, window, cx| {
+                cx.stop_propagation();
+                view.run_palette(&action.0, window, cx);
+            },
+        ))
+    }
+
+    /// Text editing reaches the focused field; Enter commits it, and Escape
+    /// puts back its text or clears the search. An open dialog takes every
+    /// such command.
     fn run_palette(
         &mut self,
         invocation: &CommandInvocation,
@@ -1683,7 +1808,7 @@ impl SettingsView {
             // with none highlighted saves the typed name, and a second
             // Escape puts back the value.
             id if run_list(list.as_ref(), id, cx) => {}
-            ids::PALETTE_CONFIRM => {
+            ids::TEXT_CONFIRM => {
                 if let Some((path, _)) = focused
                     && let Some(setting) = self.setting_at(path)
                 {
@@ -1694,21 +1819,15 @@ impl SettingsView {
             }
             // Up and Down step a number field's value, and Page Up and Page
             // Down page it; Home and End stay with its text.
-            ids::PALETTE_SELECT_PREVIOUS | ids::PALETTE_SELECT_NEXT
-                if focused.is_some() =>
-            {
-                let forward = invocation.id == ids::PALETTE_SELECT_PREVIOUS;
+            ids::TEXT_PREVIOUS | ids::TEXT_NEXT if focused.is_some() => {
+                let forward = invocation.id == ids::TEXT_PREVIOUS;
                 self.step(Jump::Step(forward), window, cx);
             }
-            ids::PALETTE_PAGE_UP | ids::PALETTE_PAGE_DOWN
-                if focused.is_some() =>
-            {
-                let forward = invocation.id == ids::PALETTE_PAGE_UP;
+            ids::TEXT_PAGE_UP | ids::TEXT_PAGE_DOWN if focused.is_some() => {
+                let forward = invocation.id == ids::TEXT_PAGE_UP;
                 self.step(Jump::Page(forward), window, cx);
             }
-            ids::PALETTE_EXPAND => window.focus_next(cx),
-            ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
-            ids::PALETTE_BACK => {
+            ids::TEXT_CANCEL => {
                 match focused {
                     // Escape in a field cancels its typing.
                     Some((path, _)) => self.cancel_field(path, cx),
@@ -1730,9 +1849,9 @@ impl SettingsView {
 
 impl SettingsView {
     /// Text editing in a keybinding field: a `when` field's suggestions
-    /// take Up, Down, Page Up, Page Down, Enter, Tab, and Escape while
-    /// they show; otherwise Enter saves and Escape puts the saved text
-    /// back.
+    /// take Up, Down, Page Up, Page Down, Enter, and Escape while they
+    /// show, and Tab through [`Self::close_focused_list`]; otherwise Enter
+    /// saves and Escape puts the saved text back.
     fn run_key_field(
         &mut self,
         key: &str,
@@ -1745,38 +1864,40 @@ impl SettingsView {
         match invocation.id {
             id if run_list(list.as_ref(), id, cx) => {}
             // Up and Down step a number argument.
-            ids::PALETTE_SELECT_NEXT | ids::PALETTE_SELECT_PREVIOUS
-                if key.starts_with("arg:") =>
-            {
+            ids::TEXT_NEXT | ids::TEXT_PREVIOUS if key.starts_with("arg:") => {
                 self.step_argument(
                     key,
-                    invocation.id == ids::PALETTE_SELECT_PREVIOUS,
+                    invocation.id == ids::TEXT_PREVIOUS,
                     cx,
                 );
             }
-            ids::PALETTE_CONFIRM if key == "search" => {
+            ids::TEXT_CONFIRM if key == "search" => {
                 self.focus_first_command(window, cx);
             }
-            ids::PALETTE_CONFIRM => self.commit_key_field(key, cx),
-            // Tab closes open suggestions first, as Escape does, keeping
-            // the text; a suggestion takes Return or a click.
-            ids::PALETTE_EXPAND
-                if list
-                    .as_ref()
-                    .is_some_and(|list| list.update(cx, Combobox::close)) => {}
-            ids::PALETTE_EXPAND => window.focus_next(cx),
-            ids::PALETTE_PREVIOUS_SLOT => window.focus_prev(cx),
-            ids::PALETTE_BACK if key == "search" => {
+            ids::TEXT_CONFIRM => self.commit_key_field(key, cx),
+            ids::TEXT_CANCEL if key == "search" => {
                 field.update(cx, |field, cx| field.set_text("", cx));
             }
             // Escape puts the saved text back and stays in the field.
-            ids::PALETTE_BACK => self.cancel_key_field(key, cx),
+            ids::TEXT_CANCEL => self.cancel_key_field(key, cx),
             _ => {
                 let _ = field.update(cx, |field, cx| {
                     crate::ui::input::run(field, invocation, cx)
                 });
             }
         }
+    }
+
+    /// Closes the focused keybinding field's open suggestions; whether it
+    /// closed any.
+    fn close_focused_list(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        self.focused_key_field(window, cx)
+            .and_then(|(key, _)| self.condition_for(&key))
+            .is_some_and(|list| list.update(cx, Combobox::close))
     }
 
     /// Moves focus from the search field to the first matching control.
@@ -2051,12 +2172,12 @@ fn run_list(
         return false;
     };
     let act: fn(&mut Combobox, &mut Context<'_, Combobox>) -> bool = match id {
-        ids::PALETTE_SELECT_NEXT => Combobox::select_next,
-        ids::PALETTE_SELECT_PREVIOUS => Combobox::select_previous,
-        ids::PALETTE_PAGE_DOWN => Combobox::select_page_down,
-        ids::PALETTE_PAGE_UP => Combobox::select_page_up,
-        ids::PALETTE_CONFIRM => Combobox::confirm,
-        ids::PALETTE_BACK => Combobox::close,
+        ids::TEXT_NEXT => Combobox::select_next,
+        ids::TEXT_PREVIOUS => Combobox::select_previous,
+        ids::TEXT_PAGE_DOWN => Combobox::select_page_down,
+        ids::TEXT_PAGE_UP => Combobox::select_page_up,
+        ids::TEXT_CONFIRM => Combobox::confirm,
+        ids::TEXT_CANCEL => Combobox::close,
         _ => return false,
     };
     list.update(cx, act)
@@ -2327,16 +2448,15 @@ impl Render for SettingsView {
             .key_context(context)
             .track_focus(&self.focus)
             .on_action(cx.listener(
+                |view, request: &FieldContextMenu, window, cx| {
+                    view.open_field_menu(request, window, cx);
+                },
+            ))
+            .on_action(cx.listener(
                 |view, action: &InvokeWindow, window, cx| {
                     // A command for terminal windows has nothing to act on
                     // here; it is not a failed save.
                     let _ = view.run(&action.0, window, cx);
-                },
-            ))
-            .on_action(cx.listener(
-                |view, action: &InvokePalette, window, cx| {
-                    cx.stop_propagation();
-                    view.run_palette(&action.0, window, cx);
                 },
             ))
             .flex()
@@ -2432,6 +2552,37 @@ impl SettingsView {
         cx: &App,
     ) -> Option<(gpui::Pixels, gpui::Bounds<gpui::Pixels>)> {
         self.fields.get(path)?.read(cx).painted_caret()
+    }
+
+    /// Where the open dialog's field last painted its caret, and the
+    /// bounds its text shows in.
+    pub(super) fn dialog_field_caret(
+        &self,
+        cx: &App,
+    ) -> Option<(gpui::Pixels, gpui::Bounds<gpui::Pixels>)> {
+        self.dialog.field()?.read(cx).painted_caret()
+    }
+
+    /// Whether the open menu is a text field's context menu.
+    pub(super) fn field_menu_shown(&self) -> bool {
+        matches!(self.menu, Some((_, MenuFor::Field(_), _)))
+    }
+
+    /// The open menu's disabled item identities, in order.
+    pub(super) fn menu_disabled_ids(&self, cx: &App) -> Vec<String> {
+        self.menu.as_ref().map_or_else(Vec::new, |(menu, _, _)| {
+            menu.read(cx)
+                .model()
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    MenuRow::Item(item) if !item.enabled => {
+                        Some(item.id.to_string())
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
     }
 
     /// The message under the setting's row, if any.

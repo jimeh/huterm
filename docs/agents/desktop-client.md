@@ -385,8 +385,20 @@ Text arguments accept a blank value: the core executor maps a blank rename name
 to `None`, which clears the custom name, so there are no reset-name commands.
 The palette prefills a rename's current custom name, selected, whenever the name
 slot is untouched. Palette, text-field, and other UI keyboard operations are
-`Palette`-scope catalog commands with a required context compiled into every
-binding, never hardcoded GPUI component bindings. `validate_supplied` guards
+`Focused`-scope catalog commands with a required context compiled into every
+binding, never hardcoded GPUI component bindings: `palette_*` under `Palette`,
+`text_*` under `TextField`. A user `when` joins the command's context with
+`&&`, which matches on one node, so `text_*` with `when = "Palette"` matches
+only where the two sit together: the palette's field line and the Licenses
+content (`ui::input::context_with`); `resolve_entries` reports such a user
+binding (`on_the_node`) among the keymap's non-fatal diagnostics, which
+show as notices and in Settings. There `palette_confirm` and
+`text_confirm`, and the other verb pairs, tie on depth. `WorkspaceView`
+propagates the field verbs (`ui::input::FIELD_VERBS`) unhandled, and GPUI
+then runs the next matching binding, the palette's, so the order of the two
+never matters; a handler that consumed them would let a user's later verb
+binding take Enter from the palette. `TextField` binds no Tab, so Tab
+reaches the owner's focus command. `validate_supplied` guards
 bindings, menus, and interactive requests; only executors run the full
 `validate`, so a binding may omit prompted arguments and the palette collects
 them. Keep the keybinding schema aligned: only unprompted `Always` arguments
@@ -397,7 +409,7 @@ omits is refused as unknown from every shortcut and menu, while a test that
 calls the handler directly still passes. Settings binds Space and the arrows
 under `SettingsControl`, which only its controls and section rows carry: a
 binding under `Settings` matched inside a focused text field too, because the
-field's `Palette` context binds no Space, and ate the space. The roving
+field's `TextField` context binds no Space, and ate the space. The roving
 groups (the sidebar's sections, the theme cards, the modifier chips, and
 the layout cycle's switches) give each item a `SettingsGroup` context nested
 inside a `SettingsControl` wrapper around the group, or around each cycle
@@ -418,11 +430,11 @@ switch no steps. Page Up, Page Down,
 Home, and End bind under `SettingsControl && control == slider`, which only
 a slider's `SettingsControl control=slider` context matches, so the keys stay
 unbound, not swallowed, on every other control. A number field's context is
-`Palette` alone, so no `SettingsControl` binding reaches it; a
-`SettingsControl` wrapper around it would still lose to `Palette`'s deeper
+`TextField` alone, so no `SettingsControl` binding reaches it; a
+`SettingsControl` wrapper around it would still lose to `TextField`'s deeper
 `pageup` and `pagedown`. `run_palette` pages a focused number field from
-`palette_page_up` and `palette_page_down` instead, as it steps one from
-`palette_select_previous` and `palette_select_next`.
+`text_page_up` and `text_page_down` instead, as it steps one from
+`text_previous` and `text_next`.
 
 A command whose arguments are all unprompted, such as `resize_pane_left` or
 `close_tab`, has no palette slot. `SlotEditor::new` returns `None` for it, and
@@ -438,6 +450,19 @@ is covered.
 GPUI's native menu matcher uses a fixed Workspace/Pane/Editor context. Menu
 ordering fixtures need a predicate true there, such as `!confirming`; `Terminal`
 never participates and cannot detect conditional bindings moving ahead of defaults.
+A binding none of whose predicates is true there, such as `text_cut`'s,
+still shows: the matcher falls back to the first binding.
+
+GPUI enables a native menu item when any handler on the focus path takes the
+item's action type, never by its arguments. The Edit menu's Cut is
+`text_cut` (`InvokePalette`), so `WorkspaceView` registers its
+`InvokePalette` handler only while the palette or Licenses is open, and
+Settings registers its handler on each field's `TextField` element
+(`SettingsView::text_field`), never on the root; otherwise Cut would stay
+enabled over a terminal or a switch. Copy, Paste, and Select All stay the
+terminal's commands, and every `ui::input::context` element answers them as
+the field's `text_copy`, `text_paste`, and `text_select_all` by dispatching
+those through the owner's routing.
 
 GPUI still passes literal `enter` and `tab` strings to NSMenuItem instead of
 AppKit's Return and Tab characters. Normalize those two key equivalents after
@@ -494,10 +519,11 @@ command bound under a key context. The close dialog and the About panel use
 `confirming`, menus `menu`, and focused toasts `notices`; each binding is
 conditional, so it reserves no terminal key. The About panel's Licenses view
 wraps its dialog content, the search field, list, and buttons, in the
-`Palette` context, so `Input` editing and the list's keys work from any of
-them without new commands; `WorkspaceView` sends Palette-scope commands to
-it before the palette while it is open. That wrapper is deeper than the
-dialog panel's `confirming`, so its Escape, Enter, and Tab bindings win.
+`Palette` and `TextField` contexts, so `Input` editing and the list's keys
+work from any of them without new commands; `WorkspaceView` sends
+Focused-scope commands to it before the palette while it is open. That
+wrapper is deeper than the dialog panel's `confirming`, so its Escape,
+Enter, and Tab bindings win.
 A repeated close shortcut while `confirming` must not confirm. Menus and
 dialogs return focus to the terminal when they close; the menu button never
 keeps it, or terminal bindings stop matching until the user clicks back in.
@@ -691,7 +717,21 @@ Text fields are `huterm_ui::components::input::Input` entities, and
 `huterm_ui::text` holds the UTF-16 range conversions that `Input` and
 `desktop/composition.rs` share. `ui/input.rs` is the adapter that maps the
 catalog's `text_*` commands onto `Input` methods; route a field's commands
-through `crate::ui::input::run`. `Input` refuses typing, composition, paste,
+through `crate::ui::input::run`. Draw every field inside
+`ui::input::context` (Settings: `SettingsView::text_field`), which carries
+`TextField`; a field outside one gets no editing keys. A right press on an
+enabled field keeps a selection under the pointer, else places the caret,
+focuses the field, and dispatches `huterm_ui`'s `ContextMenu` action from
+it, deferred so the handler can read the field. The window roots handle it
+and open `windows/field_menu.rs`'s model in their one popover, returning
+focus to the field on a pick, Escape, or an outside press; picks run on the
+field through `ui::input::run`. Opening the menu blurs the field, so a
+Settings field's blur listener skips its commit while the field's own menu
+is open, and the menu's blur close runs that commit
+(`field_menu_left`) when focus went elsewhere. `run_command` refuses commands
+while the palette is open but lets menu commands through, and Settings' `run`
+gives an open menu its commands before an open dialog takes every command.
+`Input` refuses typing, composition, paste,
 cut, and deletion while read-only or disabled, but the owner's `set_text` and
 `replace` always apply. The palette and Licenses draw their own frames
 around `Chrome::Bare` fields until their migrations; Settings fields are
@@ -775,9 +815,9 @@ the field, and the chevron addon calls `toggle_browsing`; the chevron has no
 focus handle, so it is no tab stop, and carries the read-only reason itself,
 since a disabled `InputGroup` keeps a button's own reason. The GPUI test
 platform lists no installed fonts, so font tests set `set_families` before
-the Appearance section first draws. `run_list` routes the `Palette` field
-commands to the focused field's list first; the field's own behavior gets
-the keys the list leaves alone.
+the Appearance section first draws. `run_list` routes the field verbs to the
+focused field's list first; the field's own behavior gets the keys the list
+leaves alone.
 
 The terminal window has two `Command` lists. The palette mounts one per
 stage or identity slot, named "Commands" or for the slot, and drops it for
@@ -809,9 +849,10 @@ guard's capture-phase press listener reads the live open state, so it also
 stops a press that arrives before the popover's first frame, when no backdrop
 is drawn yet. GPUI runs capture listeners in paint order, and the guard
 stops the presses it consumes, so the terminal window mounts it after its own
-window-level listeners, which every press must reach. The window, tab, and
-terminal menus share that window's one popover and return focus to the
-active terminal. GPUI also blurs a focused menu when its window deactivates.
+window-level listeners, which every press must reach. The window, tab,
+terminal, and field menus share that window's one popover; the first three
+return focus to the active terminal and a field's menu to its field. GPUI also
+blurs a focused menu when its window deactivates.
 The activation observer runs first and closes the menu onto the terminal;
 the deferred blur close also skips an inactive window, so it can never strand
 focus on a dropped menu. Opening a menu drops a right-click still waiting for
@@ -898,15 +939,15 @@ and a binding's command context and `when` must match on one context node, so
 both names sit on the button and Space never reaches a field in the dialog.
 The Licenses buttons carry no such context, since Space there types into the
 search.
-A text field in a dialog carries the `Palette` context, as Settings' fields
-do, so Left and Right edit it rather than run `dialog_focus_*`. Its owner
-then routes `palette_expand` and `palette_previous_slot` (Tab and Shift-Tab
-in the field) to `Modal::focus_next` and `focus_previous`, `palette_confirm`
-to the dialog's confirm action, and `palette_back` to `Dismissal::Escape`,
-so Tab never leaves the dialog. GPUI falls through to an outer context's
-binding when a deeper context's action has no handler, so an unhandled
-`palette_expand` still reaches the dialog's Tab, but a handler that consumes
-it without moving focus traps Tab in the field. Focus moves in on the
+A text field in a dialog carries the `TextField` context, as Settings'
+fields do, so Left and Right edit it rather than run `dialog_focus_*`. Its
+owner routes `text_confirm` to the dialog's confirm action and
+`text_cancel` to `Dismissal::Escape`; `TextField` binds no Tab or
+Shift-Tab, so they reach the panel's `dialog_focus_*` and Tab never leaves
+the dialog. GPUI falls through to an outer context's binding when a deeper
+context's action has no handler or its handler propagates, so an unhandled
+verb still reaches the dialog's binding for the key, but a handler that
+consumes a key without acting traps it in the field. Focus moves in on the
 dialog's first frame, and `Modal::close` returns it to the target given to
 `open`; with every control disabled it enters on the first button. Window
 deactivation and owner changes are the owner's to route; a dialog normally
@@ -915,8 +956,12 @@ puts its long content in a `ScrollArea` made with `fill()`, which shrinks
 with the body, since a plain `ScrollArea` grows to its content's height and
 never scrolls there; the body shrinks and clips so the footer stays inside
 the panel, where the guard lets presses through. The
-guard stops presses on the scrim outside the panel, so a popover opened from a
-dialog's body does not work yet. A simulated press in a GPUI test draws a
+guard stops presses on the scrim outside the panel, except on the content of
+a popover registered with `Modal::beneath`: Settings and the terminal window
+register their one popover, so a field's context menu that reaches past a
+dialog's panel still takes its presses. Mount the popover's guard before the
+dialog's, so a press outside the menu closes it there. A simulated press in a
+GPUI test draws a
 notified window first, so a stale-frame test opens without notifying,
 presses, and notifies afterwards. In the desktop harness, `simulate_click`
 still draws after an update through the Settings window's handle, so its
@@ -972,13 +1017,14 @@ closes on an outside press or on deactivation, so the guard's callback
 ignores the reason. In Licenses, a press that focuses nothing
 returns focus to the search, and so do Escape that clears the search and a
 selection or search change that hides the focused Website or Copy button.
-The `Palette` context wraps the buttons, so the list keys and text commands
-work from a button. While Website, Copy, or Done has focus, a canvas over
+The `Palette` and `TextField` contexts wrap the buttons, so the list keys and
+text commands work from a button. While Website, Copy, or Done has focus, a
+canvas over
 the search field registers the search `Input`'s handler for that button with
 `window.handle_input`, wrapped in `SearchFromButton`. Unbound keys then reach
 the search through the platform's ordinary text input, so dead keys, IME
 composition, and Linux's Shift-only rule behave as on the focused search,
-and Space, which no `Palette` binding claims, types a space. The wrapper
+and Space, which no binding there claims, types a space. The wrapper
 focuses the search before text, marked text, or a paste applies, and the
 composition continues there under the search's own handler, because the
 `Input` holds the marked text. GPUI's tests cannot send marked text through
@@ -1000,15 +1046,15 @@ no gate.
 
 A prompt with a text field opens with `open_field_dialog`, which gives the
 slot its `Input`, and its renderer draws the field inside a `Field`, wrapping
-the `InputGroup` in a `div` with the `Palette` context, declares the field's
-handle with `Dialog::focusable` and `initial_focus`, and names the key Enter
-runs in `Prompt::confirm`. `run_palette` calls `run_dialog_field` first: it
-routes `palette_expand` and `palette_previous_slot` to the modal's focus
-cycle, `palette_confirm` to the confirm key, `palette_back` to the prompt's
-Cancel, and every other palette command to the field, and while a dialog is
-open it takes them all. Route Shift-Tab to the modal, not the window: the
-field is the dialog's first control, so `window.focus_prev` leaves the
-dialog. The New profile and Rename profile dialogs (`quake.rs`,
+the `InputGroup` in `SettingsView::text_field`, declares the field's handle
+with `Dialog::focusable` and `initial_focus`, and names the key Enter runs in
+`Prompt::confirm`. `run_palette` calls `run_dialog_field` first: it routes
+`text_confirm` to the confirm key, `text_cancel` to the prompt's Cancel, and
+every other text command to the field, and while a dialog is open it takes
+them all. Tab and Shift-Tab reach `run_dialog` as `dialog_focus_*` and move
+through the modal's cycle; the window's `focus_prev` would leave the dialog,
+since the field is its first control. The New profile and Rename profile
+dialogs (`quake.rs`,
 `render_name_dialog`) check the typed name on every frame, show the message
 under the field, and disable the primary button, which then leaves the Tab
 cycle. Settings ignores an outside press on its dialogs, as a macOS sheet

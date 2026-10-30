@@ -16,7 +16,11 @@
 //!
 //! Pointer: a press places the caret, Shift extends the selection, a
 //! double press selects a word, and a triple press selects everything. A
-//! drag selects and keeps tracking outside the field until the release.
+//! drag selects and keeps tracking outside the field until the release. A
+//! right press keeps a selection it lands on and otherwise places the
+//! caret, as macOS does, then focuses the field and dispatches
+//! [`ContextMenu`] from it, so the owner that handles that action opens
+//! the field's menu; the field draws none itself.
 //!
 //! Scrolling: text wider than the field scrolls horizontally, by the
 //! smallest distance that keeps the caret, which is the selection's moving
@@ -28,7 +32,8 @@
 //! States: read-only keeps the field focusable, selectable, and copyable,
 //! draws no caret, as a selectable `NSTextField` does not, and refuses
 //! typing, composition, paste, cut, and deletion. Disabled
-//! takes no focus from a press, drops the tab stop, refuses every edit and
+//! takes no focus from a press, asks for no context menu, drops the tab
+//! stop, refuses every edit and
 //! selection, dims the field, and shows its reason as a tooltip. Invalid
 //! draws a framed field's border in the danger color. Both refusals are
 //! user edits only: the owner's [`Input::set_text`] and [`Input::replace`]
@@ -59,7 +64,8 @@ use gpui::{
     ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle,
     Focusable, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point, Render, ShapedLine, SharedString, Stateful, TextAlign,
-    TextRun, UTF16Selection, Window, canvas, div, fill, point, prelude::*, px,
+    TextRun, UTF16Selection, WeakEntity, Window, canvas, div, fill, point,
+    prelude::*, px,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -83,6 +89,18 @@ pub struct Edited;
 /// same, so an owner whose suggestions depend on the caret can follow it.
 #[derive(Clone, Debug)]
 pub struct Moved;
+
+/// Asks the field's owner to open the field's context menu. A right press
+/// dispatches it from the field, after focusing the field and placing the
+/// caret, so it reaches the nearest handler on the field's focus path.
+#[derive(Clone, Debug, PartialEq, gpui::Action)]
+#[action(namespace = huterm_ui, no_json)]
+pub struct ContextMenu {
+    /// The field the menu edits.
+    pub field: WeakEntity<Input>,
+    /// Where the press landed, in window coordinates.
+    pub position: Point<Pixels>,
+}
 
 /// What a field reports while it drives a list of suggestions.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -757,6 +775,48 @@ impl Input {
         self.moved(&before, cx);
     }
 
+    /// A right press: a selection under the pointer stays, and anywhere
+    /// else the caret moves there. Then the field takes focus and asks its
+    /// owner for the menu; the dispatch waits for this update to end, so
+    /// the owner can read the field.
+    fn context_press(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !self.on_selection(event.position)
+            && let Some(index) = self.index_at(event.position)
+        {
+            let before = self.selection_state();
+            self.buffer.move_to(index);
+            self.moved(&before, cx);
+        }
+        window.focus(&self.focus, cx);
+        window.dispatch_action(
+            Box::new(ContextMenu {
+                field: cx.entity().downgrade(),
+                position: event.position,
+            }),
+            cx,
+        );
+    }
+
+    /// Whether a window `position` lies over the painted selection.
+    fn on_selection(&self, position: Point<Pixels>) -> bool {
+        let selection = &self.buffer.selection;
+        let Some(layout) =
+            self.layout.as_ref().filter(|_| !selection.is_empty())
+        else {
+            return false;
+        };
+        let x = position.x - layout.bounds.left() - px(FIELD_PADDING)
+            + layout.scroll;
+        (layout.line.x_for_index(selection.start)
+            ..=layout.line.x_for_index(selection.end))
+            .contains(&x)
+    }
+
     fn drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<'_, Self>) {
         if !self.dragging {
             return;
@@ -1008,61 +1068,77 @@ impl Render for Input {
             .and_then(|list| list.active.clone())
             .filter(|_| reason.is_none());
         let text = self.text_canvas(self.focus.is_focused(window), cx);
-        let field =
-            div()
-                .id(self.id.clone())
-                .role(if self.list.is_some() {
-                    gpui::Role::EditableComboBox
-                } else {
-                    gpui::Role::TextInput
-                })
-                .aria_label(self.label.clone())
-                .aria_value(SharedString::from(self.buffer.content.clone()))
-                .when(!self.placeholder.is_empty(), |field| {
-                    field.aria_placeholder(self.placeholder.clone())
-                })
-                .when_some(self.list.as_ref(), |field, list| {
-                    field.aria_expanded(list.expanded)
-                })
-                .when_some(active, StatefulInteractiveElement::aria_description)
-                .when_some(reason, |field, reason| {
-                    field.aria_description(reason.clone()).tooltip(
-                        move |_, cx| Tooltip::view(reason.clone(), tokens, cx),
-                    )
-                })
-                .relative()
-                .px(px(FIELD_PADDING))
-                .flex()
-                .items_center()
-                .overflow_hidden()
-                .track_focus(&self.focus)
-                .map(|field| self.chrome_style(field))
-                // A group dims itself and its addons together.
-                .when(!enabled && self.chrome != Chrome::Grouped, |field| {
-                    field.opacity(0.5)
-                })
-                .when(!enabled, |field| {
-                    field.on_mouse_down(MouseButton::Left, |_, window, _| {
+        let field = div()
+            .id(self.id.clone())
+            .role(if self.list.is_some() {
+                gpui::Role::EditableComboBox
+            } else {
+                gpui::Role::TextInput
+            })
+            .aria_label(self.label.clone())
+            .aria_value(SharedString::from(self.buffer.content.clone()))
+            .when(!self.placeholder.is_empty(), |field| {
+                field.aria_placeholder(self.placeholder.clone())
+            })
+            .when_some(self.list.as_ref(), |field, list| {
+                field.aria_expanded(list.expanded)
+            })
+            .when_some(active, StatefulInteractiveElement::aria_description)
+            .when_some(reason, |field, reason| {
+                field
+                    .aria_description(reason.clone())
+                    .tooltip(move |_, cx| {
+                        Tooltip::view(reason.clone(), tokens, cx)
+                    })
+            })
+            .relative()
+            .px(px(FIELD_PADDING))
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .track_focus(&self.focus)
+            .map(|field| self.chrome_style(field))
+            // A group dims itself and its addons together.
+            .when(!enabled && self.chrome != Chrome::Grouped, |field| {
+                field.opacity(0.5)
+            })
+            .when(!enabled, |field| {
+                field
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
                         window.prevent_default();
                     })
-                })
-                .when(enabled, |field| {
-                    field.cursor(gpui::CursorStyle::IBeam).on_mouse_down(
+                    .on_mouse_down(MouseButton::Right, |_, window, _| {
+                        window.prevent_default();
+                    })
+            })
+            .when(enabled, |field| {
+                field
+                    .cursor(gpui::CursorStyle::IBeam)
+                    .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|field, event: &MouseDownEvent, _, cx| {
                             field.press(event, cx);
                         }),
                     )
-                })
-                .when(self.buffer.content.is_empty(), |field| {
-                    field.child(
-                        div()
-                            .text_color(tokens.muted)
-                            .whitespace_nowrap()
-                            .child(self.placeholder.clone()),
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(
+                            |field, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                field.context_press(event, window, cx);
+                            },
+                        ),
                     )
-                })
-                .child(text);
+            })
+            .when(self.buffer.content.is_empty(), |field| {
+                field.child(
+                    div()
+                        .text_color(tokens.muted)
+                        .whitespace_nowrap()
+                        .child(self.placeholder.clone()),
+                )
+            })
+            .child(text);
         let field = if self.chrome == Chrome::Framed {
             focus::ring(field, &self.focus, tokens, window, cx)
         } else {

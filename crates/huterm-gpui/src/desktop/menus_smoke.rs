@@ -29,6 +29,11 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     marker("default-undo-shortcuts");
     shortcut_with("Balance Panes", "=", COMMAND_MODIFIER | CONTROL_MODIFIER)?;
     marker("default-balance-shortcut");
+    // Cut shows the text fields' Cut, and Copy the terminal's, which a
+    // focused field also answers.
+    shortcut("Cut", "x")?;
+    shortcut("Copy", "c")?;
+    marker("default-edit-shortcuts");
     let mut config = Config {
         keybindings: vec![
             KeybindingEntry {

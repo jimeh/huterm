@@ -17,12 +17,12 @@
 //! stays open while the window is inactive.
 //!
 //! A prompt may hold one text field, opened with
-//! [`SettingsView::open_field_dialog`]. The field carries the `Palette`
+//! [`SettingsView::open_field_dialog`]. The field carries the `TextField`
 //! context, as Settings' other fields do, so Left and Right edit it, and
-//! [`SettingsView::run_dialog_field`] routes that context's Tab and
-//! Shift-Tab (`palette_expand`, `palette_previous_slot`) to the dialog's
-//! focus cycle, Enter (`palette_confirm`) to the prompt's confirm key, and
-//! Escape (`palette_back`) to its Cancel, so focus never leaves the dialog.
+//! [`SettingsView::run_dialog_field`] routes Enter (`text_confirm`) to the
+//! prompt's confirm key and Escape (`text_cancel`) to its Cancel. The
+//! context binds no Tab or Shift-Tab, so they reach the dialog's
+//! `dialog_focus_*` and focus never leaves the dialog.
 
 use std::collections::HashMap;
 
@@ -276,9 +276,8 @@ impl SettingsView {
     }
 
     /// Takes a text-editing command while the open dialog's field has
-    /// focus: Tab and Shift-Tab cycle the dialog, Enter runs the prompt's
-    /// confirm key, Escape answers as Cancel does, and every other command
-    /// edits the field. Returns whether it took the command; any command
+    /// focus: Enter runs the prompt's confirm key, Escape answers as Cancel
+    /// does, and every other command edits the field. Returns whether it took the command; any command
     /// while a dialog is open is taken, since nothing it covers may edit.
     pub(super) fn run_dialog_field(
         &mut self,
@@ -293,16 +292,12 @@ impl SettingsView {
             return true;
         };
         match invocation.id {
-            ids::PALETTE_EXPAND => self.dialog.modal.focus_next(window, cx),
-            ids::PALETTE_PREVIOUS_SLOT => {
-                self.dialog.modal.focus_previous(window, cx);
-            }
-            ids::PALETTE_CONFIRM => {
+            ids::TEXT_CONFIRM => {
                 if let Some(key) = prompt.confirm() {
                     self.act(key, window, cx);
                 }
             }
-            ids::PALETTE_BACK => {
+            ids::TEXT_CANCEL => {
                 self.dismiss_dialog(Dismissal::Escape, window, cx);
             }
             _ => {

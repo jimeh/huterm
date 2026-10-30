@@ -27,7 +27,7 @@ use huterm_protocol::{
 use crate::APP_ID;
 use crate::assets::Icon;
 use crate::commands::{
-    InvokeApp, InvokePalette, InvokeTerminal, InvokeWindow, invoke,
+    InvokeApp, InvokeFocused, InvokeTerminal, InvokeWindow, invoke,
 };
 use crate::config::{self, Config, LinkModifiersExt, Theme, WindowConfig};
 #[cfg(test)]
@@ -189,6 +189,9 @@ fn install_menus(cx: &mut App) {
                 item(ids::UNDO),
                 item(ids::REDO),
                 MenuItem::separator(),
+                // Cut is a text field's; a focused field also answers the
+                // terminal's Copy, Paste, and Select All (`ui::input`).
+                invoke(ids::TEXT_CUT).menu_item_titled("Cut".to_owned()),
                 item(ids::COPY),
                 item(ids::PASTE),
                 item(ids::SELECT_ALL),

@@ -3,7 +3,7 @@
 //! The palette has two stages. Command search ranks the catalog with the
 //! fuzzy matcher and usage history. The slot stage collects arguments one
 //! active slot at a time, showing everything else as chips. Every keyboard
-//! operation arrives as a `Palette`-scope catalog command through
+//! operation arrives as a `Focused`-scope catalog command through
 //! [`CommandPalette::run`]. The results and an identity slot's picker rows
 //! draw in a `huterm-ui` `Command` under the search field: the palette
 //! ranks or filters the rows, and the list keeps their highlight.
@@ -1487,7 +1487,7 @@ impl CommandPalette {
         rename_target_in(editor, &self.domain())
     }
 
-    /// Runs one `Palette`-scope catalog command.
+    /// Runs one `Focused`-scope catalog command.
     ///
     /// # Errors
     /// Reports `UnknownCommand` for anything outside the palette's set.
@@ -1578,6 +1578,12 @@ impl CommandPalette {
         let list = self.list.as_ref()?.read(cx);
         let id = &list.hovered()?.id;
         list.options().iter().position(|option| &option.id == id)
+    }
+
+    /// The search and argument field.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) fn field(&self) -> Entity<Input> {
+        self.input.clone()
     }
 
     pub(super) fn smoke_state(&self, cx: &App) -> String {
@@ -2304,7 +2310,9 @@ impl Render for CommandPalette {
             available.clamp(ROW_HEIGHT + LIST_PADDING * 2.0, LIST_MAX_HEIGHT);
         let panel_height = list_max + PANEL_CHROME_HEIGHT;
         let top = panel_top(self.placement, viewport, panel_height);
-        let mut line = div()
+        // The field's line carries `Palette` beside `TextField`, so a text
+        // binding whose `when` names `Palette` still matches in the palette.
+        let mut line = crate::ui::input::context_with(&["Palette"])
             .flex()
             .items_center()
             .gap(px(6.0))

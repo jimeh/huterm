@@ -146,9 +146,8 @@ impl SettingsView {
                     .pb(px(10.0))
                     .when(!cfg!(target_os = "macos"), |area| area.pt(px(10.0)))
                     .child(
-                        div()
+                        Self::text_field(cx)
                             .relative()
-                            .key_context("Palette")
                             .child(search)
                             .child(probe),
                     ),

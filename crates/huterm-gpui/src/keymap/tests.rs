@@ -598,6 +598,7 @@ fn palette_defaults_dispatch_through_invoke_palette() {
     let palette = [
         KeyContext::parse("Workspace palette").unwrap(),
         KeyContext::parse("Palette").unwrap(),
+        KeyContext::parse("Palette TextField").unwrap(),
     ];
     let matched = |key: &str, contexts: &[KeyContext]| {
         let (bindings, pending) =
@@ -615,6 +616,64 @@ fn palette_defaults_dispatch_through_invoke_palette() {
     ];
     assert_eq!(matched("cmd-c", &terminal), Some(ids::COPY));
     assert_eq!(matched("down", &terminal), None);
+}
+
+/// A field verb and the palette's command for the same key tie on depth
+/// on the palette's field line, which carries both contexts. The palette
+/// leaves the verb unhandled, so GPUI falls through to the next binding:
+/// whichever comes first, the palette's command runs. Elsewhere a field
+/// has `TextField` alone, and Tab reaches the owner's focus command.
+#[test]
+fn text_field_verbs_reach_the_palette_and_tab_reaches_the_owner() {
+    for platform in [Platform::MacOs, Platform::Linux] {
+        let keymap = Keymap::new(compile(platform, &[]).unwrap().bindings);
+        let stack = |contexts: &[&str]| {
+            contexts
+                .iter()
+                .map(|context| KeyContext::parse(context).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let matched = |key: &str, contexts: &[KeyContext]| {
+            let (bindings, pending) =
+                keymap.bindings_for_input(&[keystroke(key)], contexts);
+            assert!(!pending, "{platform:?}: {key} left a pending chord");
+            bindings.iter().map(command_of).collect::<Vec<_>>()
+        };
+        let palette =
+            stack(&["Workspace palette", "Palette", "Palette TextField"]);
+        for (key, palette_command, verb) in [
+            ("enter", ids::PALETTE_CONFIRM, ids::TEXT_CONFIRM),
+            ("escape", ids::PALETTE_BACK, ids::TEXT_CANCEL),
+            ("down", ids::PALETTE_SELECT_NEXT, ids::TEXT_NEXT),
+            ("up", ids::PALETTE_SELECT_PREVIOUS, ids::TEXT_PREVIOUS),
+            ("pagedown", ids::PALETTE_PAGE_DOWN, ids::TEXT_PAGE_DOWN),
+            ("pageup", ids::PALETTE_PAGE_UP, ids::TEXT_PAGE_UP),
+        ] {
+            assert_eq!(
+                matched(key, &palette),
+                [palette_command, verb],
+                "{platform:?}: {key} in the palette"
+            );
+        }
+        assert_eq!(matched("tab", &palette), [ids::PALETTE_EXPAND]);
+
+        let settings = stack(&["Settings", "TextField"]);
+        assert_eq!(matched("enter", &settings), [ids::TEXT_CONFIRM]);
+        assert_eq!(matched("escape", &settings), [ids::TEXT_CANCEL]);
+        assert_eq!(matched("tab", &settings), [ids::SETTINGS_FOCUS_NEXT]);
+        assert_eq!(
+            matched("shift-tab", &settings),
+            [ids::SETTINGS_FOCUS_PREVIOUS]
+        );
+
+        let dialog = stack(&["Settings", "confirming", "TextField"]);
+        assert_eq!(
+            matched("enter", &dialog),
+            [ids::TEXT_CONFIRM, ids::DIALOG_CONFIRM]
+        );
+        assert_eq!(matched("tab", &dialog)[0], ids::DIALOG_FOCUS_NEXT);
+        assert_eq!(matched("left", &dialog)[0], ids::TEXT_MOVE_LEFT);
+    }
 }
 
 #[test]
@@ -754,10 +813,10 @@ fn settings_page_home_and_end_keys_match_only_on_a_slider() {
                 KeyContext::parse(focused).unwrap(),
             ]
         };
-        // A slider sets `control = slider`; a number field is a `Palette`
-        // field; a switch or select is a bare `SettingsControl`.
+        // A slider sets `control = slider`; a number field is a
+        // `TextField`; a switch or select is a bare `SettingsControl`.
         let slider = within("SettingsControl control=slider");
-        let number = within("Palette");
+        let number = within("TextField");
         let switch = within("SettingsControl");
         let matched = |key: &str, contexts: &[KeyContext]| {
             let (bindings, pending) =
@@ -766,8 +825,8 @@ fn settings_page_home_and_end_keys_match_only_on_a_slider() {
             bindings.iter().map(command_of).collect::<Vec<_>>()
         };
         let slider_commands = [
-            ("pageup", ids::SETTINGS_PAGE_UP, ids::PALETTE_PAGE_UP),
-            ("pagedown", ids::SETTINGS_PAGE_DOWN, ids::PALETTE_PAGE_DOWN),
+            ("pageup", ids::SETTINGS_PAGE_UP, ids::TEXT_PAGE_UP),
+            ("pagedown", ids::SETTINGS_PAGE_DOWN, ids::TEXT_PAGE_DOWN),
             ("home", ids::SETTINGS_FIRST, ids::TEXT_LINE_START),
             ("end", ids::SETTINGS_LAST, ids::TEXT_LINE_END),
         ];
@@ -810,7 +869,7 @@ fn settings_arrows_move_a_group_and_step_every_other_control() {
         let group = within(&["SettingsControl", "SettingsGroup"]);
         let slider = within(&["SettingsControl control=slider"]);
         let switch = within(&["SettingsControl"]);
-        let number = within(&["Palette"]);
+        let number = within(&["TextField"]);
         // GPUI runs the first binding it lists.
         let first = |key: &str, contexts: &[KeyContext]| {
             let (bindings, pending) =
@@ -823,7 +882,7 @@ fn settings_arrows_move_a_group_and_step_every_other_control() {
                 "down",
                 ids::SETTINGS_NEXT,
                 ids::SETTINGS_DECREASE,
-                ids::PALETTE_SELECT_NEXT,
+                ids::TEXT_NEXT,
             ),
             (
                 "right",
@@ -835,7 +894,7 @@ fn settings_arrows_move_a_group_and_step_every_other_control() {
                 "up",
                 ids::SETTINGS_PREVIOUS,
                 ids::SETTINGS_INCREASE,
-                ids::PALETTE_SELECT_PREVIOUS,
+                ids::TEXT_PREVIOUS,
             ),
             (
                 "left",
@@ -1145,9 +1204,12 @@ fn user_palette_override_wins_at_equal_depth() {
     let compiled =
         compile(Platform::MacOs, &[entry("up", "text_line_start")]).unwrap();
     let keymap = Keymap::new(compiled.bindings);
+    // The palette's field line carries both contexts, so the user's text
+    // binding ties on depth with the palette's and its own defaults.
     let contexts = [
         KeyContext::parse("Workspace palette").unwrap(),
         KeyContext::parse("Palette").unwrap(),
+        KeyContext::parse("Palette TextField").unwrap(),
     ];
     let (bindings, pending) =
         keymap.bindings_for_input(&[keystroke("up")], &contexts);
@@ -1156,7 +1218,7 @@ fn user_palette_override_wins_at_equal_depth() {
 }
 
 #[test]
-fn palette_bindings_never_reserve_terminal_strokes() {
+fn text_field_bindings_never_reserve_terminal_strokes() {
     let compiled =
         compile(Platform::MacOs, &[entry("ctrl-c", "text_copy")]).unwrap();
     assert!(!compiled.reserved.is_reserved(&keystroke("ctrl-c")));
@@ -1167,7 +1229,7 @@ fn palette_bindings_never_reserve_terminal_strokes() {
             binding.origin == Origin::User && binding.key == "ctrl-c"
         })
         .expect("user binding is effective");
-    assert_eq!(binding.context, Some("Palette"));
+    assert_eq!(binding.context, Some("TextField"));
     assert_eq!(binding.when, None);
 }
 
@@ -1301,9 +1363,13 @@ fn disabled_matches_a_contextual_default_and_a_normalized_when() {
     let remaining = bound_to(&compiled, "alt-x");
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].when.as_deref(), Some("Terminal && !selection"));
+    // `text_next` keeps its own Ctrl-N.
     assert_eq!(
-        bound_to(&compiled, "ctrl-n"),
-        Vec::<&EffectiveBinding>::new()
+        bound_to(&compiled, "ctrl-n")
+            .iter()
+            .map(|binding| binding.command)
+            .collect::<Vec<_>>(),
+        [ids::TEXT_NEXT]
     );
     assert_eq!(
         bound_to(&compiled, "down")
@@ -1321,7 +1387,13 @@ fn disabled_matches_a_contextual_default_and_a_normalized_when() {
         })],
     )
     .unwrap();
-    assert_eq!(bound_to(&other, "ctrl-n").len(), 1);
+    assert_eq!(
+        bound_to(&other, "ctrl-n")
+            .iter()
+            .filter(|binding| binding.command == ids::PALETTE_SELECT_NEXT)
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -1561,4 +1633,33 @@ fn a_binding_replaces_another_only_with_the_same_keys_and_predicate() {
         Some("Terminal"),
         Some("split")
     ));
+}
+
+/// A text binding whose `when` asks for `Palette` on the field's node
+/// matches only where both contexts sit together, the palette and
+/// Licenses, so it is reported; one that excludes the palette, scopes by
+/// an ancestor, or is no text command is not.
+#[test]
+fn a_text_binding_limited_to_the_palette_is_reported() {
+    let when = |key: &str, command: &str, when: &str| KeybindingEntry {
+        when: Some(when.to_owned()),
+        ..entry(key, command)
+    };
+    let user = [
+        when("ctrl-1", "text_copy", "Palette"),
+        when("ctrl-2", "text_copy", "Palette && !confirming"),
+        when("ctrl-3", "text_copy", "Workspace > Palette"),
+        when("ctrl-4", "text_copy", "!Palette"),
+        when("ctrl-5", "text_copy", "Palette > TextField"),
+        when("ctrl-6", "palette_select_next", "Palette"),
+        disabled(when("ctrl-7", "text_paste", "Palette")),
+    ];
+    let compiled = compile(Platform::MacOs, &user).unwrap();
+    let reported: Vec<&str> = compiled
+        .conflicts
+        .iter()
+        .filter(|message| message.contains("names `Palette`"))
+        .map(|message| message.split_whitespace().nth(1).unwrap())
+        .collect();
+    assert_eq!(reported, ["1", "2", "3", "7"], "{:?}", compiled.conflicts);
 }

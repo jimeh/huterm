@@ -43,8 +43,9 @@ pub enum CommandScope {
     Window,
     /// Executed by one terminal view.
     Terminal,
-    /// Executed by the window's open command palette.
-    Palette,
+    /// Executed by the focused keyboard surface: the window's open command
+    /// palette, or a text field's owner.
+    Focused,
 }
 
 /// Declared type of one command argument.
@@ -967,6 +968,18 @@ pub mod ids {
     pub const TEXT_COPY: CommandId = CommandId::new("text_copy");
     /// Pastes text from the clipboard.
     pub const TEXT_PASTE: CommandId = CommandId::new("text_paste");
+    /// Commits the focused text field, or submits its dialog.
+    pub const TEXT_CONFIRM: CommandId = CommandId::new("text_confirm");
+    /// Puts back the focused text field's text, or cancels its dialog.
+    pub const TEXT_CANCEL: CommandId = CommandId::new("text_cancel");
+    /// Highlights the next suggestion, or steps a number field down.
+    pub const TEXT_NEXT: CommandId = CommandId::new("text_next");
+    /// Highlights the previous suggestion, or steps a number field up.
+    pub const TEXT_PREVIOUS: CommandId = CommandId::new("text_previous");
+    /// Moves the suggestions down a page, or pages a number field down.
+    pub const TEXT_PAGE_DOWN: CommandId = CommandId::new("text_page_down");
+    /// Moves the suggestions up a page, or pages a number field up.
+    pub const TEXT_PAGE_UP: CommandId = CommandId::new("text_page_up");
 }
 
 const fn spec(
@@ -1954,7 +1967,7 @@ const CATALOG: &[CommandSpec] = &[
     spec_in(
         "Palette",
         ids::PALETTE_SELECT_NEXT,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Palette: Next Item",
         "Move the palette selection down.",
         &[],
@@ -1962,7 +1975,7 @@ const CATALOG: &[CommandSpec] = &[
     spec_in(
         "Palette",
         ids::PALETTE_SELECT_PREVIOUS,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Palette: Previous Item",
         "Move the palette selection up.",
         &[],
@@ -1970,7 +1983,7 @@ const CATALOG: &[CommandSpec] = &[
     spec_in(
         "Palette",
         ids::PALETTE_PAGE_DOWN,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Palette: Page Down",
         "Move the palette selection down one page.",
         &[],
@@ -1978,7 +1991,7 @@ const CATALOG: &[CommandSpec] = &[
     spec_in(
         "Palette",
         ids::PALETTE_PAGE_UP,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Palette: Page Up",
         "Move the palette selection up one page.",
         &[],
@@ -1986,7 +1999,7 @@ const CATALOG: &[CommandSpec] = &[
     spec_in(
         "Palette",
         ids::PALETTE_CONFIRM,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Palette: Confirm",
         "Run the selected command or commit the active argument.",
         &[],
@@ -1994,7 +2007,7 @@ const CATALOG: &[CommandSpec] = &[
     spec_in(
         "Palette",
         ids::PALETTE_BACK,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Palette: Back",
         "Return to command search, or close the palette.",
         &[],
@@ -2002,7 +2015,7 @@ const CATALOG: &[CommandSpec] = &[
     spec_in(
         "Palette",
         ids::PALETTE_POP,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Palette: Pop Argument",
         "Reopen the previous argument, or return to search.",
         &[],
@@ -2010,7 +2023,7 @@ const CATALOG: &[CommandSpec] = &[
     spec_in(
         "Palette",
         ids::PALETTE_EXPAND,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Palette: Edit Arguments",
         "Open the selected command's arguments without running it.",
         &[],
@@ -2018,7 +2031,7 @@ const CATALOG: &[CommandSpec] = &[
     spec_in(
         "Palette",
         ids::PALETTE_NEXT_SLOT,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Palette: Next Argument",
         "Move to the next argument.",
         &[],
@@ -2026,127 +2039,175 @@ const CATALOG: &[CommandSpec] = &[
     spec_in(
         "Palette",
         ids::PALETTE_PREVIOUS_SLOT,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Palette: Previous Argument",
         "Move to the previous argument.",
         &[],
     ),
     spec_in(
-        "Palette",
+        "TextField",
+        ids::TEXT_CONFIRM,
+        CommandScope::Focused,
+        "Text: Confirm",
+        "Commit the field, or submit its dialog.",
+        &[],
+    ),
+    spec_in(
+        "TextField",
+        ids::TEXT_CANCEL,
+        CommandScope::Focused,
+        "Text: Cancel",
+        "Put back the field's text, or cancel its dialog.",
+        &[],
+    ),
+    spec_in(
+        "TextField",
+        ids::TEXT_NEXT,
+        CommandScope::Focused,
+        "Text: Next",
+        "Highlight the next suggestion, or step a number field down.",
+        &[],
+    ),
+    spec_in(
+        "TextField",
+        ids::TEXT_PREVIOUS,
+        CommandScope::Focused,
+        "Text: Previous",
+        "Highlight the previous suggestion, or step a number field up.",
+        &[],
+    ),
+    spec_in(
+        "TextField",
+        ids::TEXT_PAGE_DOWN,
+        CommandScope::Focused,
+        "Text: Page Down",
+        "Move the suggestions down a page, or page a number field down.",
+        &[],
+    ),
+    spec_in(
+        "TextField",
+        ids::TEXT_PAGE_UP,
+        CommandScope::Focused,
+        "Text: Page Up",
+        "Move the suggestions up a page, or page a number field up.",
+        &[],
+    ),
+    spec_in(
+        "TextField",
         ids::TEXT_DELETE_BACKWARD,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Delete Backward",
         "Delete the character before the cursor.",
         &[],
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_DELETE_FORWARD,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Delete Forward",
         "Delete the character after the cursor.",
         &[],
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_DELETE_WORD_BACKWARD,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Delete Word Backward",
         "Delete the word before the cursor.",
         &[],
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_DELETE_WORD_FORWARD,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Delete Word Forward",
         "Delete the word after the cursor.",
         &[],
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_DELETE_LINE_START,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Delete to Line Start",
         "Delete from the line start to the cursor.",
         &[],
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_MOVE_LEFT,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Move Left",
         "Move the cursor left, or extend the selection with `select`.",
         SELECT,
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_MOVE_RIGHT,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Move Right",
         "Move the cursor right, or extend the selection with `select`.",
         SELECT,
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_MOVE_WORD_LEFT,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Move Word Left",
         "Move the cursor one word left, or extend the selection with `select`.",
         SELECT,
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_MOVE_WORD_RIGHT,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Move Word Right",
         "Move the cursor one word right, or extend the selection with `select`.",
         SELECT,
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_LINE_START,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Line Start",
         "Move the cursor to the line start, or extend the selection with `select`.",
         SELECT,
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_LINE_END,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Line End",
         "Move the cursor to the line end, or extend the selection with `select`.",
         SELECT,
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_SELECT_ALL,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Select All",
         "Select all text.",
         &[],
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_CUT,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Cut",
         "Cut the selection to the clipboard.",
         &[],
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_COPY,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Copy",
         "Copy the selection.",
         &[],
     ),
     spec_in(
-        "Palette",
+        "TextField",
         ids::TEXT_PASTE,
-        CommandScope::Palette,
+        CommandScope::Focused,
         "Text: Paste",
         "Paste from the clipboard.",
         &[],

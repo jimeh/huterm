@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
@@ -175,6 +175,91 @@ fn long_text_scrolls_to_keep_the_caret_in_view(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let cursor = probe.update(cx, |input, _| input.cursor());
     assert!(cursor + 3 >= text.len(), "the press landed at {cursor}");
+}
+
+/// Where an owner was asked for context menus, in order.
+type Asked = Rc<RefCell<Vec<Point<Pixels>>>>;
+
+/// A 300-point field under an owner that records the context menus it is
+/// asked for, by where they were asked for.
+fn menu_field(
+    cx: &mut TestAppContext,
+    build: impl FnOnce(Input) -> Input + 'static,
+) -> (Probe, Asked, &mut VisualTestContext) {
+    let input = cx.update(|cx| {
+        cx.new(|cx| build(Input::new("name", "Name", tokens(), cx)))
+    });
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let (drawn, record) = (input.clone(), asked.clone());
+    let (_, cx) = host(cx, move |_, _| {
+        let (field, record) = (drawn.downgrade(), record.clone());
+        div()
+            .w(px(300.0))
+            .on_action(move |action: &ContextMenu, _, _| {
+                assert_eq!(action.field, field);
+                record.borrow_mut().push(action.position);
+            })
+            .child(drawn.clone())
+            .into_any_element()
+    });
+    let changes = Rc::new(Cell::new(0));
+    (Probe { input, changes }, asked, cx)
+}
+
+fn right_press(cx: &mut VisualTestContext, at: Point<Pixels>) {
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn a_right_press_keeps_a_selection_under_it_and_moves_the_caret_elsewhere(
+    cx: &mut TestAppContext,
+) {
+    let (probe, asked, cx) = menu_field(cx, |input| input);
+    probe.update(cx, |input, cx| {
+        input.set_text("hello world", cx);
+        input.move_word_left(true, cx);
+    });
+    // The caret is at the selection's start, on "w".
+    let (start, _) =
+        probe.update(cx, |input, _| input.painted_caret()).unwrap();
+    let on_word = point(start + px(4.0), px(12.0));
+    right_press(cx, on_word);
+    assert_eq!(probe.update(cx, |input, _| input.selection()), 6..11);
+    assert!(probe.focused(cx), "the press focuses the field");
+    assert_eq!(*asked.borrow(), [on_word]);
+    // Past the text, the selection goes and the caret lands at the end.
+    let past = point(px(290.0), px(12.0));
+    right_press(cx, past);
+    assert_eq!(probe.update(cx, |input, _| input.selection()), 11..11);
+    // Before the selection, too: the caret moves into "hello".
+    probe.update(cx, |input, cx| input.move_word_left(true, cx));
+    right_press(cx, point(px(10.0), px(12.0)));
+    assert_eq!(probe.update(cx, |input, _| input.selection()), 0..0);
+    assert_eq!(asked.borrow().len(), 3);
+}
+
+#[gpui::test]
+fn a_disabled_field_asks_for_no_menu_and_takes_no_focus(
+    cx: &mut TestAppContext,
+) {
+    let (probe, asked, cx) = menu_field(cx, |input| input);
+    probe.update(cx, |input, cx| {
+        input.set_text("value", cx);
+        input.set_disabled(true, None, cx);
+    });
+    right_press(cx, point(px(20.0), px(12.0)));
+    assert!(!probe.focused(cx));
+    assert!(asked.borrow().is_empty());
+    // A read-only field still asks: Copy and Select All apply there.
+    probe.update(cx, |input, cx| {
+        input.set_disabled(false, None, cx);
+        input.set_read_only(true, cx);
+    });
+    right_press(cx, point(px(20.0), px(12.0)));
+    assert!(probe.focused(cx));
+    assert_eq!(asked.borrow().len(), 1);
 }
 
 #[gpui::test]

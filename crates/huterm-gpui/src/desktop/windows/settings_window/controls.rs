@@ -2,8 +2,8 @@
 //! controls the override table names.
 
 use gpui::{
-    AnyElement, Context, ElementId, Entity, FocusHandle, SharedString, Window,
-    canvas, div, prelude::*, px,
+    AnyElement, Context, Div, ElementId, Entity, FocusHandle, SharedString,
+    Window, canvas, div, prelude::*, px,
 };
 use huterm_config::settings::{Choice, Control, Setting, SettingKind};
 use huterm_ui::components::button::{Button, Variant};
@@ -53,13 +53,12 @@ fn id(name: String) -> ElementId {
     ElementId::Name(name.into())
 }
 
-/// A field's `control` at `width`, in the `Palette` context that routes
-/// its keys.
-fn field_frame(width: f32, control: AnyElement) -> AnyElement {
-    div()
+/// A field's `control` at `width`, in `frame`, the field's `TextField`
+/// context from [`SettingsView::text_field`] that routes its keys.
+fn field_frame(frame: Div, width: f32, control: AnyElement) -> AnyElement {
+    frame
         .flex_none()
         .w(px(width))
-        .key_context("Palette")
         .child(control)
         .into_any_element()
 }
@@ -446,7 +445,7 @@ impl SettingsView {
                 field.into_any_element(),
             ),
         };
-        field_frame(width, control)
+        field_frame(Self::text_field(cx), width, control)
     }
 
     /// `setting`'s field, disabled with `read_only`'s reason and marked
@@ -506,7 +505,11 @@ impl SettingsView {
         div()
             .flex_none()
             .relative()
-            .child(field_frame(FIELD_WIDTH, group.into_any_element()))
+            .child(field_frame(
+                Self::text_field(cx),
+                FIELD_WIDTH,
+                group.into_any_element(),
+            ))
             .child(list)
             .into_any_element()
     }

@@ -5,9 +5,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use gpui::{
-    AnyElement, App, Context, Entity, Focusable, InteractiveElement,
-    IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::*,
-    px,
+    AnyElement, App, Context, Entity, Focusable, IntoElement, ParentElement,
+    SharedString, Styled, Window, div, prelude::*, px,
 };
 use huterm_config::document::{EntryLocator, Patch};
 use huterm_config::settings::{Choice, Setting, SettingKind, SettingsModel};
@@ -1297,14 +1296,15 @@ impl SettingsView {
             .variant(Variant::Primary)
             .when_some(refusal, |button, reason| button.disabled(Some(reason)));
         let handle = field.read(cx).focus_handle(cx);
-        let name =
-            Field::new("settings-qname", "Name", swatch)
-                .vertical()
-                .error(message.map(SharedString::from))
-                .control(div().key_context("Palette").w_full().child(
-                    InputGroup::new("settings-qname-group", &field, swatch),
-                ))
-                .p_0();
+        let name = Field::new("settings-qname", "Name", swatch)
+            .vertical()
+            .error(message.map(SharedString::from))
+            .control(Self::text_field(cx).w_full().child(InputGroup::new(
+                "settings-qname-group",
+                &field,
+                swatch,
+            )))
+            .p_0();
         Some(
             Dialog::new(id, title, self.dialog.modal(), swatch)
                 .when(from.is_some(), |dialog| {

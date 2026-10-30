@@ -173,7 +173,8 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has finished entering native or non-native fullscreen. Pending entry alone does not match. |
 | `palette` | The window owns an open command palette. |
-| `Palette` | The command palette or the About panel's Licenses view is open and has focus, or a Settings text field has focus. |
+| `Palette` | The command palette or the About panel's Licenses view is open and has focus. |
+| `TextField` | A text field has focus: a Settings field or dialog field, the palette's field, or the Licenses search. The Licenses buttons carry it too, since text edits there go to the search. In the palette and Licenses it sits on the same element as `Palette`. |
 | `Settings` | The Settings window has focus. |
 | `SettingsControl` | A Settings switch, select, segmented control, slider, modifier chip, theme card, button, or section has focus. |
 | `SettingsGroup` | A Settings section, theme card, or modifier chip has focus. It sits inside that item's `SettingsControl`, so a binding under it matches deeper and wins over a `SettingsControl` binding on the same key. |
@@ -227,10 +228,17 @@ the canonical session structure. The `pane`, `tab`, `workspace`, and
 `session` arguments cannot be written in the config for any command. The
 palette prompts for them where a command needs one, and omitted targets
 default to the invoking window's active tab, workspace, or session.
-Palette-scope commands imply the `Palette` context, and dialog, menu, and
-notice commands imply `confirming`, `menu`, and `notices`. Settings commands
-imply `Settings`, `SettingsControl`, or `SettingsGroup`. User bindings for
-them need no `when`.
+Focused commands run in whatever has keyboard focus: the palette, the
+Licenses view, or a text field's owner.
+The `palette_*` commands imply the `Palette` context and the `text_*`
+commands imply `TextField`, and dialog, menu, and notice commands imply
+`confirming`, `menu`, and `notices`. Settings commands imply `Settings`,
+`SettingsControl`, or `SettingsGroup`. User bindings for them need no `when`.
+A `when` adds to the implied context on the same element, so a `text_*`
+binding with `when = "Palette"` matches only in the palette and Licenses,
+where both contexts sit together, and no longer in Settings fields. Huterm
+reports such a binding as a keybinding warning; drop `Palette` from its
+`when` to bind it in every text field.
 
 | Command | Scope | Arguments |
 | --- | --- | --- |
@@ -328,31 +336,37 @@ them need no `when`.
 | `settings_next` | Window | Bound only while `SettingsGroup`. Moves to the next section, theme, or modifier chip of the focused group, wrapping from the last to the first; a section or theme it reaches is shown or chosen. Other controls ignore it. |
 | `settings_previous` | Window | Bound only while `SettingsGroup`. Moves to the previous section, theme, or modifier chip of the focused group, wrapping from the first to the last; a section or theme it reaches is shown or chosen. Other controls ignore it. |
 | `settings_reset` | Window | Bound only while `SettingsControl`. |
-| `palette_select_next` | Palette | Also steps a focused Settings number field down. |
-| `palette_select_previous` | Palette | Also steps a focused Settings number field up. |
-| `palette_page_down` | Palette | Also pages a focused Settings number field down. |
-| `palette_page_up` | Palette | Also pages a focused Settings number field up. |
-| `palette_confirm` | Palette | |
-| `palette_back` | Palette | |
-| `palette_pop` | Palette | |
-| `palette_expand` | Palette | |
-| `palette_next_slot` | Palette | |
-| `palette_previous_slot` | Palette | |
-| `text_delete_backward` | Palette | |
-| `text_delete_forward` | Palette | |
-| `text_delete_word_backward` | Palette | |
-| `text_delete_word_forward` | Palette | |
-| `text_delete_line_start` | Palette | |
-| `text_move_left` | Palette | Optional `select` extends the selection instead. |
-| `text_move_right` | Palette | Optional `select`. |
-| `text_move_word_left` | Palette | Optional `select`. |
-| `text_move_word_right` | Palette | Optional `select`. |
-| `text_line_start` | Palette | Optional `select`. |
-| `text_line_end` | Palette | Optional `select`. |
-| `text_select_all` | Palette | |
-| `text_cut` | Palette | |
-| `text_copy` | Palette | |
-| `text_paste` | Palette | |
+| `palette_select_next` | Focused | |
+| `palette_select_previous` | Focused | |
+| `palette_page_down` | Focused | |
+| `palette_page_up` | Focused | |
+| `palette_confirm` | Focused | |
+| `palette_back` | Focused | |
+| `palette_pop` | Focused | |
+| `palette_expand` | Focused | |
+| `palette_next_slot` | Focused | |
+| `palette_previous_slot` | Focused | |
+| `text_confirm` | Focused | Saves a Settings field or submits its dialog. The palette and Licenses leave it to `palette_confirm`. |
+| `text_cancel` | Focused | Puts back a Settings field's value or cancels its dialog. The palette and Licenses leave it to `palette_back`. |
+| `text_next` | Focused | Highlights the next suggestion, or steps a Settings number field down. The palette and Licenses leave it to `palette_select_next`. |
+| `text_previous` | Focused | Highlights the previous suggestion, or steps a Settings number field up. The palette and Licenses leave it to `palette_select_previous`. |
+| `text_page_down` | Focused | Pages suggestions or a Settings number field down. The palette and Licenses leave it to `palette_page_down`. |
+| `text_page_up` | Focused | Pages suggestions or a Settings number field up. The palette and Licenses leave it to `palette_page_up`. |
+| `text_delete_backward` | Focused | |
+| `text_delete_forward` | Focused | |
+| `text_delete_word_backward` | Focused | |
+| `text_delete_word_forward` | Focused | |
+| `text_delete_line_start` | Focused | |
+| `text_move_left` | Focused | Optional `select` extends the selection instead. |
+| `text_move_right` | Focused | Optional `select`. |
+| `text_move_word_left` | Focused | Optional `select`. |
+| `text_move_word_right` | Focused | Optional `select`. |
+| `text_line_start` | Focused | Optional `select`. |
+| `text_line_end` | Focused | Optional `select`. |
+| `text_select_all` | Focused | |
+| `text_cut` | Focused | |
+| `text_copy` | Focused | |
+| `text_paste` | Focused | |
 
 ## Default bindings
 
@@ -455,6 +469,35 @@ directions if you use them.
 | `palette_back` | `escape` | `escape` |
 | `palette_expand` | `tab` | `tab` |
 | `palette_previous_slot` | `shift-tab` | `shift-tab` |
+
+### Text fields
+
+These bind under `TextField`, in every text field. The field verbs
+(`text_confirm`, `text_cancel`, `text_next`, `text_previous`, `text_page_down`,
+`text_page_up`) mean what the field's owner makes of them. The palette's field
+and the Licenses view carry `Palette` beside `TextField` and leave the verbs
+unhandled, so the key goes on to the palette's binding for it: Enter still
+runs `palette_confirm` there, however the two bindings are ordered. Tab and
+Shift-Tab are not bound here, so they reach `settings_focus_next`, a dialog's
+`dialog_focus_next`, or `palette_expand`.
+
+A right-click on a text field opens its menu: Cut, Copy, Paste, and Select
+All, with the shortcuts the field's bindings give them. Cut and Copy are
+disabled with nothing selected, Cut and Paste in a read-only field, and Select
+All in an empty one. A right-click on the selection keeps it; anywhere else it
+moves the caret there first, as on macOS. On macOS the Edit menu's Cut is
+`text_cut`, and its Copy, Paste, and Select All act on a focused field as
+`text_copy`, `text_paste`, and `text_select_all`; over a terminal, Cut is
+disabled.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `text_confirm` | `enter` | `enter` |
+| `text_cancel` | `escape` | `escape` |
+| `text_next` | `down`, `ctrl-n` | `down`, `ctrl-n` |
+| `text_previous` | `up`, `ctrl-p` | `up`, `ctrl-p` |
+| `text_page_down` | `pagedown` | `pagedown` |
+| `text_page_up` | `pageup` | `pageup` |
 | `text_delete_backward` | `backspace` | `backspace` |
 | `text_delete_forward` | `delete`, `ctrl-d` | `delete` |
 | `text_delete_word_backward` | `alt-backspace` | `alt-backspace` |
@@ -490,20 +533,20 @@ window and app commands such as Quit still work.
 
 New profile and Rename profile ask for a name in a dialog whose name field has
 focus; Rename profile starts with the current name selected. The field takes
-the `Palette` context, as other Settings fields do, so the text commands edit
-it, `palette_expand` and `palette_previous_slot` move focus between the field,
-Cancel, and Create or Rename, `palette_confirm` creates or renames, and
-`palette_back` cancels. On a button, the dialog commands apply. Create and
+the `TextField` context, as other Settings fields do, so the text commands
+edit it, `text_confirm` creates or renames, and `text_cancel` cancels. The
+dialog focus commands move focus between the field, Cancel, and Create or
+Rename, and on a button the other dialog commands apply. Create and
 Rename stay disabled, and out of the focus order, while the name is blank,
 unchanged, needs quoting, or names another profile.
 
-The Licenses view takes the `Palette` context, so the palette bindings apply
-there: `palette_select_next` and `palette_select_previous` move the selection,
-`palette_page_down` and `palette_page_up` scroll the license text,
-`palette_expand` and `palette_previous_slot` move focus between the search and
-the buttons, `palette_confirm` presses the focused button, the text commands
-edit the search, and `palette_back` clears the search or returns to the About
-panel.
+The Licenses view takes the `Palette` and `TextField` contexts, so the
+palette bindings apply there: `palette_select_next` and
+`palette_select_previous` move the selection, `palette_page_down` and
+`palette_page_up` scroll the license text, `palette_expand` and
+`palette_previous_slot` move focus between the search and the buttons,
+`palette_confirm` presses the focused button, the text commands edit the
+search, and `palette_back` clears the search or returns to the About panel.
 
 | Command | macOS | Linux |
 | --- | --- | --- |
@@ -569,30 +612,32 @@ does not. Enter and Space reach a switch, segmented control, chip, theme card,
 section, button, or key recorder only through these bindings, so removing a
 binding removes its key there.
 
-The window's text fields take the `Palette` context, so the palette bindings
-edit them: `palette_confirm` saves a field, or from the search field moves to
-the first match; `palette_expand` and `palette_previous_slot` move focus on and
-back; `palette_select_previous` and `palette_select_next` step a number within
-its range; `palette_page_up` and `palette_page_down` page a number by a tenth
-of its range, or by ten steps when either end is open; and `palette_back` puts
-a field's value back or clears the search.
+The window's text fields take the `TextField` context, so the text bindings
+edit them: `text_confirm` saves a field, or from the search field moves to the
+first match; `settings_focus_next` and `settings_focus_previous` move focus on
+and back; `text_previous` and `text_next` step a number within its range;
+`text_page_up` and `text_page_down` page a number by a tenth of its range, or
+by ten steps when either end is open; and `text_cancel` puts a field's value
+back or clears the search. A field's draft stays a draft while its context
+menu is open; it saves when focus moves elsewhere, as it does on leaving the
+field.
 Home and End keep moving the caret in a number field. `settings_increase` and
 `settings_decrease` step a Quake width or height slider by 5%, stopping at 5%
 and 100%; on a slider, `settings_page_up` and `settings_page_down` page it by
 10%, and `settings_first` and `settings_last` move it to 5% and 100%. Their
 default keys carry `when = "control == slider"`, so Page Up, Page Down, Home,
 and End stay unbound on other Settings controls. In a
-shortcut's `when` field and the font family field, `palette_select_next` and
-`palette_select_previous` move through the suggestions, opening them when
-they are closed, `palette_page_up` and `palette_page_down` page through
-them, `palette_confirm` takes the highlighted one, and `palette_back`, like
-`palette_expand` in a `when` field, closes them before it acts on the field.
-The font field highlights nothing until you move, so `palette_confirm` saves
-the typed name. Until you type in it, the font field's list shows every
-installed family, on the one it holds. In an argument's number field,
-`palette_select_next` and `palette_select_previous` step it. In Keybindings, `settings_search`
-focuses the section's own search, where `palette_confirm` moves to the first
-command, and `settings_reset` on a command restores its defaults. The window
+shortcut's `when` field and the font family field, `text_next` and
+`text_previous` move through the suggestions, opening them when they are
+closed, `text_page_up` and `text_page_down` page through them, `text_confirm`
+takes the highlighted one, and `text_cancel`, like `settings_focus_next` in a
+`when` field, closes them before it acts on the field. The font field
+highlights nothing until you move, so `text_confirm` saves the typed name.
+Until you type in it, the font field's list shows every installed family, on
+the one it holds. In an argument's number field, `text_next` and
+`text_previous` step it. In Keybindings, `settings_search` focuses the
+section's own search, where `text_confirm` moves to the first command, and
+`settings_reset` on a command restores its defaults. The window
 also reads `close_window`, `close_tab`, and `close_pane` as closing it, and
 `next_tab` and `previous_tab` as moving between sections.
 

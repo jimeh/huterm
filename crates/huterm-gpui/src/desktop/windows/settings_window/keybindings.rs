@@ -1397,9 +1397,13 @@ impl SettingsView {
         })
         .detach();
         cx.on_blur(&handle, window, move |view, window, cx| {
+            // The field's own menu keeps its draft and its editing state.
             let Some(blurred) = view.keys.key_of(id) else {
                 return;
             };
+            if view.field_menu_open(id) {
+                return;
+            }
             if view.keys.editing.as_ref() == Some(&blurred) {
                 view.keys.editing = None;
             }
@@ -2257,13 +2261,7 @@ impl SettingsView {
             .items_center()
             .gap(px(8.0))
             .mb(px(12.0))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(200.0))
-                    .key_context("Palette")
-                    .child(search),
-            )
+            .child(Self::text_field(cx).flex_1().min_w(px(200.0)).child(search))
             .child(segments)
             .into_any_element()
     }
@@ -2499,9 +2497,8 @@ impl SettingsView {
             .min_w(px(110.0))
             .relative()
             .child(
-                div()
+                Self::text_field(cx)
                     .font_family(mono_font_family())
-                    .key_context("Palette")
                     .child(when),
             )
             .children(completion);
@@ -2673,9 +2670,7 @@ impl SettingsView {
                     .items_center()
                     .gap(px(6.0))
                     .child(small(argument.name.to_owned(), swatch.muted))
-                    .child(
-                        div().w(px(width)).key_context("Palette").child(field),
-                    )
+                    .child(Self::text_field(cx).w(px(width)).child(field))
                     .into_any_element()
             }
             _ => {

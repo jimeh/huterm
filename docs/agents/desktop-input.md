@@ -59,6 +59,19 @@ GPUI's update borrow, and skip deferred cancellation when the active view alread
 has newer preedit. Bindings and menu installation share one operation;
 `smoke:macos-menus` reads actual NSMenuItem shortcuts.
 
+## Text fields
+
+Text fields take their keys under `TextField`; the keymap rules, the field
+verbs, and the palette's fallthrough are in
+[the desktop client guide](desktop-client.md#keymap-commands-and-menus). A
+right press opens the field's context menu through `huterm_ui`'s
+`ContextMenu` action. GPUI's `track_focus` focuses an element on a press of
+any button, so a disabled field prevents the default for Right as well as
+Left, or a right press would focus it. The field's own bubble listener runs
+before that focus listener, so the field focuses itself before it
+dispatches, and it dispatches deferred, after its update ends, so the
+owner's handler can read it.
+
 ## Mouse buttons and application mouse reporting
 
 Ghostty treats mouse encodings 1005 and 1006 as mutually exclusive; the last

@@ -136,7 +136,8 @@ pub(crate) struct CompiledKeymap {
     /// Retained so later UI can list bindings without re-parsing config.
     pub(crate) effective: Vec<EffectiveBinding>,
     pub(crate) reserved: ReservedKeys,
-    /// Non-fatal precedence diagnostics in entry order.
+    /// Non-fatal diagnostics in entry order: precedence clashes, and
+    /// bindings that match less widely than they read.
     pub(crate) conflicts: Vec<String>,
 }
 
@@ -265,7 +266,7 @@ fn toml_value(name: &str, value: &toml::Value) -> Result<CommandValue, String> {
 #[cfg(test)]
 pub(crate) fn bound_command(binding: &KeyBinding) -> Option<CommandId> {
     use crate::commands::{
-        InvokeApp, InvokePalette, InvokeTerminal, InvokeWindow,
+        InvokeApp, InvokeFocused, InvokeTerminal, InvokeWindow,
     };
     let action = binding.action().as_any();
     action
@@ -283,7 +284,7 @@ pub(crate) fn bound_command(binding: &KeyBinding) -> Option<CommandId> {
         })
         .or_else(|| {
             action
-                .downcast_ref::<InvokePalette>()
+                .downcast_ref::<InvokeFocused>()
                 .map(|action| action.0.id)
         })
 }
@@ -476,6 +477,22 @@ fn resolve_entries(
         let predicate = combined_predicate(spec.context, entry.when.as_deref())
             .map_err(|error| fail(format!("invalid when: {error}")))?;
         effective.predicate.clone_from(&predicate);
+        if entry.origin == Origin::User
+            && spec.context == Some(TEXT_FIELD_CONTEXT)
+            && entry
+                .when
+                .as_deref()
+                .and_then(|when| KeyBindingContextPredicate::parse(when).ok())
+                .is_some_and(|when| on_the_node(&when, "Palette"))
+        {
+            conflicts.push(keybinding_diagnostic(
+                position,
+                &entry.key,
+                "`when` names `Palette`, so this text binding matches only \
+                 in the palette and Licenses; without it, it binds in every \
+                 text field",
+            ));
+        }
         let resolved = Resolved {
             keystrokes,
             predicate,
@@ -568,6 +585,28 @@ fn resolve_entries(
         unbinds,
         conflicts,
     })
+}
+
+/// Whether `predicate` requires `identifier` on the node it matches, as a
+/// `when` does once it is joined to its command's context. An identifier
+/// under `!`, or on an ancestor side of `>`, places no such requirement.
+fn on_the_node(
+    predicate: &KeyBindingContextPredicate,
+    identifier: &str,
+) -> bool {
+    match predicate {
+        KeyBindingContextPredicate::Identifier(name) => name == identifier,
+        KeyBindingContextPredicate::And(left, right)
+        | KeyBindingContextPredicate::Or(left, right) => {
+            on_the_node(left, identifier) || on_the_node(right, identifier)
+        }
+        KeyBindingContextPredicate::Descendant(_, child) => {
+            on_the_node(child, identifier)
+        }
+        KeyBindingContextPredicate::Equal(..)
+        | KeyBindingContextPredicate::NotEqual(..)
+        | KeyBindingContextPredicate::Not(_) => false,
+    }
 }
 
 fn compile_entries(
@@ -1035,7 +1074,8 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     entries.extend(menu_defaults());
     entries.extend(notice_defaults());
     entries.extend(settings_defaults(platform));
-    entries.extend(palette_defaults(platform));
+    entries.extend(text_field_defaults(platform));
+    entries.extend(palette_defaults());
     entries
 }
 
@@ -1088,9 +1128,9 @@ fn notice_defaults() -> Vec<BindingEntry> {
 /// Settings window bindings. Search and focus movement carry the `Settings`
 /// context; toggling, stepping, and reset carry `SettingsControl`, which
 /// only switches, selects, sliders, and section rows set, so Space and the
-/// arrows still reach a focused text field, whose `Palette` context handles
+/// arrows still reach a focused text field, whose `TextField` context handles
 /// them. Page Up, Page Down, Home, and End match only on a slider: a number
-/// field's `Palette` context pages it and keeps Home and End for its text,
+/// field's `TextField` context pages it and keeps Home and End for its text,
 /// and on any other control the keys stay unbound. A roving group's items
 /// nest a `SettingsGroup` context inside their `SettingsControl` one, where
 /// the arrows move between the items instead of stepping: Down and Right
@@ -1134,8 +1174,18 @@ fn settings_defaults(platform: Platform) -> Vec<BindingEntry> {
     entries
 }
 
-fn palette_defaults(platform: Platform) -> Vec<BindingEntry> {
-    let mut entries = vec![
+/// The key context of a text field, and of anything that hands text
+/// editing to one, such as the Licenses view's buttons.
+pub(crate) const TEXT_FIELD_CONTEXT: &str = "TextField";
+
+/// Command palette bindings: its list and argument commands, under
+/// `Palette`. The palette's search field carries `TextField` too, on the
+/// same node, so these and the text field's verbs tie on depth there. The
+/// palette leaves the verbs unhandled, and GPUI then falls through to the
+/// palette's binding for the same key, so Enter, Escape, and the arrows
+/// keep their palette meaning whatever the order.
+fn palette_defaults() -> Vec<BindingEntry> {
+    vec![
         default("down", ids::PALETTE_SELECT_NEXT, "Next Item"),
         default("up", ids::PALETTE_SELECT_PREVIOUS, "Previous Item"),
         default("pagedown", ids::PALETTE_PAGE_DOWN, "Page Down"),
@@ -1146,6 +1196,24 @@ fn palette_defaults(platform: Platform) -> Vec<BindingEntry> {
         default("shift-tab", ids::PALETTE_PREVIOUS_SLOT, "Previous Argument"),
         default("ctrl-n", ids::PALETTE_SELECT_NEXT, "Next Item"),
         default("ctrl-p", ids::PALETTE_SELECT_PREVIOUS, "Previous Item"),
+    ]
+}
+
+/// Text field bindings, under `TextField`: editing, and the verbs a field's
+/// owner gives meaning (Enter commits, Escape puts the text back, the
+/// arrows step a number or move through suggestions). Tab and Shift-Tab
+/// stay unbound here, so they reach the owner's focus commands: Settings'
+/// `settings_focus_*`, a dialog's `dialog_focus_*`, or the palette's own.
+fn text_field_defaults(platform: Platform) -> Vec<BindingEntry> {
+    let mut entries = vec![
+        default("enter", ids::TEXT_CONFIRM, "Confirm"),
+        default("escape", ids::TEXT_CANCEL, "Cancel"),
+        default("down", ids::TEXT_NEXT, "Next"),
+        default("up", ids::TEXT_PREVIOUS, "Previous"),
+        default("ctrl-n", ids::TEXT_NEXT, "Next"),
+        default("ctrl-p", ids::TEXT_PREVIOUS, "Previous"),
+        default("pagedown", ids::TEXT_PAGE_DOWN, "Page Down"),
+        default("pageup", ids::TEXT_PAGE_UP, "Page Up"),
         default("backspace", ids::TEXT_DELETE_BACKWARD, "Delete Backward"),
         default("delete", ids::TEXT_DELETE_FORWARD, "Delete Forward"),
         default("left", ids::TEXT_MOVE_LEFT, "Move Left"),
