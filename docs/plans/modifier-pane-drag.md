@@ -1,6 +1,6 @@
 # Modifier pane drags
 
-Status: in progress
+Status: implemented
 
 ## Objective
 
@@ -101,8 +101,8 @@ are about to move.
   any invalid config.
 - Schema describes the value with a token pattern, since an enum cannot
   hold both spellings of `cmd` in every order. Its description gives the
-  recommendations and says the duplicate, platform, and link checks run at
-  load.
+  gesture, the token format, and the recommendations; the rejection rules
+  live in the load errors and `docs/configuration.md`.
 - `x-huterm-apply = "live"`.
 
 ### Held modifiers and arming (`windows/pane_grab.rs`, new)
@@ -295,3 +295,21 @@ Jim settled the open questions on 2026-10-30, each as recommended.
    with `smoke:macos-input` coverage. The docs recommend `cmd-ctrl` on
    macOS and `ctrl-alt` on Linux.
 3. **Every pane drag shows the closed hand**, title bar drags included.
+
+## Deviations
+
+Minor changes made while implementing and reviewing, with their reasons:
+
+- The schema description, which Settings shows, is three short sentences.
+  The UX review found the full rule list buried the gesture, and the
+  shorter text lets Settings search find the row by "move pane".
+- Badge hiding on a key press is a keystroke interceptor, not an observer.
+  GPUI notifies no observer of a key it keeps as a pending shortcut prefix.
+- `held` ignores moves with a pressed button and records the release's
+  modifiers instead, adding Control for the Right release that ends a
+  remapped drag. macOS GPUI replays the last move with its old modifiers
+  while a button is held, which re-armed the panes after the keys went.
+- A press with GPUI's `first_mouse` flag is never a grab, so the click
+  that activates a window reaches the terminal.
+- Window tests use a `#[cfg(test)]` hovered-window flag, because the test
+  platform never reports a hovered window.

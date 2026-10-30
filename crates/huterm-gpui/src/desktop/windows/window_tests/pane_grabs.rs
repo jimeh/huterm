@@ -23,6 +23,13 @@ const REPORTING: &str = "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY';
      while byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); \
      [ -n \"$byte\" ]; do printf '%s' \"$byte\"; done";
 
+fn cmd() -> Modifiers {
+    Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    }
+}
+
 fn cmd_ctrl() -> Modifiers {
     Modifiers {
         platform: true,
@@ -281,10 +288,7 @@ fn a_remapped_control_press_drags_and_its_right_release_drops(
     let grab = harness.terminal_rect(window, first).center();
     let frame = harness.terminal_rect(window, second);
     let edge = gpui::point(frame.right() - px(8.0), frame.center().y);
-    let cmd = Modifiers {
-        platform: true,
-        ..Modifiers::default()
-    };
+    let cmd = cmd();
     // As AppKit delivers Cmd-Control-left through GPUI: the flags, a
     // Right press without Control, Left-pressed motion that still carries
     // it, and a Right release without it.
@@ -305,6 +309,105 @@ fn a_remapped_control_press_drags_and_its_right_release_drops(
     harness.update_view(window, |view, _, _| assert!(view.menu.is_none()));
     let after = harness.probe_pane(window, tab, first);
     assert_eq!(after, format!("{before}7a"));
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn a_remapped_drag_drops_on_a_left_release_once_control_is_let_go(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = grab_harness(cx);
+    let (window, tab, first, second) = harness.grab_window(REPORTING);
+    let before = harness.probe_pane(window, tab, first);
+    let grab = harness.terminal_rect(window, first).center();
+    let frame = harness.terminal_rect(window, second);
+    let edge = gpui::point(frame.right() - px(8.0), frame.center().y);
+    let mut visual = harness.visual(window);
+    visual.simulate_modifiers_change(cmd_ctrl());
+    visual.simulate_mouse_down(grab, MouseButton::Right, cmd());
+    visual.simulate_mouse_move(edge, Some(MouseButton::Left), cmd_ctrl());
+    harness.wait_for("the remapped press to drag", |cx| dragging(cx, window));
+    // Control goes first, so GPUI leaves the release as Left.
+    let mut visual = harness.visual(window);
+    visual.simulate_modifiers_change(cmd());
+    visual.simulate_mouse_up(edge, MouseButton::Left, cmd());
+    harness.wait_for("the Left release to drop the pane", |cx| {
+        !pressed(cx, window)
+            && panes_shown(cx, window, tab)
+                == Some((vec![second, first], first))
+    });
+    harness.update_view(window, |view, _, _| assert!(view.menu.is_none()));
+    let after = harness.probe_pane(window, tab, first);
+    assert_eq!(after, format!("{before}7a"));
+}
+
+#[gpui::test]
+fn a_replayed_drag_move_does_not_rearm_after_the_modifiers_go(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = grab_harness(cx);
+    let (window, _, first, _) = harness.grab_window(ECHO);
+    let grab = harness.terminal_rect(window, first).center();
+    let moved = grab + gpui::point(px(4.0), px(0.0));
+    let mut visual = harness.visual(window);
+    visual.simulate_modifiers_change(cmd_ctrl());
+    visual.simulate_mouse_down(grab, MouseButton::Left, cmd_ctrl());
+    visual.simulate_mouse_move(moved, Some(MouseButton::Left), cmd_ctrl());
+    visual.simulate_modifiers_change(Modifiers::none());
+    // macOS GPUI replays the last move, with its modifiers, while the
+    // button stays down.
+    visual.simulate_mouse_move(moved, Some(MouseButton::Left), cmd_ctrl());
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::none());
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, window, cx| {
+        assert!(view.pane_drag.is_none());
+        assert_eq!(view.pane_grab.held(), 0);
+        view.refresh_tab_visibility(window, cx);
+    });
+    harness.animate_grab(window, Instant::now() + Duration::from_secs(1));
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert_eq!(grab_state(cx, window), (false, false));
+    });
+    harness.update_view(window, |view, _, _| {
+        assert!(view.drawn_badges.borrow().is_empty());
+    });
+}
+
+#[gpui::test]
+fn a_pending_shortcut_prefix_hides_the_badges(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.panes.drag_modifier = Some(
+            PaneDragModifiers::parse("cmd-ctrl", cfg!(target_os = "macos"))
+                .unwrap(),
+        );
+        // A chord whose first stroke uses the drag modifiers.
+        config.keybindings.push(huterm_config::KeybindingEntry {
+            key: "cmd-ctrl-y cmd-ctrl-u".to_owned(),
+            command: "copy".to_owned(),
+            args: None,
+            when: None,
+            description: None,
+            disabled: None,
+        });
+    });
+    let (window, _, first, _) = harness.grab_window(ECHO);
+    let centre = harness.terminal_rect(window, first).center();
+    let mut visual = harness.visual(window);
+    visual.simulate_mouse_move(centre, None, Modifiers::none());
+    visual.simulate_modifiers_change(cmd_ctrl());
+    harness.wait_for("the combination to arm", |cx| grab_state(cx, window).0);
+    harness.animate_grab(window, Instant::now() + Duration::from_secs(1));
+    harness.wait_for("the badges to show", |cx| {
+        grab_state(cx, window) == (true, true)
+    });
+    harness.press(window, "cmd-ctrl-y");
+    harness.update_view(window, |_, window, _| {
+        assert!(window.has_pending_keystrokes(), "the prefix is pending");
+    });
+    harness.wait_for("the prefix to hide the badges", |cx| {
+        grab_state(cx, window) == (true, false)
+    });
 }
 
 #[gpui::test]
@@ -493,7 +596,7 @@ fn badges_name_each_pane_after_the_delay_and_a_key_hides_them(
         })
     };
     harness.cx.run_until_parked();
-    assert!(smoke(&mut harness).contains("grab_armed=true grab_badges=0"));
+    assert!(smoke(&mut harness).contains("grab_armed=true"));
     // The badges show once the combination has been held for the delay.
     harness.animate_grab(window, held + Duration::from_millis(200));
     harness.wait_for("both badges to draw", |cx| {

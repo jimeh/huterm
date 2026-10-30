@@ -1630,6 +1630,7 @@ fn install_desktop(
     })
     .detach();
     cx.observe_keystrokes(observe_keystroke).detach();
+    cx.intercept_keystrokes(hide_grab_badges).detach();
 }
 
 /// Sets the interface's typography from the configuration's `[font]`
@@ -1999,6 +2000,27 @@ fn quit_now(pending_spawns: usize, quit_pending: &mut bool) -> bool {
     true
 }
 
+/// Hides the pane badges of the window a key is pressed in, such as a pane
+/// keybinding's pressed with the drag modifiers held, until the modifiers
+/// change. An interceptor, because GPUI notifies no keystroke observer of
+/// a key it keeps as a pending shortcut prefix.
+fn hide_grab_badges(
+    event: &gpui::KeystrokeEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if pane_grab::modifier_only(&event.keystroke) {
+        return;
+    }
+    if let Some(root) = window.root::<WorkspaceView>().flatten() {
+        root.update(cx, |view, cx| {
+            if view.pane_grab.suppress(Instant::now()) {
+                cx.notify();
+            }
+        });
+    }
+}
+
 fn observe_keystroke(
     event: &gpui::KeystrokeEvent,
     window: &mut Window,
@@ -2009,13 +2031,6 @@ fn observe_keystroke(
         event.action.is_some() || reserved.is_reserved(&event.keystroke);
     if let Some(root) = window.root::<WorkspaceView>().flatten() {
         root.update(cx, |view, cx| {
-            // A key pressed with the drag modifiers held, such as a pane
-            // keybinding's, hides the pane badges until they change.
-            if !pane_grab::modifier_only(&event.keystroke)
-                && view.pane_grab.suppress(Instant::now())
-            {
-                cx.notify();
-            }
             let input_blocked = view.busy
                 || view.dialog_showing()
                 || view.reorder.is_some()
@@ -6220,7 +6235,16 @@ impl WorkspaceView {
         modifiers: gpui::Modifiers,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        let held = pane_grab::held_bits(modifiers);
+        self.record_held_bits(pane_grab::held_bits(modifiers), cx)
+    }
+
+    /// Records `held`, as [`pane_grab::held_bits`] numbers modifiers, for
+    /// modifier pane drags. Returns whether the record changed.
+    fn record_held_bits(
+        &mut self,
+        held: u8,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
         let changed = held != self.pane_grab.held();
         if self.pane_grab.record(held, Instant::now()) {
             cx.notify();
@@ -11647,7 +11671,13 @@ impl Render for WorkspaceView {
                             if phase == DispatchPhase::Capture {
                                 let _ = move_view.update(cx, |view, cx| {
                                     view.pointer_reveal.outside = false;
-                                    view.record_held(event.modifiers, cx);
+                                    // macOS GPUI replays the last move with
+                                    // its modifiers while a button is held,
+                                    // so only a free move records them; the
+                                    // release records them again.
+                                    if event.pressed_button.is_none() {
+                                        view.record_held(event.modifiers, cx);
+                                    }
                                     view.defer_pointer_refresh(window, cx);
                                     if view.divider_drag.is_some() {
                                         view.drag_divider_to(
@@ -11734,57 +11764,70 @@ impl Render for WorkspaceView {
                     window.on_mouse_event(
                         move |event: &MouseUpEvent, phase, window, cx| {
                             if phase == DispatchPhase::Capture {
-                                let _ = release_view.update(cx, |view, cx| {
-                                    view.defer_pointer_refresh(window, cx);
-                                    // A drag from a remapped Control-left
-                                    // press ends on a Right release, or on a
-                                    // Left one once Control is let go first.
-                                    let remapped = view
-                                        .pane_drag
-                                        .as_ref()
-                                        .is_some_and(PaneDrag::remapped);
-                                    if event.button != MouseButton::Left
-                                        && !(remapped
-                                            && event.button
-                                                == MouseButton::Right)
-                                    {
-                                        return;
-                                    }
-                                    if view.divider_drag.is_some() {
-                                        view.drag_divider_to(
-                                            event.position,
-                                            window,
-                                            cx,
-                                        );
-                                        view.finish_divider_drag(window, cx);
-                                        cx.stop_propagation();
-                                    } else if view.resizing_sidebar {
-                                        view.resize_sidebar(
-                                            event.position,
-                                            window,
-                                            cx,
-                                        );
-                                        view.resizing_sidebar = false;
-                                        cx.stop_propagation();
-                                    } else if view.reorder.is_some() {
-                                        view.finish_reorder(
-                                            event.position,
-                                            window,
-                                            cx,
-                                        );
-                                        cx.stop_propagation();
-                                    } else if view.pane_drag.is_some() {
-                                        view.finish_pane_drag(
-                                            event.position,
-                                            window,
-                                            cx,
-                                        );
-                                        cx.stop_propagation();
-                                    } else if view.tab_scrollbars.dragging() {
-                                        view.tab_scrollbar_release(cx);
-                                        cx.stop_propagation();
-                                    }
-                                });
+                                let _ =
+                                    release_view.update(cx, |view, cx| {
+                                        view.defer_pointer_refresh(window, cx);
+                                        // A drag from a remapped Control-left
+                                        // press ends on a Right release, or on a
+                                        // Left one once Control is let go first.
+                                        let remapped = view
+                                            .pane_drag
+                                            .as_ref()
+                                            .is_some_and(PaneDrag::remapped);
+                                        if let Some(held) =
+                                            pane_grab::released_held(
+                                                event.button,
+                                                event.modifiers,
+                                                remapped,
+                                            )
+                                        {
+                                            view.record_held_bits(held, cx);
+                                        }
+                                        if event.button != MouseButton::Left
+                                            && !(remapped
+                                                && event.button
+                                                    == MouseButton::Right)
+                                        {
+                                            return;
+                                        }
+                                        if view.divider_drag.is_some() {
+                                            view.drag_divider_to(
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                            view.finish_divider_drag(
+                                                window, cx,
+                                            );
+                                            cx.stop_propagation();
+                                        } else if view.resizing_sidebar {
+                                            view.resize_sidebar(
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                            view.resizing_sidebar = false;
+                                            cx.stop_propagation();
+                                        } else if view.reorder.is_some() {
+                                            view.finish_reorder(
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
+                                        } else if view.pane_drag.is_some() {
+                                            view.finish_pane_drag(
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
+                                        } else if view.tab_scrollbars.dragging()
+                                        {
+                                            view.tab_scrollbar_release(cx);
+                                            cx.stop_propagation();
+                                        }
+                                    });
                             }
                         },
                     );

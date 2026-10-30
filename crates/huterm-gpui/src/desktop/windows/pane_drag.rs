@@ -216,6 +216,9 @@ impl WorkspaceView {
             strip: self.tab_strip(window),
             remapped,
         });
+        // The press shows the closed hand at once, even over a pane that
+        // already had focus.
+        cx.notify();
     }
 
     fn can_drag_panes(&self, cx: &App) -> bool {

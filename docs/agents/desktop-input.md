@@ -304,9 +304,15 @@ Control cleared, and `Window::modifiers` follows the remapped event, so a
 combination with Control arrives as a Right press carrying the rest.
 `PaneGrab` keeps its own `held` record, which no remapped event writes: the
 root div's `on_modifiers_changed` sets it, the window's capture listeners
-correct it from `MouseMove`, `Scroll`, and `MouseExited`, activation resets
-it from `Window::modifiers`, and a closing native menu clears it, since
-AppKit's menu loop swallows `flagsChanged`. A window-level
+correct it from free `MouseMove`s, `Scroll`, `MouseExited`, and releases,
+activation resets it from `Window::modifiers`, and a closing native menu
+clears it, since AppKit's menu loop swallows `flagsChanged`. While a button
+is held, macOS GPUI's `synthetic_drag` replays the last move every 16 ms
+with that move's original modifiers, so a move with a pressed button never
+writes `held`: it would bring back modifiers already let go and re-arm the
+panes after the release. A Left release records its modifiers instead, and
+the Right release that ends a `remapped` drag records them plus Control,
+since GPUI remaps only while Control is down. A window-level
 `window.on_modifiers_changed` never runs: GPUI dispatches the event only
 along the focused element's path, so with nothing focused only a pointer
 event updates `held`. `grab_press` accepts that Right press only while
@@ -317,7 +323,9 @@ Arming recomputes on every pointer refresh from `pane_bar_pointer`, so
 anything that claims the pointer or the window disarms. The badges wait
 `GRAB_BADGE_DELAY` on the animation schedule and stay hidden after a key
 press or an activation until `held` changes, so pane keybindings that share
-the modifiers flash none. Window tests set `pointer_reveal.hovered_in_tests`
+the modifiers flash none. The key press comes from an app-wide keystroke
+interceptor, not an observer: GPUI keeps a shortcut prefix pending and
+returns before it notifies observers. Window tests set `pointer_reveal.hovered_in_tests`
 to sample the pointer from real events; `smoke:macos-input` covers the real
 remap with posted Command and Control `flagsChanged` events.
 

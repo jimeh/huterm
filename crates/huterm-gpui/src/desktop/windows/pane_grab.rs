@@ -105,6 +105,22 @@ pub(super) fn held_bits(modifiers: gpui::Modifiers) -> u8 {
     crate::config::modifier_bits(modifiers).unwrap_or(FUNCTION)
 }
 
+/// The held record a `button` release carrying `modifiers` reports, or
+/// `None` for a release that says nothing reliable. A Left release reports
+/// its modifiers. The Right release that ends a `remapped` pane drag was a
+/// Control-left release, so Control was still down.
+pub(super) fn released_held(
+    button: MouseButton,
+    modifiers: gpui::Modifiers,
+    remapped: bool,
+) -> Option<u8> {
+    match button {
+        MouseButton::Left => Some(held_bits(modifiers)),
+        MouseButton::Right if remapped => Some(held_bits(modifiers) | CONTROL),
+        _ => None,
+    }
+}
+
 /// Whether `keystroke` is a modifier pressed and released alone, which GPUI
 /// reports as a keystroke of its own.
 pub(super) fn modifier_only(keystroke: &gpui::Keystroke) -> bool {
@@ -227,6 +243,23 @@ mod tests {
         // An activation while they show hides them at once.
         assert!(grab.suppress(later + Duration::from_secs(1)));
         assert!(!grab.badges());
+    }
+
+    #[test]
+    fn a_release_reports_its_modifiers_and_a_remapped_one_adds_control() {
+        let cmd = gpui::Modifiers {
+            platform: true,
+            ..gpui::Modifiers::default()
+        };
+        assert_eq!(released_held(MouseButton::Left, cmd, false), Some(CMD));
+        assert_eq!(released_held(MouseButton::Left, cmd, true), Some(CMD));
+        // GPUI remaps a release only while Control is down.
+        assert_eq!(
+            released_held(MouseButton::Right, cmd, true),
+            Some(CMD_CTRL)
+        );
+        assert_eq!(released_held(MouseButton::Right, cmd, false), None);
+        assert_eq!(released_held(MouseButton::Middle, cmd, true), None);
     }
 
     #[test]
