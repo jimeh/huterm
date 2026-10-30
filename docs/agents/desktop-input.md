@@ -133,6 +133,19 @@ link result: no snapshot follows it while another viewer controls.
 
 ## Pointer tracking, scrolling, and selection
 
+GPUI shows the cursor of the last-painted hovered hitbox that set one, and
+only an occluding hitbox hides those beneath it. The terminal root sets
+`terminal_cursor`: the I-beam, the arrow on the scrollbar or while the
+program takes the mouse under `application_mouse`'s own focus and
+window-active rule, unless Shift is held, and a hand on a link. Anything
+drawn over a terminal that takes input without occluding, such as a revealed
+pane bar, a toast, or the palette scrim, sets its own cursor, or the I-beam
+shows through it. Huterm's own drags do not use GPUI's drag, so
+`WorkspaceView::drag_cursor` paints a window cursor last while a divider,
+sidebar, pane, or tab drag runs. A cursor change with no other effect, such
+as Shift over vim, re-renders only when the shape differs from the last one
+drawn.
+
 Derive scrollbar geometry and label text from the displayed snapshot offset.
 Growing the grid pulls rows out of terminal history. Let the runtime engine
 anchor its shared viewport across output and resize; never also compensate the
@@ -273,10 +286,13 @@ With `[panes] title_bar = "hidden"` no pane has a bar, so panes move only by
 command; a bar's position never changes its drag or drop geometry. Under
 `title_bar = "hover"` a bar has its rectangle but draws, and takes input,
 only while `PaneBarReveals` reveals it: after the pointer rests in its band
-for `HOVER_INTENT` (200 ms, the scrollbar's), while a pane drag or its menu,
-Huterm's or a native `NSMenu`, holds it, or for a second after a keyboard
-focus change. A keyboard reveal survives a refresh against the frame before
-its bar draws, as when the focus move also unzooms.
+for `title_bar_hover_delay_ms`, while a pane drag or its menu, Huterm's or a
+native `NSMenu`, holds it, or for a second after a keyboard focus change. Its
+fade and leave hold come from `[panes]` through `PaneBarTiming`; the shared
+`Reveal` takes them as a `RevealTiming`, and the fullscreen tab bar keeps
+`RevealTiming::default()`, so changing a pane key never retimes the tab bar.
+A keyboard reveal survives a refresh against the frame before its bar draws,
+as when the focus move also unzooms.
 
 The window samples the pointer in the tab bar's deferred pointer refresh and
 treats it as nowhere while a terminal owns a gesture, during a pane, divider,

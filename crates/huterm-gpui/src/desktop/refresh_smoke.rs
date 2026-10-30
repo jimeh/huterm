@@ -304,11 +304,9 @@ async fn check_animations(cx: &mut AsyncApp) -> anyhow::Result<()> {
     cx.update(|cx| {
         workspace(cx, |view, _, cx| {
             view.tabs[0].focused_view().update(cx, |terminal, cx| {
-                terminal.resize_visibility =
-                    super::IndicatorVisibility::with_hold(
-                        Duration::from_millis(100),
-                    );
-                terminal.resize_visibility.activate(Instant::now());
+                terminal
+                    .resize_visibility
+                    .resized(Instant::now(), Duration::from_millis(100));
                 terminal.bell.ring(Instant::now(), true, true);
                 cx.notify();
             });

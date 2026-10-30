@@ -882,6 +882,66 @@
     "theme": false
   },
   {
+    "name": "pane title bar timings at their maximums",
+    "toml": "[panes]\ntitle_bar_hover_delay_ms = 2000\ntitle_bar_fade_ms = 1000\ntitle_bar_hide_delay_ms = 5000",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "pane title bar timings at zero",
+    "toml": "[panes]\ntitle_bar_hover_delay_ms = 0\ntitle_bar_fade_ms = 0\ntitle_bar_hide_delay_ms = 0",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "pane title bar hover delay above 2000",
+    "toml": "[panes]\ntitle_bar_hover_delay_ms = 2001",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "pane title bar fade above 1000",
+    "toml": "[panes]\ntitle_bar_fade_ms = 1001",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "pane title bar hide delay above 5000",
+    "toml": "[panes]\ntitle_bar_hide_delay_ms = 5001",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "pane title bar fade below 0",
+    "toml": "[panes]\ntitle_bar_fade_ms = -1",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window size indicator variants",
+    "toml": "[window]\nsize_indicator = \"compact\"\nsize_indicator_linger_ms = 10000",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window size indicator off",
+    "toml": "[window]\nsize_indicator = \"off\"\nsize_indicator_linger_ms = 0",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window size indicator unknown variant",
+    "toml": "[window]\nsize_indicator = \"tiny\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window size indicator linger above 10000",
+    "toml": "[window]\nsize_indicator_linger_ms = 10001",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "quake defaults",
     "toml": "[quake.profiles.default]",
     "valid": true

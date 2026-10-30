@@ -251,13 +251,13 @@ fn hover_bars_reveal_after_the_intent_and_stay_while_held(
     // and the revealed bar keeps the terminal's pointer input.
     let start = Instant::now();
     harness.point_bars(window, Some(bar.center()));
-    harness.animate_through(window, start, start + Duration::from_millis(100));
+    harness.animate_through(window, start, start + Duration::from_millis(40));
     harness.cx.update(|cx| {
         assert_eq!(bar_state(cx, window, first), Some((0.0, None)));
     });
     harness.animate_through(
         window,
-        start + Duration::from_millis(100),
+        start + Duration::from_millis(40),
         start + Duration::from_millis(500),
     );
     harness.cx.update(|cx| {

@@ -501,6 +501,8 @@ impl WorkspaceView {
         div()
             .id(("pane-title", pane.get()))
             .group("pane-title")
+            // Over a terminal, whose text cursor would otherwise show.
+            .cursor(gpui::CursorStyle::Arrow)
             .absolute()
             .left(bounds.origin.x)
             .top(bounds.origin.y)

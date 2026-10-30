@@ -142,7 +142,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   hold, which leaves `check_render_resize` about 500 ms to see nonzero
   opacity; a runner stall would miss it. Alternatively, no frame rendered after
   `window.resize`. Restoring the default hold at the start of
-  `check_render_resize` would only help the stall case.
+  `check_render_resize` would only help the stall case. Since the size
+  indicator reads `[window] size_indicator_linger_ms` at each resize, the
+  100 ms hold no longer carries into `check_render_resize`, which removes the
+  first candidate.
 - **Triage:** read the step's panic output first; this smoke has caught real
   bugs. On a second occurrence, look for frame evidence before changing the
   check.

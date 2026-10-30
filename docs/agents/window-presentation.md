@@ -89,6 +89,24 @@ GPUI's inherent `Window::window_handle` returns its own handle; qualify
 Map its `HandleError` explicitly into anyhow; it does not implement
 `std::error::Error` with the current dependency features.
 
+Each window's `NSWindow.appearance` follows the theme through
+`native_appearance::FrameAppearance`, from the same `theme_is_dark` that
+native menus use, so a light theme keeps a light frame under a dark system.
+The setter runs on a foreground turn after the render that noticed the
+change, since `AppKit` relays it to GPUI's window state at once. Huterm picks
+no theme from an appearance, and `observe_window_appearance` only resyncs
+decorations, so forcing the frame cannot loop. Any future theme choice that
+follows light or dark mode must read the application's appearance
+(`App::window_appearance`), never `Window::appearance`, which this override
+changes.
+
+GPUI reports each new size during a window edge drag but neither its end nor
+a pointer resting mid-drag. `native_live_resize` observes the will-start and
+did-end live-resize notifications for each `NSWindow` and only sends the
+state over a channel; the window's task applies it, and `sync_tab_layout`
+holds the size indicators while it lasts. Linux has no such state, so the
+indicator lingers after the last resize there.
+
 Guard nil retained handles before invoking `objc` message macros, including in
 retained-handle destructors. Adapter drop moves native resources, such as an
 AppKit owner, into deferred cleanup and leaves nil placeholders behind. The Rust

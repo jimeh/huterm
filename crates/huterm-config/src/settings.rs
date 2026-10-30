@@ -1102,6 +1102,47 @@ mod tests {
     }
 
     #[test]
+    fn timing_rows_show_only_where_their_setting_acts() {
+        let model = SettingsModel::load().unwrap();
+        let equals = |setting: &str, value: &str| VisibleWhen {
+            setting: setting.into(),
+            equals: toml::Value::String(value.into()),
+        };
+        for (path, max) in [
+            ("panes.title_bar_hover_delay_ms", 2000),
+            ("panes.title_bar_fade_ms", 1000),
+            ("panes.title_bar_hide_delay_ms", 5000),
+        ] {
+            let setting = model.setting(path).unwrap();
+            assert_eq!(setting.unit.as_deref(), Some("ms"), "{path}");
+            assert!(
+                matches!(
+                    setting.kind,
+                    SettingKind::Integer { min: Some(0), max: Some(found), .. }
+                        if found == max
+                ),
+                "{path}: {:?}",
+                setting.kind
+            );
+            assert_eq!(
+                setting.visible_when,
+                vec![equals("panes.title_bar", "hover")],
+                "{path}"
+            );
+        }
+        assert_eq!(
+            model
+                .setting("window.size_indicator_linger_ms")
+                .unwrap()
+                .visible_when,
+            vec![
+                equals("window.size_indicator", "full"),
+                equals("window.size_indicator", "compact")
+            ]
+        );
+    }
+
+    #[test]
     fn malformed_metadata_names_the_setting() {
         let style = || {
             let mut style =

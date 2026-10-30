@@ -171,6 +171,12 @@ out again once the pointer, a drag, or its menu leaves it. Until it shows, the
 pointer reaches the terminal there as usual. Moving focus between panes with
 the keyboard shows the newly focused pane's bar for a second. In fullscreen with
 an auto-hiding tab bar, the tab bar's trigger edge wins over the bars below it.
+Three settings, in milliseconds, time hover bars: `title_bar_hover_delay_ms` is
+how long the pointer rests before a bar appears, from 0 to 2000;
+`title_bar_fade_ms` is how long a bar takes to fade in or out, from 0 to 1000;
+and `title_bar_hide_delay_ms` is how long a bar stays after the pointer leaves,
+from 0 to 5000. They apply only to pane title bars; the fullscreen tab bar
+keeps its own timing.
 
 `title_bar = "hidden"` removes the bars and gives their space to the terminals;
 closing, zooming, moving, and renaming panes stay available as commands.
@@ -182,12 +188,15 @@ It draws only under hover or hidden bars, and under hover bars only until the
 focused pane's bar appears. `inactive_dim` dims every other pane's terminal by
 laying the theme's background color over it, from 0 to 0.8; their title bars
 stay as they are, and clicks, selections, scrolling, links, and drops reach a
-dimmed pane as usual. All four settings apply on reload:
+dimmed pane as usual. All seven settings apply on reload:
 
 ```toml
 [panes]
 title_bar = "visible" # visible, hover, or hidden
 title_bar_position = "top" # top or bottom
+title_bar_hover_delay_ms = 75 # 0 to 2000
+title_bar_fade_ms = 75 # 0 to 1000
+title_bar_hide_delay_ms = 400 # 0 to 5000
 focus_accent = 0.0 # 0 (off) to 1
 inactive_dim = 0.0 # 0 (off) to 0.8
 ```
@@ -272,6 +281,26 @@ first. The cycle lists every layout, the cycle's own first and in order:
 turn a layout on or off with its switch, and move it with Move up and Move
 down. The cycle keeps at least one layout.
 
+## Size indicator
+
+While a window or pane resizes, and when a pane splits, a panel in the middle
+of each resized terminal shows its size in columns and rows. `size_indicator`
+chooses it: `"full"` shows the panel, or a compact badge with the numbers alone
+in a pane too small for the panel; `"compact"` always shows the badge; and
+`"off"` shows neither. A tiny pane shows nothing. The indicator stays for
+`size_indicator_linger_ms` after the size stops changing, from 0 to 10000
+milliseconds, then fades. While you still drag a pane divider or the sidebar's
+edge, or on macOS a window's edge, it stays however long you rest, and the
+linger starts when you release. On Linux, Huterm cannot tell when a window
+edge drag ends, so there the linger counts from the last resize. Both settings
+apply on reload:
+
+```toml
+[window]
+size_indicator = "full" # full, compact, or off
+size_indicator_linger_ms = 2000 # 0 to 10000
+```
+
 ## Tab bar
 
 Tabs can sit at the top, bottom, left, or right of the window, or in the title
@@ -289,6 +318,8 @@ macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 menu_button = true # the window menu button in the title bar or tab bar
 shortcut_hints = false # key hints on the scroll pill and dialog buttons
 macos_native_menus = true # native macOS menus; ignored on Linux
+size_indicator = "full" # full, compact, or off; see Size indicator
+size_indicator_linger_ms = 2000
 
 [tabs]
 label = "smart" # smart, title, process, directory, or process_and_directory
@@ -678,6 +709,12 @@ override its entries. Unspecified keys inherit. Without
 scroll controls derive their colors from the theme. Reload keeps colors that
 terminal applications set explicitly.
 
+On macOS the window frame, its title bar and traffic lights, and native menus
+follow the theme rather than the system's light or dark mode: a theme with a
+light background gets the light frame even while macOS is dark, and the other
+way round. Every window follows, including Settings and Quake windows, and a
+theme change or reload updates them.
+
 See [theme sources and licenses](../crates/huterm-gpui/themes/README.md) for
 attribution and palette import details.
 
@@ -781,12 +818,15 @@ buttons and vertical and horizontal wheels, in legacy, UTF-8 (1005), or SGR
 (1006) encoding, with Control and Alt/Option modifiers. Applications that do
 not enable reporting receive no mouse input.
 
-Hold Shift when starting a selection or scrolling to use local selection and
-scrollback while an application has the mouse. The scrollbar always stays
-local. Mouse input also stays local while you view scrollback, including while
-a scroll away from live output waits for its snapshot; return to the live view
-to interact with the application again. A drag keeps its original owner until
-release, even if Shift changes or the pointer leaves the grid.
+Over the terminal the pointer is a text cursor where a click selects, and an
+arrow over the scrollbar and while an application has the mouse. Hold Shift
+when starting a selection or scrolling to use local selection and scrollback
+while an application has the mouse; the text cursor shows while Shift is
+held. The scrollbar always stays local. Mouse input also stays local while you
+view scrollback, including while a scroll away from live output waits for its
+snapshot; return to the live view to interact with the application again. A
+drag keeps its original owner until release, even if Shift changes or the
+pointer leaves the grid.
 
 Leaving the live view or losing focus ends application button gestures.
 Coordinates for continuing gestures clamp to the grid edge. Fast wheel input to

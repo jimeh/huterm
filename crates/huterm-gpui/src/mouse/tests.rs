@@ -390,3 +390,34 @@ fn wheel_preserves_fraction_reverses_resets_and_caps_both_axes() {
     state.cancel();
     assert_eq!(state.wheel(0.0, 0.8), []);
 }
+
+#[test]
+fn the_cursor_is_text_unless_a_link_the_scrollbar_or_the_program_owns_the_pointer()
+ {
+    use gpui::CursorStyle::{Arrow, IBeam, PointingHand};
+    let target = |link, scrollbar, application, shift| PointerTarget {
+        link,
+        scrollbar,
+        application,
+        shift,
+    };
+    for (pointer, cursor) in [
+        (target(false, false, false, false), IBeam),
+        (target(false, false, false, true), IBeam),
+        (target(false, false, true, false), Arrow),
+        // Shift keeps clicks local past the program's tracking.
+        (target(false, false, true, true), IBeam),
+        (target(false, true, false, false), Arrow),
+        (target(false, true, true, true), Arrow),
+        (target(true, false, true, false), PointingHand),
+        (target(true, true, false, false), PointingHand),
+    ] {
+        assert_eq!(terminal_cursor(pointer), cursor, "{pointer:?}");
+    }
+    // Tracking counts only on live output of a running program.
+    assert!(application_tracks(Some(MouseTracking::Buttons), 0, 0));
+    assert!(!application_tracks(Some(MouseTracking::Disabled), 0, 0));
+    assert!(!application_tracks(None, 0, 0));
+    assert!(!application_tracks(Some(MouseTracking::Buttons), 3, 0));
+    assert!(!application_tracks(Some(MouseTracking::Buttons), 0, 3));
+}

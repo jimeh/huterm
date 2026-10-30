@@ -30,6 +30,12 @@ pub(crate) fn tokens(theme: &Theme) -> Swatch {
     Swatch::new(overlay_colors(theme))
 }
 
+/// Whether `theme` is dark, for native chrome that has only light and dark
+/// appearances: the window frame and native menus.
+pub(crate) fn theme_is_dark(theme: &Theme) -> bool {
+    !tokens(theme).is_light()
+}
+
 /// The monospace family for process names, locations, and grid sizes,
 /// matching the default terminal font on each platform.
 pub(crate) fn mono_font_family() -> SharedString {
@@ -99,6 +105,20 @@ pub(crate) fn raised_panel(swatch: Swatch, radius: f32) -> Div {
     huterm_ui::components::surface::surface(swatch, radius)
 }
 
+/// A small raised pill holding one line of `text`, for a short label
+/// centred over a pane, such as the compact size indicator. Callers set
+/// its font family and opacity.
+pub(crate) fn badge(swatch: Swatch, text: impl Into<SharedString>) -> Div {
+    raised_panel(swatch, 6.0)
+        .py(px(3.0))
+        .px(px(8.0))
+        .text_size(px(13.0))
+        .line_height(px(16.0))
+        .text_color(swatch.fg)
+        .whitespace_nowrap()
+        .child(text.into())
+}
+
 /// A severity mark: a filled circle with a single glyph.
 pub(crate) fn severity_mark(glyph: &str, fill: Hsla, swatch: Swatch) -> Div {
     div()
@@ -141,6 +161,18 @@ mod tests {
         assert!(light.is_light());
         assert!(light.surface.l < light.bg.l, "light themes lower it");
         assert!((light.surface.a - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn native_chrome_is_dark_only_under_a_dark_theme() {
+        let directory = std::path::Path::new("");
+        let theme = |name: &str| {
+            crate::themes::preview(name, directory)
+                .unwrap_or_else(|| panic!("{name} resolves"))
+        };
+        assert!(theme_is_dark(&Theme::huterm_dark()));
+        assert!(theme_is_dark(&theme("catppuccin-mocha")));
+        assert!(!theme_is_dark(&theme("catppuccin-latte")));
     }
 }
 

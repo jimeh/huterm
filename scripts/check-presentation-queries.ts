@@ -60,6 +60,11 @@ async function readOptional(file: string): Promise<Buffer | undefined> {
   }
 }
 
+/** The macOS window frame takes the theme's appearance; Linux reports none. */
+function frameFollows(state: State, appearance: string): boolean {
+  return process.platform !== "darwin" || state.appearance === appearance;
+}
+
 async function main(executableArgument: string): Promise<void> {
   const executable = resolve(executableArgument);
   const directory = await mkdtemp(join(tmpdir(), "huterm-presentation-query-"));
@@ -118,8 +123,9 @@ async function main(executableArgument: string): Promise<void> {
       const value = await state();
       return value?.tabs === "1" && value["tab0.visible"] === "true"
         && value["tab0.grid"] === value["tab0.layout_grid"]
-        && value["tab0.displayed_grid"] === value["tab0.grid"] ? value : undefined;
-    }, "initial rendered terminal");
+        && value["tab0.displayed_grid"] === value["tab0.grid"]
+        && frameFollows(value, "NSAppearanceNameAqua") ? value : undefined;
+    }, "initial rendered terminal with a light frame for the light theme");
     await writeFile(join(directory, `query-initial-${firstPid}`), "query");
     const initialReplies = await queryReplies("initial", firstPid);
     if (!initialReplies.equals(expectedReplies(initial, 0))) throw new Error(`initial replies differ: ${initialReplies.toString("hex")}`);
@@ -148,8 +154,9 @@ async function main(executableArgument: string): Promise<void> {
         && value["tab0.active"] === "false" && value["tab0.visible"] === "false"
         && value["tab0.grid"] === value["tab0.layout_grid"]
         && value["tab0.foreground"] === "fedcba" && value["tab0.background"] === "102030"
-        && value["tab0.font"] === "22" ? value : undefined;
-    }, "inactive tab theme and font reload");
+        && value["tab0.font"] === "22"
+        && frameFollows(value, "NSAppearanceNameDarkAqua") ? value : undefined;
+    }, "inactive tab theme and font reload, with a dark frame for the dark theme");
     if (initial["tab0.cell"] === reloaded["tab0.cell"]) throw new Error("font reload did not change inactive-tab cell pixels");
     await writeFile(join(directory, `query-reload-${firstPid}`), "query");
     const reloadReplies = await queryReplies("reload", firstPid);

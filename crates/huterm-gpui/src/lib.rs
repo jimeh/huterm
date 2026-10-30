@@ -28,8 +28,12 @@ mod keymap;
 mod licenses;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod mouse;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod native_appearance;
 #[cfg(target_os = "macos")]
 mod native_fullscreen;
+#[cfg(target_os = "macos")]
+mod native_live_resize;
 #[cfg(target_os = "macos")]
 mod native_quit;
 #[cfg(target_os = "macos")]
