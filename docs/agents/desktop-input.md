@@ -325,9 +325,10 @@ anything that claims the pointer or the window disarms. The badges wait
 press or an activation until `held` changes, so pane keybindings that share
 the modifiers flash none. The key press comes from an app-wide keystroke
 interceptor, not an observer: GPUI keeps a shortcut prefix pending and
-returns before it notifies observers. Window tests set `pointer_reveal.hovered_in_tests`
-to sample the pointer from real events; `smoke:macos-input` covers the real
-remap with posted Command and Control `flagsChanged` events.
+returns before it notifies observers. Window tests set
+`pointer_reveal.hovered_in_tests` to sample the pointer from real events;
+`smoke:macos-input` covers the real remap with posted Command and Control
+`flagsChanged` events.
 
 ## Pane title bar modes
 

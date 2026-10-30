@@ -2000,9 +2000,9 @@ fn quit_now(pending_spawns: usize, quit_pending: &mut bool) -> bool {
     true
 }
 
-/// Hides the pane badges of the window a key is pressed in, such as a pane
-/// keybinding's pressed with the drag modifiers held, until the modifiers
-/// change. An interceptor, because GPUI notifies no keystroke observer of
+/// Hides the pane badges of the window a key is pressed in until the held
+/// modifiers change, so a pane keybinding that shares the drag modifiers
+/// flashes none. An interceptor, because GPUI notifies no keystroke observer of
 /// a key it keeps as a pending shortcut prefix.
 fn hide_grab_badges(
     event: &gpui::KeystrokeEvent,

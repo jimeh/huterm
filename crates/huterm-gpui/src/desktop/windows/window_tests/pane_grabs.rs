@@ -357,6 +357,13 @@ fn a_replayed_drag_move_does_not_rearm_after_the_modifiers_go(
     // macOS GPUI replays the last move, with its modifiers, while the
     // button stays down.
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), cmd_ctrl());
+    harness.cx.run_until_parked();
+    // The replay alone leaves the record alone, so a drag that ends on a
+    // release the record ignores cannot keep the old modifiers.
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.pane_grab.held(), 0);
+    });
+    let mut visual = harness.visual(window);
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::none());
     harness.cx.run_until_parked();
     harness.update_view(window, |view, window, cx| {
