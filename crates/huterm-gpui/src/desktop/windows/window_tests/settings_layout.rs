@@ -259,6 +259,9 @@ fn arrows_move_between_theme_cards_and_choose_each(cx: &mut TestAppContext) {
 
 /// A click on a theme card draws no ring, and keyboard focus on it does.
 fn a_theme_card_rings_for_the_keyboard_alone(harness: &mut DesktopHarness) {
+    // The click lands at the card's center, so the cards must be on screen
+    // below the Font rows.
+    visual(harness).simulate_resize(gpui::size(px(860.0), px(900.0)));
     let (names, start) = themes(harness);
     let other = names[(start + 1) % names.len()].clone();
     let card = labelled(harness, "RadioButton", &other);
@@ -1095,5 +1098,38 @@ fn an_unbound_key_row_draws_its_key_caps_and_names_the_key(
             .debug_bounds("settings-kunbound-keys-0")
             .is_some(),
         "the key caps did not draw"
+    );
+}
+
+#[gpui::test]
+fn the_interface_font_size_applies_to_an_open_window_on_reload(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("layout-ui-size", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    let title = |harness: &mut DesktopHarness| {
+        visual(harness)
+            .debug_bounds("settings-label-font.size")
+            .expect("the Font size row drew")
+    };
+    let before = title(&mut harness);
+    std::fs::write(file.path(), "[font]\nui_size = 16.0\n").unwrap();
+    harness.cx.update(|cx| {
+        let read = config::reload(&file.path());
+        finish_reload(cx, ReloadKind::Manual, &file.path(), read, 0);
+    });
+    visual(&harness).run_until_parked();
+    let rem = with_window(&mut harness, |_, window, _| window.rem_size());
+    assert!(
+        (f32::from(rem) - 16.0 * 16.0 / 13.0).abs() < 1e-3,
+        "{rem:?}"
+    );
+    // The row's label and description grow with the scale, without the
+    // window reopening.
+    let after = title(&mut harness);
+    assert!(
+        after.size.height > before.size.height,
+        "{before:?} -> {after:?}"
     );
 }

@@ -9,6 +9,7 @@ use super::key_hint::KeyHint;
 use super::scrollbar_colors;
 use crate::config::Theme;
 use crate::renderer::rgb_color as color;
+use huterm_ui::typography::ui;
 
 /// The overlay colors `theme` supplies.
 pub(crate) fn overlay_colors(theme: &Theme) -> OverlayColors {
@@ -39,11 +40,7 @@ pub(crate) fn theme_is_dark(theme: &Theme) -> bool {
 /// The monospace family for process names, locations, and grid sizes,
 /// matching the default terminal font on each platform.
 pub(crate) fn mono_font_family() -> SharedString {
-    if cfg!(target_os = "macos") {
-        "Menlo".into()
-    } else {
-        "monospace".into()
-    }
+    huterm_ui::typography::Typography::platform_mono()
 }
 
 /// A 3-point accent bar with rounded ends, inset from the left edge of a
@@ -84,7 +81,7 @@ pub(crate) fn footer_hints(
         .border_t_1()
         .border_color(swatch.line)
         .bg(swatch.footer())
-        .text_size(px(11.5))
+        .text_size(ui(11.5))
         .text_color(swatch.muted);
     for (key, label) in hints {
         footer = footer.child(
@@ -112,8 +109,8 @@ pub(crate) fn badge(swatch: Swatch, text: impl Into<SharedString>) -> Div {
     raised_panel(swatch, 6.0)
         .py(px(3.0))
         .px(px(8.0))
-        .text_size(px(13.0))
-        .line_height(px(16.0))
+        .text_size(ui(13.0))
+        .line_height(ui(16.0))
         .text_color(swatch.fg)
         .whitespace_nowrap()
         .child(text.into())
@@ -130,7 +127,7 @@ pub(crate) fn severity_mark(glyph: &str, fill: Hsla, swatch: Swatch) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(11.0))
+        .text_size(ui(11.0))
         .font_weight(gpui::FontWeight::BOLD)
         .text_color(swatch.on(fill))
         .child(glyph.to_owned())

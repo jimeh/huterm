@@ -1443,10 +1443,30 @@ impl TabPosition {
     }
 }
 
+/// The `[font] ui_size` at which Huterm's interface draws at its design
+/// sizes.
+pub const UI_FONT_SIZE: f32 = 13.0;
+/// The smallest `[font] ui_size`.
+pub const MIN_UI_FONT_SIZE: f32 = 10.0;
+/// The largest `[font] ui_size`. Terminal windows' bars keep their
+/// heights, and their text still fits at this size.
+pub const MAX_UI_FONT_SIZE: f32 = 16.0;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontConfig {
     pub family: String,
     pub size: f32,
+    /// The interface's family; `None` uses the system interface font.
+    pub ui_family: Option<String>,
+    pub ui_size: f32,
+}
+
+impl FontConfig {
+    /// The factor the interface draws its design sizes at.
+    #[must_use]
+    pub fn ui_scale(&self) -> f32 {
+        self.ui_size / UI_FONT_SIZE
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2099,6 +2119,33 @@ pub struct RawFont {
         "x-huterm-unit" = "pt",
     )))]
     pub size: f32,
+    /// The font family of Huterm's own interface: tabs, pane title bars,
+    /// Settings, the command palette, menus, dialogs, and notices. Empty
+    /// uses the system interface font. The terminal grid, native menus, and
+    /// text set in a monospace family, such as process names, keep their
+    /// fonts.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Font",
+        "x-huterm-label" = "Interface font family",
+        "x-huterm-order" = 22,
+        "x-huterm-apply" = "live",
+    )))]
+    pub ui_family: String,
+    /// The size of interface text, in points, from 10 to 16. At 13 the
+    /// interface draws at its design sizes; other sizes scale its text, and
+    /// the controls and rows that hold text, in proportion. Terminal
+    /// windows' tab and title bars keep their heights.
+    #[cfg_attr(feature = "schema", schemars(range(min = 10, max = 16), extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Font",
+        "x-huterm-label" = "Interface font size",
+        "x-huterm-order" = 24,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "pt",
+        "x-huterm-step" = 0.5,
+    )))]
+    pub ui_size: f32,
 }
 
 impl Default for RawFont {
@@ -2107,6 +2154,8 @@ impl Default for RawFont {
         Self {
             family: font.family,
             size: font.size,
+            ui_family: String::new(),
+            ui_size: font.ui_size,
         }
     }
 }
@@ -2157,6 +2206,8 @@ impl Default for FontConfig {
             }
             .into(),
             size: 14.0,
+            ui_family: None,
+            ui_size: UI_FONT_SIZE,
         }
     }
 }
@@ -2187,6 +2238,14 @@ impl RawConfig {
         {
             return Err(ConfigError::Invalid(
                 "font.size must be between 6 and 96",
+            ));
+        }
+        if !self.font.ui_size.is_finite()
+            || !(MIN_UI_FONT_SIZE..=MAX_UI_FONT_SIZE)
+                .contains(&self.font.ui_size)
+        {
+            return Err(ConfigError::Invalid(
+                "font.ui_size must be between 10 and 16",
             ));
         }
         for padding in [self.window.padding_x, self.window.padding_y] {

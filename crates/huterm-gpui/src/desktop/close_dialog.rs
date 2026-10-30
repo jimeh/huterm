@@ -10,6 +10,7 @@ use gpui::{App, Div, FocusHandle, Pixels, Size, Window, div, prelude::*, px};
 use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::button::{Button, Colors};
 use huterm_ui::components::dialog::Modal;
+use huterm_ui::typography::ui;
 
 use super::key_hint::KeyHint;
 use super::overlay::{Swatch, accent_bar, mono_font_family, severity_mark};
@@ -332,16 +333,16 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
     let main = || div().flex_basis(px(0.0)).flex_grow_1().min_w_0();
     let detail = |text: String| {
         div()
-            .text_size(px(11.5))
+            .text_size(ui(11.5))
             .text_color(swatch.muted)
             .truncate()
             .child(text)
     };
     match row {
         DialogRow::Heading(title) => base
-            .min_h(px(24.0))
+            .min_h(ui(24.0))
             .pt(px(6.0))
-            .text_size(px(11.5))
+            .text_size(ui(11.5))
             .text_color(swatch.muted)
             .child(title.clone()),
         DialogRow::Process(process) => {
@@ -354,7 +355,7 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
                 Some(command_line) => format!("{role} · {command_line}"),
                 None => role.to_owned(),
             };
-            base.min_h(px(40.0))
+            base.min_h(ui(40.0))
                 .py(px(4.0))
                 .when(process.foreground, |row| row.child(bar(swatch.accent)))
                 .child(
@@ -363,7 +364,7 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
                             div()
                                 .font_family(mono_font_family())
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_size(px(13.0))
+                                .text_size(ui(13.0))
                                 .child(process.command.clone()),
                         )
                         .child(detail(line)),
@@ -372,18 +373,18 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
                     div()
                         .flex_none()
                         .font_family(mono_font_family())
-                        .text_size(px(11.5))
+                        .text_size(ui(11.5))
                         .text_color(swatch.muted)
                         .child(process.pid.to_string()),
                 )
         }
         DialogRow::Unknown { tab_title } => base
-            .min_h(px(40.0))
+            .min_h(ui(40.0))
             .py(px(4.0))
             .child(bar(swatch.warning))
             .child(
                 main()
-                    .child(div().text_size(px(13.0)).child(tab_title.clone()))
+                    .child(div().text_size(ui(13.0)).child(tab_title.clone()))
                     .child(detail(
                         "Process state unavailable; it may have running jobs"
                             .to_owned(),
@@ -397,13 +398,13 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
                     .rounded(px(4.0))
                     .border_1()
                     .border_color(swatch.warning.opacity(0.45))
-                    .text_size(px(10.5))
+                    .text_size(ui(10.5))
                     .text_color(swatch.warning_text())
                     .child("unknown"),
             ),
         DialogRow::More(count) => base
-            .min_h(px(28.0))
-            .text_size(px(12.0))
+            .min_h(ui(28.0))
+            .text_size(ui(12.0))
             .text_color(swatch.muted)
             .child(format!("and {count} more")),
     }
@@ -422,10 +423,10 @@ fn button(
         .when_some(hint, |button, key| {
             button.shortcut(KeyHint::keys(&[key], Platform::current()).glyphs())
         })
-        .h(px(28.0))
+        .h(ui(28.0))
         .pl(px(12.0))
         .pr(px(if hint.is_some() { 8.0 } else { 12.0 }))
-        .text_size(px(12.5))
+        .text_size(ui(12.5))
         .font_weight(gpui::FontWeight::MEDIUM)
         .cursor_pointer()
 }
@@ -473,14 +474,14 @@ pub(crate) fn render_close_dialog(
                 .min_w_0()
                 .child(
                     div()
-                        .text_size(px(14.0))
+                        .text_size(ui(14.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child(model.title.clone()),
                 )
                 .child(
                     div()
                         .mt(px(1.0))
-                        .text_size(px(12.0))
+                        .text_size(ui(12.0))
                         .text_color(swatch.muted)
                         .child(model.subtitle.clone()),
                 ),

@@ -58,6 +58,7 @@ use huterm_config::SizeIndicator;
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
 };
+use huterm_ui::typography::ui;
 use key_hint::KeyHint;
 use notices::Severity;
 use overlay::{badge, key_cap_on, mono_font_family, raised_panel, tokens};
@@ -3067,9 +3068,9 @@ impl TerminalView {
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .h(px(26.0))
+                    .h(ui(26.0))
                     .px(px(10.0))
-                    .text_size(px(12.0))
+                    .text_size(ui(12.0))
                     .text_color(swatch.fg)
                     .child(
                         svg()
@@ -3124,10 +3125,10 @@ impl TerminalView {
                     .flex_none()
                     .items_center()
                     .gap(px(10.0))
-                    .h(px(30.0))
+                    .h(ui(30.0))
                     .pl(px(12.0))
                     .pr(px(if hints { 6.0 } else { 12.0 }))
-                    .text_size(px(12.0))
+                    .text_size(ui(12.0))
                     .text_color(swatch.fg)
                     .whitespace_nowrap()
                     .cursor_pointer()
@@ -3161,7 +3162,7 @@ impl TerminalView {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .h(px(18.0))
+                            .h(ui(18.0))
                             .pl(px(10.0))
                             .when(hints, |jump| jump.pr(px(4.0)))
                             .border_l_1()

@@ -57,6 +57,7 @@ use huterm_ui::listbox::{
 };
 use huterm_ui::option_list::ListOption;
 use huterm_ui::tokens::size;
+use huterm_ui::typography::ui;
 
 /// The key cap's width, and the tag's, so rows line up.
 pub(super) const CAP_WIDTH: f32 = 96.0;
@@ -2101,7 +2102,7 @@ impl SettingsView {
         let Some(inventory) = self.keys.inventory.clone() else {
             body.push(
                 div()
-                    .text_size(px(13.0))
+                    .text_size(ui(13.0))
                     .text_color(swatch.muted)
                     .child("Shortcuts show once config.toml has no errors.")
                     .into_any_element(),
@@ -2143,7 +2144,7 @@ impl SettingsView {
         if !any {
             body.push(
                 div()
-                    .text_size(px(13.0))
+                    .text_size(ui(13.0))
                     .text_color(swatch.muted)
                     .child("No commands match.")
                     .into_any_element(),
@@ -2154,7 +2155,7 @@ impl SettingsView {
         }
         body.push(
             div()
-                .text_size(px(12.0))
+                .text_size(ui(12.0))
                 .text_color(swatch.muted)
                 .child(
                     "A condition limits where a shortcut works, such as \
@@ -2591,7 +2592,7 @@ impl SettingsView {
             div()
                 .flex_none()
                 .w(px(width))
-                .h(px(24.0))
+                .h(ui(24.0))
                 .flex()
                 .items_center()
                 .justify_end()
@@ -2882,7 +2883,7 @@ fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
                 .rounded(px(8.0))
                 .border_1()
                 .border_color(swatch.accent_text().opacity(0.35))
-                .text_size(px(11.0))
+                .text_size(ui(11.0))
                 .text_color(swatch.accent_text())
                 .child("when"),
         );
@@ -2919,7 +2920,7 @@ impl SettingsView {
 }
 
 pub(super) fn small(text: String, color: gpui::Hsla) -> gpui::Div {
-    div().text_size(px(11.5)).text_color(color).child(text)
+    div().text_size(ui(11.5)).text_color(color).child(text)
 }
 
 /// A shortcut drawn as a key cap; a user binding gets an accent border.
@@ -2927,7 +2928,7 @@ fn cap(key: &str, origin: Origin, swatch: Swatch) -> gpui::Div {
     div()
         .flex_none()
         .px(px(5.0))
-        .h(px(20.0))
+        .h(ui(20.0))
         .flex()
         .items_center()
         .rounded(px(4.0))
@@ -2939,7 +2940,7 @@ fn cap(key: &str, origin: Origin, swatch: Swatch) -> gpui::Div {
         })
         // Letters and digits sized to the icons beside them, as menus
         // size their shortcuts; inherited text would dwarf the icons.
-        .text_size(px(11.5))
+        .text_size(ui(11.5))
         .child(
             KeyHint::parse(key, Platform::current())
                 .element(px(11.0), swatch.fg),

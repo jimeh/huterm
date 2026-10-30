@@ -221,6 +221,28 @@ fn update_settings_are_optional_and_preserve_explicit_values() {
 }
 
 #[test]
+fn the_interface_font_defaults_to_the_system_font_at_its_design_size() {
+    let defaults = parse("").unwrap().font;
+    assert!((defaults.ui_scale() - 1.0).abs() < f32::EPSILON);
+    assert_eq!((defaults.ui_family, defaults.ui_size), (None, 13.0));
+    // A blank family is the system font too.
+    let blank = parse("[font]\nui_family = \"  \"").unwrap().font;
+    assert_eq!(blank.ui_family, None);
+    let set = parse("[font]\nui_family = \"Helvetica\"\nui_size = 16")
+        .unwrap()
+        .font;
+    assert_eq!(set.ui_family.as_deref(), Some("Helvetica"));
+    assert_eq!(set.ui_size, 16.0);
+    assert_eq!(parse("[font]\nui_size = 10").unwrap().font.ui_size, 10.0);
+    for size in ["9.5", "16.5", "nan", "inf"] {
+        let error = parse(&format!("[font]\nui_size = {size}"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "font.ui_size must be between 10 and 16", "{size}");
+    }
+}
+
+#[test]
 fn update_interval_rejects_values_below_sparkles_minimum() {
     let error = parse("[updates]\ncheck_interval_hours = 0")
         .unwrap_err()

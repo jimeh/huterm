@@ -139,6 +139,7 @@ fn addon(
     focus: &FocusHandle,
     enabled: bool,
     tokens: Tokens,
+    rem: Pixels,
 ) -> AnyElement {
     let focus = focus.clone();
     let slot = div()
@@ -170,7 +171,9 @@ fn addon(
         Addon::Button(button) => {
             // Square, with the same gap to the group's border on its outer
             // side as above and below, and that gap again to its neighbor.
-            let extent = size::CONTROL_HEIGHT - px(2.0) - ADDON_INSET * 2.0;
+            let extent = size::CONTROL_HEIGHT.to_pixels(rem)
+                - px(2.0)
+                - ADDON_INSET * 2.0;
             let square = button.is_icon_only();
             let button = button
                 .small()
@@ -213,15 +216,20 @@ impl RenderOnce for InputGroup {
                 input.is_invalid(),
             )
         };
+        let rem = window.rem_size();
         let leading: Vec<AnyElement> = self
             .leading
             .into_iter()
-            .map(|item| addon(item, Side::Leading, &focus, enabled, tokens))
+            .map(|item| {
+                addon(item, Side::Leading, &focus, enabled, tokens, rem)
+            })
             .collect();
         let trailing: Vec<AnyElement> = self
             .trailing
             .into_iter()
-            .map(|item| addon(item, Side::Trailing, &focus, enabled, tokens))
+            .map(|item| {
+                addon(item, Side::Trailing, &focus, enabled, tokens, rem)
+            })
             .collect();
         let group = div()
             .id(self.id)

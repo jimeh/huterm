@@ -16,6 +16,7 @@ use gpui::{
 };
 
 use crate::tokens::Tokens;
+use crate::typography::ui;
 
 /// A badge's color scheme.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -59,12 +60,12 @@ pub fn badge(
         .role(gpui::Role::Label)
         .aria_label(label.clone())
         .flex_none()
-        .min_w(px(18.0))
+        .min_w(ui(18.0))
         .px(px(6.0))
         .rounded(px(9.0))
         .bg(fill)
-        .text_size(px(10.5))
-        .line_height(px(16.0))
+        .text_size(ui(10.5))
+        .line_height(ui(16.0))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(text)
         .text_center()

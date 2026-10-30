@@ -627,6 +627,23 @@ re-exports `Tokens` as `Swatch` and builds it with `tokens(theme)` and
 `overlay_colors(theme)`; the orphan rule rules out `from_theme` constructors on
 the crate's types.
 
+`[font] ui_family` and `ui_size` reach the chrome through
+`huterm_ui::typography`, never through config reads in the crate.
+`apply_typography` sets the `Typography` global (families and scale) at
+startup and on every reload. Each window root calls `Typography::apply`, which
+sets the window's rem size, at the top of `render`, before anything measures
+text, and sets `font_family` on its root element. Write chrome text sizes, line
+heights, and the heights of rows and controls that hold text as
+`typography::ui(points)` rems. Keep spacing, radii, and icons in points. A rem
+always scales, so a size that must stay fixed stays in points. At scale 1 the
+rem is GPUI's default 16 points, so a `ui` size draws exactly at its design
+size. Code that measures text or places rows outside layout, such as tab title
+widths, `Menu::content_width` and `content_height`, and `OptionList` row
+heights, converts with `window.rem_size()` and names `Typography::of(cx).family`.
+At that point the root's inherited family is not on the text-style stack yet.
+GPUI lays tooltips out outside the window tree, so `Tooltip` names the family
+itself. Terminal-window bar heights and the terminal grid stay in points.
+
 `Tokens` corrects arbitrary themes toward WCAG's minimums, and the `contrast`
 test in `desktop/overlay.rs` checks a table of the (text, fill) pairs Huterm
 draws in every bundled theme; add a pair there when a new one appears.

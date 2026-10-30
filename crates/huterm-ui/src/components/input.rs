@@ -74,6 +74,7 @@ use crate::components::tooltip::Tooltip;
 use crate::focus;
 use crate::text::{range_from_utf16, range_to_utf16};
 use crate::tokens::{Tokens, size};
+use crate::typography::ui;
 
 /// Emitted whenever the text changes, by the user or the owner.
 #[derive(Clone, Debug)]
@@ -1044,7 +1045,7 @@ impl Input {
             // chromes underline the marked text.
             Chrome::Bare => field
                 .w_full()
-                .h(px(34.0))
+                .h(ui(34.0))
                 .when(self.buffer.marked.is_some(), |field| {
                     field.border_b_1().border_color(tokens.fg.opacity(0.8))
                 }),

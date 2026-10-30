@@ -16,6 +16,7 @@ use huterm_ui::components::select::Select;
 use huterm_ui::components::slider::Slider;
 use huterm_ui::components::switch::Switch;
 use huterm_ui::components::toggle_group::ToggleGroup;
+use huterm_ui::typography::ui;
 use toml::Value;
 
 use super::super::super::overlay::Swatch;
@@ -693,7 +694,7 @@ impl SettingsView {
             .when(!overrides.is_empty(), |block| {
                 block.child(
                     div()
-                        .text_size(px(11.5))
+                        .text_size(ui(11.5))
                         .text_color(swatch.warning_text())
                         .when(locked, |note| note.opacity(0.5))
                         .child(format!(

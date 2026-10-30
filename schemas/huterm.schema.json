@@ -946,6 +946,31 @@
           "x-huterm-order": 20,
           "x-huterm-section": "appearance",
           "x-huterm-unit": "pt"
+        },
+        "ui_family": {
+          "default": "",
+          "description": "The font family of Huterm's own interface: tabs, pane title bars,\nSettings, the command palette, menus, dialogs, and notices. Empty\nuses the system interface font. The terminal grid, native menus, and\ntext set in a monospace family, such as process names, keep their\nfonts.",
+          "type": "string",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Font",
+          "x-huterm-label": "Interface font family",
+          "x-huterm-order": 22,
+          "x-huterm-section": "appearance"
+        },
+        "ui_size": {
+          "default": 13.0,
+          "description": "The size of interface text, in points, from 10 to 16. At 13 the\ninterface draws at its design sizes; other sizes scale its text, and\nthe controls and rows that hold text, in proportion. Terminal\nwindows' tab and title bars keep their heights.",
+          "format": "float",
+          "maximum": 16,
+          "minimum": 10,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Font",
+          "x-huterm-label": "Interface font size",
+          "x-huterm-order": 24,
+          "x-huterm-section": "appearance",
+          "x-huterm-step": 0.5,
+          "x-huterm-unit": "pt"
         }
       },
       "type": "object"

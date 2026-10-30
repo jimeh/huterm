@@ -62,6 +62,10 @@ visual = true
 [font]
 family = "Menlo"
 size = 14.0
+# The interface font for tabs, Settings, menus, and dialogs. An empty family
+# uses the system font; the size runs from 10 to 16 points.
+# ui_family = ""
+# ui_size = 13.0
 
 [window]
 # Default fullscreen mode on macOS: "native" or "non_native". Linux ignores it.
@@ -571,6 +575,9 @@ fn parse_consumed(
         font: FontConfig {
             family: raw.font.family,
             size: raw.font.size,
+            ui_family: Some(raw.font.ui_family.trim().to_owned())
+                .filter(|family| !family.is_empty()),
+            ui_size: raw.font.ui_size,
         },
         theme,
         keybindings,

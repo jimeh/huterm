@@ -53,6 +53,7 @@ use huterm_ui::listbox::{Button as MenuButton, Item, Model, Row};
 use huterm_ui::option_list::ListOption;
 use huterm_ui::steps::Steps;
 use huterm_ui::tokens::size;
+use huterm_ui::typography::ui;
 
 use super::key_hint::KeyHint;
 use super::overlay::{Swatch, tokens};
@@ -820,7 +821,7 @@ impl Gallery {
             .p(px(16.0))
             .bg(swatch.bg)
             .text_color(swatch.fg)
-            .text_size(px(12.5))
+            .text_size(ui(12.5))
             .child(div().text_color(swatch.muted).child(column.name))
             .child(badges(index, swatch))
             .child(buttons(index, swatch))
@@ -1573,10 +1574,14 @@ impl Gallery {
                         menu.read(cx).model(),
                         viewport.width,
                         window,
+                        cx,
                     ),
                     Anchor::Pointer(_) => MIN_WIDTH,
                 };
-                let height = Menu::content_height(menu.read(cx).model());
+                let height = Menu::content_height(
+                    menu.read(cx).model(),
+                    window.rem_size(),
+                );
                 let placement = place(anchor, size(width, height), viewport);
                 menu.update(cx, |menu, cx| {
                     menu.set_max_height(Some(placement.max_height), cx);
@@ -2294,7 +2299,7 @@ fn entry(
             div()
                 .flex()
                 .gap(px(6.0))
-                .text_size(px(11.5))
+                .text_size(ui(11.5))
                 .child(div().text_color(swatch.fg).child(title))
                 .child(
                     div()

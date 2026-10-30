@@ -31,6 +31,7 @@ pub(super) enum Special {
 
 const OVERRIDES: &[(&str, Special)] = &[
     ("font.family", Special::FontPicker),
+    ("font.ui_family", Special::FontPicker),
     ("theme", Special::ThemePicker),
     ("terminal.link_modifiers", Special::Modifiers),
     ("terminal.scrollback_bytes", Special::Size),

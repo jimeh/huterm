@@ -63,6 +63,7 @@ use huterm_ui::listbox::{
 use huterm_ui::option_list::ListOption;
 use huterm_ui::roving::{self, Group, Move};
 use huterm_ui::steps::Steps;
+use huterm_ui::typography::Typography;
 
 const SIDEBAR_WIDTH: f32 = 200.0;
 /// The height of the pane's section header and, on macOS, of the title
@@ -603,6 +604,9 @@ impl SettingsView {
         let template = layouts::is_template(path);
         let placeholder = if template {
             "Template"
+        } else if path == "font.ui_family" {
+            // Empty draws the interface in the system font.
+            "System font"
         } else if setting.default.is_none() && self.defaults.get(path).is_none()
         {
             "Default"
@@ -1748,10 +1752,12 @@ impl SettingsView {
                 menu.read(cx).model(),
                 viewport.width,
                 window,
+                cx,
             ),
             Anchor::Pointer(_) => MIN_WIDTH,
         };
-        let height = MenuView::content_height(menu.read(cx).model());
+        let height =
+            MenuView::content_height(menu.read(cx).model(), window.rem_size());
         let placement = place(anchor, size(width, height), viewport);
         let now = Instant::now();
         menu.update(cx, |menu, cx| {
@@ -2558,6 +2564,9 @@ impl Render for SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        // Before anything measures or lays out text.
+        let typography = Typography::of(cx);
+        typography.apply(window);
         let swatch = Self::swatch(cx);
         let dark = theme_is_dark(&cx.global::<Desktop>().config.theme);
         self.frame_appearance.sync(dark, window, cx);
@@ -2647,6 +2656,7 @@ impl Render for SettingsView {
             .flex()
             .size_full()
             .bg(swatch.bg)
+            .font_family(typography.family)
             .text_color(swatch.fg)
             .child(huterm_ui::focus::tracker())
             .child(guard)

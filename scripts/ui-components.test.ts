@@ -31,6 +31,34 @@ test("every huterm-ui component has a gallery entry, and every entry a component
   expect(entries).toEqual(components);
 });
 
+test("chrome text sizes follow the interface scale", () => {
+  // `[font] ui_size` scales chrome through the window's rem size, so a text
+  // size or line height in fixed points would ignore it. The terminal grid
+  // sizes its text from `[font] size`, not a literal, and the grid size
+  // panel is the one overlay that keeps its points.
+  const sources = [
+    ...rustFiles(crate),
+    join(repoRoot, "crates/huterm-gpui/src/desktop.rs"),
+    ...rustFiles(join(repoRoot, "crates/huterm-gpui/src/desktop")),
+  ];
+  const fixed = /\.(text_size|line_height)\(\s*px\(/g;
+  const offenders: string[] = [];
+  for (const file of sources) {
+    const relative = file.slice(repoRoot.length + 1);
+    if (/(\/tests?\.rs|_tests\.rs|\/window_tests\/)/.test(relative)) continue;
+    const source = readFileSync(file, "utf8");
+    const panel = relative.endsWith("huterm-gpui/src/desktop.rs") ? source.indexOf("fn render_size_panel(") : -1;
+    const panelEnd = panel < 0 ? -1 : source.indexOf("\n    }\n", panel);
+    const lineOf = (offset: number) => source.slice(0, offset).split("\n").length;
+    for (const match of source.matchAll(fixed)) {
+      const at = match.index ?? 0;
+      if (at > panel && at < panelEnd) continue;
+      offenders.push(`${relative}:${lineOf(at)}`);
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+
 test("huterm-ui draws focus rings only through focus::ring", () => {
   // `Tokens::focus_ring` defines the shadow and `focus::ring` is the one
   // painter that gates it on keyboard focus. GPUI's own focus styles

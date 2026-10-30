@@ -643,7 +643,23 @@ warns the same way.
 [font]
 family = "Menlo" # defaults to Menlo on macOS and monospace on Linux
 size = 14.0      # 6 through 96
+ui_family = ""   # empty uses the system interface font
+ui_size = 13.0   # 10 through 16
 ```
+
+`family` and `size` set the terminal grid. `ui_family` and `ui_size` set
+Huterm's own interface: tabs, pane title bars, Settings, the command palette,
+the menus and dialogs Huterm draws, notices, and other overlays. Native macOS
+menus keep the system font, and text set in a monospace family, such as
+process names, keeps that family. A family that is not installed falls back
+to the system interface font with a warning.
+
+At the default `ui_size` of 13, the interface draws at its design sizes.
+Other sizes scale its text, and the controls, rows, and menus that hold text,
+in proportion, so 16 draws everything about 23% larger. Terminal windows'
+tab bars and pane title bars keep their heights, which is why the range stops
+at 16. A value outside 10 through 16 is an error that names the key. Both
+keys apply to open windows when the file reloads.
 
 Select a built-in theme and optionally override individual colors:
 

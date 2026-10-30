@@ -10,6 +10,7 @@ use gpui::{
 };
 use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::dialog::{Dialog, Modal};
+use huterm_ui::typography::ui;
 
 use super::key_hint::KeyHint;
 use super::overlay::{Swatch, mono_font_family};
@@ -279,14 +280,14 @@ fn hero(version: &str, swatch: Swatch) -> Div {
         .child(
             div()
                 .mt(px(12.0))
-                .text_size(px(17.0))
+                .text_size(ui(17.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child("Huterm"),
         )
         .child(
             div()
                 .mt(px(2.0))
-                .text_size(px(12.5))
+                .text_size(ui(12.5))
                 .text_color(swatch.muted)
                 .child(format!("Version {version}")),
         )
@@ -303,7 +304,7 @@ fn details_list(details: &AboutDetails, swatch: Swatch) -> Div {
         .py(px(12.0))
         .border_t_1()
         .border_color(swatch.line)
-        .text_size(px(12.0));
+        .text_size(ui(12.0));
     for (label, value) in &details.rows {
         list = list.child(
             div()
@@ -322,7 +323,7 @@ fn details_list(details: &AboutDetails, swatch: Swatch) -> Div {
                         .flex_1()
                         .min_w_0()
                         .font_family(mono_font_family())
-                        .text_size(px(11.5))
+                        .text_size(ui(11.5))
                         .child(value.clone()),
                 ),
         );
@@ -392,12 +393,12 @@ pub(super) fn footer_button(
             Variant::Outline
         })
         .when_some(shortcut, |button, hint| button.shortcut(hint.glyphs()))
-        .h(px(26.0))
+        .h(ui(26.0))
         .gap(px(6.0))
         .pl(px(12.0))
         .pr(px(if shortcut.is_some() { 7.0 } else { 12.0 }))
-        .text_size(px(12.0))
-        .line_height(px(24.0))
+        .text_size(ui(12.0))
+        .line_height(ui(24.0))
         // A clear border keeps a primary button as wide as an outlined one.
         .when(primary, |button| {
             button.border_1().border_color(gpui::transparent_black())
