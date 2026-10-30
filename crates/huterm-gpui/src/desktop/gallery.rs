@@ -38,6 +38,7 @@ use huterm_ui::components::menu::{
 };
 use huterm_ui::components::number_field::{Format, NumberField};
 use huterm_ui::components::popover::{Anchor, Popover, place};
+use huterm_ui::components::prose::Prose;
 use huterm_ui::components::radio_group::RadioGroup;
 use huterm_ui::components::scroll_area::{ContentBounds, ScrollArea};
 use huterm_ui::components::select::Select;
@@ -829,6 +830,7 @@ impl Gallery {
             .child(key_recorders(index, swatch, &column.recorders, cx))
             .child(scroll_area)
             .child(separators(swatch))
+            .child(prose(swatch))
             .child(entry(
                 "surface",
                 "Surface",
@@ -2043,6 +2045,34 @@ fn key_recorders(
                     .text_color(swatch.accent_text())
                     .child(hint)
             })),
+    )
+}
+
+/// Descriptions with inline code: wrapping on a static surface, and
+/// outlined on one line, as a row that hovers draws it.
+fn prose(swatch: Swatch) -> Div {
+    entry(
+        "prose",
+        "Prose",
+        swatch,
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .w(px(220.0))
+            .text_size(size::TEXT_SMALL)
+            .text_color(swatch.muted)
+            .child(Prose::new(
+                "The display the window opens on, or `id:` and a platform \
+                 identifier, such as `columns(pane 60%, rows(*))`.",
+                swatch,
+            ))
+            .child(
+                div().truncate().child(
+                    Prose::new("Runs `next_pane_layout` on a row", swatch)
+                        .outlined(),
+                ),
+            ),
     )
 }
 

@@ -3,7 +3,9 @@
 //!
 //! Anatomy: a label column (the label on a title line that may carry
 //! elements before and after it, such as a changed marker or a tag; then
-//! each description, muted; then the error, in the danger text color),
+//! each description, muted; then the error, in the danger text color; both
+//! draw Markdown code spans as inline code, through
+//! [`crate::components::prose::Prose`]),
 //! actions beside the column, such as Reset, and the control. Horizontal
 //! fields put the control at the trailing edge; vertical ones put it under
 //! the label, as a wide picker needs. It pads itself as a row of a
@@ -15,15 +17,17 @@
 //! disables it while the row is read-only.
 //!
 //! Accessibility: a `Group` named by the label, whose description is the
-//! descriptions and the error, so assistive technology reads them from
-//! the row. The control still carries its own name, as every component
-//! requires, since GPUI cannot relate it to the label.
+//! descriptions and the error without their code-span backticks, so
+//! assistive technology reads them from the row. The control still carries
+//! its own name, as every component requires, since GPUI cannot relate it
+//! to the label.
 
 use gpui::{
     AnyElement, App, ElementId, IntoElement, RenderOnce, SharedString,
     StyleRefinement, Window, div, prelude::*, px,
 };
 
+use crate::components::prose::{Prose, plain};
 use crate::tokens::{Tokens, size};
 
 /// A field.
@@ -149,22 +153,23 @@ impl Styled for Field {
     }
 }
 
-/// A secondary line of `text` in `color`.
-fn line(text: SharedString, color: gpui::Hsla) -> gpui::Div {
+/// A secondary line of `text` in `color`, with its code spans as inline
+/// code.
+fn line(text: SharedString, color: gpui::Hsla, tokens: Tokens) -> gpui::Div {
     div()
         .text_size(size::TEXT_SMALL)
         .text_color(color)
-        .child(text)
+        .child(Prose::new(text, tokens))
 }
 
 impl RenderOnce for Field {
     fn render(mut self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let tokens = self.tokens;
-        let description: Vec<&str> = self
+        let description: Vec<String> = self
             .descriptions
             .iter()
             .chain(&self.error)
-            .map(SharedString::as_ref)
+            .map(|text| plain(text))
             .collect();
         let description = description.join("\n");
         let title = div()
@@ -186,9 +191,12 @@ impl RenderOnce for Field {
             .children(
                 self.descriptions
                     .into_iter()
-                    .map(|text| line(text, tokens.muted)),
+                    .map(|text| line(text, tokens.muted, tokens)),
             )
-            .children(self.error.map(|text| line(text, tokens.danger_text())))
+            .children(
+                self.error
+                    .map(|text| line(text, tokens.danger_text(), tokens)),
+            )
             .when_some(self.label_selector.take(), |column, selector| {
                 column.debug_selector(|| selector)
             });
@@ -248,6 +256,25 @@ mod tests {
                 aria["description"],
                 "Space around the terminal grid.\nApplies to new windows.\n\
                  Must be zero or more."
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_field_reads_its_inline_code_without_backticks(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, cx) = host(cx, |_, _| {
+            Field::new("display", "Display", tokens())
+                .description("The active one, or `id:` and a name.")
+                .control(div().id("control").size(px(40.0)))
+                .into_any_element()
+        });
+        cx.update(|window, _| {
+            let aria = &a11y_node(window, "display")["aria"];
+            assert_eq!(
+                aria["description"],
+                "The active one, or id: and a name."
             );
         });
     }

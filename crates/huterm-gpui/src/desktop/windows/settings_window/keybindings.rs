@@ -2298,7 +2298,7 @@ impl SettingsView {
             spec.title,
             swatch,
         )
-        .description(spec.description.replace('`', ""))
+        .description(spec.description)
         .media(chevron(Icon::ChevronRight.asset_path(), open, swatch))
         .when(Self::customized(inventory, spec.id), |item| {
             item.before_title(changed_dot(swatch))

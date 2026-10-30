@@ -17,6 +17,7 @@ use huterm_ui::components::field::Field;
 use huterm_ui::components::input::Input;
 use huterm_ui::components::input_group::{Addon, InputGroup};
 use huterm_ui::components::item::Item;
+use huterm_ui::components::prose::Prose;
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::components::tabs::Tabs;
 use huterm_ui::typography::ui;
@@ -443,7 +444,12 @@ impl SettingsView {
                             notice
                                 .messages
                                 .iter()
-                                .map(|message| div().child(sentence(message))),
+                                // A chip's fill on the tone's wash would
+                                // cost the text its contrast.
+                                .map(|message| {
+                                    Prose::new(sentence(message), swatch)
+                                        .outlined()
+                                }),
                         ),
                 )
             });
