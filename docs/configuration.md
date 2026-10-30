@@ -652,7 +652,8 @@ Huterm's own interface: tabs, pane title bars, Settings, the command palette,
 the menus and dialogs Huterm draws, notices, and other overlays. Native macOS
 menus keep the system font, and text set in a monospace family, such as
 process names, keeps that family. A family that is not installed falls back
-to the system interface font with a warning.
+to the system interface font, and Settings says so under the field, as it does
+for a terminal `family` that falls back to the platform's monospace font.
 
 At the default `ui_size` of 13, the interface draws at its design sizes.
 Other sizes scale its text, and the controls, rows, and menus that hold text,

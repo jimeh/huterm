@@ -521,12 +521,14 @@ impl SettingsView {
                 .child(reset)
         });
         let conflict = self.render_conflict(setting, swatch, cx);
-        // A conflict's alert says what the error would, and more.
+        // A conflict's alert says what the error would, and more. A family
+        // that saved but fell back says so where its error would.
         let error = self
             .errors
             .get(path)
-            .filter(|_| conflict.is_none())
             .cloned()
+            .or_else(|| self.fallback_note(setting, cx))
+            .filter(|_| conflict.is_none())
             .map(SharedString::from);
         // The theme picker's cards need the row's width.
         let wide = special(path) == Some(Special::ThemePicker);

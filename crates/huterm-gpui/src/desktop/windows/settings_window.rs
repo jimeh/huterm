@@ -728,10 +728,7 @@ impl SettingsView {
             return list.clone();
         }
         let field = self.field(setting, window, cx);
-        #[cfg(test)]
-        let families = self.families.unwrap_or_else(|| installed_fonts(cx));
-        #[cfg(not(test))]
-        let families = installed_fonts(cx);
+        let families = self.families(cx);
         let swatch = Self::swatch(cx);
         let list = cx.new(|cx| {
             Combobox::new(
@@ -2323,6 +2320,53 @@ fn themes(config: &std::path::Path) -> Vec<(String, Option<Theme>)> {
             (name, preview)
         })
         .collect()
+}
+
+impl SettingsView {
+    /// The families font fields suggest and check against: the installed
+    /// ones, or a test's stand-ins.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "tests substitute the families")
+    )]
+    fn families(&self, cx: &App) -> &'static [&'static str] {
+        #[cfg(test)]
+        if let Some(families) = self.families {
+            return families;
+        }
+        installed_fonts(cx)
+    }
+
+    /// Why a font family row's applied family draws in another: the family
+    /// is not installed, so Huterm fell back, which the save alone does not
+    /// show.
+    pub(super) fn fallback_note(
+        &self,
+        setting: &Setting,
+        cx: &App,
+    ) -> Option<String> {
+        let font = &cx.global::<Desktop>().config.font;
+        let (family, fallback) = match setting.path.as_str() {
+            // `monospace` is a fontconfig alias, not an installed family.
+            "font.family" => (
+                Some(font.family.as_str())
+                    .filter(|family| *family != "monospace"),
+                if cfg!(target_os = "macos") {
+                    "terminals use Menlo"
+                } else {
+                    "terminals use the monospace font"
+                },
+            ),
+            "font.ui_family" => (
+                font.ui_family.as_deref(),
+                "the interface uses the system font",
+            ),
+            _ => return None,
+        };
+        let family = family?;
+        (!self.families(cx).contains(&family))
+            .then(|| format!("{family} is not installed, so {fallback}."))
+    }
 }
 
 /// The installed font families, read once and kept for every font field's
