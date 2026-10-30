@@ -626,14 +626,14 @@ fn pane_title_text(title: String, status: TabStatus) -> Div {
         .child(title)
 }
 
-/// The focused pane's mark while its title bar is hidden or waiting for
-/// hover: an accent line along the `bottom` or top edge of its `frame`,
-/// where the bar would be, drawn over the terminal without taking pointer
-/// input.
+/// The focused pane's mark while its title bar is off screen: an accent
+/// line at `alpha` along the `bottom` or top edge of its `frame`, where the
+/// bar would be, drawn over the terminal without taking pointer input.
 pub(super) fn pane_focus_cue(
     frame: Bounds<Pixels>,
     bottom: bool,
     colors: TabColors,
+    alpha: f32,
 ) -> Div {
     let top = if bottom {
         frame.bottom() - PANE_FOCUS_CUE_HEIGHT
@@ -646,7 +646,18 @@ pub(super) fn pane_focus_cue(
         .top(top)
         .w(frame.size.width)
         .h(PANE_FOCUS_CUE_HEIGHT)
-        .bg(colors.accent)
+        .bg(colors.accent.opacity(alpha))
+}
+
+/// The layer that dims a pane without focus: the terminal's background at
+/// `alpha` over its whole terminal area. It carries no listeners, cursor,
+/// or hover style, so GPUI gives it no hitbox and every press, wheel,
+/// hover, link, and drop still reaches the terminal beneath.
+pub(super) fn pane_dim(colors: TabColors, alpha: f32) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .bg(colors.terminal.opacity(alpha))
 }
 
 /// Whether a tab shows its close button without being hovered.

@@ -161,8 +161,8 @@ zoom = "view" # view or shared
 ```
 
 Each pane of a split tab has a title bar with its title, zoom and close
-buttons, a drag handle, and a context menu. `title_bar_position` puts the bars
-along the top or bottom of their panes.
+buttons, a drag handle, and a context menu. `title_bar_position` puts the bars,
+and the focus accent described below, along the top or bottom of their panes.
 
 `title_bar = "hover"` gives the terminals the bars' space and draws a pane's bar
 over its terminal only when you want it: rest the pointer where the bar would be
@@ -173,14 +173,23 @@ the keyboard shows the newly focused pane's bar for a second. In fullscreen with
 an auto-hiding tab bar, the tab bar's trigger edge wins over the bars below it.
 
 `title_bar = "hidden"` removes the bars and gives their space to the terminals;
-closing, zooming, moving, and renaming panes stay available as commands. With
-hover or hidden bars, a thin accent line along the bar's edge marks the focused
-pane. Both settings apply on reload:
+closing, zooming, moving, and renaming panes stay available as commands.
+
+Two optional indicators show which pane has focus while more than one pane is
+on screen; both are off at 0. `focus_accent` draws a thin accent line along the
+focused pane's edge where its title bar would be, at that opacity from 0 to 1.
+It draws only under hover or hidden bars, and under hover bars only until the
+focused pane's bar appears. `inactive_dim` dims every other pane's terminal by
+laying the theme's background color over it, from 0 to 0.8; their title bars
+stay as they are, and clicks, selections, scrolling, links, and drops reach a
+dimmed pane as usual. All four settings apply on reload:
 
 ```toml
 [panes]
 title_bar = "visible" # visible, hover, or hidden
 title_bar_position = "top" # top or bottom
+focus_accent = 0.0 # 0 (off) to 1
+inactive_dim = 0.0 # 0 (off) to 0.8
 ```
 
 ### Pane layouts

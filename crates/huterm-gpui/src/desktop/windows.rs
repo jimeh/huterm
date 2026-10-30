@@ -182,6 +182,7 @@ mod model;
 mod native_menus;
 mod pane_bars;
 mod pane_drag;
+mod pane_focus;
 mod pane_geometry;
 mod pane_layouts;
 mod pane_menu;
@@ -220,6 +221,7 @@ use model::{
 use native_menus::{MenuAnchor, MenuPresenter, NativeMenuSession};
 use pane_bars::{BarInput, PaneBarReveals};
 use pane_drag::{DropTarget, PaneDrag, PaneMode};
+use pane_focus::FocusMarks;
 use pane_geometry::{
     Divider, PaneRect, TabPanes, TitleBars, boundary_position, dragged_weights,
     layout_panes, with_boundary,
@@ -2422,6 +2424,7 @@ fn open_window_with_profile(
                 drawn_dividers: RefCell::new(Vec::new()),
                 drawn_panes: RefCell::new(None),
                 drawn_drop: RefCell::new(None),
+                drawn_focus: RefCell::new(FocusMarks::default()),
                 pane_drag: None,
                 reveal: Reveal::default(),
                 reveal_context: None,
@@ -3549,6 +3552,8 @@ struct WorkspaceView {
     drawn_panes: RefCell<Option<(TabId, Vec<PaneRect>)>>,
     /// The drop target the last frame drew, for smoke state.
     drawn_drop: RefCell<Option<String>>,
+    /// The focus marks the last frame drew, for smoke state.
+    drawn_focus: RefCell<FocusMarks>,
     /// A press on a pane title bar, or the drag it became.
     pane_drag: Option<PaneDrag>,
     reveal: Reveal,
@@ -4530,6 +4535,7 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Vec<gpui::AnyElement> {
+        *self.drawn_focus.borrow_mut() = FocusMarks::default();
         let Some(tab) = self.active_tab_view(cx) else {
             self.drawn_dividers.borrow_mut().clear();
             *self.drawn_panes.borrow_mut() = None;
@@ -4546,6 +4552,7 @@ impl WorkspaceView {
         );
         let focused = tab.focused().pane;
         let bars = self.title_bars();
+        let shown = Self::panes_shown(tab, rects.as_ref());
         *self.drawn_dividers.borrow_mut() = rects
             .as_ref()
             .map(|rects| rects.dividers.clone())
@@ -4584,22 +4591,10 @@ impl WorkspaceView {
                         },
                     ))
                     .child(pane.view.clone())
+                    .children(self.inactive_dim(id, focused, shown, colors))
                     .into_any_element(),
             );
             let bottom = bars.position == PaneTitleBarPosition::Bottom;
-            // Without a visible bar, only this marks which pane has focus,
-            // and only while more than one pane shows. A revealed hover bar
-            // covers it.
-            if let Some(rect) = rect.filter(|_| {
-                id == focused
-                    && bars.mode != PaneTitleBarMode::Visible
-                    && rects.as_ref().is_some_and(|rects| rects.panes.len() > 1)
-            }) {
-                elements.push(
-                    tab_bar::pane_focus_cue(rect.frame, bottom, colors)
-                        .into_any_element(),
-                );
-            }
             // A hover bar draws only while it reveals, at its reveal's
             // opacity; until then the terminal beneath keeps the pointer.
             let opacity = if bars.mode == PaneTitleBarMode::Hover {
@@ -4632,6 +4627,12 @@ impl WorkspaceView {
                 );
             }
         }
+        elements.extend(self.focus_accent(
+            rects.as_ref(),
+            focused,
+            shown,
+            colors,
+        ));
         if let Some(rects) = &rects {
             elements.extend(Self::divider_elements(
                 &rects.dividers,
@@ -4640,6 +4641,61 @@ impl WorkspaceView {
             ));
         }
         elements
+    }
+
+    /// The `focused` pane's accent line, while `[panes] focus_accent` draws
+    /// one. It draws only while the pane's bar is off screen, so no bar
+    /// covers it.
+    fn focus_accent(
+        &self,
+        rects: Option<&TabPanes>,
+        focused: PaneId,
+        shown: usize,
+        colors: TabColors,
+    ) -> Option<gpui::AnyElement> {
+        let bars = self.title_bars();
+        let alpha = pane_focus::focus_accent(
+            bars.mode,
+            self.pane_bars.progress(focused),
+            shown,
+            self.config.panes.focus_accent,
+        )?;
+        let frame = rects?.pane(focused)?.frame;
+        let bottom = bars.position == PaneTitleBarPosition::Bottom;
+        self.drawn_focus.borrow_mut().accent = Some((focused, alpha));
+        Some(
+            tab_bar::pane_focus_cue(frame, bottom, colors, alpha)
+                .into_any_element(),
+        )
+    }
+
+    /// The layer dimming `pane`'s terminal, while `[panes] inactive_dim`
+    /// dims it.
+    fn inactive_dim(
+        &self,
+        pane: PaneId,
+        focused: PaneId,
+        shown: usize,
+        colors: TabColors,
+    ) -> Option<gpui::Div> {
+        let alpha = pane_focus::inactive_dim(
+            pane == focused,
+            shown,
+            self.config.panes.inactive_dim,
+        )?;
+        self.drawn_focus.borrow_mut().dimmed.push((pane, alpha));
+        Some(tab_bar::pane_dim(colors, alpha))
+    }
+
+    /// How many of `tab`'s panes `pane_elements` draws: each installed view
+    /// the layout places, or the focused pane alone without a layout.
+    fn panes_shown(tab: &TabView, rects: Option<&TabPanes>) -> usize {
+        rects.map_or(1, |rects| {
+            tab.panes
+                .iter()
+                .filter(|pane| rects.pane(pane.pane).is_some())
+                .count()
+        })
     }
 
     /// Gives `pane` of `tab` keyboard focus in this window: the tab's
@@ -13422,6 +13478,8 @@ impl WorkspaceView {
         let grabs =
             button(|bar| gpui::point(bar.origin.x + px(40.0), bar.center().y));
         let opacities = joined(&|rect, _| self.pane_bar_opacity(rect));
+        let marks =
+            joined(&|rect, _| self.drawn_focus.borrow().describe(rect.pane));
         let drop = self
             .drawn_drop
             .borrow()
@@ -13441,7 +13499,7 @@ impl WorkspaceView {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}drop={drop} {prefix}spring={spring} {} {prefix}pane_dividers={}",
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}pane_focus_marks={marks} {prefix}drop={drop} {prefix}spring={spring} {} {prefix}pane_dividers={}",
             panes.len(),
             self.layout_smoke_state(prefix, cx),
             if dividers.is_empty() {

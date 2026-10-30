@@ -116,8 +116,14 @@ max_width = 240.0
 # rests where they would be; hidden bars never show, and close, zoom, and move
 # remain commands.
 title_bar = "visible"
-# Which edge of a pane its title bar runs along: top or bottom.
+# Which edge of a pane its title bar, or the focus accent, runs along: top or
+# bottom.
 title_bar_position = "top"
+# How strongly an accent line marks the focused pane while its title bar is
+# off screen under hover or hidden bars, from 0 (off) to 1.
+focus_accent = 0.0
+# How much panes without focus dim, from 0 (off) to 0.8.
+inactive_dim = 0.0
 # Who owns a pane's zoom: view, where each window zooms on its own, or
 # shared, where the tab owns it and every window set to shared shows it.
 zoom = "view"

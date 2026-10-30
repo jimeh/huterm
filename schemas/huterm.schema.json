@@ -570,6 +570,48 @@
       "additionalProperties": false,
       "description": "Split pane behavior.",
       "properties": {
+        "focus_accent": {
+          "default": 0.0,
+          "description": "How strongly a thin accent line marks the focused pane while its\ntitle bar is not on screen, from 0 (off) to 1. It draws only under\n`hover` and `hidden` bars, and only while more than one pane shows.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Focus accent",
+          "x-huterm-order": 37,
+          "x-huterm-section": "window",
+          "x-huterm-step": 0.05,
+          "x-huterm-visible-when": [
+            {
+              "equals": "hover",
+              "setting": "panes.title_bar"
+            },
+            {
+              "equals": "hidden",
+              "setting": "panes.title_bar"
+            }
+          ],
+          "x-huterm-zero-label": "Off"
+        },
+        "inactive_dim": {
+          "default": 0.0,
+          "description": "How much the panes without focus dim, from 0 (off) to 0.8, while\nmore than one pane shows. Their title bars stay as they are.",
+          "format": "float",
+          "maximum": 0.8,
+          "minimum": 0,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Dim unfocused panes",
+          "x-huterm-order": 38,
+          "x-huterm-section": "window",
+          "x-huterm-step": 0.05,
+          "x-huterm-zero-label": "Off"
+        },
         "layout_cycle": {
           "default": [
             "columns",
@@ -642,22 +684,12 @@
             }
           ],
           "default": "top",
-          "description": "Which edge of a pane its title bar runs along: `top` or `bottom`.",
+          "description": "Which edge of a pane its title bar, or the focus accent that stands\nin for a hidden bar, runs along: `top` or `bottom`.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Title bar position",
           "x-huterm-order": 36,
-          "x-huterm-section": "window",
-          "x-huterm-visible-when": [
-            {
-              "equals": "visible",
-              "setting": "panes.title_bar"
-            },
-            {
-              "equals": "hover",
-              "setting": "panes.title_bar"
-            }
-          ]
+          "x-huterm-section": "window"
         },
         "zoom": {
           "allOf": [

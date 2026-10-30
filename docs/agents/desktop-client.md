@@ -770,8 +770,10 @@ unsigned integer `format`'s limit when there is no `maximum`, and
 steps as `values::empty_step` says, from the default or to the minimum, never
 to that stand-in. `x-huterm-control = "slider"` picks a `Slider` instead of a
 field; without `x-huterm-unit` its readout is a percent, so the model refuses
-a unitless slider whose range leaves 0 to 1. Row controls take a fixed width:
-a full-width control squeezes the row's description to a character per line.
+a unitless slider whose range leaves 0 to 1. `x-huterm-zero-label` replaces
+the readout at exactly 0, as "Off" does for an amount that 0 turns off. Row
+controls take a fixed width: a full-width control squeezes the row's
+description to a character per line.
 A locked Settings field is `Input`'s disabled state with the lock
 reason, not read-only, so a press takes no focus. Settings commits number
 fields itself (`with_commit_on_blur(false)`), so a conflicted draft survives

@@ -1,12 +1,15 @@
 //! Tier 2 tests for `[panes] title_bar` and `title_bar_position`: a reload
 //! moves the title bars or hides them, the terminals take the space a bar
 //! gives up, a bottom bar's buttons work, and hover bars reveal, hold, and
-//! fade.
+//! fade. Also the focus marks: which panes `focus_accent` and
+//! `inactive_dim` mark, and a dim layer leaving pointer input to the pane
+//! beneath it.
 
 use std::time::{Duration, Instant};
 
 use huterm_config::{PaneTitleBarMode, PaneTitleBarPosition, PanesConfig};
 
+use super::pane_moves::pane_focused;
 use super::*;
 
 /// The rectangles `window` last drew for its active tab's panes.
@@ -377,5 +380,119 @@ fn a_revealed_bars_overlay_follows_its_pane_through_a_resize(
                 wider.size.width > bar.size.width
                     && bar_state(cx, window, first) == Some((1.0, Some(wider)))
             })
+    });
+}
+
+/// The focus marks `window` last drew.
+fn focus_marks(cx: &mut App, window: AnyWindowHandle) -> Option<FocusMarks> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            Some(view.read(cx).drawn_focus.borrow().clone())
+        })
+        .ok()
+        .flatten()
+}
+
+#[gpui::test]
+fn focus_marks_follow_focus_zoom_and_the_bar_mode(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    harness.invoke(window, ids::FOCUS_PANE_RIGHT).unwrap();
+    harness.reload_panes(window, |panes| {
+        panes.title_bar = PaneTitleBarMode::Hidden;
+        panes.focus_accent = 0.5;
+        panes.inactive_dim = 0.4;
+    });
+    let marks =
+        |dimmed: Vec<(PaneId, f32)>, accent| FocusMarks { dimmed, accent };
+    // The focused pane carries the accent; the other dims.
+    let expected = marks(vec![(first, 0.4)], Some((second, 0.5)));
+    harness.wait_for("the right pane to carry the accent", |cx| {
+        focus_marks(cx, window).as_ref() == Some(&expected)
+    });
+    harness.invoke(window, ids::FOCUS_PANE_LEFT).unwrap();
+    let expected = marks(vec![(second, 0.4)], Some((first, 0.5)));
+    harness.wait_for("the marks to follow focus left", |cx| {
+        focus_marks(cx, window).as_ref() == Some(&expected)
+    });
+    // A zoomed pane is the only one on screen, so nothing is marked.
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_for("zoom to clear the marks", |cx| {
+        pane_shown(cx, window, tab, second).is_some_and(|(shown, _)| !shown)
+            && focus_marks(cx, window) == Some(FocusMarks::default())
+    });
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    // Visible bars show focus themselves, so only the dimming stays.
+    harness.reload_panes(window, |panes| {
+        panes.title_bar = PaneTitleBarMode::Visible;
+    });
+    let expected = marks(vec![(second, 0.4)], None);
+    harness.wait_for("visible bars to drop the accent", |cx| {
+        pane_shown(cx, window, tab, second).is_some_and(|(shown, _)| shown)
+            && focus_marks(cx, window).as_ref() == Some(&expected)
+    });
+}
+
+#[gpui::test]
+fn a_dimmed_pane_takes_the_wheel_and_a_selection_through_its_dim_layer(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{Modifiers, ScrollDelta, ScrollEvent, TouchPhase, point};
+    let mut harness = DesktopHarness::new(cx);
+    // The first pane holds scrollback for the wheel to scroll.
+    let tab = harness.open_tab(&format!("seq 1 200; {ECHO}"));
+    let (window, first, second) = harness.split_window(tab);
+    harness.invoke(window, ids::FOCUS_PANE_RIGHT).unwrap();
+    harness.reload_panes(window, |panes| panes.inactive_dim = 0.5);
+    harness.wait_for("the second pane to take focus", |cx| {
+        pane_focused(cx, window, tab, second)
+    });
+    let centre = harness.cx.update(|cx| {
+        drawn(cx, window)
+            .and_then(|rects| rects.into_iter().find(|rect| rect.pane == first))
+            .map(|rect| rect.terminal.center())
+            .unwrap()
+    });
+    let scrolled = |cx: &mut App| {
+        pane_view(cx, window, tab, first)
+            .map_or(0, |view| view.read(cx).scroll.desired())
+    };
+    // The wheel scrolls what the pointer is over, as of a frame drawn after
+    // the pointer arrived, and leaves focus where it was.
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_move(centre, None, Modifiers::none());
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    visual.simulate_event(ScrollEvent {
+        position: centre,
+        delta: ScrollDelta::Lines(point(0.0, 3.0)),
+        modifiers: Modifiers::none(),
+        touch_phase: TouchPhase::Moved,
+        ..Default::default()
+    });
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert_eq!(scrolled(cx), 3, "the wheel did not reach the dimmed pane");
+        assert!(pane_focused(cx, window, tab, second));
+    });
+    // A drag selects in the dimmed pane and focuses it.
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(centre, MouseButton::Left, Modifiers::none());
+    visual.simulate_mouse_move(
+        centre + point(px(48.0), px(0.0)),
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
+    visual.simulate_mouse_up(
+        centre + point(px(48.0), px(0.0)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    harness.wait_for("the dimmed pane to focus and select", |cx| {
+        pane_focused(cx, window, tab, first)
+            && pane_view(cx, window, tab, first)
+                .is_some_and(|view| view.read(cx).selection.is_some())
     });
 }

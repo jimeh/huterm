@@ -6,6 +6,11 @@ Status: implemented. Jim approved the configuration and hover design on
 `hidden`, and `hover` modes shipped as one pull request, #340. The
 follow-ups at the end list what that delivery left uncovered.
 
+Superseded in part: the accent line that `hover` and `hidden` modes drew on
+the focused pane is now off by default and set by `[panes] focus_accent`,
+beside `[panes] inactive_dim`. The accent-line rules below record the original
+design, not current behaviour.
+
 Split panes gain names and a context menu on their title bars, and the bars
 gain a position and a visibility mode:
 

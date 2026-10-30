@@ -288,6 +288,13 @@ and every other view none, so a resize or tab switch never leaves a stale
 band; every press, motion, link, and drop path reads it like the tab bar's
 overlay, and a gesture the terminal already owns still wins.
 
+The `focus_accent` line and the `inactive_dim` layer are plain backgrounds
+drawn over the terminal. GPUI gives a div a hitbox only for listeners, a
+cursor, hover styles, or `occlude`, so they must carry none: every press,
+wheel, hover, link, and drop then reaches the terminal beneath.
+`a_dimmed_pane_takes_the_wheel_and_a_selection_through_its_dim_layer` fails
+if the dim layer starts taking input.
+
 GPUI reports a macOS window as hovered only while it is active, so hover bars
 reveal only in the active window. The Linux test platform never reports a
 hovered window, so window tests feed `pane_bar_pointer` directly;
