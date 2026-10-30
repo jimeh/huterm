@@ -81,9 +81,9 @@ since, when it keeps its current name, the rule `restored_zoom` applies to
 zoom. Undoing a pane-to-tab move therefore returns the name to the pane, and a
 rename made after the move survives an undo. The rule crosses the boundary a
 move carried the name over: a single-pane tab that the restore removes passes
-a name given to it since to its pane, and a named tab that the restore reopens
-around one pane takes a name the pane was given since, so a name is never
-dropped or copied.
+a rename made since to its pane, unless that rename cleared the name and the
+pane has a newer one, and a named tab that the restore reopens around one pane
+takes a name the pane was given since, so a name is never dropped or copied.
 
 **Menu.** A right press on a pane title bar, including its buttons, focuses
 the pane and opens the pane menu at the pointer, as a left press focuses it

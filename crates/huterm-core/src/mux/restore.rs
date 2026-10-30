@@ -85,8 +85,9 @@ impl Mux {
     /// Each pane takes its recorded name unless it was renamed since the
     /// side the restore leaves, when it keeps its current one. A name a move
     /// carried between a pane and its single-pane tab moves back the same
-    /// way: the only pane of a tab the restore removes takes the tab's name
-    /// when the tab was given one since, and a named tab the restore reopens
+    /// way. The only pane of a tab the restore removes takes the tab's name
+    /// when the tab was renamed since, unless that rename cleared the name
+    /// and the pane was renamed since too. A named tab the restore reopens
     /// around one pane takes that pane's name when the pane was renamed
     /// since, leaving the pane its recorded name.
     /// # Errors
@@ -472,13 +473,14 @@ impl RestoredNames {
             match (&from.record, &now.record, &to.record) {
                 (Some(from), Some(now), None)
                     if now.layout.pane_count() == 1
-                        && now.custom_name.is_some()
                         && from.custom_name != now.custom_name =>
                 {
-                    panes.insert(
-                        now.layout.first_pane().id,
-                        now.custom_name.clone(),
-                    );
+                    // A cleared tab name gives way to a name the pane was
+                    // given since.
+                    let pane = now.layout.first_pane().id;
+                    if now.custom_name.is_some() || renamed(pane).is_none() {
+                        panes.insert(pane, now.custom_name.clone());
+                    }
                 }
                 (_, None, Some(to))
                     if to.layout.pane_count() == 1

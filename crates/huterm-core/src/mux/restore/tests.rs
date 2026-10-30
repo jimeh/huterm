@@ -660,6 +660,13 @@ fn a_name_given_since_a_carry_moves_back_across_the_tab_boundary() {
     mux.restore_tabs(&extract, Undo).unwrap();
     assert!(mux.tab(extracted).is_none());
     assert_eq!(pane_name(&mux, b).as_deref(), Some("own"));
+    // Clearing it with no newer pane name carries the clear back, as a
+    // clear counts as a rename everywhere else.
+    mux.restore_tabs(&extract, Redo).unwrap();
+    assert_eq!(mux.tab(extracted).unwrap().custom_name(), Some("own"));
+    mux.rename_tab(extracted, None).unwrap();
+    mux.restore_tabs(&extract, Undo).unwrap();
+    assert_eq!(pane_name(&mux, b), None);
 
     // The other direction: a named tab nested into a pane gives the pane
     // its name, and undoing after renaming the pane hands that name back
