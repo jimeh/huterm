@@ -87,9 +87,17 @@ const BUTTON_GAP: f32 = 6.0;
 const BUTTON_ROW_END: f32 = 4.0;
 /// A count badge's horizontal padding and border, beyond its digits.
 const BADGE_PADDING: f32 = 14.0;
-/// The menu's default minimum width; command labels never need more, so
-/// placement treats it as the width.
+/// The menu's default minimum width at the design size; command labels
+/// never need more, so placement treats it, at the window's interface
+/// scale ([`min_width`]), as the width.
 pub const MIN_WIDTH: Pixels = px(264.0);
+
+/// [`MIN_WIDTH`] at `window`'s interface scale: the width a menu with the
+/// default minimum draws at, and so the width to place it at.
+#[must_use]
+pub fn min_width(window: &Window) -> Pixels {
+    MIN_WIDTH * (window.rem_size() / DESIGN_REM)
+}
 
 /// Which accessibility roles a menu reports.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -181,7 +189,9 @@ impl Menu {
     }
 
     /// The menu at least `width` wide instead of [`MIN_WIDTH`], such as a
-    /// select's, which its owner sizes through [`select_width`].
+    /// select's, which its owner sizes through [`select_width`]. Like
+    /// [`MIN_WIDTH`], `width` is a design width that follows the interface
+    /// scale.
     #[must_use]
     pub fn with_min_width(mut self, width: Pixels) -> Self {
         self.min_width = width;
@@ -851,7 +861,7 @@ impl Render for Menu {
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .occlude()
-            .min_w(self.min_width)
+            .min_w(self.min_width * (self.rem / DESIGN_REM))
             .text_size(ui(TEXT_SIZE))
             .text_color(tokens.fg)
             .flex()
@@ -962,6 +972,7 @@ mod tests {
     use super::{Menu, MenuEvent, Role, select_width};
     use crate::listbox::{Button, Item, Model, Row};
     use crate::testing::{a11y_node, tokens};
+    use crate::typography::DESIGN_REM;
 
     fn model() -> Model {
         Model::new(vec![
@@ -1016,6 +1027,55 @@ mod tests {
         });
         cx.run_until_parked();
         (menu, cx)
+    }
+
+    /// A menu at its own width, inside a box tests measure.
+    struct Sized {
+        menu: Entity<Menu>,
+    }
+
+    impl Render for Sized {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            _: &mut Context<'_, Self>,
+        ) -> impl IntoElement {
+            div().flex().items_start().child(
+                div()
+                    .debug_selector(|| "menu-box".into())
+                    .child(self.menu.clone()),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn the_default_minimum_width_follows_the_interface_scale(
+        cx: &mut TestAppContext,
+    ) {
+        let (host, cx) = cx.add_window_view(|_, cx| Sized {
+            menu: cx.new(|cx| {
+                let short = Model::new(vec![Row::Item(Item::new("a", "A"))]);
+                Menu::new("Actions", short, tokens(), true, cx)
+            }),
+        });
+        cx.run_until_parked();
+        let width = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("menu-box").expect("drawn").size.width
+        };
+        let placed = cx.update(|window, _| super::min_width(window));
+        assert_eq!((width(cx), placed), (px(264.0), px(264.0)));
+        // Below the design size the menu shrinks with its text, so it
+        // draws at the width its owner placed it at.
+        let small = DESIGN_REM * (10.0 / 13.0);
+        cx.update(|window, cx| {
+            window.set_rem_size(small);
+            host.update(cx, |_, cx| cx.notify());
+        });
+        cx.run_until_parked();
+        let placed = cx.update(|window, _| super::min_width(window));
+        assert!((f32::from(placed) - 264.0 * 10.0 / 13.0).abs() < 1e-3);
+        // Layout rounds to whole pixels.
+        assert!((width(cx) - placed).abs() < px(0.5), "{:?}", width(cx));
     }
 
     #[gpui::test]

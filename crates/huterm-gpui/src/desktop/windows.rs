@@ -78,11 +78,11 @@ use huterm_ui::components::button::{Button, Colors as ButtonColors};
 use huterm_ui::components::dialog::Modal;
 use huterm_ui::components::input::{ContextMenu as FieldContextMenu, Input};
 use huterm_ui::components::menu::{
-    MIN_WIDTH as MENU_MIN_WIDTH, Menu as MenuView, MenuEvent,
+    Menu as MenuView, MenuEvent, min_width as menu_min_width,
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
 use huterm_ui::listbox::{Model as MenuModel, Row as MenuRow};
-use huterm_ui::typography::{DESIGN_REM, Typography};
+use huterm_ui::typography::Typography;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -13519,7 +13519,7 @@ impl WorkspaceView {
         };
         // The menu's labels follow the interface scale, and so does its
         // width.
-        let width = MENU_MIN_WIDTH * (window.rem_size() / DESIGN_REM);
+        let width = menu_min_width(window);
         let placement = place(anchor, size(width, height), viewport);
         menu.update(cx, |menu, cx| {
             menu.set_max_height(Some(placement.max_height), cx);

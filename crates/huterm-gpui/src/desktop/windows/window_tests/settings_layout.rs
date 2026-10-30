@@ -1114,12 +1114,21 @@ fn the_interface_font_size_applies_to_an_open_window_on_reload(
             .expect("the Font size row drew")
     };
     let before = title(&mut harness);
-    std::fs::write(file.path(), "[font]\nui_size = 16.0\n").unwrap();
+    // The test platform installs no fonts, so the family falls back.
+    std::fs::write(
+        file.path(),
+        "[font]\nui_size = 16.0\nui_family = \"Missing Sans\"\n",
+    )
+    .unwrap();
     harness.cx.update(|cx| {
         let read = config::reload(&file.path());
         finish_reload(cx, ReloadKind::Manual, &file.path(), read, 0);
     });
     visual(&harness).run_until_parked();
+    let family = harness.cx.update(|cx| {
+        huterm_ui::typography::Typography::of(cx).family.to_string()
+    });
+    assert_eq!(family, huterm_ui::typography::SYSTEM_FAMILY);
     let rem = with_window(&mut harness, |_, window, _| window.rem_size());
     assert!(
         (f32::from(rem) - 16.0 * 16.0 / 13.0).abs() < 1e-3,
@@ -1131,5 +1140,26 @@ fn the_interface_font_size_applies_to_an_open_window_on_reload(
     assert!(
         after.size.height > before.size.height,
         "{before:?} -> {after:?}"
+    );
+}
+
+#[gpui::test]
+fn a_search_matches_a_description_as_it_reads(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("layout-search-code", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
+    });
+    // Pane title bars' description reads "`visible` bars always show",
+    // which shows as "visible bars always show".
+    let mut typing = visual(&harness);
+    typing.simulate_input("visible bars always");
+    typing.run_until_parked();
+    assert!(
+        visual(&harness)
+            .debug_bounds("settings-row-panes.title_bar")
+            .is_some(),
+        "the search across a code span found no row"
     );
 }

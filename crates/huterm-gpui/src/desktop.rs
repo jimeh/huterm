@@ -58,7 +58,7 @@ use huterm_config::SizeIndicator;
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
 };
-use huterm_ui::typography::ui;
+use huterm_ui::typography::{Typography, ui};
 use key_hint::KeyHint;
 use notices::Severity;
 use overlay::{badge, key_cap_on, mono_font_family, raised_panel, tokens};
@@ -3048,17 +3048,21 @@ impl Focusable for TerminalView {
 
 impl TerminalView {
     /// The hovered link's destination on a small raised panel at the
-    /// terminal's bottom-left corner, truncated to the terminal's width.
+    /// terminal's bottom-left corner, truncated to the terminal's width,
+    /// in the interface `family`, since the terminal's own family is the
+    /// one the view's root sets.
     fn render_link_status(
         &self,
         destination: String,
         terminal_bounds: Bounds<Pixels>,
         viewport_height: Pixels,
+        family: gpui::SharedString,
     ) -> impl IntoElement {
         let swatch = tokens(&self.theme);
         let inset = px(8.0);
         div()
             .absolute()
+            .font_family(family)
             .left(terminal_bounds.origin.x + inset)
             .bottom(viewport_height - terminal_bounds.bottom() + inset)
             .max_w((terminal_bounds.size.width - inset * 2.0).max(px(0.0)))
@@ -3111,15 +3115,19 @@ impl TerminalView {
         let stop = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
             cx.stop_propagation();
         };
+        // The pill's text is interface chrome, not terminal output, and its
+        // ends stay round as its height follows the interface scale.
+        let typography = Typography::of(cx);
         div()
             .absolute()
+            .font_family(typography.family)
             .left(terminal_bounds.origin.x)
             .w(terminal_bounds.size.width)
             .bottom(bottom)
             .flex()
             .justify_center()
             .child(
-                raised_panel(swatch, 15.0)
+                raised_panel(swatch, 15.0 * typography.scale)
                     .id("scroll-pill")
                     .flex()
                     .flex_none()
@@ -3188,7 +3196,11 @@ impl TerminalView {
     /// holds: the full panel, the compact badge in a small pane, or
     /// nothing in a tiny one. The surface stays opaque; the fade applies to
     /// the whole indicator.
-    fn render_size_panel(&self, viewport: Size<Pixels>) -> Option<AnyElement> {
+    fn render_size_panel(
+        &self,
+        viewport: Size<Pixels>,
+        family: gpui::SharedString,
+    ) -> Option<AnyElement> {
         let swatch = tokens(&self.theme);
         let grid = self.displayed_grid().unwrap_or(self.requested_grid);
         let centred = || {
@@ -3217,9 +3229,11 @@ impl TerminalView {
             }
             SizePanel::Full => {}
         }
+        // The caption is interface chrome; the grid size stays monospace.
         let panel = div()
             .absolute()
             .inset_0()
+            .font_family(family)
             .flex()
             .items_center()
             .justify_center()
@@ -3530,6 +3544,7 @@ impl Render for TerminalView {
                 link.destination,
                 terminal_bounds,
                 self.viewport(window).height,
+                Typography::of(cx).family,
             ));
         }
         let displayed_offset = self.scroll.displayed();
@@ -3554,7 +3569,10 @@ impl Render for TerminalView {
             }
         }
         if self.resize_visibility.opacity > 0.0
-            && let Some(panel) = self.render_size_panel(self.viewport(window))
+            && let Some(panel) = self.render_size_panel(
+                self.viewport(window),
+                Typography::of(cx).family,
+            )
         {
             root = root.child(panel);
         }

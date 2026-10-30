@@ -48,12 +48,13 @@ use huterm_ui::components::input::{
     Changed, Chrome, ContextMenu as FieldContextMenu, Input,
 };
 use huterm_ui::components::menu::{
-    MIN_WIDTH, Menu as MenuView, MenuEvent, Role as MenuRole, select_width,
+    Menu as MenuView, MenuEvent, Role as MenuRole, min_width, select_width,
 };
 use huterm_ui::components::number_field::{
     self, Format as NumberFormat, NumberField,
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
+use huterm_ui::components::prose;
 use huterm_ui::components::scroll_area::{ContentBounds, ScrollArea};
 use huterm_ui::components::toggle_group::roving_target;
 use huterm_ui::list_scrollbar::ListScrollbar;
@@ -1069,10 +1070,10 @@ impl SettingsView {
         query.is_empty()
             || setting.label.to_lowercase().contains(query)
             || setting.path.to_lowercase().contains(query)
-            || setting
-                .description
-                .as_deref()
-                .is_some_and(|text| text.to_lowercase().contains(query))
+            // Descriptions match as they read, without code-span backticks.
+            || setting.description.as_deref().is_some_and(|text| {
+                prose::plain(text).to_lowercase().contains(query)
+            })
     }
 
     fn select_section(
@@ -1751,7 +1752,7 @@ impl SettingsView {
                 window,
                 cx,
             ),
-            Anchor::Pointer(_) => MIN_WIDTH,
+            Anchor::Pointer(_) => min_width(window),
         };
         let height =
             MenuView::content_height(menu.read(cx).model(), window.rem_size());

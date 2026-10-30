@@ -34,7 +34,7 @@ use huterm_ui::components::key_recorder::{
     KeyRecorder, KeyRecorderButton, KeyRecorderEvent,
 };
 use huterm_ui::components::menu::{
-    MIN_WIDTH, Menu, MenuEvent, Role as MenuRole, select_width,
+    Menu, MenuEvent, Role as MenuRole, min_width, select_width,
 };
 use huterm_ui::components::number_field::{Format, NumberField};
 use huterm_ui::components::popover::{Anchor, Popover, place};
@@ -1578,7 +1578,7 @@ impl Gallery {
                         window,
                         cx,
                     ),
-                    Anchor::Pointer(_) => MIN_WIDTH,
+                    Anchor::Pointer(_) => min_width(window),
                 };
                 let height = Menu::content_height(
                     menu.read(cx).model(),

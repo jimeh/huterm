@@ -191,14 +191,21 @@ impl RenderOnce for Prose {
 
 /// The lines a code span's glyphs fill, each as its top and the left and
 /// right edges of the glyphs on it. Spaces where the span wraps reach no
-/// chip, and text cut off by truncation draws none.
+/// chip, and neither does text cut off by truncation or the ellipsis that
+/// replaces it.
 fn rows(
     layout: &gpui::TextLayout,
     range: &std::ops::Range<usize>,
     left: Pixels,
 ) -> Vec<(Pixels, Pixels, Pixels)> {
     let text = layout.text();
+    // A truncated line ends in the ellipsis, which belongs to no span.
     let end = range.end.min(layout.len());
+    let end = if text.ends_with('…') {
+        end.min(text.len() - '…'.len_utf8())
+    } else {
+        end
+    };
     let mut rows: Vec<(Pixels, Pixels, Pixels)> = Vec::new();
     let Some(span) = text.get(range.start.min(end)..end) else {
         return rows;
