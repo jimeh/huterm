@@ -230,7 +230,12 @@ done
   // always shown so the window menu button sits at its end from the start.
   // The geometry below is a top bar's; macOS defaults to the title-bar row,
   // which check-macos-titlebar.ts covers.
-  const configDocument = `[terminal]
+  // The menu steps check Huterm's own menus, which macOS replaces with
+  // native ones by default.
+  const configDocument = `[window]
+macos_native_menus = false
+
+[terminal]
 close_on_exit = false
 
 [tabs]

@@ -256,6 +256,7 @@ padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 menu_button = true # the window menu button in the title bar or tab bar
 shortcut_hints = false # key hints on the scroll pill and dialog buttons
+macos_native_menus = true # native macOS menus; ignored on Linux
 
 [tabs]
 label = "smart" # smart, title, process, directory, or process_and_directory
@@ -398,6 +399,15 @@ Menus and the command palette show each command's shortcut: in symbols on macOS
 and the arrows drawn as icons on both. The scroll pill, the close
 confirmation's buttons, the About panel, and the Licenses view show key hints
 only with `shortcut_hints = true`.
+
+On macOS the window, tab, pane, and terminal menus open as native macOS
+menus while `macos_native_menus = true`, the default. They list the same
+items with the same shortcuts, follow the theme's light or dark appearance,
+and use the system's keys and dismissal. The Edit row becomes separate
+**Copy** and **Paste** items, and a disabled item shows no reason. A native
+menu shows the state from when it opened, and closes if its tab or pane
+goes away. Set `macos_native_menus = false` for Huterm's own menus, which
+Linux always uses.
 
 Right-clicking any tab opens its context menu without activating it, and
 outlines the tab while the menu is open. The menu has:

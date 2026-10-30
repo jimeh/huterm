@@ -2048,6 +2048,13 @@ impl TerminalView {
         self.context_lookup = None;
     }
 
+    /// Forgets the right press that opened a native menu. The menu takes
+    /// its release, and a press still held would stop the next right-click
+    /// from opening anything.
+    fn release_menu_press(&mut self) {
+        self.mouse.forget_local(ProtocolMouseButton::Right);
+    }
+
     /// Asks the window for the context menu at `position`, first looking
     /// up the link at `cell` unless its result is already known. The
     /// lookup rides on a snapshot request and is bounded by

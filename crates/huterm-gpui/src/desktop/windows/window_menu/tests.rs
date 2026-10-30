@@ -3,6 +3,16 @@ use crate::config::KeybindingEntry;
 use crate::keymap::compile;
 use huterm_config::WindowConfig;
 use huterm_ui::components::kbd;
+use huterm_ui::listbox::{Model as MenuModel, Row as MenuRow};
+
+/// The rows Huterm's own menu draws for `input`.
+fn window_menu_model(
+    input: &WindowMenuInput,
+    keymap: &InstalledKeymap,
+    contexts: &[KeyContext],
+) -> MenuModel {
+    window_menu(input, keymap, contexts).to_listbox(input.platform)
+}
 
 const POSITIONS: [TabPosition; 4] = [
     TabPosition::Top,

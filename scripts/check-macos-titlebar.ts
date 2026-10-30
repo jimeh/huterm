@@ -68,7 +68,12 @@ while IFS= read -r line; do
   esac
 done
 `, { mode: 0o700 });
-  await writeFile(config, `[tabs]
+  // The menu steps check Huterm's own menus, which macOS replaces with
+  // native ones by default.
+  await writeFile(config, `[window]
+macos_native_menus = false
+
+[tabs]
 position = "${position}"
 always_show = true
 label = "title"
