@@ -353,7 +353,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   Keybindings section: same step, same focus, and the same
   `when:u2=Terminal (` draft, after that PR's new title-strip checks had
   passed. Host runs of the step passed 3 of 3 for that change, once a
-  leftover Huterm app in front of the window was stopped.
+  leftover Huterm app in front of the window was stopped. A fifth came on
+  2026-10-30 on PR #331 (run 41005288106, job 123898692917, head
+  `74d464b9`), which changes only smoke tooling: same step, same focus,
+  and the same draft. The same step had passed on that PR's previous head,
+  `3379810b`, whose tree differed only by main's #333.
 - **Evidence:** the last state had `settings.focus=action:kon:u2`,
   `settings.list=none`, `settings.status="Saved"`, `settings.writing=false`,
   and `settings.drafts` still holding `when:u2=Terminal (`, so the
