@@ -439,6 +439,28 @@ impl Tokens {
         gentlest(self.fg, &[self.fg], &tracks, &alphas)
     }
 
+    /// The border that marks a selected segment on a dark track, where its
+    /// fill barely lifts off the track and some themes draw muted text as
+    /// `fg`: the foreground at the lightest opacity that reaches 3:1
+    /// against the segment on each track.
+    #[must_use]
+    pub fn segment_line(&self) -> Hsla {
+        let segment = self.segment();
+        let unders = [
+            over(segment, over(self.chip, self.bg)),
+            over(segment, over(self.chip, self.surface)),
+        ];
+        [0.22, 0.3, 0.38, 0.46, 0.54, 0.62, 0.7, 0.78, 0.86, 0.94]
+            .into_iter()
+            .map(|alpha| self.fg.opacity(alpha))
+            .find(|line| {
+                unders.iter().all(|under| {
+                    contrast(over(*line, *under), *under) >= NON_TEXT_CONTRAST
+                })
+            })
+            .unwrap_or(self.fg)
+    }
+
     /// The shadow that lifts a selected segment off its track: faint and
     /// close on a light theme, and none on a dark one, where a shadow would
     /// not show against the track.

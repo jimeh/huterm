@@ -390,7 +390,7 @@ fn segment_style(
             element
                 .bg(tokens.segment())
                 .when(!tokens.is_light(), |element| {
-                    element.border_color(tokens.line)
+                    element.border_color(tokens.segment_line())
                 })
                 .shadow(tokens.segment_shadow())
                 .text_color(tokens.fg)

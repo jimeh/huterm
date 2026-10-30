@@ -280,9 +280,32 @@ mod contrast {
                 NON_TEXT_CONTRAST,
             ));
         }
+        pairs.extend(segment_borders(t, &chips));
         // A switch's knob marks its state on the accent track.
         pairs.push(("switch knob", t.on_accent(), t.accent, NON_TEXT_CONTRAST));
         pairs
+    }
+
+    /// A dark selected segment's border, which marks it on each of
+    /// `tracks`.
+    fn segment_borders(
+        t: &Swatch,
+        tracks: &[Hsla],
+    ) -> Vec<(&'static str, Hsla, Hsla, f32)> {
+        if t.is_light() {
+            return Vec::new();
+        }
+        tracks
+            .iter()
+            .map(|track| {
+                (
+                    "selected segment border",
+                    t.segment_line(),
+                    over(t.segment(), *track),
+                    NON_TEXT_CONTRAST,
+                )
+            })
+            .collect()
     }
 
     #[test]
