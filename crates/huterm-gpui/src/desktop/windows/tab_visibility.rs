@@ -42,6 +42,24 @@ pub(super) fn pointer_probe_deadline(
     })
 }
 
+/// How a `Reveal` fades: its fade length each way, and how long it holds
+/// after the pointer leaves before fading out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct RevealTiming {
+    pub(super) fade: Duration,
+    pub(super) leave_hold: Duration,
+}
+
+impl Default for RevealTiming {
+    /// The fullscreen tab bar's timing.
+    fn default() -> Self {
+        Self {
+            fade: Duration::from_millis(150),
+            leave_hold: Duration::from_millis(300),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Reveal {
     pub(super) progress: f32,
@@ -50,9 +68,27 @@ pub(super) struct Reveal {
     activity_until: Option<Instant>,
     hover: bool,
     enabled: bool,
+    timing: RevealTiming,
 }
 
 impl Reveal {
+    pub(super) fn with_timing(timing: RevealTiming) -> Self {
+        Self {
+            timing,
+            ..Self::default()
+        }
+    }
+
+    /// Changes the fade and leave hold from the next tick on.
+    pub(super) fn set_timing(&mut self, timing: RevealTiming) {
+        self.timing = timing;
+    }
+
+    /// Hides at once, keeping the timing.
+    fn reset(&mut self) {
+        *self = Self::with_timing(self.timing);
+    }
+
     pub(super) fn set_input(
         &mut self,
         now: Instant,
@@ -65,7 +101,7 @@ impl Reveal {
             return false;
         }
         if !enabled {
-            *self = Self::default();
+            self.reset();
         }
         if hover || self.activity_until.is_some_and(|until| now < until) {
             self.leave = None;
@@ -101,11 +137,11 @@ impl Reveal {
         if self.progress == 0.0 {
             return AnimationSchedule::IDLE;
         }
+        let hold = self.timing.leave_hold;
         match self.leave {
             None => AnimationSchedule::at(now),
-            Some(left) if now < left + Duration::from_millis(300) => {
-                let deadline =
-                    AnimationSchedule::at(left + Duration::from_millis(300));
+            Some(left) if now < left + hold => {
+                let deadline = AnimationSchedule::at(left + hold);
                 if self.progress < 1.0 {
                     deadline.merge(AnimationSchedule::FRAME)
                 } else {
@@ -139,9 +175,10 @@ impl Reveal {
     ) -> bool {
         let before = self.progress;
         if !enabled {
-            *self = Self::default();
+            self.reset();
             return before != 0.0;
         }
+        let RevealTiming { fade, leave_hold } = self.timing;
         let previous_tick = self.last.replace(now).unwrap_or(now);
         let show =
             if hover || self.activity_until.is_some_and(|until| now < until) {
@@ -149,7 +186,7 @@ impl Reveal {
                 true
             } else {
                 now.saturating_duration_since(*self.leave.get_or_insert(now))
-                    < Duration::from_millis(300)
+                    < leave_hold
                     && self.progress > 0.0
             };
         // A deadline skips the static hold. Only time after that hold belongs
@@ -158,11 +195,16 @@ impl Reveal {
             previous_tick
         } else {
             self.leave.map_or(previous_tick, |left| {
-                previous_tick.max(left + Duration::from_millis(300))
+                previous_tick.max(left + leave_hold)
             })
         };
-        let delta =
-            now.saturating_duration_since(animation_start).as_secs_f32() / 0.15;
+        let elapsed = now.saturating_duration_since(animation_start);
+        // A zero fade jumps straight to its end.
+        let delta = if fade.is_zero() {
+            1.0
+        } else {
+            elapsed.as_secs_f32() / fade.as_secs_f32()
+        };
         self.progress =
             (self.progress + if show { delta } else { -delta }).clamp(0.0, 1.0);
         (before - self.progress).abs() > f32::EPSILON

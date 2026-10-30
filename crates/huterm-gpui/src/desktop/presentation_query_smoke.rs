@@ -79,6 +79,14 @@ fn read_state(cx: &mut App) -> String {
             let Ok(root) = root.downcast::<WorkspaceView>() else {
                 return;
             };
+            #[cfg(target_os = "macos")]
+            writeln!(
+                output,
+                "appearance={}",
+                crate::native_appearance::frame_appearance_name(window)
+                    .unwrap_or_else(|error| format!("error: {error}"))
+            )
+            .unwrap();
             let workspace = root.read(cx);
             writeln!(output, "tabs={}", workspace.tabs.len()).unwrap();
             for (index, tab) in workspace.tabs.iter().enumerate() {

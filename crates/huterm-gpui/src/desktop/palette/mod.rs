@@ -2409,6 +2409,8 @@ impl Render for CommandPalette {
 
         div()
             .id("palette-overlay")
+            // Over a terminal, whose text cursor would otherwise show.
+            .cursor(gpui::CursorStyle::Arrow)
             .absolute()
             .inset_0()
             .bg(swatch.bg.opacity(0.55))

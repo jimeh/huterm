@@ -8,6 +8,7 @@
 
 use gpui::Hsla;
 use huterm_core::{Beside, MoveDestination, PaneRef};
+use huterm_ui::tokens::size;
 
 use super::pane_geometry::{PaneRect, Zone, drop_zone, zone_preview};
 use super::pane_moves::PaneMove;
@@ -22,6 +23,22 @@ pub(super) const SPRING_LOAD_DELAY: Duration = Duration::from_millis(500);
 /// perpendicular to the bar, before a release nests the tab instead of
 /// reordering it.
 pub(super) const PANE_DROP_DEPTH: Pixels = px(32.0);
+
+/// How far a drawn drop box sits inside the region it stands for, so it
+/// never touches the pane's edges or a neighbouring box.
+const DROP_BOX_INSET: Pixels = px(4.0);
+
+/// The box drawn for a drop `region`: inset on every side, keeping at
+/// least its centre line in a region too small for the inset. Only the
+/// drawing moves; the region itself still decides the drop.
+fn drop_box(region: Bounds<Pixels>) -> Bounds<Pixels> {
+    let inset = |length: Pixels| DROP_BOX_INSET.min(length / 2.0);
+    let (x, y) = (inset(region.size.width), inset(region.size.height));
+    Bounds::new(
+        point(region.origin.x + x, region.origin.y + y),
+        size(region.size.width - x * 2.0, region.size.height - y * 2.0),
+    )
+}
 
 /// The tab a pane drag rests on, and since when. Every instant comes from
 /// the caller, so tests drive the deadline without sleeping.
@@ -765,12 +782,14 @@ impl WorkspaceView {
     ) -> Vec<gpui::AnyElement> {
         let mut elements = Vec::new();
         let outline = |bounds: Bounds<Pixels>, color: Hsla| {
+            let bounds = drop_box(bounds);
             div()
                 .absolute()
                 .left(bounds.origin.x)
                 .top(bounds.origin.y)
                 .w(bounds.size.width)
                 .h(bounds.size.height)
+                .rounded(px(size::CONTROL_RADIUS))
                 .border_2()
                 .border_color(color)
                 .into_any_element()
@@ -783,7 +802,7 @@ impl WorkspaceView {
                 ..
             }) => {
                 let color = if refused { colors.error } else { colors.accent };
-                let region = zone_preview(frame, zone);
+                let region = drop_box(zone_preview(frame, zone));
                 elements.push(
                     div()
                         .absolute()
@@ -791,6 +810,7 @@ impl WorkspaceView {
                         .top(region.origin.y)
                         .w(region.size.width)
                         .h(region.size.height)
+                        .rounded(px(size::CONTROL_RADIUS))
                         .bg(color.opacity(0.22))
                         .border_2()
                         .border_color(color.opacity(0.8))
@@ -890,5 +910,21 @@ mod tests {
         assert_eq!(spring.armed_at(), Some(later + Duration::from_millis(100)));
         spring.hover(None, later);
         assert_eq!(spring, SpringLoad::default());
+    }
+
+    #[test]
+    fn a_drop_box_sits_inside_its_region_and_never_inverts() {
+        let region =
+            Bounds::new(point(px(100.0), px(50.0)), size(px(300.0), px(200.0)));
+        assert_eq!(
+            drop_box(region),
+            Bounds::new(point(px(104.0), px(54.0)), size(px(292.0), px(192.0)))
+        );
+        let thin =
+            Bounds::new(point(px(10.0), px(10.0)), size(px(6.0), px(40.0)));
+        let drawn = drop_box(thin);
+        assert_eq!(drawn.origin.x, px(13.0));
+        assert_eq!(drawn.size.width, px(0.0));
+        assert_eq!(drawn.size.height, px(32.0));
     }
 }

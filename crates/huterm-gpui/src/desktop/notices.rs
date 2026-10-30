@@ -612,6 +612,8 @@ fn render_toast(
     };
     let mut toast = raised_panel(swatch, 9.0)
         .id(("toast", id.0))
+        // Over a terminal, whose text cursor would otherwise show.
+        .cursor(gpui::CursorStyle::Arrow)
         .w_full()
         .relative()
         .flex()

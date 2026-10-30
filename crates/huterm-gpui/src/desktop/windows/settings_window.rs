@@ -28,7 +28,7 @@ use huterm_config::settings::{
 use huterm_protocol::{ArgumentKind, CommandError, CommandInvocation, ids};
 use toml::Value;
 
-use super::super::overlay::{Swatch, tokens};
+use super::super::overlay::{Swatch, theme_is_dark, tokens};
 use super::super::settings::status::{FileStatus, Tone};
 use super::super::settings::values::{
     self, Defaults, FileValues, as_number, number, number_value, shown,
@@ -41,6 +41,7 @@ use super::native_menus::{MenuAnchor, PresentedMenu};
 use crate::APP_ID;
 use crate::commands::{InvokeFocused, InvokeWindow};
 use crate::config::Theme;
+use crate::native_appearance::FrameAppearance;
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 use huterm_ui::components::input::{
@@ -286,6 +287,7 @@ pub(super) struct SettingsView {
     synced: HashMap<&'static str, String>,
     /// Focus handles for every other control, by stop.
     stops: HashMap<&'static str, FocusHandle>,
+    frame_appearance: FrameAppearance,
     sections: HashMap<SectionId, FocusHandle>,
     /// Focus handles for buttons and cards that act rather than hold a
     /// value, by action key such as `theme:nord`; see `act`.
@@ -401,6 +403,10 @@ impl SettingsView {
         search
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one initializer for each part of the settings view"
+    )]
     fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let model = SettingsModel::load()
             .expect("tests keep the committed schema valid");
@@ -455,6 +461,7 @@ impl SettingsView {
             families: None,
             synced: HashMap::new(),
             stops: HashMap::new(),
+            frame_appearance: FrameAppearance::default(),
             sections: HashMap::new(),
             actions: HashMap::new(),
             errors: HashMap::new(),
@@ -1484,7 +1491,8 @@ impl SettingsView {
         let Some(presenter) = desktop.menu_presenter.clone() else {
             return false;
         };
-        let menu = spec.to_native(!Self::swatch(cx).is_light());
+        let menu =
+            spec.to_native(theme_is_dark(&cx.global::<Desktop>().config.theme));
         let anchor = MenuAnchor::Pointer(request.position);
         let Ok(opened) = presenter.present(&menu, anchor, window) else {
             return false;
@@ -2551,6 +2559,8 @@ impl Render for SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let swatch = Self::swatch(cx);
+        let dark = theme_is_dark(&cx.global::<Desktop>().config.theme);
+        self.frame_appearance.sync(dark, window, cx);
         self.recolor_fields(swatch, cx);
         self.animate_lists(window, cx);
         self.cancel_stale_recording(cx);

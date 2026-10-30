@@ -674,8 +674,65 @@
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Pane title bars",
-          "x-huterm-order": 33,
+          "x-huterm-order": 31,
           "x-huterm-section": "window"
+        },
+        "title_bar_fade_ms": {
+          "default": 75,
+          "description": "How long, in milliseconds, a `hover` title bar takes to fade in or\nout, from 0 to 1000.",
+          "format": "uint16",
+          "maximum": 1000,
+          "minimum": 0,
+          "type": "integer",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Title bar fade",
+          "x-huterm-order": 33,
+          "x-huterm-section": "window",
+          "x-huterm-step": 25,
+          "x-huterm-unit": "ms",
+          "x-huterm-visible-when": {
+            "equals": "hover",
+            "setting": "panes.title_bar"
+          }
+        },
+        "title_bar_hide_delay_ms": {
+          "default": 400,
+          "description": "How long, in milliseconds, a `hover` title bar stays after the\npointer leaves it before it fades out, from 0 to 5000.",
+          "format": "uint16",
+          "maximum": 5000,
+          "minimum": 0,
+          "type": "integer",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Title bar hide delay",
+          "x-huterm-order": 34,
+          "x-huterm-section": "window",
+          "x-huterm-step": 25,
+          "x-huterm-unit": "ms",
+          "x-huterm-visible-when": {
+            "equals": "hover",
+            "setting": "panes.title_bar"
+          }
+        },
+        "title_bar_hover_delay_ms": {
+          "default": 75,
+          "description": "How long, in milliseconds, the pointer rests along a pane's edge\nbefore a `hover` title bar fades in, from 0 to 2000.",
+          "format": "uint16",
+          "maximum": 2000,
+          "minimum": 0,
+          "type": "integer",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Title bar reveal delay",
+          "x-huterm-order": 32,
+          "x-huterm-section": "window",
+          "x-huterm-step": 25,
+          "x-huterm-unit": "ms",
+          "x-huterm-visible-when": {
+            "equals": "hover",
+            "setting": "panes.title_bar"
+          }
         },
         "title_bar_position": {
           "allOf": [
@@ -8890,6 +8947,29 @@
       },
       "type": "object"
     },
+    "SizeIndicator": {
+      "description": "How the window shows its grid size while it resizes.",
+      "oneOf": [
+        {
+          "const": "full",
+          "description": "The size panel, or the compact badge where the panel does not fit.",
+          "type": "string",
+          "x-huterm-label": "Full"
+        },
+        {
+          "const": "compact",
+          "description": "The compact badge alone.",
+          "type": "string",
+          "x-huterm-label": "Compact"
+        },
+        {
+          "const": "off",
+          "description": "No indicator.",
+          "type": "string",
+          "x-huterm-label": "Off"
+        }
+      ]
+    },
     "TabCloseButton": {
       "oneOf": [
         {
@@ -9490,6 +9570,45 @@
           "x-huterm-label": "Shortcut hints",
           "x-huterm-order": 20,
           "x-huterm-section": "window"
+        },
+        "size_indicator": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SizeIndicator"
+            }
+          ],
+          "default": "full",
+          "description": "The centred `columns × rows` indicator while a window or pane\nresizes: `full` shows the size panel, falling back to the compact\nbadge in a small pane, `compact` always shows the badge, and `off`\nshows neither.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Size indicator",
+          "x-huterm-order": 26,
+          "x-huterm-section": "window"
+        },
+        "size_indicator_linger_ms": {
+          "default": 2000,
+          "description": "How long, in milliseconds, the size indicator stays after resizing\nstops, from 0 to 10000. While a window edge or a pane divider is\nstill being dragged it stays regardless; on Linux a window edge\ndrag counts from the last resize.",
+          "format": "uint16",
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Size indicator linger",
+          "x-huterm-order": 27,
+          "x-huterm-section": "window",
+          "x-huterm-step": 100,
+          "x-huterm-unit": "ms",
+          "x-huterm-visible-when": [
+            {
+              "equals": "full",
+              "setting": "window.size_indicator"
+            },
+            {
+              "equals": "compact",
+              "setting": "window.size_indicator"
+            }
+          ]
         }
       },
       "type": "object"

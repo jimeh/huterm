@@ -517,6 +517,58 @@ pub struct WindowConfig {
         "x-huterm-platform" = "macos",
     )))]
     pub macos_native_menus: bool,
+    /// The centred `columns × rows` indicator while a window or pane
+    /// resizes: `full` shows the size panel, falling back to the compact
+    /// badge in a small pane, `compact` always shows the badge, and `off`
+    /// shows neither.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Window",
+        "x-huterm-label" = "Size indicator",
+        "x-huterm-order" = 26,
+        "x-huterm-apply" = "live",
+    )))]
+    pub size_indicator: SizeIndicator,
+    /// How long, in milliseconds, the size indicator stays after resizing
+    /// stops, from 0 to 10000. While a window edge or a pane divider is
+    /// still being dragged it stays regardless; on Linux a window edge
+    /// drag counts from the last resize.
+    #[cfg_attr(feature = "schema", schemars(range(max = 10000), extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Window",
+        "x-huterm-label" = "Size indicator linger",
+        "x-huterm-order" = 27,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "ms",
+        "x-huterm-step" = 100,
+        "x-huterm-visible-when" = [
+            {"setting": "window.size_indicator", "equals": "full"},
+            {"setting": "window.size_indicator", "equals": "compact"}
+        ],
+    )))]
+    pub size_indicator_linger_ms: u16,
+}
+
+/// How the window shows its grid size while it resizes.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum SizeIndicator {
+    /// The size panel, or the compact badge where the panel does not fit.
+    #[default]
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Full")))]
+    Full,
+    /// The compact badge alone.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Compact"))
+    )]
+    Compact,
+    /// No indicator.
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Off")))]
+    Off,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -681,6 +733,8 @@ impl Default for WindowConfig {
             menu_button: true,
             shortcut_hints: false,
             macos_native_menus: true,
+            size_indicator: SizeIndicator::Full,
+            size_indicator_linger_ms: 2000,
         }
     }
 }
@@ -873,10 +927,49 @@ pub struct PanesConfig {
         "x-huterm-section" = "window",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Pane title bars",
-        "x-huterm-order" = 33,
+        "x-huterm-order" = 31,
         "x-huterm-apply" = "live",
     )))]
     pub title_bar: PaneTitleBarMode,
+    /// How long, in milliseconds, the pointer rests along a pane's edge
+    /// before a `hover` title bar fades in, from 0 to 2000.
+    #[cfg_attr(feature = "schema", schemars(range(max = 2000), extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Title bar reveal delay",
+        "x-huterm-order" = 32,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "ms",
+        "x-huterm-step" = 25,
+        "x-huterm-visible-when" = {"setting": "panes.title_bar", "equals": "hover"},
+    )))]
+    pub title_bar_hover_delay_ms: u16,
+    /// How long, in milliseconds, a `hover` title bar takes to fade in or
+    /// out, from 0 to 1000.
+    #[cfg_attr(feature = "schema", schemars(range(max = 1000), extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Title bar fade",
+        "x-huterm-order" = 33,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "ms",
+        "x-huterm-step" = 25,
+        "x-huterm-visible-when" = {"setting": "panes.title_bar", "equals": "hover"},
+    )))]
+    pub title_bar_fade_ms: u16,
+    /// How long, in milliseconds, a `hover` title bar stays after the
+    /// pointer leaves it before it fades out, from 0 to 5000.
+    #[cfg_attr(feature = "schema", schemars(range(max = 5000), extend(
+        "x-huterm-section" = "window",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Title bar hide delay",
+        "x-huterm-order" = 34,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "ms",
+        "x-huterm-step" = 25,
+        "x-huterm-visible-when" = {"setting": "panes.title_bar", "equals": "hover"},
+    )))]
+    pub title_bar_hide_delay_ms: u16,
     /// Which edge of a pane its title bar, or the focus accent that stands
     /// in for a hidden bar, runs along: `top` or `bottom`.
     #[cfg_attr(feature = "schema", schemars(extend(
@@ -966,6 +1059,9 @@ impl Default for PanesConfig {
         Self {
             title_bar: PaneTitleBarMode::default(),
             title_bar_position: PaneTitleBarPosition::default(),
+            title_bar_hover_delay_ms: 75,
+            title_bar_fade_ms: 75,
+            title_bar_hide_delay_ms: 400,
             focus_accent: 0.0,
             inactive_dim: 0.0,
             zoom: PaneZoomScope::default(),
@@ -979,12 +1075,30 @@ impl Default for PanesConfig {
 }
 
 impl PanesConfig {
-    /// Checks the focus indicator amounts, the user layouts, and the cycle.
+    /// Checks the title bar timings, the focus indicator amounts, the user
+    /// layouts, and the cycle.
     ///
     /// # Errors
-    /// Returns the first invalid amount, layout, or cycle entry, with its
-    /// key path.
+    /// Returns the first invalid timing, amount, layout, or cycle entry,
+    /// with its key path.
     pub fn validate(&self) -> Result<(), String> {
+        for (key, value, max) in [
+            (
+                "title_bar_hover_delay_ms",
+                self.title_bar_hover_delay_ms,
+                2000,
+            ),
+            ("title_bar_fade_ms", self.title_bar_fade_ms, 1000),
+            (
+                "title_bar_hide_delay_ms",
+                self.title_bar_hide_delay_ms,
+                5000,
+            ),
+        ] {
+            if value > max {
+                return Err(format!("panes.{key} must be between 0 and {max}"));
+            }
+        }
         if !(0.0..=1.0).contains(&self.focus_accent) {
             return Err("panes.focus_accent must be between 0 and 1".into());
         }
@@ -2055,6 +2169,11 @@ impl RawConfig {
     pub fn validate_values(&self) -> Result<(), ConfigError> {
         self.quake.validate().map_err(ConfigError::Quake)?;
         self.panes.validate().map_err(ConfigError::Panes)?;
+        if self.window.size_indicator_linger_ms > 10_000 {
+            return Err(ConfigError::Invalid(
+                "window.size_indicator_linger_ms must be between 0 and 10000",
+            ));
+        }
         if self.palette.retain_query_seconds > 3600 {
             return Err(ConfigError::Invalid(
                 "palette.retain_query_seconds must be between 0 and 3600",
@@ -2780,6 +2899,83 @@ mod panes_tests {
         ] {
             assert_eq!(panes(source).unwrap_err(), message, "{source}");
         }
+    }
+
+    #[test]
+    fn title_bar_timings_accept_their_range_and_reject_the_rest() {
+        let defaults = panes("").unwrap();
+        assert_eq!(
+            (
+                defaults.title_bar_hover_delay_ms,
+                defaults.title_bar_fade_ms,
+                defaults.title_bar_hide_delay_ms
+            ),
+            (75, 75, 400)
+        );
+        let ends = panes(
+            "[panes]\ntitle_bar_hover_delay_ms = 2000\ntitle_bar_fade_ms = 0\n\
+             title_bar_hide_delay_ms = 5000",
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                ends.title_bar_hover_delay_ms,
+                ends.title_bar_fade_ms,
+                ends.title_bar_hide_delay_ms
+            ),
+            (2000, 0, 5000)
+        );
+        for (source, message) in [
+            (
+                "[panes]\ntitle_bar_hover_delay_ms = 2001",
+                "panes.title_bar_hover_delay_ms must be between 0 and 2000",
+            ),
+            (
+                "[panes]\ntitle_bar_fade_ms = 1001",
+                "panes.title_bar_fade_ms must be between 0 and 1000",
+            ),
+            (
+                "[panes]\ntitle_bar_hide_delay_ms = 5001",
+                "panes.title_bar_hide_delay_ms must be between 0 and 5000",
+            ),
+        ] {
+            assert_eq!(panes(source).unwrap_err(), message, "{source}");
+        }
+        assert!(panes("[panes]\ntitle_bar_fade_ms = -1").is_err());
+    }
+
+    #[test]
+    fn the_size_indicator_parses_its_variants_and_bounds_its_linger() {
+        let window = |source: &str| -> Result<WindowConfig, String> {
+            let raw: RawConfig =
+                toml::from_str(source).map_err(|error| error.to_string())?;
+            raw.validate_values().map_err(|error| error.to_string())?;
+            Ok(raw.window)
+        };
+        let defaults = window("").unwrap();
+        assert_eq!(
+            (defaults.size_indicator, defaults.size_indicator_linger_ms),
+            (SizeIndicator::Full, 2000)
+        );
+        let compact = window(
+            "[window]\nsize_indicator = 'compact'\nsize_indicator_linger_ms = 10000",
+        )
+        .unwrap();
+        assert_eq!(
+            (compact.size_indicator, compact.size_indicator_linger_ms),
+            (SizeIndicator::Compact, 10_000)
+        );
+        assert_eq!(
+            window("[window]\nsize_indicator = 'off'")
+                .unwrap()
+                .size_indicator,
+            SizeIndicator::Off
+        );
+        assert!(window("[window]\nsize_indicator = 'tiny'").is_err());
+        assert_eq!(
+            window("[window]\nsize_indicator_linger_ms = 10001").unwrap_err(),
+            "window.size_indicator_linger_ms must be between 0 and 10000"
+        );
     }
 
     #[test]

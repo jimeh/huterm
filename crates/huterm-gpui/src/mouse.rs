@@ -34,9 +34,50 @@ pub(super) fn application_route(
     in_grid
         && !scrollbar
         && !shift
-        && tracking.is_some_and(|tracking| tracking != MouseTracking::Disabled)
+        && application_tracks(tracking, displayed, desired)
+}
+
+/// Whether the program in a live terminal takes the mouse: it enabled
+/// tracking and the view shows live output. `tracking` is `None` once the
+/// terminal exited.
+pub(super) fn application_tracks(
+    tracking: Option<MouseTracking>,
+    displayed: usize,
+    desired: usize,
+) -> bool {
+    tracking.is_some_and(|tracking| tracking != MouseTracking::Disabled)
         && displayed == 0
         && desired == 0
+}
+
+/// What the pointer over a terminal hits, for its cursor.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact about the pointer"
+)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct PointerTarget {
+    /// A link the pointer would open.
+    pub(super) link: bool,
+    /// The scrollbar strip.
+    pub(super) scrollbar: bool,
+    /// The program takes the mouse, as `application_tracks` decides.
+    pub(super) application: bool,
+    /// Shift is held, which keeps clicks local.
+    pub(super) shift: bool,
+}
+
+/// The cursor over a terminal: a pointing hand on a link, the arrow on the
+/// scrollbar or while the program takes the mouse, and the text cursor
+/// where a press selects, including with Shift past a program's tracking.
+pub(super) fn terminal_cursor(target: PointerTarget) -> gpui::CursorStyle {
+    if target.link {
+        gpui::CursorStyle::PointingHand
+    } else if target.scrollbar || (target.application && !target.shift) {
+        gpui::CursorStyle::Arrow
+    } else {
+        gpui::CursorStyle::IBeam
+    }
 }
 
 fn index(button: MouseButton) -> usize {
@@ -70,6 +111,11 @@ impl MouseState {
     pub(super) fn boundary(&mut self) {
         self.motion = None;
         self.wheel = [0.0; 2];
+    }
+
+    /// Whether a held button's gesture belongs to the program.
+    pub(super) fn application_held(&self) -> bool {
+        self.buttons.contains(&Ownership::Application)
     }
 
     pub(super) fn held(&self, button: MouseButton) -> bool {

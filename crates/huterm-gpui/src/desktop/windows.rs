@@ -40,7 +40,7 @@ use super::notices::{
     Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
     ToastHandlers, render_notice_stack,
 };
-use super::overlay::{OverlayColors, overlay_colors, tokens};
+use super::overlay::{OverlayColors, overlay_colors, theme_is_dark, tokens};
 use super::palette::{
     CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
     PaletteHierarchy, PaletteOpen, PaletteScope, PaletteTarget,
@@ -52,6 +52,7 @@ use crate::commands::{
 };
 use crate::config::TabPosition;
 use crate::fullscreen::{Effect, FullscreenController, ToggleIntent};
+use crate::native_appearance::FrameAppearance;
 #[cfg(target_os = "macos")]
 use crate::native_quit;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
@@ -68,7 +69,7 @@ use huterm_core::{
 };
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, HierarchyState, NodeId,
-    PaneId, PaneInfo, PaneLayout, RuntimeId, SessionId, SplitAxis,
+    PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis,
     SplitDirection, SplitId, SplitNode, TerminalId, Touched,
     ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name, validate,
     validate_supplied,
@@ -219,7 +220,7 @@ use model::{
     WindowRecord, WindowRestore, apply_tab_order,
 };
 use native_menus::{MenuAnchor, MenuPresenter, NativeMenuSession};
-use pane_bars::{BarInput, PaneBarReveals};
+use pane_bars::{BarInput, PaneBarReveals, PaneBarTiming};
 use pane_drag::{DropTarget, PaneDrag, PaneMode};
 use pane_focus::FocusMarks;
 use pane_geometry::{
@@ -2416,6 +2417,8 @@ fn open_window_with_profile(
                 tab_scrollbars: Scrollbars::default(),
                 sidebar_width: SIDEBAR_WIDTH,
                 resizing_sidebar: false,
+                live_resize: LiveResize::default(),
+                frame_appearance: FrameAppearance::default(),
                 divider_drag: None,
                 resize_commits: Vec::new(),
                 resize_commit_counter: 0,
@@ -2429,7 +2432,9 @@ fn open_window_with_profile(
                 reveal: Reveal::default(),
                 reveal_context: None,
                 pointer_reveal: PointerReveal::default(),
-                pane_bars: PaneBarReveals::default(),
+                pane_bars: PaneBarReveals::with_timing(
+                    PaneBarTiming::from_config(&config.panes),
+                ),
                 pane_bar_pointer: None,
                 layout_pending: false,
                 synced_presentation: None,
@@ -2617,6 +2622,25 @@ fn open_window_with_profile(
                         .await;
                     }));
                 view.fullscreen_work.wake.signal();
+                #[cfg(target_os = "macos")]
+                match crate::native_live_resize::LiveResize::observe(window) {
+                    Ok((observer, changes)) => {
+                        let task = cx.spawn(async move |weak, cx| {
+                            while let Ok(live) = changes.recv().await {
+                                let updated = weak.update(cx, |view, cx| {
+                                    view.live_resize.active = live;
+                                    cx.notify();
+                                });
+                                if updated.is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                        view.live_resize.observer = Some((observer, task));
+                    }
+                    // The size indicator then lingers after the last resize.
+                    Err(error) => eprintln!("Live resize observer: {error}"),
+                }
             });
             view
         },
@@ -3488,6 +3512,15 @@ fn shorten_path(path: &str) -> String {
     parts.join("/")
 }
 
+/// Whether the user is dragging the window's edge, as `AppKit` reports it,
+/// and the observer that reports it.
+#[derive(Default)]
+struct LiveResize {
+    active: bool,
+    #[cfg(target_os = "macos")]
+    observer: Option<(crate::native_live_resize::LiveResize, Task<()>)>,
+}
+
 #[derive(Default)]
 struct PointerReveal {
     refresh_pending: bool,
@@ -3530,6 +3563,8 @@ struct WorkspaceView {
     tab_scrollbars: Scrollbars,
     sidebar_width: Pixels,
     resizing_sidebar: bool,
+    live_resize: LiveResize,
+    frame_appearance: FrameAppearance,
     divider_drag: Option<DividerDrag>,
     /// Resizes this window committed, shown until the projection holds
     /// them, keyed by a per-window counter.
@@ -5023,6 +5058,9 @@ impl WorkspaceView {
         let Some(drag) = self.divider_drag.take() else {
             return;
         };
+        // The release ends the size indicator's hold even when the split
+        // is gone.
+        cx.notify();
         // Against the layout with this window's queued commits, so a drag
         // back to the projection's position still lands after them.
         let Some(split) = self
@@ -6035,6 +6073,11 @@ impl WorkspaceView {
                 layout.tabs.intersect(&layout.terminal)
             });
         let pane_bars = self.revealed_pane_bars(window, cx);
+        // A drag that resizes the panes holds their size indicators until
+        // it ends: every pane for the window edge or the sidebar, and only
+        // the panes beside it for a divider.
+        let resize_held = self.resizing_sidebar || self.live_resize.active;
+        let divider_held = self.divider_drag_views(cx);
         let mut changed_any = false;
         for (view, geometry, placement) in views {
             let pane_bar = pane_bars
@@ -6063,6 +6106,10 @@ impl WorkspaceView {
                 terminal.overlays.pane_bar = pane_bar;
                 terminal.geometry = geometry;
                 terminal.quiet_resize = quake_presenting;
+                terminal.hold_size_indicator(
+                    resize_held || divider_held.contains(&view.entity_id()),
+                    cx,
+                );
                 if geometry_changed || changed || scale_changed || cell_changed
                 {
                     terminal.resize_to_layout(window, bar_toggled);
@@ -6073,6 +6120,60 @@ impl WorkspaceView {
         if changed_any {
             cx.notify();
         }
+    }
+
+    /// Re-renders the shown terminal under the pointer when `modifiers`
+    /// change its cursor. Modifier events reach only the focused terminal,
+    /// and Shift changes an unfocused pane's cursor too.
+    fn refresh_hovered_cursor(
+        &self,
+        modifiers: gpui::Modifiers,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let pointer = window.mouse_position();
+        for (view, _, _) in self.pane_views_with_layout(window, cx) {
+            view.update(cx, |terminal, cx| {
+                if terminal.visible
+                    && terminal.content_bounds(window).contains(&pointer)
+                {
+                    terminal.refresh_cursor(pointer, modifiers, window, cx);
+                }
+            });
+        }
+    }
+
+    /// The views of the panes the dragged divider resizes: those in the two
+    /// children beside it, since a drag moves only that boundary.
+    fn divider_drag_views(&self, cx: &App) -> HashSet<EntityId> {
+        fn collect(node: &PaneNode, panes: &mut Vec<PaneId>) {
+            match node {
+                PaneNode::Pane(pane) => panes.push(pane.id),
+                PaneNode::Split(split) => {
+                    for child in &split.children {
+                        collect(&child.node, panes);
+                    }
+                }
+            }
+        }
+        let Some(drag) = &self.divider_drag else {
+            return HashSet::new();
+        };
+        let mut panes = Vec::new();
+        if let Some(layout) = self.shown_layout(drag.tab, cx)
+            && let Some(split) = layout.split_node(drag.split)
+        {
+            for child in split.children.iter().skip(drag.index).take(2) {
+                collect(&child.node, &mut panes);
+            }
+        }
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == drag.tab) else {
+            return HashSet::new();
+        };
+        panes
+            .into_iter()
+            .filter_map(|pane| tab.pane(pane).map(|pane| pane.view.entity_id()))
+            .collect()
     }
 
     /// A Quake window is still showing, settling, or hiding; its layout
@@ -10522,6 +10623,8 @@ impl WorkspaceView {
                 window.request_decorations(requested);
             }
             self.config = config.clone();
+            self.pane_bars
+                .set_timing(PaneBarTiming::from_config(&config.panes));
             // A change of bar mode reveals or hides the hover bars.
             self.refresh_pane_bars(cx);
             self.sync_frame(window);
@@ -11146,6 +11249,11 @@ impl Render for WorkspaceView {
         }
         self.measure_tab_widths(window, cx);
         self.sync_frame(window);
+        self.frame_appearance.sync(
+            theme_is_dark(&self.config.theme),
+            window,
+            cx,
+        );
         self.refresh_tab_visibility(window, cx);
         self.sync_tab_layout(window, cx);
         self.sync_window_title(window, cx);
@@ -11183,6 +11291,13 @@ impl Render for WorkspaceView {
             .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
             .track_focus(&self.focus)
+            // On the focus path, so it hears modifier changes over every
+            // pane, not only the focused one.
+            .on_modifiers_changed(cx.listener(
+                |view, event: &gpui::ModifiersChangedEvent, window, cx| {
+                    view.refresh_hovered_cursor(event.modifiers, window, cx);
+                },
+            ))
             .on_drag_move::<gpui::ExternalPaths>(|_, window, cx| {
                 // GPUI owns one app-wide drag. Closing another window must
                 // not cancel the external payload delivered to this one.
@@ -12200,6 +12315,20 @@ impl Render for WorkspaceView {
                 );
             }
         }
+        // Drawn last, a window cursor wins over every element beneath the
+        // pointer, such as a terminal's text cursor, while a drag owns it.
+        if let Some(cursor) = self.drag_cursor() {
+            root = root.child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, (), window, _| {
+                        window.set_window_cursor_style(cursor);
+                    },
+                )
+                .absolute()
+                .size_full(),
+            );
+        }
         // Layout may change drag geometry or clear hover without an input event.
         self.frame_clock.animate(
             cx.entity().downgrade(),
@@ -12207,6 +12336,28 @@ impl Render for WorkspaceView {
             cx,
         );
         root
+    }
+}
+
+impl WorkspaceView {
+    /// The cursor one of Huterm's own drags shows wherever the pointer
+    /// goes: the resize cursor while a divider or the sidebar edge moves,
+    /// and the arrow while a pane or tab moves.
+    fn drag_cursor(&self) -> Option<gpui::CursorStyle> {
+        if let Some(drag) = &self.divider_drag {
+            Some(match drag.axis {
+                SplitAxis::Columns => gpui::CursorStyle::ResizeLeftRight,
+                SplitAxis::Rows => gpui::CursorStyle::ResizeUpDown,
+            })
+        } else if self.resizing_sidebar {
+            Some(gpui::CursorStyle::ResizeLeftRight)
+        } else if self.reorder.as_ref().is_some_and(|drag| drag.dragging)
+            || self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+        {
+            Some(gpui::CursorStyle::Arrow)
+        } else {
+            None
+        }
     }
 }
 

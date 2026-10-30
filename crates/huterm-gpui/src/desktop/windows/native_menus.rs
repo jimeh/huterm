@@ -9,7 +9,9 @@
 use gpui::{Bounds, Context, Pixels, Point, WeakEntity, Window};
 
 use super::menu_spec::{MenuSpec, NativeMenu};
-use super::{Desktop, MenuKind, TabId, TerminalView, WorkspaceView, tokens};
+use super::{
+    Desktop, MenuKind, TabId, TerminalView, WorkspaceView, theme_is_dark,
+};
 
 /// Where a native menu opens, in window coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -87,7 +89,7 @@ impl WorkspaceView {
         else {
             return false;
         };
-        let menu = spec.to_native(!tokens(&self.config.theme).is_light());
+        let menu = spec.to_native(theme_is_dark(&self.config.theme));
         let opened = match presenter.present(&menu, anchor, window) {
             Ok(opened) => opened,
             Err(error) => {

@@ -737,3 +737,60 @@ fn moving_the_origin_without_changing_the_grid_repaints_the_same_rows_there(
     harness.click(cell);
     harness.assert_received(&click(2, 1));
 }
+
+#[gpui::test]
+fn an_unfocused_pane_shows_the_arrow_where_its_first_click_reaches_the_child(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &echo_fixture(0, BUTTONS));
+    harness.wait_ready(MouseTracking::Buttons);
+    let position = harness.cell_center(2, 1);
+    harness.update(|_, window, cx| window.blur(cx));
+    harness.read(|view, window| {
+        assert!(!view.focus.is_focused(window));
+        assert_eq!(
+            view.cursor_at(position, Modifiers::none(), window),
+            gpui::CursorStyle::Arrow
+        );
+        assert_eq!(
+            view.cursor_at(position, Modifiers::shift(), window),
+            gpui::CursorStyle::IBeam
+        );
+    });
+    // The press focuses the pane before it routes, so the child gets it.
+    harness.click(position);
+    harness.assert_received(&click(2, 1));
+}
+
+#[gpui::test]
+fn a_held_gesture_keeps_its_owners_cursor_whatever_shift_does(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &echo_fixture(0, BUTTONS));
+    harness.wait_ready(MouseTracking::Buttons);
+    let position = harness.cell_center(2, 1);
+    // A plain press goes to the child, which keeps the arrow even if Shift
+    // is pressed before the release.
+    harness.update(|view, window, cx| {
+        view.mouse_down(&press(position), window, cx);
+        assert_eq!(
+            view.cursor_at(position, Modifiers::shift(), window),
+            gpui::CursorStyle::Arrow
+        );
+        view.mouse_up(&release(position), window, cx);
+    });
+    harness.assert_received(&click(2, 1));
+    // A Shift press selects locally, which keeps the text cursor after
+    // Shift is let go.
+    harness.update(|view, window, cx| {
+        let mut shifted = press(position);
+        shifted.modifiers = Modifiers::shift();
+        view.mouse_down(&shifted, window, cx);
+        assert!(view.selecting, "the Shift press started a local selection");
+        assert_eq!(
+            view.cursor_at(position, Modifiers::none(), window),
+            gpui::CursorStyle::IBeam
+        );
+        view.mouse_up(&release(position), window, cx);
+    });
+}

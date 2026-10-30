@@ -15,7 +15,8 @@ use crate::animation::AnimationSchedule;
 const MIN_THUMB_SIZE: f32 = 24.0;
 /// How long an indicator stays fully visible after activity before fading.
 pub const INDICATOR_HOLD: Duration = Duration::from_secs(2);
-const INDICATOR_FADE: Duration = Duration::from_millis(400);
+/// How long an indicator takes to fade out once its hold ends.
+pub const INDICATOR_FADE: Duration = Duration::from_millis(400);
 const SCROLLBAR_EXPAND: Duration = Duration::from_millis(180);
 /// How long the pointer must rest on a scrollbar before it widens, so a
 /// pointer crossing it on the way elsewhere leaves it thin. Crossing the

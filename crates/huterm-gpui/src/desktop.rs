@@ -39,24 +39,29 @@ use crate::input_queue::{
 use crate::keymap::{
     self, CompiledKeymap, InstalledKeymap, Platform, ReservedKeys,
 };
-use crate::mouse::{MouseState, application_route};
+use crate::mouse::{
+    MouseState, PointerTarget, application_route, application_tracks,
+    terminal_cursor,
+};
 use crate::renderer::{
     GridMetrics, TerminalRenderer, rgb_color as color, rgba_color,
 };
 use crate::scroll::ScrollController;
 use crate::ui::animation::AnimationSchedule;
 use crate::ui::scrollbar::{
-    Axis, Edge, HitBand, INDICATOR_HOLD, IndicatorVisibility, Origin, Press,
-    ScrollbarColors, ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions,
-    Scrollbars, ThumbSize, TrackMargins, TrackPress,
+    Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarColors,
+    ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions, Scrollbars,
+    ThumbSize, TrackMargins, TrackPress,
 };
 use grid_geometry::GridGeometry;
+use huterm_config::SizeIndicator;
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
 };
 use key_hint::KeyHint;
 use notices::Severity;
-use overlay::{key_cap_on, mono_font_family, raised_panel, tokens};
+use overlay::{badge, key_cap_on, mono_font_family, raised_panel, tokens};
+use size_indicator::SizeIndicatorVisibility;
 
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
@@ -105,6 +110,7 @@ mod overlay;
 pub(crate) mod palette;
 mod refresh;
 mod settings;
+mod size_indicator;
 pub(crate) use windows::{
     fullscreen_smoke, integration_smoke, palette_smoke,
     presentation_query_smoke, quake_smoke, refresh_smoke,
@@ -488,7 +494,9 @@ struct TerminalView {
     selected_text: Option<String>,
     selecting: bool,
     scrollbars: Scrollbars,
-    resize_visibility: IndicatorVisibility,
+    /// The cursor the last render set over the terminal.
+    pointer_cursor: gpui::CursorStyle,
+    resize_visibility: SizeIndicatorVisibility,
     /// Key cap shown beside "Jump to live" in the scroll pill.
     scroll_to_bottom_key: String,
     last_viewport: Option<gpui::Size<Pixels>>,
@@ -677,6 +685,12 @@ impl TerminalView {
                         if view.bell.viewed(true) {
                             cx.notify();
                         }
+                        view.refresh_cursor(
+                            window.mouse_position(),
+                            window.modifiers(),
+                            window,
+                            cx,
+                        );
                     } else {
                         view.clear_composition(cx);
                         view.blur_mouse(cx);
@@ -801,7 +815,8 @@ impl TerminalView {
             selected_text: None,
             selecting: false,
             scrollbars: Scrollbars::vertical(TERMINAL_SCROLLBAR),
-            resize_visibility: IndicatorVisibility::default(),
+            pointer_cursor: gpui::CursorStyle::IBeam,
+            resize_visibility: SizeIndicatorVisibility::default(),
             scroll_to_bottom_key: DEFAULT_SCROLL_TO_BOTTOM_KEY.to_owned(),
             last_viewport: None,
             selection_edge_direction: 0,
@@ -1770,6 +1785,56 @@ impl TerminalView {
         }
     }
 
+    /// The cursor for the pointer at window `position`.
+    fn cursor_at(
+        &self,
+        position: gpui::Point<Pixels>,
+        modifiers: GpuiModifiers,
+        window: &Window,
+    ) -> gpui::CursorStyle {
+        let local = position - self.content_bounds(window).origin;
+        // A held gesture keeps its owner's cursor until release, as it keeps
+        // its owner, whatever Shift does meanwhile.
+        let (application, shift) = if self.selecting {
+            (false, false)
+        } else if self.mouse.application_held() {
+            (true, false)
+        } else {
+            // As `application_mouse` routes, except that focus does not
+            // count: a press focuses the pane before it routes.
+            let tracks = window.is_window_active()
+                && self.snapshot.as_ref().is_some_and(|snapshot| {
+                    application_tracks(
+                        (!self.exited).then_some(snapshot.modes.mouse_tracking),
+                        self.scroll.displayed(),
+                        self.scroll.desired(),
+                    )
+                });
+            (tracks, modifiers.shift)
+        };
+        terminal_cursor(PointerTarget {
+            link: self.links.hover().is_some(),
+            scrollbar: self.scrollbars.dragging()
+                || (!self.selecting && self.over_scrollbar(local, window)),
+            application,
+            shift,
+        })
+    }
+
+    /// Renders again when the pointer's cursor would change, as when Shift
+    /// toggles over a program that takes the mouse.
+    fn refresh_cursor(
+        &self,
+        position: gpui::Point<Pixels>,
+        modifiers: GpuiModifiers,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.cursor_at(position, modifiers, window) != self.pointer_cursor {
+            cx.notify();
+        }
+    }
+
     fn can_drop_paths(&self, window: &Window) -> bool {
         !self.overlays.contains(window.mouse_position())
             && self.visible
@@ -2151,6 +2216,7 @@ impl TerminalView {
             self.activate_scrollbar();
             cx.notify();
         }
+        self.refresh_cursor(event.position, event.modifiers, window, cx);
         if let Some((_, thumb_start)) =
             self.scrollbars.drag_to(bounds, position, now)
         {
@@ -2524,6 +2590,22 @@ impl TerminalView {
         }
     }
 
+    fn size_indicator_linger(&self) -> Duration {
+        Duration::from_millis(u64::from(
+            self.window_config.size_indicator_linger_ms,
+        ))
+    }
+
+    /// Holds the size indicator while a window edge or pane divider drag
+    /// that resizes this terminal is under way; its release starts the
+    /// linger.
+    fn hold_size_indicator(&mut self, held: bool, cx: &mut Context<'_, Self>) {
+        let linger = self.size_indicator_linger();
+        if self.resize_visibility.hold(held, Instant::now(), linger) {
+            cx.notify();
+        }
+    }
+
     fn resize_if_needed(&mut self, window: &Window) {
         self.resize_to_layout(window, false);
     }
@@ -2552,8 +2634,12 @@ impl TerminalView {
             // the pointer's cell up again by itself.
             self.links.invalidate();
             self.links.forget_point();
-            if !quiet && !self.quiet_resize {
-                self.resize_visibility.activate(Instant::now());
+            if !quiet
+                && !self.quiet_resize
+                && self.window_config.size_indicator != SizeIndicator::Off
+            {
+                self.resize_visibility
+                    .resized(Instant::now(), self.size_indicator_linger());
                 self.resize_indicators += 1;
             }
         }
@@ -2673,6 +2759,7 @@ impl TerminalView {
         self.mouse.forget_released_buttons();
         self.links.forget_press();
         self.scrollbars.pointer_left(Instant::now());
+        self.resize_visibility.reset();
         self.visible = false;
     }
 
@@ -2805,7 +2892,7 @@ impl refresh::Animated for TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         if self.scrollbars.advance(now)
-            | self.resize_visibility.update(now, false)
+            | self.resize_visibility.update(now)
             | self.bell.advance(now)
         {
             cx.notify();
@@ -3095,10 +3182,11 @@ impl TerminalView {
             )
     }
 
-    /// The centred `columns × rows` panel while the grid size changes, sized
-    /// to what `viewport` holds: the full panel, the numbers alone in a
-    /// small pane, or nothing in a tiny one. The surface stays opaque; the
-    /// fade applies to the whole panel.
+    /// The centred `columns × rows` indicator while the grid size changes,
+    /// as `[window] size_indicator` asks and sized to what `viewport`
+    /// holds: the full panel, the compact badge in a small pane, or
+    /// nothing in a tiny one. The surface stays opaque; the fade applies to
+    /// the whole indicator.
     fn render_size_panel(&self, viewport: Size<Pixels>) -> Option<AnyElement> {
         let swatch = tokens(&self.theme);
         let grid = self.displayed_grid().unwrap_or(self.requested_grid);
@@ -3110,24 +3198,18 @@ impl TerminalView {
                 .items_center()
                 .justify_center()
         };
-        match size_panel(viewport) {
+        match size_panel(self.window_config.size_indicator, viewport) {
             SizePanel::Hidden => return None,
             SizePanel::Compact => {
                 return Some(
                     centred()
                         .child(
-                            raised_panel(swatch, 6.0)
-                                .opacity(self.resize_visibility.opacity)
-                                .py(px(3.0))
-                                .px(px(8.0))
-                                .font_family(mono_font_family())
-                                .text_size(px(13.0))
-                                .line_height(px(16.0))
-                                .text_color(swatch.fg)
-                                .child(format!(
-                                    "{}×{}",
-                                    grid.columns, grid.rows
-                                )),
+                            badge(
+                                swatch,
+                                format!("{}×{}", grid.columns, grid.rows),
+                            )
+                            .font_family(mono_font_family())
+                            .opacity(self.resize_visibility.opacity),
                         )
                         .into_any_element(),
                 );
@@ -3195,18 +3277,22 @@ const FULL_SIZE_PANEL: (Pixels, Pixels) = (px(200.0), px(96.0));
 /// The smallest view that holds the compact panel, the numbers alone.
 const COMPACT_SIZE_PANEL: (Pixels, Pixels) = (px(96.0), px(32.0));
 
-/// Which size panel fits `viewport`, so a small pane never shows one
-/// clipped or wrapped.
-fn size_panel(viewport: Size<Pixels>) -> SizePanel {
+/// Which size panel `variant` asks for and `viewport` fits, so a small
+/// pane never shows one clipped or wrapped.
+fn size_panel(variant: SizeIndicator, viewport: Size<Pixels>) -> SizePanel {
     let holds = |(width, height): (Pixels, Pixels)| {
         viewport.width >= width && viewport.height >= height
     };
-    if holds(FULL_SIZE_PANEL) {
-        SizePanel::Full
-    } else if holds(COMPACT_SIZE_PANEL) {
-        SizePanel::Compact
-    } else {
-        SizePanel::Hidden
+    match variant {
+        SizeIndicator::Full if holds(FULL_SIZE_PANEL) => SizePanel::Full,
+        SizeIndicator::Full | SizeIndicator::Compact
+            if holds(COMPACT_SIZE_PANEL) =>
+        {
+            SizePanel::Compact
+        }
+        SizeIndicator::Full | SizeIndicator::Compact | SizeIndicator::Off => {
+            SizePanel::Hidden
+        }
     }
 }
 
@@ -3290,9 +3376,16 @@ impl Render for TerminalView {
             ))
             .on_modifiers_changed(cx.listener(
                 |view, event: &gpui::ModifiersChangedEvent, window, cx| {
-                    // Notifies only when link hover changes. Modifier presses
-                    // while typing must not re-render the window.
+                    // Notifies only when link hover or the cursor changes.
+                    // Modifier presses while typing must not re-render the
+                    // window.
                     view.update_link_pointer(
+                        window.mouse_position(),
+                        event.modifiers,
+                        window,
+                        cx,
+                    );
+                    view.refresh_cursor(
                         window.mouse_position(),
                         event.modifiers,
                         window,
@@ -3428,14 +3521,15 @@ impl Render for TerminalView {
                     },
                 ));
         }
+        self.pointer_cursor =
+            self.cursor_at(window.mouse_position(), window.modifiers(), window);
+        root = root.cursor(self.pointer_cursor);
         if let Some(link) = hovered_link {
-            root = root.cursor(gpui::CursorStyle::PointingHand).child(
-                self.render_link_status(
-                    link.destination,
-                    terminal_bounds,
-                    self.viewport(window).height,
-                ),
-            );
+            root = root.child(self.render_link_status(
+                link.destination,
+                terminal_bounds,
+                self.viewport(window).height,
+            ));
         }
         let displayed_offset = self.scroll.displayed();
         let geometries = self.scrollbar_geometries(window);
@@ -3935,15 +4029,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_size_panel_compacts_then_hides_in_small_views() {
+    fn the_size_panel_follows_its_variant_and_compacts_then_hides_in_small_views()
+     {
         let view = |width: f32, height: f32| size(px(width), px(height));
-        assert_eq!(size_panel(view(800.0, 600.0)), SizePanel::Full);
-        assert_eq!(size_panel(view(200.0, 96.0)), SizePanel::Full);
-        assert_eq!(size_panel(view(199.0, 300.0)), SizePanel::Compact);
-        assert_eq!(size_panel(view(300.0, 95.0)), SizePanel::Compact);
-        assert_eq!(size_panel(view(96.0, 32.0)), SizePanel::Compact);
-        assert_eq!(size_panel(view(95.0, 300.0)), SizePanel::Hidden);
-        assert_eq!(size_panel(view(300.0, 31.0)), SizePanel::Hidden);
+        let full = |viewport| size_panel(SizeIndicator::Full, viewport);
+        assert_eq!(full(view(800.0, 600.0)), SizePanel::Full);
+        assert_eq!(full(view(200.0, 96.0)), SizePanel::Full);
+        assert_eq!(full(view(199.0, 300.0)), SizePanel::Compact);
+        assert_eq!(full(view(300.0, 95.0)), SizePanel::Compact);
+        assert_eq!(full(view(96.0, 32.0)), SizePanel::Compact);
+        assert_eq!(full(view(95.0, 300.0)), SizePanel::Hidden);
+        assert_eq!(full(view(300.0, 31.0)), SizePanel::Hidden);
+        let compact = |viewport| size_panel(SizeIndicator::Compact, viewport);
+        assert_eq!(compact(view(800.0, 600.0)), SizePanel::Compact);
+        assert_eq!(compact(view(95.0, 300.0)), SizePanel::Hidden);
+        assert_eq!(
+            size_panel(SizeIndicator::Off, view(800.0, 600.0)),
+            SizePanel::Hidden
+        );
     }
 
     #[test]
