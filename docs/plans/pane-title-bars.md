@@ -1,9 +1,10 @@
 # Pane title bars
 
-Status: in progress. Jim approved the configuration and hover design on
+Status: implemented. Jim approved the configuration and hover design on
 2026-10-30. PR 1 (pane names and the title bar menu) merged in #329. On
 2026-10-30 Jim folded the planned PR 3 (`hover`) into PR 2, so the position,
-`hidden`, and `hover` modes ship as one pull request.
+`hidden`, and `hover` modes shipped as one pull request, #340. The
+follow-ups at the end list what that delivery left uncovered.
 
 Split panes gain names and a context menu on their title bars, and the bars
 gain a position and a visibility mode:
@@ -258,3 +259,15 @@ pass-through.
 | Pane close and zoom buttons at the bottom | GPUI window test |
 | Defaults unchanged for native input | `smoke:macos-input` |
 | Bars, cue, and fades in both themes; native menu from a bottom bar; Settings rows | Codex computer-use UX review |
+
+## Follow-ups
+
+- The pane title bar's title and its zoom and close buttons are missing from
+  the accessibility tree; the buttons are not `Button`s yet. This predates
+  the series.
+- No automated test covers the fullscreen auto-hide tab bar's priority over
+  top-row hover bars, or a terminal-owned selection drag crossing a bar's
+  band. The Linux test platform never reports a hovered window, so window
+  tests inject the sampled pointer.
+- A native `NSMenu` holding its hover bar revealed, and the native menu's
+  position under a bottom bar, were checked only by inspection.
