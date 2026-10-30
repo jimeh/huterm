@@ -105,7 +105,7 @@ a pointer resting mid-drag. `native_live_resize` observes the will-start and
 did-end live-resize notifications for each `NSWindow` and only sends the
 state over a channel; the window's task applies it, and `sync_tab_layout`
 holds every pane's size indicator while it lasts, as it does for a sidebar
-drag. A divider drag holds only the panes in its split. Linux has no such
+drag. A divider drag holds only the panes beside it. Linux has no such
 state, so the indicator lingers after the last resize there.
 
 Guard nil retained handles before invoking `objc` message macros, including in

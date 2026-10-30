@@ -6075,7 +6075,7 @@ impl WorkspaceView {
         let pane_bars = self.revealed_pane_bars(window, cx);
         // A drag that resizes the panes holds their size indicators until
         // it ends: every pane for the window edge or the sidebar, and only
-        // the panes in its split for a divider.
+        // the panes beside it for a divider.
         let resize_held = self.resizing_sidebar || self.live_resize.active;
         let divider_held = self.divider_drag_views(cx);
         let mut changed_any = false;
@@ -6122,7 +6122,29 @@ impl WorkspaceView {
         }
     }
 
-    /// The views of the panes in the split whose divider is being dragged.
+    /// Re-renders the shown terminal under the pointer when `modifiers`
+    /// change its cursor. Modifier events reach only the focused terminal,
+    /// and Shift changes an unfocused pane's cursor too.
+    fn refresh_hovered_cursor(
+        &self,
+        modifiers: gpui::Modifiers,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let pointer = window.mouse_position();
+        for (view, _, _) in self.pane_views_with_layout(window, cx) {
+            view.update(cx, |terminal, cx| {
+                if terminal.visible
+                    && terminal.content_bounds(window).contains(&pointer)
+                {
+                    terminal.refresh_cursor(pointer, modifiers, window, cx);
+                }
+            });
+        }
+    }
+
+    /// The views of the panes the dragged divider resizes: those in the two
+    /// children beside it, since a drag moves only that boundary.
     fn divider_drag_views(&self, cx: &App) -> HashSet<EntityId> {
         fn collect(node: &PaneNode, panes: &mut Vec<PaneId>) {
             match node {
@@ -6141,7 +6163,7 @@ impl WorkspaceView {
         if let Some(layout) = self.shown_layout(drag.tab, cx)
             && let Some(split) = layout.split_node(drag.split)
         {
-            for child in &split.children {
+            for child in split.children.iter().skip(drag.index).take(2) {
                 collect(&child.node, &mut panes);
             }
         }
@@ -11269,6 +11291,13 @@ impl Render for WorkspaceView {
             .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
             .track_focus(&self.focus)
+            // On the focus path, so it hears modifier changes over every
+            // pane, not only the focused one.
+            .on_modifiers_changed(cx.listener(
+                |view, event: &gpui::ModifiersChangedEvent, window, cx| {
+                    view.refresh_hovered_cursor(event.modifiers, window, cx);
+                },
+            ))
             .on_drag_move::<gpui::ExternalPaths>(|_, window, cx| {
                 // GPUI owns one app-wide drag. Closing another window must
                 // not cancel the external payload delivered to this one.

@@ -685,6 +685,12 @@ impl TerminalView {
                         if view.bell.viewed(true) {
                             cx.notify();
                         }
+                        view.refresh_cursor(
+                            window.mouse_position(),
+                            window.modifiers(),
+                            window,
+                            cx,
+                        );
                     } else {
                         view.clear_composition(cx);
                         view.blur_mouse(cx);
@@ -1794,15 +1800,16 @@ impl TerminalView {
         } else if self.mouse.application_held() {
             (true, false)
         } else {
-            // Focus and window activity do not count: a press focuses the
-            // pane before `application_mouse` routes it.
-            let tracks = self.snapshot.as_ref().is_some_and(|snapshot| {
-                application_tracks(
-                    (!self.exited).then_some(snapshot.modes.mouse_tracking),
-                    self.scroll.displayed(),
-                    self.scroll.desired(),
-                )
-            });
+            // As `application_mouse` routes, except that focus does not
+            // count: a press focuses the pane before it routes.
+            let tracks = window.is_window_active()
+                && self.snapshot.as_ref().is_some_and(|snapshot| {
+                    application_tracks(
+                        (!self.exited).then_some(snapshot.modes.mouse_tracking),
+                        self.scroll.displayed(),
+                        self.scroll.desired(),
+                    )
+                });
             (tracks, modifiers.shift)
         };
         terminal_cursor(PointerTarget {

@@ -766,6 +766,102 @@ fn a_divider_drag_holds_only_the_panes_in_its_split(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_divider_drag_holds_only_the_panes_beside_it(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, panes) = harness.three_panes(ECHO);
+    harness
+        .invoke_with(window, &arrange_panes("columns"))
+        .unwrap();
+    harness.wait_layout(window, tab, &panes, COLUMNS);
+    // A, in the same split but not beside the dragged divider, still shows
+    // its size from earlier.
+    harness.cx.update(|cx| {
+        let view = pane_view(cx, window, tab, panes[0]).unwrap();
+        view.update(cx, |view, _| {
+            view.resize_visibility
+                .resized(Instant::now(), Duration::from_secs(60));
+        });
+    });
+    let start = harness.update_view(window, |view, _, _| {
+        view.drawn_dividers
+            .borrow()
+            .iter()
+            .find(|divider| divider.index == 1)
+            .map(|divider| divider.grab.center())
+            .expect("the divider between B and C")
+    });
+    let moved = start + gpui::point(px(-20.0), px(0.0));
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(
+        start,
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_move(
+        moved,
+        Some(MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    harness.wait_for("the drag to hold B's size", |cx| {
+        dragging(cx, window)
+            && indicator(cx, window, tab, panes[1]) == (1.0, true)
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(
+            indicator(cx, window, tab, panes[0]),
+            (1.0, false),
+            "A keeps its own linger"
+        );
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_up(moved, MouseButton::Left, gpui::Modifiers::none());
+}
+
+#[gpui::test]
+fn shift_over_an_unfocused_pane_turns_its_cursor_without_a_move(
+    cx: &mut TestAppContext,
+) {
+    // Each child enables mouse reporting before it reports ready.
+    const TRACKING: &str = "printf '\\033[?1000hREADY'; exec cat >/dev/null";
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, panes) = harness.three_panes(TRACKING);
+    let centre = harness.update_view(window, |view, _, _| {
+        view.drawn_panes
+            .borrow()
+            .as_ref()
+            .and_then(|(_, rects)| {
+                rects.iter().find(|rect| rect.pane == panes[1])
+            })
+            .map(|rect| rect.terminal.center())
+            .expect("B is drawn")
+    });
+    let cursor = |cx: &mut App| {
+        pane_view(cx, window, tab, panes[1])
+            .map(|view| view.read(cx).pointer_cursor)
+    };
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_move(centre, None, gpui::Modifiers::none());
+    harness.wait_for("B's arrow over its program", |cx| {
+        cursor(cx) == Some(gpui::CursorStyle::Arrow)
+    });
+    // Focus stays in A, so only the window sees the modifier change, and
+    // GPUI redraws nothing for one: B must be notified to show the I-beam.
+    let notified = Rc::new(Cell::new(0));
+    let _observation = harness.cx.update(|cx| {
+        let view = pane_view(cx, window, tab, panes[1]).unwrap();
+        let notified = Rc::clone(&notified);
+        cx.observe(&view, move |_, _| notified.set(notified.get() + 1))
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_modifiers_change(gpui::Modifiers::shift());
+    harness.cx.run_until_parked();
+    assert!(notified.get() > 0, "Shift did not re-render B");
+    harness.wait_for("Shift to turn B's cursor", |cx| {
+        cursor(cx) == Some(gpui::CursorStyle::IBeam)
+    });
+}
+
+#[gpui::test]
 fn an_earlier_drop_completing_first_keeps_its_undo_entry(
     cx: &mut TestAppContext,
 ) {
