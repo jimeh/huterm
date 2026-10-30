@@ -277,7 +277,7 @@ run = [
 [tasks."bench:idle"]
 depends = ["ghostty:prepare", "scripts:install"]
 description = "Measure opt-in macOS idle CPU, wakeups, RSS and threads; pass --arms for preserved binaries"
-run = "bun scripts/run-idle-benchmark.ts"
+run = "bun scripts/host-smoke-lock.ts bun scripts/run-idle-benchmark.ts"
 
 [tasks."bench:output-latency"]
 depends = ["ghostty:prepare", "scripts:install"]
@@ -345,7 +345,7 @@ else
   SHELL="$workload" HUTERM_SCROLL_BENCH=1 \
     HUTERM_SCROLL_REVISION="$revision" \
     HUTERM_SCROLL_HARDWARE="$hardware" \
-    bun scripts/run-scroll-benchmark.ts "$report" target/release/huterm
+    bun scripts/host-smoke-lock.ts bun scripts/run-scroll-benchmark.ts "$report" target/release/huterm
 fi
 bun scripts/check-scroll-benchmark.ts "$report"
 '''
@@ -500,7 +500,7 @@ depends = ["ghostty:prepare"]
 description = "Verify cancellable AppKit termination with a real PTY"
 run = [
   "bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example native_quit_smoke",
-  "bun scripts/check-native-quit.ts target/debug/examples/native_quit_smoke",
+  "bun scripts/host-smoke-lock.ts bun scripts/check-native-quit.ts target/debug/examples/native_quit_smoke",
 ]
 
 [tasks."bench:engine"]
@@ -737,7 +737,7 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 0
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --features macos-updater --example native_menus_smoke
-bun scripts/check-native-menus.ts target/debug/examples/native_menus_smoke
+bun scripts/host-smoke-lock.ts bun scripts/check-native-menus.ts target/debug/examples/native_menus_smoke
 '''
 
 [tasks."smoke:macos-updater"]
@@ -749,7 +749,7 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 0
 fi
 bash scripts/build-exec.sh cargo build --locked --features macos-updater --example native_updater_smoke
-bun scripts/check-native-updater.ts target/debug/examples/native_updater_smoke
+bun scripts/host-smoke-lock.ts bun scripts/check-native-updater.ts target/debug/examples/native_updater_smoke
 '''
 
 [tasks."smoke:linux-input"]
@@ -786,7 +786,7 @@ run = '''
 set -eu
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example presentation_query_smoke
 case "$(uname -s)" in
-  Darwin) bun scripts/check-presentation-queries.ts target/debug/examples/presentation_query_smoke ;;
+  Darwin) bun scripts/host-smoke-lock.ts bun scripts/check-presentation-queries.ts target/debug/examples/presentation_query_smoke ;;
   Linux) xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-presentation-queries.ts target/debug/examples/presentation_query_smoke ;;
   *) echo "Presentation query smoke requires Linux or macOS" >&2; exit 1 ;;
 esac
@@ -833,7 +833,7 @@ if [ "$(uname -s)" != Darwin ]; then
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example quake_smoke
 mise run build:swift
-bun scripts/check-quake.ts target/debug/examples/quake_smoke target/debug/quake-witness
+bun scripts/host-smoke-lock.ts bun scripts/check-quake.ts target/debug/examples/quake_smoke target/debug/quake-witness
 '''
 
 [tasks."smoke:macos-fullscreen"]
@@ -845,7 +845,7 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 0
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example fullscreen_smoke
-bun scripts/check-fullscreen.ts target/debug/examples/fullscreen_smoke
+bun scripts/host-smoke-lock.ts bun scripts/check-fullscreen.ts target/debug/examples/fullscreen_smoke
 '''
 
 [tasks."smoke:macos-input"]
@@ -857,7 +857,7 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 0
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example native_input_smoke
-bun scripts/check-native-input.ts target/debug/examples/native_input_smoke
+bun scripts/host-smoke-lock.ts bun scripts/check-native-input.ts target/debug/examples/native_input_smoke
 '''
 
 [tasks."smoke:macos-clipboard"]
@@ -871,7 +871,7 @@ fi
 command -v tmux >/dev/null || { echo "Clipboard smoke requires tmux" >&2; exit 1; }
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example clipboard_smoke
 mise run build:swift
-bun scripts/check-clipboard.ts target/debug/examples/clipboard_smoke target/debug/clipboard-witness
+bun scripts/host-smoke-lock.ts bun scripts/check-clipboard.ts target/debug/examples/clipboard_smoke target/debug/clipboard-witness
 '''
 
 [tasks."smoke:linux-clipboard"]
@@ -902,7 +902,7 @@ if [ "$(uname -s)" != Darwin ]; then
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example palette_smoke
 mise run build:swift
-bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
+bun scripts/host-smoke-lock.ts bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
 '''
 
 [tasks."smoke:linux-palette"]
@@ -982,7 +982,7 @@ esac
 
 [tasks."ci:smoke:step"]
 description = "Supervise one named CI smoke step with bounded cleanup and live evidence"
-run = "bun scripts/run-smoke-step.ts"
+run = "bun scripts/host-smoke-lock.ts bun scripts/run-smoke-step.ts"
 
 [tasks."ci:smoke:run"]
 description = "Run precompiled CI desktop smoke binaries for the current platform"
@@ -996,6 +996,10 @@ run_smoke_step() {
 
 case "$(uname -s)" in
   Darwin)
+    # Hold the host smoke lock once across every step; the rerun inherits it.
+    if [ -z "${HUTERM_HOST_SMOKE_LOCK_HELD:-}" ]; then
+      exec bun scripts/host-smoke-lock.ts mise run ci:smoke:run
+    fi
     case "$smoke_step" in
       all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-refresh|macos-clipboard|macos-palette|macos-overlays|macos-viewers|macos-settings|macos-titlebar|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
       *) echo "Unknown macOS smoke step: $smoke_step" >&2; exit 1 ;;
@@ -1168,7 +1172,7 @@ if [ "$(uname -s)" = Linux ]; then
   mkdir -p "$(dirname "$xvfb_log")"
   xvfb-run -a -e "$xvfb_log" -s '-screen 0 1280x960x24 -noreset' bun scripts/check-renderer.ts target/debug/examples/renderer_smoke
 else
-  bun scripts/check-renderer.ts target/debug/examples/renderer_smoke
+  bun scripts/host-smoke-lock.ts bun scripts/check-renderer.ts target/debug/examples/renderer_smoke
 fi
 '''
 
@@ -1239,7 +1243,7 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 1
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example integration_smoke
-bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke
+bun scripts/host-smoke-lock.ts bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke
 '''
 
 [tasks."smoke:linux-integration"]
@@ -1257,12 +1261,12 @@ xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-desktop-integr
 [tasks."smoke:manual-integration"]
 description = "Launch a safe Ghostty raw-PTY recorder for Finder or file-manager QA"
 depends = ["ghostty:prepare"]
-run = "bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example integration_smoke && bun scripts/manual-desktop-integration.ts"
+run = "bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example integration_smoke && bun scripts/host-smoke-lock.ts bun scripts/manual-desktop-integration.ts"
 
 [tasks."smoke:manual-viewers"]
 description = "Launch one terminal in two windows for manual focus and control QA"
 depends = ["ghostty:prepare"]
-run = "bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example palette_smoke && bun scripts/manual-viewers.ts"
+run = "bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example palette_smoke && bun scripts/host-smoke-lock.ts bun scripts/manual-viewers.ts"
 
 [tasks."vendor:check"]
 description = "Verify vendored crates match their pinned archives and patches"
@@ -1314,5 +1318,5 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 1
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example refresh_smoke
-bun scripts/check-refresh-smoke.ts target/debug/examples/refresh_smoke
+bun scripts/host-smoke-lock.ts bun scripts/check-refresh-smoke.ts target/debug/examples/refresh_smoke
 '''
