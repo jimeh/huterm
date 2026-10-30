@@ -997,7 +997,7 @@ run_smoke_step() {
 case "$(uname -s)" in
   Darwin)
     # Hold the host smoke lock once across every step; the rerun inherits it.
-    if [ -z "${HUTERM_HOST_SMOKE_LOCK_HELD:-}" ]; then
+    if ! bun scripts/host-smoke-lock.ts --held; then
       exec bun scripts/host-smoke-lock.ts mise run ci:smoke:run
     fi
     case "$smoke_step" in

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,6 +6,9 @@ import { join, resolve } from "node:path";
 const script = join(import.meta.dir, "host-smoke-lock.ts");
 const worktree = resolve(import.meta.dir, "..");
 const darwin = process.platform === "darwin";
+
+// Waits below have their own deadlines; leave room for a loaded runner.
+setDefaultTimeout(30_000);
 
 const directories: string[] = [];
 const processes: ReturnType<typeof Bun.spawn>[] = [];
@@ -38,7 +41,7 @@ function start(state: string, command: string[], env: Record<string, string> = {
   return { child, stderr: () => stderr, exit: child.exited.then(async (code) => { await drained; return code; }) };
 }
 
-async function until(condition: () => boolean, description: string, describeState: () => string = () => "", timeoutMs = 3_000) {
+async function until(condition: () => boolean, description: string, describeState: () => string = () => "", timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${description}; last state: ${describeState()}`);
@@ -148,6 +151,28 @@ describe.skipIf(!darwin)("the host smoke lock", () => {
     writeFileSync(join(files, "finish"), "");
     expect(await first.exit).toBe(7);
     expect(existsSync(join(state, "owner"))).toBe(false);
+  });
+
+  test("a terminated holder stops the processes its command leaves behind before releasing", async () => {
+    const { state, files } = fixture();
+    // The shell exits on SIGTERM and orphans its background child.
+    const first = start(state, ["sh", "-c", `sleep 30 & echo $! > "$1/sleep"; touch "$1/a.started"; wait`, "sh", files]);
+    await until(() => existsSync(join(files, "a.started")), "the first command", first.stderr);
+    const orphan = Number(readFileSync(join(files, "sleep"), "utf8"));
+    pids.push(orphan);
+    first.child.kill("SIGTERM");
+    expect(await first.child.exited).toBe(143);
+    expect(() => process.kill(orphan, 0)).toThrow();
+  });
+
+  test("--held answers whether this run already holds the same lock", async () => {
+    const { state, files } = fixture();
+    const held = (env: Record<string, string>) => Bun.spawn([process.execPath, script, "--held"], {
+      env: { ...process.env, HUTERM_HOST_SMOKE_LOCK_HELD: "", HUTERM_HOST_SMOKE_STATE: state, ...env }, stdout: "ignore", stderr: "ignore",
+    }).exited;
+    expect(await held({ HUTERM_HOST_SMOKE_LOCK_HELD: state })).toBe(0);
+    expect(await held({ HUTERM_HOST_SMOKE_LOCK_HELD: join(files, "elsewhere") })).toBe(1);
+    expect(await held({})).toBe(1);
   });
 
   test("a stale holder record is not reported as the holder", async () => {

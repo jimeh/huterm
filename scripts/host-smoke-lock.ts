@@ -3,11 +3,14 @@
  * pointer, keyboard, focus, and global shortcuts, so two at once fail like flakes.
  *
  *   bun scripts/host-smoke-lock.ts [--] <command...>
+ *   bun scripts/host-smoke-lock.ts --held
  *
  * Waits for one per-user kernel lock, records its holder beside it, and runs the
  * command while holding it. The command inherits HUTERM_HOST_SMOKE_LOCK_HELD, so
  * a nested wrapper runs its command directly instead of waiting on its ancestor.
  * Off macOS the command runs without a lock; Linux smokes use private displays.
+ * `--held` exits 0 when this process needs no lock of its own, for a shell
+ * script that reruns itself under the wrapper.
  */
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { constants as os, homedir } from "node:os";
@@ -18,6 +21,8 @@ export const HELD = "HUTERM_HOST_SMOKE_LOCK_HELD";
 const TIMEOUT = "HUTERM_HOST_SMOKE_LOCK_TIMEOUT";
 const DEFAULT_TIMEOUT_SECONDS = 45 * 60;
 const POLL_MS = 250;
+/** How long processes a cancelled command leaves behind get to exit before SIGKILL. */
+const STRAY_GRACE_MS = 2_000;
 const worktree = resolve(import.meta.dir, "..");
 
 class LockError extends Error {
@@ -29,7 +34,7 @@ export function stateDirectory(env = process.env): string {
 }
 
 export function timeoutSeconds(value: string | undefined): number {
-  if (value === undefined || value === "") return DEFAULT_TIMEOUT_SECONDS;
+  if (value === undefined || value.trim() === "") return DEFAULT_TIMEOUT_SECONDS;
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds < 0) throw new LockError(`${TIMEOUT} must be a non-negative number of seconds, not ${JSON.stringify(value)}`, 2);
   return seconds;
@@ -64,13 +69,48 @@ function describeOwner(owner: Owner | undefined): string {
   return `${task} in ${owner.worktree} (PID ${owner.pid}, since ${owner.started})`;
 }
 
+/** Each process's parent, or none where the process table is unreadable, as in some sandboxes. */
+function parents(): Map<number, number> {
+  try {
+    const listing = Bun.spawnSync(["ps", "-axo", "pid=,ppid="], { stdout: "pipe", stderr: "ignore" });
+    if (listing.exitCode !== 0) return new Map();
+    return new Map(listing.stdout.toString().trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number) as [number, number]));
+  } catch {
+    return new Map();
+  }
+}
+
 function isAncestor(pid: number): boolean {
-  const listing = Bun.spawnSync(["ps", "-axo", "pid=,ppid="], { stdout: "pipe", stderr: "ignore" }).stdout.toString();
-  const parents = new Map(listing.trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number) as [number, number]));
-  for (let current = parents.get(process.pid); current && current > 1; current = parents.get(current)) {
+  const table = parents();
+  for (let current = table.get(process.pid); current && current > 1; current = table.get(current)) {
     if (current === pid) return true;
   }
   return false;
+}
+
+function descendants(root: number): number[] {
+  const children = new Map<number, number[]>();
+  for (const [pid, parent] of parents()) children.set(parent, [...(children.get(parent) ?? []), pid]);
+  const found: number[] = [];
+  for (let queue = [root]; queue.length > 0; ) {
+    for (const pid of children.get(queue.shift()!) ?? []) {
+      found.push(pid);
+      queue.push(pid);
+    }
+  }
+  return found;
+}
+
+/**
+ * A harness killed by a signal can orphan the app it launched, which would
+ * then share the desktop with the next holder. Stop whatever is left.
+ */
+async function stopStrays(pids: Iterable<number>): Promise<void> {
+  const strays = [...pids].filter(alive);
+  for (const pid of strays) { try { process.kill(pid, "SIGTERM"); } catch {} }
+  const deadline = performance.now() + STRAY_GRACE_MS;
+  while (strays.some(alive) && performance.now() < deadline) await Bun.sleep(50);
+  for (const pid of strays.filter(alive)) { try { process.kill(pid, "SIGKILL"); } catch {} }
 }
 
 let interrupted: NodeJS.Signals | undefined;
@@ -87,7 +127,8 @@ async function acquire(directory: string, timeout: number): Promise<() => void> 
     if (interrupted) throw new LockError(`host smoke lock: interrupted while waiting for ${holder}`, 128 + os.signals[interrupted]);
     if (performance.now() >= deadline) throw new LockError(`host smoke lock: timed out after ${duration(timeout)} waiting for ${holder}`, 75);
     const key = owner ? `${owner.pid} ${owner.started}` : "unknown";
-    if (key !== announced) {
+    // A handoff briefly leaves no record; that is not a new holder.
+    if (key !== announced && !(key === "unknown" && announced)) {
       if (owner && isAncestor(owner.pid)) {
         throw new LockError(`host smoke lock: held by an ancestor of this run, ${holder}, but ${HELD} did not reach this process; pass the environment through`, 1);
       }
@@ -112,6 +153,7 @@ function publishOwner(path: string, command: string[]): void {
 }
 
 async function main(argv: string[]): Promise<number> {
+  if (argv[0] === "--held") return process.platform !== "darwin" || process.env[HELD] === stateDirectory() ? 0 : 1;
   const command = argv[0] === "--" ? argv.slice(1) : argv;
   if (command.length === 0) throw new LockError("usage: bun scripts/host-smoke-lock.ts [--] <command...>", 2);
   const timeout = timeoutSeconds(process.env[TIMEOUT]);
@@ -119,18 +161,26 @@ async function main(argv: string[]): Promise<number> {
   const locking = process.platform === "darwin" && process.env[HELD] !== directory;
 
   let child: ReturnType<typeof Bun.spawn> | undefined;
+  const strays = new Set<number>();
   // The child usually shares the terminal's process group and receives a
   // terminal signal directly too; a repeat is harmless to the smoke harnesses.
+  // Its descendants are recorded first: once it exits, orphans lose their parent.
   const forward = (signal: NodeJS.Signals) => {
     interrupted ??= signal;
-    child?.kill(signal);
+    if (!child) return;
+    for (const pid of descendants(child.pid)) strays.add(pid);
+    child.kill(signal);
   };
   const handlers = (["SIGINT", "SIGTERM", "SIGHUP"] as const).map((signal) => [signal, () => forward(signal)] as const);
   for (const [signal, handler] of handlers) process.on(signal, handler);
   let release: (() => void) | undefined;
   try {
     if (locking) {
-      mkdirSync(directory, { recursive: true });
+      try {
+        mkdirSync(directory, { recursive: true });
+      } catch (error) {
+        throw new LockError(`host smoke lock: cannot create ${directory}; set HUTERM_HOST_SMOKE_STATE to a writable directory: ${error instanceof Error ? error.message : String(error)}`, 1);
+      }
       const unlock = await acquire(directory, timeout);
       const owner = join(directory, "owner");
       publishOwner(owner, command);
@@ -144,6 +194,7 @@ async function main(argv: string[]): Promise<number> {
       throw new LockError(`host smoke lock: could not start ${command[0]}: ${error instanceof Error ? error.message : String(error)}`, 127);
     }
     const status = await child.exited;
+    await stopStrays(strays);
     const signal = child.signalCode;
     if (signal === null) return status;
     return 128 + (typeof signal === "number" ? signal : os.signals[signal]);

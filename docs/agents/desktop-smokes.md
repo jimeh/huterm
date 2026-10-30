@@ -19,14 +19,18 @@ its holder in `owner` beside it, and runs its command while holding the lock.
   so for the macOS benchmarks it runs. Cargo builds and `build:swift` run
   before the lock, so other worktrees keep compiling while one holds it;
   `bench:idle` builds inside it.
-- `scripts/host-smoke-tasks.test.ts` fails for any smoke, benchmark, or task
-  that runs a desktop harness without the lock, unless it lists a reason the
-  task may skip it. Wrap a new host smoke's harness command and the test
-  passes; run a harness such as `bun scripts/check-palette.ts` directly on
-  the host only under `bun scripts/host-smoke-lock.ts`.
+- `scripts/host-smoke-tasks.test.ts` checks each desktop harness command in
+  `mise.toml` (`check-*`, `manual-*`, and the window-opening `run-*`
+  scripts). Each must follow the wrapper or `headless.sh` on its command
+  line, run under `xvfb-run`, belong to a task that reruns itself under the
+  wrapper, or sit in a task the test lists with a reason. Every
+  `smoke:macos-*` task must use the wrapper. Run a harness such as
+  `bun scripts/check-palette.ts` directly on the host only under
+  `bun scripts/host-smoke-lock.ts`.
 - The command inherits `HUTERM_HOST_SMOKE_LOCK_HELD`, and a wrapper that
-  finds it set for the same lock runs its command directly. `ci:smoke:run`
-  reruns itself under the lock once, so every step shares one hold, and
+  finds it set for the same lock runs its command directly; `--held` asks
+  the same question for a shell script. `ci:smoke:run` uses it to rerun
+  itself under the lock once, so every step shares one hold, and
   `ci:smoke:step` takes the lock outside its supervisor's deadline. Anything
   between two wrappers must pass that variable through; a wrapper that finds
   its own ancestor holding the lock fails at once instead of waiting.
@@ -36,10 +40,13 @@ its holder in `owner` beside it, and runs its command while holding the lock.
   waiting exits 130 without running the command. A contended smoke can block
   for that long, so agents run it in the background or with a short timeout.
 - The wrapper forwards SIGINT, SIGTERM, and SIGHUP and keeps the lock until
-  its command exits. The kernel releases the lock if the wrapper dies, and
-  Bun closes the lock descriptor in every child, so a leftover tmux server
-  cannot keep it. A wrapper killed with SIGKILL leaves its smoke running
-  without the lock.
+  its command exits. It records the command's descendants when it forwards
+  a signal, and after the command exits it stops any still running, SIGKILL
+  after two seconds, so an app a cancelled harness orphaned cannot share the
+  desktop with the next holder. The kernel releases the lock if the wrapper
+  dies, and Bun closes the lock descriptor in every child, so a leftover tmux
+  server cannot keep it. A wrapper killed with SIGKILL leaves its smoke
+  running without the lock.
 - A `smoke:manual-*` session holds the lock until it ends.
 - On GitHub's macOS runners and in the Tart guest the lock is uncontended
   and costs one Bun start per step. Off macOS the wrapper runs its command

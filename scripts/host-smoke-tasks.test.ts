@@ -1,7 +1,7 @@
 /**
- * Every task that can drive the host desktop must hold the host smoke lock, or
- * be listed here with the reason it need not. A new smoke or benchmark fails
- * this test until it is classified.
+ * Every desktop harness a mise task runs on the host must run under the host
+ * smoke lock. A new smoke or benchmark fails this test until its harness
+ * command is wrapped, or until it is listed here with the reason it need not be.
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -9,65 +9,88 @@ import { join } from "node:path";
 
 type Tasks = Record<string, { run?: string | string[] }>;
 
-/** Tasks the lock leaves alone, and why. */
-const UNLOCKED: Record<string, string> = {
-  "smoke:linux": "Linux only, on a private Xvfb display",
-  "smoke:linux-clipboard": "Linux only, on a private Xvfb display",
-  "smoke:linux-fullscreen": "Linux only, on a private Xvfb display",
-  "smoke:linux-input": "Linux only, on a private Xvfb display",
-  "smoke:linux-integration": "Linux only, on a private Xvfb display",
-  "smoke:linux-palette": "Linux only, on a private Xvfb display",
-  "smoke:linux-quake": "Linux only, on a private Xvfb display",
-  "bench:renderer": "Linux only, on a private Xvfb display",
-  "bench:engine": "headless Cargo benchmark",
-  "bench:compression": "headless Cargo benchmark",
-  "bench:links": "headless Cargo benchmark",
-  "smoke:schema-editor": "drives a language server, not a window",
-  "ci:smoke:build": "compiles only",
-  "ci:smoke": "its ci:smoke:run step takes the lock after the builds",
-  "ci:benchmarks": "its desktop benchmarks each take the lock; CI runs it on Linux",
-  "vm:macos:smoke": "runs its smokes in a disposable Tart VM, not on the host display",
-};
+/** Tasks that run a desktop harness on the host without the lock, and why. */
+const UNLOCKED: Record<string, string> = {};
 
-const LOCKS = /\bscripts\/(host-smoke-lock\.ts|headless\.sh)\b/;
-/** Harnesses that open windows or drive input, and composites that run them. */
-const DESKTOP = /\bscripts\/(check-[\w-]+\.ts|manual-[\w-]+\.ts|run-(scroll-benchmark|output-latency|renderer-bench|idle-benchmark|smoke-step)\.ts|headless\.sh)\b|\bmise run (smoke|bench|ci:smoke)[\w:-]*/;
+/** Harnesses that open windows or drive input on the display they run against. */
+const HARNESS = /\bscripts\/(check-(?!scroll-benchmark\.ts)[\w-]+\.ts|manual-[\w-]+\.ts|run-(scroll-benchmark|output-latency|renderer-bench|idle-benchmark|smoke-step)\.ts)/g;
+const WRAPPER = /\bscripts\/(host-smoke-lock\.ts|headless\.sh)\b/;
+const COMPOSITE = /\bmise run ([\w:-]+)/g;
 
 const runText = (run: string | string[] | undefined) => [run ?? []].flat().join("\n");
 
-/** Returns a problem for each desktop task that neither locks nor is listed, and each stale listing. */
+/** The command line holding `index`, with backslash continuations joined, up to `index`. */
+function commandBefore(text: string, index: number): string {
+  const start = text.lastIndexOf("\n", index - 1) + 1;
+  let line = text.slice(start, index);
+  for (let end = start - 1; end > 0 && text[end - 1] === "\\"; ) {
+    const previous = text.lastIndexOf("\n", end - 1) + 1;
+    line = text.slice(previous, end - 1) + line;
+    end = previous - 1;
+  }
+  return line;
+}
+
+/** Xvfb gives a harness a private display: on the same command, or inside its quoted `sh -c` script. */
+function underXvfb(text: string, index: number): boolean {
+  if (commandBefore(text, index).includes("xvfb-run")) return true;
+  const xvfb = text.lastIndexOf("xvfb-run", index);
+  return xvfb >= 0 && (text.slice(xvfb, index).match(/'/g)?.length ?? 0) % 2 === 1;
+}
+
+/** A task's harness commands that run on the host display without the lock. */
+function unlockedHarnesses(name: string, tasks: Tasks, seen = new Set<string>()): string[] {
+  seen.add(name);
+  const text = runText(tasks[name]?.run);
+  // A task that reruns itself under the wrapper holds the lock for all of its commands.
+  if (new RegExp(`host-smoke-lock\\.ts mise run ${name}(?![\\w:-])`).test(text)) return [];
+  const found: string[] = [];
+  for (const match of text.matchAll(HARNESS)) {
+    if (!WRAPPER.test(commandBefore(text, match.index)) && !underXvfb(text, match.index)) found.push(match[0]);
+  }
+  for (const match of text.matchAll(COMPOSITE)) {
+    const target = match[1]!;
+    if (!seen.has(target) && unlockedHarnesses(target, tasks, seen).length > 0) found.push(`mise run ${target}`);
+  }
+  return found;
+}
+
+/** Returns a problem for each task with an unlocked harness that is not listed, and for each stale listing. */
 function unclassified(tasks: Tasks, unlocked: Record<string, string>): string[] {
   const problems: string[] = [];
-  const selected = new Set<string>();
-  for (const [name, task] of Object.entries(tasks)) {
-    const run = runText(task.run);
-    if (!/^(smoke|bench|ci:smoke)/.test(name) && !DESKTOP.test(run)) continue;
-    selected.add(name);
-    const locked = LOCKS.test(run);
-    if (name.startsWith("smoke:macos-") && !locked) problems.push(`${name} drives the macOS desktop without the host smoke lock`);
-    else if (!locked && !(name in unlocked)) problems.push(`${name} must run through scripts/host-smoke-lock.ts or be listed with a reason`);
-    else if (locked && name in unlocked) problems.push(`${name} takes the lock but is listed as unlocked`);
+  for (const name of Object.keys(tasks)) {
+    const found = unlockedHarnesses(name, tasks);
+    if (name.startsWith("smoke:macos-") && !WRAPPER.test(runText(tasks[name]!.run))) problems.push(`${name} drives the macOS desktop without the host smoke lock`);
+    else if (found.length > 0 && (name.startsWith("smoke:macos-") || !(name in unlocked))) problems.push(`${name} runs ${found.join(", ")} without the host smoke lock`);
+    else if (found.length === 0 && name in unlocked) problems.push(`${name} is listed as unlocked but runs no unlocked desktop harness`);
   }
-  for (const name of Object.keys(unlocked)) {
-    if (!selected.has(name)) problems.push(`${name} is listed as unlocked but is not a desktop task`);
-  }
+  for (const name of Object.keys(unlocked)) if (!(name in tasks)) problems.push(`${name} is listed as unlocked but is not a task`);
   return problems;
 }
 
-test("every desktop task holds the host smoke lock or says why not", () => {
+test("every desktop harness a task runs on the host holds the host smoke lock", () => {
   const tasks = (Bun.TOML.parse(readFileSync(join(import.meta.dir, "..", "mise.toml"), "utf8")) as { tasks: Tasks }).tasks;
   expect(unclassified(tasks, UNLOCKED)).toEqual([]);
 });
 
-test("the classification rejects an unlocked desktop task and a stale listing", () => {
+test("the classification checks each harness command, not each task", () => {
   const tasks: Tasks = {
-    "smoke:macos-new": { run: "bun scripts/check-new.ts target/debug/examples/new_smoke" },
+    "smoke:macos-new": { run: "cargo build\nbun scripts/check-new.ts target/debug/examples/new_smoke" },
+    "smoke:macos-added": { run: "bun scripts/host-smoke-lock.ts bun scripts/check-one.ts a\nbun scripts/check-two.ts b" },
+    "smoke:macos-wrapped": { run: "cargo build\nbun scripts/host-smoke-lock.ts bun scripts/check-one.ts a" },
+    "smoke:linux-new": { run: "xvfb-run -a -s '-screen 0 1x1x24' \\\n  bun scripts/check-new.ts a\nxvfb-run sh -c '\n  bun scripts/run-scroll-benchmark.ts \"$1\"\n' sh x" },
     "bench:window": { run: ["cargo build", "bun scripts/run-scroll-benchmark.ts report"] },
+    "bench:headless": { run: ["bash scripts/headless.sh bun scripts/run-output-latency.ts a"] },
+    "ci:all": { run: "mise run bench:window\nmise run bench:headless" },
+    "ci:self": { run: "[ -n \"$HELD\" ] || exec bun scripts/host-smoke-lock.ts mise run ci:self\nbun scripts/check-one.ts a" },
     "release:notes": { run: "bun scripts/release-notes.ts" },
   };
-  expect(unclassified(tasks, { "smoke:macos-new": "listed", "smoke:gone": "removed" })).toEqual([
+  expect(unclassified(tasks, { "smoke:macos-new": "listed", "release:notes": "stale", "smoke:gone": "removed" })).toEqual([
     "smoke:macos-new drives the macOS desktop without the host smoke lock",
-    "bench:window must run through scripts/host-smoke-lock.ts or be listed with a reason",
-    "smoke:gone is listed as unlocked but is not a desktop task",
+    "smoke:macos-added runs scripts/check-two.ts without the host smoke lock",
+    "bench:window runs scripts/run-scroll-benchmark.ts without the host smoke lock",
+    "ci:all runs mise run bench:window without the host smoke lock",
+    "release:notes is listed as unlocked but runs no unlocked desktop harness",
+    "smoke:gone is listed as unlocked but is not a task",
   ]);
 });
