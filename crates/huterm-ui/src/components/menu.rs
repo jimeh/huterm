@@ -225,12 +225,13 @@ impl Menu {
                         + measure(&count.to_string(), size::TEXT_SMALL.into())
                         + BADGE_PADDING
                 } else if item.enabled && !item.shortcut.is_empty() {
-                    SIDE_INSET
+                    ROW_GAP
+                        + SIDE_INSET
                         + measure(&kbd::text(&item.shortcut), SIDE_TEXT_SIZE)
                 } else if let Some(hint) =
                     item.disabled_hint.as_deref().filter(|_| !item.enabled)
                 {
-                    SIDE_INSET + measure(hint, SIDE_TEXT_SIZE)
+                    ROW_GAP + SIDE_INSET + measure(hint, SIDE_TEXT_SIZE)
                 } else {
                     0.0
                 };
@@ -748,7 +749,6 @@ fn row_span(model: &Model, row: usize) -> Option<(f32, f32)> {
     Some((top, top + height))
 }
 
-/// A row's fixed height.
 /// The width a select's menu opens at: as wide as its `trigger`, wider
 /// where the rows of `model` need it, and no wider than `viewport` leaves
 /// inside the popover margins, where long labels truncate.
@@ -764,6 +764,7 @@ pub fn select_width(
     trigger.max(Menu::content_width(model, window)).min(room)
 }
 
+/// A row's fixed height.
 fn row_height(row: &Row) -> f32 {
     match row {
         Row::Item(_) => ROW_HEIGHT,

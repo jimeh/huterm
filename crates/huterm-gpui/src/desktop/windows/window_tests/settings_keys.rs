@@ -228,6 +228,78 @@ fn taking_another_commands_key_asks_first_and_cancel_keeps_it(
     );
 }
 
+/// Two user entries for different commands under the same predicate, the
+/// later one holding `ctrl-alt-b`.
+const TWO_USER_KEYS: &str = "[[keybinding]]\nkey = \"ctrl-alt-a\"\n\
+                             command = \"new_window\"\n\n[[keybinding]]\n\
+                             key = \"ctrl-alt-b\"\ncommand = \"new_tab\"\n";
+
+/// Records `keys` on `row`, letting the chord timeout end the recording.
+fn record(harness: &mut DesktopHarness, row: &str, keys: &str) {
+    press(harness, &format!("krec:{row}"));
+    keystrokes(harness, keys);
+    harness
+        .cx
+        .executor()
+        .advance_clock(super::super::settings_window::CHORD_TIMEOUT);
+    harness.cx.run_until_parked();
+}
+
+#[gpui::test]
+fn reassigning_from_a_later_user_entry_removes_it_so_the_key_moves(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-reassign-later", TWO_USER_KEYS);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let window = row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-a");
+    record(&mut harness, &window, "ctrl-alt-b");
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.dialog_name(), "reassign-key");
+    });
+    keystrokes(&mut harness, "tab enter");
+    saved(&mut harness, &file, |text| !text.contains("new_tab"));
+    // Edited in place, the earlier entry would lose to the later one.
+    assert_eq!(
+        file.text(),
+        "[[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n"
+    );
+}
+
+#[gpui::test]
+fn a_reassign_prompt_that_a_read_overtook_writes_nothing(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-reassign-stale", TWO_USER_KEYS);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let window = row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-a");
+    record(&mut harness, &window, "ctrl-alt-b");
+    // Another editor puts an entry first while the prompt is open, so the
+    // recorded row's name now names that entry.
+    let moved = format!(
+        "[[keybinding]]\nkey = \"ctrl-alt-c\"\ncommand = \"split_right\"\n\n\
+         {TWO_USER_KEYS}"
+    );
+    std::fs::write(file.path(), &moved).unwrap();
+    with_view(&mut harness, SettingsView::reread);
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.dialog_name(), "reassign-key");
+    });
+    keystrokes(&mut harness, "tab enter");
+    harness.cx.run_until_parked();
+    assert_eq!(file.text(), moved);
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.dialog_name(), "none");
+        assert!(
+            view.notice_text().contains("Record it again"),
+            "{}",
+            view.notice_text()
+        );
+    });
+}
+
 #[gpui::test]
 fn a_user_entry_changes_in_place_and_a_bad_condition_writes_nothing(
     cx: &mut TestAppContext,

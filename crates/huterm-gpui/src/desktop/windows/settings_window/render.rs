@@ -946,8 +946,6 @@ impl SettingsView {
     }
 }
 
-/// A titled card of `rows`, as each group of the pane draws, with the space
-/// below it that separates it from the next.
 /// `message` with a capital first letter: messages are written as clauses,
 /// such as "cannot register …".
 fn sentence(message: &str) -> String {
@@ -957,6 +955,8 @@ fn sentence(message: &str) -> String {
     })
 }
 
+/// A titled card of `rows`, as each group of the pane draws, with the space
+/// below it that separates it from the next.
 pub(super) fn group_card(
     id: impl Into<ElementId>,
     title: &str,

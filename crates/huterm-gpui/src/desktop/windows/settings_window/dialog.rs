@@ -37,7 +37,7 @@ use huterm_ui::components::input::Input;
 
 use super::super::super::overlay::Swatch;
 use super::SettingsView;
-use super::keybindings::Target;
+use super::keybindings::{Taking, Target};
 use crate::keymap::DIALOG_BUTTON_CONTEXT;
 
 /// What the open dialog asks.
@@ -66,11 +66,11 @@ pub(super) enum Prompt {
     /// Why the layout cycle cannot lose the pane layout, its last member.
     CycleRefused(String),
     /// Whether a recorded shortcut, `key` for `target`, should take its
-    /// key from the commands named in `from`.
+    /// key from what `taking` names.
     Reassign {
         target: Target,
         key: String,
-        from: Vec<String>,
+        taking: Taking,
     },
 }
 
@@ -386,9 +386,17 @@ impl SettingsView {
             | Prompt::CycleRefused(_) => {
                 self.render_layout_alert(&prompt, swatch, window, cx)
             }
-            Prompt::Reassign { target, key, from } => {
-                Some(self.render_reassign(&target, &key, &from, swatch, cx))
-            }
+            Prompt::Reassign {
+                target,
+                key,
+                taking,
+            } => Some(self.render_reassign(
+                &target,
+                &key,
+                &taking.from,
+                swatch,
+                cx,
+            )),
         }
     }
 

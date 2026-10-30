@@ -298,6 +298,7 @@ impl SettingsView {
                 valid,
                 keys,
             }) => {
+                self.status.read();
                 if std::mem::take(&mut self.reload_unreported) {
                     if snapshot.text().is_some_and(|text| {
                         self.written.as_deref() == Some(text)
@@ -337,7 +338,7 @@ impl SettingsView {
             }
             Err(error) => {
                 self.reload_unreported = false;
-                self.status.failed(error.to_string());
+                self.status.read_failed(error.to_string());
             }
         }
     }
@@ -628,6 +629,19 @@ impl SettingsView {
         field: Option<(String, Option<String>)>,
         cx: &mut Context<'_, Self>,
     ) -> bool {
+        self.submit_keys_removing(edit, row, field, &[], cx)
+    }
+
+    /// [`Self::submit_keys`], removing the user entries `remove` in the
+    /// same write.
+    pub(super) fn submit_keys_removing(
+        &mut self,
+        edit: Edit,
+        row: Option<String>,
+        field: Option<(String, Option<String>)>,
+        remove: &[usize],
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
         if self.locked() {
             return false;
         }
@@ -637,8 +651,15 @@ impl SettingsView {
         if let Some(row) = &row {
             self.keys.errors.remove(row);
         }
-        let patches = match edit.patches(&self.keys.entries, &self.keys.globals)
-        {
+        let removal = Edit::Remove(remove.to_vec());
+        let patches = match edit
+            .patches(&self.keys.entries, &self.keys.globals)
+            .and_then(|mut patches| {
+                patches.extend(
+                    removal.patches(&self.keys.entries, &self.keys.globals)?,
+                );
+                Ok(patches)
+            }) {
             Ok(patches) => patches,
             Err(message) => {
                 self.status.failed(message);

@@ -643,7 +643,10 @@ fn parse_keystrokes(
 }
 
 /// Argument lists with the same names and values, in any order.
-fn same_arguments(left: &[CommandArgument], right: &[CommandArgument]) -> bool {
+pub(crate) fn same_arguments(
+    left: &[CommandArgument],
+    right: &[CommandArgument],
+) -> bool {
     left.len() == right.len()
         && left.iter().all(|argument| right.contains(argument))
 }

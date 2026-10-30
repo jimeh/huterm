@@ -37,7 +37,7 @@ use super::{MenuFor, SettingsView};
 use crate::assets::Icon;
 use crate::keymap::{
     BindingState, Bound, Inventory, ListedBinding, Origin, Platform,
-    would_replace,
+    same_arguments, would_replace,
 };
 use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::badge::{Tone as BadgeTone, badge};
@@ -109,6 +109,21 @@ impl Target {
             _ => None,
         }
     }
+}
+
+/// What a recorded shortcut takes its key from, as the reassign prompt
+/// asked about it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct Taking {
+    /// The titles of the commands that lose the key.
+    pub(super) from: Vec<String>,
+    /// The user entries that hold it, which Reassign removes: a later
+    /// user entry would otherwise keep the key, and an earlier one would
+    /// stay in the file only to be replaced.
+    entries: Vec<usize>,
+    /// The recorded row's binding, which Reassign checks is still where
+    /// the prompt found it.
+    row: Option<Identity>,
 }
 
 /// The section's state, held by the view.
@@ -227,7 +242,7 @@ impl Keys {
 }
 
 /// A row's binding, to recognize it when the entries move.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Identity {
     whole: String,
     /// The binding without its key.
@@ -758,6 +773,20 @@ impl SettingsView {
         origin: Option<(String, Option<String>)>,
         cx: &mut Context<'_, Self>,
     ) -> bool {
+        self.edit_row_removing(name, field, value, origin, &[], cx)
+    }
+
+    /// [`Self::edit_row`], removing the user entries `remove` in the same
+    /// write.
+    fn edit_row_removing(
+        &mut self,
+        name: &str,
+        field: Field,
+        value: Option<Value>,
+        origin: Option<(String, Option<String>)>,
+        remove: &[usize],
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
         let Some(listed) = self
             .keys
             .inventory
@@ -782,7 +811,13 @@ impl SettingsView {
                 value,
             },
         };
-        self.submit_keys(edit, Some(name.to_owned()), origin, cx)
+        self.submit_keys_removing(
+            edit,
+            Some(name.to_owned()),
+            origin,
+            remove,
+            cx,
+        )
     }
 
     /// Whether `row` shows a default with a change queued or being
@@ -1120,29 +1155,36 @@ impl SettingsView {
         key: String,
         cx: &mut Context<'_, Self>,
     ) {
-        let from = self.taken_by(&target, &key);
-        if from.is_empty() {
-            self.apply_recording(target, key, cx);
+        let taking = self.taken_by(&target, &key);
+        if taking.from.is_empty() {
+            self.apply_recording(target, key, &[], cx);
             return;
         }
         let Some(stop) = self.recorder_key().map(str::to_owned) else {
             return;
         };
         let return_to = self.action_stop(stop, cx);
-        self.open_dialog(Prompt::Reassign { target, key, from }, &return_to);
+        self.open_dialog(
+            Prompt::Reassign {
+                target,
+                key,
+                taking,
+            },
+            &return_to,
+        );
     }
 
-    /// The commands a recording of `key` for `target` takes it from: the
+    /// What a recording of `key` for `target` takes the key from: the
     /// active bindings it would replace, other than the row itself and
     /// those that run the same command with the same arguments.
-    fn taken_by(&self, target: &Target, key: &str) -> Vec<String> {
+    fn taken_by(&self, target: &Target, key: &str) -> Taking {
         let Some(inventory) = self.keys.inventory.as_ref() else {
-            return Vec::new();
+            return Taking::default();
         };
         let (own, command, args, when) = match target {
             Target::Row(name) => {
                 let Some(listed) = row(inventory, name) else {
-                    return Vec::new();
+                    return Taking::default();
                 };
                 let binding = &listed.binding;
                 (
@@ -1153,15 +1195,19 @@ impl SettingsView {
                 )
             }
             Target::Add(command) => (None, *command, &[][..], None),
-            Target::Global(_) | Target::AddGlobal => return Vec::new(),
+            Target::Global(_) | Target::AddGlobal => return Taking::default(),
         };
         let context = lookup(command.as_str()).and_then(|spec| spec.context);
-        let mut from: Vec<String> = Vec::new();
+        let mut taking = Taking {
+            row: own.map(Identity::of),
+            ..Taking::default()
+        };
         for other in &inventory.bindings {
             let binding = &other.binding;
             if other.state != BindingState::Active
                 || own.is_some_and(|own| std::ptr::eq(own, other))
-                || (binding.command == command && binding.args == args)
+                || (binding.command == command
+                    && same_arguments(&binding.args, args))
                 || !would_replace(
                     Platform::current(),
                     key,
@@ -1176,28 +1222,49 @@ impl SettingsView {
                 || binding.command.as_str().to_owned(),
                 |spec| spec.title.to_owned(),
             );
-            if !from.contains(&title) {
-                from.push(title);
+            if !taking.from.contains(&title) {
+                taking.from.push(title);
+            }
+            if other.binding.origin == Origin::User
+                && let Some(entry) = other.entry
+            {
+                taking.entries.push(entry);
             }
         }
-        from
+        taking
     }
 
-    /// Answers the reassign prompt: applies the recording it holds.
+    /// Answers the reassign prompt: applies the recording it holds, unless
+    /// a read since it opened moved the recorded row or changed what the
+    /// key would be taken from, since the prompt's answer covered only
+    /// what it showed.
     fn reassign(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let Some(Prompt::Reassign { target, key, .. }) =
-            self.dialog.prompt().cloned()
+        let Some(Prompt::Reassign {
+            target,
+            key,
+            taking,
+        }) = self.dialog.prompt().cloned()
         else {
             return;
         };
         self.close_dialog(window, cx);
-        self.apply_recording(target, key, cx);
+        if self.taken_by(&target, &key) != taking {
+            self.status.failed(
+                "config.toml changed while Settings asked about the \
+                 shortcut. Record it again.",
+            );
+            return;
+        }
+        self.apply_recording(target, key, &taking.entries, cx);
     }
 
+    /// Applies a recorded shortcut, removing the user entries `remove`
+    /// that hold its key in the same write.
     fn apply_recording(
         &mut self,
         target: Target,
         key: String,
+        remove: &[usize],
         cx: &mut Context<'_, Self>,
     ) {
         match target {
@@ -1209,18 +1276,25 @@ impl SettingsView {
                     .and_then(|inventory| row(inventory, &name))
                     .map(|listed| listed.binding.key.clone());
                 if current.as_deref() != Some(key.as_str()) {
-                    self.edit_row(
+                    self.edit_row_removing(
                         &name,
                         Field::Key,
                         Some(Value::String(key)),
                         None,
+                        remove,
                         cx,
                     );
                 }
             }
             Target::Add(command) => {
                 self.keys.open.insert(command);
-                self.submit_keys(Edit::Add { key, command }, None, None, cx);
+                self.submit_keys_removing(
+                    Edit::Add { key, command },
+                    None,
+                    None,
+                    remove,
+                    cx,
+                );
             }
             Target::Global(entry) => self.finish_global(Some(entry), key, cx),
             Target::AddGlobal => self.finish_global(None, key, cx),

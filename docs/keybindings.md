@@ -11,7 +11,8 @@ shortcut. A second key within a second makes a chord, Return saves at once,
 and Escape cancels. Holding a key records it once. The recorder takes keys
 that are bound elsewhere, so `cmd-w` records instead of closing the window.
 When the new shortcut would take its key from another command with the same
-`when`, Settings asks first; Cancel leaves both commands as they were. Each
+`when`, Settings asks first. Reassign removes your own entries that gave the
+other command the key, and Cancel leaves both commands as they were. Each
 shortcut also has a `when` field that completes context names and checks
 the condition before saving, its argument values, and a switch. Changing or
 switching off a default writes a `disabled = true` entry for exactly that

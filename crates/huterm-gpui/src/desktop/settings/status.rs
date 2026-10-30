@@ -31,6 +31,8 @@ enum Event {
     Invalid(String),
     /// A write failed and left the file as it was.
     Failed(String),
+    /// Reading the file failed, so the controls show an older read.
+    ReadFailed(String),
     /// A write replaced the file, but making that durable failed.
     SavedUnsure(String),
     /// A reload failed for a reason outside the file, such as a font that
@@ -137,7 +139,10 @@ impl FileStatus {
         self.settle_problem(|problem| {
             matches!(
                 problem,
-                Event::Failed(_) | Event::SavedUnsure(_) | Event::FileError(_)
+                Event::Failed(_)
+                    | Event::ReadFailed(_)
+                    | Event::SavedUnsure(_)
+                    | Event::FileError(_)
             )
         });
         self.own_reload = true;
@@ -146,6 +151,10 @@ impl FileStatus {
     /// A reload applied the file. The reload a save asked for keeps
     /// reporting the save, as does one while a save is running.
     pub(crate) fn reloaded(&mut self) {
+        // A failure to create or open the file, or to run a command, lasts
+        // until the next reload, whose report replaced it before the
+        // notice held its place.
+        self.settle_problem(|problem| matches!(problem, Event::FileError(_)));
         let own = std::mem::take(&mut self.own_reload);
         let saving = matches!(self.latest, Some(Event::Saving));
         let saved =
@@ -192,6 +201,19 @@ impl FileStatus {
                 Event::NotApplied(_) | Event::AppliedWithWarning(_)
             )
         });
+    }
+
+    /// Reading the file failed.
+    pub(crate) fn read_failed(&mut self, message: impl Into<String>) {
+        self.report_problem(Event::ReadFailed(message.into()));
+    }
+
+    /// A read succeeded, which settles a failed one.
+    pub(crate) fn read(&mut self) {
+        if matches!(self.latest, Some(Event::ReadFailed(_))) {
+            self.latest = None;
+        }
+        self.settle_problem(|problem| matches!(problem, Event::ReadFailed(_)));
     }
 
     pub(crate) fn changed_on_disk(&mut self) {
@@ -268,6 +290,7 @@ impl FileStatus {
             // for its summary.
             Some(
                 event @ (Event::Failed(_)
+                | Event::ReadFailed(_)
                 | Event::FileError(_)
                 | Event::SavedUnsure(_)
                 | Event::NotApplied(_)
@@ -317,6 +340,12 @@ impl FileStatus {
                 "Failed",
                 std::slice::from_ref(message),
                 None,
+            ),
+            Event::ReadFailed(message) => notice(
+                Tone::Error,
+                "Not read",
+                std::slice::from_ref(message),
+                Some(Action::Reload),
             ),
             Event::SavedUnsure(message) => notice(
                 Tone::Warning,
@@ -527,6 +556,29 @@ mod tests {
             Some("Not saved".into())
         );
         status.saved();
+        assert_eq!(status.notice(), None);
+    }
+
+    #[test]
+    fn a_failed_read_holds_until_a_read_succeeds() {
+        let mut status = FileStatus::new(true);
+        status.read_failed("permission denied");
+        assert_eq!(text(&status), (Tone::Error, "Not read".into(), None));
+        // A reload applying the file leaves an unread file's notice.
+        status.reloaded();
+        status.applied();
+        assert_eq!(
+            status.notice().map(|notice| notice.messages),
+            Some(vec!["permission denied".to_owned()])
+        );
+        status.read();
+        assert_eq!(status.notice(), None);
+        // A failure to create the file, or a command's, lasts until the
+        // next reload.
+        status.file_error("Cannot create config.toml");
+        status.applied();
+        assert!(status.notice().is_some());
+        status.reloaded();
         assert_eq!(status.notice(), None);
     }
 
