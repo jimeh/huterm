@@ -811,9 +811,10 @@ struct Desktop {
     runtime: Arc<DesktopRuntime>,
     config: Config,
     config_path: PathBuf,
-    /// Persistent Config and Keymap notices for the active configuration.
-    /// New windows raise them; every reload replaces them.
-    diagnostics: Vec<NoticeContent>,
+    /// What is wrong with the active configuration. New windows raise its
+    /// persistent notices, Settings spells it out, and every reload
+    /// replaces it.
+    config_report: ConfigReport,
     /// Failures reported while no window could show them, such as a startup
     /// hotkey conflict. The next window to open or become active takes and
     /// raises them; a reload clears the ones still waiting.
@@ -1121,6 +1122,33 @@ fn check_for_updates(cx: &mut App) -> Result<CommandOutcome, CommandError> {
     }
 }
 
+/// Why this build cannot check for updates, if it cannot: Sparkle failed
+/// to start, or the build has no updater.
+#[cfg_attr(
+    not(all(target_os = "macos", feature = "macos-updater")),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only updater-enabled builds can check, so only they return None"
+    )
+)]
+pub(super) fn update_check_refusal(cx: &App) -> Option<String> {
+    #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+    {
+        cx.global::<Desktop>()
+            .updater
+            .startup_error()
+            .map(str::to_owned)
+    }
+    #[cfg(not(all(target_os = "macos", feature = "macos-updater")))]
+    {
+        let _ = cx;
+        match unsupported_update_error() {
+            CommandError::Unavailable(reason) => Some(reason),
+            error => Some(error.to_string()),
+        }
+    }
+}
+
 #[cfg(not(all(target_os = "macos", feature = "macos-updater")))]
 fn unsupported_update_error() -> CommandError {
     CommandError::Unavailable(
@@ -1203,26 +1231,104 @@ fn quake_profile_rows(cx: &App) -> Vec<QuakeProfileRow> {
         .collect()
 }
 
+/// What is wrong with the active configuration, kept in one place so each
+/// terminal window's persistent notices and the Settings notice report the
+/// same problems however late the window opens.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct ConfigReport {
+    /// The file failed at startup, so the defaults apply. Settings reads
+    /// the file itself and shows its own banner for this.
+    error: Option<String>,
+    /// A binding failed at startup, so the default bindings apply.
+    keymap_error: Option<String>,
+    /// One message per binding conflict.
+    conflicts: Vec<String>,
+    warning: Option<String>,
+    /// One message per global shortcut the platform refused.
+    refused: Vec<String>,
+    /// The last reload failed, so the previous settings are still active.
+    reload_failure: Option<String>,
+}
+
+impl ConfigReport {
+    /// The report for a reload that applied `config`, with the global
+    /// shortcuts the platform `refused`.
+    fn reloaded(
+        config: &Config,
+        compiled: &CompiledKeymap,
+        refused: Vec<String>,
+    ) -> Self {
+        if let Some(warning) = &config.warning {
+            eprintln!("Huterm configuration warning: {warning}");
+        }
+        let mut report = Self {
+            conflicts: compiled.conflicts.clone(),
+            warning: config.warning.clone(),
+            ..Self::default()
+        };
+        report.refuse(refused);
+        report
+    }
+
+    /// Records the global shortcuts the platform refused.
+    fn refuse(&mut self, refused: Vec<String>) {
+        if !refused.is_empty() {
+            eprintln!("Huterm global shortcut warning: {}", refused.join("\n"));
+        }
+        self.refused = refused;
+    }
+
+    /// The persistent notices in precedence order: config error, keymap
+    /// error, conflicts, warning, then refused shortcuts. A reload failure
+    /// is not among them: it shows in the windows open when it happened,
+    /// through [`failed_reload_diagnostics`].
+    pub(super) fn notices(&self, path: &Path) -> Vec<NoticeContent> {
+        let mut notices = config_diagnostics(
+            path,
+            self.error.as_deref(),
+            self.keymap_error.as_deref(),
+            &self.conflicts,
+            self.warning.as_deref(),
+        );
+        notices.extend(refused_shortcuts_diagnostic(path, &self.refused));
+        notices
+    }
+
+    /// What Settings reports: why the settings did not apply, or each
+    /// thing the applied file asks for that the desktop could not honour.
+    pub(super) fn for_settings(&self) -> Result<Vec<String>, String> {
+        match self.reload_failure.as_ref().or(self.keymap_error.as_ref()) {
+            Some(error) => Err(error.clone()),
+            None => Ok(self
+                .conflicts
+                .iter()
+                .chain(&self.warning)
+                .chain(&self.refused)
+                .cloned()
+                .collect()),
+        }
+    }
+}
+
 /// Binds the startup keymap and returns its reserved keys with the
-/// persistent diagnostics in precedence order: config error, keymap error,
-/// conflicts, then warning.
+/// startup configuration's report.
 ///
-/// A broken binding never blocks startup: defaults apply and the diagnostic
-/// shows like any other non-fatal configuration error.
+/// A broken binding never blocks startup: defaults apply and the report
+/// carries it like any other non-fatal configuration error.
 pub(super) fn install_startup_keymap(
     cx: &mut App,
     loaded: &config::LoadedConfig,
-) -> (InstalledKeymap, Vec<NoticeContent>) {
+) -> (InstalledKeymap, ConfigReport) {
     let (compiled, keymap_error) = compile_keymap(&loaded.config);
-    let diagnostics = config_diagnostics(
-        &loaded.path,
-        loaded.error.as_deref(),
-        keymap_error.as_deref(),
-        &compiled.conflicts,
-        loaded.warning.as_deref(),
-    );
+    let report = ConfigReport {
+        error: loaded.error.clone(),
+        keymap_error,
+        conflicts: compiled.conflicts.clone(),
+        warning: loaded.warning.clone(),
+        ..ConfigReport::default()
+    };
     let keymap = bind_keymap(cx, compiled);
-    (keymap, diagnostics)
+    (keymap, report)
 }
 
 /// A notice action that runs `id` without arguments.
@@ -1295,29 +1401,6 @@ fn config_diagnostics(
     diagnostics
 }
 
-/// The persistent notices after a successful reload: binding conflicts,
-/// the config warning, and the global shortcuts the platform refused. A
-/// reload that failed never reaches this.
-fn reload_diagnostics(
-    path: &Path,
-    config: &Config,
-    compiled: &CompiledKeymap,
-    refused: &[String],
-) -> Vec<NoticeContent> {
-    if let Some(warning) = &config.warning {
-        eprintln!("Huterm configuration warning: {warning}");
-    }
-    let mut diagnostics = config_diagnostics(
-        path,
-        None,
-        None,
-        &compiled.conflicts,
-        config.warning.as_deref(),
-    );
-    diagnostics.extend(refused_shortcuts_diagnostic(path, refused));
-    diagnostics
-}
-
 /// The notice for global shortcuts the platform refused, if any. Reload
 /// tries them again, such as after another application releases one.
 fn refused_shortcuts_diagnostic(
@@ -1328,7 +1411,6 @@ fn refused_shortcuts_diagnostic(
         return None;
     }
     let message = refused.join("\n");
-    eprintln!("Huterm global shortcut warning: {message}");
     Some(
         NoticeContent::diagnostic(
             Severity::Warning,
@@ -1413,10 +1495,7 @@ pub(super) fn run_with_startup(
         follow_button_layout(cx);
         install_native_quit(cx);
         let refused = quake_windows::install(cx);
-        let desktop = cx.global_mut::<Desktop>();
-        let refused =
-            refused_shortcuts_diagnostic(&desktop.config_path, &refused);
-        desktop.diagnostics.extend(refused);
+        cx.global_mut::<Desktop>().config_report.refuse(refused);
         cx.on_app_quit(move |cx| {
             commit_quit(cx);
             quake_windows::shutdown(cx);
@@ -1462,14 +1541,14 @@ fn install_desktop(
     hierarchy: Projection,
     loaded: config::LoadedConfig,
 ) {
-    let (keymap, diagnostics) = install_startup_keymap(cx, &loaded);
+    let (keymap, config_report) = install_startup_keymap(cx, &loaded);
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     let updater = native_updater::Updater::initialize(loaded.config.updates);
     cx.set_global(Desktop {
         quake: quake_windows::Registry::default(),
         runtime,
         config: loaded.config,
-        diagnostics,
+        config_report,
         latched: Vec::new(),
         config_path: loaded.path,
         windows: WindowModel::default(),
@@ -2633,7 +2712,8 @@ impl WorkspaceView {
     /// Raises the desktop's configuration diagnostics and latched failures
     /// in a new window.
     fn raise_desktop_notices(&mut self, cx: &mut Context<'_, Self>) {
-        let diagnostics = cx.global::<Desktop>().diagnostics.clone();
+        let desktop = cx.global::<Desktop>();
+        let diagnostics = desktop.config_report.notices(&desktop.config_path);
         self.notices
             .replace_diagnostics(&diagnostics, Instant::now());
         self.raise_latched_failures(cx);
@@ -9992,18 +10072,17 @@ fn finish_reload(
         let shortcuts = quake_windows::compile_shortcuts(&config, &compiled)?;
         Ok((config, family, metrics, compiled, shortcuts))
     });
-    let mut refused = Vec::new();
     let result =
         result.map(|(config, family, metrics, compiled, shortcuts)| {
             // A shortcut the platform refuses, such as one another application
             // holds, warns without blocking the rest of the configuration.
-            refused = quake_windows::replace_registrations(cx, shortcuts);
+            let refused = quake_windows::replace_registrations(cx, shortcuts);
             #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             apply_update_config(cx, &config);
             let desktop = cx.global_mut::<Desktop>();
             desktop.config = config.clone();
-            desktop.diagnostics =
-                reload_diagnostics(path, &config, &compiled, &refused);
+            desktop.config_report =
+                ConfigReport::reloaded(&config, &compiled, refused);
             desktop.latched.clear();
             quake_windows::reconcile(cx, renames);
             let keymap = bind_keymap(cx, compiled);
@@ -10012,20 +10091,16 @@ fn finish_reload(
             (config, family, metrics)
         });
     report_config_reload_error(&result);
-    settings_window::reloaded(
-        cx,
-        result
-            .as_ref()
-            .map(|_| (!refused.is_empty()).then(|| refused.join("; ")))
-            .map_err(Clone::clone),
-        kind == ReloadKind::Automatic,
-    );
+    if let Err(error) = &result {
+        cx.global_mut::<Desktop>().config_report.reload_failure =
+            Some(error.clone());
+    }
+    settings_window::reloaded(cx, kind == ReloadKind::Automatic);
+    let desktop = cx.global::<Desktop>();
+    let active = desktop.config_report.notices(path);
     let diagnostics = match &result {
-        Ok(_) => cx.global::<Desktop>().diagnostics.clone(),
-        Err(error) => failed_reload_diagnostics(
-            error,
-            &cx.global::<Desktop>().diagnostics,
-        ),
+        Ok(_) => active,
+        Err(error) => failed_reload_diagnostics(error, &active),
     };
     for handle in cx.windows() {
         let _ = handle.update(cx, |root, window, cx| {

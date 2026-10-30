@@ -313,13 +313,15 @@ impl SettingsView {
                 match (file, valid) {
                     (Ok(file), Ok(())) => {
                         self.file = file;
-                        if let Some(error) = self.reload_error.take() {
+                        match self.reload_outcome.take() {
                             // The file is fine, so something else refused
                             // the reload, such as a missing font.
-                            self.status.not_applied(error);
-                        } else if let Some(warning) = self.reload_warning.take()
-                        {
-                            self.status.applied_with_warning(warning);
+                            Some(Err(error)) => self.status.not_applied(error),
+                            Some(Ok(warnings)) if !warnings.is_empty() => {
+                                self.status.applied_with_warnings(warnings);
+                            }
+                            Some(Ok(_)) => self.status.applied(),
+                            None => {}
                         }
                     }
                     (Ok(file), Err(message)) => {
@@ -413,27 +415,20 @@ impl SettingsView {
     /// with the write, not with `base`.
     pub(super) fn reloaded(
         &mut self,
-        outcome: Result<Option<String>, String>,
+        outcome: Result<Vec<String>, String>,
         automatic: bool,
         cx: &mut Context<'_, Self>,
     ) {
         self.status
             .watching(cx.global::<Desktop>().config.general.watch_config);
-        match outcome {
-            Ok(warning) => {
-                self.reload_error = None;
-                self.reload_warning = warning;
-                if automatic {
-                    self.reload_unreported = true;
-                } else {
-                    self.status.reloaded();
-                }
-            }
-            Err(message) => {
-                self.reload_error = Some(message);
-                self.reload_warning = None;
+        if outcome.is_ok() {
+            if automatic {
+                self.reload_unreported = true;
+            } else {
+                self.status.reloaded();
             }
         }
+        self.reload_outcome = Some(outcome);
         self.load(cx);
         self.load_themes(cx);
     }

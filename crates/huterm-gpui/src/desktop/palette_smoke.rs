@@ -805,15 +805,13 @@ fn read_state(cx: &mut App) -> String {
     // `desktop.notice<i>="<severity>|<source>|<message>"`; windows list
     // theirs as `w<i>.notices=` and `w<i>.notice<j>=` on their line.
     let desktop = cx.global::<Desktop>();
+    let diagnostics = desktop.config_report.notices(&desktop.config_path);
     let mut output = format!(
         "windows={} quake_hotkeys={} config.warning={:?} {} model_titles={:?} reloads={} reload_titles={:?}\n",
         cx.windows().len(),
         super::quake_windows::keep_alive(cx),
         desktop.config.warning,
-        smoke_notices(
-            "desktop.",
-            desktop.diagnostics.iter().chain(&desktop.latched)
-        ),
+        smoke_notices("desktop.", diagnostics.iter().chain(&desktop.latched)),
         model_titles(cx).join(";"),
         cx.global::<ReloadTitles>().reloads,
         cx.global::<ReloadTitles>().titles.join(";"),

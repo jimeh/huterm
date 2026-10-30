@@ -140,17 +140,14 @@ pub(super) fn open(cx: &mut App) {
 }
 
 /// Tells the Settings window that a reload finished, so it rereads the
-/// file and reports the outcome: `Ok` with any warning about what the
-/// applied file asks for, or the error. `automatic` says the watcher
-/// started it.
-pub(super) fn reloaded(
-    cx: &mut App,
-    outcome: Result<Option<String>, String>,
-    automatic: bool,
-) {
-    let Some(handle) = cx.global::<Desktop>().settings else {
+/// file and reports the desktop's new [`super::ConfigReport`]. `automatic`
+/// says the watcher started it.
+pub(super) fn reloaded(cx: &mut App, automatic: bool) {
+    let desktop = cx.global::<Desktop>();
+    let Some(handle) = desktop.settings else {
         return;
     };
+    let outcome = desktop.config_report.for_settings();
     let _ = handle.update(cx, |view, _, cx| {
         view.reloaded(outcome, automatic, cx);
     });
@@ -289,12 +286,11 @@ pub(super) struct SettingsView {
     /// A setting whose next change reads the file afresh: after Use mine,
     /// or a profile's deletion.
     fresh: Option<&'static str>,
-    /// The last reload's error when the file itself validates, so the
-    /// footer can say the settings were not applied.
-    reload_error: Option<String>,
-    /// The last reload's warning when it applied the file, such as a global
-    /// shortcut another application holds.
-    reload_warning: Option<String>,
+    /// The last reload's outcome until a reread finds the file valid and
+    /// reports it: its error, so the footer can say the settings were not
+    /// applied, or what it applied with but could not honour, such as
+    /// refused global shortcuts.
+    reload_outcome: Option<Result<Vec<String>, String>>,
     /// An automatic reload applied the file, and the reread it started
     /// decides whether to report it (`loaded`).
     reload_unreported: bool,
@@ -380,6 +376,9 @@ impl SettingsView {
         let path = desktop.config_path.clone();
         let watching = desktop.config.general.watch_config;
         let swatch = tokens(&desktop.config.theme);
+        // The window reports the active configuration's problems from its
+        // first read, not only after a reload.
+        let report = desktop.config_report.for_settings();
         let search = Self::search_field(swatch, cx);
         let keys = Keys::new(swatch, cx);
         // While a shortcut records, its keys reach no binding, menu, or
@@ -440,8 +439,7 @@ impl SettingsView {
             loading: 0,
             reread: false,
             fresh: None,
-            reload_error: None,
-            reload_warning: None,
+            reload_outcome: Some(report),
             reload_unreported: false,
             written: None,
             closing: false,
@@ -887,6 +885,20 @@ impl SettingsView {
                 });
             }
             "open" => cx.defer(super::open_config_file),
+            // The command reports its own failures, such as Sparkle's, but
+            // not a refusal before it runs.
+            "updates" => cx.defer(|cx| {
+                let invocation =
+                    CommandInvocation::new(ids::CHECK_FOR_UPDATES, Vec::new());
+                if let Err(error) = Desktop::invoke(cx, &invocation, None) {
+                    let message = match error {
+                        CommandError::Unavailable(reason) => reason,
+                        error => error.to_string(),
+                    };
+                    show_failure(cx, &message);
+                }
+            }),
+            "notice" => self.status.toggle_notice(),
             "reveal" => cx.reveal_path(&self.path),
             _ => {}
         }
@@ -2658,17 +2670,26 @@ impl SettingsView {
         self.reloaded(Err(message.to_owned()), false, cx);
     }
 
-    /// Follows an automatic reload that applied the file with `warning`.
-    pub(super) fn follow_reload_with_warning(
+    /// Follows an automatic reload that applied the file with `warnings`.
+    pub(super) fn follow_reload_with_warnings(
         &mut self,
-        warning: &str,
+        warnings: &[&str],
         cx: &mut Context<'_, Self>,
     ) {
-        self.reloaded(Ok(Some(warning.to_owned())), true, cx);
+        let warnings = warnings.iter().map(|&warning| warning.to_owned());
+        self.reloaded(Ok(warnings.collect()), true, cx);
     }
 
     pub(super) fn status_text(&self) -> String {
         self.status.line().text
+    }
+
+    /// The notice's messages, one per line, or nothing without a notice.
+    pub(super) fn notice_text(&self) -> String {
+        self.status
+            .notice()
+            .map(|notice| notice.messages.join("\n"))
+            .unwrap_or_default()
     }
 
     pub(super) fn read_only(&self) -> bool {
@@ -2750,7 +2771,7 @@ impl SettingsView {
 
     /// Follows a reload that applied the file.
     pub(super) fn follow_reload(&mut self, cx: &mut Context<'_, Self>) {
-        self.reloaded(Ok(None), false, cx);
+        self.reloaded(Ok(Vec::new()), false, cx);
     }
 
     /// Looks for an edit made elsewhere, as coming forward does.

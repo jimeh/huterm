@@ -1246,12 +1246,12 @@ fn a_refused_rename_behind_another_dialog_leaves_the_new_name_and_says_why(
     with_view(&mut harness, |view, _| {
         assert_eq!(view.dialog_name(), "new-profile");
         assert_eq!(view.shown_profile_name(), "logs");
-        let status = view.status_text();
+        let notice = view.notice_text();
         assert!(
-            status.ends_with(
+            notice.ends_with(
                 "The changes made to work meanwhile were not saved."
             ),
-            "{status}"
+            "{notice}"
         );
     });
 }

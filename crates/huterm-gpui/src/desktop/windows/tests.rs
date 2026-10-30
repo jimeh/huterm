@@ -349,14 +349,18 @@ fn refused_global_shortcuts_warn_after_a_reload_with_reload_offered() {
     let path = Path::new("/home/me/.config/huterm/config.toml");
     let config = Config::default();
     let compiled = keymap::compile_defaults(Platform::current());
-    assert_eq!(reload_diagnostics(path, &config, &compiled, &[]), []);
+    let notices = |refused: &[String]| {
+        ConfigReport::reloaded(&config, &compiled, refused.to_vec())
+            .notices(path)
+    };
+    assert_eq!(notices(&[]), []);
     let refused = [
         "cannot register cmd-shift-space: already in use by another \
          application"
             .to_owned(),
         "cannot register f12: registration rejected".to_owned(),
     ];
-    let diagnostics = reload_diagnostics(path, &config, &compiled, &refused);
+    let diagnostics = notices(&refused);
     let [notice] = diagnostics.as_slice() else {
         panic!("one notice: {diagnostics:?}");
     };
@@ -374,6 +378,43 @@ fn refused_global_shortcuts_warn_after_a_reload_with_reload_offered() {
             .collect::<Vec<_>>(),
         [ids::OPEN_CONFIG_FILE, ids::RELOAD_CONFIG]
     );
+}
+
+#[test]
+fn settings_reads_each_warning_or_the_failure_from_the_report() {
+    let report = ConfigReport {
+        conflicts: vec!["cmd-t conflicts".to_owned()],
+        warning: Some(config::LEGACY_ALACRITTY_WARNING.to_owned()),
+        refused: vec![
+            "cannot register cmd-shift-space".to_owned(),
+            "cannot register f12".to_owned(),
+        ],
+        ..ConfigReport::default()
+    };
+    assert_eq!(
+        report.for_settings(),
+        Ok(vec![
+            "cmd-t conflicts".to_owned(),
+            config::LEGACY_ALACRITTY_WARNING.to_owned(),
+            "cannot register cmd-shift-space".to_owned(),
+            "cannot register f12".to_owned(),
+        ])
+    );
+    // A failure says why nothing new applied, over what still warns.
+    let failed = ConfigReport {
+        reload_failure: Some("font \"Nope\" is not installed".to_owned()),
+        ..report
+    };
+    assert_eq!(
+        failed.for_settings(),
+        Err("font \"Nope\" is not installed".to_owned())
+    );
+    // Settings shows its own banner for a file that failed to load.
+    let invalid = ConfigReport {
+        error: Some("expected `=`".to_owned()),
+        ..ConfigReport::default()
+    };
+    assert_eq!(invalid.for_settings(), Ok(Vec::new()));
 }
 
 #[test]

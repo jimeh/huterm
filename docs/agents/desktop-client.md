@@ -549,7 +549,10 @@ the new command.
 
 Notices replace both status strings. Configuration and keymap diagnostics are
 persistent notices keyed by source, and every reload replaces that source, so
-a still-failing file raises them again after dismissal. Command and terminal
+a still-failing file raises them again after dismissal. `Desktop::config_report`
+holds the active configuration's problems as data, from startup and each
+reload, and both the persistent notices and the Settings notice derive from
+it, so a window opened later reports what startup found. Command and terminal
 failures expire on the window's single earliest-deadline timer; persistent
 notices schedule nothing. Terminal failures reach the window through the tab's
 activity drain, including hidden tabs. Root-shell exit is not a failure: only a
@@ -1174,7 +1177,16 @@ keeps a save's footer report. The comparison is with that write, not with the
 last read, which may already hold another editor's change. Such a reload
 still clears a "Not applied" or invalid report, since a theme or a font
 outside the file may have changed. A reload that applied the file with refused
-global shortcuts reports "Applied, but ..." in place of a save's report.
+global shortcuts reports "Applied with a warning" in place of a save's report.
+The footer line shows only such a summary; `FileStatus::notice` spells out a
+warning or failure above the section from its first read on, one message per
+binding conflict, config warning, or refused shortcut, and a
+warning starts folded until Details shows it, so it never pushes the section
+down unasked. The notice outlasts the saves and reloads that follow it, so it
+never vanishes and returns while they run: a write's problem lasts until a
+write succeeds, and a reload's until a later reload's reread applies the file
+in full. A reread that finds problems again updates the notice in place and
+keeps it unfolded if the user unfolded it.
 Every finished reload sends the watcher fresh `Settings`, including after a
 failure, which keeps the previous `watch_config`. An automatic reload that
 finds the file missing is skipped silently, since editors remove it while

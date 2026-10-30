@@ -70,7 +70,8 @@ Developer ID and notarized by Apple, and needs macOS 14.0 or later. Intel Macs
 are supported by the build but have not been validated on Intel hardware.
 
 Release builds update themselves with [Sparkle](https://sparkle-project.org).
-Choose **Check for Updates...** from the Huterm application menu to check now.
+Choose **Check for Updates...** from the Huterm application menu, or the
+button in the Updates section of Settings, to check now.
 On the second launch, Sparkle asks whether to check automatically; if you
 agree, it checks every 24 hours. The update window lists the release notes for
 every version between the installed one and the update. The `[updates]`
