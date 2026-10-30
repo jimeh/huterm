@@ -221,6 +221,7 @@ use model::{
 use native_menus::{MenuAnchor, MenuPresenter, NativeMenuSession};
 use pane_bars::{BarInput, PaneBarReveals};
 use pane_drag::{DropTarget, PaneDrag, PaneMode};
+use pane_focus::FocusMarks;
 use pane_geometry::{
     Divider, PaneRect, TabPanes, TitleBars, boundary_position, dragged_weights,
     layout_panes, with_boundary,
@@ -2423,6 +2424,7 @@ fn open_window_with_profile(
                 drawn_dividers: RefCell::new(Vec::new()),
                 drawn_panes: RefCell::new(None),
                 drawn_drop: RefCell::new(None),
+                drawn_focus: RefCell::new(FocusMarks::default()),
                 pane_drag: None,
                 reveal: Reveal::default(),
                 reveal_context: None,
@@ -3550,6 +3552,8 @@ struct WorkspaceView {
     drawn_panes: RefCell<Option<(TabId, Vec<PaneRect>)>>,
     /// The drop target the last frame drew, for smoke state.
     drawn_drop: RefCell<Option<String>>,
+    /// The focus marks the last frame drew, for smoke state.
+    drawn_focus: RefCell<FocusMarks>,
     /// A press on a pane title bar, or the drag it became.
     pane_drag: Option<PaneDrag>,
     reveal: Reveal,
@@ -4531,6 +4535,7 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Vec<gpui::AnyElement> {
+        *self.drawn_focus.borrow_mut() = FocusMarks::default();
         let Some(tab) = self.active_tab_view(cx) else {
             self.drawn_dividers.borrow_mut().clear();
             *self.drawn_panes.borrow_mut() = None;
@@ -4586,7 +4591,7 @@ impl WorkspaceView {
                         },
                     ))
                     .child(pane.view.clone())
-                    .children(self.inactive_dim(id == focused, shown, colors))
+                    .children(self.inactive_dim(id, focused, shown, colors))
                     .into_any_element(),
             );
             let bottom = bars.position == PaneTitleBarPosition::Bottom;
@@ -4657,22 +4662,29 @@ impl WorkspaceView {
         )?;
         let frame = rects?.pane(focused)?.frame;
         let bottom = bars.position == PaneTitleBarPosition::Bottom;
+        self.drawn_focus.borrow_mut().accent = Some((focused, alpha));
         Some(
             tab_bar::pane_focus_cue(frame, bottom, colors, alpha)
                 .into_any_element(),
         )
     }
 
-    /// The layer dimming a pane's terminal, while `[panes] inactive_dim`
+    /// The layer dimming `pane`'s terminal, while `[panes] inactive_dim`
     /// dims it.
     fn inactive_dim(
         &self,
-        focused: bool,
+        pane: PaneId,
+        focused: PaneId,
         shown: usize,
         colors: TabColors,
     ) -> Option<gpui::Div> {
-        pane_focus::inactive_dim(focused, shown, self.config.panes.inactive_dim)
-            .map(|alpha| tab_bar::pane_dim(colors, alpha))
+        let alpha = pane_focus::inactive_dim(
+            pane == focused,
+            shown,
+            self.config.panes.inactive_dim,
+        )?;
+        self.drawn_focus.borrow_mut().dimmed.push((pane, alpha));
+        Some(tab_bar::pane_dim(colors, alpha))
     }
 
     /// How many of `tab`'s panes `pane_elements` draws: each installed view
@@ -13466,6 +13478,8 @@ impl WorkspaceView {
         let grabs =
             button(|bar| gpui::point(bar.origin.x + px(40.0), bar.center().y));
         let opacities = joined(&|rect, _| self.pane_bar_opacity(rect));
+        let marks =
+            joined(&|rect, _| self.drawn_focus.borrow().describe(rect.pane));
         let drop = self
             .drawn_drop
             .borrow()
@@ -13485,7 +13499,7 @@ impl WorkspaceView {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}drop={drop} {prefix}spring={spring} {} {prefix}pane_dividers={}",
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}pane_focus_marks={marks} {prefix}drop={drop} {prefix}spring={spring} {} {prefix}pane_dividers={}",
             panes.len(),
             self.layout_smoke_state(prefix, cx),
             if dividers.is_empty() {

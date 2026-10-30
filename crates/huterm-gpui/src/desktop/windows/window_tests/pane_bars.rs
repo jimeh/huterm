@@ -1,7 +1,8 @@
 //! Tier 2 tests for `[panes] title_bar` and `title_bar_position`: a reload
 //! moves the title bars or hides them, the terminals take the space a bar
 //! gives up, a bottom bar's buttons work, and hover bars reveal, hold, and
-//! fade. Also `inactive_dim`, whose layer leaves pointer input to the pane
+//! fade. Also the focus marks: which panes `focus_accent` and
+//! `inactive_dim` mark, and a dim layer leaving pointer input to the pane
 //! beneath it.
 
 use std::time::{Duration, Instant};
@@ -379,6 +380,58 @@ fn a_revealed_bars_overlay_follows_its_pane_through_a_resize(
                 wider.size.width > bar.size.width
                     && bar_state(cx, window, first) == Some((1.0, Some(wider)))
             })
+    });
+}
+
+/// The focus marks `window` last drew.
+fn focus_marks(cx: &mut App, window: AnyWindowHandle) -> Option<FocusMarks> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            Some(view.read(cx).drawn_focus.borrow().clone())
+        })
+        .ok()
+        .flatten()
+}
+
+#[gpui::test]
+fn focus_marks_follow_focus_zoom_and_the_bar_mode(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    harness.invoke(window, ids::FOCUS_PANE_RIGHT).unwrap();
+    harness.reload_panes(window, |panes| {
+        panes.title_bar = PaneTitleBarMode::Hidden;
+        panes.focus_accent = 0.5;
+        panes.inactive_dim = 0.4;
+    });
+    let marks =
+        |dimmed: Vec<(PaneId, f32)>, accent| FocusMarks { dimmed, accent };
+    // The focused pane carries the accent; the other dims.
+    let expected = marks(vec![(first, 0.4)], Some((second, 0.5)));
+    harness.wait_for("the right pane to carry the accent", |cx| {
+        focus_marks(cx, window).as_ref() == Some(&expected)
+    });
+    harness.invoke(window, ids::FOCUS_PANE_LEFT).unwrap();
+    let expected = marks(vec![(second, 0.4)], Some((first, 0.5)));
+    harness.wait_for("the marks to follow focus left", |cx| {
+        focus_marks(cx, window).as_ref() == Some(&expected)
+    });
+    // A zoomed pane is the only one on screen, so nothing is marked.
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_for("zoom to clear the marks", |cx| {
+        pane_shown(cx, window, tab, second).is_some_and(|(shown, _)| !shown)
+            && focus_marks(cx, window) == Some(FocusMarks::default())
+    });
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    // Visible bars show focus themselves, so only the dimming stays.
+    harness.reload_panes(window, |panes| {
+        panes.title_bar = PaneTitleBarMode::Visible;
+    });
+    let expected = marks(vec![(second, 0.4)], None);
+    harness.wait_for("visible bars to drop the accent", |cx| {
+        pane_shown(cx, window, tab, second).is_some_and(|(shown, _)| shown)
+            && focus_marks(cx, window).as_ref() == Some(&expected)
     });
 }
 

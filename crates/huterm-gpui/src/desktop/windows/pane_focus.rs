@@ -3,6 +3,29 @@
 //! only one pane shows, as in a zoomed or single-pane tab.
 
 use huterm_config::{MAX_INACTIVE_DIM, PaneTitleBarMode};
+use huterm_protocol::PaneId;
+
+/// The focus marks a frame drew: each dimmed pane with its layer's opacity,
+/// and the pane with the accent line, with its alpha.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct FocusMarks {
+    pub(super) dimmed: Vec<(PaneId, f32)>,
+    pub(super) accent: Option<(PaneId, f32)>,
+}
+
+impl FocusMarks {
+    /// `pane`'s marks for smoke state: `dim:<opacity>`, `accent:<alpha>`, or
+    /// `none`.
+    pub(super) fn describe(&self, pane: PaneId) -> String {
+        if let Some((_, alpha)) = self.accent.filter(|(id, _)| *id == pane) {
+            return format!("accent:{alpha:.2}");
+        }
+        self.dimmed.iter().find(|(id, _)| *id == pane).map_or_else(
+            || "none".to_owned(),
+            |(_, alpha)| format!("dim:{alpha:.2}"),
+        )
+    }
+}
 
 /// The alpha of the focused pane's accent line, if it draws: only while its
 /// title bar is off screen, so never under visible bars and, under hover

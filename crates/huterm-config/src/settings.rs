@@ -221,7 +221,7 @@ pub struct Setting {
     pub step: Option<f64>,
     /// The control `x-huterm-control` asks for, if any.
     pub control: Option<Control>,
-    /// What a number shows at 0 in place of its value, from
+    /// What a slider shows at 0 in place of its value, from
     /// `x-huterm-zero-label`, such as "Off".
     pub zero_label: Option<String>,
     pub apply: Apply,
@@ -500,14 +500,10 @@ fn setting(
     let step = step(path, property, &kind)?;
     let unit = text("unit")?;
     let control = control(path, property, &kind, step, unit.as_deref())?;
+    // Only a slider's readout shows it.
     let zero_label = text("zero-label")?;
-    if zero_label.is_some()
-        && !matches!(
-            kind,
-            SettingKind::Integer { .. } | SettingKind::Number { .. }
-        )
-    {
-        return Err(error(path, "x-huterm-zero-label needs a number setting"));
+    if zero_label.is_some() && control != Some(Control::Slider) {
+        return Err(error(path, "x-huterm-zero-label needs a slider"));
     }
     Ok(Setting {
         path: path.into(),
@@ -1267,7 +1263,14 @@ mod tests {
             (
                 json!({"a": setting(&json!({"x-huterm-zero-label": "Off"}))}),
                 "a",
-                "x-huterm-zero-label needs a number setting",
+                "x-huterm-zero-label needs a slider",
+            ),
+            (
+                json!({"a": setting(&json!({
+                    "type": "number", "x-huterm-zero-label": "Off"
+                }))}),
+                "a",
+                "x-huterm-zero-label needs a slider",
             ),
         ] {
             assert_eq!(
