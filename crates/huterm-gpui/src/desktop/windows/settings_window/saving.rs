@@ -1615,9 +1615,11 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> bool {
         // A field's open menu holds focus, and its field's draft waits for
-        // the menu to close.
+        // the menu to close. Closing it hands focus back to the field, so the
+        // draft saves below, and a draft that does not save keeps focus there
+        // and refuses every close until it does.
         if matches!(self.menu, Some((_, super::MenuFor::Field(_), _))) {
-            self.drop_menu();
+            self.close_menu(window, cx);
         }
         if !self.settle_menu_left(cx) {
             return false;

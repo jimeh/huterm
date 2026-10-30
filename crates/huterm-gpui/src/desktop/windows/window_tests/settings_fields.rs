@@ -677,6 +677,43 @@ fn closing_or_changing_section_with_a_fields_menu_open_saves_its_draft(
     }
 }
 
+/// A draft that does not save keeps Settings open however often it is
+/// closed with the field's menu open, and focus goes back to the field
+/// that shows why.
+#[gpui::test]
+fn a_rejected_draft_under_its_menu_refuses_every_close(
+    cx: &mut TestAppContext,
+) {
+    let path = "terminal.scrollback_rows";
+    let file = ScratchConfig::new("fields-menu-refused", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Scrollback);
+    with_window(&mut harness, |_, window, _| window.activate_window());
+    click_field(&mut harness, path);
+    type_over(&harness, "lots");
+    let (_, bounds) =
+        with_window(&mut harness, |view, _, cx| view.field_caret(path, cx))
+            .expect("the field painted");
+    right_press(&harness, bounds);
+    assert!(with_view(&mut harness, |view, _| view.field_menu_shown()));
+    for attempt in 1..=2 {
+        with_window(&mut harness, |view, window, cx| {
+            let _ = view.command(ids::CLOSE_WINDOW, window, cx);
+        });
+        harness.cx.run_until_parked();
+        assert!(
+            harness.cx.update(|cx| settings(cx).is_some()),
+            "close {attempt} closed Settings"
+        );
+        assert!(with_view(&mut harness, |view, _| view
+            .error(path)
+            .is_some()));
+        assert_eq!(focus(&mut harness), path, "close {attempt}");
+    }
+    assert_eq!(field_text(&mut harness, path), "lots");
+    assert_eq!(file.text(), "");
+}
+
 /// A field's menu opens over a dialog and takes its keys, which the open
 /// dialog would otherwise take for itself.
 #[gpui::test]
