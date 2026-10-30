@@ -5683,6 +5683,20 @@ impl WorkspaceView {
         self.config.panes.title_bar == PaneTitleBar::Hover
     }
 
+    /// How opaque `rect`'s bar draws, for smoke state: a hover bar's reveal,
+    /// else fully, or `none` without a bar.
+    fn pane_bar_opacity(&self, rect: &PaneRect) -> String {
+        if rect.title_bar.is_none() {
+            return "none".to_owned();
+        }
+        let opacity = if self.hover_bars() {
+            self.pane_bars.progress(rect.pane)
+        } else {
+            1.0
+        };
+        format!("{opacity:.2}")
+    }
+
     /// Feeds the hover bars what the last pointer refresh saw and what holds
     /// each drawn bar, and schedules their fades and intents.
     fn refresh_pane_bars(&mut self, cx: &mut Context<'_, Self>) {
@@ -13368,6 +13382,7 @@ impl WorkspaceView {
         // Where a press grabs each title bar for a drag: its title text.
         let grabs =
             button(|bar| gpui::point(bar.origin.x + px(40.0), bar.center().y));
+        let opacities = joined(&|rect, _| self.pane_bar_opacity(rect));
         let drop = self
             .drawn_drop
             .borrow()
@@ -13387,7 +13402,7 @@ impl WorkspaceView {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}drop={drop} {prefix}spring={spring} {} {prefix}pane_dividers={}",
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}drop={drop} {prefix}spring={spring} {} {prefix}pane_dividers={}",
             panes.len(),
             self.layout_smoke_state(prefix, cx),
             if dividers.is_empty() {

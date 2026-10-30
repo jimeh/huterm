@@ -234,8 +234,11 @@ gesture, during a pane drag, or over the fullscreen tab bar's trigger edge or
 revealed bar, so a selection crossing the band never reveals one. A
 revealed bar reaches its terminal as `PointerOverlays::pane_bar`, which every
 press, motion, link, and drop path reads like the tab bar's overlay; a
-gesture the terminal already owns still wins. The test platform never
-reports a hovered window, so window tests feed `pane_bar_pointer` directly.
+gesture the terminal already owns still wins. GPUI reports a macOS window
+as hovered only while it is active, so hover bars reveal only in the active
+window, and the Linux test platform never reports a hovered window, so
+window tests feed `pane_bar_pointer` directly; `smoke:macos-input` covers the
+real pointer path with injected mouse-moved events.
 
 The window's
 capture listeners own its motion and release, as they do for a reorder, and

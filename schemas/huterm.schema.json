@@ -628,7 +628,7 @@
             }
           ],
           "default": "visible",
-          "description": "Whether a split tab's panes show title bars: `visible`, `hover`, or\n`hidden`.",
+          "description": "How a split tab's panes show their title bars. `visible` bars always\nshow and take space from the terminal. `hover` bars take no space:\nrest the pointer along the pane's edge where the bar would be, and it\nfades in over the terminal. `hidden` bars never show.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Pane title bars",

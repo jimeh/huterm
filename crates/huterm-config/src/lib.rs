@@ -862,8 +862,10 @@ pub const MAX_LAYOUTS: usize = 64;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct PanesConfig {
-    /// Whether a split tab's panes show title bars: `visible`, `hover`, or
-    /// `hidden`.
+    /// How a split tab's panes show their title bars. `visible` bars always
+    /// show and take space from the terminal. `hover` bars take no space:
+    /// rest the pointer along the pane's edge where the bar would be, and it
+    /// fades in over the terminal. `hidden` bars never show.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "window",
         "x-huterm-group" = "Panes",
