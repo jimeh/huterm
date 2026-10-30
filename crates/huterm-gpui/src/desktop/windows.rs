@@ -56,7 +56,7 @@ use crate::fullscreen::{Effect, FullscreenController, ToggleIntent};
 use crate::native_quit;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 use crate::native_updater;
-use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
+use gpui::{AnyWindowHandle, Entity, EntityId, Global, WeakEntity};
 use huterm_config::{
     PaneTitleBarMode, PaneTitleBarPosition, TabStyle, TabWidth, TabsConfig,
 };
@@ -3645,9 +3645,13 @@ enum MenuKind {
     Window,
     /// A tab's context menu.
     Tab(TabId),
-    /// The context menu of the terminal in `tab`, with the destination of
-    /// the link under the pointer when it opened.
-    Terminal { tab: TabId, link: Option<String> },
+    /// The context menu of `terminal`, the focused terminal of `tab` when
+    /// it opened, with the destination of the link under the pointer.
+    Terminal {
+        tab: TabId,
+        terminal: EntityId,
+        link: Option<String>,
+    },
     /// The context menu of a pane's title bar in `tab`.
     Pane { tab: TabId, pane: PaneId },
     /// A text field's context menu, in the palette or the Licenses view.
@@ -12312,8 +12316,11 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         self.check_available(false)?;
+        // A request while a native menu is opening, such as a repeated key
+        // or a double right-click before the popup appears, is dropped: the
+        // first menu still opens, as the other menus' requests do.
         if self.native_menu.is_some() {
-            return Err(CommandError::Unavailable("a menu is open".to_owned()));
+            return Ok(CommandOutcome::Completed);
         }
         if let Some(menu) = &self.menu
             && menu.kind == MenuKind::Window
@@ -12503,7 +12510,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(tab) = self.active_tab(cx) else {
+        let (Some(tab), Some(terminal)) =
+            (self.active_tab(cx), self.active_view(cx))
+        else {
             return;
         };
         if self.check_available(true).is_err()
@@ -12513,11 +12522,13 @@ impl WorkspaceView {
             return;
         }
         self.close_menu(MenuFocusReturn::Keep, window, cx);
-        if let Some(terminal) = self.active_view(cx) {
-            terminal.update(cx, TerminalView::clear_composition);
-        }
+        terminal.update(cx, TerminalView::clear_composition);
         let contexts = window.context_stack();
-        let kind = MenuKind::Terminal { tab, link };
+        let kind = MenuKind::Terminal {
+            tab,
+            terminal: terminal.entity_id(),
+            link,
+        };
         let Some(spec) = self.terminal_menu_spec(&kind, &contexts, cx) else {
             return;
         };
@@ -12613,18 +12624,18 @@ impl WorkspaceView {
         }
     }
 
-    /// The terminal menu's rows, or `None` once its tab is no longer the
-    /// active one.
+    /// The terminal menu's rows, or `None` once its terminal is no longer
+    /// the focused one, which its picks act on.
     fn terminal_menu_spec(
         &self,
         kind: &MenuKind,
         contexts: &[KeyContext],
         cx: &App,
     ) -> Option<MenuSpec> {
-        let MenuKind::Terminal { tab, link } = kind else {
+        let MenuKind::Terminal { link, .. } = kind else {
             return None;
         };
-        if self.active_tab(cx) != Some(*tab) {
+        if !self.menu_target_live(kind, cx) {
             return None;
         }
         let terminal = self.active_view(cx)?.read(cx);
@@ -12871,8 +12882,13 @@ impl WorkspaceView {
                 self.close_menu(MenuFocusReturn::Terminal, window, cx);
             }
             MenuEvent::Picked(id) => {
+                // Focus can move before a refresh closes the menu; a pick
+                // must not then act on another pane.
+                let live = self.menu_target_live(&kind, cx);
                 self.close_menu(MenuFocusReturn::Terminal, window, cx);
-                self.run_menu_pick(&kind, id, window, cx);
+                if live {
+                    self.run_menu_pick(&kind, id, window, cx);
+                }
             }
         }
     }

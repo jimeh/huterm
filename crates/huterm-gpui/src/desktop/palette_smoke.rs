@@ -119,14 +119,33 @@ pub(crate) fn run() -> anyhow::Result<()> {
     })
 }
 
+/// Posts the `AppKit` events a `native` command names, or `None` for any
+/// other command. `native-batch\t<event>\n<event>…` posts every event in
+/// one poll, so they reach `AppKit` together, as keys typed in quick
+/// succession do.
+#[cfg(target_os = "macos")]
+fn post_native(command: &str) -> Option<anyhow::Result<String>> {
+    let events = command
+        .strip_prefix("native-batch\t")
+        .map(|events| events.split('\n').collect::<Vec<_>>())
+        .or_else(|| {
+            command.strip_prefix("native\t").map(|event| vec![event])
+        })?;
+    Some(
+        events
+            .into_iter()
+            .try_for_each(super::input_smoke::post_event)
+            .map(|()| "posted".to_owned()),
+    )
+}
+
 async fn execute(
     command: &str,
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<String> {
     #[cfg(target_os = "macos")]
-    if let Some(event) = command.strip_prefix("native\t") {
-        super::input_smoke::post_event(event)?;
-        return Ok("posted".to_owned());
+    if let Some(posted) = post_native(command) {
+        return posted;
     }
     #[cfg(target_os = "macos")]
     if command == "native-title" {

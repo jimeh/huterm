@@ -242,6 +242,11 @@ close_on_exit = false
 position = "top"
 always_show = true
 label = "title"
+
+# A real key opens the terminal menu for the typing-after-Escape steps.
+[[keybinding]]
+key = "cmd-shift-y"
+command = "open_context_menu"
 `;
   await writeFile(config, configDocument);
   const app = Bun.spawn([executable], {
@@ -311,6 +316,19 @@ label = "title"
     const content = parseRect(field(opened, "content"));
     if (menu.y < content.y || menu.y + menu.h > content.y + content.h) throw new Error(`${engine}: the menu ${field(opened, "menu_rect")} leaves the window ${field(opened, "content")}`);
     return opened;
+  }
+  /**
+   * Opens the terminal menu with its key binding and waits for `opened`,
+   * then posts Escape, `token`, and Enter in one batch, so the line follows
+   * the dismissal as fast typing would, and waits for every character of it
+   * to reach the shell.
+   */
+  async function typeAfterEscape(opened: () => Promise<unknown>, token: string): Promise<void> {
+    await command(["native", 16, commandFlag | shiftFlag, "Y", "y"].join("\t"));
+    await opened();
+    const keys = [[53, 0, "\x1b", "\x1b"], ...macKeyEvents(token).map((event) => [event.code, event.flags, event.text, event.plain]), [36, 0, "\r", "\r"]];
+    await command(["native-batch", keys.map((event) => event.join("\t")).join("\n")].join("\t"));
+    await state(`ACK:${token}`);
   }
   /** Types a line the fixture answers with `ACK:<token>` and waits for it. */
   async function ack(token: string): Promise<void> {
@@ -674,6 +692,14 @@ label = "title"
     await key("escape");
     await state("w0.menu=false");
     await resizeContent(original.w, original.h);
+    // A line typed right after Escape closes a keyboard-opened menu
+    // arrives whole.
+    if (process.platform === "darwin") {
+      await typeAfterEscape(
+        () => stateWhere((text) => text.includes("w0.menu_kind=terminal") && field(text, "menu_rect") !== "none", "painted terminal menu from its key"),
+        "ackescapedx",
+      );
+    }
     // The keyboard opens the menu at the cursor with its first item selected.
     await invoke("open_context_menu");
     await state("w0.menu=true", "w0.menu_kind=terminal", "w0.menu_focused=true", "w0.menu_selection=paste");
@@ -1022,6 +1048,8 @@ label = "title"
     let nativeMenus = "skipped";
     if (process.platform === "darwin") {
       await reloadedTitles(configDocument.replace("macos_native_menus = false", "macos_native_menus = true"));
+      await typeAfterEscape(() => state("w0.native_menu=terminal", "native_menu_tracking=true"), "acknativeescapedx");
+      await state("w0.native_menu=none", "native_menu_tracking=false");
       const nativeGrid = parseRect(field(await current(), "grid_bounds"));
       const at = { x: nativeGrid.x + nativeGrid.w / 2, y: nativeGrid.y + nativeGrid.h / 2 };
       for (let round = 0; round < 2; round++) {
@@ -1038,10 +1066,10 @@ label = "title"
       await invoke("previous_tab");
       await state("w0.terminal_focused=true");
       await reloadedTitles(configDocument);
-      nativeMenus = "open-cancel-reopen";
+      nativeMenus = "key-escape-typed-open-cancel-reopen";
     }
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard pane-drags=edge-centre-escape-spring-back-drop undo=tab-drop layouts=arrange-sizes-moved-origin-keys-resize native-menus=${nativeMenus}`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard${process.platform === "darwin" ? "-escape-typed" : ""} pane-drags=edge-centre-escape-spring-back-drop undo=tab-drop layouts=arrange-sizes-moved-origin-keys-resize native-menus=${nativeMenus}`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

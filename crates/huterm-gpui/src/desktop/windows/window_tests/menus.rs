@@ -480,3 +480,74 @@ fn a_menu_supersedes_a_right_click_waiting_for_its_link(
         assert_eq!(menu_kind(cx, window), None, "the lookup opens no menu");
     });
 }
+
+impl DesktopHarness {
+    /// A window on an [`ECHO`] tab split into two panes, with the left one
+    /// focused. Returns the left and right panes.
+    fn split_menu_window(
+        &mut self,
+    ) -> (AnyWindowHandle, TabId, PaneId, PaneId) {
+        let (window, tab) = self.menu_window(ECHO);
+        let left = self.first_pane(tab);
+        let right = self.split(tab, left, SplitDirection::Right, ECHO);
+        self.wait_for("the right pane's shell", |cx| {
+            pane_screen(cx, window, tab, right)
+                .is_some_and(|text| text.contains("READY"))
+        });
+        self.update_view(window, |view, window, cx| {
+            view.focus_pane(tab, left, window, cx);
+        });
+        (window, tab, left, right)
+    }
+}
+
+#[gpui::test]
+fn a_terminal_menu_closes_when_its_pane_closes_under_it(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, left, _) = harness.split_menu_window();
+    harness.open_painted(window, ids::OPEN_CONTEXT_MENU);
+    // The pane closes as its shell exiting would; the right pane takes
+    // focus, and the menu's picks would act on it.
+    harness
+        .runtime
+        .lock()
+        .close_pane(harness.workspace, tab, left)
+        .unwrap();
+    harness.wait_for("the closed pane's view to go", |cx| {
+        pane_view(cx, window, tab, left).is_none()
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(menu_kind(cx, window), None, "the menu outlived its pane");
+        assert!(focused(cx, window, tab), "focus returns to the terminal");
+    });
+}
+
+#[gpui::test]
+fn a_terminal_menu_pick_after_focus_leaves_its_pane_runs_nothing(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, left, right) = harness.split_menu_window();
+    harness.open_painted(window, ids::OPEN_CONTEXT_MENU);
+    // Focus moves and the pick arrives before a refresh closes the menu.
+    harness.update_view(window, |view, window, cx| {
+        let menu = view.menu.as_ref().unwrap().view.clone();
+        view.focus_pane(tab, right, window, cx);
+        view.handle_menu_event(
+            &menu,
+            &MenuEvent::Picked("select_all".into()),
+            window,
+            cx,
+        );
+    });
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert_eq!(menu_kind(cx, window), None);
+        for pane in [left, right] {
+            let view = pane_view(cx, window, tab, pane).unwrap();
+            assert!(view.read(cx).selection.is_none(), "{pane:?} selected");
+        }
+    });
+}
