@@ -131,6 +131,11 @@ impl MenuPresenter for AppKitPresenter {
     }
 }
 
+/// Whether an `AppKit` menu is tracking now, for smoke state.
+pub(super) fn tracking() -> bool {
+    POPUPS.with(|popups| popups.borrow().values().any(|popup| popup.tracking))
+}
+
 /// Closes its menu when dropped: one still waiting never opens, and one
 /// tracking is cancelled.
 struct Close(u64);
