@@ -159,11 +159,15 @@ async function main(argv: string[]): Promise<number> {
   const locking = process.platform === "darwin" && process.env[HELD] !== directory;
 
   let child: ChildProcess | undefined;
-  // The command leads its own process group, so a terminal's Ctrl-C reaches
-  // it once, through this handler, and so does anything it started.
+  // A locked command leads its own process group, so a terminal's Ctrl-C
+  // reaches it once, through this handler, and so does anything it started.
+  // Without the lock the command stays in this group, so a nested run is
+  // still inside the cleanup of the wrapper that holds the lock.
   const forward = (signal: NodeJS.Signals) => {
     interrupted ??= signal;
-    if (child?.pid) signalGroup(child.pid, signal);
+    if (!child?.pid) return;
+    if (locking) signalGroup(child.pid, signal);
+    else child.kill(signal);
   };
   const handlers = (["SIGINT", "SIGTERM", "SIGHUP"] as const).map((signal) => [signal, () => forward(signal)] as const);
   for (const [signal, handler] of handlers) process.on(signal, handler);
@@ -184,7 +188,7 @@ async function main(argv: string[]): Promise<number> {
     }
     const spawned = spawn(command[0]!, command.slice(1), {
       stdio: "inherit",
-      detached: true,
+      detached: locking,
       env: locking ? { ...process.env, [HELD]: directory } : process.env,
     });
     child = spawned;
@@ -192,7 +196,7 @@ async function main(argv: string[]): Promise<number> {
       spawned.once("error", (error) => reject(new LockError(`host smoke lock: could not start ${command[0]}: ${error.message}`, 127)));
       spawned.once("exit", (code, signal) => resolve([code, signal]));
     });
-    await stopGroup(spawned.pid!);
+    if (locking) await stopGroup(spawned.pid!);
     return signal ? 128 + os.signals[signal] : status ?? 1;
   } finally {
     release?.();

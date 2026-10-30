@@ -172,6 +172,34 @@ describe.skipIf(!darwin)("the host smoke lock", () => {
     expect(existsSync(join(files, "orphan-alive"))).toBe(false);
   });
 
+  test("a holder stops what its command leaves behind after a normal exit", async () => {
+    const { state, files } = fixture();
+    const first = start(state, ["sh", "-c", `sleep 30 & echo $! > "$1/sleep"`, "sh", files]);
+    expect(await first.child.exited).toBe(0);
+    const orphan = Number(readFileSync(join(files, "sleep"), "utf8"));
+    pids.push(orphan);
+    expect(() => process.kill(orphan, 0)).toThrow();
+  });
+
+  test("a cancelled holder stops a nested run's command before the next holder starts", async () => {
+    const { state, files } = fixture();
+    // The nested command outlasts the grace period; its shell parent dies at once.
+    const nested = join(files, "nested.sh");
+    writeFileSync(nested, `echo $$ > "$1/nested"; trap 'sleep 30' TERM; : > "$1/a.started"; while :; do sleep 0.05; done\n`);
+    // The trailing command keeps the shell from replacing itself with the nested wrapper.
+    const first = start(state, ["sh", "-c", `"$2" "$3" sh "$4" "$1"; true`, "sh", files, process.execPath, script, nested]);
+    await until(() => existsSync(join(files, "a.started")), "the nested command", first.stderr);
+    const command = Number(readFileSync(join(files, "nested"), "utf8"));
+    pids.push(command);
+    const second = start(state, ["sh", "-c", `read pid < "$1/nested"; if kill -0 "$pid" 2>/dev/null; then touch "$1/nested-alive"; fi; touch "$1/b.ran"`, "sh", files]);
+    await until(() => second.stderr().includes("Waiting for the host smoke lock"), "the waiting message", second.stderr);
+    first.child.kill("SIGTERM");
+    await first.child.exited;
+    expect(await second.exit).toBe(0);
+    expect(existsSync(join(files, "b.ran"))).toBe(true);
+    expect(existsSync(join(files, "nested-alive"))).toBe(false);
+  });
+
   test("--held answers whether this run already holds the same lock", async () => {
     const { state, files } = fixture();
     const held = (env: Record<string, string>) => Bun.spawn([process.execPath, script, "--held"], {
