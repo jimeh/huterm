@@ -494,7 +494,8 @@ fn text_cut_moves_a_fields_selection_to_the_clipboard(cx: &mut TestAppContext) {
 /// The Edit menu's Cut, Copy, Paste, and Select All are enabled while a
 /// field has focus, and act on it: Cut is the field's `text_cut`, and the
 /// terminal's Copy, Paste, and Select All run as the field's commands. On
-/// any other control they are disabled.
+/// any other control they are disabled, and the terminal's other items,
+/// such as Clear Scrollback, stay disabled in a field too.
 #[gpui::test]
 fn the_edit_menu_acts_on_a_focused_field_and_only_there(
     cx: &mut TestAppContext,
@@ -502,7 +503,13 @@ fn the_edit_menu_acts_on_a_focused_field_and_only_there(
     let file = ScratchConfig::new("fields-edit-menu", "");
     let mut harness = DesktopHarness::new(cx);
     show(&mut harness, &file, SectionId::Tabs);
-    let edit = [ids::TEXT_CUT, ids::COPY, ids::PASTE, ids::SELECT_ALL];
+    let edit = [
+        ids::TEXT_CUT,
+        ids::COPY,
+        ids::PASTE,
+        ids::SELECT_ALL,
+        ids::CLEAR_SCROLLBACK,
+    ];
     let available = |harness: &mut DesktopHarness| {
         with_window(harness, |_, window, cx| {
             edit.map(|id| {
@@ -526,7 +533,7 @@ fn the_edit_menu_acts_on_a_focused_field_and_only_there(
     let mut typing = visual(&harness);
     typing.simulate_input("scrollback");
     typing.run_until_parked();
-    assert_eq!(available(&mut harness), [true; 4]);
+    assert_eq!(available(&mut harness), [true, true, true, true, false]);
     run(&mut harness, ids::SELECT_ALL);
     run(&mut harness, ids::COPY);
     assert_eq!(clipboard(&mut harness).as_deref(), Some("scrollback"));
@@ -545,7 +552,7 @@ fn the_edit_menu_acts_on_a_focused_field_and_only_there(
         view.focus_stop("tabs.always_show", window, cx);
     });
     visual(&harness).run_until_parked();
-    assert_eq!(available(&mut harness), [false; 4]);
+    assert_eq!(available(&mut harness), [false; 5]);
 }
 
 /// Right-presses the first character the field shows in `bounds`, as a
@@ -634,6 +641,40 @@ fn a_fields_context_menu_edits_it_and_keeps_its_draft_until_focus_leaves(
     harness.wait_for("the field to save", |cx| {
         settled(cx) && file.text().contains("scrollback_rows = 5000")
     });
+}
+
+/// Closing Settings, or moving to another section, while a field's menu
+/// is open saves the field's draft, as it would with focus in the field.
+#[gpui::test]
+fn closing_or_changing_section_with_a_fields_menu_open_saves_its_draft(
+    cx: &mut TestAppContext,
+) {
+    let path = "terminal.scrollback_rows";
+    for (name, command) in
+        [("close", ids::CLOSE_WINDOW), ("tab", ids::NEXT_TAB)]
+    {
+        let file = ScratchConfig::new(&format!("fields-menu-{name}"), "");
+        let mut harness = DesktopHarness::new(cx);
+        show(&mut harness, &file, SectionId::Scrollback);
+        with_window(&mut harness, |_, window, _| window.activate_window());
+        click_field(&mut harness, path);
+        type_over(&harness, "5000");
+        let (_, bounds) =
+            with_window(&mut harness, |view, _, cx| view.field_caret(path, cx))
+                .expect("the field painted");
+        right_press(&harness, bounds);
+        assert!(with_view(&mut harness, |view, _| view.field_menu_shown()));
+        with_window(&mut harness, |view, window, cx| {
+            let _ = view.command(command, window, cx);
+        });
+        // Settings closes once the write lands, so wait on the file.
+        harness.wait_for(&format!("{name} to save the draft"), |_| {
+            file.text().contains("scrollback_rows = 5000")
+        });
+        if command == ids::CLOSE_WINDOW {
+            harness.wait_for("Settings to close", |cx| settings(cx).is_none());
+        }
+    }
 }
 
 /// A field's menu opens over a dialog and takes its keys, which the open

@@ -1638,7 +1638,8 @@ fn a_binding_replaces_another_only_with_the_same_keys_and_predicate() {
 /// A text binding whose `when` asks for `Palette` on the field's node
 /// matches only where both contexts sit together, the palette and
 /// Licenses, so it is reported; one that excludes the palette, scopes by
-/// an ancestor, or is no text command is not.
+/// an ancestor, offers an alternative without it, or is no text command is
+/// not.
 #[test]
 fn a_text_binding_limited_to_the_palette_is_reported() {
     let when = |key: &str, command: &str, when: &str| KeybindingEntry {
@@ -1653,6 +1654,9 @@ fn a_text_binding_limited_to_the_palette_is_reported() {
         when("ctrl-5", "text_copy", "Palette > TextField"),
         when("ctrl-6", "palette_select_next", "Palette"),
         disabled(when("ctrl-7", "text_paste", "Palette")),
+        // Either side of `||` may match without the palette.
+        when("ctrl-8", "text_copy", "Palette || !confirming"),
+        when("ctrl-9", "text_copy", "(Palette && menu) || Palette"),
     ];
     let compiled = compile(Platform::MacOs, &user).unwrap();
     let reported: Vec<&str> = compiled
@@ -1661,5 +1665,10 @@ fn a_text_binding_limited_to_the_palette_is_reported() {
         .filter(|message| message.contains("names `Palette`"))
         .map(|message| message.split_whitespace().nth(1).unwrap())
         .collect();
-    assert_eq!(reported, ["1", "2", "3", "7"], "{:?}", compiled.conflicts);
+    assert_eq!(
+        reported,
+        ["1", "2", "3", "7", "9"],
+        "{:?}",
+        compiled.conflicts
+    );
 }

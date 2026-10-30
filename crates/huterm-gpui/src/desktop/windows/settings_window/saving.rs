@@ -1614,6 +1614,14 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
+        // A field's open menu holds focus, and its field's draft waits for
+        // the menu to close.
+        if matches!(self.menu, Some((_, super::MenuFor::Field(_), _))) {
+            self.drop_menu();
+        }
+        if !self.settle_menu_left(cx) {
+            return false;
+        }
         if let Some(setting) = self.focused_field(window, cx) {
             self.field_blurred(setting, cx);
             if self.errors.contains_key(setting.path.as_str()) {

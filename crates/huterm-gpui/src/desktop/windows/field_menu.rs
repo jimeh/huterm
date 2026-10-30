@@ -99,6 +99,7 @@ pub(super) fn run_pick(field: &Entity<Input>, id: &str, cx: &mut App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desktop::key_hint::KeyHint;
     use crate::keymap::compile;
 
     fn input() -> FieldMenuInput {
@@ -197,13 +198,20 @@ mod tests {
                 .rows
                 .iter()
                 .filter_map(|row| match row {
-                    MenuRow::Item(item) => Some(item.shortcut.len()),
+                    MenuRow::Item(item) => Some(item.shortcut.clone()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
         };
-        // Each default is one modifier and one key.
-        assert_eq!(shortcuts(&model(input(), &[])), [2, 2, 2, 2]);
+        let hints = |keys: [&str; 4]| {
+            keys.map(|key| KeyHint::parse(key, Platform::MacOs).glyphs())
+                .to_vec()
+        };
+        assert_eq!(
+            shortcuts(&model(input(), &[])),
+            hints(["cmd-x", "cmd-c", "cmd-v", "cmd-a"])
+        );
+        // A user binding is shown ahead of the default.
         let user = huterm_config::KeybindingEntry {
             key: "ctrl-alt-shift-x".to_owned(),
             command: "text_cut".to_owned(),
@@ -212,6 +220,9 @@ mod tests {
             description: None,
             disabled: None,
         };
-        assert_eq!(shortcuts(&model(input(), &[user])), [4, 2, 2, 2]);
+        assert_eq!(
+            shortcuts(&model(input(), &[user])),
+            hints(["ctrl-alt-shift-x", "cmd-c", "cmd-v", "cmd-a"])
+        );
     }
 }

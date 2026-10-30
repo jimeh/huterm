@@ -5,7 +5,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{Bounds, Entity, Modifiers, Pixels, Point, point, px};
+use gpui::{Bounds, Entity, Modifiers, MouseButton, Pixels, Point, point, px};
 use huterm_config::settings::SectionId;
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 
@@ -725,4 +725,38 @@ fn the_font_chevron_is_not_a_tab_stop(cx: &mut TestAppContext) {
     assert_eq!(focus(&mut harness), "font.size");
     keys(&harness, "shift-tab");
     assert_eq!(focus(&mut harness), FAMILY);
+}
+
+/// A `when` field's draft waits while its context menu is open, and saves
+/// once focus leaves the menu for somewhere else, as leaving the field does.
+#[gpui::test]
+fn a_condition_draft_saves_when_focus_leaves_its_context_menu(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("lists-condition-menu", "");
+    let mut harness = DesktopHarness::new(cx);
+    let when = condition(&mut harness, &file, ids::NEXT_TAB, "ctrl-tab");
+    // GPUI reports blurs only in an active window.
+    with_window(&mut harness, |_, window, _| window.activate_window());
+    typed(&harness, "Terminal");
+    let (_, bounds) =
+        with_window(&mut harness, |view, _, cx| view.key_caret(&when, cx))
+            .expect("the field painted");
+    let mut visual = visual(&harness);
+    let at = point(bounds.left() + px(2.0), bounds.center().y);
+    visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+    visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+    visual.run_until_parked();
+    assert!(with_view(&mut harness, |view, _| view.field_menu_shown()));
+    assert!(
+        harness.cx.update(settled) && file.text().is_empty(),
+        "opening the menu saved"
+    );
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_handle(cx).focus(window, cx);
+    });
+    harness.cx.run_until_parked();
+    harness.wait_for("the condition to save", |cx| {
+        settled(cx) && file.text().contains("when = \"Terminal\"")
+    });
 }

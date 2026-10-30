@@ -238,7 +238,11 @@ A `when` adds to the implied context on the same element, so a `text_*`
 binding with `when = "Palette"` matches only in the palette and Licenses,
 where both contexts sit together, and no longer in Settings fields. Huterm
 reports such a binding as a keybinding warning; drop `Palette` from its
-`when` to bind it in every text field.
+`when` to bind it in every text field. A custom key for
+`palette_select_next`, `palette_select_previous`, `palette_page_down`, or
+`palette_page_up` no longer steps a Settings number field or its
+suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
+`text_page_up` for that.
 
 | Command | Scope | Arguments |
 | --- | --- | --- |

@@ -266,7 +266,7 @@ fn toml_value(name: &str, value: &toml::Value) -> Result<CommandValue, String> {
 #[cfg(test)]
 pub(crate) fn bound_command(binding: &KeyBinding) -> Option<CommandId> {
     use crate::commands::{
-        InvokeApp, InvokeFocused, InvokeTerminal, InvokeWindow,
+        InvokeApp, InvokeEdit, InvokeFocused, InvokeTerminal, InvokeWindow,
     };
     let action = binding.action().as_any();
     action
@@ -280,6 +280,11 @@ pub(crate) fn bound_command(binding: &KeyBinding) -> Option<CommandId> {
         .or_else(|| {
             action
                 .downcast_ref::<InvokeTerminal>()
+                .map(|action| action.0.id)
+        })
+        .or_else(|| {
+            action
+                .downcast_ref::<InvokeEdit>()
                 .map(|action| action.0.id)
         })
         .or_else(|| {
@@ -489,8 +494,8 @@ fn resolve_entries(
                 position,
                 &entry.key,
                 "`when` names `Palette`, so this text binding matches only \
-                 in the palette and Licenses; without it, it binds in every \
-                 text field",
+                 in the palette and Licenses; without `Palette` it applies \
+                 to every text field",
             ));
         }
         let resolved = Resolved {
@@ -588,17 +593,20 @@ fn resolve_entries(
 }
 
 /// Whether `predicate` requires `identifier` on the node it matches, as a
-/// `when` does once it is joined to its command's context. An identifier
-/// under `!`, or on an ancestor side of `>`, places no such requirement.
+/// `when` does once it is joined to its command's context: `&&` requires
+/// it when either side does, `||` only when both do. An identifier under
+/// `!`, or on an ancestor side of `>`, places no such requirement.
 fn on_the_node(
     predicate: &KeyBindingContextPredicate,
     identifier: &str,
 ) -> bool {
     match predicate {
         KeyBindingContextPredicate::Identifier(name) => name == identifier,
-        KeyBindingContextPredicate::And(left, right)
-        | KeyBindingContextPredicate::Or(left, right) => {
+        KeyBindingContextPredicate::And(left, right) => {
             on_the_node(left, identifier) || on_the_node(right, identifier)
+        }
+        KeyBindingContextPredicate::Or(left, right) => {
+            on_the_node(left, identifier) && on_the_node(right, identifier)
         }
         KeyBindingContextPredicate::Descendant(_, child) => {
             on_the_node(child, identifier)

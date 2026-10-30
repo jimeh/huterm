@@ -27,7 +27,7 @@ use huterm_protocol::{
 use crate::APP_ID;
 use crate::assets::Icon;
 use crate::commands::{
-    InvokeApp, InvokeFocused, InvokeTerminal, InvokeWindow, invoke,
+    InvokeApp, InvokeEdit, InvokeFocused, InvokeTerminal, InvokeWindow, invoke,
 };
 use crate::config::{self, Config, LinkModifiersExt, Theme, WindowConfig};
 #[cfg(test)]
@@ -3264,6 +3264,13 @@ impl Render for TerminalView {
             .key_context(self.key_context())
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::invoke_terminal))
+            .on_action(cx.listener(|view, action: &InvokeEdit, window, cx| {
+                view.invoke_terminal(
+                    &InvokeTerminal(action.0.clone()),
+                    window,
+                    cx,
+                );
+            }))
             .capture_key_down(cx.listener(
                 |view, event: &gpui::KeyDownEvent, _, cx| {
                     if event.keystroke.key == "escape"
@@ -3393,6 +3400,11 @@ impl Render for TerminalView {
                 ))
                 .capture_action(cx.listener(
                     |view, _: &InvokeTerminal, window, cx| {
+                        view.capture_shortcut_resolution(window, cx);
+                    },
+                ))
+                .capture_action(cx.listener(
+                    |view, _: &InvokeEdit, window, cx| {
                         view.capture_shortcut_resolution(window, cx);
                     },
                 ))

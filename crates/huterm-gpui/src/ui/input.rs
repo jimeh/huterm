@@ -5,7 +5,7 @@ use gpui::{Context, Div, InteractiveElement as _, KeyContext, div};
 use huterm_protocol::{CommandError, CommandId, CommandInvocation, ids};
 use huterm_ui::components::input::Input;
 
-use crate::commands::{InvokeTerminal, invoke};
+use crate::commands::{InvokeEdit, invoke};
 use crate::keymap::TEXT_FIELD_CONTEXT;
 
 /// The field verbs: commands bound under `TextField` whose meaning is the
@@ -29,10 +29,12 @@ pub(crate) fn is_field_verb(id: CommandId) -> bool {
 /// that sits with it, such as an input group's addons. The `text_*`
 /// bindings match only inside one.
 ///
-/// The Edit menu's Copy, Paste, and Select All are terminal commands; inside
-/// this element they run as the field's `text_copy`, `text_paste`, and
-/// `text_select_all` through the owner's routing, so the menu items act on
-/// a focused field and are enabled only there.
+/// The Edit menu's Copy, Paste, and Select All are the terminal's commands,
+/// sent as `InvokeEdit`; inside this element they run as the field's
+/// `text_copy`, `text_paste`, and `text_select_all` through the owner's
+/// routing, so the menu items act on a focused field. The element handles
+/// no other terminal command, so the rest of the terminal's menu items stay
+/// disabled in a field.
 pub(crate) fn context() -> Div {
     context_with(&[])
 }
@@ -46,15 +48,15 @@ pub(crate) fn context_with(extra: &[&str]) -> Div {
     for identifier in extra {
         context.add(identifier.to_string());
     }
-    div().key_context(context).on_action(
-        |action: &InvokeTerminal, window, cx| {
+    div()
+        .key_context(context)
+        .on_action(|action: &InvokeEdit, window, cx| {
             let Some(id) = edit_menu_command(action.0.id) else {
                 cx.propagate();
                 return;
             };
             window.dispatch_action(invoke(id).into_boxed(), cx);
-        },
-    )
+        })
 }
 
 /// The field command the Edit menu's terminal command `id` stands for.

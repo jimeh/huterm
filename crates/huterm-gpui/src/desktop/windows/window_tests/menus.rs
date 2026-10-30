@@ -383,7 +383,7 @@ fn the_edit_menus_cut_needs_a_field_and_copy_follows_focus(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
-    let (window, _) = harness.menu_window(ECHO);
+    let (window, tab) = harness.menu_window(ECHO);
     let available = |harness: &mut DesktopHarness, id| {
         harness.update_view(window, |_, window, cx| {
             window.is_action_available(
@@ -394,10 +394,27 @@ fn the_edit_menus_cut_needs_a_field_and_copy_follows_focus(
     };
     assert!(!available(&mut harness, ids::TEXT_CUT));
     assert!(available(&mut harness, ids::COPY));
+    // The terminal runs the Edit menu's Select All itself.
+    harness.update_view(window, |_, window, cx| {
+        window.dispatch_action(
+            crate::commands::invoke(ids::SELECT_ALL).into_boxed(),
+            cx,
+        );
+    });
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        let terminal = terminal(cx, window, tab).unwrap();
+        assert!(
+            terminal.read(cx).command_availability(ids::COPY).is_ok(),
+            "Select All selected the terminal"
+        );
+    });
     harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
     harness.press(window, "a b c");
     harness.cx.run_until_parked();
     assert!(available(&mut harness, ids::TEXT_CUT));
+    // The terminal's other menu items have nothing to act on in a field.
+    assert!(!available(&mut harness, ids::CLEAR_SCROLLBACK));
     for id in [ids::SELECT_ALL, ids::COPY] {
         harness.update_view(window, |_, window, cx| {
             window

@@ -455,14 +455,17 @@ still shows: the matcher falls back to the first binding.
 
 GPUI enables a native menu item when any handler on the focus path takes the
 item's action type, never by its arguments. The Edit menu's Cut is
-`text_cut` (`InvokePalette`), so `WorkspaceView` registers its
-`InvokePalette` handler only while the palette or Licenses is open, and
+`text_cut` (`InvokeFocused`), so `WorkspaceView` registers its
+`InvokeFocused` handler only while the palette or Licenses is open, and
 Settings registers its handler on each field's `TextField` element
 (`SettingsView::text_field`), never on the root; otherwise Cut would stay
-enabled over a terminal or a switch. Copy, Paste, and Select All stay the
-terminal's commands, and every `ui::input::context` element answers them as
-the field's `text_copy`, `text_paste`, and `text_select_all` by dispatching
-those through the owner's routing.
+enabled over a terminal or a switch. The terminal's `copy`, `paste`, and
+`select_all` compile to their own `InvokeEdit` action
+(`commands::is_edit_command`), which `TerminalView` runs and every
+`ui::input::context` element answers as the field's `text_copy`,
+`text_paste`, and `text_select_all` through the owner's routing. A field
+must never handle `InvokeTerminal`: that would enable every terminal menu
+item, such as Clear Scrollback, over the field.
 
 GPUI still passes literal `enter` and `tab` strings to NSMenuItem instead of
 AppKit's Return and Tab characters. Normalize those two key equivalents after
@@ -727,8 +730,11 @@ and open `windows/field_menu.rs`'s model in their one popover, returning
 focus to the field on a pick, Escape, or an outside press; picks run on the
 field through `ui::input::run`. Opening the menu blurs the field, so a
 Settings field's blur listener skips its commit while the field's own menu
-is open, and the menu's blur close runs that commit
-(`field_menu_left`) when focus went elsewhere. `run_command` refuses commands
+is open. Every close that does not hand focus back to the field goes
+through `drop_menu`, which leaves the field in `menu_left`, and
+`settle_menu_left` runs the skipped commit: the menu's blur close, a section
+change, `request_close` (with the draft's error check), or the next frame
+for a caller without a context. `run_command` refuses commands
 while the palette is open but lets menu commands through, and Settings' `run`
 gives an open menu its commands before an open dialog takes every command.
 `Input` refuses typing, composition, paste,

@@ -308,6 +308,9 @@ pub(super) struct SettingsView {
     /// An open select's menu, what it sets, and the control that opened
     /// it, which takes focus back.
     menu: Option<(Entity<MenuView>, MenuFor, FocusHandle)>,
+    /// A field whose context menu closed without handing focus back: its
+    /// blur skipped the commit, which `settle_menu_left` runs.
+    menu_left: Option<WeakEntity<Input>>,
     /// Where the open menu draws, and the guard that closes it on a press
     /// outside it or on its trigger.
     popover: Popover,
@@ -451,6 +454,7 @@ impl SettingsView {
             closing: false,
             handle: window.window_handle(),
             menu: None,
+            menu_left: None,
             popover: Popover::new(),
             triggers: Rc::default(),
             focus_group: Rc::default(),
@@ -611,7 +615,7 @@ impl SettingsView {
         let id = field.entity_id();
         cx.on_blur(&handle, window, move |view, _, cx| {
             // The field's own menu keeps its draft; the menu commits it if
-            // focus goes elsewhere (`field_menu_left`).
+            // focus goes elsewhere (`settle_menu_left`).
             if !view.field_menu_open(id) {
                 view.field_blurred(setting, cx);
             }
@@ -1048,6 +1052,7 @@ impl SettingsView {
         // The open menu's control may not be in the new section.
         if self.drop_menu() {
             self.keys.stranded = true;
+            self.settle_menu_left(cx);
         }
         self.section = section;
         self.search.update(cx, |search, cx| search.set_text("", cx));
@@ -1407,6 +1412,7 @@ impl SettingsView {
             return;
         };
         self.drop_menu();
+        self.settle_menu_left(cx);
         let model = field_menu::field_menu_model(
             field_menu::FieldMenuInput::of(field.read(cx)),
             &cx.global::<Desktop>().keymap,
@@ -1433,13 +1439,13 @@ impl SettingsView {
         )
     }
 
-    /// A field menu closed because focus went elsewhere: the field lost
-    /// focus when the menu took it, so it does now what its blur skipped.
-    fn field_menu_left(
-        &mut self,
-        field: &WeakEntity<Input>,
-        cx: &mut Context<'_, Self>,
-    ) {
+    /// Runs the commit a field's blur skipped while its menu was open, for
+    /// a menu that closed without handing focus back (`menu_left`). Returns
+    /// whether the field saved cleanly, or had nothing to save.
+    fn settle_menu_left(&mut self, cx: &mut Context<'_, Self>) -> bool {
+        let Some(field) = self.menu_left.take() else {
+            return true;
+        };
         let id = field.entity_id();
         let setting = self
             .fields
@@ -1448,11 +1454,15 @@ impl SettingsView {
             .and_then(|(path, _)| self.setting_at(path));
         if let Some(setting) = setting {
             self.field_blurred(setting, cx);
+            !self.errors.contains_key(setting.path.as_str())
         } else if let Some(key) = self.keys.key_of(id) {
             if self.keys.editing.as_ref() == Some(&key) {
                 self.keys.editing = None;
             }
             self.commit_key_field(&key, cx);
+            !self.keys.errors.contains_key(&key)
+        } else {
+            true
         }
     }
 
@@ -1516,14 +1526,8 @@ impl SettingsView {
                 if current != Some(menu_id) {
                     return;
                 }
-                let field = match &view.menu {
-                    Some((_, MenuFor::Field(field), _)) => Some(field.clone()),
-                    _ => None,
-                };
                 if view.drop_menu() {
-                    if let Some(field) = field {
-                        view.field_menu_left(&field, cx);
-                    }
+                    view.settle_menu_left(cx);
                     cx.notify();
                 }
             });
@@ -1631,9 +1635,17 @@ impl SettingsView {
 
     /// Closes the menu without moving focus, for when focus has already
     /// gone elsewhere or the menu's control is gone. True when one was open.
+    /// A field's menu leaves its field's skipped commit in `menu_left`,
+    /// which the caller settles, or the next frame does.
     fn drop_menu(&mut self) -> bool {
         let _ = self.popover.close();
-        self.menu.take().is_some()
+        let Some((_, target, _)) = self.menu.take() else {
+            return false;
+        };
+        if let MenuFor::Field(field) = target {
+            self.menu_left = Some(field);
+        }
+        true
     }
 
     fn close_menu(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -2420,6 +2432,12 @@ impl Render for SettingsView {
         let neighbour = stranded
             .then(|| self.layout_neighbour(window, cx))
             .flatten();
+        // A field menu dropped where no context could settle its field.
+        if self.menu_left.is_some() {
+            cx.defer_in(window, |view, _, cx| {
+                view.settle_menu_left(cx);
+            });
+        }
         if self.keys.follow.is_some() || stranded {
             cx.defer_in(window, move |view, window, cx| {
                 if view.keys.follow.is_some() {
@@ -2552,6 +2570,16 @@ impl SettingsView {
         cx: &App,
     ) -> Option<(gpui::Pixels, gpui::Bounds<gpui::Pixels>)> {
         self.fields.get(path)?.read(cx).painted_caret()
+    }
+
+    /// Where a keybinding field last painted its caret, and the bounds its
+    /// text shows in.
+    pub(super) fn key_caret(
+        &self,
+        key: &str,
+        cx: &App,
+    ) -> Option<(gpui::Pixels, gpui::Bounds<gpui::Pixels>)> {
+        self.keys.fields.get(key)?.read(cx).painted_caret()
     }
 
     /// Where the open dialog's field last painted its caret, and the

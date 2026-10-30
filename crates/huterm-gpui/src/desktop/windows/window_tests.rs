@@ -4052,9 +4052,17 @@ fn the_palette_leaves_field_verbs_to_its_own_bindings(cx: &mut TestAppContext) {
     harness.wait_for("the palette to open again", |cx| {
         palette_state(cx, window).is_some()
     });
+    let before = harness.update_view(window, |view, _, _| view.tabs.len());
     harness.press(window, "n e w space t a b enter");
     harness.wait_for("Enter to run New Tab", |cx| {
         palette_state(cx, window).is_none()
+            && window
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                        view.read(cx).tabs.len() == before + 1
+                    })
+                })
+                .unwrap_or(false)
     });
 }
 
