@@ -117,9 +117,11 @@ impl Target {
 pub(super) struct Taking {
     /// The titles of the commands that lose the key.
     pub(super) from: Vec<String>,
-    /// The user entries that hold it, which Reassign removes: a later
-    /// user entry would otherwise keep the key, and an earlier one would
-    /// stay in the file only to be replaced.
+    /// Every user entry for another command with the same keys and
+    /// predicate, which Reassign removes: the recorded binding must end up
+    /// the last such entry, or a later one keeps the key, and that
+    /// includes one that a removed entry had replaced. An earlier one
+    /// would stay in the file only to be replaced.
     entries: Vec<usize>,
     /// The recorded row's binding, which Reassign checks is still where
     /// the prompt found it.
@@ -1175,8 +1177,10 @@ impl SettingsView {
     }
 
     /// What a recording of `key` for `target` takes the key from: the
-    /// active bindings it would replace, other than the row itself and
-    /// those that run the same command with the same arguments.
+    /// bindings with the same keys and predicate, other than the row itself
+    /// and those that run the same command with the same arguments. The
+    /// prompt names the active ones; the user entries among them, active
+    /// or replaced, go.
     fn taken_by(&self, target: &Target, key: &str) -> Taking {
         let Some(inventory) = self.keys.inventory.as_ref() else {
             return Taking::default();
@@ -1204,8 +1208,10 @@ impl SettingsView {
         };
         for other in &inventory.bindings {
             let binding = &other.binding;
-            if other.state != BindingState::Active
-                || own.is_some_and(|own| std::ptr::eq(own, other))
+            if !matches!(
+                other.state,
+                BindingState::Active | BindingState::Replaced(_)
+            ) || own.is_some_and(|own| std::ptr::eq(own, other))
                 || (binding.command == command
                     && same_arguments(&binding.args, args))
                 || !would_replace(
@@ -1222,7 +1228,9 @@ impl SettingsView {
                 || binding.command.as_str().to_owned(),
                 |spec| spec.title.to_owned(),
             );
-            if !taking.from.contains(&title) {
+            if other.state == BindingState::Active
+                && !taking.from.contains(&title)
+            {
                 taking.from.push(title);
             }
             if other.binding.origin == Origin::User
@@ -1269,6 +1277,8 @@ impl SettingsView {
     ) {
         match target {
             Target::Row(name) => {
+                // Only an active row records, and an active row's own key
+                // has no active holder, so an unchanged key writes nothing.
                 let current = self
                     .keys
                     .inventory
@@ -2892,4 +2902,21 @@ fn cap(key: &str, origin: Origin, swatch: Swatch) -> gpui::Div {
             KeyHint::parse(key, Platform::current())
                 .element(px(11.0), swatch.fg),
         )
+}
+
+/// What desktop tests drive in the keybindings section.
+#[cfg(all(test, feature = "test-support"))]
+impl SettingsView {
+    /// Applies a recording of `key` on `row` as Reassign does, without the
+    /// prompt, so a test can queue it behind another write.
+    pub(in crate::desktop::windows) fn reassign_row(
+        &mut self,
+        row: &str,
+        key: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let target = Target::Row(row.to_owned());
+        let taking = self.taken_by(&target, key);
+        self.apply_recording(target, key.to_owned(), &taking.entries, cx);
+    }
 }

@@ -267,6 +267,54 @@ fn reassigning_from_a_later_user_entry_removes_it_so_the_key_moves(
 }
 
 #[gpui::test]
+fn reassigning_removes_a_holder_that_a_removed_one_had_replaced(
+    cx: &mut TestAppContext,
+) {
+    // Close Window's entry replaces New Tab's, which would take the key
+    // back once Close Window's goes.
+    let file = ScratchConfig::new(
+        "keys-reassign-shadowed",
+        &format!(
+            "{TWO_USER_KEYS}\n[[keybinding]]\nkey = \"ctrl-alt-b\"\n\
+             command = \"close_window\"\n"
+        ),
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let window = row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-a");
+    record(&mut harness, &window, "ctrl-alt-b");
+    keystrokes(&mut harness, "tab enter");
+    saved(&mut harness, &file, |text| !text.contains("close_window"));
+    assert_eq!(
+        file.text(),
+        "[[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_window\"\n"
+    );
+}
+
+#[gpui::test]
+fn a_reassignment_whose_row_a_queued_write_removes_writes_nothing(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("keys-reassign-queued", TWO_USER_KEYS);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let window = row(&mut harness, ids::NEW_WINDOW, "ctrl-alt-a");
+    // The row's removal is still being written when the reassignment
+    // queues behind it.
+    with_window(&mut harness, |view, window_, cx| {
+        view.press(&format!("kdel:{window}"), window_, cx);
+        view.reassign_row(&window, "ctrl-alt-b", cx);
+    });
+    saved(&mut harness, &file, |text| !text.contains("new_window"));
+    harness.cx.run_until_parked();
+    // New Tab keeps its key rather than losing it to a row that is gone.
+    assert_eq!(
+        file.text(),
+        "[[keybinding]]\nkey = \"ctrl-alt-b\"\ncommand = \"new_tab\"\n"
+    );
+}
+
+#[gpui::test]
 fn a_reassign_prompt_that_a_read_overtook_writes_nothing(
     cx: &mut TestAppContext,
 ) {

@@ -77,6 +77,10 @@ pub(super) struct KeyChange {
     /// another one; this window's own writes rebase them
     /// (`rebase_queued_keys`).
     patches: Vec<Patch>,
+    /// How many of the leading patches the rest depend on: when a rebase
+    /// drops one of them, the whole change goes. A reassignment's removals
+    /// of the entries holding a key mean nothing once its own edit is gone.
+    required: usize,
     /// The field that made the edit and the text it last saved, put back
     /// when the write fails so the entered text stays a draft to retry.
     pub(super) field: Option<(String, Option<String>)>,
@@ -652,9 +656,13 @@ impl SettingsView {
             self.keys.errors.remove(row);
         }
         let removal = Edit::Remove(remove.to_vec());
+        let mut required = 0;
         let patches = match edit
             .patches(&self.keys.entries, &self.keys.globals)
             .and_then(|mut patches| {
+                if !remove.is_empty() {
+                    required = patches.len();
+                }
                 patches.extend(
                     removal.patches(&self.keys.entries, &self.keys.globals)?,
                 );
@@ -671,6 +679,7 @@ impl SettingsView {
             edit,
             row,
             patches,
+            required,
             field,
         };
         if self.writing.is_some() {
@@ -1483,7 +1492,11 @@ impl SettingsView {
                 return true;
             };
             let had = change.patches.len();
+            let mut position = 0;
+            let mut orphaned = false;
             change.patches.retain_mut(|patch| {
+                let required = position < change.required;
+                position += 1;
                 let (Patch::SetEntryField { locator, .. }
                 | Patch::ClearEntryField { locator, .. }
                 | Patch::RemoveEntry { locator }
@@ -1498,7 +1511,10 @@ impl SettingsView {
                             && *at == index
                             && before == locator.content()
                     }) {
-                        Some((.., None)) => return false,
+                        Some((.., None)) => {
+                            orphaned |= required;
+                            return false;
+                        }
                         Some((.., Some(after))) => after.clone(),
                         None => locator.content().clone(),
                     };
@@ -1512,7 +1528,7 @@ impl SettingsView {
                 *locator = locator.rebased(moved, content);
                 true
             });
-            had == 0 || !change.patches.is_empty()
+            !orphaned && (had == 0 || !change.patches.is_empty())
         });
     }
 
