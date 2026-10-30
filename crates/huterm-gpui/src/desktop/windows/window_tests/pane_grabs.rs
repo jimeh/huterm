@@ -23,6 +23,8 @@ const REPORTING: &str = "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY';
      while byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); \
      [ -n \"$byte\" ]; do printf '%s' \"$byte\"; done";
 
+// Only the macOS remap tests hold Cmd without Control.
+#[cfg(target_os = "macos")]
 fn cmd() -> Modifiers {
     Modifiers {
         platform: true,
@@ -62,6 +64,7 @@ fn grab_state(cx: &mut App, window: AnyWindowHandle) -> (bool, bool) {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
 fn dragging(cx: &mut App, window: AnyWindowHandle) -> bool {
     window
         .update(cx, |root, _, cx| {
