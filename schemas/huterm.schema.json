@@ -570,6 +570,16 @@
       "additionalProperties": false,
       "description": "Split pane behavior.",
       "properties": {
+        "drag_modifier": {
+          "description": "Hold these modifiers to move panes by dragging anywhere inside\nthem, as a title bar drag does, which helps when title bars are\nhidden. Unset, the default, is off. Join two or more of `cmd`,\n`ctrl`, `alt`, and `shift` with hyphens: `cmd-ctrl` suits macOS and\n`ctrl-alt` Linux.",
+          "pattern": "^(cmd|super|ctrl|alt|shift)(-(cmd|super|ctrl|alt|shift)){1,3}$",
+          "type": "string",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Drag panes with",
+          "x-huterm-order": 39,
+          "x-huterm-section": "panes"
+        },
         "focus_accent": {
           "default": 0.0,
           "description": "How strongly a thin accent line marks the focused pane while its\ntitle bar is not on screen, from 0 (off) to 1. It draws only under\n`hover` and `hidden` bars, and only while more than one pane shows.",

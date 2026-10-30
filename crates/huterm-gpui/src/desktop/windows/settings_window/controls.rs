@@ -106,6 +106,9 @@ impl SettingsView {
             Some(Special::Modifiers) => {
                 return self.render_modifiers(setting, read_only, swatch, cx);
             }
+            Some(Special::DragModifiers) => {
+                return self.render_drag_modifiers(setting, locked, swatch, cx);
+            }
             Some(Special::FontPicker) => {
                 return self
                     .render_font(setting, read_only, swatch, window, cx);
@@ -297,6 +300,36 @@ impl SettingsView {
                         .map_or_else(|| value.to_owned(), option_label)
                 },
             );
+        self.select(
+            format!("settings-select-{path}"),
+            path,
+            setting.label.clone(),
+            label,
+            Opener::Setting(setting),
+            read_only,
+            px(150.0),
+            swatch,
+            cx,
+        )
+    }
+
+    /// A select of Off and the pane drag combinations the menu offers. A
+    /// file value the menu does not offer shows as written, and the file's
+    /// check reports it.
+    fn render_drag_modifiers(
+        &mut self,
+        setting: &'static Setting,
+        read_only: bool,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let path = setting.path.as_str();
+        let current = self.drag_modifier_current(setting);
+        let label = self
+            .drag_modifier_choices()
+            .into_iter()
+            .find(|(value, _)| *value == current)
+            .map_or(current, |(_, label)| label);
         self.select(
             format!("settings-select-{path}"),
             path,

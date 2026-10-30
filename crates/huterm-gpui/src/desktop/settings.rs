@@ -15,6 +15,9 @@ pub(super) enum Special {
     ThemePicker,
     /// Modifier chips.
     Modifiers,
+    /// A select of the pane drag combinations this platform accepts, less
+    /// those the link chord takes, built when it draws.
+    DragModifiers,
     /// A byte size with a unit, or unset.
     Size,
     /// The keybinding editor.
@@ -34,6 +37,7 @@ const OVERRIDES: &[(&str, Special)] = &[
     ("font.ui_family", Special::FontPicker),
     ("theme", Special::ThemePicker),
     ("terminal.link_modifiers", Special::Modifiers),
+    ("panes.drag_modifier", Special::DragModifiers),
     ("terminal.scrollback_bytes", Special::Size),
     ("keybinding", Special::Keybindings),
     ("global_keybinding", Special::GlobalShortcuts),

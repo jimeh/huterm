@@ -110,6 +110,9 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
     // A held key's repeat, as AppKit marks it while a key stays down.
     let repeat = fields.len() == 5;
     let key: u16 = fields[0].parse()?;
+    // Command, Shift, and Control post as flagsChanged, as AppKit sends a
+    // modifier key's press and release.
+    let flags_changed = matches!(key, 55 | 56 | 59);
     let flags: usize = fields[1].parse()?;
     // Fields are tab-separated, so a Tab key's characters arrive escaped.
     let characters = CString::new(fields[2].replace("\\t", "\t"))?;
@@ -132,7 +135,7 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
         let plain: *mut Object =
             msg_send![string, stringWithUTF8String: plain.as_ptr()];
         let event: *mut Object = msg_send![Class::get("NSEvent").context("NSEvent")?,
-            keyEventWithType: if key == 56 { 12_usize } else { 10_usize }
+            keyEventWithType: if flags_changed { 12_usize } else { 10_usize }
             location: gpui::point(0.0_f64, 0.0_f64)
             modifierFlags: flags
             timestamp: 0.0_f64

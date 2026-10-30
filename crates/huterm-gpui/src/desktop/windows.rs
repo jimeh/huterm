@@ -186,6 +186,7 @@ mod pane_bars;
 mod pane_drag;
 mod pane_focus;
 mod pane_geometry;
+mod pane_grab;
 mod pane_layouts;
 mod pane_menu;
 mod pane_moves;
@@ -228,6 +229,7 @@ use pane_geometry::{
     Divider, PaneRect, TabPanes, TitleBars, boundary_position, dragged_weights,
     layout_panes, with_boundary,
 };
+use pane_grab::{GrabPress, PaneGrab};
 use pane_menu::{PaneMenuInput, pane_menu};
 use projection::{
     Drained, Install, PendingInstalls, Projection, ReconcileTarget, Resolution,
@@ -1628,6 +1630,7 @@ fn install_desktop(
     })
     .detach();
     cx.observe_keystrokes(observe_keystroke).detach();
+    cx.intercept_keystrokes(hide_grab_badges).detach();
 }
 
 /// Sets the interface's typography from the configuration's `[font]`
@@ -1995,6 +1998,27 @@ fn quit_now(pending_spawns: usize, quit_pending: &mut bool) -> bool {
         return false;
     }
     true
+}
+
+/// Hides the pane badges of the window a key is pressed in until the held
+/// modifiers change, so a pane keybinding that shares the drag modifiers
+/// flashes none. An interceptor, because GPUI notifies no keystroke observer of
+/// a key it keeps as a pending shortcut prefix.
+fn hide_grab_badges(
+    event: &gpui::KeystrokeEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if pane_grab::modifier_only(&event.keystroke) {
+        return;
+    }
+    if let Some(root) = window.root::<WorkspaceView>().flatten() {
+        root.update(cx, |view, cx| {
+            if view.pane_grab.suppress(Instant::now()) {
+                cx.notify();
+            }
+        });
+    }
 }
 
 fn observe_keystroke(
@@ -2464,6 +2488,7 @@ fn open_window_with_profile(
                 drawn_panes: RefCell::new(None),
                 drawn_drop: RefCell::new(None),
                 drawn_focus: RefCell::new(FocusMarks::default()),
+                drawn_badges: RefCell::new(Vec::new()),
                 pane_drag: None,
                 reveal: Reveal::default(),
                 reveal_context: None,
@@ -2472,6 +2497,7 @@ fn open_window_with_profile(
                     PaneBarTiming::from_config(&config.panes),
                 ),
                 pane_bar_pointer: None,
+                pane_grab: PaneGrab::default(),
                 layout_pending: false,
                 synced_presentation: None,
                 reorder: None,
@@ -2555,6 +2581,14 @@ fn open_window_with_profile(
                     if let Some(state) = &view.quake {
                         state.native_wake();
                     }
+                    // Modifier changes made while another window had the
+                    // keyboard never arrived. The badges stay hidden until
+                    // the modifiers change, so switching windows with a pane
+                    // keybinding's modifiers held flashes none.
+                    let now = Instant::now();
+                    view.pane_grab
+                        .record(pane_grab::held_bits(window.modifiers()), now);
+                    view.pane_grab.suppress(now);
                     if !window.is_window_active() {
                         view.cancel_divider_drag(cx);
                         view.cancel_reorder(window, cx);
@@ -2697,7 +2731,8 @@ impl refresh::Animated for WorkspaceView {
             .tab_scrollbars
             .schedule(now)
             .merge(self.reveal.schedule(now))
-            .merge(self.pane_bars.schedule(now));
+            .merge(self.pane_bars.schedule(now))
+            .merge(self.pane_grab.schedule());
         if let Some(at) = self.pointer_reveal.probe_at {
             next = next.merge(AnimationSchedule::at(at));
         }
@@ -2757,6 +2792,9 @@ impl refresh::Animated for WorkspaceView {
             cx.notify();
         }
         if self.pane_bars.tick(now, self.hover_bars()) {
+            cx.notify();
+        }
+        if self.pane_grab.tick(now) {
             cx.notify();
         }
         self.advance_spring(now, window, cx);
@@ -3562,6 +3600,10 @@ struct PointerReveal {
     refresh_pending: bool,
     outside: bool,
     probe_at: Option<Instant>,
+    /// Treats the window as hovered, which the test platform never
+    /// reports, so window tests sample the pointer from real events.
+    #[cfg(test)]
+    hovered_in_tests: bool,
 }
 
 struct WorkspaceView {
@@ -3623,6 +3665,8 @@ struct WorkspaceView {
     drawn_panes: RefCell<Option<(TabId, Vec<PaneRect>)>>,
     /// The drop target the last frame drew, for smoke state.
     drawn_drop: RefCell<Option<String>>,
+    /// The pane titles the last frame's grab badges showed, for smoke state.
+    drawn_badges: RefCell<Vec<String>>,
     /// The focus marks the last frame drew, for smoke state.
     drawn_focus: RefCell<FocusMarks>,
     /// A press on a pane title bar, or the drag it became.
@@ -3636,6 +3680,8 @@ struct WorkspaceView {
     /// while it is outside the window, a terminal gesture or pane drag owns
     /// it, or the fullscreen tab bar claims it.
     pane_bar_pointer: Option<gpui::Point<Pixels>>,
+    /// The held modifiers and the modifier pane drag they arm.
+    pane_grab: PaneGrab,
     layout_pending: bool,
     /// The tab bar presentation the last layout sync pushed, so a sync can
     /// tell the bar appearing or hiding from a resize.
@@ -4624,6 +4670,7 @@ impl WorkspaceView {
         let focused = tab.focused().pane;
         let bars = self.title_bars();
         let shown = Self::panes_shown(tab, rects.as_ref());
+        let grabs = self.draws_grab_layers(tab, rects.as_ref());
         *self.drawn_dividers.borrow_mut() = rects
             .as_ref()
             .map(|rects| rects.dividers.clone())
@@ -4645,6 +4692,7 @@ impl WorkspaceView {
             };
             let terminal = rect.map_or(bounds, |rect| rect.terminal);
             let id = pane.pane;
+            let grab = grabs.then(|| self.grab_layer(tab, pane, terminal, cx));
             elements.push(
                 div()
                     .id(("pane", id.get()))
@@ -4663,6 +4711,7 @@ impl WorkspaceView {
                     ))
                     .child(pane.view.clone())
                     .children(self.inactive_dim(id, focused, shown, colors))
+                    .children(grab)
                     .into_any_element(),
             );
             let bottom = bars.position == PaneTitleBarPosition::Bottom;
@@ -6179,6 +6228,190 @@ impl WorkspaceView {
         }
     }
 
+    /// Records `modifiers` as the held modifiers modifier pane drags read.
+    /// Returns whether the record changed.
+    fn record_held(
+        &mut self,
+        modifiers: gpui::Modifiers,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        self.record_held_bits(pane_grab::held_bits(modifiers), cx)
+    }
+
+    /// Records `held`, as [`pane_grab::held_bits`] numbers modifiers, for
+    /// modifier pane drags. Returns whether the record changed.
+    fn record_held_bits(
+        &mut self,
+        held: u8,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let changed = held != self.pane_grab.held();
+        if self.pane_grab.record(held, Instant::now()) {
+            cx.notify();
+        }
+        changed
+    }
+
+    /// Whether a modifier press may grab a pane of the active tab now: the
+    /// window is active, the tab it draws is split, and no menu, dialog,
+    /// palette, Licenses, or other drag holds the window.
+    fn grab_allowed(&self, window: &Window, cx: &App) -> bool {
+        let active = self.active_tab_view(cx);
+        window.is_window_active()
+            && self.config.panes.drag_modifier.is_some()
+            && active.is_some_and(|tab| tab.panes.len() > 1)
+            && self
+                .drawn_panes
+                .borrow()
+                .as_ref()
+                .is_some_and(|(drawn, _)| {
+                    active.is_some_and(|tab| tab.id == *drawn)
+                })
+            && self.menu.is_none()
+            && self.native_menu.is_none()
+            && !self.overlay_holds_focus()
+            && self.licenses.is_none()
+            && self.pane_drag.is_none()
+            && self.divider_drag.is_none()
+            && self.reorder.is_none()
+            && !self.resizing_sidebar
+    }
+
+    /// Whether the drag modifiers are held with the pointer, as the last
+    /// refresh sampled it, over a drawn pane's terminal that a press would
+    /// grab.
+    fn grab_armed(&self, window: &Window, cx: &App) -> bool {
+        let Some(pointer) = self.pane_bar_pointer else {
+            return false;
+        };
+        self.config.panes.drag_modifier.is_some_and(|combination| {
+            combination.matches_bits(self.pane_grab.held())
+        }) && self.grab_allowed(window, cx)
+            && self
+                .drawn_panes
+                .borrow()
+                .as_ref()
+                .is_some_and(|(_, rects)| {
+                    rects.iter().any(|rect| rect.terminal.contains(&pointer))
+                })
+    }
+
+    /// Whether `tab`'s panes, drawn at `rects`, get grab layers: every pane
+    /// of a split tab does while `drag_modifier` is set, zoomed or not.
+    /// Forgets the badges the last frame drew.
+    fn draws_grab_layers(
+        &self,
+        tab: &TabView,
+        rects: Option<&TabPanes>,
+    ) -> bool {
+        self.drawn_badges.borrow_mut().clear();
+        self.config.panes.drag_modifier.is_some()
+            && rects.is_some()
+            && tab.panes.len() > 1
+    }
+
+    /// The layer over `pane`'s terminal that takes a press made with the
+    /// drag modifiers. Drawn after the terminal and its dim layer, its
+    /// bubble listener runs before the terminal's, and after every overlay
+    /// drawn later has declined the press. It does not occlude, so hover,
+    /// the wheel, and other presses reach the terminal beneath. While armed
+    /// it shows the open hand, and while the badges show it centres the
+    /// pane's title, ellipsized to fit its `terminal`.
+    fn grab_layer(
+        &self,
+        tab: &TabView,
+        pane: &PaneView,
+        terminal: Bounds<Pixels>,
+        cx: &mut Context<'_, Self>,
+    ) -> gpui::Div {
+        let badge = self
+            .pane_grab
+            .badges()
+            .then(|| tab.pane_label(pane, self.config.tabs, cx));
+        if let Some(title) = &badge {
+            self.drawn_badges.borrow_mut().push(title.clone());
+        }
+        let (tab, pane) = (tab.id, pane.pane);
+        let swatch = tokens(&self.config.theme);
+        let press = cx.listener(
+            move |view, event: &gpui::MouseDownEvent, window, cx| {
+                view.grab_pane(tab, pane, event, window, cx);
+            },
+        );
+        let press = Rc::new(press);
+        let right = Rc::clone(&press);
+        div()
+            .absolute()
+            .inset_0()
+            .when(self.pane_grab.armed(), |layer| {
+                layer.cursor(gpui::CursorStyle::OpenHand)
+            })
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                press(event, window, cx);
+            })
+            // macOS turns a Control-left press into Right.
+            .when(cfg!(target_os = "macos"), |layer| {
+                layer.on_mouse_down(
+                    MouseButton::Right,
+                    move |event, window, cx| {
+                        right(event, window, cx);
+                    },
+                )
+            })
+            .when_some(badge, |layer, title| {
+                layer.flex().items_center().justify_center().child(
+                    super::overlay::badge(swatch, title)
+                        .max_w((terminal.size.width - px(16.0)).max(px(0.0)))
+                        .overflow_hidden()
+                        .text_ellipsis(),
+                )
+            })
+    }
+
+    /// Starts a pane drag from a press on `pane`'s grab layer when the
+    /// press carries the drag modifiers. The press is consumed even when
+    /// the drag cannot start, as a title bar's is, so the terminal sees no
+    /// report, selection, link press, or menu.
+    fn grab_pane(
+        &mut self,
+        tab: TabId,
+        pane: PaneId,
+        event: &gpui::MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(combination) = self.config.panes.drag_modifier else {
+            return;
+        };
+        let Some(press) = pane_grab::grab_press(
+            event.button,
+            config::modifier_bits(event.modifiers),
+            self.pane_grab.held(),
+            combination,
+            cfg!(target_os = "macos"),
+        ) else {
+            return;
+        };
+        // The press that activates an inactive window reaches the terminal.
+        if event.first_mouse
+            || !self.grab_allowed(window, cx)
+            || self.active_tab(cx) != Some(tab)
+        {
+            return;
+        }
+        self.focus_pane(tab, pane, window, cx);
+        self.begin_pane_drag(
+            tab,
+            pane,
+            event.position,
+            press == GrabPress::Remapped,
+            window,
+            cx,
+        );
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     /// The views of the panes the dragged divider resizes: those in the two
     /// children beside it, since a drag moves only that boundary.
     fn divider_drag_views(&self, cx: &App) -> HashSet<EntityId> {
@@ -6283,6 +6516,11 @@ impl WorkspaceView {
         let bounds = layout.terminal;
         let hovered =
             window.is_window_hovered() && !self.pointer_reveal.outside;
+        // The test platform never reports a hovered window.
+        #[cfg(test)]
+        let hovered = hovered
+            || (self.pointer_reveal.hovered_in_tests
+                && !self.pointer_reveal.outside);
         #[cfg(target_os = "macos")]
         let hovered = hovered
             && self.native_fullscreen.as_ref().is_none_or(
@@ -6336,6 +6574,10 @@ impl WorkspaceView {
         self.pane_bar_pointer =
             (hovered && !gesture && !claimed && !tab_claims).then_some(pointer);
         self.refresh_pane_bars(cx);
+        let armed = self.grab_armed(window, cx);
+        if self.pane_grab.arm(armed, Instant::now()) {
+            cx.notify();
+        }
         self.update_pointer_probe(Instant::now(), window);
         self.frame_clock.animate(
             cx.entity().downgrade(),
@@ -11332,11 +11574,15 @@ impl Render for WorkspaceView {
             .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
             .track_focus(&self.focus)
-            // On the focus path, so it hears modifier changes over every
-            // pane, not only the focused one.
+            // The window's only modifier listener. GPUI dispatches modifier
+            // changes along the focus path alone, and this root is on it
+            // whenever anything in the window has focus, so it hears them
+            // over every pane, not only the focused one.
             .on_modifiers_changed(cx.listener(
                 |view, event: &gpui::ModifiersChangedEvent, window, cx| {
                     view.refresh_hovered_cursor(event.modifiers, window, cx);
+                    view.record_held(event.modifiers, cx);
+                    view.defer_pointer_refresh(window, cx);
                 },
             ))
             .on_drag_move::<gpui::ExternalPaths>(|_, window, cx| {
@@ -11413,7 +11659,7 @@ impl Render for WorkspaceView {
         let release_view = move_view.clone();
         let press_view = move_view.clone();
         let exit_view = move_view.clone();
-        let modifiers_view = move_view.clone();
+        let scroll_view = move_view.clone();
         // Register before terminal children so capture consumes drag movement
         // and release even beyond the bar/window, before application mouse input.
         root = root.child(
@@ -11425,6 +11671,13 @@ impl Render for WorkspaceView {
                             if phase == DispatchPhase::Capture {
                                 let _ = move_view.update(cx, |view, cx| {
                                     view.pointer_reveal.outside = false;
+                                    // macOS GPUI replays the last move with
+                                    // its modifiers while a button is held,
+                                    // so only a free move records them; the
+                                    // release records them again.
+                                    if event.pressed_button.is_none() {
+                                        view.record_held(event.modifiers, cx);
+                                    }
                                     view.defer_pointer_refresh(window, cx);
                                     if view.divider_drag.is_some() {
                                         view.drag_divider_to(
@@ -11481,63 +11734,100 @@ impl Render for WorkspaceView {
                         },
                     );
                     window.on_mouse_event(
-                        move |_: &gpui::MouseExitEvent, phase, window, cx| {
+                        move |event: &gpui::MouseExitEvent,
+                              phase,
+                              window,
+                              cx| {
                             if phase == DispatchPhase::Capture {
                                 let _ = exit_view.update(cx, |view, cx| {
                                     view.pointer_reveal.outside = true;
+                                    view.record_held(event.modifiers, cx);
                                     view.defer_pointer_refresh(window, cx);
                                 });
                             }
                         },
                     );
-                    window.on_modifiers_changed(move |_, window, cx| {
-                        let _ = modifiers_view.update(cx, |view, cx| {
-                            view.defer_pointer_refresh(window, cx);
-                        });
-                    });
+                    // Pointer events GPUI does not remap correct a held
+                    // record that missed a modifier change, as when a menu
+                    // loop swallowed it or no element had focus.
+                    window.on_mouse_event(
+                        move |event: &gpui::ScrollEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Capture {
+                                let _ = scroll_view.update(cx, |view, cx| {
+                                    if view.record_held(event.modifiers, cx) {
+                                        view.defer_pointer_refresh(window, cx);
+                                    }
+                                });
+                            }
+                        },
+                    );
                     window.on_mouse_event(
                         move |event: &MouseUpEvent, phase, window, cx| {
                             if phase == DispatchPhase::Capture {
-                                let _ = release_view.update(cx, |view, cx| {
-                                    view.defer_pointer_refresh(window, cx);
-                                    if event.button != MouseButton::Left {
-                                        return;
-                                    }
-                                    if view.divider_drag.is_some() {
-                                        view.drag_divider_to(
-                                            event.position,
-                                            window,
-                                            cx,
-                                        );
-                                        view.finish_divider_drag(window, cx);
-                                        cx.stop_propagation();
-                                    } else if view.resizing_sidebar {
-                                        view.resize_sidebar(
-                                            event.position,
-                                            window,
-                                            cx,
-                                        );
-                                        view.resizing_sidebar = false;
-                                        cx.stop_propagation();
-                                    } else if view.reorder.is_some() {
-                                        view.finish_reorder(
-                                            event.position,
-                                            window,
-                                            cx,
-                                        );
-                                        cx.stop_propagation();
-                                    } else if view.pane_drag.is_some() {
-                                        view.finish_pane_drag(
-                                            event.position,
-                                            window,
-                                            cx,
-                                        );
-                                        cx.stop_propagation();
-                                    } else if view.tab_scrollbars.dragging() {
-                                        view.tab_scrollbar_release(cx);
-                                        cx.stop_propagation();
-                                    }
-                                });
+                                let _ =
+                                    release_view.update(cx, |view, cx| {
+                                        view.defer_pointer_refresh(window, cx);
+                                        // A drag from a remapped Control-left
+                                        // press ends on a Right release, or on a
+                                        // Left one once Control is let go first.
+                                        let remapped = view
+                                            .pane_drag
+                                            .as_ref()
+                                            .is_some_and(PaneDrag::remapped);
+                                        if let Some(held) =
+                                            pane_grab::released_held(
+                                                event.button,
+                                                event.modifiers,
+                                                remapped,
+                                            )
+                                        {
+                                            view.record_held_bits(held, cx);
+                                        }
+                                        if event.button != MouseButton::Left
+                                            && !(remapped
+                                                && event.button
+                                                    == MouseButton::Right)
+                                        {
+                                            return;
+                                        }
+                                        if view.divider_drag.is_some() {
+                                            view.drag_divider_to(
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                            view.finish_divider_drag(
+                                                window, cx,
+                                            );
+                                            cx.stop_propagation();
+                                        } else if view.resizing_sidebar {
+                                            view.resize_sidebar(
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                            view.resizing_sidebar = false;
+                                            cx.stop_propagation();
+                                        } else if view.reorder.is_some() {
+                                            view.finish_reorder(
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
+                                        } else if view.pane_drag.is_some() {
+                                            view.finish_pane_drag(
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
+                                        } else if view.tab_scrollbars.dragging()
+                                        {
+                                            view.tab_scrollbar_release(cx);
+                                            cx.stop_propagation();
+                                        }
+                                    });
                             }
                         },
                     );
@@ -12383,7 +12673,8 @@ impl Render for WorkspaceView {
 impl WorkspaceView {
     /// The cursor one of Huterm's own drags shows wherever the pointer
     /// goes: the resize cursor while a divider or the sidebar edge moves,
-    /// and the arrow while a pane or tab moves.
+    /// the closed hand from a pane drag's press on, however it started,
+    /// and the arrow while a tab moves.
     fn drag_cursor(&self) -> Option<gpui::CursorStyle> {
         if let Some(drag) = &self.divider_drag {
             Some(match drag.axis {
@@ -12392,9 +12683,9 @@ impl WorkspaceView {
             })
         } else if self.resizing_sidebar {
             Some(gpui::CursorStyle::ResizeLeftRight)
-        } else if self.reorder.as_ref().is_some_and(|drag| drag.dragging)
-            || self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
-        {
+        } else if self.pane_drag.is_some() {
+            Some(gpui::CursorStyle::ClosedHand)
+        } else if self.reorder.as_ref().is_some_and(|drag| drag.dragging) {
             Some(gpui::CursorStyle::Arrow)
         } else {
             None
@@ -13586,6 +13877,18 @@ impl WorkspaceView {
         )
     }
 
+    /// Smoke output for modifier pane drags: whether the pointer is armed,
+    /// how many badges the last frame drew, and whether a pane drag came
+    /// from a remapped Control-left press.
+    fn grab_smoke_state(&self, prefix: &str) -> String {
+        format!(
+            "{prefix}grab_armed={} {prefix}grab_badges={} {prefix}drag_remapped={}",
+            self.pane_grab.armed(),
+            self.drawn_badges.borrow().len(),
+            self.pane_drag.as_ref().is_some_and(PaneDrag::remapped),
+        )
+    }
+
     /// The active tab's panes for smoke fixtures, as `<prefix>` fields:
     /// `panes` counts them, `pane_focus` is the focused pane's index, and
     /// `pane_zoomed` the zoomed one's, or `none`. In split layout order and
@@ -13692,14 +13995,16 @@ impl WorkspaceView {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}pane_focus_marks={marks} {prefix}drop={drop} {prefix}spring={spring} {} {prefix}pane_dividers={}",
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}pane_focus_marks={marks} {prefix}drop={drop} {prefix}spring={spring} {} {} {prefix}pane_dividers={} {prefix}grab_badge_titles={:?}",
             panes.len(),
+            self.grab_smoke_state(prefix),
             self.layout_smoke_state(prefix, cx),
             if dividers.is_empty() {
                 "none"
             } else {
                 &dividers
             },
+            self.drawn_badges.borrow(),
         )
     }
 

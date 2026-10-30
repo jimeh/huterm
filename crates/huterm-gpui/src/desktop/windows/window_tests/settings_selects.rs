@@ -279,3 +279,103 @@ fn the_profile_select_still_switches_profiles_on_an_invalid_file(
         assert_eq!(view.shown_profile_name(), "logs");
     });
 }
+
+/// The link chord's default and its Settings spelling of Cmd on this
+/// platform.
+fn platform_keys() -> (&'static str, &'static str) {
+    if cfg!(target_os = "macos") {
+        ("cmd", "cmd")
+    } else {
+        ("ctrl", "super")
+    }
+}
+
+#[gpui::test]
+fn the_drag_modifier_select_offers_what_the_link_chord_leaves_and_writes_it(
+    cx: &mut TestAppContext,
+) {
+    const PATH: &str = "panes.drag_modifier";
+    let file = ScratchConfig::new("select-drag-modifier", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    with_window(&mut harness, |view, window, cx| {
+        view.show_section(SectionId::Panes, cx);
+        window.refresh();
+    });
+    draw(&harness);
+    // The row draws a select in the Panes section.
+    trigger(&mut harness, PATH);
+    let (link, cmd) = platform_keys();
+    with_window(&mut harness, |view, window, cx| {
+        view.open_select_for(PATH, window, cx);
+        let ids = view.menu_ids(cx);
+        let labels = view.menu_labels(cx);
+        assert_eq!(ids.first().map(String::as_str), Some("off"));
+        assert_eq!(labels.first().map(String::as_str), Some("Off"));
+        // The link chord plus Shift opens links over a program that takes
+        // the mouse, so the menu leaves it out.
+        assert!(!ids.contains(&format!("{link}-shift")), "{ids:?}");
+        let both = format!("{cmd}-ctrl");
+        let index = ids.iter().position(|id| *id == both).expect("Cmd-Ctrl");
+        let label = if cfg!(target_os = "macos") {
+            "⌃⌘ Control-Command"
+        } else {
+            "Ctrl+Super"
+        };
+        assert_eq!(labels[index], label);
+        // Two or more modifiers, less the excluded ones.
+        let platform = if cfg!(target_os = "macos") { 9 } else { 11 };
+        assert_eq!(ids.len(), 1 + platform - 1, "{ids:?}");
+        view.pick_menu_item(&both, cx);
+    });
+    harness.wait_for("the save", |cx| {
+        settled(cx) && file.text().contains("drag_modifier")
+    });
+    assert_eq!(
+        file.text(),
+        format!("[panes]\ndrag_modifier = \"{cmd}-ctrl\"\n")
+    );
+    // The menu opens on the value, and Off removes the key.
+    with_window(&mut harness, |view, window, cx| {
+        view.open_select_for(PATH, window, cx);
+        view.pick_menu_item("off", cx);
+    });
+    harness.wait_for("the removal", |cx| {
+        settled(cx) && !file.text().contains("drag_modifier")
+    });
+}
+
+#[gpui::test]
+fn a_link_chip_that_would_take_the_drag_modifier_is_refused(
+    cx: &mut TestAppContext,
+) {
+    let (link, _) = platform_keys();
+    let original = format!("[panes]\ndrag_modifier = \"{link}-alt-shift\"\n");
+    let file = ScratchConfig::new("chip-drag-collision", &original);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // The link chord plus Alt would make the drag combination the chord
+    // plus Shift.
+    with_window(&mut harness, |view, window, cx| {
+        view.press("chip:terminal.link_modifiers:alt", window, cx);
+    });
+    harness.wait_for("the refusal", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| {
+                        view.setting_error("terminal.link_modifiers").is_some()
+                    })
+                    .unwrap_or(false)
+            })
+    });
+    with_view(&mut harness, |view, _| {
+        let message = view.setting_error("terminal.link_modifiers").unwrap();
+        assert!(
+            message.contains("panes.drag_modifier")
+                && message.contains("terminal.link_modifiers plus shift"),
+            "{message}"
+        );
+    });
+    assert_eq!(file.text(), original);
+}

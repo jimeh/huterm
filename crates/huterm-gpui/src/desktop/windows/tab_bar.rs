@@ -533,7 +533,14 @@ impl WorkspaceView {
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     view.focus_pane(tab, pane, window, cx);
-                    view.begin_pane_drag(tab, pane, event.position, window, cx);
+                    view.begin_pane_drag(
+                        tab,
+                        pane,
+                        event.position,
+                        false,
+                        window,
+                        cx,
+                    );
                     cx.stop_propagation();
                 }),
             )

@@ -142,13 +142,16 @@ before `application_mouse` routes it; an unfocused pane over vim shows the
 arrow. A held gesture keeps its owner's cursor until release, whatever
 Shift does meanwhile, and a scrollbar drag keeps the arrow off the strip.
 Modifier events reach only the focus path, so the workspace root refreshes
-the hovered pane's cursor when Shift changes. Anything drawn over a terminal
-that takes input without occluding, such as a revealed pane bar, a toast,
-or the palette scrim, sets its own cursor, or the I-beam shows through it.
-Huterm's own drags do not use GPUI's drag, so `WorkspaceView::drag_cursor`
-paints a window cursor last while a divider, sidebar, pane, or tab drag
-runs. A cursor change with no other effect, such as Shift over vim,
-re-renders only when the shape differs from the last one drawn.
+the hovered pane's cursor when Shift changes; that root listener is the
+window's only modifier listener (see "Modifier pane drags"). Anything drawn
+over a terminal that takes input without occluding, such as a revealed pane
+bar, a toast, or the palette scrim, sets its own cursor, or the I-beam shows
+through it. Huterm's own drags do not use GPUI's drag, so
+`WorkspaceView::drag_cursor` paints a window cursor last while a divider,
+sidebar, pane, or tab drag runs: the closed hand from a pane drag's press
+on, however it started, and the arrow for a tab reorder. A cursor change
+with no other effect, such as Shift over vim, re-renders only when the shape
+differs from the last one drawn.
 
 Derive scrollbar geometry and label text from the displayed snapshot offset.
 Growing the grid pulls rows out of terminal history. Let the runtime engine
@@ -283,6 +286,49 @@ request, or a refused commit, switches back to the tab it started in when
 the sprung tab is still active, without taking focus from an overlay. A
 render that finds the dragged pane gone from its tab, or an unexpected
 active tab, defers the cancel, so a drag also ends while the pointer rests.
+
+## Modifier pane drags
+
+Under `[panes] drag_modifier`, each drawn pane of a split active tab gets a
+grab layer over its terminal, drawn after the terminal and its dim layer and
+always present, so a press never depends on the frame that armed it. It has
+no `occlude`, so hover, the wheel, and other presses reach the terminal
+beneath; its bubble `on_mouse_down` runs after the title bars, divider zones,
+toasts, and palette drawn later have declined a press, and it consumes a
+match, which then never reaches the terminal. It sets the open hand only
+while armed, which wins over the terminal's cursor and loses to anything
+drawn later that sets its own.
+
+macOS GPUI turns every Control-left press and release into Right with
+Control cleared, and `Window::modifiers` follows the remapped event, so a
+combination with Control arrives as a Right press carrying the rest.
+`PaneGrab` keeps its own `held` record, which no remapped event writes: the
+root div's `on_modifiers_changed` sets it, the window's capture listeners
+correct it from free `MouseMove`s, `Scroll`, `MouseExited`, and releases,
+activation resets it from `Window::modifiers`, and a closing native menu
+clears it, since AppKit's menu loop swallows `flagsChanged`. While a button
+is held, macOS GPUI's `synthetic_drag` replays the last move every 16 ms
+with that move's original modifiers, so a move with a pressed button never
+writes `held`: it would bring back modifiers already let go and re-arm the
+panes after the release. A Left release records its modifiers instead, and
+the Right release that ends a `remapped` drag records them plus Control,
+since GPUI remaps only while Control is down. A window-level
+`window.on_modifiers_changed` never runs: GPUI dispatches the event only
+along the focused element's path, so with nothing focused only a pointer
+event updates `held`. `grab_press` accepts that Right press only while
+`held` holds the whole combination, and a drag it starts is `remapped`, so
+the release listener ends it on Right or Left, whichever arrives.
+
+Arming recomputes on every pointer refresh from `pane_bar_pointer`, so
+anything that claims the pointer or the window disarms. The badges wait
+`GRAB_BADGE_DELAY` on the animation schedule and stay hidden after a key
+press or an activation until `held` changes, so pane keybindings that share
+the modifiers flash none. The key press comes from an app-wide keystroke
+interceptor, not an observer: GPUI keeps a shortcut prefix pending and
+returns before it notifies observers. Window tests set
+`pointer_reveal.hovered_in_tests` to sample the pointer from real events;
+`smoke:macos-input` covers the real remap with posted Command and Control
+`flagsChanged` events.
 
 ## Pane title bar modes
 

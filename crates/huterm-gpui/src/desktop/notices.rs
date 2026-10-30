@@ -611,6 +611,7 @@ fn render_toast(
     let stop = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
         cx.stop_propagation();
     };
+    let dismiss_selector = dismiss_name.clone();
     let mut toast = raised_panel(swatch, 9.0)
         .id(("toast", id.0))
         // Over a terminal, whose text cursor would otherwise show.
@@ -648,6 +649,7 @@ fn render_toast(
                 .size(px(22.0))
                 .rounded(px(5.0))
                 .cursor_pointer()
+                .debug_selector(|| format!("toast-{dismiss_selector}"))
                 .on_click(move |window, cx| dismiss(id, window, cx)),
         );
     if let Some(progress) = progress {
