@@ -642,7 +642,11 @@ widths, `Menu::content_width` and `content_height`, and `OptionList` row
 heights, converts with `window.rem_size()` and names `Typography::of(cx).family`.
 At that point the root's inherited family is not on the text-style stack yet.
 GPUI lays tooltips out outside the window tree, so `Tooltip` names the family
-itself. Terminal-window bar heights and the terminal grid stay in points.
+itself. A terminal view's root sets the terminal font, so chrome drawn inside
+it, such as the scroll pill, link status, and size panel, names the interface
+family too. Place a menu with the default minimum at `menu::min_width(window)`,
+the width it draws at. Terminal-window bar heights and the terminal grid stay
+in points.
 
 `Tokens` corrects arbitrary themes toward WCAG's minimums, and the `contrast`
 test in `desktop/overlay.rs` checks a table of the (text, fill) pairs Huterm
