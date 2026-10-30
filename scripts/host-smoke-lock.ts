@@ -9,10 +9,10 @@
  * a nested wrapper runs its command directly instead of waiting on its ancestor.
  * Off macOS the command runs without a lock; Linux smokes use private displays.
  */
-import { dlopen } from "bun:ffi";
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { constants as os, homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { tryLock } from "./flock";
 
 export const HELD = "HUTERM_HOST_SMOKE_LOCK_HELD";
 const TIMEOUT = "HUTERM_HOST_SMOKE_LOCK_TIMEOUT";
@@ -36,27 +36,6 @@ export function timeoutSeconds(value: string | undefined): number {
 }
 
 const duration = (seconds: number) => seconds >= 60 && seconds % 60 === 0 ? `${seconds / 60} minutes` : `${seconds} seconds`;
-
-let libc: ReturnType<typeof openLibc> | undefined;
-function openLibc() {
-  return dlopen("/usr/lib/libSystem.B.dylib", { flock: { args: ["i32", "i32"], returns: "i32" } });
-}
-
-/**
- * Kernel-owned locks release automatically if the holder dies. Bun.spawn
- * closes every other descriptor in its children, so a daemon a smoke leaves
- * behind, such as a tmux server, cannot keep holding it.
- */
-function tryLock(path: string): (() => void) | undefined {
-  libc ??= openLibc();
-  const fd = openSync(path, "a");
-  // LOCK_EX | LOCK_NB
-  if (libc.symbols.flock(fd, 6) !== 0) {
-    closeSync(fd);
-    return undefined;
-  }
-  return () => closeSync(fd);
-}
 
 type Owner = { pid: number; task: string; step?: string; worktree: string; started: string };
 
