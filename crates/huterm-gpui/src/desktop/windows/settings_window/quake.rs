@@ -1187,7 +1187,8 @@ impl SettingsView {
             | Prompt::LayoutRenameRefused { .. }
             | Prompt::DeleteLayout(_)
             | Prompt::LayoutDeleteRefused { .. }
-            | Prompt::CycleRefused(_) => return None,
+            | Prompt::CycleRefused(_)
+            | Prompt::Reassign { .. } => return None,
         };
         Some(alert.into_any_element())
     }

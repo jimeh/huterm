@@ -37,6 +37,7 @@ use huterm_ui::components::input::Input;
 
 use super::super::super::overlay::Swatch;
 use super::SettingsView;
+use super::keybindings::Target;
 use crate::keymap::DIALOG_BUTTON_CONTEXT;
 
 /// What the open dialog asks.
@@ -64,6 +65,13 @@ pub(super) enum Prompt {
     LayoutDeleteRefused { layout: String, message: String },
     /// Why the layout cycle cannot lose the pane layout, its last member.
     CycleRefused(String),
+    /// Whether a recorded shortcut, `key` for `target`, should take its
+    /// key from the commands named in `from`.
+    Reassign {
+        target: Target,
+        key: String,
+        from: Vec<String>,
+    },
 }
 
 impl Prompt {
@@ -82,6 +90,7 @@ impl Prompt {
                 "ldelno"
             }
             Self::CycleRefused(_) => "lcycno",
+            Self::Reassign { .. } => "kreno",
         }
     }
 
@@ -99,7 +108,8 @@ impl Prompt {
             | Self::LayoutRenameRefused { .. }
             | Self::DeleteLayout(_)
             | Self::LayoutDeleteRefused { .. }
-            | Self::CycleRefused(_) => None,
+            | Self::CycleRefused(_)
+            | Self::Reassign { .. } => None,
         }
     }
 
@@ -117,6 +127,7 @@ impl Prompt {
             Self::DeleteLayout(_) => "delete-layout",
             Self::LayoutDeleteRefused { .. } => "delete-layout-refused",
             Self::CycleRefused(_) => "cycle-refused",
+            Self::Reassign { .. } => "reassign-key",
         }
     }
 }
@@ -374,6 +385,9 @@ impl SettingsView {
             | Prompt::LayoutDeleteRefused { .. }
             | Prompt::CycleRefused(_) => {
                 self.render_layout_alert(&prompt, swatch, window, cx)
+            }
+            Prompt::Reassign { target, key, from } => {
+                Some(self.render_reassign(&target, &key, &from, swatch, cx))
             }
         }
     }

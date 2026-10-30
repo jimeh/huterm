@@ -1537,3 +1537,28 @@ fn the_inventory_records_what_became_of_each_binding() {
         .collect::<Vec<_>>();
     assert_eq!(compiled, active);
 }
+
+#[test]
+fn a_binding_replaces_another_only_with_the_same_keys_and_predicate() {
+    let other = Bound {
+        key: "cmd-shift-t".into(),
+        command: ids::NEW_TAB,
+        args: Vec::new(),
+        context: Some("Terminal"),
+        when: Some("split".into()),
+        origin: Origin::Default,
+    };
+    let replaces = |key: &str, context, when| {
+        would_replace(Platform::MacOs, key, context, when, &other)
+    };
+    // Modifier order does not matter, as in dispatch.
+    assert!(replaces("shift-cmd-t", Some("Terminal"), Some("split")));
+    assert!(!replaces("cmd-t", Some("Terminal"), Some("split")));
+    assert!(!replaces("cmd-shift-t", Some("Terminal"), None));
+    assert!(!replaces("cmd-shift-t", Some("Palette"), Some("split")));
+    assert!(!replaces(
+        "cmd-shift-t cmd-k",
+        Some("Terminal"),
+        Some("split")
+    ));
+}

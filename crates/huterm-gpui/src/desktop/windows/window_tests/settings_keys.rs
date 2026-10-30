@@ -98,10 +98,16 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
         assert_eq!(view.recording(cx), Some(vec![CLOSE.to_owned()]));
     });
     // With no second stroke, the recording ends after the chord timeout.
+    // Close Pane holds the key, so Settings asks before taking it.
     harness
         .cx
         .executor()
         .advance_clock(super::super::settings_window::CHORD_TIMEOUT);
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.dialog_name(), "reassign-key");
+    });
+    keystrokes(&mut harness, "tab enter");
     saved(&mut harness, &file, |text| text.contains(CLOSE));
     assert_eq!(
         file.text(),
@@ -111,9 +117,16 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
              command = \"next_tab\"\n"
         )
     );
-    // A Return meant to save, landing just after the timeout saved, does
-    // not start another recording on the key cap focus followed to; a
-    // later one does.
+    // A Return meant to save, landing just after the timeout saved a key
+    // no command holds, does not start another recording on the key cap
+    // focus followed to; a later one does.
+    harness.cx.run_until_parked();
+    keystrokes(&mut harness, "enter ctrl-alt-y");
+    harness
+        .cx
+        .executor()
+        .advance_clock(super::super::settings_window::CHORD_TIMEOUT);
+    saved(&mut harness, &file, |text| text.contains("ctrl-alt-y"));
     harness.cx.run_until_parked();
     let followed = with_window(&mut harness, |view, window, cx| {
         view.focus_name(window, cx)
@@ -158,6 +171,61 @@ fn the_recorder_takes_bound_keys_records_chords_and_cancels_on_escape(
         .advance_clock(super::super::settings_window::CHORD_TIMEOUT);
     harness.cx.run_until_parked();
     assert_eq!(file.text(), before);
+}
+
+#[gpui::test]
+fn taking_another_commands_key_asks_first_and_cancel_keeps_it(
+    cx: &mut TestAppContext,
+) {
+    let new_tab = if cfg!(target_os = "macos") {
+        "cmd-t"
+    } else {
+        "ctrl-shift-t"
+    };
+    let file = ScratchConfig::new("keys-reassign", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let record = |harness: &mut DesktopHarness| {
+        press(harness, "kadd:new_window");
+        keystrokes(harness, new_tab);
+        harness
+            .cx
+            .executor()
+            .advance_clock(super::super::settings_window::CHORD_TIMEOUT);
+        harness.cx.run_until_parked();
+    };
+    record(&mut harness);
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.dialog_name(), "reassign-key");
+    });
+    let title = a11y_node(&mut harness, "settings-reassign-key");
+    let keys = crate::desktop::key_hint::KeyHint::parse(
+        new_tab,
+        crate::keymap::Platform::current(),
+    )
+    .text();
+    assert_eq!(
+        title["aria"]["label"],
+        format!("{keys} is assigned to New Tab"),
+        "{title}"
+    );
+    // Cancel, which has focus, writes nothing, and New Tab keeps the key.
+    keystrokes(&mut harness, "escape");
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.dialog_name(), "none");
+    });
+    assert_eq!(file.text(), "");
+    // Reassign gives the key to New Window.
+    record(&mut harness);
+    keystrokes(&mut harness, "tab enter");
+    saved(&mut harness, &file, |text| text.contains(new_tab));
+    assert_eq!(
+        file.text(),
+        format!(
+            "[[keybinding]]\nkey = \"{new_tab}\"\ncommand = \"new_window\"\n"
+        )
+    );
 }
 
 #[gpui::test]

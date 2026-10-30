@@ -30,13 +30,16 @@ use super::super::super::settings::keybindings::{
 };
 use super::super::Desktop;
 use super::controls::Opener;
+use super::dialog::Prompt;
 use super::render::{changed_dot, group_card};
 use super::saving::Queued;
 use super::{MenuFor, SettingsView};
 use crate::assets::Icon;
 use crate::keymap::{
     BindingState, Bound, Inventory, ListedBinding, Origin, Platform,
+    would_replace,
 };
+use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::badge::{Tone as BadgeTone, badge};
 use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::card;
@@ -690,6 +693,8 @@ impl SettingsView {
                     self.open_argument_menu(row, name, window, cx);
                 }
             }
+            "kreyes" => self.reassign(window, cx),
+            "kreno" => self.close_dialog(window, cx),
             _ => return false,
         }
         true
@@ -1107,7 +1112,89 @@ impl SettingsView {
         })
     }
 
+    /// Applies a recorded shortcut, or first asks whether it should take
+    /// its key from the commands that hold it.
     fn finish_recording(
+        &mut self,
+        target: Target,
+        key: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let from = self.taken_by(&target, &key);
+        if from.is_empty() {
+            self.apply_recording(target, key, cx);
+            return;
+        }
+        let Some(stop) = self.recorder_key().map(str::to_owned) else {
+            return;
+        };
+        let return_to = self.action_stop(stop, cx);
+        self.open_dialog(Prompt::Reassign { target, key, from }, &return_to);
+    }
+
+    /// The commands a recording of `key` for `target` takes it from: the
+    /// active bindings it would replace, other than the row itself and
+    /// those that run the same command with the same arguments.
+    fn taken_by(&self, target: &Target, key: &str) -> Vec<String> {
+        let Some(inventory) = self.keys.inventory.as_ref() else {
+            return Vec::new();
+        };
+        let (own, command, args, when) = match target {
+            Target::Row(name) => {
+                let Some(listed) = row(inventory, name) else {
+                    return Vec::new();
+                };
+                let binding = &listed.binding;
+                (
+                    Some(listed),
+                    binding.command,
+                    binding.args.as_slice(),
+                    binding.when.as_deref(),
+                )
+            }
+            Target::Add(command) => (None, *command, &[][..], None),
+            Target::Global(_) | Target::AddGlobal => return Vec::new(),
+        };
+        let context = lookup(command.as_str()).and_then(|spec| spec.context);
+        let mut from: Vec<String> = Vec::new();
+        for other in &inventory.bindings {
+            let binding = &other.binding;
+            if other.state != BindingState::Active
+                || own.is_some_and(|own| std::ptr::eq(own, other))
+                || (binding.command == command && binding.args == args)
+                || !would_replace(
+                    Platform::current(),
+                    key,
+                    context,
+                    when,
+                    binding,
+                )
+            {
+                continue;
+            }
+            let title = lookup(binding.command.as_str()).map_or_else(
+                || binding.command.as_str().to_owned(),
+                |spec| spec.title.to_owned(),
+            );
+            if !from.contains(&title) {
+                from.push(title);
+            }
+        }
+        from
+    }
+
+    /// Answers the reassign prompt: applies the recording it holds.
+    fn reassign(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let Some(Prompt::Reassign { target, key, .. }) =
+            self.dialog.prompt().cloned()
+        else {
+            return;
+        };
+        self.close_dialog(window, cx);
+        self.apply_recording(target, key, cx);
+    }
+
+    fn apply_recording(
         &mut self,
         target: Target,
         key: String,
@@ -2528,6 +2615,60 @@ impl SettingsView {
                 .into_any_element()
             }))
             .collect()
+    }
+
+    /// The prompt that asks whether a recorded shortcut takes its key from
+    /// the commands in `from`. Reassign applies it; Cancel leaves every
+    /// binding as it was.
+    pub(super) fn render_reassign(
+        &mut self,
+        target: &Target,
+        key: &str,
+        from: &[String],
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let command = match target {
+            Target::Row(name) => self
+                .keys
+                .inventory
+                .as_ref()
+                .and_then(|inventory| row(inventory, name))
+                .map(|listed| listed.binding.command),
+            Target::Add(command) => Some(*command),
+            Target::Global(_) | Target::AddGlobal => None,
+        };
+        let title = command
+            .and_then(|command| lookup(command.as_str()))
+            .map_or("this command", |spec| spec.title);
+        let holders = match from {
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+            [] => String::new(),
+        };
+        let keys = KeyHint::parse(key, Platform::current()).text();
+        let (cancel, cancel_focus) =
+            self.dialog_button("settings-kreno", "Cancel", "kreno", swatch, cx);
+        let (reassign, reassign_focus) = self.dialog_button(
+            "settings-kreyes",
+            "Reassign",
+            "kreyes",
+            swatch,
+            cx,
+        );
+        AlertDialog::new(
+            "settings-reassign-key",
+            format!("{keys} is assigned to {holders}"),
+            self.dialog.modal(),
+            swatch,
+        )
+        .description(format!(
+            "Reassign it to {title}? {holders} will no longer have this \
+             shortcut."
+        ))
+        .cancel(cancel, &cancel_focus)
+        .action(reassign.variant(Variant::Primary), &reassign_focus)
+        .into_any_element()
     }
 
     /// Commands matching the sidebar search, as links into the section.
