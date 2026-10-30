@@ -1082,15 +1082,13 @@ impl SettingsView {
                     .items_center()
                     .gap(px(8.0))
                     .w_full()
-                    .child(
-                        div().key_context("Palette").flex_1().min_w_0().child(
-                            InputGroup::new(
-                                id(format!("settings-ltemplate-{name}")),
-                                &field,
-                                swatch,
-                            ),
+                    .child(Self::text_field(cx).flex_1().min_w_0().child(
+                        InputGroup::new(
+                            id(format!("settings-ltemplate-{name}")),
+                            &field,
+                            swatch,
                         ),
-                    )
+                    ))
                     .child(rename)
                     .child(delete),
             )
@@ -1321,14 +1319,15 @@ impl SettingsView {
             .variant(Variant::Primary)
             .when_some(refusal, |button, reason| button.disabled(Some(reason)));
         let handle = field.read(cx).focus_handle(cx);
-        let name =
-            Field::new("settings-lname", "Name", swatch)
-                .vertical()
-                .error(message.map(SharedString::from))
-                .control(div().key_context("Palette").w_full().child(
-                    InputGroup::new("settings-lname-group", &field, swatch),
-                ))
-                .p_0();
+        let name = Field::new("settings-lname", "Name", swatch)
+            .vertical()
+            .error(message.map(SharedString::from))
+            .control(Self::text_field(cx).w_full().child(InputGroup::new(
+                "settings-lname-group",
+                &field,
+                swatch,
+            )))
+            .p_0();
         Some(
             Dialog::new(id, title, self.dialog.modal(), swatch)
                 .when(from.is_some(), |dialog| {

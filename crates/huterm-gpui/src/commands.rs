@@ -3,8 +3,10 @@
 //! Each catalog scope maps to one GPUI action type so type-routed dispatch
 //! delivers a command to the handler that owns it: the application for
 //! [`InvokeApp`], the window's `WorkspaceView` for [`InvokeWindow`], and the
-//! active `TerminalView` for [`InvokeTerminal`]. Palette-scope commands travel
-//! as [`InvokePalette`] to the window's open palette. Runtime-scope commands
+//! active `TerminalView` for [`InvokeTerminal`], except that the terminal's
+//! Copy, Paste, and Select All travel as [`InvokeEdit`]. Focused-scope
+//! commands travel as [`InvokeFocused`] to the window's open palette, or to
+//! the focused text field's owner. Runtime-scope commands
 //! travel as [`InvokeWindow`] because the window fills omitted targets from
 //! its own context before forwarding to the structural worker.
 
@@ -29,10 +31,21 @@ pub(crate) struct InvokeWindow(pub(crate) CommandInvocation);
 #[action(namespace = huterm, no_json)]
 pub(crate) struct InvokeTerminal(pub(crate) CommandInvocation);
 
-/// Palette-scope command handled by the window's open command palette.
+/// The terminal's Copy, Paste, or Select All, which the focused terminal
+/// view runs and a focused text field answers as its own `text_*` command.
+/// It has a type of its own because GPUI enables a native menu item by the
+/// action type the focus path handles: fields handle this one, so the Edit
+/// menu's three items work in them, and never handle [`InvokeTerminal`], so
+/// the terminal's other menu items stay disabled there.
 #[derive(Action, Clone, Debug, PartialEq)]
 #[action(namespace = huterm, no_json)]
-pub(crate) struct InvokePalette(pub(crate) CommandInvocation);
+pub(crate) struct InvokeEdit(pub(crate) CommandInvocation);
+
+/// Focused-scope command handled by the focused palette or text field's
+/// owner.
+#[derive(Action, Clone, Debug, PartialEq)]
+#[action(namespace = huterm, no_json)]
+pub(crate) struct InvokeFocused(pub(crate) CommandInvocation);
 
 /// A validated invocation wrapped in the action type for its scope.
 #[derive(Clone, Debug, PartialEq)]
@@ -40,7 +53,8 @@ pub(crate) enum CommandAction {
     App(InvokeApp),
     Window(InvokeWindow),
     Terminal(InvokeTerminal),
-    Palette(InvokePalette),
+    Edit(InvokeEdit),
+    Focused(InvokeFocused),
 }
 
 impl CommandAction {
@@ -62,10 +76,13 @@ impl CommandAction {
             CommandScope::Window | CommandScope::Runtime => {
                 Self::Window(InvokeWindow(invocation))
             }
+            CommandScope::Terminal if is_edit_command(invocation.id) => {
+                Self::Edit(InvokeEdit(invocation))
+            }
             CommandScope::Terminal => {
                 Self::Terminal(InvokeTerminal(invocation))
             }
-            CommandScope::Palette => Self::Palette(InvokePalette(invocation)),
+            CommandScope::Focused => Self::Focused(InvokeFocused(invocation)),
         })
     }
 
@@ -74,7 +91,8 @@ impl CommandAction {
             Self::App(action) => &action.0,
             Self::Window(action) => &action.0,
             Self::Terminal(action) => &action.0,
-            Self::Palette(action) => &action.0,
+            Self::Edit(action) => &action.0,
+            Self::Focused(action) => &action.0,
         }
     }
 
@@ -83,7 +101,8 @@ impl CommandAction {
             Self::App(action) => Box::new(action),
             Self::Window(action) => Box::new(action),
             Self::Terminal(action) => Box::new(action),
-            Self::Palette(action) => Box::new(action),
+            Self::Edit(action) => Box::new(action),
+            Self::Focused(action) => Box::new(action),
         }
     }
 
@@ -99,11 +118,18 @@ impl CommandAction {
                 title
             },
         );
+        self.menu_item_titled(title)
+    }
+
+    /// Builds a menu item labelled `title`, for a command whose catalog
+    /// title names its group, such as Text: Cut.
+    pub(crate) fn menu_item_titled(&self, title: String) -> MenuItem {
         match self.clone() {
             Self::App(action) => MenuItem::action(title, action),
             Self::Window(action) => MenuItem::action(title, action),
             Self::Terminal(action) => MenuItem::action(title, action),
-            Self::Palette(action) => MenuItem::action(title, action),
+            Self::Edit(action) => MenuItem::action(title, action),
+            Self::Focused(action) => MenuItem::action(title, action),
         }
     }
 
@@ -113,9 +139,16 @@ impl CommandAction {
             Self::App(action) => cx.dispatch_action(action),
             Self::Window(action) => cx.dispatch_action(action),
             Self::Terminal(action) => cx.dispatch_action(action),
-            Self::Palette(action) => cx.dispatch_action(action),
+            Self::Edit(action) => cx.dispatch_action(action),
+            Self::Focused(action) => cx.dispatch_action(action),
         }
     }
+}
+
+/// Whether `id` is a terminal command that also edits a focused text field
+/// ([`InvokeEdit`]).
+pub(crate) fn is_edit_command(id: CommandId) -> bool {
+    matches!(id, ids::COPY | ids::PASTE | ids::SELECT_ALL)
 }
 
 /// Wraps an argument-free catalog command.
@@ -168,7 +201,7 @@ pub(crate) fn route<W>(
         CommandScope::Application => Ok(Route::Application),
         CommandScope::Window
         | CommandScope::Runtime
-        | CommandScope::Palette => window
+        | CommandScope::Focused => window
             .map(Route::Window)
             .ok_or(CommandError::ClientRequired),
         CommandScope::Terminal => window
@@ -297,10 +330,14 @@ mod tests {
         ));
         assert!(matches!(invoke(ids::NEW_TAB), CommandAction::Window(_)));
         assert!(matches!(invoke(ids::ABOUT), CommandAction::Window(_)));
-        assert!(matches!(invoke(ids::COPY), CommandAction::Terminal(_)));
+        assert!(matches!(invoke(ids::COPY), CommandAction::Edit(_)));
+        assert!(matches!(
+            invoke(ids::CLEAR_SCROLLBACK),
+            CommandAction::Terminal(_)
+        ));
         assert!(matches!(
             invoke(ids::PALETTE_CONFIRM),
-            CommandAction::Palette(_)
+            CommandAction::Focused(_)
         ));
         assert!(matches!(
             invoke_with(
@@ -323,7 +360,7 @@ mod tests {
         ));
         assert!(matches!(
             CommandAction::new(invocation(ids::PALETTE_CONFIRM, &[])),
-            Ok(CommandAction::Palette(_))
+            Ok(CommandAction::Focused(_))
         ));
         assert!(matches!(
             CommandAction::new(invocation(
@@ -389,7 +426,7 @@ mod tests {
             Err(CommandError::ClientRequired)
         );
         assert_eq!(
-            route::<u8>(CommandScope::Palette, None),
+            route::<u8>(CommandScope::Focused, None),
             Err(CommandError::ClientRequired)
         );
         assert_eq!(
@@ -397,7 +434,7 @@ mod tests {
             Ok(Route::Terminal(7))
         );
         assert_eq!(route(CommandScope::Runtime, Some(7)), Ok(Route::Window(7)));
-        assert_eq!(route(CommandScope::Palette, Some(7)), Ok(Route::Window(7)));
+        assert_eq!(route(CommandScope::Focused, Some(7)), Ok(Route::Window(7)));
     }
 
     #[test]

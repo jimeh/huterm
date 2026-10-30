@@ -73,6 +73,7 @@ use huterm_protocol::{
 };
 use huterm_ui::components::button::{Button, Colors as ButtonColors};
 use huterm_ui::components::dialog::Modal;
+use huterm_ui::components::input::{ContextMenu as FieldContextMenu, Input};
 use huterm_ui::components::menu::{
     MIN_WIDTH as MENU_MIN_WIDTH, Menu as MenuView, MenuEvent,
 };
@@ -171,6 +172,7 @@ pub(super) use appkit_menu::check_window_menu as check_native_window_menu;
 mod button_layout;
 mod client_frame;
 mod exit_closes;
+mod field_menu;
 mod layout_history;
 mod layout_undo;
 mod menu_spec;
@@ -1212,7 +1214,7 @@ fn interactive_spec(
     invocation: &CommandInvocation,
 ) -> Result<(&'static huterm_protocol::CommandSpec, bool), CommandError> {
     let spec = validate_supplied(invocation)?;
-    let prompt = spec.scope != CommandScope::Palette
+    let prompt = spec.scope != CommandScope::Focused
         && !spec.missing_prompted(invocation).is_empty();
     Ok((spec, prompt))
 }
@@ -2464,6 +2466,8 @@ fn open_window_with_profile(
             });
             view.update(cx, |view, cx| {
                 view.frame_clock.observe(cx);
+                // A field's menu over Licenses reaches past its panel.
+                view.dialog.beneath(&view.popover);
                 // A quake window whose setup failed is removed below while
                 // still hidden, so it leaves the latched failures waiting.
                 if !profile_requested || view.quake.is_some() {
@@ -3630,13 +3634,15 @@ enum MenuKind {
     Terminal { tab: TabId, link: Option<String> },
     /// The context menu of a pane's title bar in `tab`.
     Pane { tab: TabId, pane: PaneId },
+    /// A text field's context menu, in the palette or the Licenses view.
+    Field(WeakEntity<Input>),
 }
 
 impl MenuKind {
     /// The tab the menu's tab-targeted picks act on.
     fn tab(&self) -> Option<TabId> {
         match self {
-            Self::Window => None,
+            Self::Window | Self::Field(_) => None,
             Self::Tab(tab)
             | Self::Terminal { tab, .. }
             | Self::Pane { tab, .. } => Some(*tab),
@@ -3647,7 +3653,10 @@ impl MenuKind {
     fn pane(&self) -> Option<PaneId> {
         match self {
             Self::Pane { pane, .. } => Some(*pane),
-            Self::Window | Self::Tab(_) | Self::Terminal { .. } => None,
+            Self::Window
+            | Self::Tab(_)
+            | Self::Terminal { .. }
+            | Self::Field(_) => None,
         }
     }
 }
@@ -3715,7 +3724,8 @@ enum ShownDialog {
 enum MenuFocusReturn {
     /// The active terminal, after Escape, a pick, an outside press, or a
     /// command. Returning to the menu button would leave terminal bindings
-    /// inactive until the user clicked back into the terminal.
+    /// inactive until the user clicked back into the terminal. A field's
+    /// menu returns to its field instead.
     Terminal,
     /// Whatever takes focus next, such as a close confirmation.
     Keep,
@@ -7160,7 +7170,7 @@ impl WorkspaceView {
             CommandScope::Window | CommandScope::Runtime => {
                 self.run_command(invocation, window, cx)
             }
-            CommandScope::Palette => {
+            CommandScope::Focused => {
                 if let Some(licenses) = self.licenses.clone() {
                     return licenses.update(cx, |licenses, cx| {
                         licenses.run(invocation, window, cx)
@@ -7179,12 +7189,20 @@ impl WorkspaceView {
         }
     }
 
-    fn invoke_palette(
+    /// Runs a focused-scope command from the palette or the Licenses view.
+    /// Neither gives the field verbs a meaning of its own, so they go on
+    /// unhandled and GPUI tries the next binding for the key, the palette's
+    /// own under `Palette`.
+    fn invoke_focused(
         &mut self,
-        action: &InvokePalette,
+        action: &InvokeFocused,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if crate::ui::input::is_field_verb(action.0.id) {
+            cx.propagate();
+            return;
+        }
         cx.stop_propagation();
         if self.licenses.is_some() {
             // The view has no error line; a refused command changes nothing.
@@ -7404,7 +7422,7 @@ impl WorkspaceView {
                                 terminal.run_command(invocation, window, cx)
                             })
                         }),
-                    Ok(CommandScope::Palette) => {
+                    Ok(CommandScope::Focused) => {
                         Err(CommandError::UnknownCommand(invocation.id))
                     }
                     Err(error) => Err(error),
@@ -7726,7 +7744,7 @@ impl WorkspaceView {
                 }
                 terminal.command_availability(command)
             }
-            CommandScope::Palette => Ok(()),
+            CommandScope::Focused => Ok(()),
         }
     }
 
@@ -8251,7 +8269,10 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         validate(invocation)?;
-        if self.palette.is_some() && invocation.id != ids::OPEN_COMMAND_PALETTE
+        // A menu open over the palette is its field's, and takes its keys.
+        if self.palette.is_some()
+            && invocation.id != ids::OPEN_COMMAND_PALETTE
+            && !is_menu_command(invocation.id)
         {
             // The palette's search field has no undo, so its undo keys do
             // nothing rather than raise a notice.
@@ -10943,7 +10964,17 @@ impl Render for WorkspaceView {
                     }
                 },
             ))
-            .on_action(cx.listener(Self::invoke_palette))
+            // Only the palette and the Licenses view send focused-scope
+            // commands, so without them the window takes none, and the Edit
+            // menu's Cut, which is `text_cut`, is disabled over a terminal.
+            .when(self.palette.is_some() || self.licenses.is_some(), |root| {
+                root.on_action(cx.listener(Self::invoke_focused))
+            })
+            .on_action(cx.listener(
+                |view, request: &FieldContextMenu, window, cx| {
+                    view.open_field_menu(request, window, cx);
+                },
+            ))
             .child(huterm_ui::focus::tracker());
         if decorated {
             root = root.child(
@@ -12302,6 +12333,58 @@ impl WorkspaceView {
         );
     }
 
+    /// Opens a text field's context menu where its right press landed,
+    /// replacing any open menu. Only the palette's and Licenses' fields
+    /// ask, and editing a field needs nothing from the window, so it opens
+    /// whenever the field is still there.
+    fn open_field_menu(
+        &mut self,
+        request: &FieldContextMenu,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.native_menu.is_some() {
+            return;
+        }
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
+        let contexts = window.context_stack();
+        let kind = MenuKind::Field(request.field.clone());
+        let Some(spec) = Self::field_menu_spec(&kind, &contexts, cx) else {
+            return;
+        };
+        // A native menu leaves GPUI focus on the field while it tracks.
+        let anchor = MenuAnchor::Pointer(request.position);
+        if self.open_native_menu(kind.clone(), &spec, anchor, window, cx) {
+            return;
+        }
+        self.mount_menu(
+            spec.to_listbox(Platform::current()),
+            kind,
+            Some(request.position),
+            contexts,
+            false,
+            window,
+            cx,
+        );
+    }
+
+    /// A field menu's rows, or `None` once its field is gone.
+    fn field_menu_spec(
+        kind: &MenuKind,
+        contexts: &[KeyContext],
+        cx: &App,
+    ) -> Option<MenuSpec> {
+        let MenuKind::Field(field) = kind else {
+            return None;
+        };
+        let field = field.upgrade()?;
+        Some(field_menu::field_menu(
+            field_menu::FieldMenuInput::of(field.read(cx)),
+            &cx.global::<Desktop>().keymap,
+            contexts,
+        ))
+    }
+
     /// A terminal's right-click. Only the active terminal's menu opens: a
     /// lookup can finish after its tab was switched away.
     fn handle_context_menu_request(
@@ -12408,6 +12491,9 @@ impl WorkspaceView {
             kind @ MenuKind::Pane { .. } => {
                 self.pane_menu_spec(kind, &menu.contexts, cx)
             }
+            kind @ MenuKind::Field(_) => {
+                Self::field_menu_spec(kind, &menu.contexts, cx)
+            }
         };
         spec.map(|spec| spec.to_listbox(Platform::current()))
     }
@@ -12438,6 +12524,7 @@ impl WorkspaceView {
             MenuKind::Tab(_) => "Tab",
             MenuKind::Terminal { .. } => "Terminal",
             MenuKind::Pane { .. } => "Pane",
+            MenuKind::Field(_) => "Edit",
         };
         let view = cx.new(|cx| {
             clock.observe(cx);
@@ -12511,12 +12598,17 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> bool {
         let _ = self.popover.close();
-        if self.menu.take().is_none() {
+        let Some(menu) = self.menu.take() else {
             return false;
-        }
-        match focus {
-            MenuFocusReturn::Terminal => self.focus_terminal(window, cx),
-            MenuFocusReturn::Keep => {}
+        };
+        match (focus, menu.kind) {
+            (MenuFocusReturn::Terminal, MenuKind::Field(field))
+                if let Some(field) = field.upgrade() =>
+            {
+                field.read(cx).focus_handle(cx).focus(window, cx);
+            }
+            (MenuFocusReturn::Terminal, _) => self.focus_terminal(window, cx),
+            (MenuFocusReturn::Keep, _) => {}
         }
         cx.notify();
         true
@@ -12588,6 +12680,13 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // A field menu's picks edit its field, not the window.
+        if let MenuKind::Field(field) = kind {
+            if let Some(field) = field.upgrade() {
+                field_menu::run_pick(&field, id, cx);
+            }
+            return;
+        }
         if let MenuKind::Terminal {
             link: Some(link), ..
         } = kind
@@ -12980,6 +13079,7 @@ impl WorkspaceView {
                     MenuKind::Tab(_) => "tab",
                     MenuKind::Terminal { .. } => "terminal",
                     MenuKind::Pane { .. } => "pane",
+                    MenuKind::Field(_) => "field",
                 };
                 let (overflow, indicator) = menu.scroll_state();
                 format!(
@@ -12997,6 +13097,7 @@ impl WorkspaceView {
             Some(MenuKind::Tab(_)) => "tab",
             Some(MenuKind::Terminal { .. }) => "terminal",
             Some(MenuKind::Pane { .. }) => "pane",
+            Some(MenuKind::Field(_)) => "field",
             None => "none",
         };
         format!(
@@ -13181,7 +13282,8 @@ impl WorkspaceView {
                 MenuKind::Tab(tab) => Some(tab),
                 MenuKind::Window
                 | MenuKind::Terminal { .. }
-                | MenuKind::Pane { .. } => None,
+                | MenuKind::Pane { .. }
+                | MenuKind::Field(_) => None,
             })
             .and_then(|tab| {
                 self.tabs.iter().position(|record| record.id == tab)

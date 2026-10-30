@@ -116,6 +116,16 @@ impl Popover {
         self.state.borrow().anchor.is_some()
     }
 
+    /// Whether a window `position` lies on the open popover's painted
+    /// content.
+    pub(crate) fn covers(&self, position: Point<Pixels>) -> bool {
+        let state = self.state.borrow();
+        state.anchor.is_some()
+            && state
+                .content
+                .is_some_and(|content| content.contains(&position))
+    }
+
     /// Where it is open from.
     #[must_use]
     pub fn anchor(&self) -> Option<Anchor> {

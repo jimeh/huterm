@@ -161,7 +161,14 @@ pub(crate) const CONTEXTS: &[Context] = &[
     context("reordering", "A tab drag is in progress."),
     context("fullscreen", "The window has finished entering fullscreen."),
     context("palette", "The window owns an open command palette."),
-    context("Palette", "The command palette or a text field has focus."),
+    context(
+        "Palette",
+        "The command palette or the Licenses list has focus.",
+    ),
+    context(
+        "TextField",
+        "A text field has focus, in Settings, the palette, or Licenses.",
+    ),
     context("Settings", "The Settings window has focus."),
     context(
         "SettingsControl",
@@ -419,7 +426,8 @@ fn place_name(context: &str) -> &str {
         "confirming" => "dialogs",
         "menu" => "menus",
         "notices" => "notices",
-        "Palette" => "the palette and text fields",
+        "Palette" => "the palette",
+        "TextField" => "text fields",
         "Settings" => "Settings",
         "SettingsControl" => "Settings controls",
         "SettingsGroup" => "Settings groups",

@@ -26,6 +26,7 @@ fn menu_kind(cx: &mut App, window: AnyWindowHandle) -> Option<&'static str> {
                 MenuKind::Tab(_) => "tab",
                 MenuKind::Terminal { .. } => "terminal",
                 MenuKind::Pane { .. } => "pane",
+                MenuKind::Field(_) => "field",
             })
         })
         .ok()
@@ -301,6 +302,130 @@ fn deactivating_the_window_closes_the_menu_onto_the_terminal(
     harness.activate(window, tab);
     harness.type_line(window, "back");
     harness.wait_text(window, tab, "got:back");
+}
+
+/// The open palette's field in `window`.
+fn palette_field(cx: &mut App, window: AnyWindowHandle) -> Entity<Input> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().unwrap();
+            let palette = view.read(cx).palette.clone().expect("open");
+            palette.read(cx).field()
+        })
+        .unwrap()
+}
+
+/// A right press on the palette's field opens the field's menu at the
+/// pointer; Escape and a pick close it back onto the field, and the
+/// palette stays open throughout.
+#[gpui::test]
+fn a_right_press_in_the_palette_opens_its_fields_menu(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.menu_window(ECHO);
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    harness.press(window, "a b c");
+    let field = harness.cx.update(|cx| palette_field(cx, window));
+    let (_, bounds) = harness
+        .cx
+        .update(|cx| field.read(cx).painted_caret())
+        .expect("the field painted");
+    let on_text = gpui::point(bounds.left() + px(1.0), bounds.center().y);
+    let right_press = |harness: &mut DesktopHarness| {
+        let mut visual = VisualTestContext::from_window(window, &harness.cx);
+        visual.simulate_mouse_down(
+            on_text,
+            MouseButton::Right,
+            Modifiers::none(),
+        );
+        visual.simulate_mouse_up(
+            on_text,
+            MouseButton::Right,
+            Modifiers::none(),
+        );
+        harness
+            .wait_for("the field menu to paint", |cx| menu_painted(cx, window));
+    };
+    let field_focused = |cx: &mut App| {
+        window
+            .update(cx, |_, window, cx| {
+                field.read(cx).focus_handle(cx).is_focused(window)
+            })
+            .unwrap()
+    };
+    right_press(&mut harness);
+    harness.cx.update(|cx| {
+        assert_eq!(menu_kind(cx, window), Some("field"));
+    });
+    harness.press(window, "escape");
+    harness.cx.update(|cx| {
+        assert_eq!(menu_kind(cx, window), None);
+        assert!(field_focused(cx), "Escape returns focus to the field");
+    });
+    // Nothing is selected, so Paste is the first item; the press put the
+    // caret before the text.
+    harness
+        .cx
+        .write_to_clipboard(gpui::ClipboardItem::new_string("XY".to_owned()));
+    right_press(&mut harness);
+    harness.press(window, "down enter");
+    harness.cx.update(|cx| {
+        assert_eq!(menu_kind(cx, window), None);
+        assert!(field_focused(cx), "a pick returns focus to the field");
+        assert_eq!(field.read(cx).text(), "XYabc");
+        assert!(palette_state(cx, window).is_some(), "the palette stays");
+    });
+}
+
+/// The Edit menu's Cut is a text field's, so it is disabled over a
+/// terminal and enabled in the palette, where Copy acts on the field.
+#[gpui::test]
+fn the_edit_menus_cut_needs_a_field_and_copy_follows_focus(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab) = harness.menu_window(ECHO);
+    let available = |harness: &mut DesktopHarness, id| {
+        harness.update_view(window, |_, window, cx| {
+            window.is_action_available(
+                crate::commands::invoke(id).into_boxed().as_ref(),
+                cx,
+            )
+        })
+    };
+    assert!(!available(&mut harness, ids::TEXT_CUT));
+    assert!(available(&mut harness, ids::COPY));
+    // The terminal runs the Edit menu's Select All itself.
+    harness.update_view(window, |_, window, cx| {
+        window.dispatch_action(
+            crate::commands::invoke(ids::SELECT_ALL).into_boxed(),
+            cx,
+        );
+    });
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        let terminal = terminal(cx, window, tab).unwrap();
+        assert!(
+            terminal.read(cx).command_availability(ids::COPY).is_ok(),
+            "Select All selected the terminal"
+        );
+    });
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    harness.press(window, "a b c");
+    harness.cx.run_until_parked();
+    assert!(available(&mut harness, ids::TEXT_CUT));
+    // The terminal's other menu items have nothing to act on in a field.
+    assert!(!available(&mut harness, ids::CLEAR_SCROLLBACK));
+    for id in [ids::SELECT_ALL, ids::COPY] {
+        harness.update_view(window, |_, window, cx| {
+            window
+                .dispatch_action(crate::commands::invoke(id).into_boxed(), cx);
+        });
+        harness.cx.run_until_parked();
+    }
+    let copied = harness
+        .cx
+        .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("abc"));
 }
 
 #[gpui::test]

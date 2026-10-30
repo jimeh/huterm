@@ -96,6 +96,7 @@ use gpui::{
 
 use crate::a11y::States;
 use crate::components::button::Button;
+use crate::components::popover::Popover;
 use crate::components::surface::surface;
 use crate::focus;
 use crate::tokens::{Tokens, size};
@@ -138,6 +139,8 @@ struct State {
     panel: Option<Bounds<Pixels>>,
     /// The scrim's bounds from its last paint.
     scrim: Option<Bounds<Pixels>>,
+    /// A popover drawn above the dialog, whose content keeps its presses.
+    above: Option<Popover>,
 }
 
 impl State {
@@ -148,6 +151,10 @@ impl State {
         self.open
             && self.scrim.is_none_or(|scrim| scrim.contains(&position))
             && !self.panel.is_some_and(|panel| panel.contains(&position))
+            && !self
+                .above
+                .as_ref()
+                .is_some_and(|above| above.covers(position))
     }
 }
 
@@ -163,6 +170,15 @@ impl Modal {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Lets presses and wheel events on `popover`'s open content through,
+    /// for a popover the owner draws above the dialog, such as a field's
+    /// context menu that reaches past the panel. The owner mounts the
+    /// popover's guard first, so a press outside that content still
+    /// closes the popover there.
+    pub fn beneath(&self, popover: &Popover) {
+        self.state.borrow_mut().above = Some(popover.clone());
     }
 
     /// Opens the dialog, which takes focus on its first frame and returns

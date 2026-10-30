@@ -16,7 +16,8 @@ use crate::components::alert_dialog::AlertDialog;
 use crate::components::button::{Button, Variant};
 use crate::components::input::{Chrome, Input};
 use crate::components::input_group::InputGroup;
-use crate::testing::{a11y_action, a11y_node, tokens};
+use crate::components::popover::{Anchor, Popover, place};
+use crate::testing::{a11y_action, a11y_node, host, tokens};
 
 gpui::actions!(
     dialog_test,
@@ -32,9 +33,9 @@ gpui::actions!(
     ]
 );
 
-/// The rename field's own key context, standing in for Huterm's `Palette`,
-/// which its text fields carry.
-const FIELD_CONTEXT: &str = "Palette";
+/// The rename field's own key context, standing in for Huterm's
+/// `TextField`, which its text fields carry.
+const FIELD_CONTEXT: &str = "TextField";
 
 /// Which dialog the host draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -875,4 +876,61 @@ fn a_wheel_event_outside_the_scrim_reaches_what_is_there(
     open_inset(&probe, cx);
     wheel(cx, on_the_edge());
     assert_eq!(probe.log(), ["edge-wheel", "window-wheel"]);
+}
+
+/// A popover drawn above an open dialog, as a field's context menu is,
+/// keeps the presses on its content once the dialog yields to it, even
+/// where that content lies over the scrim outside the panel.
+#[gpui::test]
+fn a_popover_above_the_dialog_keeps_presses_on_its_content(
+    cx: &mut TestAppContext,
+) {
+    let (modal, popover) = (Modal::new(), Popover::new());
+    let pressed = Rc::new(RefCell::new(Vec::new()));
+    let (drawn_modal, drawn_popover, log) =
+        (modal.clone(), popover.clone(), pressed.clone());
+    let (view, cx) = host(cx, move |window, _| {
+        let content_log = log.clone();
+        let content = div().w(px(120.0)).h(px(40.0)).on_mouse_down(
+            MouseButton::Left,
+            move |_, _, _| {
+                content_log.borrow_mut().push("content");
+            },
+        );
+        let viewport = window.viewport_size();
+        let placement = place(
+            Anchor::Pointer(point(px(10.0), px(10.0))),
+            gpui::size(px(120.0), px(40.0)),
+            viewport,
+        );
+        div()
+            .size_full()
+            .child(drawn_popover.guard(|_, _, _| {}))
+            .child(drawn_modal.guard(|_, _, _| {}))
+            .children(drawn_popover.render(placement, viewport, content))
+            .into_any_element()
+    });
+    // The dialog covers the window with a panel far from the popover.
+    let trigger = cx.update(|_, cx| cx.focus_handle());
+    modal.open(&trigger);
+    {
+        let mut state = modal.state.borrow_mut();
+        state.scrim = Some(gpui::Bounds::new(
+            point(px(0.0), px(0.0)),
+            gpui::size(px(1000.0), px(1000.0)),
+        ));
+        state.panel = Some(gpui::Bounds::new(
+            point(px(400.0), px(400.0)),
+            gpui::size(px(100.0), px(100.0)),
+        ));
+    }
+    popover.open(Anchor::Pointer(point(px(10.0), px(10.0))), true);
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    let content = popover.content_bounds().expect("the content painted");
+    click(cx, content.center());
+    assert!(pressed.borrow().is_empty(), "the scrim stopped the press");
+    modal.beneath(&popover);
+    click(cx, content.center());
+    assert_eq!(*pressed.borrow(), ["content"]);
 }

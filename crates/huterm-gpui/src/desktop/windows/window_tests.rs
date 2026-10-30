@@ -807,7 +807,7 @@ fn ctrl_x_reaches_the_shell_while_text_cut_binds_it_in_fields(
     cx: &mut TestAppContext,
 ) {
     // Linux binds `ctrl-x` to `text_cut` by default. The binding here does
-    // the same on every platform: `text_cut` implies the `Palette` context,
+    // the same on every platform: `text_cut` implies the `TextField` context,
     // so a focused terminal still sends Control-X to its child.
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.keybindings.push(huterm_config::KeybindingEntry {
@@ -4023,6 +4023,47 @@ fn the_palette_runs_commands_whose_arguments_are_all_unprompted(
         .cx
         .dispatch_keystroke(window, Keystroke::parse("enter").unwrap());
     harness.wait_for("the active tab to close", |cx| !projected(cx, other));
+}
+
+/// A field verb that wins the tie with the palette's own binding, as a
+/// user's later binding does, goes on unhandled to the palette's command
+/// for the key.
+#[gpui::test]
+fn the_palette_leaves_field_verbs_to_its_own_bindings(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::with_bindings(
+        cx,
+        &[
+            ("escape", "text_cancel", "Palette"),
+            ("enter", "text_confirm", "Palette"),
+        ],
+    );
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    harness.wait_for("the palette to open", |cx| {
+        palette_state(cx, window).is_some()
+    });
+    harness.press(window, "escape");
+    harness.wait_for("Escape to close the palette", |cx| {
+        palette_state(cx, window).is_none()
+    });
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    harness.wait_for("the palette to open again", |cx| {
+        palette_state(cx, window).is_some()
+    });
+    let before = harness.update_view(window, |view, _, _| view.tabs.len());
+    harness.press(window, "n e w space t a b enter");
+    harness.wait_for("Enter to run New Tab", |cx| {
+        palette_state(cx, window).is_none()
+            && window
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                        view.read(cx).tabs.len() == before + 1
+                    })
+                })
+                .unwrap_or(false)
+    });
 }
 
 #[gpui::test]

@@ -22,6 +22,7 @@ fn catalog_entries_are_unique_and_described() {
                 spec.context,
                 None | Some(
                     "Palette"
+                        | "TextField"
                         | "Settings"
                         | "SettingsControl"
                         | "SettingsGroup"
@@ -374,9 +375,13 @@ fn layout_arguments_carry_any_valid_name_and_are_prompted() {
     );
 }
 
+/// The palette's own commands bind under `Palette`; text editing and the
+/// field verbs bind under `TextField`, so every text field takes them and
+/// the palette keeps only its list and argument commands. Both travel as
+/// focused-scope commands to the focused surface.
 #[test]
-fn palette_commands_are_palette_scoped_and_context_bound() {
-    let expected = [
+fn palette_and_text_commands_are_focused_scoped_and_context_bound() {
+    let palette = [
         ids::PALETTE_SELECT_NEXT,
         ids::PALETTE_SELECT_PREVIOUS,
         ids::PALETTE_PAGE_DOWN,
@@ -387,6 +392,14 @@ fn palette_commands_are_palette_scoped_and_context_bound() {
         ids::PALETTE_EXPAND,
         ids::PALETTE_NEXT_SLOT,
         ids::PALETTE_PREVIOUS_SLOT,
+    ];
+    let text = [
+        ids::TEXT_CONFIRM,
+        ids::TEXT_CANCEL,
+        ids::TEXT_NEXT,
+        ids::TEXT_PREVIOUS,
+        ids::TEXT_PAGE_DOWN,
+        ids::TEXT_PAGE_UP,
         ids::TEXT_DELETE_BACKWARD,
         ids::TEXT_DELETE_FORWARD,
         ids::TEXT_DELETE_WORD_BACKWARD,
@@ -403,20 +416,34 @@ fn palette_commands_are_palette_scoped_and_context_bound() {
         ids::TEXT_COPY,
         ids::TEXT_PASTE,
     ];
-    for id in expected {
-        let spec = lookup(id.as_str()).unwrap();
-        assert_eq!(spec.scope, CommandScope::Palette, "{id}");
-        assert_eq!(spec.context, Some("Palette"), "{id}");
+    for (ids, context) in [(&palette[..], "Palette"), (&text[..], "TextField")]
+    {
+        for id in ids {
+            let spec = lookup(id.as_str()).unwrap();
+            assert_eq!(spec.scope, CommandScope::Focused, "{id}");
+            assert_eq!(spec.context, Some(context), "{id}");
+            assert!(only_select_argument(spec), "{id}");
+        }
+    }
+    for spec in catalog()
+        .iter()
+        .filter(|spec| spec.scope == CommandScope::Focused)
+    {
+        let id = spec.id.as_str();
+        let context = if id.starts_with("text_") {
+            "TextField"
+        } else {
+            assert!(id.starts_with("palette_"), "{id}");
+            "Palette"
+        };
+        assert_eq!(spec.context, Some(context), "{id}");
         assert!(only_select_argument(spec), "{id}");
     }
-    for spec in catalog().iter().filter(|spec| {
-        spec.id.as_str().starts_with("palette_")
-            || spec.id.as_str().starts_with("text_")
-    }) {
-        assert_eq!(spec.scope, CommandScope::Palette, "{}", spec.id);
-        assert_eq!(spec.context, Some("Palette"), "{}", spec.id);
-        assert!(only_select_argument(spec), "{}", spec.id);
-    }
+    let listed = catalog()
+        .iter()
+        .filter(|spec| spec.scope == CommandScope::Focused)
+        .count();
+    assert_eq!(listed, palette.len() + text.len());
 }
 
 /// Palette commands take no prompted arguments; movement commands may
@@ -436,7 +463,7 @@ fn only_select_argument(spec: &CommandSpec) -> bool {
 #[test]
 fn non_palette_commands_needing_arguments_offer_a_prompted_argument() {
     for spec in catalog().iter().filter(|spec| {
-        spec.scope != CommandScope::Palette
+        spec.scope != CommandScope::Focused
             && spec
                 .args
                 .iter()

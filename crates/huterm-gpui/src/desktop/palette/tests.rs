@@ -60,12 +60,15 @@ fn palette_commands_are_hidden_from_a_terminal_context() {
     assert!(context_matches(Some("Palette"), &palette_context));
 }
 
+/// The palette forwards every editing command to its field; the field
+/// verbs it leaves to its own bindings.
 #[test]
 fn forwarded_text_commands_cover_the_catalog() {
     let catalog_text_commands = catalog()
         .iter()
         .filter(|spec| spec.id.as_str().starts_with("text_"))
         .map(|spec| spec.id)
+        .filter(|id| !crate::ui::input::is_field_verb(*id))
         .collect::<Vec<_>>();
     assert_eq!(FORWARDED_TEXT_COMMANDS, catalog_text_commands);
 }

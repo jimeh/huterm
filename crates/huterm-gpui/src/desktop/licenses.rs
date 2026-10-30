@@ -2,10 +2,12 @@
 //! source components this build ships, beside the selected one's license
 //! texts. It draws a `huterm-ui` dialog in the window's dialog slot, in
 //! the About panel's place, and Done or Escape returns to it. Every
-//! keyboard operation arrives as a `Palette`-scope catalog command through
-//! [`LicensesView::run`]: the dialog's content takes the `Palette` key
-//! context, so the palette's list and text bindings apply whether the
-//! search field or a button has focus, and Tab and Shift-Tab
+//! keyboard operation arrives as a `Focused`-scope catalog command through
+//! [`LicensesView::run`]: the dialog's content takes the `Palette` and
+//! `TextField` key contexts, so the palette's list bindings and the text
+//! bindings apply whether the search field or a button has focus. The
+//! field verbs go on to the palette's bindings for the same keys, and Tab
+//! and Shift-Tab
 //! (`palette_expand`, `palette_previous_slot`) move through the dialog's
 //! focus cycle. While a button has focus, the search's input handler
 //! takes the platform's text input, composition included, and the first
@@ -291,7 +293,7 @@ impl LicensesView {
         cx.notify();
     }
 
-    /// Runs one `Palette`-scope catalog command: Up and Down select, Page
+    /// Runs one `Focused`-scope catalog command: Up and Down select, Page
     /// Up and Page Down scroll the license text, Tab and Shift-Tab move
     /// focus through the dialog's cycle of the search and the buttons, Enter
     /// presses the focused button, and Escape clears the search before
@@ -364,6 +366,11 @@ impl LicensesView {
     fn selected_component(&self, cx: &App) -> Option<&Component> {
         let index = self.selected_index(cx)?;
         self.catalog()?.components.get(index)
+    }
+
+    /// The search field.
+    pub(super) fn search(&self) -> Entity<Input> {
+        self.input.clone()
     }
 
     /// Moves focus to the search from a button, so it shows the edit that
@@ -1125,8 +1132,10 @@ impl Render for LicensesView {
         let height = (self.viewport.height
             - px(PANEL_TOP_INSET + SCRIM_MARGIN))
         .clamp(px(0.0), px(PANEL_HEIGHT));
-        let content = div()
-            .key_context("Palette")
+        // The search's keys work from the buttons too: the list keys under
+        // `Palette` and its text commands under `TextField`, which the
+        // search takes in `run`.
+        let content = crate::ui::input::context_with(&["Palette"])
             .flex()
             .flex_col()
             .flex_1()
@@ -1173,11 +1182,6 @@ impl LicensesView {
     /// Sets the search's text as an edit that arrives without moving focus.
     pub(super) fn set_search(&self, text: &str, cx: &mut Context<'_, Self>) {
         self.input.update(cx, |input, cx| input.set_text(text, cx));
-    }
-
-    /// The search field.
-    pub(super) fn search(&self) -> Entity<Input> {
-        self.input.clone()
     }
 
     /// The component list's scroll offset from its top, and its first row's

@@ -64,7 +64,7 @@ use crate::keymap::Platform;
 const LIGHT_THEME: &str = "tokyo-night-day";
 
 /// The text fields' key context, which Huterm's text fields carry.
-const FIELD_CONTEXT: &str = "Palette";
+const FIELD_CONTEXT: &str = "TextField";
 
 /// The combobox and command entries' list keys, inside [`FIELD_CONTEXT`].
 const LIST_CONTEXT: &str = "GalleryList";

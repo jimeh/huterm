@@ -491,6 +491,255 @@ fn text_cut_moves_a_fields_selection_to_the_clipboard(cx: &mut TestAppContext) {
     assert_eq!(clipboard.as_deref(), Some("scrollback"));
 }
 
+/// The Edit menu's Cut, Copy, Paste, and Select All are enabled while a
+/// field has focus, and act on it: Cut is the field's `text_cut`, and the
+/// terminal's Copy, Paste, and Select All run as the field's commands. On
+/// any other control they are disabled, and the terminal's other items,
+/// such as Clear Scrollback, stay disabled in a field too.
+#[gpui::test]
+fn the_edit_menu_acts_on_a_focused_field_and_only_there(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("fields-edit-menu", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Tabs);
+    let edit = [
+        ids::TEXT_CUT,
+        ids::COPY,
+        ids::PASTE,
+        ids::SELECT_ALL,
+        ids::CLEAR_SCROLLBACK,
+    ];
+    let available = |harness: &mut DesktopHarness| {
+        with_window(harness, |_, window, cx| {
+            edit.map(|id| {
+                window.is_action_available(
+                    crate::commands::invoke(id).into_boxed().as_ref(),
+                    cx,
+                )
+            })
+        })
+    };
+    let run = |harness: &mut DesktopHarness, id| {
+        with_window(harness, |_, window, cx| {
+            window
+                .dispatch_action(crate::commands::invoke(id).into_boxed(), cx);
+        });
+        visual(harness).run_until_parked();
+    };
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
+    });
+    let mut typing = visual(&harness);
+    typing.simulate_input("scrollback");
+    typing.run_until_parked();
+    assert_eq!(available(&mut harness), [true, true, true, true, false]);
+    run(&mut harness, ids::SELECT_ALL);
+    run(&mut harness, ids::COPY);
+    assert_eq!(clipboard(&mut harness).as_deref(), Some("scrollback"));
+    run(&mut harness, ids::TEXT_CUT);
+    assert_eq!(
+        with_window(&mut harness, |view, _, cx| view.search_text(cx)),
+        ""
+    );
+    run(&mut harness, ids::PASTE);
+    assert_eq!(
+        with_window(&mut harness, |view, _, cx| view.search_text(cx)),
+        "scrollback"
+    );
+    // A switch is no field.
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_stop("tabs.always_show", window, cx);
+    });
+    visual(&harness).run_until_parked();
+    assert_eq!(available(&mut harness), [false; 5]);
+}
+
+/// Right-presses the first character the field shows in `bounds`, as a
+/// context click does.
+fn right_press(harness: &DesktopHarness, bounds: gpui::Bounds<gpui::Pixels>) {
+    let mut visual = visual(harness);
+    let at = point(bounds.left() + px(2.0), bounds.center().y);
+    visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+    visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+    visual.run_until_parked();
+}
+
+fn clipboard(harness: &mut DesktopHarness) -> Option<String> {
+    harness
+        .cx
+        .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+}
+
+/// A field's context menu edits the field and returns focus to it, and
+/// its draft stays a draft while the menu is open: the field commits only
+/// when focus goes somewhere else. A number field's own `Input` asks for
+/// the menu as any field does.
+#[gpui::test]
+fn a_fields_context_menu_edits_it_and_keeps_its_draft_until_focus_leaves(
+    cx: &mut TestAppContext,
+) {
+    let path = "terminal.scrollback_rows";
+    let file = ScratchConfig::new("fields-menu", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Scrollback);
+    // GPUI reports blurs only in an active window.
+    with_window(&mut harness, |_, window, _| window.activate_window());
+    click_field(&mut harness, path);
+    type_over(&harness, "5000");
+    let (_, bounds) =
+        with_window(&mut harness, |view, _, cx| view.field_caret(path, cx))
+            .expect("the field painted");
+    let menu = |harness: &mut DesktopHarness| {
+        with_view(harness, |view, cx| {
+            (
+                view.field_menu_shown(),
+                view.menu_ids(cx),
+                view.menu_disabled_ids(cx),
+            )
+        })
+    };
+    // With nothing selected, Cut and Copy say so, and the draft waits.
+    right_press(&harness, bounds);
+    assert_eq!(
+        menu(&mut harness),
+        (
+            true,
+            ["text_cut", "text_copy", "text_paste", "text_select_all"]
+                .map(str::to_owned)
+                .to_vec(),
+            ["text_cut", "text_copy"].map(str::to_owned).to_vec(),
+        )
+    );
+    assert!(
+        harness.cx.update(settled) && file.text().is_empty(),
+        "opening the menu saved"
+    );
+    keys(&harness, "escape");
+    assert!(!menu(&mut harness).0);
+    assert_eq!(focus(&mut harness), path);
+    // A press on the selection keeps it, so Cut is the first item.
+    keys(&harness, SELECT_ALL);
+    right_press(&harness, bounds);
+    keys(&harness, "down enter");
+    assert_eq!(field_text(&mut harness, path), "");
+    assert_eq!(clipboard(&mut harness).as_deref(), Some("5000"));
+    assert_eq!(focus(&mut harness), path);
+    // An empty field offers Paste alone.
+    right_press(&harness, bounds);
+    keys(&harness, "down enter");
+    assert_eq!(field_text(&mut harness, path), "5000");
+    assert!(harness.cx.update(settled), "an edit from the menu saved");
+    assert_eq!(file.text(), "");
+    // Focus leaving the open menu leaves the field too, which saves.
+    right_press(&harness, bounds);
+    with_window(&mut harness, |view, window, cx| {
+        view.focus_handle(cx).focus(window, cx);
+    });
+    harness.cx.run_until_parked();
+    assert!(!menu(&mut harness).0);
+    harness.wait_for("the field to save", |cx| {
+        settled(cx) && file.text().contains("scrollback_rows = 5000")
+    });
+}
+
+/// Closing Settings, or moving to another section, while a field's menu
+/// is open saves the field's draft, as it would with focus in the field.
+#[gpui::test]
+fn closing_or_changing_section_with_a_fields_menu_open_saves_its_draft(
+    cx: &mut TestAppContext,
+) {
+    let path = "terminal.scrollback_rows";
+    for (name, command) in
+        [("close", ids::CLOSE_WINDOW), ("tab", ids::NEXT_TAB)]
+    {
+        let file = ScratchConfig::new(&format!("fields-menu-{name}"), "");
+        let mut harness = DesktopHarness::new(cx);
+        show(&mut harness, &file, SectionId::Scrollback);
+        with_window(&mut harness, |_, window, _| window.activate_window());
+        click_field(&mut harness, path);
+        type_over(&harness, "5000");
+        let (_, bounds) =
+            with_window(&mut harness, |view, _, cx| view.field_caret(path, cx))
+                .expect("the field painted");
+        right_press(&harness, bounds);
+        assert!(with_view(&mut harness, |view, _| view.field_menu_shown()));
+        with_window(&mut harness, |view, window, cx| {
+            let _ = view.command(command, window, cx);
+        });
+        // Settings closes once the write lands, so wait on the file.
+        harness.wait_for(&format!("{name} to save the draft"), |_| {
+            file.text().contains("scrollback_rows = 5000")
+        });
+        if command == ids::CLOSE_WINDOW {
+            harness.wait_for("Settings to close", |cx| settings(cx).is_none());
+        }
+    }
+}
+
+/// A draft that does not save keeps Settings open however often it is
+/// closed with the field's menu open, and focus goes back to the field
+/// that shows why.
+#[gpui::test]
+fn a_rejected_draft_under_its_menu_refuses_every_close(
+    cx: &mut TestAppContext,
+) {
+    let path = "terminal.scrollback_rows";
+    let file = ScratchConfig::new("fields-menu-refused", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Scrollback);
+    with_window(&mut harness, |_, window, _| window.activate_window());
+    click_field(&mut harness, path);
+    type_over(&harness, "lots");
+    let (_, bounds) =
+        with_window(&mut harness, |view, _, cx| view.field_caret(path, cx))
+            .expect("the field painted");
+    right_press(&harness, bounds);
+    assert!(with_view(&mut harness, |view, _| view.field_menu_shown()));
+    for attempt in 1..=2 {
+        with_window(&mut harness, |view, window, cx| {
+            let _ = view.command(ids::CLOSE_WINDOW, window, cx);
+        });
+        harness.cx.run_until_parked();
+        assert!(
+            harness.cx.update(|cx| settings(cx).is_some()),
+            "close {attempt} closed Settings"
+        );
+        assert!(with_view(&mut harness, |view, _| view
+            .error(path)
+            .is_some()));
+        assert_eq!(focus(&mut harness), path, "close {attempt}");
+    }
+    assert_eq!(field_text(&mut harness, path), "lots");
+    assert_eq!(file.text(), "");
+}
+
+/// A field's menu opens over a dialog and takes its keys, which the open
+/// dialog would otherwise take for itself.
+#[gpui::test]
+fn a_dialog_fields_context_menu_takes_its_keys(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("fields-dialog-menu", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Quake);
+    with_window(&mut harness, |view, window, cx| {
+        view.type_profile_name("scratch", window, cx);
+    });
+    visual(&harness).run_until_parked();
+    let (_, bounds) =
+        with_window(&mut harness, |view, _, cx| view.dialog_field_caret(cx))
+            .expect("the dialog's field painted");
+    keys(&harness, SELECT_ALL);
+    right_press(&harness, bounds);
+    assert!(with_view(&mut harness, |view, _| view.field_menu_shown()));
+    keys(&harness, "down enter");
+    assert_eq!(clipboard(&mut harness).as_deref(), Some("scratch"));
+    with_view(&mut harness, |view, cx| {
+        assert!(!view.field_menu_shown());
+        assert_eq!(view.quake_prompts(), (true, false));
+        assert_eq!(view.profile_name_text(cx), "");
+    });
+}
+
 /// Sends `key` and waits for the file to read exactly `text`.
 fn key_writes(
     harness: &mut DesktopHarness,
