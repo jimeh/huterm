@@ -60,18 +60,18 @@ export async function runSmokeProcess(command: string[], options: {
     if (!force) force = setTimeout(() => { event("force-kill"); signal("SIGKILL"); }, options.graceMs ?? 1_000);
   };
   let hungUp = false;
-  // Writes to a terminal that hung up fail with EIO, including those already
-  // queued; the terminal never comes back, so neither does the listener.
-  const ignoreHangup = (error: NodeJS.ErrnoException) => { if (error.code !== "EIO") throw error; };
+  // Writes to a terminal that hung up fail with EIO, and one can fail before
+  // the SIGHUP arrives; the terminal never comes back, so streaming stops.
+  const ignoreHangup = (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EIO") throw error;
+    hungUp = true;
+  };
   // A hangup stops the smoke with SIGTERM, as host-smoke-lock.ts forwards
-  // one, so a smoke run directly or under the wrapper stops the same way.
+  // one when it holds the lock, so a smoke run directly or under the
+  // wrapper stops the same way.
   const interrupt = (received: NodeJS.Signals) => {
     interrupted = received;
-    if (received === "SIGHUP" && !hungUp) {
-      hungUp = true;
-      process.stdout.on("error", ignoreHangup);
-      process.stderr.on("error", ignoreHangup);
-    }
+    if (received === "SIGHUP") hungUp = true;
     event("interrupted", { signal: received });
     terminate(received === "SIGHUP" ? "SIGTERM" : received);
   };
@@ -81,6 +81,8 @@ export async function runSmokeProcess(command: string[], options: {
   const handlers = (["SIGINT", "SIGTERM", "SIGHUP"] as const).map((received) => [received, () => interrupt(received)] as const);
   // A child can signal us as soon as spawn starts it. Install handlers first.
   for (const [received, handler] of handlers) process.on(received, handler);
+  const outputs = [process.stdout, process.stderr];
+  for (const output of outputs) output.on("error", ignoreHangup);
   try {
     // A private process group lets the deadline also stop Xvfb, window managers,
     // and fixture helpers when a harness is stuck in its own cleanup.
@@ -131,6 +133,8 @@ export async function runSmokeProcess(command: string[], options: {
     throw error;
   } finally {
     for (const [received, handler] of handlers) process.off(received, handler);
+    // Writes still queued to a terminal that hung up can fail after this.
+    if (!hungUp) for (const output of outputs) output.off("error", ignoreHangup);
     clearTimeout(deadline);
     clearTimeout(force);
     signal("SIGKILL");

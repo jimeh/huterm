@@ -175,7 +175,8 @@ async function main(argv: string[]): Promise<number> {
   // still inside the cleanup of the wrapper that holds the lock. A hangup
   // reaches the group as SIGTERM: most harnesses die at once on SIGHUP,
   // and runSmokeProcess, which puts its app in another group, stops that
-  // group on either, taking SIGHUP as SIGTERM for a run without the wrapper.
+  // group on either. It takes a SIGHUP of its own as SIGTERM, for a run
+  // without a wrapper that holds the lock.
   const forward = (signal: NodeJS.Signals) => {
     interrupted ??= signal;
     if (!child?.pid) return;

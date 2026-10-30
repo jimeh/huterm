@@ -136,7 +136,7 @@ test("cancelling the supervisor terminates its child and cannot report success",
   expect(() => checkSmokeProcess(inner, "fixture")).toThrow("terminated by SIGTERM");
 });
 
-test.skipIf(process.platform === "win32")("a hung-up supervisor stops its smoke's process group and records the outcome despite EIO on its terminal", async () => {
+test.skipIf(process.platform === "win32")("a hung-up supervisor stops its smoke's process group and records the outcome", async () => {
   const directory = await mkdtemp(join(tmpdir(), "huterm-hangup-"));
   let group: number | undefined;
   try {

@@ -187,9 +187,11 @@ args = { layout = "smoke" }
   }
   /** Presses Tab until `name` has focus, waiting for each press to move it.
    * A name ending in ":", such as `key:when:`, matches any control it
-   * starts, as `state` reads it. Only a state published after the app read
-   * the Tab shows its move; an earlier one can show focus that something
-   * else moved, and taking that for the Tab's move sends one Tab too many. */
+   * starts, as `state` reads it. On macOS, where keys are fixture commands,
+   * only a state published after the app read the Tab shows its move; an
+   * earlier one can show focus that something else moved, and taking that
+   * for the Tab's move sends one Tab too many. X11 keys bypass the fixture,
+   * so there a caller must first wait for anything else that moves focus. */
   async function tabTo(name: string): Promise<void> {
     const reached = (focus: string) => focus === name || (name.endsWith(":") && focus.startsWith(name));
     for (let step = 0; step < 20; step++) {

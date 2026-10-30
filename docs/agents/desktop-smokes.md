@@ -221,7 +221,10 @@ change must not take a change something else made for its own: gate on
 `check-fullscreen.ts` do, and compare a save's file with a state published
 after it, as `saved` does. Without that, the settings smoke's rebind step
 read the focus that followed the rebound shortcut to its new row as its
-Tab's move, sent a second Tab, and left focus on the row's switch.
+Tab's move, sent a second Tab, and left focus on the row's switch. On X11,
+keys go through `xdotool` rather than file commands, so `command_sequence`
+does not order them; wait first for anything else that moves focus, as the
+rebind step waits for the rebound row.
 
 Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
