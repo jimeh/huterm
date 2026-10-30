@@ -1176,14 +1176,11 @@ pub struct PanesConfig {
         "x-huterm-zero-label" = "Off",
     )))]
     pub inactive_dim: f32,
-    /// The modifiers that, while held, let a press anywhere in a split
-    /// tab's pane drag the pane as its title bar does, joined with hyphens:
-    /// `cmd` (or `super`), `ctrl`, `alt`, and `shift`. Unset, the default,
-    /// turns modifier drags off. `cmd-ctrl` suits macOS and `ctrl-alt`
-    /// Linux. A combination needs at least two modifiers, macOS rejects
-    /// `ctrl-alt` and `ctrl-shift`, and it may not be
-    /// `terminal.link_modifiers` alone or plus `shift`; these checks run
-    /// when the file loads.
+    /// Hold these modifiers to move panes by dragging anywhere inside
+    /// them, as a title bar drag does, which helps when title bars are
+    /// hidden. Unset, the default, is off. Join two or more of `cmd`,
+    /// `ctrl`, `alt`, and `shift` with hyphens: `cmd-ctrl` suits macOS and
+    /// `ctrl-alt` Linux.
     #[cfg_attr(feature = "schema", schemars(with = "PaneDragModifiers", extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",

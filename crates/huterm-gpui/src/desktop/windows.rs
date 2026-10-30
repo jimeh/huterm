@@ -13834,17 +13834,6 @@ impl WorkspaceView {
         )
     }
 
-    /// The active tab's panes for smoke fixtures, as `<prefix>` fields:
-    /// `panes` counts them, `pane_focus` is the focused pane's index, and
-    /// `pane_zoomed` the zoomed one's, or `none`. In split layout order and
-    /// `;`-separated, `pane_grids` holds each pane's requested grid as
-    /// `columns,rows`, `pane_rects` its drawn terminal bounds in window
-    /// points (a pane a zoom hides keeps its split bounds), and `pane_close`
-    /// and `pane_zoom` its title bar buttons' centres as `x,y`, or `none`
-    /// while the tab is not split. `pane_dividers` lists the drawn
-    /// dividers' grab zones as `x,y,w,h`. `pane_layout` is the projected
-    /// layout in canonical form, and `arranging` counts this window's
-    /// arrangements in flight.
     /// Smoke output for modifier pane drags: whether the pointer is armed,
     /// how many badges the last frame drew, and whether a pane drag came
     /// from a remapped Control-left press.
@@ -13857,6 +13846,17 @@ impl WorkspaceView {
         )
     }
 
+    /// The active tab's panes for smoke fixtures, as `<prefix>` fields:
+    /// `panes` counts them, `pane_focus` is the focused pane's index, and
+    /// `pane_zoomed` the zoomed one's, or `none`. In split layout order and
+    /// `;`-separated, `pane_grids` holds each pane's requested grid as
+    /// `columns,rows`, `pane_rects` its drawn terminal bounds in window
+    /// points (a pane a zoom hides keeps its split bounds), and `pane_close`
+    /// and `pane_zoom` its title bar buttons' centres as `x,y`, or `none`
+    /// while the tab is not split. `pane_dividers` lists the drawn
+    /// dividers' grab zones as `x,y,w,h`. `pane_layout` is the projected
+    /// layout in canonical form, and `arranging` counts this window's
+    /// arrangements in flight.
     pub(super) fn pane_smoke_state(
         &self,
         prefix: &str,
