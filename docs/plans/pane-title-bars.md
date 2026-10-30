@@ -1,9 +1,9 @@
 # Pane title bars
 
 Status: in progress. Jim approved the configuration and hover design on
-2026-10-30. PR 1 (pane names and the title bar menu) merged in #329; PR 2
-(position and `hidden`) is in progress, and PR 3 (`hover`) follows from
-`main` after it merges.
+2026-10-30. PR 1 (pane names and the title bar menu) merged in #329. On
+2026-10-30 Jim folded the planned PR 3 (`hover`) into PR 2, so the position,
+`hidden`, and `hover` modes ship as one pull request.
 
 Split panes gain names and a context menu on their title bars, and the bars
 gain a position and a visibility mode:
@@ -140,52 +140,77 @@ argument.
 | Catalog, schema, and keybinding docs stay aligned | slot tests over every command, schema generation check |
 | The bar menu and rename flow look and behave right on macOS | Codex computer-use UX review on a scratch bundle |
 
-## PR 2: position and `hidden`
+## PR 2: position, `hidden`, and `hover`
 
 ### PR 2 agreed design
 
 - `[panes] title_bar_position = "top" | "bottom"`, default `top`, live, with a
   new position enum rather than `TabPosition`.
-- `[panes] title_bar = "hidden"` reserves no space and draws no bar; close,
-  zoom, and move stay available as commands and in the terminal menu.
+- `[panes] title_bar = "visible" | "hover" | "hidden"`, default `visible`,
+  live. `hidden` reserves no space and draws no bar; close, zoom, and move stay
+  available as commands and in the terminal menu.
+- `hover` reserves no space; the bar overlays the terminal. The trigger is the
+  bar's full 24-point area with a 200 ms enter delay, matching the scrollbar's
+  hover intent. Input reaches the terminal until the bar reveals;
+  terminal-owned gestures passing through are never interrupted.
+- A keyboard focus change reveals the focused pane's bar for about 1 s, as
+  the tab bar's `reveal_for_activity`. A pane drag or the bar's open menu,
+  Huterm's or a native `NSMenu`, holds it revealed.
+- The fullscreen auto-hide tab bar's top trigger wins over top-row bars.
 - `layout_panes`, `pane_rect`, `fit`'s minimums, `tab_panes`, `pane_grids`,
   the resize span, and the smoke state read one shared bar placement.
 - Settings: Window › Panes rows, the position row hidden while the bar is
   `hidden` (`x-huterm-visible-when`, as for `pill_accent`).
-- The focused pane gets a thin accent line on its edge while bars are hidden.
+- In `hover` and `hidden` modes the focused pane gets a thin accent line on
+  its edge.
 
 ### PR 2 approach
 
 **Config.** `PanesConfig` gains `title_bar: PaneTitleBar` (`visible`,
-`hidden`) and `title_bar_position: PaneTitleBarPosition` (`top`, `bottom`),
-lowercase serde enums with schema labels, in Window › Panes before Pane zoom,
-both `x-huterm-apply = "live"`. `hover` joins `PaneTitleBar` in PR 3, not
-before, so no setting accepts a mode that does nothing.
+`hover`, `hidden`) and `title_bar_position: PaneTitleBarPosition` (`top`,
+`bottom`), lowercase serde enums with schema labels, in Window › Panes before
+Pane zoom, both `x-huterm-apply = "live"`.
 
-**Settings condition.** `x-huterm-visible-when` gains a `not_equals` form,
-`{"setting": ..., "not_equals": ...}`, because the position row must show for
-`visible` and, after PR 3, `hover`. `VisibleWhen` holds the compared value and
-whether a match shows or hides the setting; validation checks the value
-against the target's choices either way.
+**Settings condition.** `x-huterm-visible-when` takes a list of `equals`
+conditions, any of which shows the setting (#328), so the position row lists
+`visible` and `hover`.
 
 **Geometry.** `pane_geometry::TitleBars`, built from `[panes]`, says where a
 split tab's bars go and how much each takes from its pane's frame.
-`layout_panes` takes it; `pane_rect` puts a visible bar along the frame's top
-or bottom and the terminal in the rest, or, hidden, gives the terminal the
-whole frame. `PaneMetrics` carries it, so `fit`'s minimum pane height
-subtracts only a reserved bar. Every caller (`tab_panes`, `pane_grids`, the
-resize span, the layout commands) builds it from the window's config, so a
-reload re-syncs every view's geometry and applies the keys live. A tab of one
-pane still draws no bar.
+`layout_panes` takes it; `pane_rect` puts a visible or hover bar along the
+frame's top or bottom; a visible bar takes its height from the terminal,
+while a hover bar overlays it and a hidden one has no rectangle. `PaneMetrics`
+carries it, so `fit`'s minimum pane height subtracts only a reserved bar.
+Every caller (`tab_panes`, `pane_grids`, the resize span, the layout commands)
+builds it from the window's config, so a reload re-syncs every view's
+geometry and applies the keys live. A tab of one pane still draws no bar.
 
-**Drawing.** A bottom bar draws its border along its top edge. While bars are
-hidden, the focused pane of a split tab that shows more than one pane draws a
-2-point accent line along its frame's top edge, above the terminal, which
-takes no pointer input. A zoomed pane shows none.
+**Hover reveal.** `pane_bars::PaneBarReveals` keeps one `Reveal` per pane
+with the time the pointer entered its bar, and turns entry into hover once
+the 200 ms intent passes. The window feeds it after every pointer event, from
+the same deferred refresh as the tab bar, with each drawn bar's band, whether
+a pane drag or that pane's menu holds it, and the pointer it last saw. The
+pointer counts as nowhere while a terminal owns a gesture, outside the
+window, or over the fullscreen tab bar's overlay or its top trigger edge.
+`cycle_pane` and `focus_neighbor` reveal the newly focused pane's bar for a
+second. The window's animation schedule merges the bars' fades and intent
+deadlines.
 
-**Docs.** `docs/configuration.md` describes both keys; the desktop input guide
-notes that hidden bars leave panes no drag handle or bar menu, so they move
-and rename by command.
+**Pointer pass-through.** `TerminalView.tab_overlay` becomes a pair of
+overlay areas, the tab bar's and the pane's revealed bar, which
+`overlay_blocks_pointer` and the link, drop, and press paths read alike. A
+hover bar draws, and blocks the terminal beneath it, only while its reveal
+is above zero; a gesture the terminal already owns still wins.
+
+**Drawing.** A bottom bar draws its border along its top edge. A hover bar
+draws at its reveal's opacity. In `hover` and `hidden` modes the focused pane
+of a split tab that shows more than one pane draws a 2-point accent line
+along the edge its bar runs along, above the terminal, taking no pointer
+input; a revealed bar covers it.
+
+**Docs.** `docs/configuration.md` describes both keys and the hover
+behaviour; the desktop input guide records the reveal rules and the overlay
+pass-through.
 
 ### PR 2 observable success
 
@@ -193,7 +218,11 @@ and rename by command.
   with its title, buttons, drag, and menu working as at the top.
 - `title_bar = "hidden"` draws no bars, gives terminals the full pane height,
   and marks the focused pane with an accent line.
-- Both keys apply on reload without restarting, and Settings shows the
+- `title_bar = "hover"` gives terminals the full height, reveals a bar after
+  the pointer rests in its band for 200 ms, keeps it while the pointer, a
+  drag, or its menu stays, and fades it out after; keyboard focus moves
+  reveal the new pane's bar briefly.
+- All keys apply on reload without restarting, and Settings shows the
   position row only while the bar is not `hidden`.
 - The defaults draw exactly what `main` draws today.
 
@@ -201,40 +230,31 @@ and rename by command.
 
 - A pane shorter than a bar keeps the bar clipped to its frame and an empty
   terminal, at either edge, as the top bar does today.
-- Minimum-size checks use the reserved height, so `hidden` lets a split go one
-  bar's height smaller, and a reload to `visible` can leave panes under the
-  minimum until resized, as a font change can today.
+- Minimum-size checks use the reserved height, so `hover` and `hidden` let a
+  split go one bar's height smaller, and a reload to `visible` can leave panes
+  under the minimum until resized, as a font change can today.
+- A selection drag that crosses a bar's band neither reveals it nor loses
+  its release; a revealed bar never takes a gesture the terminal owns.
+- A pane closed while its bar is revealed drops its reveal.
 - A reload during a divider drag re-syncs geometry through the normal path.
 
 ### PR 2 non-goals
 
-- `hover` and its overlay pointer filtering (PR 3).
-- A `toggle_pane_title_bars` command or per-layout overrides.
+- A `toggle_pane_title_bars` command, per-layout overrides, or a translucent
+  bar background.
 
 ### PR 2 verification
 
 | Concern | Evidence |
 | --- | --- |
-| Top, bottom, hidden, zoomed, and one-pane rectangles | `pane_geometry` unit tests |
+| Top, bottom, hover, hidden, zoomed, and one-pane rectangles | `pane_geometry` unit tests |
 | `fit` minimums with and without a reserved bar | `pane_geometry` unit tests |
-| Config defaults, round trip, unknown values | `huterm-config` tests |
-| `not_equals` parsing, validation, and the position row's condition | settings model tests |
-| The position row hides for `hidden` in Settings | the model test of `VisibleWhen::shows`, which Settings calls with the shown value, and the UX review |
-| Reload to bottom and hidden moves bars, resizes grids, shows the cue | GPUI window test |
+| Config defaults, round trip, unknown values | config tests |
+| The position row's condition | settings model test |
+| Hover intent, hold, activity reveal, pruning | `pane_bars` unit tests |
+| Overlay pass-through, held gestures | `overlay_blocks_pointer` tests |
+| Reload to bottom, hidden, and hover moves bars and resizes grids | GPUI window test |
+| Hover reveal after the intent, menu hold, keyboard reveal | GPUI window test |
 | Pane close and zoom buttons at the bottom | GPUI window test |
-| Defaults unchanged for native input | `smoke:macos-input` under the host lock |
-| The bars and cue look right in both themes | Codex computer-use UX review |
-
-## PR 3: `hover` (agreed design)
-
-- `title_bar = "hover"` reserves no space; the bar overlays the terminal.
-- The trigger is the bar's full 24-point area with a 200 ms enter delay, the
-  scrollbar's `HOVER_INTENT`. Input reaches the terminal until the bar
-  reveals; terminal-owned gestures passing through are never interrupted.
-- A keyboard focus change reveals the focused pane's bar for about 1 s, as
-  the tab bar's `reveal_for_activity`. A pane drag or the bar's open menu
-  holds it revealed.
-- The fullscreen auto-hide tab bar's top trigger wins over top-row bars.
-- `TerminalView.tab_overlay` generalizes to a list of overlay areas, reusing
-  `tab_visibility`'s `Presentation` and `Reveal`.
-- The focused-pane accent line from PR 2 applies here too.
+| Defaults unchanged for native input | `smoke:macos-input` |
+| Bars, cue, and fades in both themes; native menu from a bottom bar; Settings rows | Codex computer-use UX review |
