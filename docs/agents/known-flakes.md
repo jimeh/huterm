@@ -445,7 +445,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   failures sit in the `busy-on` step, where `xdotool` input and the smoke's
   file commands are not ordered. It recurred on 2026-10-28 on x86_64 (PR
   #318 at `bbeb8be1`, run 40767320033, job 123094963780) with the same
-  state, `w0.busy=true` and `w0.palette=false`; the next head passed.
+  state, `w0.busy=true` and `w0.palette=false`; the next head passed. It
+  reached aarch64 on 2026-10-30 (PR #331 at `45219c47`, run 41007277899,
+  job 123905010885) with the same state.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused
