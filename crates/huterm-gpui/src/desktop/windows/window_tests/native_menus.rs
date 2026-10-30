@@ -267,10 +267,39 @@ fn the_native_window_menu_lists_copy_and_paste_and_opens_below_its_button(
         ids[redo + 1..redo + 4],
         ["copy!", "paste", "toggle_fullscreen"]
     );
-    drop(shown);
-    // A second open waits for the first menu to close.
-    assert!(harness.invoke(window, ids::OPEN_MENU).is_err());
+}
+
+#[gpui::test]
+fn menu_requests_while_a_native_menu_is_opening_are_dropped_quietly(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _, presenter) = harness.native_window();
+    harness.invoke(window, ids::OPEN_MENU).unwrap();
+    harness.wait_shown(&presenter, 1);
+    // The stand-in's menu stays unanswered, as AppKit's does until its
+    // popup runs: a right press on empty bar space, the keyboard terminal
+    // menu, and a repeated key each ask again.
+    harness.update_view(window, |view, window, cx| {
+        view.open_menu_at(point(px(400.0), px(10.0)), window, cx);
+    });
+    harness.invoke(window, ids::OPEN_CONTEXT_MENU).unwrap();
+    let repeated = harness.invoke(window, ids::OPEN_MENU);
+    harness.cx.run_until_parked();
+    let notices =
+        harness.update_view(window, |view, _, _| view.notices.contents().len());
+    assert_eq!(notices, 0, "a dropped request raises no notice");
+    assert!(repeated.is_ok(), "{repeated:?}");
     assert_eq!(presenter.shown.borrow().len(), 1);
+    harness.cx.update(|cx| {
+        assert_eq!(native_kind(cx, window), Some(MenuKind::Window));
+    });
+    // Once it closes, the next request opens a menu.
+    presenter.shown.borrow()[0].dismiss();
+    harness
+        .wait_for("the menu to close", |cx| native_kind(cx, window).is_none());
+    harness.invoke(window, ids::OPEN_MENU).unwrap();
+    harness.wait_shown(&presenter, 2);
 }
 
 #[gpui::test]

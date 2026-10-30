@@ -52,6 +52,15 @@ Serialize all native layout tests with their shared mutex. Parallel Carbon calls
 caused SIGSEGV; the SDK marks `LMGetKbdType` as not thread safe. Production calls
 stay on the main thread.
 
+`Window::dispatch_key_event` draws a dirty window before it dispatches a key,
+and each AppKit event flushes its effects first, so a key typed right after
+one that moved focus, such as Escape closing a menu, meets a frame that
+already paints the new focus. A Tier 2 test that dispatches two keys inside
+one update models neither: the first key's emitted events, such as a menu's
+`Dismissed`, have not run when the second arrives. Dispatch such keys in
+separate updates, and use the overlays smoke's `native-batch` posts for
+AppKit timing.
+
 Route other printable input through `EntityInputHandler`. Consume recognized raw
 Meta/Control/special chords even when their input queue is full, or AppKit can
 insert a second interpretation. Cancel native preedit on the exact NSView outside

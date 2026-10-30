@@ -156,7 +156,7 @@ impl WorkspaceView {
         else {
             return;
         };
-        if self.session_live(&session, cx) {
+        if self.menu_target_live(&session.kind, cx) {
             self.run_menu_pick(&session.kind, &id, window, cx);
         }
     }
@@ -185,37 +185,33 @@ impl WorkspaceView {
         if self
             .native_menu
             .as_ref()
-            .is_some_and(|session| !self.session_live(session, cx))
+            .is_some_and(|session| !self.menu_target_live(&session.kind, cx))
         {
             self.close_native_menu(cx);
         }
     }
 
-    /// Whether `session`'s picks would still act on what it opened over. A
-    /// terminal menu's picks run on the active terminal, so that must still
-    /// be the one it opened from, not a sibling that took focus when its
-    /// pane closed.
-    fn session_live(
+    /// Whether picks from a menu of `kind`, native or not, would still act
+    /// on what it opened over.
+    pub(super) fn menu_target_live(
         &self,
-        session: &NativeMenuSession,
+        kind: &MenuKind,
         cx: &gpui::App,
     ) -> bool {
-        self.menu_target_live(&session.kind, cx)
-            && session.terminal.as_ref().is_none_or(|terminal| {
-                self.active_view(cx).is_some_and(|active| {
-                    active.entity_id() == terminal.entity_id()
-                })
-            })
-    }
-
-    /// Whether the target a menu of `kind` acts on still exists.
-    fn menu_target_live(&self, kind: &MenuKind, cx: &gpui::App) -> bool {
         match kind {
             MenuKind::Window => true,
             MenuKind::Tab(tab) => {
                 self.tabs.iter().any(|record| record.id == *tab)
             }
-            MenuKind::Terminal { tab, .. } => self.active_tab(cx) == Some(*tab),
+            // Its picks run on the focused terminal, which must still be
+            // the one it opened from, not a sibling that took focus when
+            // its pane closed.
+            MenuKind::Terminal { tab, terminal, .. } => {
+                self.active_tab(cx) == Some(*tab)
+                    && self
+                        .active_view(cx)
+                        .is_some_and(|active| active.entity_id() == *terminal)
+            }
             // Its picks act on the focused pane, which must still be it.
             MenuKind::Pane { tab, pane } => {
                 self.active_tab_view(cx).is_some_and(|view| {
