@@ -1714,7 +1714,6 @@ impl SettingsView {
         let Some(field) = self.keys.fields.get(key) else {
             return;
         };
-        self.hold_control(key);
         let text = field.read(cx).text().trim().to_owned();
         let (name, field_kind) = if let Some(name) = key.strip_prefix("when:") {
             (name.to_owned(), None)
@@ -1726,14 +1725,18 @@ impl SettingsView {
         } else {
             return;
         };
+        // An unchanged commit, as a blur makes, holds its row only when
+        // the error under it goes, as `commit_field` does.
         if self.keys.synced.get(key).map(|synced| synced.trim())
             == Some(text.as_str())
         {
             if self.keys.errors.remove(key).is_some() {
+                self.hold_control(key);
                 cx.notify();
             }
             return;
         }
+        self.hold_control(key);
         // While the file is invalid the draft waits, marked, for the fix.
         if self.keys.inventory.is_none() || self.status.invalid() {
             self.keys.errors.insert(

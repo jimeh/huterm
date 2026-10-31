@@ -990,14 +990,16 @@ impl SettingsView {
     ) {
         let (kind, argument) = key.split_once(':').unwrap_or((key, ""));
         // A dialog's controls act for the one that opened it. A reorder
-        // moves its row, which should not drag the pane after it.
+        // moves its row, which must not drag the pane after it, so it
+        // releases any hold an earlier change left. Others hold before the
+        // action runs, so the rows its write moves find the hold.
         let from = match self.dialog.prompt() {
             Some(_) => self.dialog_from.clone(),
             None => Some(key.to_owned()),
-        }
-        .filter(|_| !matches!(kind, "lup" | "ldown"));
-        // Before the action, so a write it queues counts for the hold.
-        if let Some(from) = from {
+        };
+        if matches!(kind, "lup" | "ldown") {
+            self.anchor.release();
+        } else if let Some(from) = from {
             self.hold_control(&from);
         }
         if self.act_keys(kind, argument, window, cx)
@@ -3366,6 +3368,17 @@ impl SettingsView {
     /// How far the pane has scrolled down.
     pub(super) fn pane_scrolled(&self) -> gpui::Pixels {
         -self.scroll.offset().y
+    }
+
+    /// Types `text` into the Keybindings search, as the user does.
+    pub(super) fn search_keybindings(
+        &mut self,
+        text: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.keys
+            .search
+            .update(cx, |search, cx| search.set_text(text, cx));
     }
 
     /// How far the pane can scroll down.

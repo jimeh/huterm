@@ -11,23 +11,28 @@
 //! press, and drags its thumb, continuing outside the area. A content that
 //! fits draws no scrollbar and leaves its right edge free for clicks.
 //!
-//! Holding a row: an area given a [`RowAnchor`] ([`ScrollArea::hold_rows`])
-//! keeps a row the user changed where it painted while rows above or below
-//! it appear or disappear, such as a switch that hides the rows under it at
-//! the content's foot. The owner wraps each row the user can change in
-//! [`RowAnchor::row`] and calls [`RowAnchor::hold`] on the change. In each
-//! frame laid out after it, the area moves its offset so the row paints at
-//! the top it painted at, capped at the content's top. While it holds, the
-//! content stays a viewport taller than the offset needs, so neither rows
-//! going below nor rows coming above, up to a viewport's worth in one
-//! frame, clamp the offset; that space lies below what shows, and goes when
-//! the hold ends, so scrolling never reaches it. More than
-//! that clamps one frame, and the next corrects. The hold is about layout
-//! only: it ends when [`HOLD_QUIET`] passes without the row needing a
-//! correction, on the wheel or any other change of the offset, such as a
-//! scrollbar drag or [`ScrollArea::reveal`], and on [`RowAnchor::release`].
-//! The space it kept then shrinks as the user scrolls up, never grows, and
-//! goes on [`RowAnchor::reset`], such as when the owner shows other content.
+//! Holding a row: a [`ScrollArea::fill`] area given a [`RowAnchor`]
+//! ([`ScrollArea::hold_rows`]) keeps a row the user changed where it painted
+//! while rows above or below it appear or disappear, such as a switch that
+//! hides the rows under it at the content's foot. The owner wraps each row
+//! the user can change in [`RowAnchor::row`] and calls [`RowAnchor::hold`]
+//! on the change. In each frame laid out after it, the area moves its offset
+//! so the row paints at the top it painted at, capped at the content's top.
+//! While it holds, the content stays a viewport taller than the offset
+//! needs, so neither rows going below nor rows coming above, up to a
+//! viewport's worth in one frame, clamp the offset; that space lies below
+//! what shows, and goes when the hold ends, so scrolling never reaches it.
+//! The scrollbar counts it while the hold lasts, so a content that fits can
+//! show a thumb for that second. More than a viewport coming above clamps
+//! one frame, and the next corrects. The hold is about layout only: it ends
+//! when [`HOLD_QUIET`] passes without the row needing a correction, on the
+//! wheel or any other change of the offset, such as a scrollbar drag or a
+//! reveal the owner follows with [`RowAnchor::release`], and on
+//! [`RowAnchor::release`] itself. Space that showed below the content then
+//! stays until the user scrolls up through it, or until the rows grow
+//! shorter on their own, such as when a search narrows them, which drops it
+//! in that frame; [`RowAnchor::reset`] drops it too, such as when the owner
+//! shows other content.
 //!
 //! Keyboard: the area takes no focus. When focus moves to a control inside
 //! it, such as on Tab or Shift-Tab, the owner passes the control's
@@ -103,7 +108,9 @@ impl ScrollArea {
 
     /// Keeps the row `anchor` holds where it painted while the content
     /// changes around it. The owner keeps `anchor` with the area's
-    /// `ScrollHandle` and gives each area its own.
+    /// `ScrollHandle` and gives each area its own. Only a [`Self::fill`]
+    /// area holds rows: in one that grows with its content, the space a
+    /// hold keeps would grow the area too.
     #[must_use]
     pub fn hold_rows(mut self, anchor: &RowAnchor) -> Self {
         self.anchor = Some(anchor.clone());
@@ -150,6 +157,11 @@ impl ScrollArea {
         let released = self.anchor.clone();
         let (corrector, children) = match &self.anchor {
             Some(anchor) => {
+                debug_assert!(
+                    fill,
+                    "hold_rows needs a filled area, whose viewport the content \
+                     does not size"
+                );
                 // A thumb drag or a track jump scrolls as the wheel does.
                 if scrollbar.dragging() {
                     anchor.release();
@@ -169,13 +181,15 @@ impl ScrollArea {
                 .size_0();
                 // One content box, so a kept height reaches GPUI's measure of
                 // the content; `flex_none`, or a minimum below the content
-                // would let it shrink.
+                // would let it shrink. The rows inside it lay out without
+                // that minimum, so the anchor can tell their own height.
+                let rows = div().flex().flex_col().children(self.children);
                 let content = div()
                     .flex()
                     .flex_col()
                     .flex_none()
                     .when_some(keep, Styled::min_h)
-                    .children(self.children)
+                    .child(anchor.content(rows))
                     .into_any_element();
                 (Some(corrector), vec![content])
             }
@@ -299,6 +313,15 @@ struct Anchor {
     /// needs while holding, and after a release no more than shows, so it
     /// only shrinks.
     keep: Option<Pixels>,
+    /// The rows' own layout this frame, without the kept minimum, taken by
+    /// the correction like a held row's.
+    content_layout: Option<(u64, LayoutId)>,
+    /// The rows' own height, as the correction last measured it.
+    natural: Option<Pixels>,
+    /// The rows' own height when the hold that left `keep` ended. Rows
+    /// shorter than that shrank on their own, as a search narrows them, and
+    /// the space kept below them goes.
+    kept_for: Option<Pixels>,
     /// Every frame's `tops`, while a test records them.
     #[cfg(feature = "test-support")]
     frames: Option<Vec<HashMap<ElementId, Pixels>>>,
@@ -339,7 +362,18 @@ impl RowAnchor {
         AnchoredRow {
             anchor: self.clone(),
             key: key.into(),
+            content: false,
             row: Some(row.into_any_element()),
+        }
+    }
+
+    /// The area's rows, wrapped so the correction can read their own height.
+    fn content(&self, rows: impl IntoElement) -> AnchoredRow {
+        AnchoredRow {
+            anchor: self.clone(),
+            key: ElementId::Name("content".into()),
+            content: true,
+            row: Some(rows.into_any_element()),
         }
     }
 
@@ -380,6 +414,7 @@ impl RowAnchor {
         let mut anchor = self.0.borrow_mut();
         anchor.held = None;
         anchor.keep = None;
+        anchor.kept_for = None;
         anchor.tops.clear();
     }
 
@@ -423,6 +458,15 @@ impl RowAnchor {
         let Some(scroll) = anchor.scroll.clone() else {
             return;
         };
+        if let Some((_, layout)) =
+            anchor.content_layout.take().filter(|(at, _)| *at == frame)
+        {
+            anchor.natural = Some(window.layout_bounds(layout).size.height);
+        }
+        if anchor.held.is_none() {
+            anchor.drop_space_the_rows_left(&scroll);
+            return;
+        }
         let Some(held) = anchor.held.as_mut() else {
             return;
         };
@@ -483,6 +527,27 @@ impl Anchor {
             let shown = -held.seen.y + scroll.bounds().size.height;
             self.keep = Some(keep.min(shown));
         }
+        self.kept_for = self.natural;
+    }
+
+    /// Drops the space a released hold kept once the rows grow shorter on
+    /// their own, and in this frame moves the offset to the foot of the
+    /// rows, so they never scroll out of a pane left blank.
+    fn drop_space_the_rows_left(&mut self, scroll: &ScrollHandle) {
+        let (Some(natural), Some(kept_for)) = (self.natural, self.kept_for)
+        else {
+            return;
+        };
+        if natural >= kept_for - gpui::px(0.5) {
+            return;
+        }
+        self.keep = None;
+        self.kept_for = None;
+        let offset = scroll.offset();
+        let max = (natural - scroll.bounds().size.height).max(Pixels::ZERO);
+        if -offset.y > max {
+            scroll.set_offset(point(offset.x, -max));
+        }
     }
 }
 
@@ -516,6 +581,8 @@ fn same_offset(a: Point<Pixels>, b: Point<Pixels>) -> bool {
 pub struct AnchoredRow {
     anchor: RowAnchor,
     key: ElementId,
+    /// The area's rows as a whole rather than one of them.
+    content: bool,
     row: Option<AnyElement>,
 }
 
@@ -562,7 +629,9 @@ impl Element for AnchoredRow {
         let layout = row.request_layout(window, cx);
         let mut anchor = self.anchor.0.borrow_mut();
         let frame = anchor.frame;
-        if let Some(held) = anchor.held.as_mut()
+        if self.content {
+            anchor.content_layout = Some((frame, layout));
+        } else if let Some(held) = anchor.held.as_mut()
             && held.key == self.key
         {
             held.layout = Some((frame, layout));
@@ -579,7 +648,7 @@ impl Element for AnchoredRow {
         window: &mut Window,
         cx: &mut App,
     ) {
-        {
+        if !self.content {
             let mut anchor = self.anchor.0.borrow_mut();
             anchor.tops.insert(self.key.clone(), bounds.top());
             let offset = anchor.scroll.as_ref().map(ScrollHandle::offset);
@@ -849,12 +918,11 @@ mod tests {
     /// A 100-point area of 20-point rows: `above` rows, the row `anchor`
     /// can hold (`held`, a button, while `shown`), and `below` rows, each
     /// wrapped under its own key. The area fills a 100-point column, as in
-    /// Settings, or with `grows` grows with its content up to 100 points.
+    /// Settings.
     struct Anchored {
         scroll: ScrollHandle,
         scrollbar: ListScrollbar,
         anchor: RowAnchor,
-        grows: bool,
         above: usize,
         shown: bool,
         below: usize,
@@ -882,23 +950,19 @@ mod tests {
                 )
             });
             let below = (0..self.below).map(|at| row(format!("below-{at}")));
-            let area = ScrollArea::new("area", &self.scroll);
-            let area = if self.grows {
-                area.max_height(Some(px(100.0)))
-            } else {
-                area.fill()
-            }
-            .hold_rows(&self.anchor)
-            .children(above)
-            .children(held)
-            .children(below)
-            .render(
-                &mut self.scrollbar,
-                tokens().scrollbar,
-                &view,
-                |view| &mut view.scrollbar,
-                cx,
-            );
+            let area = ScrollArea::new("area", &self.scroll)
+                .fill()
+                .hold_rows(&self.anchor)
+                .children(above)
+                .children(held)
+                .children(below)
+                .render(
+                    &mut self.scrollbar,
+                    tokens().scrollbar,
+                    &view,
+                    |view| &mut view.scrollbar,
+                    cx,
+                );
             div().flex().flex_col().h(px(100.0)).child(area)
         }
     }
@@ -911,24 +975,12 @@ mod tests {
         below: usize,
         scrolled: f32,
     ) -> (gpui::Entity<Anchored>, &mut gpui::VisualTestContext) {
-        anchored_area(cx, false, scale, above, below, scrolled)
-    }
-
-    fn anchored_area(
-        cx: &mut TestAppContext,
-        grows: bool,
-        scale: f32,
-        above: usize,
-        below: usize,
-        scrolled: f32,
-    ) -> (gpui::Entity<Anchored>, &mut gpui::VisualTestContext) {
         let (view, cx) = cx.add_window_view(|_, _| {
             let scroll = ScrollHandle::new();
             Anchored {
                 scrollbar: ListScrollbar::new(scroll.clone()),
                 scroll,
                 anchor: RowAnchor::new(),
-                grows,
                 above,
                 shown: true,
                 below,
@@ -1279,20 +1331,33 @@ mod tests {
         }
     }
 
-    /// An area that grows with its content measures its new viewport only
-    /// after the frame that grew it, so that frame clamps and the frame it
-    /// asks for corrects.
+    /// Space a hold left below the rows goes once they grow shorter on
+    /// their own, in that frame, so they never scroll out of a blank pane.
     #[gpui::test]
-    fn a_growing_area_returns_a_held_row(cx: &mut TestAppContext) {
-        let (view, cx) = anchored_area(cx, true, 2.0, 1, 1, 0.0);
+    fn kept_space_goes_once_the_rows_shrink_on_their_own(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = anchored(cx, 2.0, 10, 2, 160.0);
         view.update(cx, |view, cx| {
             assert!(view.anchor.hold("held"));
-            view.above = 3;
+            view.below = 0;
             cx.notify();
         });
         cx.run_until_parked();
-        next_frame(cx);
-        assert_eq!(tops(&view, cx, "held").last(), Some(&Some(20.0)));
+        cx.executor().advance_clock(HOLD_QUIET);
+        rerender(&view, cx);
+        assert!(!view.read_with(cx, |view, _| view.anchor.is_held()));
+        // Forty points of kept space show below the held row.
+        assert_eq!(tops(&view, cx, "held").last(), Some(&Some(40.0)));
+        view.update(cx, |view, cx| {
+            view.above = 1;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // The two rows left fit, and show from the top at once.
+        let top = first_changed_top(&view, cx, |top| top.is_none(), "above-1");
+        assert_eq!(top, 20.0);
+        assert_eq!(offset(&view, cx), 0.0);
     }
 
     /// A hold ends once [`HOLD_QUIET`] passes without the row needing a

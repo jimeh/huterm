@@ -1798,16 +1798,18 @@ impl SettingsView {
         let Some(field) = self.fields.get(path) else {
             return;
         };
-        self.hold_control(path);
         let text = field.read(cx).text().to_owned();
         // A field still showing what it last synced has nothing to save,
         // even when the file spells the value differently, such as the
-        // integer `13` for a number setting.
+        // integer `13` for a number setting. Such a commit, as a blur
+        // makes, holds its row only when the error under it goes, so it
+        // never takes over the hold of the control the user pressed.
         if !self.conflicts.contains_key(path)
             && !self.pending.contains_key(path)
             && self.synced.get(path) == Some(&text)
         {
             if self.errors.remove(path).is_some() {
+                self.hold_control(path);
                 cx.notify();
             }
             return;
@@ -1821,6 +1823,7 @@ impl SettingsView {
         {
             return;
         }
+        self.hold_control(path);
         // Saving a field again after a conflict keeps the entered value,
         // against a fresh read; the conflict stays until the text parses.
         let resolving = self.conflicts.contains_key(path);

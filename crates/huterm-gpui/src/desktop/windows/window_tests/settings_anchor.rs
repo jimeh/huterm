@@ -485,3 +485,104 @@ fn showing_advanced_settings_in_a_section_that_fits_keeps_the_button_in_place(
         false,
     );
 }
+
+/// Space a hold left below the rows goes when a search then narrows them,
+/// so the results show instead of a blank pane with them scrolled away.
+#[gpui::test]
+fn searching_keybindings_after_a_hold_shows_the_results(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("anchor-key-search", "");
+    let mut harness = DesktopHarness::new(cx);
+    at_the_foot(&mut harness, &file, SectionId::Keybindings);
+    let command = expand_the_lowest_command(&mut harness);
+    to_the_foot(&mut harness);
+    // Collapsing at the foot leaves space below the rows.
+    let trigger = format!("settings-kcmd-{command}");
+    let node = a11y_node(&mut harness, &trigger);
+    a11y_click(&mut harness, &node);
+    harness.cx.executor().advance_clock(HOLD_QUIET);
+    with_view(&mut harness, |_, cx| cx.notify());
+    visual(&harness).run_until_parked();
+    assert!(!held(&mut harness));
+    with_view(&mut harness, |view, cx| view.search_keybindings("zoom", cx));
+    visual(&harness).run_until_parked();
+    let viewport = with_view(&mut harness, |view, _| view.pane_viewport());
+    let shown = frames(&mut harness)
+        .last()
+        .unwrap()
+        .iter()
+        .any(|(id, top)| {
+            matches!(id, ElementId::Name(name) if name.starts_with("kcmd:"))
+                && *top >= viewport.top()
+                && *top < viewport.bottom()
+        });
+    assert!(shown, "no result shows: {:?}", frames(&mut harness).last());
+}
+
+/// A reorder moves its own row, so it releases a hold an earlier change
+/// left rather than scrolling the pane after the rows it moves.
+#[gpui::test]
+fn reordering_the_cycle_right_after_a_change_leaves_the_pane_still(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "anchor-reorder",
+        "[panes]\nlayout_cycle = [\"columns\", \"rows\"]\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    at_the_foot(&mut harness, &file, SectionId::Panes);
+    with_window_view(&mut harness, |view, window, cx| {
+        view.press("lcyc:main_left", window, cx);
+    });
+    harness.wait_for("the cycle's save", settled);
+    visual(&harness).run_until_parked();
+    assert!(file.text().contains("main_left"), "{}", file.text());
+    assert!(held(&mut harness), "the toggle's hold already ended");
+    let before = scrolled(&mut harness);
+    with_window_view(&mut harness, |view, window, cx| {
+        view.press("lup:main_left", window, cx);
+    });
+    harness.wait_for("the move's save", settled);
+    visual(&harness).run_until_parked();
+    assert!(
+        file.text()
+            .contains("[\"columns\", \"main_left\", \"rows\"]"),
+        "{}",
+        file.text()
+    );
+    assert!(!held(&mut harness));
+    assert_eq!(scrolled(&mut harness), before);
+}
+
+/// A field commit that saves nothing, as a blur after pressing another
+/// control makes, leaves the hold on the control the user pressed.
+#[gpui::test]
+fn an_unchanged_field_commit_keeps_the_pressed_controls_hold(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("anchor-blur", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Scrollback);
+    harness.wait_for("the first read", settled);
+    with_window_view(&mut harness, |view, window, cx| {
+        view.press("advanced:pane", window, cx);
+    });
+    let holds = |harness: &mut DesktopHarness| {
+        with_view(harness, |view, _| format!("{:?}", view.pane_anchor()))
+    };
+    assert!(
+        holds(&mut harness).contains("\"advanced\""),
+        "{}",
+        holds(&mut harness)
+    );
+    with_view(&mut harness, |view, cx| {
+        view.blur("terminal.scrollback_rows", cx);
+    });
+    visual(&harness).run_until_parked();
+    assert!(
+        holds(&mut harness).contains("\"advanced\""),
+        "{}",
+        holds(&mut harness)
+    );
+}
