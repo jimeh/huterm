@@ -347,6 +347,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   close dialog nor tab closing. The last state matched the first
   occurrence: `w0.confirming=false`, `w0.tabs=3`, `w0.active_index=2`, and
   `w0.terminal_focused=false`.
+- **Sixth occurrence:** 2026-10-31 on PR #363 (run 41214596936, job
+  124576473001, head `9cb9ad94`), aarch64 only, under `Smoke Linux
+  overlays`. The PR changes window chrome, not the close dialog or tab
+  closing. The last state matched the second occurrence:
+  `w0.confirming=true`, `w0.dialog_focus=primary`, and `w0.tabs=3`.
 - **Triage:** rerun and record the run here. A hardening is to wait for
   `w0.dialog_focus=primary` before Enter, as the neighboring steps do.
 
