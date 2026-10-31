@@ -170,6 +170,8 @@ pub(super) struct Presentation {
     model: policy::Model,
     /// A move to another display in regular presentation.
     pin: Option<placement::Pin>,
+    /// The displays seen since the window entered regular presentation.
+    excursion: Option<placement::Excursion>,
     work: Work,
     focus_observations: u64,
     sampled_focus: Option<(bool, bool)>,
@@ -682,6 +684,7 @@ pub(super) fn attach(
             native_paused: false,
         },
         pin: None,
+        excursion: None,
         work,
         focus_observations: 0,
         sampled_focus: None,
@@ -746,6 +749,7 @@ pub(super) fn toggle(
             .unwrap_or_else(|| state.profile.clone());
         placement::moved(
             &displays,
+            state.excursion.take().as_ref(),
             &state.model.display.id,
             &display,
             &state.model.profile.display,
@@ -753,6 +757,16 @@ pub(super) fn toggle(
         );
         state.display = display;
         state.target = state.profile.geometry(&state.display);
+    } else {
+        // Without the displays, the return cannot tell a user's move from
+        // the system's and pins nothing.
+        state.excursion = cx
+            .global::<Desktop>()
+            .quake
+            .platform
+            .as_ref()
+            .and_then(|native| native.displays().ok())
+            .map(|displays| placement::Excursion::start(&displays));
     }
     state.regular = !state.regular;
     state.request(true, false);
@@ -800,6 +814,7 @@ fn recover(
                 };
                 state.recovering = true;
                 state.regular = true;
+                state.excursion = None;
                 state.deadline = now + Duration::from_secs(3);
                 state.activation.request();
                 let effect = NativeEffect::for_state(
@@ -906,13 +921,11 @@ fn step_transition(
     state.focus_observations = state.focus_observations.wrapping_add(1);
     state.sampled_focus = Some((facts.active, facts.blurred));
     if state.regular
-        && state.pin.is_some()
         && flags & crate::quake::observation::DISPLAY != 0
+        && let Some(excursion) = state.excursion.as_mut()
         && let Ok(displays) = platform.displays()
     {
-        // Regular presentation skips refits, but a display change must
-        // still end a move made before it.
-        placement::expire(
+        excursion.observe(
             &displays,
             &state.model.profile.display,
             &mut state.pin,

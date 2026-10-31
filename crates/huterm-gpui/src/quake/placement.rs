@@ -89,19 +89,42 @@ pub(crate) fn show<'a>(
     select(displays, selector, point)
 }
 
-/// Drops a pin the connected displays no longer match. Every observed
-/// display change runs this, in regular presentation too, so a pin stays
-/// dropped when a reconnect later restores its arrangement.
-pub(crate) fn expire(
-    displays: &[Display],
-    selector: &str,
-    pin: &mut Option<Pin>,
-) {
+/// Drops a pin the connected displays no longer match.
+fn expire(displays: &[Display], selector: &str, pin: &mut Option<Pin>) {
     if pin
         .as_ref()
         .is_some_and(|pin| pin.holds(displays, selector).is_none())
     {
         *pin = None;
+    }
+}
+
+/// What a window in regular presentation saw of the displays. Refits skip
+/// regular presentation, so this still drops a pin on a display change, and
+/// it tells a move the user made from one the system made when a display
+/// went away, which must not pin.
+pub(crate) struct Excursion {
+    arrangement: Arrangement,
+    displays_changed: bool,
+}
+
+impl Excursion {
+    pub(crate) fn start(displays: &[Display]) -> Self {
+        Self {
+            arrangement: Arrangement::of(displays),
+            displays_changed: false,
+        }
+    }
+
+    /// Records the displays after a display notification.
+    pub(crate) fn observe(
+        &mut self,
+        displays: &[Display],
+        selector: &str,
+        pin: &mut Option<Pin>,
+    ) {
+        expire(displays, selector, pin);
+        self.displays_changed |= Arrangement::of(displays) != self.arrangement;
     }
 }
 
@@ -123,17 +146,23 @@ pub(crate) fn changed<'a>(
 }
 
 /// Records the display a window returns to quake presentation on. Only a
-/// move away from a display that is still connected pins it; returning on
-/// the display it left keeps any earlier pin, and a window the system moved
-/// off a disconnected display is not pinned.
+/// move to another display with no display change since the window entered
+/// regular presentation pins it. Returning on the display it left keeps any
+/// earlier pin. Without an excursion, as after a failure recovery, nothing
+/// pins.
 pub(crate) fn moved(
     displays: &[Display],
+    excursion: Option<&Excursion>,
     from: &str,
     to: &Display,
     selector: &str,
     pin: &mut Option<Pin>,
 ) {
-    if to.id != from && displays.iter().any(|display| display.id == from) {
+    let user_move = excursion.is_some_and(|excursion| {
+        !excursion.displays_changed
+            && excursion.arrangement == Arrangement::of(displays)
+    });
+    if user_move && to.id != from {
         *pin = Some(Pin {
             display: to.id.clone(),
             selector: selector.to_owned(),
@@ -142,21 +171,28 @@ pub(crate) fn moved(
     }
 }
 
-/// Moves regular-presentation bounds along with the window's display,
-/// keeping their offset within the work area, so entering regular
-/// presentation opens on the display the window shows on.
+/// Moves regular-presentation bounds along with the window's display, so
+/// entering regular presentation opens on the display the window shows on.
+/// Bounds keep their offset from the display's origin, which also covers
+/// macOS moving every display's coordinates when the primary changes, and
+/// stay inside the work area. A display whose frame did not change, such as
+/// after a Dock change, keeps the bounds as they are.
 pub(crate) fn carry(bounds: Rect, from: &Display, to: &Display) -> Rect {
-    if from.id == to.id {
+    if from.frame == to.frame {
         return bounds;
     }
-    let (work, old) = (to.work, from.work);
+    let work = to.work;
     let width = bounds.width.min(work.width);
     let height = bounds.height.min(work.height);
+    // min then max rather than clamp: rounding can put the upper limit
+    // below the lower one, which clamp panics on.
     Rect {
-        x: (work.x + bounds.x - old.x)
-            .clamp(work.x, work.x + work.width - width),
-        y: (work.y + bounds.y - old.y)
-            .clamp(work.y, work.y + work.height - height),
+        x: (bounds.x + to.frame.x - from.frame.x)
+            .min(work.x + work.width - width)
+            .max(work.x),
+        y: (bounds.y + to.frame.y - from.frame.y)
+            .min(work.y + work.height - height)
+            .max(work.y),
         width,
         height,
     }
@@ -210,6 +246,7 @@ mod tests {
         selector: &'static str,
         display: String,
         pin: Option<Pin>,
+        excursion: Option<Excursion>,
     }
 
     impl Window {
@@ -231,6 +268,7 @@ mod tests {
                 selector,
                 display,
                 pin,
+                excursion: None,
             }
         }
 
@@ -259,17 +297,38 @@ mod tests {
             &self.display
         }
 
-        /// A display change observed in regular presentation.
-        fn change_while_regular(&mut self, displays: &[Display]) {
-            expire(displays, self.selector, &mut self.pin);
+        fn enter_regular(&mut self, displays: &[Display]) {
+            self.excursion = Some(Excursion::start(displays));
         }
 
+        /// A display change observed in regular presentation.
+        fn change_while_regular(&mut self, displays: &[Display]) {
+            self.excursion.as_mut().expect("regular").observe(
+                displays,
+                self.selector,
+                &mut self.pin,
+            );
+        }
+
+        /// Returns from regular presentation on `id`, entering it first at
+        /// the same displays when the test did not.
         fn move_to(&mut self, displays: &[Display], id: &str) {
             let to = displays
                 .iter()
                 .find(|display| display.id == id)
                 .expect("a connected display");
-            moved(displays, &self.display, to, self.selector, &mut self.pin);
+            let excursion = self
+                .excursion
+                .take()
+                .unwrap_or_else(|| Excursion::start(displays));
+            moved(
+                displays,
+                Some(&excursion),
+                &self.display,
+                to,
+                self.selector,
+                &mut self.pin,
+            );
             self.display = id.into();
         }
     }
@@ -436,6 +495,7 @@ mod tests {
     fn a_display_change_in_regular_presentation_ends_a_move() {
         let mut window = Window::open("primary", &docked());
         window.move_to(&docked(), BUILT_IN);
+        window.enter_regular(&docked());
         window.change_while_regular(&undocked());
         window.change_while_regular(&docked());
         // Toggling back on the display it was pinned to keeps no stale pin.
@@ -444,14 +504,41 @@ mod tests {
     }
 
     #[test]
-    fn a_window_moved_off_a_disconnected_display_is_not_pinned() {
+    fn a_window_the_system_moved_off_a_disconnected_display_is_not_pinned() {
+        // The window returns while the display is still gone.
         let mut window = Window::open("primary", &docked());
-        // The external display goes away while the window is regular, and
-        // the system moves the window to the built-in display.
+        window.enter_regular(&docked());
         window.change_while_regular(&undocked());
         window.move_to(&undocked(), BUILT_IN);
         assert!(window.pin.is_none());
         assert_eq!(window.show(&docked()), EXTERNAL);
+        // The display comes back before the window returns.
+        let mut window = Window::open("primary", &docked());
+        window.enter_regular(&docked());
+        window.change_while_regular(&undocked());
+        window.change_while_regular(&docked());
+        window.move_to(&docked(), BUILT_IN);
+        assert!(window.pin.is_none());
+        assert_eq!(window.show(&docked()), EXTERNAL);
+    }
+
+    #[test]
+    fn a_resolution_change_in_regular_presentation_keeps_a_move() {
+        let mut window = Window::open("primary", &docked());
+        window.enter_regular(&docked());
+        let mut wider = docked();
+        wider[1].frame.width = 2000.0;
+        window.change_while_regular(&wider);
+        window.move_to(&wider, BUILT_IN);
+        assert_eq!(window.show(&wider), BUILT_IN);
+    }
+
+    #[test]
+    fn a_return_without_an_excursion_does_not_pin() {
+        let mut pin = None;
+        let displays = docked();
+        moved(&displays, None, EXTERNAL, &displays[1], "primary", &mut pin);
+        assert!(pin.is_none());
     }
 
     #[test]
@@ -501,6 +588,64 @@ mod tests {
                 width: 500.0,
                 height: 300.0
             }
+        );
+    }
+
+    #[test]
+    fn regular_bounds_follow_a_display_whose_coordinates_move() {
+        // macOS anchors coordinates at the primary display, so making the
+        // display to the right primary moves the built-in display left.
+        let before = display(BUILT_IN, 0.0, true);
+        let mut after = display(BUILT_IN, -1000.0, false);
+        after.frame.y = 100.0;
+        after.work = Rect {
+            y: 130.0,
+            height: 770.0,
+            ..after.frame
+        };
+        let bounds = Rect {
+            x: 100.0,
+            y: 50.0,
+            width: 600.0,
+            height: 400.0,
+        };
+        assert_eq!(
+            carry(bounds, &before, &after),
+            Rect {
+                x: -900.0,
+                y: 150.0,
+                ..bounds
+            }
+        );
+        // A Dock change alone keeps the user's placement.
+        let mut docked_left = before.clone();
+        docked_left.work.x = 80.0;
+        assert_eq!(carry(bounds, &before, &docked_left), bounds);
+    }
+
+    #[test]
+    fn regular_bounds_fit_a_fractional_work_area() {
+        let from = display(BUILT_IN, 0.0, true);
+        let mut to = display(EXTERNAL, 1000.0, false);
+        to.work = Rect {
+            x: 0.1,
+            y: 0.1,
+            width: 0.7,
+            height: 0.7,
+        };
+        let carried = carry(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 900.0,
+                height: 900.0,
+            },
+            &from,
+            &to,
+        );
+        assert!(
+            (carried.x - 0.1).abs() < 1e-9
+                && (carried.width - 0.7).abs() < 1e-9
         );
     }
 }
