@@ -5836,6 +5836,61 @@ impl WorkspaceView {
         title_row_height(self.chrome_hidden(), self.window_frame())
     }
 
+    /// The rendered title row and its empty drop region, excluding native
+    /// traffic lights, drawn window buttons, and the menu button slot.
+    fn title_row_layout(&self, layout: &ChromeLayout) -> TitleRowLayout {
+        let position = self.layout_tabs().position;
+        let menu = self.menu_button_placement();
+        let titlebar = self.title_row();
+        let content = layout.content;
+        let (left, width) = if position.vertical() {
+            (layout.terminal.origin.x, layout.terminal.size.width)
+        } else {
+            (content.origin.x, content.size.width)
+        };
+        let bounds = Bounds::new(
+            point(left, content.origin.y),
+            size(width, titlebar + self.fullscreen_insets.top.max(px(0.0))),
+        );
+        let leading = if layout.frame.controls {
+            layout.frame.buttons.leading.width()
+        } else {
+            TRAFFIC_LIGHT_INSET
+        };
+        let trailing = layout.frame.buttons.trailing.width()
+            + if menu == MenuButtonPlacement::TitleStrip {
+                CONTROL_SLOT
+            } else {
+                px(0.0)
+            };
+        let drop_left =
+            (content.origin.x + leading).clamp(left, bounds.right());
+        let drop_right =
+            (content.right() - trailing).clamp(drop_left, bounds.right());
+        // Preserve the title's symmetric padding while the drop region
+        // uses the actual, potentially asymmetric control groups.
+        let title_padding = if position.vertical() {
+            let leading =
+                (content.origin.x + TRAFFIC_LIGHT_INSET - left).max(px(0.0));
+            let trailing = if menu == MenuButtonPlacement::TitleStrip {
+                (bounds.right() - (content.right() - CONTROL_SLOT)).max(px(0.0))
+            } else {
+                px(0.0)
+            };
+            leading.max(trailing)
+        } else {
+            layout.strip_inset.max(layout.strip_trailing + CONTROL_SLOT)
+        };
+        TitleRowLayout {
+            bounds,
+            drop_region: Bounds::new(
+                point(drop_left, bounds.origin.y),
+                size(drop_right - drop_left, bounds.size.height),
+            ),
+            title_padding,
+        }
+    }
+
     /// Samples the decorations GPUI reports and pushes the frame they
     /// imply: the client inset the compositor keeps clear for resizing
     /// and the shadow, and a transparent background while that inset is
@@ -7108,6 +7163,7 @@ impl WorkspaceView {
         let Some(drag) = self.reorder.take() else {
             return;
         };
+        cx.notify();
         if !self.can_reorder(drag.source, window, cx) {
             self.restore_tab_focus(window, cx);
             return;
@@ -7150,7 +7206,6 @@ impl WorkspaceView {
             });
         })
         .detach();
-        cx.notify();
     }
 
     /// The window's terminal: the active tab's focused pane.
@@ -11287,6 +11342,13 @@ pub(super) fn title_row_height(
     }
 }
 
+/// Shared title-row geometry for rendering and pane drops.
+struct TitleRowLayout {
+    bounds: Bounds<Pixels>,
+    drop_region: Bounds<Pixels>,
+    title_padding: Pixels,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ChromeLayout {
     pub(super) terminal: Bounds<Pixels>,
@@ -12035,7 +12097,8 @@ impl Render for WorkspaceView {
         let titlebar = self.title_row();
         #[cfg(test)]
         self.drawn_title_marks.replace(None);
-        let top_chrome = titlebar + self.fullscreen_insets.top.max(px(0.0));
+        let title_row = self.title_row_layout(&layout);
+        let top_chrome = title_row.bounds.size.height;
         let bar_drawn = self.bar_drawn();
         // The tab bar and the title strip are one row: the tabs cover the
         // strip, whose trailing space keeps the title bar's gestures.
@@ -12045,16 +12108,6 @@ impl Render for WorkspaceView {
             && self.presentation() == Presentation::Reserved;
         let sidebar_title_row =
             position.vertical() && bar_drawn && titlebar > px(0.0);
-        let title_left = if position.vertical() {
-            layout.terminal.origin.x
-        } else {
-            content.origin.x
-        };
-        let title_width = if position.vertical() {
-            layout.terminal.size.width
-        } else {
-            content.size.width
-        };
         let title_menu_button = (menu_placement
             == MenuButtonPlacement::TitleStrip
             && !sidebar_title_row)
@@ -12085,28 +12138,13 @@ impl Render for WorkspaceView {
                     cx,
                 ))
             });
-        // The title centres between the space its ends reserve.
-        let title_padding = if position.vertical() {
-            let leading = (content.origin.x + TRAFFIC_LIGHT_INSET - title_left)
-                .max(px(0.0));
-            let trailing = if menu_placement == MenuButtonPlacement::TitleStrip
-            {
-                (title_left + title_width - (content.right() - CONTROL_SLOT))
-                    .max(px(0.0))
-            } else {
-                px(0.0)
-            };
-            leading.max(trailing)
-        } else {
-            layout.strip_inset.max(layout.strip_trailing + CONTROL_SLOT)
-        };
         if top_chrome > px(0.0) {
             root = root.child(
                 div()
                     .absolute()
-                    .top(content.origin.y)
-                    .left(title_left)
-                    .w(title_width)
+                    .top(title_row.bounds.origin.y)
+                    .left(title_row.bounds.origin.x)
+                    .w(title_row.bounds.size.width)
                     .h(top_chrome)
                     .debug_selector(|| "terminal-title-row".to_owned())
                     .when(decorated, |bar| {
@@ -12170,7 +12208,7 @@ impl Render for WorkspaceView {
                             div()
                                 .absolute()
                                 .inset_0()
-                                .px(title_padding)
+                                .px(title_row.title_padding)
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -12952,8 +12990,8 @@ impl Render for WorkspaceView {
 impl WorkspaceView {
     /// The cursor one of Huterm's own drags shows wherever the pointer
     /// goes: the resize cursor while a divider or the sidebar edge moves,
-    /// the closed hand from a pane drag's press on, however it started,
-    /// and the arrow while a tab moves.
+    /// and the closed hand from a pane or tab drag's press on, however it
+    /// started, including while a tab drag is in pane mode.
     fn drag_cursor(&self) -> Option<gpui::CursorStyle> {
         if let Some(drag) = &self.divider_drag {
             Some(match drag.axis {
@@ -12962,10 +13000,8 @@ impl WorkspaceView {
             })
         } else if self.resizing_sidebar {
             Some(gpui::CursorStyle::ResizeLeftRight)
-        } else if self.pane_drag.is_some() {
+        } else if self.pane_drag.is_some() || self.reorder.is_some() {
             Some(gpui::CursorStyle::ClosedHand)
-        } else if self.reorder.as_ref().is_some_and(|drag| drag.dragging) {
-            Some(gpui::CursorStyle::Arrow)
         } else {
             None
         }
@@ -14271,6 +14307,11 @@ impl WorkspaceView {
         )
     }
 
+    /// How many platform window moves the title row has started, for smokes.
+    pub(super) fn title_row_move_count(&self) -> u32 {
+        self.title_row_moves.get()
+    }
+
     /// Smoke output for modifier pane drags: whether the pointer is armed,
     /// how many badges the last frame drew, whether a pane drag came from
     /// a remapped Control-left press, and whether any window drag runs.
@@ -14572,7 +14613,7 @@ impl WorkspaceView {
             f32::from(radii.top),
             f32::from(radii.bottom),
             self.native_radii.source.name(),
-            self.title_row_moves.get(),
+            self.title_row_move_count(),
             window.scale_factor(),
             self.frame_state.client_decorations(),
             f32::from(self.window_frame().inset.top),

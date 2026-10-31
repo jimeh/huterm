@@ -162,8 +162,10 @@ over a terminal that takes input without occluding, such as a revealed pane
 bar, a toast, or the palette scrim, sets its own cursor, or the I-beam shows
 through it. Huterm's own drags do not use GPUI's drag, so
 `WorkspaceView::drag_cursor` paints a window cursor last while a divider,
-sidebar, pane, or tab drag runs: the closed hand from a pane drag's press
-on, however it started, and the arrow for a tab reorder. A cursor change
+sidebar, pane, or tab drag runs: the closed hand from a pane or tab drag's
+press on, before the threshold and in a tab's pane mode, however it started.
+Every path that clears a drag notifies the view, so the next frame drops the
+override. Tabs and pane bars have no hover hand. A cursor change
 with no other effect, such as Shift over vim, re-renders only when the shape
 differs from the last one drawn.
 
@@ -294,6 +296,16 @@ spring-load and edge-drop path to join another tab. Its own pane is skipped,
 and tab insertion slots are excluded even after spring loading: core treats
 `MoveDestination::NewTab` in its own workspace as a no-op. In a one-tab window
 with a hidden tab bar, a lone drag has no targets.
+
+With the bar undrawn and `Presentation::Hidden`, a split tab's pane can drop
+on the Huterm-drawn title row to open a new tab at the end of the workspace.
+`title_row_layout` shares the rendered row bounds and control exclusions with
+hit testing and the drop highlight: the macOS traffic-light inset, Linux
+leading/trailing button groups, and the menu button slot stay out. The row
+requires `title_row() > 0`, so fullscreen, Quake, and Linux server decorations
+offer no target. It neither spring-loads nor autoscrolls. Like tab-bar pane
+drops, it stays within the source window. Capture owns motion and release;
+a press begun on a pane never arms the title row's window-move gesture.
 
 A reorder enters pane mode only over a pane of the active tab, which is not
 the dragged tab, at least `PANE_DROP_DEPTH` (32 points) past the bar's inner

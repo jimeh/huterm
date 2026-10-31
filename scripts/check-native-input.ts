@@ -271,6 +271,37 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await configure("off", false);
     await key(43, command | (1 << 17), "<", "<");
     await state("policy=Off", "reloading=false");
+    // A pane title-bar drag onto the window's title row, while the tab bar
+    // is hidden, moves the pane into a new tab.
+    // Undo restores the split; close the temporary pane before the tab tests.
+    await rm(ready);
+    await key(2, command, "d");
+    await waitFor(() => Bun.file(ready).exists(), "the title-row fixture's raw PTY");
+    await state("tabs=1", "panes=2", "pane_focus=1", "pane_bar_opacity=1.00;1.00", "drop=none", "grab_armed=false");
+    const titleRowSplit = await currentState();
+    const titleRowLayout = field(titleRowSplit, "pane_layout");
+    const [, titleGrab] = field(titleRowSplit, "pane_grab").split(";");
+    const [titleGrabX, titleGrabY] = titleGrab!.split(",").map(Number);
+    const titleRowPanes = rects(field(titleRowSplit, "pane_rects"));
+    const titleRowLeft = Math.min(...titleRowPanes.map(rect => rect.x));
+    const titleRowRight = Math.max(...titleRowPanes.map(rect => rect.x + rect.w));
+    const titleDropX = (titleRowLeft + titleRowRight) / 2;
+    // desktop::TITLEBAR_HEIGHT is 32 points on macOS; its centre is clear of controls.
+    const titleDropY = 32 / 2;
+    await send(`mouse\t1\t${titleGrabX}\t${titleGrabY}`);
+    await send(`mouse\t6\t${(titleGrabX! + titleDropX) / 2}\t${(titleGrabY! + titleDropY) / 2}`);
+    await send(`mouse\t6\t${titleDropX}\t${titleDropY}`);
+    await state("drop=title_row", "title_row_moves=0");
+    await send(`mouse\t2\t${titleDropX}\t${titleDropY}`);
+    await state("tabs=2", "panes=1", "drop=none", "window_drag=false", "title_row_moves=0", "arranging=0");
+    await key(6, command, "z");
+    await state("tabs=1", "panes=2", "pane_focus=1", `pane_layout=${titleRowLayout}`, "pane_bar_opacity=1.00;1.00", "drop=none", "window_drag=false", "title_row_moves=0", "arranging=0");
+    await check("title-row-drop-reaches-no-shell", "");
+    await key(2, control, "\x04", "d");
+    await state("exited=true");
+    await key(13, command, "w");
+    await state("tabs=1", "panes=1", "pane_focus=0", "exited=false", "confirming=false");
+
     await key(17, command, "t");
     await state("tabs=2", "active=1", "ready=true");
     await key(14, option, "´", "e");
