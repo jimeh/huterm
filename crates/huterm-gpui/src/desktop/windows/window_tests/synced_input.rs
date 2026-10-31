@@ -424,6 +424,11 @@ fn title_marks(cx: &mut App, window: AnyWindowHandle) -> Option<Vec<TabMark>> {
 /// How many image nodes in `window`'s last accessibility tree read
 /// "Syncing pane input".
 fn sync_mark_nodes(cx: &mut App, window: AnyWindowHandle) -> usize {
+    mark_nodes(cx, window, TabMark::InputSync.name())
+}
+
+/// How many state marks named `label` `window`'s accessibility tree holds.
+fn mark_nodes(cx: &mut App, window: AnyWindowHandle, label: &str) -> usize {
     let json = window
         .update(cx, |_, window, _| window.debug_a11y_tree_json())
         .unwrap()
@@ -434,8 +439,7 @@ fn sync_mark_nodes(cx: &mut App, window: AnyWindowHandle) -> usize {
         .unwrap()
         .values()
         .filter(|node| {
-            node["aria"]["role"] == "Image"
-                && node["aria"]["label"] == TabMark::InputSync.name()
+            node["aria"]["role"] == "Image" && node["aria"]["label"] == label
         })
         .count()
 }
@@ -547,12 +551,17 @@ fn the_title_row_shows_a_lone_tabs_zoom_mark_before_its_sync_mark(
         title_shows(cx, window, &[TabMark::Zoom])
     });
     harness.toggle_sync(window, tab, true);
-    harness.wait_for("the zoom mark, then the sync mark", |cx| {
+    // The zoom shows one pane, so the sync mark reads as paused, in the
+    // title row and on the zoomed pane's title bar.
+    harness.wait_for("the zoom mark, then the paused sync mark", |cx| {
         title_shows(cx, window, &[TabMark::Zoom, TabMark::InputSync])
+            && mark_nodes(cx, window, TabMark::PAUSED_SYNC_NAME) == 2
+            && sync_mark_nodes(cx, window) == 0
     });
     harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
     harness.wait_for("the sync mark alone once unzoomed", |cx| {
         title_shows(cx, window, &[TabMark::InputSync])
+            && mark_nodes(cx, window, TabMark::PAUSED_SYNC_NAME) == 0
     });
 }
 

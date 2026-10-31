@@ -786,6 +786,11 @@ impl TabMark {
         }
     }
 
+    /// What assistive technology reads for the dimmed sync mark: sync is on,
+    /// but a zoom shows one pane, so typing reaches no other.
+    pub(super) const PAUSED_SYNC_NAME: &'static str =
+        "Pane input sync paused while zoomed";
+
     /// The mark's element id, unique among one tab's marks.
     fn id(self) -> &'static str {
         match self {
@@ -828,8 +833,9 @@ pub(super) fn mark_elements(
         .collect()
 }
 
-/// One mark as [`mark_elements`] draws it, with the sync mark at
-/// [`DIMMED_SYNC_MARK`] while `sync_dimmed`.
+/// One mark as [`mark_elements`] draws it. While `sync_dimmed`, the sync
+/// mark draws at [`DIMMED_SYNC_MARK`] and is named
+/// [`TabMark::PAUSED_SYNC_NAME`].
 pub(super) fn mark_element(
     mark: TabMark,
     colors: TabColors,
@@ -843,7 +849,11 @@ pub(super) fn mark_element(
     div()
         .id(mark.id())
         .role(gpui::Role::Image)
-        .aria_label(mark.name())
+        .aria_label(if mark == TabMark::InputSync && sync_dimmed {
+            TabMark::PAUSED_SYNC_NAME
+        } else {
+            mark.name()
+        })
         .flex_shrink_0()
         .size(ICON_SIZE)
         .child(icon)

@@ -657,22 +657,49 @@ fn pattern_marks(track: &Track, pattern: LinePattern, width: f32) -> Vec<Mark> {
             if length < spacing {
                 return solid();
             }
-            // An open line's dots sit inside its ends; a closed one's last
-            // dot keeps a dot's width from its first.
-            let (first, last) = if track.closed {
-                (0.0, length - width)
-            } else {
-                (width / 2.0, length - width / 2.0)
-            };
-            let mut marks = Vec::new();
-            let mut at = first;
-            while at <= last + 1e-3 {
-                marks.extend(track.at(at).map(|center| Mark::Dot { center }));
-                at += spacing;
-            }
-            marks
+            dot_positions(length, spacing, width, track.closed)
+                .into_iter()
+                .filter_map(|at| track.at(at))
+                .map(|center| Mark::Dot { center })
+                .collect()
         }
     }
+}
+
+/// Where along a line `length` long the dots of a `dotted` pattern
+/// `width` thick sit, evenly spread at least `spacing` apart. A closed
+/// line's dots run all the way round, so its seam keeps the rhythm. An
+/// open line keeps its first and last dot a spacing, less half a dot, from
+/// its ends: a divider ends at the edge of the line it meets, whose own dot
+/// may sit right there, so a dot at the end would crowd it.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "a dot count along an on-screen line is small and positive"
+)]
+fn dot_positions(
+    length: f32,
+    spacing: f32,
+    width: f32,
+    closed: bool,
+) -> Vec<f32> {
+    if closed {
+        let dots = ((length / spacing).floor() as usize).max(1);
+        let step = length / dots as f32;
+        return (0..dots).map(|index| step * index as f32).collect();
+    }
+    let inset = spacing - width / 2.0;
+    let span = length - 2.0 * inset;
+    if span < spacing {
+        // Too short to keep both ends clear: one dot in the middle.
+        return vec![length / 2.0];
+    }
+    let gaps = (span / spacing).floor() as usize;
+    let step = span / gaps as f32;
+    (0..=gaps)
+        .map(|index| inset + step * index as f32)
+        .collect()
 }
 
 /// The corners of a dot's polygon: enough that its edge stays within a

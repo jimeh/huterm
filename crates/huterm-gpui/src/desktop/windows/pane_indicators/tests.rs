@@ -338,14 +338,25 @@ fn dashes_and_dots_scale_with_the_width() {
                 Mark::Run { .. } => panic!("a dot"),
             })
             .collect();
-        // Inside the line's ends, one spacing apart.
-        assert_eq!(centres[0], width / 2.0);
+        // A divider ends at the edge of the line it meets, half a width
+        // from that line's centre, where one of its dots may sit. The
+        // first and last dots keep a full spacing from such a dot, so a
+        // T-junction never bunches two dots together.
+        let clear = 3.0 * width - width / 2.0;
+        assert!((centres[0] - clear).abs() < 1e-3, "{width}: {centres:?}");
+        assert!(
+            (length - centres[centres.len() - 1] - clear).abs() < 1e-3,
+            "{width}: {centres:?}"
+        );
+        // Between them the dots spread evenly, at least a spacing apart.
+        let step = centres[1] - centres[0];
+        assert!(step >= 3.0 * width - 1e-3, "{width}: {step}");
         assert!(
             centres
                 .windows(2)
-                .all(|pair| (pair[1] - pair[0] - 3.0 * width).abs() < 1e-3)
+                .all(|pair| (pair[1] - pair[0] - step).abs() < 1e-3),
+            "{width}: {centres:?}"
         );
-        assert!(*centres.last().unwrap() <= length - width / 2.0);
     }
 }
 
@@ -433,7 +444,7 @@ fn a_closed_outline_starts_and_ends_on_the_middle_of_its_top_edge() {
 }
 
 #[test]
-fn a_dotted_closed_outline_keeps_a_dot_apart_at_its_seam() {
+fn a_dotted_closed_outline_keeps_its_rhythm_across_the_seam() {
     let rect = Rect {
         left: 0.5,
         top: 0.5,
@@ -448,7 +459,15 @@ fn a_dotted_closed_outline_keeps_a_dot_apart_at_its_seam() {
     let Some(Mark::Dot { center: first }) = dots.first() else {
         panic!("dots");
     };
-    assert!((last.x - first.x).hypot(last.y - first.y) >= 1.0 - 1e-3);
+    // Even steps all the way round: the seam's gap is the same as any
+    // other, at least a spacing.
+    let seam = (last.x - first.x).hypot(last.y - first.y);
+    let Some(Mark::Dot { center: second }) = dots.get(1) else {
+        panic!("dots");
+    };
+    let step = (second.x - first.x).hypot(second.y - first.y);
+    assert!(step >= 3.0 - 1e-3, "{step}");
+    assert!((seam - step).abs() < 1e-2, "seam {seam}, step {step}");
 }
 
 #[test]
