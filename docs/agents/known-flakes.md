@@ -413,6 +413,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   2026-10-31 on PR #362 (run 41209548791, job 124561468799, head
   `5bdce63f`), which changes pane indicators and dimming only, again with
   extra tab 16 below `fixture-session` 19, active at `w0.active_index=2`.
+  It recurred the same day on PR #363 (run 41212003791, job 124568761526,
+  head `e7793fe7`), which changes window chrome and not the palette, again
+  with extra tab 16 below `fixture-session` 19.
 - **Evidence:** the count includes every core workspace's tabs: two in the
   main window and one in the quake window from step 2. The failure state
   shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux
