@@ -124,20 +124,22 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TestDirectory(PathBuf);
 
     impl TestDirectory {
+        /// A fresh directory named by the process and a per-process
+        /// sequence, so tests running in parallel never share one.
         fn new() -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
+            static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
             let directory = std::env::temp_dir().join(format!(
-                "huterm-terminfo-{}-{nonce}",
-                std::process::id()
+                "huterm-terminfo-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
             ));
+            // A crashed earlier run with the same process ID can leave one.
+            let _ = fs::remove_dir_all(&directory);
             fs::create_dir_all(&directory).unwrap();
             Self(directory)
         }
@@ -150,7 +152,9 @@ mod tests {
 
     impl Drop for TestDirectory {
         fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).unwrap();
+            // A panic here during a failing test's unwind would abort every
+            // test in the binary.
+            let _ = fs::remove_dir_all(&self.0);
         }
     }
 
@@ -161,6 +165,30 @@ mod tests {
     ) -> Vec<(String, String)> {
         let values = values.iter().cloned().collect::<BTreeMap<_, _>>();
         environment_from(identity, private, |name| values.get(name).cloned())
+    }
+
+    /// Tests run in parallel threads, so directories made at the same moment
+    /// must still differ, or one test's cleanup removes another's files.
+    #[test]
+    fn test_directories_made_concurrently_are_distinct() {
+        let made: Vec<TestDirectory> = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        (0..16)
+                            .map(|_| TestDirectory::new())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .flat_map(|thread| thread.join().unwrap())
+                .collect()
+        });
+        let names: std::collections::HashSet<_> =
+            made.iter().map(|directory| directory.0.clone()).collect();
+        assert_eq!(names.len(), made.len());
     }
 
     #[test]
