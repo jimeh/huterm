@@ -26,6 +26,21 @@ export function assertRestored(before: State, after: State, native: boolean, all
   if (after["w0.mode"] !== "Windowed" || after["w0.pending"] !== "false") throw new Error("fullscreen did not finish exiting");
 }
 
+/**
+ * `w0.window_radii`, `top,bottom`: square while fullscreen hides the
+ * chrome, and on macOS rounded again once windowed, since the radii follow
+ * the window's current state rather than the one it opened in.
+ */
+export function assertWindowRadii(state: State, fullscreen: boolean, macos: boolean): void {
+  const text = state["w0.window_radii"];
+  const radii = text?.split(",").map(Number) ?? [];
+  if (radii.length !== 2 || radii.some(Number.isNaN)) throw new Error(`missing window radii evidence: ${text}`);
+  const rounded = macos && !fullscreen;
+  if (rounded ? !radii.every((radius) => radius > 0) : radii.some((radius) => radius !== 0)) {
+    throw new Error(`window radii ${text} are not ${rounded ? "rounded while windowed" : "square"}${fullscreen ? " in fullscreen" : ""}`);
+  }
+}
+
 export function assertWindowedBounds(expected: string | undefined, actual: string | undefined, allowReposition = false): void {
   if (!expected || !actual) throw new Error("missing windowed bounds evidence");
   const comparable = (value: string) => allowReposition ? value.split(",").slice(2).join(",") : value;
@@ -635,6 +650,7 @@ done
       else run(["xdotool", "key", "F11"]);
       const full = await stable("Native");
       await modelRestored("in native fullscreen");
+      assertWindowRadii(full, true, macos);
       if (full["w0.focused"] !== "true" || full["w0.retained"] !== "true") throw new Error("native mode lost focus or retained chrome");
       if (macos) {
         if ((Number(full["w0.style"]) & (1 << 14)) === 0) throw new Error("AppKit native fullscreen bit is absent");
@@ -649,6 +665,7 @@ done
       await stable("Windowed");
       await waitForRestored(original, macos, macos);
       await modelRestored("after native exit");
+      assertWindowRadii(await state(), false, macos);
       if (!macos) {
         const restoredGeometry = run(["xdotool", "getwindowgeometry", "--shell", windowId]);
         if (restoredGeometry !== originalGeometry) throw new Error(`X11 geometry did not restore: ${originalGeometry} -> ${restoredGeometry}`);
@@ -664,6 +681,7 @@ done
         const beforeSimple = await state();
         await accepted("0 toggle_non_native_fullscreen");
         const simple = await stable("NonNative");
+        assertWindowRadii(simple, true, macos);
         if ((Number(simple["w0.style"]) & ((1 << 14) | 1 | 8)) !== 0) throw new Error("non-native mode kept native/title/resize bits");
         if (Number(simple["w0.style"]) !== (Number(beforeSimple["w0.style"]) & ~(1 | 8))) throw new Error("non-native mode discarded unrelated style bits");
         if (simple["w0.frame"] !== simple["w0.screen"] || simple["w0.retained"] !== "true") throw new Error("non-native frame/chrome mismatch");

@@ -906,6 +906,30 @@
     "theme": false
   },
   {
+    "name": "pane indicators at their bounds",
+    "toml": "[panes.sync_indicator]\nstyle = \"title_bar\"\nwidth = 1\nopacity = 0.1\npattern = \"dotted\"\n[panes.zoom_indicator]\nstyle = \"off\"\nwidth = 6\nopacity = 1",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "pane indicator width above 6",
+    "toml": "[panes.sync_indicator]\nwidth = 7",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "pane indicator opacity below 0.1",
+    "toml": "[panes.zoom_indicator]\nopacity = 0.05",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "pane indicator unknown style",
+    "toml": "[panes.zoom_indicator]\nstyle = \"tint\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "audible bell with a named sound",
     "toml": "[terminal.bell]\naudio = true\nsound = \"submarine\"\nvolume = 1",
     "valid": true,

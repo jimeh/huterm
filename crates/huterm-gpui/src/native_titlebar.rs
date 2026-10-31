@@ -1,10 +1,11 @@
-//! `AppKit` geometry of the standard window buttons in Huterm's title strip.
+//! `AppKit` geometry of the standard window buttons in Huterm's title strip,
+//! and of the window's rounded corners.
 #![allow(unsafe_code, unexpected_cfgs)]
 
 use anyhow::{Context as _, ensure};
 use gpui::{Bounds, Window};
-use objc::runtime::Object;
-use objc::{msg_send, sel, sel_impl};
+use objc::runtime::{BOOL, NO, Object};
+use objc::{class, msg_send, sel, sel_impl};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 /// `NSWindowCloseButton`.
@@ -65,27 +66,85 @@ fn in_window(button: *mut Object) -> anyhow::Result<Bounds<f64>> {
     }
 }
 
+/// The window's top and bottom corner radii in points, from `NSWindow`'s
+/// private `_topCornerRadius` and `_bottomCornerRadius`, or `None` when
+/// this macOS answers neither. Fails for a window without an `AppKit`
+/// handle, as in GPUI tests.
+pub(crate) fn corner_radii(
+    window: &Window,
+) -> anyhow::Result<Option<(f64, f64)>> {
+    let native_window = native_window(window)?;
+    // SAFETY: `native_window` is GPUI's live NSWindow, read synchronously on
+    // the main thread. Each private selector is sent only after the window
+    // says it responds to it, and both return a CGFloat.
+    unsafe {
+        let top: BOOL = msg_send![
+            native_window,
+            respondsToSelector: sel!(_topCornerRadius)
+        ];
+        let bottom: BOOL = msg_send![
+            native_window,
+            respondsToSelector: sel!(_bottomCornerRadius)
+        ];
+        if top == NO || bottom == NO {
+            return Ok(None);
+        }
+        let top: f64 = msg_send![native_window, _topCornerRadius];
+        let bottom: f64 = msg_send![native_window, _bottomCornerRadius];
+        Ok(Some((top, bottom)))
+    }
+}
+
+/// The running macOS release's major version, such as 26.
+pub(crate) fn macos_major_version() -> u32 {
+    /// `NSOperatingSystemVersion`; only its layout matters past `major`.
+    #[repr(C)]
+    struct Version {
+        major: isize,
+        _minor: isize,
+        _patch: isize,
+    }
+    // SAFETY: `processInfo` returns the process's shared, live instance;
+    // `operatingSystemVersion` returns the struct above by value, which the
+    // `objc` crate sends through `objc_msgSend_stret` where the ABI needs it.
+    let version: Version = unsafe {
+        let info: *mut Object = msg_send![class!(NSProcessInfo), processInfo];
+        msg_send![info, operatingSystemVersion]
+    };
+    u32::try_from(version.major).unwrap_or(0)
+}
+
 fn standard_button(
     window: &Window,
     kind: usize,
 ) -> anyhow::Result<*mut Object> {
-    let RawWindowHandle::AppKit(handle) =
-        HasWindowHandle::window_handle(window)
-            .map_err(|error| anyhow::anyhow!("native window handle: {error}"))?
-            .as_raw()
-    else {
-        anyhow::bail!("traffic lights require an AppKit window");
-    };
-    let view = handle.ns_view.as_ptr().cast::<Object>();
-    // SAFETY: The borrowed handle identifies GPUI's live NSView on the main
-    // thread; its window owns the standard buttons.
+    let native_window = native_window(window)?;
+    // SAFETY: `native_window` is GPUI's live NSWindow on the main thread; it
+    // owns the standard buttons.
     unsafe {
-        let native_window: *mut Object = msg_send![view, window];
-        ensure!(!native_window.is_null(), "GPUI view has no window");
         let button: *mut Object =
             msg_send![native_window, standardWindowButton: kind];
         (!button.is_null())
             .then_some(button)
             .context("window has no standard buttons")
+    }
+}
+
+/// GPUI's `NSWindow` for `window`.
+fn native_window(window: &Window) -> anyhow::Result<*mut Object> {
+    let RawWindowHandle::AppKit(handle) =
+        HasWindowHandle::window_handle(window)
+            .map_err(|error| anyhow::anyhow!("native window handle: {error}"))?
+            .as_raw()
+    else {
+        anyhow::bail!("window geometry requires an AppKit window");
+    };
+    let view = handle.ns_view.as_ptr().cast::<Object>();
+    // SAFETY: The borrowed handle identifies GPUI's live NSView on the main
+    // thread.
+    unsafe {
+        let native_window: *mut Object = msg_send![view, window];
+        ensure!(!native_window.is_null(), "GPUI view has no window");
+        Ok(native_window)
     }
 }

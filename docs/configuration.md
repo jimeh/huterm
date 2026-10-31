@@ -210,6 +210,46 @@ focus_accent = 0.0 # 0 (off) to 1
 inactive_dim = 0.2 # 0 (off) to 0.8
 ```
 
+### Sync and zoom indicators
+
+A tab that syncs input, or shows a zoomed pane, says so with one shape drawn
+around its panes and a mark in the tab bar. By default a syncing tab draws a
+dashed line in the tab accent around its panes, following the window's
+rounded corners, with every divider drawn the same way. A zoomed tab draws a
+solid line in the theme's magenta and shows a zoom mark before the tab's
+title. While a single tab hides the tab bar, the window's title row shows
+both marks instead. While a tab both syncs and shows a zoomed pane, typing
+reaches only the zoomed pane, so the zoom look draws and the sync mark dims.
+Each state has its own table:
+
+```toml
+[panes.sync_indicator]
+style = "outline" # outline, dividers, glow, edge, title_bar, or off
+width = 2 # 1 to 6 points
+opacity = 0.9 # 0.1 to 1
+pattern = "dashed" # solid, dashed, or dotted
+
+[panes.zoom_indicator]
+style = "outline"
+width = 2
+opacity = 0.8
+pattern = "solid"
+```
+
+`outline` draws one line around the panes and, for sync, along each
+divider. `dividers` draws the dividers alone, so a zoomed tab, which shows
+none, draws only its marks. `glow` draws a soft band inside the edge, and
+along each divider for sync. `edge` draws one bar along the top of the panes.
+`title_bar` tints the title bar of each pane typing reaches, or of the zoomed
+pane, and shows a small chip in the pane's corner where its bar is hidden or
+has not appeared yet. `off` draws no shape and keeps the marks. `width` sets
+the thickness of the lines, `opacity` how strongly the shape draws, and
+`pattern` whether `outline`, `dividers`, and `edge` lines are solid, dashed,
+or dotted. A table you write only part of keeps its own defaults for the
+rest. Every key applies on reload. The corners are square in fullscreen, in
+a Quake window's drop-down, and on Linux, where the window's bottom corners
+are square.
+
 ### Modifier pane drags
 
 `drag_modifier` lets you drag a pane by pressing anywhere in it while you hold

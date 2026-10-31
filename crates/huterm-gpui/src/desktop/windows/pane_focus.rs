@@ -2,17 +2,21 @@
 //! focus_accent` and `inactive_dim`, and how strongly. Both stay off while
 //! only one pane shows, as in a zoomed or single-pane tab.
 
+use gpui::{Bounds, Pixels};
 use huterm_config::{MAX_INACTIVE_DIM, PaneTitleBarMode};
 use huterm_protocol::PaneId;
 
+use super::pane_indicators::IndicatorRecord;
+
 /// The focus marks a frame drew: each dimmed pane with its layer's opacity,
-/// the pane with the accent line, with its alpha, and each pane framed
-/// because its tab syncs input.
+/// the pane with the accent line, with its alpha and drawn bounds, and the
+/// sync or zoom indicator.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct FocusMarks {
     pub(super) dimmed: Vec<(PaneId, f32)>,
     pub(super) accent: Option<(PaneId, f32)>,
-    pub(super) synced: Vec<PaneId>,
+    pub(super) cue: Option<Bounds<Pixels>>,
+    pub(super) indicator: IndicatorRecord,
 }
 
 impl FocusMarks {

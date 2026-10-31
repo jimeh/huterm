@@ -237,22 +237,27 @@ fn panes_that_left_or_exited_get_no_synced_input_and_break_nothing(
     harness.cx.update(|cx| {
         assert!(!syncs_input(other, cx), "a moved pane's new tab starts off");
     });
-    // The exited pane takes no input, so only the live pane is framed.
-    harness.wait_for("only the live pane to draw a sync frame", |cx| {
-        focus_marks(cx, window).is_some_and(|marks| marks.synced == [first])
+    // The exited pane takes no input, so only the live pane receives.
+    harness.wait_for("only the live pane to receive synced input", |cx| {
+        focus_marks(cx, window)
+            .is_some_and(|marks| marks.indicator.receiving == [first])
     });
-    // Typing in the exited pane goes nowhere, so nothing is framed while it
-    // has focus.
+    // Typing in the exited pane goes nowhere, so no pane receives and no
+    // sync look draws while it has focus.
     harness.focus(window, tab, exiting);
-    harness.wait_for("no sync frame while the exited pane has focus", |cx| {
-        focus_marks(cx, window).is_some_and(|marks| marks.synced.is_empty())
+    harness.wait_for("no sync look while the exited pane has focus", |cx| {
+        focus_marks(cx, window).is_some_and(|marks| {
+            marks.indicator.receiving.is_empty()
+                && marks.indicator.look.is_none()
+        })
     });
     // Nor does typing there sync: the live shell answers "stay" below
     // without having read "dead" first.
     harness.type_line(window, "dead");
     harness.focus(window, tab, first);
-    harness.wait_for("the live pane's frame to return", |cx| {
-        focus_marks(cx, window).is_some_and(|marks| marks.synced == [first])
+    harness.wait_for("the live pane to receive again", |cx| {
+        focus_marks(cx, window)
+            .is_some_and(|marks| marks.indicator.receiving == [first])
     });
     harness.type_line(window, "stay");
     harness.wait_for("the focused pane to answer", |cx| {
@@ -326,14 +331,15 @@ fn harness_zoom(
 }
 
 #[gpui::test]
-fn a_toggle_elsewhere_redraws_the_frames_of_every_pane(
+fn a_toggle_elsewhere_redraws_the_indicator_of_every_pane(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let (window, first, second) = harness.split_window(tab);
-    harness.wait_for("a frame without sync frames", |cx| {
-        focus_marks(cx, window).is_some_and(|marks| marks.synced.is_empty())
+    harness.wait_for("a frame without receiving panes", |cx| {
+        focus_marks(cx, window)
+            .is_some_and(|marks| marks.indicator.receiving.is_empty())
     });
     // Another client's toggle changes no title, so only the hierarchy
     // change can redraw this window.
@@ -345,13 +351,14 @@ fn a_toggle_elsewhere_redraws_the_frames_of_every_pane(
             .unwrap();
     };
     set(&harness, true);
-    harness.wait_for("both panes to draw their sync frames", |cx| {
+    harness.wait_for("both panes to receive", |cx| {
         focus_marks(cx, window)
-            .is_some_and(|marks| marks.synced == [first, second])
+            .is_some_and(|marks| marks.indicator.receiving == [first, second])
     });
     set(&harness, false);
-    harness.wait_for("the sync frames to go", |cx| {
-        focus_marks(cx, window).is_some_and(|marks| marks.synced.is_empty())
+    harness.wait_for("the receiving panes to go", |cx| {
+        focus_marks(cx, window)
+            .is_some_and(|marks| marks.indicator.receiving.is_empty())
     });
 }
 
@@ -417,6 +424,11 @@ fn title_marks(cx: &mut App, window: AnyWindowHandle) -> Option<Vec<TabMark>> {
 /// How many image nodes in `window`'s last accessibility tree read
 /// "Syncing pane input".
 fn sync_mark_nodes(cx: &mut App, window: AnyWindowHandle) -> usize {
+    mark_nodes(cx, window, TabMark::InputSync.name())
+}
+
+/// How many state marks named `label` `window`'s accessibility tree holds.
+fn mark_nodes(cx: &mut App, window: AnyWindowHandle, label: &str) -> usize {
     let json = window
         .update(cx, |_, window, _| window.debug_a11y_tree_json())
         .unwrap()
@@ -427,8 +439,7 @@ fn sync_mark_nodes(cx: &mut App, window: AnyWindowHandle) -> usize {
         .unwrap()
         .values()
         .filter(|node| {
-            node["aria"]["role"] == "Image"
-                && node["aria"]["label"] == TabMark::InputSync.name()
+            node["aria"]["role"] == "Image" && node["aria"]["label"] == label
         })
         .count()
 }
@@ -527,6 +538,34 @@ fn the_title_row_shows_the_tabs_marks_only_while_the_tab_bar_is_hidden(
 }
 
 #[gpui::test]
+fn the_title_row_shows_a_lone_tabs_zoom_mark_before_its_sync_mark(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = title_row_harness(cx, |_| {});
+    let (window, tab) = harness.title_row_window();
+    let first = harness.first_pane(tab);
+    harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.focus(window, tab, first);
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_for("the title row to show the zoom mark", |cx| {
+        title_shows(cx, window, &[TabMark::Zoom])
+    });
+    harness.toggle_sync(window, tab, true);
+    // The zoom shows one pane, so the sync mark reads as paused, in the
+    // title row and on the zoomed pane's title bar.
+    harness.wait_for("the zoom mark, then the paused sync mark", |cx| {
+        title_shows(cx, window, &[TabMark::Zoom, TabMark::InputSync])
+            && mark_nodes(cx, window, TabMark::PAUSED_SYNC_NAME) == 2
+            && sync_mark_nodes(cx, window) == 0
+    });
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_for("the sync mark alone once unzoomed", |cx| {
+        title_shows(cx, window, &[TabMark::InputSync])
+            && mark_nodes(cx, window, TabMark::PAUSED_SYNC_NAME) == 0
+    });
+}
+
+#[gpui::test]
 fn an_always_shown_tab_bar_keeps_the_mark_out_of_the_title_row(
     cx: &mut TestAppContext,
 ) {
@@ -573,13 +612,15 @@ fn the_title_row_keeps_the_mark_while_the_focused_pane_has_exited(
             .is_some_and(|view| view.read(cx).exited)
     });
     harness.toggle_sync(window, tab, true);
-    // Typing reaches no pane, so no frame or pane bar mark shows; the
+    // Typing reaches no pane, so no indicator or pane bar mark shows; the
     // title row still says the tab syncs.
     harness.wait_for("the title row's mark alone", |cx| {
         title_shows(cx, window, &[TabMark::InputSync])
             && sync_mark_nodes(cx, window) == 1
-            && focus_marks(cx, window)
-                .is_some_and(|marks| marks.synced.is_empty())
+            && focus_marks(cx, window).is_some_and(|marks| {
+                marks.indicator.receiving.is_empty()
+                    && marks.indicator.look.is_none()
+            })
     });
 }
 

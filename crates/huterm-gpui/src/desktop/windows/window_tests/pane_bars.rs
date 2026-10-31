@@ -13,7 +13,10 @@ use super::pane_moves::pane_focused;
 use super::*;
 
 /// The rectangles `window` last drew for its active tab's panes.
-fn drawn(cx: &mut App, window: AnyWindowHandle) -> Option<Vec<PaneRect>> {
+pub(super) fn drawn(
+    cx: &mut App,
+    window: AnyWindowHandle,
+) -> Option<Vec<PaneRect>> {
     window
         .update(cx, |root, _, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
@@ -37,7 +40,7 @@ fn grid(
 impl DesktopHarness {
     /// Reloads `window` with its configuration's `[panes]` changed, as a
     /// configuration reload applies it.
-    fn reload_panes(
+    pub(super) fn reload_panes(
         &mut self,
         window: AnyWindowHandle,
         change: impl FnOnce(&mut PanesConfig),
@@ -383,6 +386,44 @@ fn a_revealed_bars_overlay_follows_its_pane_through_a_resize(
     });
 }
 
+#[gpui::test]
+fn the_title_bar_style_shows_chips_until_a_hover_bar_reveals_its_tint(
+    cx: &mut TestAppContext,
+) {
+    use huterm_config::IndicatorStyle;
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    harness.reload_panes(window, |panes| {
+        panes.title_bar = PaneTitleBarMode::Hover;
+        panes.sync_indicator.style = IndicatorStyle::TitleBar;
+    });
+    harness
+        .runtime
+        .lock()
+        .set_input_sync(harness.workspace, tab, true)
+        .unwrap();
+    // Neither bar shows yet, so each receiving pane shows a chip.
+    harness.wait_for("a chip on each pane", |cx| {
+        focus_marks(cx, window).is_some_and(|marks| {
+            marks.indicator.chips == [first, second]
+                && marks.indicator.tinted.is_empty()
+                && marks.indicator.key.is_none()
+        })
+    });
+    // Once the first bar reveals, it carries the tint in place of a chip.
+    let bar = harness.bar_of(window, first);
+    let start = Instant::now();
+    harness.point_bars(window, Some(bar.center()));
+    harness.animate_through(window, start, start + Duration::from_millis(500));
+    harness.wait_for("the revealed bar's tint", |cx| {
+        focus_marks(cx, window).is_some_and(|marks| {
+            marks.indicator.tinted == [first]
+                && marks.indicator.chips == [second]
+        })
+    });
+}
+
 /// The focus marks `window` last drew.
 pub(super) fn focus_marks(
     cx: &mut App,
@@ -408,10 +449,11 @@ fn focus_marks_follow_focus_zoom_and_the_bar_mode(cx: &mut TestAppContext) {
         panes.focus_accent = 0.5;
         panes.inactive_dim = 0.4;
     });
-    let marks = |dimmed: Vec<(PaneId, f32)>, accent| FocusMarks {
-        dimmed,
-        accent,
-        synced: Vec::new(),
+    // The dim layers and the accent; the cue's bounds and the indicator
+    // have tests of their own.
+    let marks = |dimmed: Vec<(PaneId, f32)>, accent| (dimmed, accent);
+    let focus_marks = |cx: &mut App, window| {
+        focus_marks(cx, window).map(|marks| (marks.dimmed, marks.accent))
     };
     // The focused pane carries the accent; the other dims.
     let expected = marks(vec![(first, 0.4)], Some((second, 0.5)));
@@ -427,7 +469,7 @@ fn focus_marks_follow_focus_zoom_and_the_bar_mode(cx: &mut TestAppContext) {
     harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
     harness.wait_for("zoom to clear the marks", |cx| {
         pane_shown(cx, window, tab, second).is_some_and(|(shown, _)| !shown)
-            && focus_marks(cx, window) == Some(FocusMarks::default())
+            && focus_marks(cx, window) == Some(marks(Vec::new(), None))
     });
     harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
     // Visible bars show focus themselves, so only the dimming stays.

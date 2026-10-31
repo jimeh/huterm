@@ -52,6 +52,22 @@ const trafficLightsEnd = (text: string): number => {
   return lights.x + lights.w;
 };
 
+/**
+ * The window's corner radii, `top,bottom`, which the pane indicator's
+ * outline follows. macOS 26 and later answer `NSWindow`'s private radius
+ * selectors; an older release may not, and then Huterm's version table
+ * answers instead.
+ */
+export function checkWindowRadii(text: string, macosMajor: number): string {
+  const source = field(text, "radius_source");
+  const radii = field(text, "window_radii").split(",").map(Number);
+  const sources = macosMajor >= 26 ? ["appkit"] : ["appkit", "table"];
+  if (!sources.includes(source) || radii.length !== 2 || !radii.every((radius) => radius > 0)) {
+    throw new Error(`window radii ${field(text, "window_radii")} from ${source} on macOS ${macosMajor}: expected rounded corners from ${sources.join(" or ")}`);
+  }
+  return `${field(text, "window_radii")}@${source}`;
+}
+
 export async function checkMacTitlebar(executable: string, pointer: string, position: "titlebar" | "top"): Promise<void> {
   const merged = position === "titlebar";
   const engine = "ghostty";
@@ -183,7 +199,9 @@ label = "title"
     if (merged && (Math.abs(lights.y + lights.h / 2 - ROW / 2) > 0.5 || lights.x < 4 || lights.x > 16)) {
       throw new Error(`${engine}: traffic lights ${field(laid, "traffic_lights")} are not centred in the ${ROW}-point strip`);
     }
-    console.log(`MACOS_TITLEBAR_SMOKE ${engine} ${position} traffic-lights=${field(laid, "traffic_lights")}`);
+    const macosMajor = Number(run(["sw_vers", "-productVersion"]).split(".")[0]);
+    const radii = checkWindowRadii(laid, macosMajor);
+    console.log(`MACOS_TITLEBAR_SMOKE ${engine} ${position} traffic-lights=${field(laid, "traffic_lights")} window-radii=${radii}`);
 
     const windowed = frame();
     if (merged) {
