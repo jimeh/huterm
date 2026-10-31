@@ -68,6 +68,16 @@ export function checkWindowRadii(text: string, macosMajor: number): string {
   return `${field(text, "window_radii")}@${source}`;
 }
 
+/**
+ * A horizontal window drag of `by` points toward the side of `visible` with
+ * room for it, so the window's controls stay on the display: a sidebar makes
+ * the window wide enough that a rightward drag can push its corner menu
+ * button off a small display.
+ */
+export function roomyDrag(window: Rect, visible: Rect, by: number): number {
+  return window.x + window.w + by <= visible.x + visible.w ? by : -by;
+}
+
 /** Empty sidebar strip space clear of native lights and the corner menu. */
 export function sidebarStripPoint(position: "left" | "right", terminal: Rect): Point {
   return { x: position === "left" ? terminal.x - 24 : terminal.x + terminal.w + 24, y: ROW / 2 };
@@ -253,11 +263,11 @@ label = "title"
     // takes over from `performWindowDragWithEvent:` and can drop part of a
     // synthetic drag, so require most of a horizontal one.
     const space = emptyRowSpace(await current());
-    const by = 150;
+    const by = roomyDrag(windowed, parseFrame(run([pointer, "visible"])), 150);
     drag(space, { x: by, y: 0 });
     const moved = await frameWhere(
-      (value) => value.w === windowed.w && value.h === windowed.h && value.x - windowed.x >= by / 2,
-      `the window moved right by at least ${by / 2} from ${JSON.stringify(windowed)}`,
+      (value) => value.w === windowed.w && value.h === windowed.h && (value.x - windowed.x) * Math.sign(by) >= Math.abs(by) / 2,
+      `the window moved by at least half of ${by} from ${JSON.stringify(windowed)}`,
     );
     await state("w0.tabs=2", "w0.active_index=1", "w0.active=true");
 
@@ -290,10 +300,12 @@ label = "title"
       // sidebar's menu button must remain above the occluding bar too.
       const strip = sidebarStripPoint(position, parseRect(field(await current(), "terminal_bounds")));
       const beforeStrip = frame();
-      drag(strip, { x: -100, y: 0 });
+      // Back toward where the window started, so it stays on the display.
+      const back = -Math.sign(by) * 100;
+      drag(strip, { x: back, y: 0 });
       const stripMoved = await frameWhere(
-        (value) => value.w === beforeStrip.w && value.h === beforeStrip.h && beforeStrip.x - value.x >= 50,
-        "the sidebar strip moved the window left",
+        (value) => value.w === beforeStrip.w && value.h === beforeStrip.h && (value.x - beforeStrip.x) * Math.sign(back) >= 50,
+        `the sidebar strip moved the window by at least half of ${back}`,
       );
       await ack("acksidebarx");
       click(centre(parseRect(field(await current(), "menu_button"))));
