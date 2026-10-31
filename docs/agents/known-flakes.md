@@ -480,48 +480,39 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   recurs on a normal-speed run, the harness wait or the close path needs a
   closer look; otherwise record the run here and rerun.
 
-## huterm-gpui Edit menu Select All on hosted macOS
+## huterm-gpui Edit menu Select All
 
 - **Label:** `desktop::windows::window_tests::menus::the_edit_menus_cut_needs_a_field_and_copy_follows_focus`
-  in `Checks (macOS arm64)` fails at `menus.rs:407` with "Select All
-  selected the terminal".
-- **Occurrences:** 2026-10-30 (PR #343 at `10dcb4e7`, run 41108259656, job
-  124243665182). The test passed six times in a row locally on the same
-  code, and the PR does not touch menus, selection, or snapshots.
-- **Evidence:** the failed run's `huterm-gpui` suite took 116.14 seconds
-  against about 14 locally. `select_all` sets the selection synchronously
-  from the current snapshot, so a missing selection after
-  `run_until_parked` suggests a later snapshot cleared it or the action
-  reached another focus target; neither is confirmed.
-- **Second occurrence:** 2026-10-31 on PR #353 (run 41163015658, job
-  124424493459, head `65daebae`), beside the pane rename flake below. The
-  `huterm-gpui` suite took 127.96 seconds; both tests passed eight times in
-  a row locally on the same head, about 0.9 seconds a run. The PR adds
-  pane input sync and changes neither menus nor selection.
-- **Third occurrence:** 2026-10-31 on PR #356 (run 41168895933, job
-  124442367197, head `7f3ee93b`). The `huterm-gpui` suite took 134.12
-  seconds; local `mise run verify` passed on the same code. The PR changes
-  only Quake display placement.
-- **Fourth occurrence:** 2026-10-31 (run 41171440439, job 124450056001,
-  head `5d501107`). The `huterm-gpui` suite took 138.87 seconds, and the
-  job passed on rerun.
-- **Fifth occurrence:** 2026-10-31 on PR #364 (run 41211311456, job
-  124566827041, head `6167ff35`). The `huterm-gpui` suite took 150.27
-  seconds; the test passed six times in a row locally on the same head,
-  about 0.3 seconds a run. The PR adds checkable rows to Huterm's menu
-  renderer and the pane menu but changes neither the Edit menu nor terminal
-  selection.
-- **First local failures:** 2026-10-31, rebasing PR #364 onto `41876720`.
-  `cargo test -p huterm-gpui --features test-support window_tests::menus`
-  on a macOS arm64 dev machine failed at the same assertion once in a run
-  of focused filters and once in 20 repeated runs of that module. Origin
-  main `41876720` failed 3 of 55 module runs in a disposable worktree,
-  without capturing which test failed. The test alone passed six runs out
-  of six. So it is not only hosted-runner slowness. A local repro loop is:
-  repeat that module filter about 20 times.
-- **Triage:** it now recurs locally at normal speed, so the next step is to
-  log the terminal's selection and snapshot generation around the dispatch
-  under the module loop above. Until then, record the run here and rerun.
+  in `Checks (macOS arm64)` or `Checks (Linux x86_64)` fails at
+  `menus.rs:407` with "Select All selected the terminal".
+- **Occurrences:** five times in hosted macOS jobs from 2026-10-30 to
+  2026-10-31 (PRs #343, #353, #356, and #364, and run 41171440439), in
+  `huterm-gpui` suites that took 116 to 150 seconds. Then on Linux x86_64
+  on release PR #332 (run 41222001449, job 124598321383, head `65e3c8cd`).
+  It also failed locally on a macOS arm64 dev machine at normal speed: 12
+  of 360 runs of `cargo test -p huterm-gpui --features test-support
+  window_tests::menus` on `0052a20a`.
+- **Cause:** `open_tab` starts the tab unsized, and the child can print
+  `READY` before the window's first geometry applies. `menu_window`
+  returned as soon as the view showed `READY`, so Select All could select
+  on that snapshot, at content generation 1 and geometry revision 0, while
+  the runtime had already applied the window's geometry, which keeps the
+  100x32 grid. Every resize advances the content generation, so the next
+  snapshot, at generation 2 and geometry revision 1, cleared the selection.
+  Temporary logging caught this sequence in all 8 failures of 150 module
+  runs. In each, `select_all` reached the terminal view with a snapshot,
+  and the only clear was the generation check in `apply_snapshot`. A
+  passing run's view had already seen generation 2 before `READY`
+  matched. The selection-extraction reply, viewer invalidation, and
+  foreground probe cleared nothing.
+- **Fix:** `menu_window` now also waits for its view's snapshot to carry a
+  geometry revision above 0. With it the module passed 360 of 360 runs on
+  the same machine.
+- **Triage:** a failure at this label after the fix is new, since the
+  selection is made on a snapshot of the window's own geometry. Check
+  whether something else advanced the generation, such as output or a
+  second resize. Remove this entry once the fixed test has passed in about
+  20 macOS and Linux check jobs.
 
 ## huterm-gpui pane rename title on hosted macOS
 
