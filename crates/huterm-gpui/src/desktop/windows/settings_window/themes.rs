@@ -401,7 +401,15 @@ impl SettingsView {
                 });
             cards = cards
                 .option(slot.id(), name.clone(), slot == target, &handle)
-                .accessible_name(format!("{} theme: {name}", slot.label()))
+                .accessible_name(if slot == current {
+                    format!(
+                        "{} theme: {name}, {system} is {}",
+                        slot.label(),
+                        slot.id()
+                    )
+                } else {
+                    format!("{} theme: {name}", slot.label())
+                })
                 .content(
                     div()
                         .flex()

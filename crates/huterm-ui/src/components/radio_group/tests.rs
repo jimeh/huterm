@@ -226,6 +226,31 @@ fn stretched_cards_share_the_line_with_trailing_and_footer_elements(
 }
 
 #[gpui::test]
+fn a_row_ends_its_label_line_with_its_trailing_element(
+    cx: &mut TestAppContext,
+) {
+    let focus = cx.update(|cx| cx.focus_handle());
+    let (_, cx) = host(cx, move |_, _| {
+        div()
+            .w(px(400.0))
+            .child(
+                RadioGroup::new("rows", "Theme", tokens())
+                    .option("nord", "nord", true, &focus)
+                    .trailing(
+                        div()
+                            .debug_selector(|| "row-status".to_owned())
+                            .child("Active"),
+                    ),
+            )
+            .into_any_element()
+    });
+    cx.run_until_parked();
+    let status = cx.debug_bounds("row-status").expect("drawn");
+    // At the 400-point row's end, inside its padding, not after "nord".
+    assert!(status.right() > px(380.0), "{status:?}");
+}
+
+#[gpui::test]
 fn a_pointer_click_checks_and_focuses_a_radio(cx: &mut TestAppContext) {
     let (probe, cx) = themes(cx, Kind::Cards);
     click(cx, "Solarized");

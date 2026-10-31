@@ -2128,7 +2128,7 @@ pub struct RawConfig {
     pub palette: PaletteConfig,
     #[serde(default)]
     pub panes: PanesConfig,
-    /// Use one theme, or match the system.
+    /// One theme, or follow light and dark mode.
     #[serde(default)]
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "appearance",

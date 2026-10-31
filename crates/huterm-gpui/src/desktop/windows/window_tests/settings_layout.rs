@@ -338,6 +338,17 @@ fn the_theme_mode_switch_works_from_the_keyboard(cx: &mut TestAppContext) {
         settled(cx) && !file.text().contains("light")
     });
     assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
+    // The arrows stop at the ends, as a segmented row's do.
+    keys(&harness, "left down");
+    assert!(harness.cx.update(settled), "a step past the end wrote");
+    assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
+    // Return opens the options too, and Escape leaves the choice alone.
+    keys(&harness, "enter");
+    assert!(with_view(&mut harness, |view, _| view.menu_open()));
+    keys(&harness, "escape");
+    assert!(!with_view(&mut harness, |view, _| view.menu_open()));
+    assert_eq!(focus(&mut harness), "action:theme-mode");
+    assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
     // Space opens the options on the current one, as on every segmented
     // row; Down and Return pick Match system.
     keys(&harness, "space");
@@ -351,6 +362,10 @@ fn the_theme_mode_switch_works_from_the_keyboard(cx: &mut TestAppContext) {
     });
     assert!(!with_view(&mut harness, |view, _| view.menu_open()));
     assert_eq!(focus(&mut harness), "action:theme-mode");
+    // At Match system the arrows stop too.
+    keys(&harness, "right up");
+    assert!(harness.cx.update(settled), "a step past the end wrote");
+    assert!(file.text().contains("light"));
 }
 
 /// A click on a theme card draws no ring, and keyboard focus on it does.

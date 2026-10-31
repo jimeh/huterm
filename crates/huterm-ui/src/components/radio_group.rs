@@ -353,10 +353,13 @@ fn render_radio(
                     .active(|style| style.bg(tokens.pressed()))
             })
             .child(indicator(checked, tokens).mt(px(1.0)))
+            // The text takes the rest of the row, so anything trailing the
+            // label reaches the row's end.
             .child(
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
                     .min_w_0()
                     .gap(px(2.0))
                     .child(label)
