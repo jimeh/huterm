@@ -363,7 +363,12 @@ impl WorkspaceView {
                 LabelZone::Spring(index) => {
                     Some(DropTarget::Spring(self.tabs.get(index)?.id))
                 }
-                LabelZone::Slot(index) => Some(DropTarget::Slot(index)),
+                LabelZone::Slot(index) => self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == drag.tab)
+                    .filter(|tab| tab.panes.len() > 1)
+                    .map(|_| DropTarget::Slot(index)),
             };
         }
         let (tab, rect) = self.drawn_pane_at(pointer)?;

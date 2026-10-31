@@ -776,3 +776,93 @@ fn a_pane_drag_under_way_still_drops_while_an_arrangement_is_in_flight(
             .any(|notice| notice.ends_with("|The panes changed; try again"))
     });
 }
+
+#[gpui::test]
+fn a_lone_bar_drag_skips_own_pane_and_slots_but_nests_after_spring_loading(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.panes.title_bar_always_show = true;
+    });
+    let tab = harness.open_tab(ECHO);
+    let other = harness.open_tab(ECHO);
+    let pane = harness.first_pane(tab);
+    let target = harness.first_pane(other);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.show_drawn(window, tab);
+    let grab = harness.grab(window, pane);
+    harness.press_at(window, grab);
+    let frame = harness.frame(window, pane);
+    harness.move_to(window, frame.center());
+    harness.wait_for("the lone drag without an own-pane target", |cx| {
+        pane_drag(cx, window).is_some_and(|(target, _)| target.is_none())
+    });
+    let slot = harness.update_view(window, |view, window, _| {
+        let strip = view.tab_strip(window);
+        let bar = view.chrome_layout(window).strip_bounds(view.layout_tabs());
+        gpui::point(bar.right() - px(2.0), strip.label(0).center().y)
+    });
+    harness.move_to(window, slot);
+    harness
+        .cx
+        .update(|cx| assert_eq!(pane_drag(cx, window).unwrap().0, None));
+    let label = harness.label(window, 1);
+    harness.move_to(window, label);
+    harness.wait_for("the other tab to arm", |cx| {
+        pane_drag(cx, window).is_some_and(|(_, armed)| armed == Some(other))
+    });
+    let (armed, _) = harness.armed(window);
+    harness.advance(window, armed + SPRING_LOAD_DELAY);
+    harness.wait_for("the spring-loaded destination to draw", |cx| {
+        active(cx, window) == Some(other)
+            && super::pane_bars::drawn(cx, window)
+                .is_some_and(|rects| rects[0].pane == target)
+    });
+    harness.move_to(window, slot);
+    harness
+        .cx
+        .update(|cx| assert_eq!(pane_drag(cx, window).unwrap().0, None));
+    let frame = harness.frame(window, target);
+    let edge = gpui::point(frame.right() - px(8.0), frame.center().y);
+    harness.move_to(window, edge);
+    harness.wait_for("a permitted edge target in the other tab", |cx| {
+        pane_drag(cx, window).is_some_and(|(drop, _)| {
+            target_is(drop, target, Zone::Edge(SplitDirection::Right), false)
+        })
+    });
+    harness.release_at(window, edge);
+    harness.wait_for("the lone pane to nest and focus", |cx| {
+        panes_shown(cx, window, other) == Some((vec![target, pane], pane))
+    });
+}
+
+#[gpui::test]
+fn a_lone_bar_drag_has_no_targets_with_a_hidden_tab_bar(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.panes.title_bar_always_show = true;
+        config.tabs.always_show = false;
+    });
+    let tab = harness.open_tab(ECHO);
+    let pane = harness.first_pane(tab);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.show_drawn(window, tab);
+    let grab = harness.grab(window, pane);
+    harness.press_at(window, grab);
+    let frame = harness.frame(window, pane);
+    harness.move_to(window, frame.center());
+    harness.wait_for("the lone drag to start without a target", |cx| {
+        pane_drag(cx, window).is_some_and(|(target, _)| target.is_none())
+    });
+    harness.update_view(window, |view, _, _| assert!(!view.bar_drawn()));
+    harness.release_at(window, frame.center());
+    harness.wait_for("the untargeted release to end without a move", |cx| {
+        no_drag(cx, window)
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(panes_shown(cx, window, tab), Some((vec![pane], pane)));
+    });
+}

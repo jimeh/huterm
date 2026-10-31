@@ -26,9 +26,10 @@ GPUI for rendering.
   reordered by dragging, renamed, and labelled by program, title, or working
   directory.
 - **Split panes:** a tab splits into panes side by side or stacked, each with
-  its own shell and a title bar while the tab is split. Keyboard commands move
-  focus between panes in order or by direction, dividers drag or step to
-  resize the panes beside them, and a pane zooms across its tab. Panes swap,
+  its own shell. Pane title bars have split, zoom, and close buttons and can
+  also show on a tab's only pane. Keyboard commands move focus between panes
+  in order or by direction, dividers drag or step to resize the panes beside
+  them, and a pane zooms across its tab. Panes swap,
   move between tabs, and open in tabs of their own by command or by dragging
   their title bars, and a tab dragged onto a pane joins it as a split. With
   an optional [drag modifier](docs/configuration.md#modifier-pane-drags) held,

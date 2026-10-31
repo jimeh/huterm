@@ -1368,7 +1368,12 @@ starts, and keeps each entry's identity through the call's own edits and
 removals; resolving again after an earlier patch can land on an identical
 twin. Its desktop
 validator, `config::validator`, must stay free of side effects: it compiles the
-keymap and global shortcuts but registers nothing.
+keymap and global shortcuts but registers nothing. Every desktop writer,
+including Settings' queues and the pane menu's Auto-hide Title Bars preference,
+holds `config::write_lock()` on its background worker through load and apply.
+The process-wide lock keeps the patch service's final recheck and rename
+serialized across windows. A successful menu save calls `reload` even with
+watching disabled; a failed save leaves the in-memory mode alone.
 
 Configuration schemas are generated from `huterm-config` with its `schema`
 feature; that crate must remain independent of GPUI and terminal engines.

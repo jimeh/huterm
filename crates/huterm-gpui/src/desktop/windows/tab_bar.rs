@@ -2,6 +2,7 @@
 
 use gpui::{Div, Hsla, Point, Rems, Stateful, Svg, TextRun, point, svg};
 use huterm_config::{Rgba, TabCloseButton, TabStyle, TabWidth, TabsConfig};
+use huterm_protocol::{CommandInvocation, ids};
 use huterm_ui::components::button::{Button, Colors as ButtonColors};
 use huterm_ui::typography::{Typography, ui};
 
@@ -53,6 +54,8 @@ pub(super) struct PaneTitleBar {
     pub(super) status: TabStatus,
     pub(super) focused: bool,
     pub(super) zoomed: bool,
+    /// The tab has no other pane, so the bar has no zoom toggle.
+    pub(super) lone: bool,
     /// The pane's tab syncs input, so the bar shows the sync mark.
     pub(super) input_sync: bool,
     /// A zoom shows this pane alone, so syncing reaches nothing else and
@@ -490,6 +493,47 @@ impl WorkspaceView {
     }
 }
 
+/// The optional controls a pane title bar draws; Close always draws.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PaneTitleButtons {
+    pub(super) splits: bool,
+    pub(super) zoom: bool,
+}
+
+/// Which optional controls fit a bar `width` wide whose leading marks take
+/// `leading`, keeping 40 points for the title. A narrowing bar drops both
+/// split buttons first, then the zoom toggle; a `lone` pane has no zoom
+/// toggle.
+pub(super) fn pane_title_buttons(
+    width: Pixels,
+    leading: Pixels,
+    lone: bool,
+) -> PaneTitleButtons {
+    let base = px(8.0) + PANE_TITLE_PADDING_RIGHT + leading + px(40.0);
+    let slot = CLOSE_SIZE + PANE_TITLE_GAP;
+    PaneTitleButtons {
+        splits: width >= base + slot * if lone { 3.0 } else { 4.0 },
+        zoom: !lone && width >= base + slot * 2.0,
+    }
+}
+
+/// Width of the leading marks, including their gaps before the title.
+pub(super) fn pane_title_leading(
+    input_sync: bool,
+    status: TabStatus,
+) -> Pixels {
+    let sync = if input_sync {
+        ICON_SIZE + PANE_TITLE_GAP
+    } else {
+        px(0.0)
+    };
+    sync + match status {
+        TabStatus::Idle => px(0.0),
+        TabStatus::Busy => DOT_SIZE + PANE_TITLE_GAP,
+        _ => ICON_SIZE + PANE_TITLE_GAP,
+    }
+}
+
 impl WorkspaceView {
     /// The centre of the close button in a pane title bar at `bounds`.
     pub(super) fn pane_close_center(bounds: Bounds<Pixels>) -> Point<Pixels> {
@@ -506,12 +550,35 @@ impl WorkspaceView {
         point(close.x - CLOSE_SIZE - PANE_TITLE_GAP, close.y)
     }
 
-    /// One pane's title bar in a split tab: its sync mark, its status, its
-    /// title, a zoom toggle, and a close button, reported as a group named
+    /// The centre of the Split Down button, before the zoom toggle when
+    /// `zoom` draws, otherwise before Close.
+    pub(super) fn pane_split_down_center(
+        bounds: Bounds<Pixels>,
+        zoom: bool,
+    ) -> Point<Pixels> {
+        let close = Self::pane_close_center(bounds);
+        point(
+            close.x
+                - (CLOSE_SIZE + PANE_TITLE_GAP) * if zoom { 2.0 } else { 1.0 },
+            close.y,
+        )
+    }
+
+    /// The centre of the Split Right button, just before Split Down.
+    pub(super) fn pane_split_right_center(
+        bounds: Bounds<Pixels>,
+        zoom: bool,
+    ) -> Point<Pixels> {
+        let down = Self::pane_split_down_center(bounds, zoom);
+        point(down.x - CLOSE_SIZE - PANE_TITLE_GAP, down.y)
+    }
+
+    /// One pane's title bar: its sync mark, status, title, split buttons,
+    /// zoom toggle when available, and close button, reported as a group named
     /// by the title. A press focuses the pane, starts a pane drag once it
     /// moves, and never reaches the terminal; the focused pane uses the
     /// active tab colours, and the toggle stays highlighted while the pane
-    /// is zoomed. Both buttons act on release over themselves.
+    /// is zoomed. Buttons act on release over themselves.
     pub(super) fn pane_title_bar(
         bar: PaneTitleBar,
         colors: TabColors,
@@ -526,11 +593,17 @@ impl WorkspaceView {
             status,
             focused,
             zoomed,
+            lone,
             input_sync,
             sync_dimmed,
             tint,
             bottom,
         } = bar;
+        let buttons = pane_title_buttons(
+            bounds.size.width,
+            pane_title_leading(input_sync, status),
+            lone,
+        );
         div()
             .id(("pane-title", pane.get()))
             .role(gpui::Role::Group)
@@ -592,20 +665,61 @@ impl WorkspaceView {
             .children(status_icon(status, colors))
             .child(pane_title_text(title, status))
             .children(Self::pane_title_buttons(
-                tab, pane, zoomed, colors, swatch, cx,
+                tab, pane, zoomed, buttons, colors, swatch, cx,
             ))
     }
 
-    /// A pane title bar's zoom toggle, worded as the pane menu's row, and
-    /// its close button.
+    /// Controls in order: Split Right, Split Down, Zoom, Close.
     fn pane_title_buttons(
         tab: TabId,
         pane: PaneId,
         zoomed: bool,
+        shown: PaneTitleButtons,
         colors: TabColors,
         swatch: Swatch,
         cx: &Context<'_, Self>,
-    ) -> [Button; 2] {
+    ) -> Vec<Button> {
+        let mut buttons = Vec::new();
+        if shown.splits {
+            for (name, label, icon, command) in [
+                (
+                    "split-right-pane",
+                    "Split Right",
+                    Icon::Columns,
+                    ids::SPLIT_RIGHT,
+                ),
+                ("split-down-pane", "Split Down", Icon::Rows, ids::SPLIT_DOWN),
+            ] {
+                buttons.push(
+                    Self::pane_title_button(
+                        (name, pane.get()),
+                        label,
+                        icon,
+                        None,
+                        colors,
+                        swatch,
+                    )
+                    .on_click(Self::button_action(
+                        cx,
+                        move |view, window, cx| {
+                            cx.stop_propagation();
+                            view.focus_pane(tab, pane, window, cx);
+                            if let Err(error) = view.invoke_interactive(
+                                &CommandInvocation::new(command, vec![]),
+                                window,
+                                cx,
+                            ) {
+                                view.report_failure(
+                                    "Command failed",
+                                    error.to_string(),
+                                    cx,
+                                );
+                            }
+                        },
+                    )),
+                );
+            }
+        }
         let zoom = Self::pane_title_button(
             ("zoom-pane", pane.get()),
             if zoomed { "Unzoom Pane" } else { "Zoom Pane" },
@@ -634,7 +748,11 @@ impl WorkspaceView {
             cx.stop_propagation();
             view.request_close(CloseTarget::Pane { tab, pane }, window, cx);
         }));
-        [zoom, close]
+        if shown.zoom {
+            buttons.push(zoom);
+        }
+        buttons.push(close);
+        buttons
     }
 
     /// A square icon-only title bar button named `label`, whose press never

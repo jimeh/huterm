@@ -4760,7 +4760,7 @@ impl WorkspaceView {
     }
 
     /// The active tab's panes: each pane's terminal view at its rectangle
-    /// inside `bounds`, a title bar per pane in a split tab, and the
+    /// inside `bounds`, the enabled pane title bars, and the
     /// dividers between panes. The marks over them, `pane_marks`, draw
     /// later, above the rounded terminal corner.
     fn pane_elements(
@@ -4802,13 +4802,10 @@ impl WorkspaceView {
             // A view the layout no longer holds, such as one still closing,
             // is not drawn. A tab without a layout to draw shows only its
             // focused pane, across the whole bounds.
-            let rect = match &rects {
-                Some(rects) => match rects.pane(pane.pane) {
-                    Some(rect) => Some(rect),
-                    None => continue,
-                },
+            let rect = match rects.as_ref().map(|rects| rects.pane(pane.pane)) {
+                Some(Some(rect)) => Some(rect),
                 None if pane.pane == focused => None,
-                None => continue,
+                _ => continue,
             };
             let terminal = rect.map_or(bounds, |rect| rect.terminal);
             let id = pane.pane;
@@ -4856,6 +4853,7 @@ impl WorkspaceView {
                             status: pane.status(cx),
                             focused: id == focused,
                             zoomed: zoomed == Some(id),
+                            lone: tab.panes.len() == 1,
                             input_sync,
                             sync_dimmed: zoomed.is_some(),
                             tint: self.bar_tint(look, id, input_sync, colors),
@@ -5991,7 +5989,7 @@ impl WorkspaceView {
         ))
     }
 
-    /// Where this window's split tabs put their panes' title bars.
+    /// Where this window puts its panes' title bars.
     fn title_bars(&self) -> TitleBars {
         TitleBars::new(&self.config.panes)
     }
@@ -13361,6 +13359,8 @@ impl WorkspaceView {
         let input = PaneMenuInput {
             platform: Platform::current(),
             zoomed: self.shown_zoom(view, cx) == Some(pane),
+            panes: view.panes.len(),
+            title_bar: self.config.panes.title_bar,
             input_sync: input_sync::syncs_input(view.id, cx),
             directory_known: tab_directory_path(
                 &focused.view.read(cx).metadata,
@@ -13617,6 +13617,7 @@ impl WorkspaceView {
         let view = cx.new(|cx| {
             clock.observe(cx);
             MenuView::new(label, model, swatch, from_keyboard, cx)
+                .check_icon(Icon::Check.asset_path())
         });
         cx.subscribe_in(&view, window, Self::handle_menu_event)
             .detach();
@@ -13767,6 +13768,51 @@ impl WorkspaceView {
         }
     }
 
+    /// Saves the pane menu's title bar preference, then reloads every window.
+    fn toggle_auto_hide_title_bars(&mut self, cx: &mut Context<'_, Self>) {
+        let mode = match self.config.panes.title_bar {
+            PaneTitleBarMode::Hover => "visible",
+            PaneTitleBarMode::Visible => "hover",
+            PaneTitleBarMode::Hidden => return,
+        };
+        let path = cx.global::<Desktop>().config_path.clone();
+        let task = cx.background_spawn(async move {
+            use huterm_config::document::{ConfigFile, Patch};
+            let _write = crate::config::write_lock()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let file = ConfigFile::new(path.clone());
+            let base = file.load()?;
+            file.apply(
+                &base,
+                &[Patch::Set {
+                    path: vec!["panes".to_owned(), "title_bar".to_owned()],
+                    value: toml::Value::String(mode.to_owned()),
+                }],
+                &crate::config::validator(path),
+            )
+        });
+        cx.spawn(async move |view, cx| {
+            let result = task.await;
+            // Saving remains effective if its originating window closed.
+            cx.update(|cx| match result {
+                Ok(_) => {
+                    reload(cx);
+                }
+                Err(error) => {
+                    let _ = view.update(cx, |view, cx| {
+                        view.report_failure(
+                            "Cannot change title bars",
+                            error.to_string(),
+                            cx,
+                        );
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Runs the item `id` picked from a menu of `kind`.
     fn run_menu_pick(
         &mut self,
@@ -13787,6 +13833,12 @@ impl WorkspaceView {
         } = kind
             && self.run_link_pick(id, link, cx)
         {
+            return;
+        }
+        if matches!(kind, MenuKind::Pane { .. })
+            && id == pane_menu::AUTO_HIDE_TITLE_BARS
+        {
+            self.toggle_auto_hide_title_bars(cx);
             return;
         }
         // An Arrange Panes item runs `arrange_panes` with its layout, as the
@@ -14259,6 +14311,45 @@ impl WorkspaceView {
         )
     }
 
+    /// Centres of the optional controls actually present at each bar width.
+    fn pane_buttons_smoke_state(
+        panes: &[(&PaneRect, &PaneView)],
+        tab: Option<&TabView>,
+        cx: &App,
+    ) -> [String; 3] {
+        let mut centers: [Vec<String>; 3] = std::array::from_fn(|_| Vec::new());
+        for (rect, pane) in panes {
+            let shown = tab_bar::pane_title_buttons(
+                rect.frame.size.width,
+                tab_bar::pane_title_leading(
+                    tab.is_some_and(|tab| input_sync::receives(tab, pane, cx)),
+                    pane.status(cx),
+                ),
+                tab.is_none_or(|tab| tab.panes.len() == 1),
+            );
+            let positions = rect.title_bar.map_or([None; 3], |bar| {
+                [
+                    shown.zoom.then(|| Self::pane_zoom_center(bar)),
+                    shown.splits.then(|| {
+                        Self::pane_split_right_center(bar, shown.zoom)
+                    }),
+                    shown
+                        .splits
+                        .then(|| Self::pane_split_down_center(bar, shown.zoom)),
+                ]
+            });
+            for (centers, position) in centers.iter_mut().zip(positions) {
+                centers.push(position.map_or_else(
+                    || "none".to_owned(),
+                    |point| {
+                        format!("{},{}", f32::from(point.x), f32::from(point.y))
+                    },
+                ));
+            }
+        }
+        centers.map(|centers| centers.join(";"))
+    }
+
     /// The active tab's panes for smoke fixtures, as `<prefix>` fields:
     /// `panes` counts them, `pane_focus` is the focused pane's index, and
     /// `pane_zoomed` the zoomed one's, or `none`. In split layout order and
@@ -14266,7 +14357,7 @@ impl WorkspaceView {
     /// `columns,rows`, `pane_rects` its drawn terminal bounds in window
     /// points (a pane a zoom hides keeps its split bounds), and `pane_close`
     /// and `pane_zoom` its title bar buttons' centres as `x,y`, or `none`
-    /// while the tab is not split. `pane_dividers` lists the drawn
+    /// when a bar or control is absent. `pane_dividers` lists the drawn
     /// dividers' grab zones as `x,y,w,h`. `pane_layout` is the projected
     /// layout in canonical form, and `arranging` counts this window's
     /// arrangements in flight.
@@ -14339,7 +14430,8 @@ impl WorkspaceView {
             })
         };
         let closes = button(Self::pane_close_center);
-        let zooms = button(Self::pane_zoom_center);
+        let [zooms, split_rights, split_downs] =
+            Self::pane_buttons_smoke_state(&panes, tab, cx);
         // Where a press grabs each title bar for a drag: its title text.
         let grabs =
             button(|bar| gpui::point(bar.origin.x + px(40.0), bar.center().y));
@@ -14365,7 +14457,7 @@ impl WorkspaceView {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}pane_focus_marks={marks} {prefix}drop={drop} {prefix}spring={spring} {} {} {prefix}pane_dividers={} {prefix}grab_badge_titles={:?}",
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_split_right={split_rights} {prefix}pane_split_down={split_downs} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}pane_focus_marks={marks} {prefix}drop={drop} {prefix}spring={spring} {} {} {prefix}pane_dividers={} {prefix}grab_badge_titles={:?}",
             panes.len(),
             self.grab_smoke_state(prefix),
             self.layout_smoke_state(prefix, cx),

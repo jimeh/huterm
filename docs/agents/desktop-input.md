@@ -289,6 +289,12 @@ exchanges panes within one tab. A zone whose result would leave a pane under
 the minimum size is drawn refused and takes no drop. A release commits one
 Mux operation through the move commands' `commit_pane_move`.
 
+A lone pane's title bar, enabled by `title_bar_always_show`, uses the same
+spring-load and edge-drop path to join another tab. Its own pane is skipped,
+and tab insertion slots are excluded even after spring loading: core treats
+`MoveDestination::NewTab` in its own workspace as a no-op. In a one-tab window
+with a hidden tab bar, a lone drag has no targets.
+
 A reorder enters pane mode only over a pane of the active tab, which is not
 the dragged tab, at least `PANE_DROP_DEPTH` (32 points) past the bar's inner
 edge. Its preview then returns to the tab's slot, dimmed, and the bar does
@@ -359,13 +365,23 @@ returns before it notifies observers. Window tests set
 
 ## Pane title bar modes
 
-With `[panes] title_bar = "hidden"` no pane has a bar, so panes move only by
-command; a bar's position never changes its drag or drop geometry. Under
-`title_bar = "hover"` a bar has its rectangle but draws, and takes input,
-only while `PaneBarReveals` reveals it: after the pointer rests in its band
-for `title_bar_hover_delay_ms`, while a pane drag or its menu, Huterm's or a
-native `NSMenu`, holds it, or for a second after a keyboard focus change. Its
-fade and leave hold come from `[panes]` through `PaneBarTiming`; the shared
+`title_bar_always_show` extends title bars to a tab's lone pane through
+`pane_geometry::layout_panes`, so reserved height, requested grids, hit testing,
+and hover overlays agree. Its bar omits zoom but keeps split and close buttons;
+focus accent, dimming, indicators, and modifier grab layers keep their split-tab
+rules. Split buttons focus their bar's pane and use `invoke_interactive`, with
+the same availability checks and failure notices as menu commands. The shared
+button-width calculation accounts for the leading marks, drops both split
+buttons before zoom, and always keeps close.
+
+With `[panes] title_bar = "hidden"` no pane has a bar, so panes move by
+command or modifier drag; a bar's position never changes its drag or drop
+geometry. Under `title_bar = "hover"` a bar has its rectangle but draws, and
+takes input, only while `PaneBarReveals` reveals it: after the pointer rests
+in its band for `title_bar_hover_delay_ms`, while a pane drag or its menu,
+Huterm's or a native `NSMenu`, holds it, or for a second after a keyboard
+focus change. Its fade and leave hold come from `[panes]` through
+`PaneBarTiming`; the shared
 `Reveal` takes them as a `RevealTiming`, and the fullscreen tab bar keeps
 `RevealTiming::default()`, so changing a pane key never retimes the tab bar.
 A keyboard reveal survives a refresh against the frame before its bar draws,

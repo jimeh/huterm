@@ -719,3 +719,48 @@ fn fractional_scales_fit_whenever_some_weights_hold_the_minimums() {
         }
     }
 }
+
+#[test]
+fn lone_pane_bars_honor_mode_position_and_default_off() {
+    let layout = PaneLayout::single(info(1));
+    let content = rect(0.0, 0.0, 400.0, 300.0);
+    for position in [PaneTitleBarPosition::Top, PaneTitleBarPosition::Bottom] {
+        for mode in [
+            PaneTitleBarMode::Visible,
+            PaneTitleBarMode::Hover,
+            PaneTitleBarMode::Hidden,
+        ] {
+            for always_show in [false, true] {
+                let bars = TitleBars {
+                    mode,
+                    always_show,
+                    position,
+                };
+                let placed = layout_panes(&layout, content, 1.0, None, bars);
+                let pane = placed.panes[0];
+                let shown = always_show && mode != PaneTitleBarMode::Hidden;
+                assert_eq!(pane.title_bar.is_some(), shown);
+                let reserved = if shown && mode == PaneTitleBarMode::Visible {
+                    TITLE_BAR_HEIGHT
+                } else {
+                    px(0.0)
+                };
+                assert_eq!(
+                    pane.terminal.size.height,
+                    content.size.height - reserved
+                );
+                if let Some(bar) = pane.title_bar {
+                    assert_eq!(bar.size.height, TITLE_BAR_HEIGHT);
+                    match position {
+                        PaneTitleBarPosition::Top => {
+                            assert_eq!(bar.top(), content.top());
+                        }
+                        PaneTitleBarPosition::Bottom => {
+                            assert_eq!(bar.bottom(), content.bottom());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

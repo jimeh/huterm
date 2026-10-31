@@ -359,6 +359,7 @@ unsafe fn build_menu(
                     key,
                     enabled,
                     badge,
+                    checked,
                     ..
                 } => {
                     let (equivalent, mask) = key
@@ -378,6 +379,7 @@ unsafe fn build_menu(
                         item,
                         setEnabled: if *enabled { YES } else { NO }
                     ];
+                    let _: () = msg_send![item, setState: isize::from(*checked == Some(true))];
                     let _: () =
                         msg_send![item, setKeyEquivalentModifierMask: mask];
                     let _: () = msg_send![item, setAllowsAutomaticKeyEquivalentLocalization: NO];
@@ -629,6 +631,25 @@ pub(in crate::desktop) fn check_terminal_menu(
         native.id_at(start).is_none(),
         "the submenu's own item picks nothing"
     );
+    for mode in [
+        huterm_config::PaneTitleBarMode::Visible,
+        huterm_config::PaneTitleBarMode::Hover,
+    ] {
+        let pane = super::pane_menu::pane_menu(
+            super::pane_menu::PaneMenuInput {
+                platform: Platform::MacOs,
+                panes: 2,
+                title_bar: mode,
+                zoomed: false,
+                input_sync: false,
+                directory_known: true,
+            },
+            keymap,
+            &contexts,
+        )
+        .to_native(true);
+        built_items(&pane)?;
+    }
     Ok(())
 }
 
@@ -722,6 +743,14 @@ unsafe fn read_menu(
                 entries.push(format!("{}{disabled}>", string(title)?));
                 read_menu(submenu, items, dark, tag, entries)?;
                 continue;
+            }
+            if let NativeItem::Item { checked, .. } = entry {
+                let state: isize = msg_send![item, state];
+                ensure!(
+                    state == isize::from(*checked == Some(true)),
+                    "{} has check state {state}",
+                    string(title)?
+                );
             }
             let key: *mut Object = msg_send![item, keyEquivalent];
             let mask: usize = msg_send![item, keyEquivalentModifierMask];

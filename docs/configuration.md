@@ -168,9 +168,17 @@ same zoomed pane:
 zoom = "view" # view or shared
 ```
 
-Each pane of a split tab has a title bar with its title, zoom and close
-buttons, a drag handle, and a context menu. `title_bar_position` puts the bars,
-and the focus accent described below, along the top or bottom of their panes.
+Each pane of a split tab has a title bar with its title, Split Right, Split
+Down, zoom, and close buttons, a drag handle, and a context menu. The split
+buttons act on their own pane and focus the new pane. Narrow bars hide both
+split buttons first, then zoom; close stays available. `title_bar_position`
+puts the bars, and the focus accent described below, along the top or bottom
+of their panes.
+
+Set `title_bar_always_show = true` to show a title bar with one pane too. It
+follows the same mode and position: visible bars take space from the terminal,
+hover bars overlay it, and hidden bars stay hidden. A lone pane's bar has split
+and close buttons; closing it closes the tab. It has no zoom button.
 
 `title_bar = "hover"` gives the terminals the bars' space and draws a pane's bar
 over its terminal only when you want it: rest the pointer where the bar would be
@@ -199,12 +207,13 @@ to 0.8, and defaults to 0.2. `inactive_dim_background` lays black over each
 unfocused pane's terminal, including its background, from 0 to 0.5, and is
 off by default. The two dimming settings work independently and stack when
 both are on. Title bars stay as they are, and clicks, selections, scrolling,
-links, and drops reach a dimmed pane as usual. All eight settings apply on
+links, and drops reach a dimmed pane as usual. All nine settings apply on
 reload:
 
 ```toml
 [panes]
 title_bar = "visible" # visible, hover, or hidden
+title_bar_always_show = false # also on a tab's only pane
 title_bar_position = "top" # top or bottom
 title_bar_hover_delay_ms = 75 # 0 to 2000
 title_bar_fade_ms = 75 # 0 to 1000
@@ -591,8 +600,8 @@ outlines the tab while the menu is open. The menu has:
 The tab menu does not open during a tab drag or while a close confirmation is
 showing. It uses the same keys, dismissal, and focus return as the window menu.
 
-Right-clicking a pane's title bar in a split tab focuses the pane and opens its
-context menu:
+Right-clicking a pane's title bar focuses the pane and opens its context
+menu:
 
 - **Rename Pane…**, which sets the name the title bar shows in place of the
   pane's title. A blank name restores the title.
@@ -600,8 +609,19 @@ context menu:
   reports a working directory.
 - **Split Right** and **Split Down**.
 - **Zoom Pane**, or **Unzoom Pane** while the pane is zoomed.
-- **Move Pane to New Tab** and **Move Pane to Another Pane…**
+- **Sync Pane Input**, or **Stop Syncing Pane Input** while the tab syncs.
+  With one pane, this row appears only while syncing.
+- **Move Pane to New Tab** and **Move Pane to Another Pane…**.
+- **Auto-hide Title Bars**, checked in hover mode. Picking it saves `title_bar`
+  as `hover` or `visible` in your configuration file and reloads every window,
+  even with `watch_config = false`. A failed save shows a notice and keeps the
+  current mode.
 - **Close Pane**.
+
+With one pane, **Zoom Pane** and **Move Pane to New Tab** are disabled with
+"Tab has one pane". Dragging a lone pane's bar onto another tab's label
+switches to that tab after a moment, and dropping it on a pane's edge there
+joins that tab as a split. The drag does not reorder tabs.
 
 A tab without a custom name shows its focused pane's name. A named pane that
 moves to a tab of its own gives the new tab its name, and a named tab of one

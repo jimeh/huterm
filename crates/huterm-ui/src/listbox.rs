@@ -34,6 +34,8 @@ pub struct Item {
     pub disabled_hint: Option<String>,
     /// A count badge in place of the shortcut.
     pub badge: Option<usize>,
+    /// A checkable row, checked when true; None is a plain row.
+    pub checked: Option<bool>,
 }
 
 impl Item {
@@ -47,6 +49,7 @@ impl Item {
             enabled: true,
             disabled_hint: None,
             badge: None,
+            checked: None,
         }
     }
 
@@ -69,6 +72,13 @@ impl Item {
     #[must_use]
     pub fn badge(mut self, count: usize) -> Self {
         self.badge = Some(count);
+        self
+    }
+
+    /// Makes this row checkable with the given state.
+    #[must_use]
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
         self
     }
 }
