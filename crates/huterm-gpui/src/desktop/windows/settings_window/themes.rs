@@ -402,6 +402,9 @@ impl SettingsView {
             cards = cards
                 .option(slot.id(), name.clone(), slot == target, &handle)
                 .accessible_name(if slot == current {
+                    // "macOS" keeps its case; "The system" continues the
+                    // sentence.
+                    let system = system.replacen("The", "the", 1);
                     format!(
                         "{} theme: {name}, {system} is {}",
                         slot.label(),

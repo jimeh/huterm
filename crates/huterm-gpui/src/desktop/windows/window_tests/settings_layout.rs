@@ -267,8 +267,21 @@ fn arrows_on_the_mode_cards_pick_the_mode_the_theme_cards_set(
     );
     let mut harness = DesktopHarness::new(cx);
     show(&mut harness, &file, SectionId::Appearance);
-    // The test platform's system is light, so the light card starts checked.
+    // The test platform's system is light, so the light card starts checked,
+    // and its accessible name says which mode the system is in.
     assert_eq!(themes(&mut harness).0[themes(&mut harness).1], "one-light");
+    let system = if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "the system"
+    };
+    let light = labelled(
+        &mut harness,
+        "RadioButton",
+        &format!("Light mode theme: one-light, {system} is light"),
+    );
+    assert_eq!(light["aria"]["toggled"], "True", "{light}");
+    labelled(&mut harness, "RadioButton", "Dark mode theme: dracula");
     let light = with_view(&mut harness, |view, _| {
         view.action_handle("theme-slot:light")
     });
@@ -338,10 +351,13 @@ fn the_theme_mode_switch_works_from_the_keyboard(cx: &mut TestAppContext) {
         settled(cx) && !file.text().contains("light")
     });
     assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
-    // The arrows stop at the ends, as a segmented row's do.
-    keys(&harness, "left down");
-    assert!(harness.cx.update(settled), "a step past the end wrote");
-    assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
+    // The arrows stop at the ends, as a segmented row's do; one key at a
+    // time, since two steps of a wrapping switch would come back.
+    for key in ["left", "down"] {
+        keys(&harness, key);
+        assert!(harness.cx.update(settled), "{key} past the end wrote");
+        assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
+    }
     // Return opens the options too, and Escape leaves the choice alone.
     keys(&harness, "enter");
     assert!(with_view(&mut harness, |view, _| view.menu_open()));
@@ -363,9 +379,11 @@ fn the_theme_mode_switch_works_from_the_keyboard(cx: &mut TestAppContext) {
     assert!(!with_view(&mut harness, |view, _| view.menu_open()));
     assert_eq!(focus(&mut harness), "action:theme-mode");
     // At Match system the arrows stop too.
-    keys(&harness, "right up");
-    assert!(harness.cx.update(settled), "a step past the end wrote");
-    assert!(file.text().contains("light"));
+    for key in ["right", "up"] {
+        keys(&harness, key);
+        assert!(harness.cx.update(settled), "{key} past the end wrote");
+        assert!(file.text().contains("light"), "{key}");
+    }
 }
 
 /// A click on a theme card draws no ring, and keyboard focus on it does.
