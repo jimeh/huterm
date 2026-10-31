@@ -246,6 +246,9 @@ fn panes_that_left_or_exited_get_no_synced_input_and_break_nothing(
     harness.wait_for("no sync frame while the exited pane has focus", |cx| {
         focus_marks(cx, window).is_some_and(|marks| marks.synced.is_empty())
     });
+    // Nor does typing there sync: the live shell answers "stay" below
+    // without having read "dead" first.
+    harness.type_line(window, "dead");
     harness.focus(window, tab, first);
     harness.wait_for("the live pane's frame to return", |cx| {
         focus_marks(cx, window).is_some_and(|marks| marks.synced == [first])
@@ -262,6 +265,8 @@ fn panes_that_left_or_exited_get_no_synced_input_and_break_nothing(
     harness.cx.update(|cx| {
         let moved = pane_screen(cx, window, other, leaving).unwrap();
         assert!(!moved.contains("got:stay"), "{moved}");
+        let live = pane_screen(cx, window, tab, first).unwrap();
+        assert!(!live.contains("got:dead"), "{live}");
         // At most the exit's own notice, which may have expired: no pane
         // refused or failed its copy.
         let notices = notices(cx, window);
@@ -349,38 +354,49 @@ fn a_toggle_elsewhere_redraws_the_frames_of_every_pane(
     });
 }
 
-/// The title `window`'s open palette gives the sync toggle's row.
-fn palette_sync_title(cx: &mut App, window: AnyWindowHandle) -> Option<String> {
+/// The label `window`'s open palette shows on the sync toggle's row.
+fn palette_sync_label(cx: &mut App, window: AnyWindowHandle) -> Option<String> {
     window
         .update(cx, |root, _, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
             let palette = view.read(cx).palette.clone()?;
-            palette
+            let label = palette
                 .read(cx)
-                .titles
-                .get(&ids::TOGGLE_PANE_INPUT_SYNC)
-                .cloned()
+                .shown_label(ids::TOGGLE_PANE_INPUT_SYNC, cx)?;
+            Some(label.to_string())
         })
         .ok()
         .flatten()
 }
 
 #[gpui::test]
-fn the_palette_row_says_what_the_toggle_will_do(cx: &mut TestAppContext) {
+fn the_palette_row_says_what_the_toggle_will_do_while_open(
+    cx: &mut TestAppContext,
+) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let (window, _, _) = harness.split_window(tab);
-    for (on, title) in [
-        (false, "Sync Pane Input"),
-        (true, "Stop Syncing Pane Input"),
-    ] {
-        if on {
-            harness.toggle_sync(window, tab, true);
-        }
-        harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
-        harness.wait_for("the palette to title the sync row", |cx| {
-            palette_sync_title(cx, window).as_deref() == Some(title)
-        });
-        harness.press(window, "escape");
-    }
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    harness.press(window, "s y n c");
+    harness.wait_for("the palette to offer to sync", |cx| {
+        palette_sync_label(cx, window).as_deref() == Some("Sync Pane Input")
+    });
+    // A toggle that lands while the palette is open, as one still in
+    // flight when it opened would, retitles the shown row.
+    harness
+        .runtime
+        .lock()
+        .set_input_sync(harness.workspace, tab, true)
+        .unwrap();
+    harness.wait_for("the open palette to offer to stop", |cx| {
+        palette_sync_label(cx, window).as_deref()
+            == Some("Stop Syncing Pane Input")
+    });
+    harness.cx.update(|cx| {
+        let state = palette_state(cx, window).unwrap();
+        assert!(
+            state.contains("selected=toggle_pane_input_sync"),
+            "the highlight stays on the row: {state}"
+        );
+    });
 }

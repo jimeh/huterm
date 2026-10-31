@@ -3945,6 +3945,10 @@ enum MenuFocusReturn {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent input to the palette's rows"
+)]
 struct PaletteRefreshState {
     tabs: usize,
     active: Option<TabId>,
@@ -3955,6 +3959,9 @@ struct PaletteRefreshState {
     /// What undo and redo would restore, which pruning can change while
     /// the palette is open.
     restorable: [Option<gpui::SharedString>; 2],
+    /// The active tab's input sync, which a toggle still in flight when
+    /// the palette opened can change, and with it the toggle row's title.
+    input_sync: bool,
 }
 
 impl Drop for WorkspaceView {
@@ -8325,6 +8332,9 @@ impl WorkspaceView {
                 .map(|state| (state.visible(), state.fullscreen_context())),
             restorable: [RestoreDirection::Undo, RestoreDirection::Redo]
                 .map(|direction| self.layout_restore_label(direction, cx)),
+            input_sync: self
+                .active_tab(cx)
+                .is_some_and(|tab| input_sync::syncs_input(tab, cx)),
         }
     }
 
@@ -8342,8 +8352,8 @@ impl WorkspaceView {
         let availability = self.palette_availability(&target, cx);
         let keymap = cx.global::<Desktop>().keymap.clone();
         let titles = self.palette_titles(cx);
-        palette.update(cx, |palette, _| {
-            palette.set_availability(availability, titles);
+        palette.update(cx, |palette, cx| {
+            palette.set_availability(availability, titles, cx);
             palette.set_keymap(keymap);
         });
     }

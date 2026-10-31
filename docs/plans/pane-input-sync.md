@@ -1,6 +1,6 @@
 # Pane input sync
 
-Status: in progress.
+Status: implemented in PR #353.
 
 ## Outcome
 
@@ -140,7 +140,7 @@ No setting turns the indication off. The generated schema and
 | --- | --- |
 | Reducer applies and touches the tab; a missing tab resyncs | protocol hierarchy unit test |
 | Setter emits once, no-op on repeat, rejects foreign targets, keeps revision | core Mux unit test, through `converge` |
-| Moves: a new tab starts off; undo reopening a removed tab restores it | core moves and restore tests |
+| Moves: a new tab starts off; undo reopening a removed tab restores it | core hierarchy test through the real subscription |
 | Typing reaches both real shells in order, focused pane included | Tier 2 window test with two `ECHO` panes |
 | Per-pane encoding | Tier 2 test: Up arrow gives `1b4f41` in a pane with DECCKM on and `1b5b41` in one without |
 | Paste syncs with per-pane bracketing | Tier 2 test |

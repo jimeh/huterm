@@ -424,9 +424,9 @@ pub enum ResyncReason {
 /// Workspaces are listed when their tab membership or order changed, when
 /// they were created, moved, or closed, or when one of their tabs' layouts
 /// changed. Tabs are listed when their name, input sync, or layout changed
-/// or they opened, moved, or closed; layouts list the tabs whose pane layout or
-/// shared zoom changed or that opened. The names flag records any change to
-/// the session or workspace lists or their names.
+/// or they opened, moved, or closed; layouts list the tabs whose pane
+/// layout or shared zoom changed or that opened. The names flag records any
+/// change to the session or workspace lists or their names.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Touched {
     everything: bool,
@@ -727,10 +727,10 @@ impl HierarchyState {
     /// - Session: `b'S'`, ID, custom name, automatic name, workspace count.
     /// - Workspace: `b'W'`, ID, custom name, automatic name, tab count.
     /// - Tab: `b'T'`, ID, custom name, shared zoom (`0`, or `1` and the pane
-    ///   ID), input sync (`0` or `1`), then its layout in traversal order: for a pane, `b'P'`, pane
-    ///   ID, terminal ID, fallback name, custom name; for a split, `b'X'`,
-    ///   split ID, axis (`0` columns, `1` rows), child count, then each
-    ///   child's weight followed by the child.
+    ///   ID), input sync (`0` or `1`), then its layout in traversal order:
+    ///   for a pane, `b'P'`, pane ID, terminal ID, fallback name, custom
+    ///   name; for a split, `b'X'`, split ID, axis (`0` columns, `1` rows),
+    ///   child count, then each child's weight followed by the child.
     ///
     /// The stream and sequence are not part of the digest. The cost is
     /// proportional to the hierarchy, so do not compute it per event.
