@@ -141,12 +141,14 @@ fn a_reload_uses_the_theme_for_the_system_mode(cx: &mut TestAppContext) {
     DARK.set(false);
     let harness = DesktopHarness::new(cx);
     let pair = inverted();
+    // The system turns dark unseen, so the reload is the first to read it.
+    DARK.set(true);
     harness.cx.update(|cx| {
         // A load leaves the dark mode's theme in use until the desktop
-        // follows the system's mode.
+        // follows the system's mode; start from the other one.
         let mut loaded = cx.global::<Desktop>().config.clone();
         loaded.themes = inverted();
-        loaded.theme = loaded.themes.dark.clone();
+        loaded.theme = loaded.themes.light.clone();
         finish_reload(
             cx,
             ReloadKind::Manual,
@@ -158,7 +160,8 @@ fn a_reload_uses_the_theme_for_the_system_mode(cx: &mut TestAppContext) {
             },
             0,
         );
-        assert_eq!(cx.global::<Desktop>().config.theme, pair.light);
-        assert!(!cx.global::<Desktop>().system_mode.is_dark());
+        assert_eq!(cx.global::<Desktop>().config.theme, pair.dark);
+        assert!(cx.global::<Desktop>().system_mode.is_dark());
     });
+    DARK.set(false);
 }

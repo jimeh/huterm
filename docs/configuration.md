@@ -745,7 +745,8 @@ dark = "tokyo-night"
 ```
 
 Setting `light` or `dark` turns this on; a mode without a theme uses `name`,
-or `tokyo-night` without one. Either mode can use any theme, light or dark.
+or `tokyo-night` without one. A `name` must still be a theme that exists
+when both modes replace it. Either mode can use any theme, light or dark.
 Huterm switches themes in every window as soon as macOS or the Linux
 desktop changes mode. On Linux the mode comes from the desktop portal's
 color scheme, so a desktop without one counts as light, and a dark desktop
