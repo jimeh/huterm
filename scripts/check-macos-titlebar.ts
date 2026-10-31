@@ -69,13 +69,19 @@ export function checkWindowRadii(text: string, macosMajor: number): string {
 }
 
 /**
- * A horizontal window drag of `by` points toward the side of `visible` with
- * room for it, so the window's controls stay on the display: a sidebar makes
- * the window wide enough that a rightward drag can push its corner menu
- * button off a small display.
+ * The horizontal window drag, at most `most` points either way, that keeps
+ * every window-relative `xs` the smoke later clicks at least `margin` inside
+ * `visible`. A sidebar widens the window enough that a fixed drag pushes the
+ * corner menu or the row's empty space off a small display.
  */
-export function roomyDrag(window: Rect, visible: Rect, by: number): number {
-  return window.x + window.w + by <= visible.x + visible.w ? by : -by;
+export function roomyDrag(window: Rect, visible: Rect, xs: number[], most: number, margin = 8): number {
+  const low = Math.max(...xs.map((x) => visible.x + margin - (window.x + x)));
+  const high = Math.min(...xs.map((x) => visible.x + visible.w - margin - (window.x + x)));
+  if (high >= most) return most;
+  if (-low >= most) return -most;
+  const shift = high >= -low ? Math.floor(high) : Math.ceil(low);
+  if (Math.abs(shift) < 40) throw new Error(`no room to drag window ${JSON.stringify(window)} within ${JSON.stringify(visible)}`);
+  return shift;
 }
 
 /** Empty sidebar strip space clear of native lights and the corner menu. */
@@ -263,7 +269,9 @@ label = "title"
     // takes over from `performWindowDragWithEvent:` and can drop part of a
     // synthetic drag, so require most of a horizontal one.
     const space = emptyRowSpace(await current());
-    const by = roomyDrag(windowed, parseFrame(run([pointer, "visible"])), 150);
+    const strip = position === "left" || position === "right" ? sidebarStripPoint(position, terminal) : undefined;
+    const clicked = [space.x, centre(button).x, ...(strip ? [strip.x] : [])];
+    const by = roomyDrag(windowed, parseFrame(run([pointer, "visible"])), clicked, 150);
     drag(space, { x: by, y: 0 });
     const moved = await frameWhere(
       (value) => value.w === windowed.w && value.h === windowed.h && (value.x - windowed.x) * Math.sign(by) >= Math.abs(by) / 2,
@@ -298,13 +306,12 @@ label = "title"
     if (vertical) {
       // The second draggable surface is above the sidebar rows. The right
       // sidebar's menu button must remain above the occluding bar too.
-      const strip = sidebarStripPoint(position, parseRect(field(await current(), "terminal_bounds")));
       const beforeStrip = frame();
-      // Back toward where the window started, so it stays on the display.
-      const back = -Math.sign(by) * 100;
-      drag(strip, { x: back, y: 0 });
+      // Back to where the window started, so it stays on the display.
+      const back = -by;
+      drag(strip!, { x: back, y: 0 });
       const stripMoved = await frameWhere(
-        (value) => value.w === beforeStrip.w && value.h === beforeStrip.h && (value.x - beforeStrip.x) * Math.sign(back) >= 50,
+        (value) => value.w === beforeStrip.w && value.h === beforeStrip.h && (value.x - beforeStrip.x) * Math.sign(back) >= Math.abs(back) / 2,
         `the sidebar strip moved the window by at least half of ${back}`,
       );
       await ack("acksidebarx");
