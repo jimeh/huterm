@@ -78,12 +78,25 @@ pub(super) fn a11y_node(
 }
 
 impl DesktopHarness {
-    /// Opens a window on a `script` tab, focused and showing `READY`.
+    /// Opens a window on a `script` tab, focused and showing `READY` at the
+    /// window's own geometry.
     fn menu_window(&mut self, script: &str) -> (AnyWindowHandle, TabId) {
         let tab = self.open_tab(script);
         let window = self.attach_window();
         self.activate(window, tab);
         self.wait_text(window, tab, "READY");
+        // The tab starts unsized, and `READY` can show before the window's
+        // geometry applies. Applying it advances the content generation,
+        // which clears a selection made on the earlier snapshot even when
+        // the grid keeps its size.
+        self.wait_for("the window's geometry to reach its view", |cx| {
+            terminal(cx, window, tab).is_some_and(|view| {
+                view.read(cx)
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.geometry_revision > 0)
+            })
+        });
         (window, tab)
     }
 
