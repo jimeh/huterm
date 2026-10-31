@@ -10,6 +10,7 @@ pub(crate) mod native;
 #[path = "quake/macos.rs"]
 pub(crate) mod native;
 pub(crate) mod observation;
+pub(crate) mod placement;
 
 pub(crate) use huterm_config::quake::{Animation, Config, Position, Profile};
 

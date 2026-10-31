@@ -437,11 +437,17 @@ async function check(executable: string, engine: string, witnessExecutable?: str
             await command("app show_quake monitor");await settled(true, "monitor");
             const after = profile(await state(), "monitor")!;
             if (after.native_id !== before.native_id || after.frame !== "0,0,1280,400") throw new Error("monitor fallback replaced the window or reverted its geometry on resummon");
+            await command("app hide_quake monitor");await settled(false, "monitor");
+            run([monitor, "add"]);
+            added = true;
+            await command("app show_quake monitor");await settled(true, "monitor");
+            const returned = profile(await state(), "monitor")!;
+            if (returned.native_id !== before.native_id || returned.display !== "huterm-smoke-vanishing" || returned.frame !== before.frame) throw new Error(`reconnected display did not receive the next show: ${JSON.stringify(returned)}`);
             await command("monitor close_window");
             await waitFor(async () => profile(await state(), "monitor")?.confirming === "true", "monitor profile close assessment");
             await command("monitor confirm_close");
             await waitFor(async () => !profile(await state(), "monitor"), "monitor fixture window cleanup");
-            console.log(`QUAKE_MONITOR fallback=screen primary=false frame=${after.frame} retained-window=${after.native_id}`);
+            console.log(`QUAKE_MONITOR fallback=screen primary=false frame=${after.frame} reconnected=${returned.frame} retained-window=${after.native_id}`);
           } finally {if (added) run([monitor, "remove"]);}
         }
         await reload('fullscreen = true\nanimation = "none"\nhide_on_focus_loss = false');

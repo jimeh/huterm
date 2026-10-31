@@ -2,7 +2,9 @@
 //! after GPUI returns its window borrow, on the same foreground executor.
 use super::*;
 use crate::quake::ProfileExt;
-use crate::quake::{self, Display, Profile, Rect, Transition, hotkeys, native};
+use crate::quake::{
+    self, Display, Profile, Rect, Transition, hotkeys, native, placement,
+};
 use std::{
     cell::Cell,
     collections::{BTreeMap, VecDeque},
@@ -166,6 +168,8 @@ pub(super) struct Presentation {
     generation: Rc<Cell<u64>>,
     pub(super) native: native::Window,
     model: policy::Model,
+    /// A move to another display in regular presentation.
+    pin: Option<placement::Pin>,
     work: Work,
     focus_observations: u64,
     sampled_focus: Option<(bool, bool)>,
@@ -521,6 +525,7 @@ fn invoke_now(
                         .map_err(|error| error.to_string())?;
                 }
                 let active = state.native.active().map_err(|error| error.to_string())?;
+                let hidden = !state.native.visible().map_err(|error| error.to_string())?;
                 let show = command == ids::SHOW_QUAKE
                     || (command == ids::TOGGLE_QUAKE
                         && (!state.transition.visible()
@@ -537,6 +542,14 @@ fn invoke_now(
                 if show {
                     state.profile = config.clone();
                     if !state.regular {
+                        if hidden {
+                            let display = place(&native, &config.display, &mut state.pin)
+                                .map_err(|error| error.to_string())?;
+                            if display != state.display {
+                                state.display = display;
+                                state.work.invalidate();
+                            }
+                        }
                         state.target = state.profile.geometry(&state.display);
                     }
                 }
@@ -561,8 +574,7 @@ fn invoke_now(
             }
         }
     }
-    let display = native
-        .resolve_display(&config.display)
+    let display = place(&native, &config.display, &mut None)
         .map_err(|error| error.to_string())?;
     open_window_with_profile(
         cx,
@@ -574,6 +586,19 @@ fn invoke_now(
         return Err(format!("could not create quake profile {name:?}"));
     }
     Ok(())
+}
+
+/// The display a show from hidden uses, from the displays connected now.
+fn place(
+    native: &native::Platform,
+    selector: &str,
+    pin: &mut Option<placement::Pin>,
+) -> anyhow::Result<Display> {
+    let displays = native.displays()?;
+    let point = native.point(selector)?;
+    placement::show(&displays, selector, point, pin)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no display available"))
 }
 
 pub(super) fn attach(
@@ -641,6 +666,7 @@ pub(super) fn attach(
             animation_started: false,
             native_paused: false,
         },
+        pin: None,
         work,
         focus_observations: 0,
         sampled_focus: None,
@@ -686,7 +712,7 @@ pub(super) fn toggle(
             state.regular_bounds.x + state.regular_bounds.width / 2.0,
             state.regular_bounds.y + state.regular_bounds.height / 2.0,
         );
-        state.display = displays
+        let display = displays
             .iter()
             .find(|display| display.frame.contains(center.0, center.1))
             .or_else(|| displays.iter().find(|display| display.primary))
@@ -703,6 +729,14 @@ pub(super) fn toggle(
             .get(&state.name)
             .cloned()
             .unwrap_or_else(|| state.profile.clone());
+        placement::moved(
+            &displays,
+            &state.model.display.id,
+            &display,
+            &state.model.profile.display,
+            &mut state.pin,
+        );
+        state.display = display;
         state.target = state.profile.geometry(&state.display);
     }
     state.regular = !state.regular;
@@ -866,12 +900,12 @@ fn step_transition(
     {
         match platform.displays() {
             Ok(displays) => {
-                if let Some(display) = displays
-                    .iter()
-                    .find(|display| display.id == state.display.id)
-                    .or_else(|| displays.iter().find(|display| display.primary))
-                    .or_else(|| displays.first())
-                    && *display != state.display
+                if let Some(display) = placement::changed(
+                    &displays,
+                    &state.model.display.id,
+                    &state.model.profile.display,
+                    &mut state.pin,
+                ) && *display != state.display
                 {
                     let target = state.profile.geometry(display);
                     let geometry_changed = target != state.target;

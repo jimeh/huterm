@@ -10,6 +10,14 @@ lifecycle sections below predate that move. The registry now keeps only the
 native platform, hotkey registrations, return focus, the failed-spawn latch,
 and the smoke journal.
 
+The retained display choice below was later replaced. Each show from hidden
+resolves the profile's `display` again, so a window follows a reconnected or
+changed primary display. A move to another display in regular presentation
+lasts only until a display is connected or disconnected, the primary display
+changes, or the profile's `display` changes. The Quake windows section of
+[the configuration reference](../configuration.md#quake-windows) describes the
+current rule.
+
 Status: implemented in PR #73 for [issue #41][issue-41]. CI now runs the native
 macOS quake smoke.
 

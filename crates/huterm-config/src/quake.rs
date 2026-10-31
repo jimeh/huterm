@@ -65,7 +65,7 @@ pub struct Profile {
         ))
     )]
     pub position: Position,
-    /// The display the window opens on: the active one, the one under the
+    /// The display each show uses: the active one, the one under the
     /// pointer, the primary one, or `id:` and a display identifier.
     #[cfg_attr(
         feature = "schema",
