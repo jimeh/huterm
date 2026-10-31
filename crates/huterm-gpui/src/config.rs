@@ -141,6 +141,8 @@ title_bar_position = "top"
 focus_accent = 0.0
 # How much panes without focus dim, from 0 (off) to 0.8.
 inactive_dim = 0.2
+# How much panes without focus darken toward black, from 0 (off) to 0.5.
+inactive_dim_background = 0.0
 # Hold these modifiers and press anywhere in a split tab's pane to drag the
 # pane, as its title bar does: two or more of cmd, ctrl, alt, and shift, or
 # "off". Defaults to cmd-ctrl on macOS and ctrl-alt on Linux.

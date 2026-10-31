@@ -6,10 +6,12 @@
 use huterm_config::{IndicatorStyle, LinePattern, PaneTitleBarMode};
 
 use super::super::pane_indicators::{
-    IndicatorRecord, IndicatorState, NativeRadii, RadiusSource, WindowRadii,
+    IndicatorRecord, IndicatorState, NativeRadii, RadiusSource, TINT_SHARE,
+    WindowRadii,
 };
 use super::super::tab_bar::TabMark;
 use super::pane_bars::{drawn, focus_marks};
+use super::synced_input::mark_nodes;
 use super::*;
 
 /// The indicator `window` last drew.
@@ -59,7 +61,9 @@ impl DesktopHarness {
 }
 
 #[gpui::test]
-fn the_record_follows_sync_zoom_and_both(cx: &mut TestAppContext) {
+fn the_default_title_bar_look_follows_sync_zoom_and_both(
+    cx: &mut TestAppContext,
+) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let (window, first, second) = harness.split_window(tab);
@@ -72,43 +76,46 @@ fn the_record_follows_sync_zoom_and_both(cx: &mut TestAppContext) {
             && tab_marks(cx, window, tab) == Some(Vec::new())
     });
 
-    // Sync draws the dashed outline with the divider in the same style.
+    let colors = harness
+        .update_view(window, |view, _, _| TabColors::new(&view.config.theme));
+    let sync_tint = colors.accent.opacity(0.5 * TINT_SHARE);
+    let zoom_tint = colors.zoom.opacity(0.5 * TINT_SHARE);
+    assert_ne!(sync_tint, zoom_tint);
+    // The default sync look tints both receiving panes' title bars.
     harness.set_sync(tab, true);
-    harness.wait_for("the sync outline and its divider", |cx| {
+    harness.wait_for("the default sync title bar tints", |cx| {
         record(cx, window).is_some_and(|record| {
-            record.look == Some((IndicatorState::Sync, IndicatorStyle::Outline))
+            record.look
+                == Some((IndicatorState::Sync, IndicatorStyle::TitleBar))
                 && record.receiving == [first, second]
-                && record.dividers.len() == 1
-                && record.key.as_ref().is_some_and(|key| {
-                    key.dividers.len() == 1
-                        && key.pattern == LinePattern::Dashed
-                        && key.width == 2
-                })
+                && record.tinted == [(first, sync_tint), (second, sync_tint)]
+                && record.key.is_none()
         }) && tab_marks(cx, window, tab) == Some(vec![TabMark::InputSync])
     });
 
-    // Sync and zoom: typing reaches only the zoomed pane, so the zoom look
-    // wins, with no dividers to draw, and the tab shows both marks with
-    // the sync mark dimmed.
+    // Zoom wins over sync: only its tint draws, and sync_dimmed makes the
+    // title bar's sync mark read as paused, as does the tab's mark.
     harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
-    harness.wait_for("the zoom look over sync", |cx| {
+    harness.wait_for("the default zoom tint over sync", |cx| {
         record(cx, window).is_some_and(|record| {
-            record.look == Some((IndicatorState::Zoom, IndicatorStyle::Outline))
+            record.look
+                == Some((IndicatorState::Zoom, IndicatorStyle::TitleBar))
                 && record.receiving == [first]
-                && record.dividers.is_empty()
-                && record.key.as_ref().is_some_and(|key| {
-                    key.dividers.is_empty() && key.pattern == LinePattern::Solid
-                })
+                && record.tinted == [(first, zoom_tint)]
+                && record.key.is_none()
         }) && tab_marks(cx, window, tab)
             == Some(vec![TabMark::Zoom, TabMark::InputSync])
+            && mark_nodes(cx, window, TabMark::PAUSED_SYNC_NAME) >= 1
+            && mark_nodes(cx, window, TabMark::InputSync.name()) == 0
     });
 
-    // Zoom alone keeps its look and loses the sync mark.
     harness.set_sync(tab, false);
-    harness.wait_for("the zoom look alone", |cx| {
+    harness.wait_for("the default zoom tint alone", |cx| {
         record(cx, window).is_some_and(|record| {
-            record.look == Some((IndicatorState::Zoom, IndicatorStyle::Outline))
+            record.look
+                == Some((IndicatorState::Zoom, IndicatorStyle::TitleBar))
                 && record.receiving.is_empty()
+                && record.tinted == [(first, zoom_tint)]
         }) && tab_marks(cx, window, tab) == Some(vec![TabMark::Zoom])
     });
     harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
@@ -125,11 +132,19 @@ fn a_style_reload_applies_at_once_and_rebuilds_the_paths(
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let (window, first, second) = harness.split_window(tab);
+    harness.reload_panes(window, |panes| {
+        panes.sync_indicator.style = IndicatorStyle::Outline;
+    });
     harness.set_sync(tab, true);
-    harness.wait_for("the default sync outline", |cx| {
+    harness.wait_for("the sync outline", |cx| {
         record(cx, window).is_some_and(|record| {
             record.look == Some((IndicatorState::Sync, IndicatorStyle::Outline))
                 && record.dividers.len() == 1
+                && record.key.as_ref().is_some_and(|key| {
+                    key.dividers.len() == 1
+                        && key.pattern == LinePattern::Dashed
+                        && key.width == 2
+                })
         }) && cache_matches(cx, window)
     });
     // An edge bar draws no dividers, where a stale cache would keep the
@@ -183,6 +198,9 @@ fn the_pane_areas_bottom_corners_follow_the_windows_radius(
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let (window, _, _) = harness.split_window(tab);
+    harness.reload_panes(window, |panes| {
+        panes.sync_indicator.style = IndicatorStyle::Outline;
+    });
     harness.set_sync(tab, true);
     harness.update_view(window, |view, _, cx| {
         view.native_radii = NativeRadii {
@@ -225,6 +243,7 @@ fn the_focus_cue_keeps_a_lines_width_clear_of_the_sync_lines(
     harness.reload_panes(window, |panes| {
         panes.title_bar = PaneTitleBarMode::Hidden;
         panes.focus_accent = 1.0;
+        panes.sync_indicator.style = IndicatorStyle::Outline;
     });
     let frame = |cx: &mut App| {
         drawn(cx, window)?

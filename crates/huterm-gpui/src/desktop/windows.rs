@@ -4830,7 +4830,7 @@ impl WorkspaceView {
                         },
                     ))
                     .child(pane.view.clone())
-                    .children(self.inactive_dim(id, focused, shown, colors))
+                    .children(self.dim_layers(id, focused, shown, colors))
                     .children(grab)
                     .into_any_element(),
             );
@@ -4882,22 +4882,37 @@ impl WorkspaceView {
         elements
     }
 
-    /// The layer dimming `pane`'s terminal, while `[panes] inactive_dim`
-    /// dims it.
-    fn inactive_dim(
+    /// The layers dimming `pane`'s terminal: the theme background under
+    /// `[panes] inactive_dim`, then black under `inactive_dim_background`.
+    /// Title bars are separate elements and stay unchanged.
+    fn dim_layers(
         &self,
         pane: PaneId,
         focused: PaneId,
         shown: usize,
         colors: TabColors,
-    ) -> Option<gpui::Div> {
-        let alpha = pane_focus::inactive_dim(
+    ) -> impl Iterator<Item = gpui::Div> + use<> {
+        let panes = &self.config.panes;
+        let mut drawn = self.drawn_focus.borrow_mut();
+        let dim = pane_focus::inactive_dim(
             pane == focused,
             shown,
-            self.config.panes.inactive_dim,
-        )?;
-        self.drawn_focus.borrow_mut().dimmed.push((pane, alpha));
-        Some(tab_bar::pane_dim(colors, alpha))
+            panes.inactive_dim,
+        )
+        .map(|alpha| {
+            drawn.dimmed.push((pane, alpha));
+            tab_bar::pane_dim(colors, alpha)
+        });
+        let background = pane_focus::inactive_dim_background(
+            pane == focused,
+            shown,
+            panes.inactive_dim_background,
+        )
+        .map(|alpha| {
+            drawn.darkened.push((pane, alpha));
+            div().absolute().inset_0().bg(gpui::black().opacity(alpha))
+        });
+        [dim, background].into_iter().flatten()
     }
 
     /// How many of `tab`'s panes `pane_elements` draws: each installed view

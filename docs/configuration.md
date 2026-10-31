@@ -189,15 +189,18 @@ keeps its own timing.
 `title_bar = "hidden"` removes the bars and gives their space to the terminals;
 closing, zooming, moving, and renaming panes stay available as commands.
 
-Two indicators show which pane has focus while more than one pane is on
+Three settings show which pane has focus while more than one pane is on
 screen; each is off at 0. `focus_accent` draws a thin accent line along the
 focused pane's edge where its title bar would be, at that opacity from 0 to 1,
 and is off by default. It draws only under hover or hidden bars, and under
 hover bars only until the focused pane's bar appears. `inactive_dim` dims every
 other pane's terminal by laying the theme's background color over it, from 0
-to 0.8, and defaults to 0.2; their title bars stay as they are, and clicks,
-selections, scrolling, links, and drops reach a dimmed pane as usual. All
-seven settings apply on reload:
+to 0.8, and defaults to 0.2. `inactive_dim_background` lays black over each
+unfocused pane's terminal, including its background, from 0 to 0.5, and is
+off by default. The two dimming settings work independently and stack when
+both are on. Title bars stay as they are, and clicks, selections, scrolling,
+links, and drops reach a dimmed pane as usual. All eight settings apply on
+reload:
 
 ```toml
 [panes]
@@ -208,37 +211,38 @@ title_bar_fade_ms = 75 # 0 to 1000
 title_bar_hide_delay_ms = 400 # 0 to 5000
 focus_accent = 0.0 # 0 (off) to 1
 inactive_dim = 0.2 # 0 (off) to 0.8
+inactive_dim_background = 0.0 # 0 (off) to 0.5
 ```
 
 ### Sync and zoom indicators
 
-A tab that syncs input, or shows a zoomed pane, says so with one shape drawn
-around its panes and a mark in the tab bar. By default a syncing tab draws a
-dashed line in the tab accent around its panes, following the window's
-rounded corners, with every divider drawn the same way. A zoomed tab draws a
-solid line in the theme's magenta and shows a zoom mark before the tab's
-title. While a single tab hides the tab bar, the window's title row shows
-both marks instead. While a tab both syncs and shows a zoomed pane, typing
-reaches only the zoomed pane, so the zoom look draws and the sync mark dims.
+A tab that syncs input, or shows a zoomed pane, says so with an indicator
+on its panes and a mark in the tab bar. By default a syncing tab tints the
+title bar of each pane typing reaches in the tab accent, and a zoomed tab
+tints the zoomed pane's title bar in the theme's magenta, both at half
+strength. A zoomed tab also shows a zoom mark before the tab's title. While
+a single tab hides the tab bar, the window's title row shows both marks
+instead. While a tab both syncs and shows a zoomed pane, typing reaches only
+the zoomed pane, so the zoom look draws and the sync mark dims.
 Each state has its own table:
 
 ```toml
 [panes.sync_indicator]
-style = "outline" # outline, dividers, glow, edge, title_bar, or off
+style = "title_bar" # outline, dividers, glow, edge, title_bar, or off
 width = 2 # 1 to 6 points
-opacity = 0.9 # 0.1 to 1
+opacity = 0.5 # 0.1 to 1
 pattern = "dashed" # solid, dashed, or dotted
 
 [panes.zoom_indicator]
-style = "outline"
+style = "title_bar" # outline, glow, edge, title_bar, or off
 width = 2
-opacity = 0.8
+opacity = 0.5
 pattern = "solid"
 ```
 
 `outline` draws one line around the panes and, for sync, along each
-divider. `dividers` draws the dividers alone, so a zoomed tab, which shows
-none, draws only its marks. `glow` draws a soft band inside the edge, and
+divider. `dividers` draws the dividers alone and is available only for sync;
+a zoomed tab shows no dividers. `glow` draws a soft band inside the edge, and
 along each divider for sync. `edge` draws one bar along the top of the panes.
 `title_bar` tints the title bar of each pane typing reaches, or of the zoomed
 pane, and shows a small chip in the pane's corner where its bar is hidden or

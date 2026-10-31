@@ -1328,8 +1328,8 @@ pub(super) struct IndicatorRecord {
     /// The drawn panes typing reaches through input sync, whatever the
     /// style.
     pub(super) receiving: Vec<PaneId>,
-    /// Panes whose title bar the `title_bar` style tints.
-    pub(super) tinted: Vec<PaneId>,
+    /// Panes whose title bar the `title_bar` style tints, with the drawn color.
+    pub(super) tinted: Vec<(PaneId, Hsla)>,
     /// Panes that show a state chip because their bar is off screen.
     pub(super) chips: Vec<PaneId>,
 }
@@ -1669,13 +1669,16 @@ impl WorkspaceView {
         let active = active.filter(|active| {
             marked && active.look.style == IndicatorStyle::TitleBar
         })?;
-        self.drawn_focus.borrow_mut().indicator.tinted.push(pane);
-        Some(
-            active
-                .state
-                .color(colors)
-                .opacity(active.look.opacity * TINT_SHARE),
-        )
+        let tint = active
+            .state
+            .color(colors)
+            .opacity(active.look.opacity * TINT_SHARE);
+        self.drawn_focus
+            .borrow_mut()
+            .indicator
+            .tinted
+            .push((pane, tint));
+        Some(tint)
     }
 
     /// The chip that marks `rect`'s pane under the `title_bar` style while
