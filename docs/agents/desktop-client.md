@@ -861,11 +861,19 @@ pick saves the family through `commit_field`, as Enter does. Its
 `with_browse` list shows every family on the shown one until the user edits
 the field, and the chevron addon calls `toggle_browsing`; the chevron has no
 focus handle, so it is no tab stop, and carries the read-only reason itself,
-since a disabled `InputGroup` keeps a button's own reason. The GPUI test
-platform lists no installed fonts, so font tests set `set_families` before
-the Appearance section first draws. `run_list` routes the field verbs to the
-focused field's list first; the field's own behavior gets the keys the list
-leaves alone.
+since a disabled `InputGroup` keeps a button's own reason. The families come
+from `scan_fonts`, which enumerates them on the background executor when the
+window opens, comes forward, or follows a reload; on Linux only the first scan
+runs, since GPUI's cosmic-text database never rescans. The "not installed"
+note reads `Desktop::unavailable_fonts`, what the last font resolution fell
+back from, not the scan, so it describes the running fonts. A scan that
+disagrees with that record asks for one manual reload per distinct result;
+without that guard a reload that still cannot apply the font would loop. The
+GPUI test platform lists no installed fonts, so font tests call
+`set_families`, which makes every later scan find those families, and set
+`unavailable_fonts` to the state they assume. `run_list` routes the field
+verbs to the focused field's list first; the field's own behavior gets the keys
+the list leaves alone.
 
 The terminal window has two `Command` lists. The palette mounts one per
 stage or identity slot, named "Commands" or for the slot, and drops it for
@@ -1044,7 +1052,19 @@ their handles, and the reveal shows the row with the ring. Smoke state reports
 results"; the view owns its `ListScrollbar`, advances it in `animate_lists` on
 the suggestion lists' wake, and shows it when a reveal scrolls. Its viewport
 starts under the header, so reveals and `settings.in_view` never count a
-control hidden behind the header as shown.
+control hidden behind the header as shown. The sidebar's section list is a
+second `ScrollArea::fill` between the pinned search field and the
+`flex_none` footer. `select_section` marks the section for
+`reveal_section_tab`, which scrolls the list to the tab's slot of the list's
+painted bounds: tabs share its height evenly, and `Tabs` reports no per-tab
+bounds, so Next Tab, which selects without moving focus, reveals too.
+
+Show advanced is `[settings] show_advanced` in the file, not view state: the
+in-page button writes or removes it and `shows` reads it through `value`, so
+a pending change applies at once. Global shortcuts list under Show, Hide, and
+Toggle Quake in Keybindings through the Quake section's `render_global`, on
+the same `grec:`, `gprofile:`, `gon:`, and `gdel:` action keys and
+`Edit`s; a recorder keyed `gadd:<command>` adds one for that command.
 
 The terminal window has one dialog slot too, `WorkspaceView::dialog`. The
 top dialog draws in it: the close confirmation, else Licenses, else About.
