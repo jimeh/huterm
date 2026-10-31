@@ -572,21 +572,14 @@ impl SettingsView {
         true
     }
 
-    /// Whether a command has a user entry, a default that is not active,
-    /// or a global shortcut, which only the file adds.
-    fn customized(
-        inventory: &Inventory,
-        globals: &[Global],
-        command: CommandId,
-    ) -> bool {
-        globals
-            .iter()
-            .any(|global| global.command == command.as_str())
-            || inventory.bindings.iter().any(|listed| {
-                listed.binding.command == command
-                    && (listed.binding.origin == Origin::User
-                        || listed.state != BindingState::Active)
-            })
+    /// Whether a command has a user entry or a default that is not active.
+    /// A global shortcut also customizes its command; callers check those.
+    fn customized(inventory: &Inventory, command: CommandId) -> bool {
+        inventory.bindings.iter().any(|listed| {
+            listed.binding.command == command
+                && (listed.binding.origin == Origin::User
+                    || listed.state != BindingState::Active)
+        })
     }
 
     fn command_matches(
@@ -608,7 +601,7 @@ impl SettingsView {
         let passes = match filter {
             Filter::All => true,
             Filter::Customized => {
-                Self::customized(inventory, &[], spec.id) || !globals.is_empty()
+                Self::customized(inventory, spec.id) || !globals.is_empty()
             }
             Filter::Conditional => listed.iter().any(|listed| {
                 listed.state == BindingState::Active
@@ -2355,7 +2348,7 @@ impl SettingsView {
         .description(spec.description)
         .media(chevron(Icon::ChevronRight.asset_path(), open, swatch))
         .when(
-            !globals.is_empty() || Self::customized(inventory, &[], spec.id),
+            !globals.is_empty() || Self::customized(inventory, spec.id),
             |item| item.before_title(changed_dot(swatch)),
         )
         .action(summary);

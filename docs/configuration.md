@@ -372,7 +372,7 @@ menu_button = true # the window menu button in the title bar or tab bar
 shortcut_hints = false # key hints on the scroll pill and dialog buttons
 macos_native_menus = true # native macOS menus; ignored on Linux
 size_indicator = "full" # full, compact, or off; see Size indicator
-size_indicator_linger_ms = 2000
+size_indicator_linger_ms = 100
 
 [tabs]
 label = "smart" # smart, title, process, directory, or process_and_directory

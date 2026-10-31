@@ -901,12 +901,20 @@ fn a_short_window_scrolls_the_sections_between_the_search_and_the_footer(
     cx: &mut TestAppContext,
 ) {
     let file = ScratchConfig::new("layout-sidebar-scroll", "");
-    let mut harness = DesktopHarness::new(cx);
+    // The largest interface text makes the sections overflow the window's
+    // minimum height on both platforms; Linux has no title strip and one
+    // section fewer.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.font.ui_size = 16.0;
+    });
     show(&mut harness, &file, SectionId::General);
-    // The window's minimum height, too short for every section.
     let height = px(420.0);
     visual(&harness).simulate_resize(gpui::size(px(860.0), height));
     visual(&harness).run_until_parked();
+    assert!(
+        with_view(&mut harness, |view, _| view.sections_overflow()),
+        "the sections fit, so nothing can scroll"
+    );
     let search = with_view(&mut harness, |view, _| view.search_bounds())
         .expect("the search field painted");
     let footer = |harness: &mut DesktopHarness| {
@@ -950,6 +958,20 @@ fn a_short_window_scrolls_the_sections_between_the_search_and_the_footer(
         Some(search)
     );
     assert!(footer(&mut harness).bottom() <= height);
+    // Tab from the search returns to the selected tab, scrolled away from
+    // by the wheel, and shows it again.
+    with_view(&mut harness, |view, cx| {
+        view.scroll_sections_to_top();
+        cx.notify();
+    });
+    visual(&harness).run_until_parked();
+    assert_eq!(scrolled(&mut harness), px(0.0));
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
+    });
+    keys(&harness, "tab");
+    assert_eq!(focus(&mut harness), format!("section:{}", last.id()));
+    assert!(scrolled(&mut harness) > px(0.0), "Tab left the tab hidden");
     // Next Tab, a command that moves no focus, scrolls back to the first.
     with_window(&mut harness, |view, window, cx| {
         view.command(ids::NEXT_TAB, window, cx).unwrap();

@@ -861,4 +861,51 @@ fn a_family_installed_while_settings_is_open_reapplies_the_fonts(
     with_view(&mut harness, |view, cx| view.set_families(INSTALLED, cx));
     harness.cx.run_until_parked();
     assert_eq!(reads(&mut harness), before, "the same scan reloaded again");
+    // Once a reload applies it, a scan agrees, and a family installed
+    // later, here for a new interface family, reloads again.
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().unavailable_fonts =
+            UnavailableFonts::default();
+    });
+    with_view(&mut harness, |view, cx| view.set_families(INSTALLED, cx));
+    harness.cx.run_until_parked();
+    assert_eq!(reads(&mut harness), before, "an agreeing scan reloaded");
+    harness.cx.update(|cx| {
+        let desktop = cx.global_mut::<Desktop>();
+        desktop.config.font.ui_family = Some("Other Sans".into());
+        desktop.unavailable_fonts = UnavailableFonts {
+            terminal: None,
+            interface: Some("Other Sans".into()),
+        };
+    });
+    with_view(&mut harness, |view, cx| {
+        view.set_families(&["Menlo", "Missing Sans", "Other Sans"], cx);
+    });
+    harness.cx.run_until_parked();
+    assert!(
+        reads(&mut harness) > before,
+        "a later installation did not reload"
+    );
+}
+
+#[gpui::test]
+fn a_reload_notes_which_configured_fonts_fell_back(cx: &mut TestAppContext) {
+    // The test platform lists no fonts, so both families fall back.
+    let file = ScratchConfig::new(
+        "lists-font-noted",
+        "[font]\nfamily = \"Nope Mono\"\nui_family = \"Nope Sans\"\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().config_path = file.path();
+        let reload = CommandInvocation::new(ids::RELOAD_CONFIG, Vec::new());
+        Desktop::invoke(cx, &reload, None).unwrap();
+    });
+    let noted = UnavailableFonts {
+        terminal: Some("Nope Mono".into()),
+        interface: Some("Nope Sans".into()),
+    };
+    harness.wait_for("the reload", |cx| {
+        cx.global::<Desktop>().unavailable_fonts == noted
+    });
 }

@@ -1294,9 +1294,9 @@ impl SettingsView {
 
     /// Scrolls the pane the least that shows the control the keyboard just
     /// moved focus to, with its ring and any group `reveal_group` drew
-    /// around it, once the frame that drew the ring has painted. A pointer
-    /// press, a control outside the pane, such as the sidebar's, and a
-    /// dialog or menu over the pane scroll nothing.
+    /// around it, once the frame that drew the ring has painted; a section
+    /// tab scrolls the sidebar to itself. A pointer press, another control
+    /// outside the pane, and a dialog or menu over the pane scroll nothing.
     fn reveal_focused(
         &mut self,
         window: &mut Window,
@@ -1309,6 +1309,16 @@ impl SettingsView {
             return;
         };
         if !huterm_ui::focus::visible(&focused, window, cx) {
+            return;
+        }
+        // A section's tab scrolls the sidebar instead, such as when Tab
+        // returns to a tab the list scrolled away from.
+        if let Some(section) =
+            self.sections.iter().find_map(|(section, handle)| {
+                (*handle == focused).then_some(*section)
+            })
+        {
+            self.reveal_section_tab(section, cx);
             return;
         }
         let Some(painted) = huterm_ui::focus::ring_bounds(&focused, window, cx)
@@ -2472,23 +2482,24 @@ impl SettingsView {
     /// fonts once at startup, so there only the first scan can find
     /// anything new.
     pub(super) fn scan_fonts(&mut self, cx: &mut Context<'_, Self>) {
+        // A test's families stand in for every scan, on every platform.
+        #[cfg(test)]
+        if let Some(families) = self.test_families {
+            self.font_scans += 1;
+            let families = families.iter().copied().map(SharedString::from);
+            self.scanned(self.font_scans, families.collect(), cx);
+            return;
+        }
         if cfg!(target_os = "linux") && self.families.scanned() {
             return;
         }
         self.font_scans += 1;
         let scan = self.font_scans;
-        #[cfg(test)]
-        if let Some(families) = self.test_families {
-            let families = families.iter().copied().map(SharedString::from);
-            self.scanned(scan, families.collect(), cx);
-            return;
-        }
         let text_system = cx.text_system().clone();
         let task = cx.background_spawn(async move {
             text_system
                 .all_font_names()
                 .into_iter()
-                .filter(|name| !name.starts_with('.'))
                 .map(SharedString::from)
                 .collect::<Arc<[SharedString]>>()
         });
@@ -2504,7 +2515,8 @@ impl SettingsView {
     /// disagree with the families Huterm last applied, such as a family
     /// installed since, a reload applies the fonts again, which also takes
     /// its note away; only once for what this scan found, so a reload that
-    /// cannot apply them does not repeat.
+    /// cannot apply them does not repeat. A scan that agrees forgets it, so
+    /// a later installation reloads again.
     fn scanned(
         &mut self,
         scan: u64,
@@ -2535,9 +2547,9 @@ impl SettingsView {
             terminal: missing(terminal),
             interface: missing(font.ui_family.as_deref()),
         };
-        if found != desktop.unavailable_fonts
-            && self.font_reload.as_ref() != Some(&found)
-        {
+        if found == desktop.unavailable_fonts {
+            self.font_reload = None;
+        } else if self.font_reload.as_ref() != Some(&found) {
             self.font_reload = Some(found);
             cx.defer(|cx| {
                 let _ = super::reload(cx);
@@ -2594,13 +2606,16 @@ impl Families {
     }
 
     /// The families containing `text`, ignoring case, in their sorted
-    /// order.
+    /// order, less the hidden system families whose names start with `.`.
     fn matching(&self, text: &str) -> Vec<ListOption> {
         let text = text.trim().to_lowercase();
         self.0.borrow().as_ref().map_or_else(Vec::new, |families| {
             families
                 .iter()
-                .filter(|family| family.to_lowercase().contains(&text))
+                .filter(|family| {
+                    !family.starts_with('.')
+                        && family.to_lowercase().contains(&text)
+                })
                 .map(|family| ListOption::new(family.clone(), family.clone()))
                 .collect()
         })
@@ -3270,6 +3285,16 @@ impl SettingsView {
     /// How far the sidebar's section list has scrolled down.
     pub(super) fn sections_scrolled(&self) -> gpui::Pixels {
         -self.nav_scroll.offset().y
+    }
+
+    /// Whether the sidebar's sections are taller than their list.
+    pub(super) fn sections_overflow(&self) -> bool {
+        self.nav_scroll.max_offset().y > px(0.0)
+    }
+
+    /// Scrolls the sidebar's sections back to the top, as the wheel does.
+    pub(super) fn scroll_sections_to_top(&self) {
+        self.nav_scroll.set_offset(point(px(0.0), px(0.0)));
     }
 
     /// The sidebar section list's visible bounds in the window.

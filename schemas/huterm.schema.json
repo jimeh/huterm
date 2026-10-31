@@ -571,7 +571,7 @@
       "description": "Split pane behavior.",
       "properties": {
         "drag_modifier": {
-          "description": "Hold these modifiers, such as `cmd-ctrl`, to drag a pane from anywhere\ninside it. Off turns this off.",
+          "description": "Hold these modifiers to drag a pane from anywhere inside it. Defaults to\n`cmd-ctrl` on macOS and `ctrl-alt` on Linux; `off` turns it off.",
           "pattern": "^(off|(cmd|super|ctrl|alt|shift)(-(cmd|super|ctrl|alt|shift)){1,3})$",
           "type": "string",
           "x-huterm-apply": "live",
@@ -8739,7 +8739,7 @@
           "x-huterm-section": "terminal"
         },
         "scrollback_bytes": {
-          "description": "An optional size limit on each terminal's history, such as `64MiB` or\n`50MB`, up to `16GiB`; `0` keeps no history. Whichever of this and\n`scrollback_rows` is reached first applies.",
+          "description": "An optional size limit on each terminal's screen and history, such as\n`64MiB` or `50MB`, up to `16GiB`; `0` keeps no history. Whichever limit\nis reached first applies.",
           "maximum": 17179869184,
           "minimum": 0,
           "pattern": "^[0-9]+( ?([bB]|[kKmMgG][iI]?[bB]))?$",

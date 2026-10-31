@@ -483,7 +483,7 @@ impl PaneDragModifiers {
     pub fn parse(value: &str, macos: bool) -> Result<Self, String> {
         if value.is_empty() {
             return Err(
-                "panes.drag_modifier must name modifiers, such as cmd-ctrl; remove it to turn modifier drags off"
+                "panes.drag_modifier must name modifiers, such as cmd-ctrl, or be \"off\" to turn modifier drags off"
                     .into(),
             );
         }
@@ -1216,8 +1216,8 @@ pub struct PanesConfig {
         "x-huterm-zero-label" = "Off",
     )))]
     pub inactive_dim: f32,
-    /// Hold these modifiers, such as `cmd-ctrl`, to drag a pane from anywhere
-    /// inside it. Off turns this off.
+    /// Hold these modifiers to drag a pane from anywhere inside it. Defaults to
+    /// `cmd-ctrl` on macOS and `ctrl-alt` on Linux; `off` turns it off.
     #[cfg_attr(feature = "schema", schemars(with = "PaneDrag", extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -2240,9 +2240,9 @@ pub struct RawTerminal {
         "x-huterm-unit" = "rows",
     )))]
     pub scrollback_rows: u32,
-    /// An optional size limit on each terminal's history, such as `64MiB` or
-    /// `50MB`, up to `16GiB`; `0` keeps no history. Whichever of this and
-    /// `scrollback_rows` is reached first applies.
+    /// An optional size limit on each terminal's screen and history, such as
+    /// `64MiB` or `50MB`, up to `16GiB`; `0` keeps no history. Whichever limit
+    /// is reached first applies.
     #[cfg_attr(feature = "schema", schemars(with = "ScrollbackSize", extend(
         "x-huterm-section" = "scrollback",
         "x-huterm-group" = "Limits",
