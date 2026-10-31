@@ -22,9 +22,11 @@ pub(super) const DEFAULT_CONFIG: &str = r##"#:schema https://github.com/jimeh/hu
 watch_config = true
 
 [terminal]
-# Terminal identity for new shells: "auto", "xterm-huterm", or
-# "xterm-256color". Auto uses Huterm's packaged entry when available.
-term = "auto"
+# Terminal identity for new shells: "xterm-256color", "auto", or
+# "xterm-huterm". Auto uses xterm-huterm when any local terminfo entry for
+# it exists, including Huterm's packaged one. SSH hosts need that entry too,
+# or line editing there may break.
+term = "xterm-256color"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.
 close_on_exit = true

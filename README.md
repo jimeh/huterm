@@ -19,8 +19,8 @@ GPUI for rendering.
   and size limits, selection, copy and
   paste, application mouse reporting, clickable links, file drops, clipboard
   writes from applications (OSC 52, OSC 1337 `Copy`, and Kitty's OSC 5522),
-  color and geometry queries, a visual bell, and a private `xterm-huterm`
-  terminfo entry.
+  color and geometry queries, a visual bell, and an opt-in private
+  `xterm-huterm` terminfo entry.
 - **Windows and tabs:** several windows, each with ordered tabs in a top,
   bottom, left, or right bar or merged into the title bar. Tabs can be
   reordered by dragging, renamed, and labelled by program, title, or working

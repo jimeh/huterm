@@ -391,10 +391,21 @@ fn terminal_close_on_exit_defaults_true_and_requires_a_boolean() {
 }
 
 #[test]
-fn terminal_identity_defaults_to_auto_and_accepts_only_supported_values() {
+fn terminal_identity_defaults_to_xterm_256color_and_accepts_known_values() {
     use huterm_config::TerminalIdentity;
 
-    assert_eq!(Config::default().terminal.term, TerminalIdentity::Auto);
+    assert_eq!(
+        Config::default().terminal.term,
+        TerminalIdentity::Xterm256Color
+    );
+    assert_eq!(
+        parse("[terminal]\n").unwrap().terminal.term,
+        TerminalIdentity::Xterm256Color
+    );
+    assert_eq!(
+        parse(DEFAULT_CONFIG).unwrap().terminal.term,
+        TerminalIdentity::Xterm256Color
+    );
     for (value, expected) in [
         ("auto", TerminalIdentity::Auto),
         ("xterm-huterm", TerminalIdentity::XtermHuterm),
