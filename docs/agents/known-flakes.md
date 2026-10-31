@@ -347,6 +347,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   not the close dialog. The last state matched the first occurrence:
   `w0.confirming=false`, `w0.tabs=3`, `w0.active_index=2`, and
   `w0.terminal_focused=false`.
+- **Fourth occurrence:** 2026-10-31 on PR #353 (run 41161296347, job
+  124419228976, head `d4347ab4`), x86_64 only, under the `Smoke Linux
+  overlays` step. The PR adds pane input sync and changes neither the close
+  dialog nor tab closing. The last state matched the first occurrence:
+  `w0.confirming=false`, `w0.tabs=3`, `w0.active_index=2`, and
+  `w0.terminal_focused=false`.
 - **Triage:** rerun and record the run here. A hardening is to wait for
   `w0.dialog_focus=primary` before Enter, as the neighboring steps do.
 
