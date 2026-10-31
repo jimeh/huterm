@@ -41,7 +41,6 @@ use super::native_menus::{MenuAnchor, PresentedMenu};
 use super::{Desktop, UnavailableFonts};
 use crate::APP_ID;
 use crate::commands::{InvokeFocused, InvokeWindow};
-use crate::config::Theme;
 use crate::native_appearance::FrameAppearance;
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
@@ -401,7 +400,7 @@ pub(super) struct SettingsView {
     /// Where the header and the search field last painted, for smokes.
     painted: Rc<RefCell<Painted>>,
     /// Every selectable theme with its colors, read when the window opens.
-    themes: Vec<(String, Option<Theme>)>,
+    themes: Vec<themes::ThemeCard>,
     /// The mode whose theme the theme cards choose while the theme follows
     /// the system; `None` is the system's mode now.
     theme_slot: Option<themes::Slot>,
@@ -539,6 +538,10 @@ impl SettingsView {
             weak.update(cx, |view, cx| view.request_close(window, cx))
                 .unwrap_or(true)
         });
+        cx.observe_window_appearance(window, |_, _, cx| {
+            Self::window_appearance_changed(cx);
+        })
+        .detach();
         // With watching off nothing reports an edit made elsewhere, so the
         // window looks when it comes forward.
         cx.observe_window_activation(window, |view, window, cx| {
@@ -583,6 +586,16 @@ impl SettingsView {
         foreign_note(setting)
             .map(SharedString::from)
             .or_else(|| self.lock_reason())
+    }
+
+    /// Follows GPUI's report that this window's appearance changed. The
+    /// desktop portal's mode changes reach every window on Linux, including
+    /// this one when it is the only window open; `follow` reads the
+    /// application's appearance, never this window's.
+    fn window_appearance_changed(cx: &mut App) {
+        cx.defer(|cx| {
+            super::system_appearance::follow(cx);
+        });
     }
 
     /// Brings every text field to the current theme's colors, which a
@@ -1006,7 +1019,7 @@ impl SettingsView {
                 // first card takes focus.
                 let selected = self.selected_theme(cx);
                 let name =
-                    if self.themes.iter().any(|(name, _)| *name == selected) {
+                    if self.themes.iter().any(|card| card.name == selected) {
                         selected
                     } else {
                         self.ordered_theme_names().first()?.clone()
@@ -2476,20 +2489,6 @@ pub(super) fn traffic_lights(
     point(px(left), px(((HEADER_HEIGHT - height) / 2.0).max(0.0)))
 }
 
-/// Every selectable theme with its preview colors.
-fn themes(config: &std::path::Path) -> Vec<(String, Option<Theme>)> {
-    let directory = config
-        .parent()
-        .map_or_else(PathBuf::new, |parent| parent.join("themes"));
-    crate::themes::names(Some(&directory))
-        .into_iter()
-        .map(|name| {
-            let preview = crate::themes::preview(&name, &directory);
-            (name, preview)
-        })
-        .collect()
-}
-
 impl SettingsView {
     /// Lists the installed font families again on the background executor,
     /// as enumerating them can take a while: when the window opens, comes
@@ -3396,9 +3395,19 @@ impl SettingsView {
         self.command(ids::SETTINGS_TOGGLE, window, cx).unwrap();
     }
 
-    /// The theme the picker marks Active, if any.
-    pub(super) fn marked_active(&self, cx: &App) -> Option<String> {
-        self.active_theme(cx)
+    /// The theme the picker marks Active.
+    pub(super) fn marked_active(cx: &App) -> String {
+        Self::active_theme(cx)
+    }
+
+    /// Runs the window's appearance callback, as GPUI does.
+    pub(super) fn appearance_changed(cx: &mut App) {
+        Self::window_appearance_changed(cx);
+    }
+
+    /// The action key of the mode card the theme cards set.
+    pub(super) fn target_mode(&self, cx: &App) -> &'static str {
+        self.selected_slot(cx)
     }
 
     /// Picks one theme, or one for each mode, as the mode switch does.

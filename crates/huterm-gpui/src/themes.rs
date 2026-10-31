@@ -15,12 +15,34 @@ pub(super) const DEFAULT: &str = "tokyo-night";
 pub(crate) struct ThemePair {
     pub(crate) light: Theme,
     pub(crate) dark: Theme,
+    /// The names that chose them, such as `tokyo-night`.
+    pub(crate) light_name: String,
+    pub(crate) dark_name: String,
 }
 
 impl ThemePair {
     /// The theme for a `dark` or light system appearance.
     pub(crate) fn get(&self, dark: bool) -> &Theme {
         if dark { &self.dark } else { &self.light }
+    }
+
+    /// The name of the theme for a `dark` or light system appearance.
+    pub(crate) fn name(&self, dark: bool) -> &str {
+        if dark {
+            &self.dark_name
+        } else {
+            &self.light_name
+        }
+    }
+
+    /// The default theme in both modes.
+    pub(super) fn default_pair() -> Self {
+        Self {
+            light: default_theme(),
+            dark: default_theme(),
+            light_name: DEFAULT.to_owned(),
+            dark_name: DEFAULT.to_owned(),
+        }
     }
 }
 
@@ -56,6 +78,11 @@ pub(super) fn resolve(
             resolve_named(name, inline, directory, consumed, &mut Vec::new())?;
         overrides.apply(base)
     };
+    // A name both modes replace still has to exist, so a typo in it does
+    // not wait for a mode to fall back to it.
+    if selected.name.is_some() && light != name && dark != name {
+        resolve(name)?;
+    }
     let light_theme = resolve(light)
         .map_err(|error| named(error, "light", selected.light.is_some()))?;
     let dark_theme = if dark == light {
@@ -67,6 +94,8 @@ pub(super) fn resolve(
     Ok(ThemePair {
         light: light_theme,
         dark: dark_theme,
+        light_name: light.to_owned(),
+        dark_name: dark.to_owned(),
     })
 }
 

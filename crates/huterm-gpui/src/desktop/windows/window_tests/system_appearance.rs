@@ -15,6 +15,8 @@ fn inverted() -> ThemePair {
     ThemePair {
         light: theme("tokyo-night"),
         dark: theme("tokyo-night-day"),
+        light_name: "tokyo-night".to_owned(),
+        dark_name: "tokyo-night-day".to_owned(),
     }
 }
 
@@ -131,5 +133,32 @@ fn a_window_appearance_change_never_picks_the_theme(cx: &mut TestAppContext) {
     harness.cx.update(|cx| {
         assert_eq!(themes_in(cx, window, tab), (light.clone(), light));
         assert_eq!(follows(cx), before + 1);
+    });
+}
+
+#[gpui::test]
+fn a_reload_uses_the_theme_for_the_system_mode(cx: &mut TestAppContext) {
+    DARK.set(false);
+    let harness = DesktopHarness::new(cx);
+    let pair = inverted();
+    harness.cx.update(|cx| {
+        // A load leaves the dark mode's theme in use until the desktop
+        // follows the system's mode.
+        let mut loaded = cx.global::<Desktop>().config.clone();
+        loaded.themes = inverted();
+        loaded.theme = loaded.themes.dark.clone();
+        finish_reload(
+            cx,
+            ReloadKind::Manual,
+            Path::new("huterm-test.toml"),
+            config::Reloaded {
+                config: Ok(loaded),
+                inputs: config::Inputs::default(),
+                missing: false,
+            },
+            0,
+        );
+        assert_eq!(cx.global::<Desktop>().config.theme, pair.light);
+        assert!(!cx.global::<Desktop>().system_mode.is_dark());
     });
 }

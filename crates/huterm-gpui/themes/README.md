@@ -75,7 +75,9 @@ color that the theme itself blends opaque over the background: `#dae9f9`
 light and `#17335a` dark. The palette scales come from GitHub Primer
 primitives bundled in that repository, whose MIT notice
 `licenses/projekt0n.txt` also carries. As upstream maps it, dark black
-matches the `#0d1117` background.
+matches the `#0d1117` background. Its bright black, `#161b22`, barely
+differs from it and would hide shell comments and suggestions, so Huterm
+uses the palette's own gray, `#6e7681`, instead.
 `solarized-light` and `solarized-dark` follow the iTerm2 port's roles: one
 ANSI palette for both modes, the body text color for the cursor, and base2 or
 base02 for selection. The iTerm2 files store calibrated color-space values, so

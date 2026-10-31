@@ -374,7 +374,7 @@ impl SettingsView {
         let path = self.path.clone();
         self.scans += 1;
         let scan = self.scans;
-        let task = cx.background_spawn(async move { themes(&path) });
+        let task = cx.background_spawn(async move { themes::scan(&path) });
         cx.spawn(async move |view, cx| {
             let themes = task.await;
             let _ = view.update(cx, |view, cx| {

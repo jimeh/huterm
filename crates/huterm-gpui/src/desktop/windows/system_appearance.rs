@@ -33,21 +33,46 @@ pub(super) fn system_dark(_: &App) -> bool {
     tests::DARK.get()
 }
 
-/// Uses the theme for the system's mode in every window when it differs
-/// from the theme in use, and returns whether it did.
+/// The system's light or dark mode, as the desktop last followed it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Mode {
+    #[default]
+    Light,
+    Dark,
+}
+
+impl Mode {
+    pub(super) fn of(dark: bool) -> Self {
+        if dark { Self::Dark } else { Self::Light }
+    }
+
+    pub(super) fn is_dark(self) -> bool {
+        self == Self::Dark
+    }
+}
+
+/// Records the system's mode and uses its theme in every window when that
+/// differs from the theme in use, returning whether the theme changed.
+/// Windows redraw on any change of mode, since Settings shows the mode
+/// even when both modes use one theme.
 pub(super) fn follow(cx: &mut App) -> bool {
     let dark = system_dark(cx);
     let desktop = cx.global_mut::<Desktop>();
-    if !desktop.config.follow_appearance(dark) {
-        return false;
+    let mode = Mode::of(dark);
+    let mode_changed =
+        std::mem::replace(&mut desktop.system_mode, mode) != mode;
+    let theme_changed = desktop.config.follow_appearance(dark);
+    if theme_changed {
+        desktop.appearance_follows += 1;
+        let theme = desktop.config.theme.clone();
+        broadcast(cx, |view, cx| view.apply_theme(&theme, cx));
     }
-    desktop.appearance_follows += 1;
-    let theme = desktop.config.theme.clone();
-    broadcast(cx, |view, cx| view.apply_theme(&theme, cx));
-    // Settings, the menus, and every window's frame read the theme when
-    // they draw.
-    cx.refresh_windows();
-    true
+    // Settings, the menus, and every window's frame read the theme and the
+    // mode when they draw.
+    if mode_changed || theme_changed {
+        cx.refresh_windows();
+    }
+    theme_changed
 }
 
 /// Follows the system's mode while the application runs. macOS reports

@@ -2,6 +2,7 @@
 //! for each of the system's light and dark modes, and the keys each choice
 //! writes.
 
+use super::super::settings_window::SettingsView;
 use super::super::system_appearance::tests::DARK;
 use super::settings::{
     ScratchConfig, open_settings, settled, with_view, with_window,
@@ -96,31 +97,107 @@ fn reset_clears_every_theme_choice_but_keeps_overrides(
 }
 
 #[gpui::test]
-fn a_theme_that_does_not_resolve_is_never_marked_active(
-    cx: &mut TestAppContext,
-) {
+fn active_marks_the_theme_in_use_not_the_files_choice(cx: &mut TestAppContext) {
     DARK.set(false);
+    // The desktop runs the default; the file chooses another theme that
+    // no reload has applied yet, as while watching is off.
     let file = ScratchConfig::new(
-        "theme-active-missing",
+        "theme-active-applied",
         "[theme]\nlight = \"one-light\"\n",
     );
     let mut harness = DesktopHarness::new(cx);
     open_settings(&mut harness, &file.path());
-    harness.wait_for("the themes to list", |cx| {
-        settled(cx)
-            && super::settings::settings(cx).is_some_and(|handle| {
-                handle
-                    .read_with(cx, |view, cx| view.marked_active(cx).is_some())
-                    .unwrap_or(false)
-            })
+    harness.wait_for("the first read", settled);
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.selected(cx), "one-light");
+        assert_eq!(SettingsView::marked_active(cx), "tokyo-night");
+    });
+    // A file that fails to load keeps the last working theme in use.
+    break_file(&mut harness, &file, "[theme]\ndark = \"nope\"\n");
+    harness.cx.update(|cx| {
+        assert_eq!(SettingsView::marked_active(cx), "tokyo-night");
+    });
+}
+
+#[gpui::test]
+fn settings_follows_a_mode_change_that_keeps_the_theme(
+    cx: &mut TestAppContext,
+) {
+    DARK.set(false);
+    // Both modes use one theme, as Match system starts them.
+    let file = ScratchConfig::new(
+        "theme-mode-change",
+        "[theme]\nlight = \"nord\"\ndark = \"nord\"\n",
+    );
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        let nord = crate::themes::preview("nord", Path::new("")).unwrap();
+        config.themes = crate::themes::ThemePair {
+            light: nord.clone(),
+            dark: nord,
+            light_name: "nord".to_owned(),
+            dark_name: "nord".to_owned(),
+        };
+    });
+    open_settings(&mut harness, &file.path());
+    harness.wait_for("the first read", settled);
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.target_mode(cx), "theme-slot:light");
+    });
+    // Settings, the only window, hears the change as the desktop portal's
+    // reaches every window on Linux; the theme stays, the mode does not.
+    let follows = harness
+        .cx
+        .update(|cx| cx.global::<Desktop>().appearance_follows);
+    DARK.set(true);
+    harness.cx.update(SettingsView::appearance_changed);
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert!(cx.global::<Desktop>().system_mode.is_dark());
+        assert_eq!(cx.global::<Desktop>().appearance_follows, follows);
     });
     with_view(&mut harness, |view, cx| {
-        assert_eq!(view.marked_active(cx).as_deref(), Some("one-light"));
+        assert_eq!(view.target_mode(cx), "theme-slot:dark");
+        assert_eq!(SettingsView::marked_active(cx), "nord");
     });
-    // The file now names a theme that does not exist: Huterm keeps its
-    // last working theme, so the file's choice is not the one in use.
-    break_file(&mut harness, &file, "[theme]\nlight = \"nope\"\n");
-    with_view(&mut harness, |view, cx| {
-        assert_eq!(view.marked_active(cx), None);
+    // A keyboard pick now sets the dark mode's theme, as Settings shows.
+    press(&mut harness, "theme:dracula");
+    assert_eq!(
+        file.text(),
+        "[theme]\nlight = \"nord\"\ndark = \"dracula\"\n"
+    );
+    DARK.set(false);
+}
+
+#[gpui::test]
+fn settings_alone_follows_a_mode_change_to_another_theme(
+    cx: &mut TestAppContext,
+) {
+    DARK.set(false);
+    let theme = |name| crate::themes::preview(name, Path::new("")).unwrap();
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.themes = crate::themes::ThemePair {
+            light: theme("one-light"),
+            dark: theme("dracula"),
+            light_name: "one-light".to_owned(),
+            dark_name: "dracula".to_owned(),
+        };
     });
+    let file = ScratchConfig::new(
+        "theme-settings-alone",
+        "[theme]\nlight = \"one-light\"\ndark = \"dracula\"\n",
+    );
+    open_settings(&mut harness, &file.path());
+    harness.cx.update(|cx| {
+        assert_eq!(cx.global::<Desktop>().config.theme, theme("one-light"));
+    });
+    DARK.set(true);
+    harness.cx.update(SettingsView::appearance_changed);
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert_eq!(cx.global::<Desktop>().config.theme, theme("dracula"));
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(SettingsView::marked_active(cx), "dracula");
+    });
+    DARK.set(false);
 }

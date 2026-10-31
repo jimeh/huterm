@@ -293,10 +293,7 @@ impl Default for Config {
             general: GeneralConfig::default(),
             font: FontConfig::default(),
             theme: themes::default_theme(),
-            themes: ThemePair {
-                light: themes::default_theme(),
-                dark: themes::default_theme(),
-            },
+            themes: ThemePair::default_pair(),
             window: WindowConfig::default(),
             tabs: TabsConfig::default(),
             updates: UpdateConfig::default(),

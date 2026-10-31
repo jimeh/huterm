@@ -18,7 +18,7 @@ use huterm_ui::typography::ui;
 use toml::Value;
 
 use super::super::super::overlay::{Swatch, mono_font_family, theme_is_dark};
-use super::super::system_appearance::system_dark;
+use super::super::Desktop;
 use super::SettingsView;
 use super::saving::Batch;
 use crate::assets::Icon;
@@ -84,9 +84,10 @@ impl Slot {
         }
     }
 
-    /// The slot the system's mode uses now.
+    /// The slot the system's mode uses now, as the desktop last followed
+    /// it, so what Settings shows and what it writes always agree.
     fn current(cx: &gpui::App) -> Self {
-        if system_dark(cx) {
+        if cx.global::<Desktop>().system_mode.is_dark() {
             Self::Dark
         } else {
             Self::Light
@@ -131,16 +132,13 @@ impl SettingsView {
         }
     }
 
-    /// The theme in use now, when the file's choice is: `None` while the
-    /// file fails to load, when Huterm keeps its last working settings, or
-    /// for a theme that does not resolve.
-    pub(super) fn active_theme(&self, cx: &gpui::App) -> Option<String> {
-        let name = self.chosen_theme(cx);
-        let resolves = self
-            .themes
-            .iter()
-            .any(|(theme, preview)| *theme == name && preview.is_some());
-        (resolves && !self.status.invalid()).then_some(name)
+    /// The theme in use now: the one the desktop applied for the system's
+    /// mode, which a file that fails to load, a save not yet reloaded, or
+    /// an edit made while watching is off has not replaced.
+    pub(super) fn active_theme(cx: &gpui::App) -> String {
+        let desktop = cx.global::<Desktop>();
+        let dark = desktop.system_mode.is_dark();
+        desktop.config.themes.name(dark).to_owned()
     }
 
     /// The slot the grid sets: the one chosen, else the system's now.
@@ -328,7 +326,7 @@ impl SettingsView {
     ) -> AnyElement {
         let target = self.target_slot(cx);
         let current = Slot::current(cx);
-        let active = self.active_theme(cx).is_some();
+        let active = Self::active_theme(cx);
         let mut cards =
             RadioGroup::new("settings-theme-slots", "Theme to choose", swatch)
                 .card(px(CARD_WIDTH * 2.0))
@@ -349,7 +347,7 @@ impl SettingsView {
                 .child(icon(slot.icon(), swatch.fg))
                 .child(slot.label())
                 .child(div().flex_1())
-                .when(active && slot == current, |header| {
+                .when(slot == current && name == active, |header| {
                     header.child(badge(
                         format!("settings-theme-slot-active-{}", slot.id()),
                         "Active",
@@ -418,7 +416,7 @@ impl SettingsView {
     ) -> AnyElement {
         let auto = self.theme_auto();
         let selected = self.selected_theme(cx);
-        let active = self.active_theme(cx);
+        let active = Self::active_theme(cx);
         let light = auto.then(|| self.slot_theme(Slot::Light));
         let dark = auto.then(|| self.slot_theme(Slot::Dark));
         let themes = self.themes.clone();
@@ -426,7 +424,7 @@ impl SettingsView {
         for (heading, dark_group) in [("Light", false), ("Dark", true)] {
             let group: Vec<_> = themes
                 .iter()
-                .filter(|(_, preview)| is_dark(preview.as_ref()) == dark_group)
+                .filter(|card| card.dark == dark_group)
                 .collect();
             if group.is_empty() {
                 continue;
@@ -438,10 +436,11 @@ impl SettingsView {
             )
             .card(px(CARD_WIDTH))
             .key_context("SettingsGroup");
-            for (name, preview) in group {
+            let count = group.len();
+            for ThemeCard { name, preview, .. } in group {
                 let handle = self.action_stop(format!("theme:{name}"), cx);
                 let marks = Marks {
-                    active: active.as_deref() == Some(name.as_str()),
+                    active: *name == active,
                     light: light.as_deref() == Some(name.as_str()),
                     dark: dark.as_deref() == Some(name.as_str()),
                 };
@@ -482,10 +481,7 @@ impl SettingsView {
                         .mt(px(4.0))
                         .text_size(ui(11.0))
                         .text_color(swatch.muted)
-                        .child(format!(
-                            "{heading} · {}",
-                            count(&themes, dark_group)
-                        ))
+                        .child(format!("{heading} · {count}"))
                         .child(div().flex_1().h(px(1.0)).bg(swatch.line)),
                 )
                 .child(cards);
@@ -497,21 +493,49 @@ impl SettingsView {
     fn preview(&self, name: &str) -> Option<Theme> {
         self.themes
             .iter()
-            .find(|(theme, _)| theme == name)
-            .and_then(|(_, preview)| preview.clone())
+            .find(|card| card.name == name)
+            .and_then(|card| card.preview.clone())
     }
 
     /// Every theme card's name in the order the grid shows them: light
     /// themes, then dark ones.
     pub(super) fn ordered_theme_names(&self) -> Vec<String> {
-        let mut names: Vec<(bool, &String)> = self
-            .themes
-            .iter()
-            .map(|(name, preview)| (is_dark(preview.as_ref()), name))
-            .collect();
-        names.sort_by_key(|(dark, _)| *dark);
-        names.into_iter().map(|(_, name)| name.clone()).collect()
+        self.themes.iter().map(|card| card.name.clone()).collect()
     }
+}
+
+/// A theme the picker offers, with its colors when it resolves.
+#[derive(Clone)]
+pub(super) struct ThemeCard {
+    pub(super) name: String,
+    pub(super) preview: Option<Theme>,
+    /// Whether it reads as dark, which groups it. One that did not resolve
+    /// counts as dark, as the colors it would start from are.
+    pub(super) dark: bool,
+}
+
+/// The themes `[theme] name` can select, with the themes directory next
+/// to `config`, in the order the grid shows them: light, then dark, each
+/// sorted by name. Reads theme files, so it runs off the UI thread.
+pub(super) fn scan(config: &std::path::Path) -> Vec<ThemeCard> {
+    let directory = config
+        .parent()
+        .map_or_else(std::path::PathBuf::new, |parent| parent.join("themes"));
+    let mut cards: Vec<ThemeCard> = crate::themes::names(Some(&directory))
+        .into_iter()
+        .map(|name| {
+            let preview = crate::themes::preview(&name, &directory);
+            let dark = preview.as_ref().is_none_or(theme_is_dark);
+            ThemeCard {
+                name,
+                preview,
+                dark,
+            }
+        })
+        .collect();
+    // Stable, so each group keeps the names' order.
+    cards.sort_by_key(|card| card.dark);
+    cards
 }
 
 /// What a theme card marks besides being chosen.
@@ -522,19 +546,6 @@ struct Marks {
     /// The light or dark mode theme, while the theme follows the system.
     light: bool,
     dark: bool,
-}
-
-/// Whether a theme reads as dark. One that did not resolve counts as dark,
-/// as the colors it would start from are.
-fn is_dark(preview: Option<&Theme>) -> bool {
-    preview.is_none_or(theme_is_dark)
-}
-
-fn count(themes: &[(String, Option<Theme>)], dark: bool) -> usize {
-    themes
-        .iter()
-        .filter(|(_, preview)| is_dark(preview.as_ref()) == dark)
-        .count()
 }
 
 fn icon(icon: Icon, color: gpui::Hsla) -> gpui::Svg {

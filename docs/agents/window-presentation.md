@@ -105,8 +105,11 @@ GPUI's per-window callback, so `native_system_appearance` observes
 `bestMatchFromAppearancesWithNames`: GPUI's `App::window_appearance` maps
 the high-contrast appearances that Increase Contrast selects to light. On
 Linux the desktop portal's changes reach every window's appearance
-callback, which follows too, and the portal answers after startup, so a
-dark desktop can start on the light theme for a moment. Never call
+callback, Settings' included, which follows too, and the portal answers
+after startup, so a dark desktop can start on the light theme for a
+moment. `Desktop::system_mode` records the mode last followed; Settings
+reads it rather than the platform, and `follow` redraws every window on a
+change of mode even when both modes use one theme. Never call
 `App::set_window_appearance` outside smokes: it pins `NSApp.appearance`.
 `window_tests::system_appearance` and the presentation-query smoke, which
 sets the smoke application's own appearance, cover the no-loop property.

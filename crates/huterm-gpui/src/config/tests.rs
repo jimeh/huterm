@@ -581,6 +581,12 @@ fn light_and_dark_pick_a_theme_for_each_mode_and_fall_back_to_name() {
     // An unknown theme fails even in the mode not in use, naming its key.
     let error = parse("[theme]\nlight = 'nope'").unwrap_err().to_string();
     assert!(error.contains("[theme] light: unknown theme"), "{error}");
+    // A name both modes replace still has to exist.
+    let error =
+        parse("[theme]\nname = 'nrod'\nlight = 'one-light'\ndark = 'dracula'")
+            .unwrap_err()
+            .to_string();
+    assert!(error.contains("unknown theme \"nrod\""), "{error}");
     // Only the selected `[theme]` picks themes.
     assert!(parse("[themes.mine]\nlight = 'nord'").is_err());
     assert!(parse("[themes.mine]\ndark = 'nord'").is_err());

@@ -883,6 +883,9 @@ struct Desktop {
     /// How many times the theme changed to follow the system's mode, for
     /// tests and smokes that check it settles.
     appearance_follows: u64,
+    /// The system's mode when last followed; Settings shows and edits that
+    /// mode's theme.
+    system_mode: system_appearance::Mode,
     /// Shows native menus; `None` where windows draw every menu themselves.
     menu_presenter: Option<Rc<dyn MenuPresenter>>,
     /// Close failures reported in any window, including windows since
@@ -1613,6 +1616,7 @@ fn install_desktop(
         external_drag_window: None,
         button_layout: ButtonLayout::standard(),
         appearance_follows: 0,
+        system_mode: system_appearance::Mode::Light,
         #[cfg(target_os = "macos")]
         menu_presenter: Some(Rc::new(appkit_menu::AppKitPresenter)),
         #[cfg(not(target_os = "macos"))]
@@ -10857,6 +10861,7 @@ fn finish_reload(
             #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             apply_update_config(cx, &config);
             let desktop = cx.global_mut::<Desktop>();
+            desktop.system_mode = system_appearance::Mode::of(dark);
             desktop.config = config.clone();
             desktop.config_report =
                 ConfigReport::reloaded(&config, &compiled, refused);
