@@ -151,6 +151,10 @@ colour.
 Lines never overlap. GPUI blends overlapping path coverage, so an overlap
 would draw darker. Each divider stops at the outline's inner edge, and a
 divider that meets another at a T-junction stops at that divider's edge.
+The rule covers `outline`, `dividers`, and `edge`. `glow`'s soft bands blend
+where they meet, so a junction glows a little brighter, as light would;
+avoiding that would need a different drawing method for a non-default
+style, and the UX review found the result natural.
 
 The divider rule under sync covers every divider of the tab, including one
 beside an exited pane. An exited pane receives nothing and still loses its
@@ -159,13 +163,19 @@ back broken lines.
 
 ### Patterns and paths
 
-- `dashed`: dashes of `3 × width` with gaps of `2 × width`, through
-  `PathBuilder::dash_array`. A closed outline starts on the middle of a
-  straight edge so the seam never lands on a corner. A line shorter than
-  one dash and one gap draws solid.
-- `dotted`: round dots of diameter `width` every `3 × width`. GPUI does not
-  expose lyon's `LineCap`, so Huterm places filled circles itself along the
-  same straight segments and arcs, in one fill path per chunk.
+- `dashed`: dashes of `3 × width` with gaps of `2 × width`, stretched or
+  shrunk a little so a whole number fit: a closed outline's seam gap
+  matches the others, and an open line starts and ends on a dash. A closed
+  outline starts on the middle of a straight edge so the seam never lands
+  on a corner. A line shorter than one dash and one gap draws solid.
+- `dotted`: round dots of diameter `width`, at least `3 × width` apart and
+  spread evenly. An open line keeps its end dots a spacing, less half a
+  dot, from its ends, so a dot never crowds one on the line it meets. GPUI
+  does not expose lyon's `LineCap`, so Huterm places filled circles itself
+  along the same straight segments and arcs, in one fill path per chunk.
+- Huterm places dashes itself too, rather than through
+  `PathBuilder::dash_array`, which restarts its pattern in each chunk of a
+  long outline.
 - Each built path stays under GPUI's `u16` vertex index limit: long dotted
   or dashed outlines split into several paths. A path whose build fails is
   skipped and logged once.

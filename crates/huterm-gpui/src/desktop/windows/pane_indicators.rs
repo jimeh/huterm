@@ -2,7 +2,8 @@
 //! from `[panes.sync_indicator]` and `[panes.zoom_indicator]`: which look
 //! applies, the radius of each corner of the pane area, the lines each
 //! style draws, and the paths a frame paints. Lines never overlap, since
-//! GPUI blends overlapping path coverage darker. The indicator carries no
+//! GPUI blends overlapping path coverage darker; only `glow`'s soft bands
+//! blend where they meet, as light would. The indicator carries no
 //! listeners, cursor, hover style, or occlusion, so it never takes input.
 //! See `docs/plans/pane-indicators.md`.
 
@@ -640,17 +641,13 @@ fn pattern_marks(track: &Track, pattern: LinePattern, width: f32) -> Vec<Mark> {
             if length < dash + gap {
                 return solid();
             }
-            let mut marks = Vec::new();
-            let mut start = 0.0;
-            while start < length {
-                let end = (start + dash).min(length);
-                marks.push(Mark::Run {
+            dash_spans(length, dash, gap, track.closed)
+                .into_iter()
+                .map(|(start, end)| Mark::Run {
                     points: track.polyline(start, end),
                     closed: false,
-                });
-                start += dash + gap;
-            }
-            marks
+                })
+                .collect()
         }
         LinePattern::Dotted => {
             let spacing = dot_spacing(width);
@@ -664,6 +661,41 @@ fn pattern_marks(track: &Track, pattern: LinePattern, width: f32) -> Vec<Mark> {
                 .collect()
         }
     }
+}
+
+/// The dashes along a line `length` long, as start and end distances, with
+/// `dash` and `gap` stretched or shrunk a little so a whole number fit. A
+/// closed line's dashes run all the way round, so its seam's gap matches
+/// the others. An open line starts and ends on a dash, so it never ends in
+/// a sliver.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "a dash count along an on-screen line is small and positive"
+)]
+fn dash_spans(
+    length: f32,
+    dash: f32,
+    gap: f32,
+    closed: bool,
+) -> Vec<(f32, f32)> {
+    let period = dash + gap;
+    let (dashes, fit) = if closed {
+        let dashes = ((length / period).round() as usize).max(1);
+        (dashes, length / (dashes as f32 * period))
+    } else {
+        let dashes = (((length + gap) / period).round() as usize).max(1);
+        let span = dashes as f32 * dash + (dashes - 1) as f32 * gap;
+        (dashes, length / span)
+    };
+    let (dash, period) = (dash * fit, period * fit);
+    (0..dashes)
+        .map(|index| {
+            let start = period * index as f32;
+            (start, (start + dash).min(length))
+        })
+        .collect()
 }
 
 /// Where along a line `length` long the dots of a `dotted` pattern
@@ -1558,10 +1590,13 @@ impl WorkspaceView {
         let gap = active.filter(|_| !lines.is_empty()).map_or(0.0, |active| {
             line_width(active.look.width, window.scale_factor())
         });
+        // Panes whose views are installed, as the dim layer counts them: a
+        // layout can place a pane before its view arrives.
+        let shown = Self::panes_shown(tab, rects.as_ref());
         let cue = self.focus_cue(
             rects.as_ref(),
             focused,
-            &drawn,
+            shown,
             &lines,
             gap,
             area,
@@ -1584,7 +1619,7 @@ impl WorkspaceView {
         &self,
         rects: Option<&TabPanes>,
         focused: PaneId,
-        drawn: &[PaneRect],
+        shown: usize,
         lines: &[Bounds<Pixels>],
         gap: f32,
         area: Bounds<Pixels>,
@@ -1595,7 +1630,7 @@ impl WorkspaceView {
         let alpha = pane_focus::focus_accent(
             bars.mode,
             self.pane_bars.progress(focused),
-            drawn.len(),
+            shown,
             self.config.panes.focus_accent,
         )?;
         let frame = rects?.pane(focused)?.frame;

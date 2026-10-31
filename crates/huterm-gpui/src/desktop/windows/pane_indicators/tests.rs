@@ -318,17 +318,32 @@ fn dashes_and_dots_scale_with_the_width() {
         assert_eq!(dot_spacing(width), 3.0 * width);
         let length = 100.0 * width;
         let line = Track::line(Pt { x: 0.0, y: 0.0 }, Pt { x: length, y: 0.0 });
-        let dashes = pattern_marks(&line, LinePattern::Dashed, width);
-        // 100 widths hold 20 periods of 5.
+        let dashes: Vec<(f32, f32)> =
+            pattern_marks(&line, LinePattern::Dashed, width)
+                .iter()
+                .map(|mark| match mark {
+                    Mark::Run { points, closed } => {
+                        assert!(!closed);
+                        (points[0].x, points[points.len() - 1].x)
+                    }
+                    Mark::Dot { .. } => panic!("a dash"),
+                })
+                .collect();
+        // 100 widths hold 20 dashes of 3 and 19 gaps of 2, stretched a
+        // little so the line starts and ends on a dash, with no sliver.
         assert_eq!(dashes.len(), 20, "{width}");
-        let Mark::Run { points, closed } = &dashes[1] else {
-            panic!("a dash");
-        };
-        assert!(!closed);
-        assert_eq!(
-            (points[0].x, points[points.len() - 1].x),
-            (5.0 * width, 8.0 * width),
-            "{width}"
+        assert!(dashes[0].0.abs() < 1e-3, "{width}: {dashes:?}");
+        assert!((dashes[19].1 - length).abs() < 1e-2, "{width}: {dashes:?}");
+        let (dash, gap) =
+            (dashes[0].1 - dashes[0].0, dashes[1].0 - dashes[0].1);
+        assert!((dash / gap - 1.5).abs() < 1e-3, "{width}: {dash} {gap}");
+        assert!((dash - 3.0 * width).abs() < 0.1 * width, "{width}: {dash}");
+        assert!(
+            dashes.windows(2).all(|pair| {
+                (pair[1].1 - pair[1].0 - dash).abs() < 1e-2
+                    && (pair[1].0 - pair[0].1 - gap).abs() < 1e-2
+            }),
+            "{width}: {dashes:?}"
         );
         let dots = pattern_marks(&line, LinePattern::Dotted, width);
         let centres: Vec<f32> = dots
@@ -380,13 +395,21 @@ fn a_line_shorter_than_one_period_draws_solid() {
             "{pattern:?}"
         );
     }
-    // One full period is long enough for the pattern.
+    // Two dashes and their gap take 16 points, each end on a dash.
+    let dashes = pattern_marks(&line(16.0), LinePattern::Dashed, width);
     assert_eq!(
-        pattern_marks(&line(10.0), LinePattern::Dashed, width),
-        [Mark::Run {
-            points: vec![Pt { x: 0.0, y: 0.0 }, Pt { x: 6.0, y: 0.0 }],
-            closed: false
-        }]
+        dashes,
+        [
+            Mark::Run {
+                points: vec![Pt { x: 0.0, y: 0.0 }, Pt { x: 6.0, y: 0.0 }],
+                closed: false
+            },
+            Mark::Run {
+                points: vec![Pt { x: 10.0, y: 0.0 }, Pt { x: 16.0, y: 0.0 }],
+                closed: false
+            }
+        ],
+        "{dashes:?}"
     );
     assert_eq!(
         pattern_marks(&line(6.0), LinePattern::Dotted, width).len(),
@@ -415,7 +438,8 @@ fn a_closed_outline_starts_and_ends_on_the_middle_of_its_top_edge() {
         "{}",
         track.length()
     );
-    // The last dash ends on the top edge too, so the seam is straight.
+    // The last dash ends on the top edge too, so the seam is straight, and
+    // the gap across the seam matches every other gap.
     let dashes = pattern_marks(&track, LinePattern::Dashed, 2.0);
     let Some(Mark::Run { points, .. }) = dashes.last() else {
         panic!("a dash");
@@ -425,6 +449,15 @@ fn a_closed_outline_starts_and_ends_on_the_middle_of_its_top_edge() {
         end.y.to_bits() == 1.0_f32.to_bits() && end.x > 1.0 && end.x <= 400.0,
         "{end:?}"
     );
+    let Some(Mark::Run { points: first, .. }) = dashes.first() else {
+        panic!("a dash");
+    };
+    let Some(Mark::Run { points: second, .. }) = dashes.get(1) else {
+        panic!("a dash");
+    };
+    let gap = second[0].x - first[first.len() - 1].x;
+    let seam = first[0].x - end.x;
+    assert!((seam - gap).abs() < 1e-2, "seam {seam}, gap {gap}");
     // Arcs follow the corner: the bottom-right arc's middle sits on the
     // circle around its centre.
     let arc = track
