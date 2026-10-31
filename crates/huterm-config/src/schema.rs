@@ -5,9 +5,7 @@ use huterm_protocol::{ArgumentKind, Requirement, catalog};
 use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
 
-use crate::{
-    LinkModifiers, PaneDragModifiers, RawConfig, ScrollbackSize, ThemeFile,
-};
+use crate::{LinkModifiers, PaneDrag, RawConfig, ScrollbackSize, ThemeFile};
 
 pub const CONFIG_ASSET: &str = "huterm.schema.json";
 pub const THEME_ASSET: &str = "huterm-theme.schema.json";
@@ -20,12 +18,12 @@ impl JsonSchema for LinkModifiers {
         let mut combinations = Vec::new();
         modifier_combinations(&mut combinations, &mut Vec::new());
         schemars::json_schema!({"type":"string", "enum":combinations,
-            "description":"Modifiers joined with hyphens, without duplicates. Defaults to cmd on macOS and ctrl on Linux. macOS rejects ctrl; this platform restriction is checked at runtime."})
+            "description":"The modifiers to hold when clicking a link, joined with hyphens. Defaults to `cmd` on macOS, which does not allow `ctrl`, and `ctrl` on Linux."})
     }
 }
-impl JsonSchema for PaneDragModifiers {
+impl JsonSchema for PaneDrag {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        "PaneDragModifiers".into()
+        "PaneDrag".into()
     }
     // Inline, so `drag_modifier` keeps its own description beside the
     // pattern.
@@ -33,10 +31,11 @@ impl JsonSchema for PaneDragModifiers {
         true
     }
     // An enum cannot hold both spellings of `cmd` in every order, so the
-    // pattern admits two to four tokens and the load checks the rest.
+    // pattern admits `off` or two to four tokens and the load checks the
+    // rest.
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         schemars::json_schema!({"type":"string",
-            "pattern":"^(cmd|super|ctrl|alt|shift)(-(cmd|super|ctrl|alt|shift)){1,3}$"})
+            "pattern":"^(off|(cmd|super|ctrl|alt|shift)(-(cmd|super|ctrl|alt|shift)){1,3})$"})
     }
 }
 impl JsonSchema for ScrollbackSize {

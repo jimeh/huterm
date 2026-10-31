@@ -1340,6 +1340,42 @@
     "theme": false
   },
   {
+    "name": "settings show_advanced on",
+    "toml": "[settings]\nshow_advanced = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "settings show_advanced text",
+    "toml": "[settings]\nshow_advanced = \"yes\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "settings unknown field",
+    "toml": "[settings]\nadvanced = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "panes drag_modifier off",
+    "toml": "[panes]\ndrag_modifier = \"off\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "panes drag_modifier combination",
+    "toml": "[panes]\ndrag_modifier = \"ctrl-shift-alt\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "panes drag_modifier misspelled off",
+    "toml": "[panes]\ndrag_modifier = \"of\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "keybinding disabled",
     "toml": "[[keybinding]]\nkey = \"cmd-h\"\ncommand = \"hide\"\ndisabled = true",
     "valid": true,

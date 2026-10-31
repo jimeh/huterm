@@ -129,10 +129,10 @@ title_bar_position = "top"
 # off screen under hover or hidden bars, from 0 (off) to 1.
 focus_accent = 0.0
 # How much panes without focus dim, from 0 (off) to 0.8.
-inactive_dim = 0.0
+inactive_dim = 0.2
 # Hold these modifiers and press anywhere in a split tab's pane to drag the
-# pane, as its title bar does. Off when unset; cmd-ctrl suits macOS and
-# ctrl-alt Linux.
+# pane, as its title bar does: two or more of cmd, ctrl, alt, and shift, or
+# "off". Defaults to cmd-ctrl on macOS and ctrl-alt on Linux.
 # drag_modifier = "cmd-ctrl"
 # Who owns a pane's zoom: view, where each window zooms on its own, or
 # shared, where the tab owns it and every window set to shared shows it.
@@ -754,7 +754,10 @@ mod link_config_tests {
         assert_eq!(
             moved
                 .panes
-                .drag_modifier
+                .drag_modifiers(
+                    moved.terminal.link_modifiers,
+                    cfg!(target_os = "macos"),
+                )
                 .map(huterm_config::PaneDragModifiers::bits),
             Some(14)
         );

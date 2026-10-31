@@ -1255,3 +1255,68 @@ fn a_refused_rename_behind_another_dialog_leaves_the_new_name_and_says_why(
         );
     });
 }
+
+#[gpui::test]
+fn keybindings_lists_global_shortcuts_under_their_commands_and_edits_them(
+    cx: &mut TestAppContext,
+) {
+    let globals = "[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+                   command = \"toggle_quake\"\n";
+    let file = ScratchConfig::new("keys-globals", globals);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    let show_keybindings = |harness: &mut DesktopHarness| {
+        with_window(harness, |view, window, cx| {
+            view.show_section(
+                huterm_config::settings::SectionId::Keybindings,
+                cx,
+            );
+            window.refresh();
+        });
+        harness.cx.run_until_parked();
+    };
+    show_keybindings(&mut harness);
+    // Toggle Quake lists its global shortcut, tagged Global, among its own.
+    press(&mut harness, "kcmd:toggle_quake");
+    with_window(&mut harness, |_, window, _| window.refresh());
+    harness.cx.run_until_parked();
+    let tag = a11y_node(&mut harness, "settings-gtag-0");
+    assert_eq!(tag["aria"]["label"], "Global", "{tag}");
+    assert!(with_view(&mut harness, |view, _| view.drew("grec:0")));
+    // Recording a key there changes the entry the Quake section edits.
+    press(&mut harness, "grec:0");
+    keystrokes(&mut harness, "ctrl-alt-shift-u");
+    saved(&mut harness, &file, |text| {
+        text.contains("ctrl-alt-shift-u")
+    });
+    assert_eq!(file.text(), globals.replace("-y", "-u"));
+    // Show Quake adds one that runs it on the default profile.
+    press(&mut harness, "kcmd:show_quake");
+    press(&mut harness, "gadd:show_quake");
+    keystrokes(&mut harness, "ctrl-alt-shift-i");
+    saved(&mut harness, &file, |text| text.contains("show_quake"));
+    assert_eq!(
+        file.text(),
+        format!(
+            "{}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-i\"\n\
+             command = \"show_quake\"\n",
+            globals.replace("-y", "-u")
+        )
+    );
+    // The Quake windows section lists both.
+    press(&mut harness, "qgo");
+    with_window(&mut harness, |_, window, _| window.refresh());
+    harness.cx.run_until_parked();
+    assert!(with_view(&mut harness, |view, _| {
+        view.drew("grec:0") && view.drew("grec:1")
+    }));
+    // Removing one under its command returns focus to that command.
+    show_keybindings(&mut harness);
+    press(&mut harness, "gdel:1");
+    saved(&mut harness, &file, |text| !text.contains("show_quake"));
+    assert_eq!(file.text(), globals.replace("-y", "-u"));
+    harness.cx.run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        assert_eq!(view.focus_name(window, cx), "action:kcmd:show_quake");
+    });
+}

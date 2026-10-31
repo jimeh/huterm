@@ -537,10 +537,11 @@ pub(crate) enum Edit {
     Add { key: String, command: CommandId },
     /// Remove user entries: one, or every entry for a command.
     Remove(Vec<usize>),
-    /// Add a global shortcut that toggles `profile`, or the default
-    /// profile when `None`.
+    /// Add a global shortcut that runs `command` on `profile`, or on the
+    /// default profile when `None`.
     AddGlobal {
         key: String,
+        command: CommandId,
         profile: Option<String>,
     },
     /// Set or clear one field of a global shortcut: `key`, `command`, or
@@ -664,12 +665,16 @@ impl Edit {
                 .ok_or_else(|| format!("global shortcut {} is gone", index + 1))
         };
         Ok(match self {
-            Self::AddGlobal { key, profile } => {
+            Self::AddGlobal {
+                key,
+                command,
+                profile,
+            } => {
                 let mut entry = Table::new();
                 entry.insert("key".into(), Value::String(key.clone()));
                 entry.insert(
                     "command".into(),
-                    Value::String(ids::TOGGLE_QUAKE.as_str().into()),
+                    Value::String(command.as_str().into()),
                 );
                 if let Some(profile) = profile {
                     entry.insert(

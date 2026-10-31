@@ -12,7 +12,10 @@ try {
   const config = join(directory, "config.toml");
   await writeFile(
     config,
-    '[terminal]\nclose_on_exit=false\n[tabs]\nlabel="title"\n',
+    // The resize check polls for the size indicator, so it keeps its
+    // former linger instead of the 100 ms default.
+    '[terminal]\nclose_on_exit=false\n[tabs]\nlabel="title"\n' +
+      "[window]\nsize_indicator_linger_ms=2000\n",
   );
   await writeFile(shell, `#!/bin/sh
 i=0

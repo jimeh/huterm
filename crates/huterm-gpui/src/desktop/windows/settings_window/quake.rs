@@ -19,7 +19,7 @@ use super::super::super::settings::keybindings::{Edit, names_profile};
 use super::super::Desktop;
 use super::controls::Opener;
 use super::dialog::Prompt;
-use super::keybindings::{CAP_WIDTH, small};
+use super::keybindings::{CAP_WIDTH, global_tag, small};
 use super::render::group_card;
 use super::saving::Batch;
 use super::{MenuFor, SettingsView};
@@ -40,7 +40,7 @@ use huterm_ui::listbox::{
 const PREFIX: &str = "quake.profiles.";
 const DEFAULT: &str = "default";
 /// The commands a global shortcut may run, in menu order.
-const COMMANDS: [huterm_protocol::CommandId; 3] =
+pub(super) const COMMANDS: [huterm_protocol::CommandId; 3] =
     [ids::TOGGLE_QUAKE, ids::SHOW_QUAKE, ids::HIDE_QUAKE];
 
 /// The section's state, held by the view.
@@ -168,13 +168,13 @@ pub(super) fn profile_setting(
 }
 
 /// One `[[global_keybinding]]` entry, as the section lists it.
-struct Global {
-    key: String,
-    command: String,
+pub(super) struct Global {
+    pub(super) key: String,
+    pub(super) command: String,
     /// `None` runs the default profile.
-    profile: Option<String>,
+    pub(super) profile: Option<String>,
     /// Whether `disabled = true` keeps it from registering.
-    disabled: bool,
+    pub(super) disabled: bool,
 }
 
 impl Global {
@@ -236,7 +236,7 @@ impl SettingsView {
         }
     }
 
-    fn globals(&self) -> Vec<Global> {
+    pub(super) fn globals(&self) -> Vec<Global> {
         self.keys
             .globals
             .iter()
@@ -271,6 +271,7 @@ impl SettingsView {
             }
             self.keys.errors.retain(|row, _| {
                 row != "gadd"
+                    && !row.starts_with("gadd:")
                     && row
                         .strip_prefix('g')
                         .is_none_or(|rest| rest.parse::<usize>().is_err())
@@ -368,7 +369,7 @@ impl SettingsView {
             "grec" if argument.parse::<usize>().is_ok() => {
                 self.start_recording(&format!("grec:{argument}"), window, cx);
             }
-            "gadd" => self.start_recording("gadd", window, cx),
+            "gadd" => self.start_recording(&add_key(argument), window, cx),
             "gcmd" | "gprofile" => {
                 if let Ok(entry) = argument.parse() {
                     self.open_global_menu(entry, kind == "gcmd", window, cx);
@@ -380,9 +381,18 @@ impl SettingsView {
                 }
             }
             "gdel" => {
-                if let Ok(entry) = argument.parse() {
-                    self.keys.follow =
-                        Some(("gadd".to_owned(), format!("gdel:{entry}")));
+                if let Ok(entry) = argument.parse::<usize>() {
+                    // Keybindings lists the shortcut under its command.
+                    let next = match self.globals().get(entry) {
+                        Some(global)
+                            if self.section
+                                == huterm_config::settings::SectionId::Keybindings =>
+                        {
+                            format!("kcmd:{}", global.command)
+                        }
+                        _ => "gadd".to_owned(),
+                    };
+                    self.keys.follow = Some((next, format!("gdel:{entry}")));
                     self.submit_keys(
                         Edit::RemoveGlobal(entry),
                         Some(format!("g{entry}")),
@@ -897,44 +907,73 @@ impl SettingsView {
         );
     }
 
-    /// Writes a recorded key for a global shortcut, or adds one.
-    pub(super) fn finish_global(
+    /// Refuses a recorded global shortcut that needs a modifier, under
+    /// `row`; true when the key may register.
+    fn global_key_checked(&mut self, key: &str, row: String) -> bool {
+        // A global shortcut works in every application, so a key without
+        // a modifier would stop reaching them.
+        if global_key_allowed(key) {
+            return true;
+        }
+        self.keys.errors.insert(
+            row,
+            if cfg!(target_os = "macos") {
+                "A global shortcut needs Control, Option, or Command, or a \
+                 function key, since it works in every app. Not saved."
+            } else {
+                "A global shortcut needs Ctrl, Alt, or Super, or a function \
+                 key, since it works in every app. Not saved."
+            }
+            .to_owned(),
+        );
+        false
+    }
+
+    /// Adds a recorded global shortcut: in the Quake windows section, one
+    /// that toggles the profile it shows; in Keybindings, one that runs
+    /// `command` on the default profile.
+    pub(super) fn add_global(
         &mut self,
-        target: Option<usize>,
+        command: Option<huterm_protocol::CommandId>,
         key: String,
         cx: &mut Context<'_, Self>,
     ) {
-        // A global shortcut works in every application, so a key without
-        // a modifier would stop reaching them.
-        if !global_key_allowed(&key) {
-            let row = target
-                .map_or_else(|| "gadd".to_owned(), |entry| format!("g{entry}"));
-            self.keys.errors.insert(
-                row,
-                if cfg!(target_os = "macos") {
-                    "A global shortcut needs Control, Option, or Command, or a \
-                     function key, since it works in every app. Not saved."
-                } else {
-                    "A global shortcut needs Ctrl, Alt, or Super, or a function \
-                     key, since it works in every app. Not saved."
-                }
-                .to_owned(),
-            );
+        let row = add_key(command.map_or("", |command| command.as_str()));
+        if !self.global_key_checked(&key, row.clone()) {
             return;
         }
-        let Some(entry) = target else {
-            let profile = self.shown_profile();
-            self.submit_keys(
-                Edit::AddGlobal {
-                    key,
-                    profile: (profile != DEFAULT).then_some(profile),
-                },
-                Some("gadd".to_owned()),
-                None,
-                cx,
-            );
+        let (command, profile) = command.map_or_else(
+            || {
+                let profile = self.shown_profile();
+                (ids::TOGGLE_QUAKE, (profile != DEFAULT).then_some(profile))
+            },
+            |command| (command, None),
+        );
+        if let Some(spec) = lookup(command.as_str()) {
+            self.keys.open.insert(spec.id);
+        }
+        self.submit_keys(
+            Edit::AddGlobal {
+                key,
+                command,
+                profile,
+            },
+            Some(row),
+            None,
+            cx,
+        );
+    }
+
+    /// Writes a recorded key for a global shortcut.
+    pub(super) fn finish_global(
+        &mut self,
+        entry: usize,
+        key: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !self.global_key_checked(&key, format!("g{entry}")) {
             return;
-        };
+        }
         if self
             .globals()
             .get(entry)
@@ -1363,7 +1402,7 @@ impl SettingsView {
             );
         }
         for (index, global) in globals.iter().enumerate() {
-            rows.push(self.render_global(index, global, read_only, swatch, cx));
+            rows.push(self.render_global(index, global, false, swatch, cx));
         }
         let recorder = self.recorder("gadd", cx);
         let add = KeyRecorderButton::new(
@@ -1406,14 +1445,18 @@ impl SettingsView {
         group_card("settings-globals", "Global shortcuts", rows, swatch)
     }
 
-    fn render_global(
+    /// One global shortcut's row: its key, command, profile, switch, and
+    /// remove button. Under its command in Keybindings, it drops the
+    /// command select for a Global tag.
+    pub(super) fn render_global(
         &mut self,
         index: usize,
         global: &Global,
-        read_only: bool,
+        under_command: bool,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
+        let read_only = self.keys_read_only();
         let record_key = format!("grec:{index}");
         let recorder = self.recorder(&record_key, cx);
         let cap = KeyRecorderButton::new(
@@ -1427,17 +1470,22 @@ impl SettingsView {
         .w(px(CAP_WIDTH))
         .border_color(swatch.accent.opacity(0.5))
         .when(read_only, |cap| cap.disabled(self.keys_lock_reason()));
-        let command = lookup(&global.command).map_or_else(
-            || global.command.clone(),
-            |spec| spec.title.to_owned(),
-        );
-        let command = self.global_select(
-            &format!("gcmd:{index}"),
-            command,
-            read_only,
-            swatch,
-            cx,
-        );
+        // Under its command, a Global tag stands where a shortcut's tag
+        // does.
+        let command = (!under_command).then(|| {
+            let command = lookup(&global.command).map_or_else(
+                || global.command.clone(),
+                |spec| spec.title.to_owned(),
+            );
+            self.global_select(
+                &format!("gcmd:{index}"),
+                command,
+                read_only,
+                swatch,
+                cx,
+            )
+        });
+        let tag = under_command.then(|| global_tag(index, swatch));
         let profile = self.global_select(
             &format!("gprofile:{index}"),
             global.profile.clone().unwrap_or_else(|| DEFAULT.to_owned()),
@@ -1465,21 +1513,22 @@ impl SettingsView {
             view.act(&switch_key, window, cx);
         }));
         let error = self.keys.errors.get(&format!("g{index}")).cloned();
+        // Under its command, the row lines up with the shortcuts above it.
         div()
             .flex()
             .flex_col()
             .gap(px(4.0))
-            .px(px(14.0))
-            .py(px(8.0))
+            .when(!under_command, |row| row.px(px(14.0)).py(px(8.0)))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.0))
+                    .gap(px(if under_command { 6.0 } else { 8.0 }))
                     .child(cap)
-                    .child(command)
+                    .children(command)
                     .child(profile)
                     .child(div().flex_1())
+                    .children(tag)
                     .child(toggle)
                     // A read-only row draws no remove button.
                     .when(!read_only, |row| {
@@ -1524,8 +1573,18 @@ impl SettingsView {
     }
 }
 
+/// The action key of a recorder that adds a global shortcut: the Quake
+/// windows section's, or the one under `command` in Keybindings.
+pub(super) fn add_key(command: &str) -> String {
+    if command.is_empty() {
+        "gadd".to_owned()
+    } else {
+        format!("gadd:{command}")
+    }
+}
+
 /// Whether this session cannot register global shortcuts.
-fn wayland() -> bool {
+pub(super) fn wayland() -> bool {
     cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 

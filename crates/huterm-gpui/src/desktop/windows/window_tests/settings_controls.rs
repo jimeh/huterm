@@ -565,3 +565,52 @@ fn link_look_footer_actions_report_as_buttons(cx: &mut TestAppContext) {
     .expect("the invalid file's status offers an action");
     assert_eq!(action["aria"]["role"], "Button", "{action}");
 }
+
+#[gpui::test]
+fn show_advanced_is_one_state_that_the_file_keeps(cx: &mut TestAppContext) {
+    // Terminal and Scrollback each have an advanced setting.
+    const TERM: &str = "settings-row-terminal.term";
+    const SIZE: &str = "settings-row-terminal.scrollback_bytes";
+    let file = ScratchConfig::new(
+        "controls-show-advanced",
+        "[settings]\nshow_advanced = true\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    let drawn = |harness: &mut DesktopHarness, section, row: &'static str| {
+        with_window(harness, |view, window, cx| {
+            view.show_section(section, cx);
+            window.refresh();
+        });
+        visual(harness).debug_bounds(row).is_some()
+    };
+    // A file that shows them shows them from the window's first frame.
+    show(&mut harness, &file, SectionId::Terminal);
+    assert!(drawn(&mut harness, SectionId::Terminal, TERM));
+    // General has a row for the state.
+    assert!(drawn(
+        &mut harness,
+        SectionId::General,
+        "settings-row-settings.show_advanced"
+    ));
+    // Hiding them on one page hides them on every page, and returns the
+    // key to its default.
+    with_window(&mut harness, |view, window, cx| {
+        view.show_section(SectionId::Scrollback, cx);
+        view.press("advanced:pane", window, cx);
+    });
+    harness.wait_for("the removal", |cx| {
+        settled(cx) && !file.text().contains("show_advanced")
+    });
+    // The emptied table goes with its key.
+    assert_eq!(file.text(), "");
+    assert!(!drawn(&mut harness, SectionId::Scrollback, SIZE));
+    assert!(!drawn(&mut harness, SectionId::Terminal, TERM));
+    // Showing them writes the key, and every page follows.
+    with_window(&mut harness, |view, window, cx| {
+        view.press("advanced:pane", window, cx);
+    });
+    harness.wait_for("the save", |cx| {
+        settled(cx) && file.text().contains("show_advanced = true")
+    });
+    assert!(drawn(&mut harness, SectionId::Scrollback, SIZE));
+}

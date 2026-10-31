@@ -90,8 +90,10 @@ pub(crate) struct FileStatus {
     /// The user unfolded the warning; it stays unfolded while the problem
     /// lasts, even as a reload updates its messages.
     notice_open: bool,
-    /// The next reload is the one a save asked for, so it keeps "Saved".
-    own_reload: bool,
+    /// The reloads saves asked for that have yet to finish, which keep
+    /// "Saved". A save during a reload waits for one follow-up, which also
+    /// serves any later save, so no more than two are owed.
+    own_reloads: u8,
 }
 
 impl FileStatus {
@@ -101,7 +103,7 @@ impl FileStatus {
             latest: None,
             problem: None,
             notice_open: false,
-            own_reload: false,
+            own_reloads: 0,
         }
     }
 
@@ -145,7 +147,7 @@ impl FileStatus {
                     | Event::FileError(_)
             )
         });
-        self.own_reload = true;
+        self.own_reloads = (self.own_reloads + 1).min(2);
     }
 
     /// A reload applied the file. The reload a save asked for keeps
@@ -155,7 +157,8 @@ impl FileStatus {
         // until the next reload, whose report replaced it before the
         // notice held its place.
         self.settle_problem(|problem| matches!(problem, Event::FileError(_)));
-        let own = std::mem::take(&mut self.own_reload);
+        let own = self.own_reloads > 0;
+        self.own_reloads = self.own_reloads.saturating_sub(1);
         let saving = matches!(self.latest, Some(Event::Saving));
         let saved =
             matches!(self.latest, Some(Event::Saved | Event::SavedUnsure(_)));
@@ -178,7 +181,7 @@ impl FileStatus {
     /// "Saved", the warning stays through the reload the save asks for.
     pub(crate) fn saved_with_warning(&mut self, message: impl Into<String>) {
         self.report_problem(Event::SavedUnsure(message.into()));
-        self.own_reload = true;
+        self.own_reloads = (self.own_reloads + 1).min(2);
     }
 
     pub(crate) fn not_applied(&mut self, message: impl Into<String>) {
@@ -405,6 +408,14 @@ mod tests {
         status.saving();
         status.reloaded();
         status.saved();
+        status.reloaded();
+        assert_eq!(text(&status), (Tone::Ok, "Saved".into(), None));
+        // A second save while the first one's reload runs waits for the
+        // follow-up reload, which keeps the report too.
+        status.saved();
+        status.saving();
+        status.saved();
+        status.reloaded();
         status.reloaded();
         assert_eq!(text(&status), (Tone::Ok, "Saved".into(), None));
         // A later reload, such as from another editor, reports itself.

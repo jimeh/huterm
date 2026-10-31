@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use gpui::Modifiers;
-use huterm_config::{PaneDragModifiers, PaneTitleBarMode};
+use huterm_config::{PaneDrag, PaneDragModifiers, PaneTitleBarMode};
 
 use super::super::notices::{NoticeContent, NoticeSource, Severity};
 use super::super::pane_drag::DropTarget;
@@ -44,10 +44,10 @@ fn cmd_ctrl() -> Modifiers {
 /// platforms accept beside their default link chord.
 fn grab_harness(cx: &mut TestAppContext) -> DesktopHarness {
     DesktopHarness::with_config(cx, |config| {
-        config.panes.drag_modifier = Some(
+        config.panes.drag_modifier = Some(PaneDrag::Modifiers(
             PaneDragModifiers::parse("cmd-ctrl", cfg!(target_os = "macos"))
                 .unwrap(),
-        );
+        ));
     })
 }
 
@@ -387,10 +387,10 @@ fn a_replayed_drag_move_does_not_rearm_after_the_modifiers_go(
 #[gpui::test]
 fn a_pending_shortcut_prefix_hides_the_badges(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.panes.drag_modifier = Some(
+        config.panes.drag_modifier = Some(PaneDrag::Modifiers(
             PaneDragModifiers::parse("cmd-ctrl", cfg!(target_os = "macos"))
                 .unwrap(),
-        );
+        ));
         // A chord whose first stroke uses the drag modifiers.
         config.keybindings.push(huterm_config::KeybindingEntry {
             key: "cmd-ctrl-y cmd-ctrl-u".to_owned(),

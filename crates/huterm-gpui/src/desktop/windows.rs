@@ -873,6 +873,9 @@ struct Desktop {
     quit_pending: bool,
     /// The Settings window, which is not in `windows`: it shows no session.
     settings: Option<gpui::WindowHandle<settings_window::SettingsView>>,
+    /// The configured font families that were not installed when Huterm
+    /// last applied the fonts, so a fallback draws instead.
+    unavailable_fonts: UnavailableFonts,
     external_drag_window: Option<gpui::WindowId>,
     /// The window buttons the desktop asks title rows to draw.
     button_layout: ButtonLayout,
@@ -886,6 +889,14 @@ struct Desktop {
     updater: native_updater::Updater,
 }
 impl Global for Desktop {}
+
+/// The configured font families a fallback stands in for, as the last
+/// font resolution found them: the terminal's, and the interface's.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct UnavailableFonts {
+    pub(super) terminal: Option<String>,
+    pub(super) interface: Option<String>,
+}
 
 /// What the configuration watcher last acknowledged. Only the macOS input
 /// smoke reads it; the Linux smoke observes reloads through the terminal.
@@ -1593,6 +1604,7 @@ fn install_desktop(
         pending_spawns: 0,
         settings: None,
         quit_pending: false,
+        unavailable_fonts: UnavailableFonts::default(),
         external_drag_window: None,
         button_layout: ButtonLayout::standard(),
         #[cfg(target_os = "macos")]
@@ -1633,6 +1645,13 @@ fn install_desktop(
     cx.intercept_keystrokes(hide_grab_badges).detach();
 }
 
+/// Notes whether `config`'s terminal family was unavailable, so `family`,
+/// the one its font resolution chose, stands in for it.
+fn note_terminal_font(cx: &mut App, config: &Config, family: &str) {
+    cx.global_mut::<Desktop>().unavailable_fonts.terminal =
+        (config.font.family != family).then(|| config.font.family.clone());
+}
+
 /// Sets the interface's typography from the configuration's `[font]`
 /// table and redraws every window in it. A family that is not installed
 /// falls back to the system interface font, as an unavailable terminal
@@ -1640,6 +1659,7 @@ fn install_desktop(
 fn apply_typography(cx: &mut App) {
     let font = &cx.global::<Desktop>().config.font;
     let scale = font.ui_scale();
+    let configured = font.ui_family.clone();
     let family = font.ui_family.clone().filter(|family| {
         let installed = cx
             .text_system()
@@ -1653,6 +1673,7 @@ fn apply_typography(cx: &mut App) {
         }
         installed
     });
+    let unavailable = configured.filter(|_| family.is_none());
     let typography = Typography {
         family: family.map_or_else(
             || huterm_ui::typography::SYSTEM_FAMILY.into(),
@@ -1661,6 +1682,7 @@ fn apply_typography(cx: &mut App) {
         mono: Typography::platform_mono(),
         scale,
     };
+    cx.global_mut::<Desktop>().unavailable_fonts.interface = unavailable;
     if cx.try_global::<Typography>() != Some(&typography) {
         cx.set_global(typography);
         cx.refresh_windows();
@@ -2289,7 +2311,10 @@ fn open_window_with_profile(
     }
     let config = cx.global::<Desktop>().config.clone();
     let (family, metrics) = match resolve_metrics(&config, cx) {
-        Ok(value) => value,
+        Ok(value) => {
+            note_terminal_font(cx, &config, &value.0);
+            value
+        }
         Err(error) => {
             report_deferred_failure(
                 cx,
@@ -6252,13 +6277,21 @@ impl WorkspaceView {
         changed
     }
 
+    /// The combination that drags panes, if any.
+    fn drag_modifiers(&self) -> Option<huterm_config::PaneDragModifiers> {
+        self.config.panes.drag_modifiers(
+            self.config.terminal.link_modifiers,
+            cfg!(target_os = "macos"),
+        )
+    }
+
     /// Whether a modifier press may grab a pane of the active tab now: the
     /// window is active, the tab it draws is split, and no menu, dialog,
     /// palette, Licenses, or other drag holds the window.
     fn grab_allowed(&self, window: &Window, cx: &App) -> bool {
         let active = self.active_tab_view(cx);
         window.is_window_active()
-            && self.config.panes.drag_modifier.is_some()
+            && self.drag_modifiers().is_some()
             && active.is_some_and(|tab| tab.panes.len() > 1)
             && self
                 .drawn_panes
@@ -6284,7 +6317,7 @@ impl WorkspaceView {
         let Some(pointer) = self.pane_bar_pointer else {
             return false;
         };
-        self.config.panes.drag_modifier.is_some_and(|combination| {
+        self.drag_modifiers().is_some_and(|combination| {
             combination.matches_bits(self.pane_grab.held())
         }) && self.grab_allowed(window, cx)
             && self
@@ -6305,7 +6338,7 @@ impl WorkspaceView {
         rects: Option<&TabPanes>,
     ) -> bool {
         self.drawn_badges.borrow_mut().clear();
-        self.config.panes.drag_modifier.is_some()
+        self.drag_modifiers().is_some()
             && rects.is_some()
             && tab.panes.len() > 1
     }
@@ -6380,7 +6413,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(combination) = self.config.panes.drag_modifier else {
+        let Some(combination) = self.drag_modifiers() else {
             return;
         };
         let Some(press) = pane_grab::grab_press(
@@ -10819,6 +10852,7 @@ fn finish_reload(
             desktop.config_report =
                 ConfigReport::reloaded(&config, &compiled, refused);
             desktop.latched.clear();
+            note_terminal_font(cx, &config, &family);
             apply_typography(cx);
             quake_windows::reconcile(cx, renames);
             let keymap = bind_keymap(cx, compiled);

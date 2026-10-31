@@ -306,6 +306,15 @@ fn the_drag_modifier_select_offers_what_the_link_chord_leaves_and_writes_it(
     // The row draws a select in the Panes section.
     trigger(&mut harness, PATH);
     let (link, cmd) = platform_keys();
+    // Unset, it shows the platform's default combination.
+    let default = if cfg!(target_os = "macos") {
+        "cmd-ctrl"
+    } else {
+        "ctrl-alt"
+    };
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.drag_modifier_shown(PATH), default);
+    });
     with_window(&mut harness, |view, window, cx| {
         view.open_select_for(PATH, window, cx);
         let ids = view.menu_ids(cx);
@@ -335,13 +344,22 @@ fn the_drag_modifier_select_offers_what_the_link_chord_leaves_and_writes_it(
         file.text(),
         format!("[panes]\ndrag_modifier = \"{cmd}-ctrl\"\n")
     );
-    // The menu opens on the value, and Off removes the key.
+    // Off writes `off`, since unset holds the default, and Reset removes
+    // the key.
     with_window(&mut harness, |view, window, cx| {
         view.open_select_for(PATH, window, cx);
         view.pick_menu_item("off", cx);
     });
+    harness.wait_for("the off value", |cx| {
+        settled(cx) && file.text().contains("\"off\"")
+    });
+    assert_eq!(file.text(), "[panes]\ndrag_modifier = \"off\"\n");
+    with_window(&mut harness, |view, _, cx| view.set(PATH, None, cx));
     harness.wait_for("the removal", |cx| {
         settled(cx) && !file.text().contains("drag_modifier")
+    });
+    with_view(&mut harness, |view, _| {
+        assert_eq!(view.drag_modifier_shown(PATH), default);
     });
 }
 

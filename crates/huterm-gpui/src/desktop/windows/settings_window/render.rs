@@ -144,6 +144,7 @@ impl SettingsView {
             .children(strip)
             .child(
                 div()
+                    .flex_none()
                     .px(px(10.0))
                     .pb(px(10.0))
                     .when(!cfg!(target_os = "macos"), |area| area.pt(px(10.0)))
@@ -154,14 +155,44 @@ impl SettingsView {
                             .child(probe),
                     ),
             )
+            .child(self.render_nav_area(nav, swatch, cx))
+            .child(self.render_footer(swatch, cx))
+            .into_any_element()
+    }
+
+    /// The section list in a scroll area that takes the sidebar's height
+    /// between the search field and the footer, with a scrollbar like the
+    /// pane's once the window is too short for every section.
+    fn render_nav_area(
+        &mut self,
+        nav: Tabs,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let painted = Rc::clone(&self.painted);
+        let probe = canvas(
+            |_, _, _| {},
+            move |bounds, (), _, _| painted.borrow_mut().nav = Some(bounds),
+        )
+        .absolute()
+        .inset_0();
+        let view = cx.entity();
+        ScrollArea::new("settings-sections-scroll", &self.nav_scroll)
+            .fill()
             .child(
                 div()
                     .key_context("SettingsControl")
-                    .flex_1()
                     .px(px(8.0))
-                    .child(nav),
+                    .pb(px(8.0))
+                    .child(div().relative().child(nav).child(probe)),
             )
-            .child(self.render_footer(swatch, cx))
+            .render(
+                &mut self.nav_scrollbar,
+                swatch.scrollbar,
+                &view,
+                |view| &mut view.nav_scrollbar,
+                cx,
+            )
             .into_any_element()
     }
 
@@ -316,8 +347,10 @@ impl SettingsView {
             .variant(Variant::Link)
             .button_role();
         div()
+            .debug_selector(|| "settings-footer".to_owned())
             .flex()
             .flex_col()
+            .flex_none()
             .gap(px(4.0))
             .p(px(10.0))
             .border_t_1()
@@ -527,7 +560,7 @@ impl SettingsView {
             .errors
             .get(path)
             .cloned()
-            .or_else(|| self.fallback_note(setting, cx))
+            .or_else(|| Self::fallback_note(setting, cx))
             .filter(|_| conflict.is_none())
             .map(SharedString::from);
         // The theme picker's cards need the row's width.
@@ -710,7 +743,7 @@ impl SettingsView {
                             .text_size(ui(11.5))
                             .text_color(swatch.muted)
                             .child(
-                                "Settings changes only the lines a setting owns; comments, order, and formatting stay as you wrote them.",
+                                "Settings changes only the lines it edits, so your comments and formatting stay.",
                             ),
                     ),
             )
@@ -919,8 +952,8 @@ impl SettingsView {
         cards
     }
 
-    /// The switch that shows a section's advanced settings, when it has any
-    /// available here.
+    /// The button that shows or hides advanced settings in every section,
+    /// under a section that has any available here.
     fn render_advanced(
         &mut self,
         section: SectionId,
@@ -935,20 +968,27 @@ impl SettingsView {
         if !has_advanced {
             return None;
         }
-        let on = self.advanced.contains(&section);
+        let on = self.show_advanced();
+        let read_only = self
+            .model
+            .setting(super::SHOW_ADVANCED)
+            .and_then(|setting| self.read_only_reason(setting));
         Some(
             self.action_button(
                 "settings-advanced".to_owned(),
                 if on {
-                    "Hide advanced settings"
+                    "Hide advanced settings in every section"
                 } else {
-                    "Show advanced settings"
+                    "Show advanced settings in every section"
                 },
-                format!("advanced:{}", section.id()),
+                "advanced:pane".to_owned(),
                 swatch,
                 cx,
             )
             .variant(Variant::Ghost)
+            .when_some(read_only, |button, reason| {
+                button.disabled(Some(reason))
+            })
             .into_any_element(),
         )
     }

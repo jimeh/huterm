@@ -4,9 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Named quake windows. The built-in default profile remains available when
-/// omitted. Profile references and display identifiers are resolved at
-/// runtime.
+/// Named quake windows. The `default` profile exists even when unset.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
@@ -50,9 +48,8 @@ impl Config {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
-    /// The display edge the window sits against. Center centers it on both
-    /// axes. A fullscreen window uses it only as the edge Slide animates
-    /// from.
+    /// The display edge the window sits against, or Center. Fullscreen uses it
+    /// only for Slide.
     #[cfg_attr(
         feature = "schema",
         schemars(extend(
@@ -69,8 +66,7 @@ pub struct Profile {
     )]
     pub position: Position,
     /// The display the window opens on: the active one, the one under the
-    /// pointer, the primary one, or `id:` and a platform display
-    /// identifier. Display availability is checked at runtime.
+    /// pointer, the primary one, or `id:` and a display identifier.
     #[cfg_attr(
         feature = "schema",
         schemars(regex(pattern = r"^(active|pointer|primary|id:.*\S.*)$"))
@@ -86,8 +82,8 @@ pub struct Profile {
         ))
     )]
     pub display: String,
-    /// Fraction of the display work area, greater than zero and at most
-    /// one. Fullscreen uses the full display frame.
+    /// The fraction of the display's work area it takes, above 0 and at
+    /// most 1.
     #[cfg_attr(
         feature = "schema",
         schemars(range(max = 1), extend("exclusiveMinimum" = 0))
@@ -106,8 +102,8 @@ pub struct Profile {
         ))
     )]
     pub width: f64,
-    /// Fraction of the display work area, greater than zero and at most
-    /// one. Fullscreen uses the full display frame.
+    /// The fraction of the display's work area it takes, above 0 and at
+    /// most 1.
     #[cfg_attr(
         feature = "schema",
         schemars(range(max = 1), extend("exclusiveMinimum" = 0))
@@ -150,8 +146,8 @@ pub struct Profile {
         ))
     )]
     pub hide_on_focus_loss: bool,
-    /// How the window shows and hides. Auto fades fullscreen windows and
-    /// fades and slides others from their side.
+    /// How the window shows and hides. Auto fades fullscreen windows and slides
+    /// others in.
     #[cfg_attr(
         feature = "schema",
         schemars(extend(
@@ -163,7 +159,7 @@ pub struct Profile {
         ))
     )]
     pub animation: Animation,
-    /// Animation duration in milliseconds, from 0 to 1000.
+    /// How long it animates, in milliseconds, from 0 to 1000.
     #[cfg_attr(feature = "schema", schemars(range(max = 1000)))]
     #[cfg_attr(
         feature = "schema",

@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
@@ -25,7 +25,7 @@ use huterm_config::settings::{
     Apply, Choice, Control, Platform as SettingPlatform, SectionId, Setting,
     SettingKind, SettingsModel,
 };
-use huterm_config::{LinkModifiers, PaneDragModifiers};
+use huterm_config::{LinkModifiers, PaneDragModifiers, PanesConfig};
 use huterm_protocol::{ArgumentKind, CommandError, CommandInvocation, ids};
 use toml::Value;
 
@@ -35,10 +35,10 @@ use super::super::settings::values::{
     self, Defaults, FileValues, as_number, number, number_value, shown,
 };
 use super::super::settings::{Special, file_only, special};
-use super::Desktop;
 use super::field_menu;
 use super::menu_spec::{MenuSpec, NativeMenu};
 use super::native_menus::{MenuAnchor, PresentedMenu};
+use super::{Desktop, UnavailableFonts};
 use crate::APP_ID;
 use crate::commands::{InvokeFocused, InvokeWindow};
 use crate::config::Theme;
@@ -74,7 +74,9 @@ const HEADER_HEIGHT: f32 = 52.0;
 const WINDOW_SIZE: (f32, f32) = (860.0, 620.0);
 const MIN_SIZE: (f32, f32) = (640.0, 420.0);
 const SEGMENTED_MAX: usize = 3;
-/// The drag modifier menu's first item, which removes the key.
+/// The setting that shows advanced settings in every section.
+const SHOW_ADVANCED: &str = "settings.show_advanced";
+/// The drag modifier menu's first item, which turns modifier drags off.
 const DRAG_OFF: &str = "off";
 
 /// Opens the Settings window, or brings the open one forward.
@@ -273,7 +275,6 @@ pub(super) struct SettingsView {
     defaults: Defaults,
     status: FileStatus,
     section: SectionId,
-    advanced: HashSet<SectionId>,
     search: Entity<Input>,
     /// Number and text fields, by setting path; a number field's entry is
     /// the text field inside it.
@@ -283,10 +284,18 @@ pub(super) struct SettingsView {
     /// The installed families a font family field suggests, by setting
     /// path.
     font_lists: HashMap<&'static str, Entity<Combobox>>,
-    /// The families font fields suggest in place of the installed ones,
-    /// which a test platform does not list.
+    /// The installed families font fields suggest, as the latest scan
+    /// found them, shared with their suggestion lists.
+    families: Families,
+    /// Scans started; only the latest applies.
+    font_scans: u64,
+    /// What the scan that last asked for a reload found unavailable, so a
+    /// reload that cannot apply it does not ask again.
+    font_reload: Option<UnavailableFonts>,
+    /// The families a scan finds in place of the installed ones, which a
+    /// test platform does not list.
     #[cfg(test)]
-    families: Option<&'static [&'static str]>,
+    test_families: Option<&'static [&'static str]>,
     /// The text each field last showed from the file; a field whose text
     /// differs holds an unsaved draft that a reload must not replace.
     synced: HashMap<&'static str, String>,
@@ -378,6 +387,13 @@ pub(super) struct SettingsView {
     scroll: ScrollHandle,
     /// The pane's overlay scrollbar.
     scrollbar: ListScrollbar,
+    /// The sidebar's section list, which scrolls between the search field
+    /// and the footer, and its overlay scrollbar.
+    nav_scroll: ScrollHandle,
+    nav_scrollbar: ListScrollbar,
+    /// A section just selected, whose tab the next frame scrolls the
+    /// sidebar to show.
+    reveal_section: Option<SectionId>,
     /// Whether a primary press on the title strip waits for the drag that
     /// moves the window.
     title_press: Rc<Cell<bool>>,
@@ -440,6 +456,7 @@ impl SettingsView {
             }
         });
         let scroll = ScrollHandle::new();
+        let nav_scroll = ScrollHandle::new();
         let mut view = Self {
             focus: cx.focus_handle(),
             keys,
@@ -457,13 +474,15 @@ impl SettingsView {
             defaults: Defaults::current(),
             status: FileStatus::new(watching),
             section: SectionId::General,
-            advanced: HashSet::new(),
             search,
             fields: HashMap::new(),
             numbers: HashMap::new(),
             font_lists: HashMap::new(),
+            families: Families::default(),
+            font_scans: 0,
+            font_reload: None,
             #[cfg(test)]
-            families: None,
+            test_families: None,
             synced: HashMap::new(),
             stops: HashMap::new(),
             frame_appearance: FrameAppearance::default(),
@@ -498,6 +517,9 @@ impl SettingsView {
             list_wake: Wake::default(),
             scrollbar: ListScrollbar::new(scroll.clone()),
             scroll,
+            nav_scrollbar: ListScrollbar::new(nav_scroll.clone()),
+            nav_scroll,
+            reveal_section: None,
             title_press: Rc::default(),
             painted: Rc::default(),
         };
@@ -505,6 +527,7 @@ impl SettingsView {
         view.dialog.modal().beneath(&view.popover);
         view.create_and_load(cx);
         view.load_themes(cx);
+        view.scan_fonts(cx);
         // Closing waits for pending writes, so none is lost.
         let weak = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
@@ -516,6 +539,9 @@ impl SettingsView {
         cx.observe_window_activation(window, |view, window, cx| {
             if window.is_window_active() {
                 view.check_disk(cx);
+                // A font installed while the window was in the background
+                // shows in its list.
+                view.scan_fonts(cx);
             } else {
                 // A recording cancels itself. An open menu closes, as
                 // AppKit menus and GTK popovers do, and focus returns to
@@ -732,7 +758,7 @@ impl SettingsView {
             return list.clone();
         }
         let field = self.field(setting, window, cx);
-        let families = self.families(cx);
+        let (filter, browse) = (self.families.clone(), self.families.clone());
         let swatch = Self::swatch(cx);
         let list = cx.new(|cx| {
             Combobox::new(
@@ -740,11 +766,11 @@ impl SettingsView {
                 "Installed fonts",
                 &field,
                 swatch,
-                move |input: &Input| families_matching(families, input.text()),
+                move |input: &Input| filter.matching(input.text()),
                 window,
                 cx,
             )
-            .with_browse(move |_: &Input| families_matching(families, ""))
+            .with_browse(move |_: &Input| browse.matching(""))
         });
         cx.subscribe(&list, move |view, _, event: &ComboboxEvent, cx| {
             let ComboboxEvent::Picked(family) = event;
@@ -907,13 +933,14 @@ impl SettingsView {
                     self.write(setting, Some(Value::String(next)), cx);
                 }
             }
+            // One state for every section, kept in the file: showing
+            // writes it, and hiding returns it to its default, hidden.
             "advanced" => {
-                if let Some(section) = SectionId::ALL
-                    .into_iter()
-                    .find(|section| section.id() == argument)
-                    && !self.advanced.remove(&section)
+                if let Some(setting) = model.setting(SHOW_ADVANCED)
+                    && self.read_only_reason(setting).is_none()
                 {
-                    self.advanced.insert(section);
+                    let next = (!self.show_advanced()).then_some(true);
+                    self.write(setting, next.map(Value::Boolean), cx);
                 }
             }
             "mine" => {
@@ -1050,16 +1077,23 @@ impl SettingsView {
                 || self.file.is_set(&setting.path))
     }
 
+    /// Whether advanced settings show, as `[settings] show_advanced` says
+    /// or a pending change to it will.
+    pub(super) fn show_advanced(&self) -> bool {
+        self.model
+            .setting(SHOW_ADVANCED)
+            .and_then(|setting| self.value(setting))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+
     /// Whether a row shows: available, its condition holds, and advanced
-    /// settings are on for its section or a search is running.
+    /// settings are on or a search is running.
     fn shows(&self, setting: &Setting, searching: bool) -> bool {
         if !self.available(setting) {
             return false;
         }
-        if setting.advanced
-            && !searching
-            && !self.advanced.contains(&setting.section)
-        {
+        if setting.advanced && !searching && !self.show_advanced() {
             return false;
         }
         setting.visible_when.is_empty()
@@ -1094,6 +1128,7 @@ impl SettingsView {
         // Dropping a native field menu closes it.
         self.field_menus.native = None;
         self.section = section;
+        self.reveal_section = Some(section);
         self.search.update(cx, |search, cx| search.set_text("", cx));
         self.scroll.set_offset(point(px(0.0), px(0.0)));
         cx.notify();
@@ -1259,9 +1294,9 @@ impl SettingsView {
 
     /// Scrolls the pane the least that shows the control the keyboard just
     /// moved focus to, with its ring and any group `reveal_group` drew
-    /// around it, once the frame that drew the ring has painted. A pointer
-    /// press, a control outside the pane, such as the sidebar's, and a
-    /// dialog or menu over the pane scroll nothing.
+    /// around it, once the frame that drew the ring has painted; a section
+    /// tab scrolls the sidebar to itself. A pointer press, another control
+    /// outside the pane, and a dialog or menu over the pane scroll nothing.
     fn reveal_focused(
         &mut self,
         window: &mut Window,
@@ -1274,6 +1309,16 @@ impl SettingsView {
             return;
         };
         if !huterm_ui::focus::visible(&focused, window, cx) {
+            return;
+        }
+        // A section's tab scrolls the sidebar instead, such as when Tab
+        // returns to a tab the list scrolled away from.
+        if let Some(section) =
+            self.sections.iter().find_map(|(section, handle)| {
+                (*handle == focused).then_some(*section)
+            })
+        {
+            self.reveal_section_tab(section, cx);
             return;
         }
         let Some(painted) = huterm_ui::focus::ring_bounds(&focused, window, cx)
@@ -1294,6 +1339,37 @@ impl SettingsView {
         let target = ContentBounds::record(&self.scroll, painted);
         if ScrollArea::reveal(&self.scroll, target) {
             self.scrollbar.show();
+            cx.notify();
+        }
+    }
+
+    /// Scrolls the sidebar the least that shows `section`'s tab, whether
+    /// the keyboard, a command, or a click selected it. The tabs share the
+    /// list's height evenly, so the tab's slot of the list's painted bounds
+    /// stands in for its own.
+    fn reveal_section_tab(
+        &mut self,
+        section: SectionId,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let sections = self.visible_sections();
+        let Some((index, list)) = sections
+            .iter()
+            .position(|shown| *shown == section)
+            .zip(self.painted.borrow().nav)
+        else {
+            return;
+        };
+        #[expect(clippy::cast_precision_loss, reason = "a dozen sections")]
+        let slot = list.size.height / sections.len() as f32;
+        #[expect(clippy::cast_precision_loss, reason = "a dozen sections")]
+        let tab = gpui::Bounds {
+            origin: point(list.origin.x, list.origin.y + slot * index as f32),
+            size: size(list.size.width, slot),
+        };
+        let target = ContentBounds::record(&self.nav_scroll, tab);
+        if ScrollArea::reveal(&self.nav_scroll, target) {
+            self.nav_scrollbar.show();
             cx.notify();
         }
     }
@@ -1432,34 +1508,39 @@ impl SettingsView {
         );
     }
 
-    /// The drag modifier menu's items: Off, then every combination this
-    /// platform accepts that the link chord Settings shows does not take.
-    fn drag_modifier_choices(&self) -> Vec<(String, String)> {
-        let macos = cfg!(target_os = "macos");
-        let link = self
-            .setting_at("terminal.link_modifiers")
+    /// The link chord Settings shows: the file's, or the default.
+    fn link_chord(&self) -> LinkModifiers {
+        self.setting_at("terminal.link_modifiers")
             .and_then(|setting| match self.value(setting) {
                 Some(Value::String(text)) => {
-                    LinkModifiers::parse(&text, macos).ok()
+                    LinkModifiers::parse(&text, cfg!(target_os = "macos")).ok()
                 }
                 _ => None,
             })
-            .unwrap_or_default();
-        drag_modifier_choices(link, macos)
+            .unwrap_or_default()
     }
 
-    /// The drag modifier item the file's value names: Off when unset, the
-    /// platform's spelling of a combination it accepts, or the value as
-    /// written.
+    /// The drag modifier menu's items: Off, then every combination this
+    /// platform accepts that the link chord Settings shows does not take.
+    fn drag_modifier_choices(&self) -> Vec<(String, String)> {
+        drag_modifier_choices(self.link_chord(), cfg!(target_os = "macos"))
+    }
+
+    /// The drag modifier item the file's value names: the platform's
+    /// spelling of a combination it accepts, Off, or the value as written.
+    /// Unset shows the platform default, or Off where the link chord takes
+    /// it.
     fn drag_modifier_current(&self, setting: &Setting) -> String {
+        let macos = cfg!(target_os = "macos");
         match self.value(setting) {
-            Some(Value::String(text)) => {
-                PaneDragModifiers::parse(&text, cfg!(target_os = "macos"))
-                    .map_or(text, |combination| {
-                        combination.spelled(cfg!(target_os = "macos"))
-                    })
-            }
-            _ => DRAG_OFF.to_owned(),
+            Some(Value::String(text)) => PaneDragModifiers::parse(&text, macos)
+                .map_or(text, |combination| combination.spelled(macos)),
+            _ => PanesConfig::default()
+                .drag_modifiers(self.link_chord(), macos)
+                .map_or_else(
+                    || DRAG_OFF.to_owned(),
+                    |combination| combination.spelled(macos),
+                ),
         }
     }
 
@@ -1717,18 +1798,6 @@ impl SettingsView {
                     // default still writes.
                     Some(MenuFor::Setting(setting)) => {
                         let setting = *setting;
-                        // Off removes the drag modifier's key.
-                        if special(&setting.path)
-                            == Some(Special::DragModifiers)
-                            && *value == DRAG_OFF
-                        {
-                            if view.value(setting).is_none() {
-                                view.errors.remove(setting.path.as_str());
-                            } else {
-                                view.write(setting, None, cx);
-                            }
-                            return;
-                        }
                         let picked = Value::String(value.to_string());
                         if view.holds(setting, &picked) {
                             view.errors.remove(setting.path.as_str());
@@ -1849,7 +1918,11 @@ impl SettingsView {
     ) {
         let now = Instant::now();
         self.scrollbar.advance(now);
-        let mut schedule = self.scrollbar.schedule(now);
+        self.nav_scrollbar.advance(now);
+        let mut schedule = self
+            .scrollbar
+            .schedule(now)
+            .merge(self.nav_scrollbar.schedule(now));
         for list in self
             .font_lists
             .values()
@@ -2336,6 +2409,8 @@ impl Focusable for SettingsView {
 struct Painted {
     header: Option<gpui::Bounds<gpui::Pixels>>,
     search: Option<gpui::Bounds<gpui::Pixels>>,
+    /// The sidebar's section list, scrolled with it.
+    nav: Option<gpui::Bounds<gpui::Pixels>>,
 }
 
 /// `bounds` as smoke state reports a rect: `x,y,w,h` in whole points, or
@@ -2401,34 +2476,96 @@ fn themes(config: &std::path::Path) -> Vec<(String, Option<Theme>)> {
 }
 
 impl SettingsView {
-    /// The families font fields suggest and check against: the installed
-    /// ones, or a test's stand-ins.
-    #[cfg_attr(
-        not(test),
-        expect(clippy::unused_self, reason = "tests substitute the families")
-    )]
-    fn families(&self, cx: &App) -> &'static [&'static str] {
+    /// Lists the installed font families again on the background executor,
+    /// as enumerating them can take a while: when the window opens, comes
+    /// forward, or follows a reload. GPUI's Linux text system reads the
+    /// fonts once at startup, so there only the first scan can find
+    /// anything new.
+    pub(super) fn scan_fonts(&mut self, cx: &mut Context<'_, Self>) {
+        // A test's families stand in for every scan, on every platform.
         #[cfg(test)]
-        if let Some(families) = self.families {
-            return families;
+        if let Some(families) = self.test_families {
+            self.font_scans += 1;
+            let families = families.iter().copied().map(SharedString::from);
+            self.scanned(self.font_scans, families.collect(), cx);
+            return;
         }
-        installed_fonts(cx)
+        if cfg!(target_os = "linux") && self.families.scanned() {
+            return;
+        }
+        self.font_scans += 1;
+        let scan = self.font_scans;
+        let text_system = cx.text_system().clone();
+        let task = cx.background_spawn(async move {
+            text_system
+                .all_font_names()
+                .into_iter()
+                .map(SharedString::from)
+                .collect::<Arc<[SharedString]>>()
+        });
+        cx.spawn(async move |view, cx| {
+            let families = task.await;
+            let _ =
+                view.update(cx, |view, cx| view.scanned(scan, families, cx));
+        })
+        .detach();
+    }
+
+    /// Takes scan `scan`'s families, unless a later scan started. When they
+    /// disagree with the families Huterm last applied, such as a family
+    /// installed since, a reload applies the fonts again, which also takes
+    /// its note away; only once for what this scan found, so a reload that
+    /// cannot apply them does not repeat. A scan that agrees forgets it, so
+    /// a later installation reloads again.
+    fn scanned(
+        &mut self,
+        scan: u64,
+        families: Arc<[SharedString]>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if scan != self.font_scans {
+            return;
+        }
+        self.families.set(families);
+        let desktop = cx.global::<Desktop>();
+        let font = &desktop.config.font;
+        let missing = |family: Option<&str>| {
+            family
+                .filter(|family| !self.families.contains(family))
+                .map(str::to_owned)
+        };
+        // As the desktop decides: `monospace` is a fontconfig alias, not an
+        // installed family, and the fallback cannot fall back.
+        let fallback = if cfg!(target_os = "macos") {
+            "Menlo"
+        } else {
+            "monospace"
+        };
+        let terminal = Some(font.family.as_str())
+            .filter(|family| *family != "monospace" && *family != fallback);
+        let found = UnavailableFonts {
+            terminal: missing(terminal),
+            interface: missing(font.ui_family.as_deref()),
+        };
+        if found == desktop.unavailable_fonts {
+            self.font_reload = None;
+        } else if self.font_reload.as_ref() != Some(&found) {
+            self.font_reload = Some(found);
+            cx.defer(|cx| {
+                let _ = super::reload(cx);
+            });
+        }
+        cx.notify();
     }
 
     /// Why a font family row's applied family draws in another: the family
-    /// is not installed, so Huterm fell back, which the save alone does not
-    /// show.
-    pub(super) fn fallback_note(
-        &self,
-        setting: &Setting,
-        cx: &App,
-    ) -> Option<String> {
-        let font = &cx.global::<Desktop>().config.font;
+    /// was not installed when Huterm last applied the fonts, so it fell
+    /// back, which the save alone does not show.
+    pub(super) fn fallback_note(setting: &Setting, cx: &App) -> Option<String> {
+        let unavailable = &cx.global::<Desktop>().unavailable_fonts;
         let (family, fallback) = match setting.path.as_str() {
-            // `monospace` is a fontconfig alias, not an installed family.
             "font.family" => (
-                Some(font.family.as_str())
-                    .filter(|family| *family != "monospace"),
+                unavailable.terminal.as_deref(),
                 if cfg!(target_os = "macos") {
                     "terminals use Menlo"
                 } else {
@@ -2436,39 +2573,53 @@ impl SettingsView {
                 },
             ),
             "font.ui_family" => (
-                font.ui_family.as_deref(),
+                unavailable.interface.as_deref(),
                 "the interface uses the system font",
             ),
             _ => return None,
         };
-        let family = family?;
-        (!self.families(cx).contains(&family))
-            .then(|| format!("{family} is not installed, so {fallback}."))
+        family
+            .map(|family| format!("{family} is not installed, so {fallback}."))
     }
 }
 
-/// The installed font families, read once and kept for every font field's
-/// suggestions.
-fn installed_fonts(cx: &App) -> &'static [&'static str] {
-    static FONTS: OnceLock<Vec<&'static str>> = OnceLock::new();
-    FONTS.get_or_init(|| {
-        cx.text_system()
-            .all_font_names()
-            .into_iter()
-            .filter(|name| !name.starts_with('.'))
-            .map(|name| &*Box::leak(name.into_boxed_str()))
-            .collect()
-    })
-}
+/// The installed font families as the latest scan found them, shared
+/// between the view and its font fields' suggestion lists; none until the
+/// first scan finishes.
+#[derive(Clone, Default)]
+struct Families(Rc<RefCell<Option<Arc<[SharedString]>>>>);
 
-/// The families containing `text`, ignoring case, in their sorted order.
-fn families_matching(families: &[&'static str], text: &str) -> Vec<ListOption> {
-    let text = text.trim().to_lowercase();
-    families
-        .iter()
-        .filter(|family| family.to_lowercase().contains(&text))
-        .map(|family| ListOption::new(*family, *family))
-        .collect()
+impl Families {
+    fn set(&self, families: Arc<[SharedString]>) {
+        *self.0.borrow_mut() = Some(families);
+    }
+
+    fn scanned(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+
+    fn contains(&self, family: &str) -> bool {
+        self.0
+            .borrow()
+            .as_ref()
+            .is_some_and(|families| families.iter().any(|name| name == family))
+    }
+
+    /// The families containing `text`, ignoring case, in their sorted
+    /// order, less the hidden system families whose names start with `.`.
+    fn matching(&self, text: &str) -> Vec<ListOption> {
+        let text = text.trim().to_lowercase();
+        self.0.borrow().as_ref().map_or_else(Vec::new, |families| {
+            families
+                .iter()
+                .filter(|family| {
+                    !family.starts_with('.')
+                        && family.to_lowercase().contains(&text)
+                })
+                .map(|family| ListOption::new(family.clone(), family.clone()))
+                .collect()
+        })
+    }
 }
 
 /// Runs a field's list command on its suggestions, `list`; returns whether
@@ -2765,6 +2916,11 @@ impl Render for SettingsView {
         if focused.is_some() && focused != self.last_focus {
             cx.defer_in(window, Self::reveal_focused);
         }
+        if let Some(section) = self.reveal_section.take() {
+            cx.defer_in(window, move |view, _, cx| {
+                view.reveal_section_tab(section, cx);
+            });
+        }
         self.last_focus = focused;
         let stranded = self
             .focused_action(window)
@@ -2886,6 +3042,12 @@ impl SettingsView {
             .find_map(|field| field.strip_prefix("settings.focus="))
             .unwrap_or_default()
             .to_owned()
+    }
+
+    /// The drag modifier select's value, as its trigger shows it.
+    pub(super) fn drag_modifier_shown(&self, path: &str) -> String {
+        let setting = self.setting_at(path).expect("a known setting");
+        self.drag_modifier_current(setting)
     }
 
     /// Gives the setting's field keyboard focus.
@@ -3118,6 +3280,31 @@ impl SettingsView {
     /// Scrolls the pane `y` down from its top, as the wheel does.
     pub(super) fn scroll_pane_to(&self, y: gpui::Pixels) {
         self.scroll.set_offset(point(px(0.0), -y));
+    }
+
+    /// How far the sidebar's section list has scrolled down.
+    pub(super) fn sections_scrolled(&self) -> gpui::Pixels {
+        -self.nav_scroll.offset().y
+    }
+
+    /// The focus handle of the sidebar's search field.
+    pub(super) fn search_handle(&self, cx: &App) -> FocusHandle {
+        self.search.read(cx).focus_handle(cx)
+    }
+
+    /// Whether the sidebar's sections are taller than their list.
+    pub(super) fn sections_overflow(&self) -> bool {
+        self.nav_scroll.max_offset().y > px(0.0)
+    }
+
+    /// Scrolls the sidebar's sections back to the top, as the wheel does.
+    pub(super) fn scroll_sections_to_top(&self) {
+        self.nav_scroll.set_offset(point(px(0.0), px(0.0)));
+    }
+
+    /// The sidebar section list's visible bounds in the window.
+    pub(super) fn sections_viewport(&self) -> gpui::Bounds<gpui::Pixels> {
+        self.nav_scroll.bounds()
     }
 
     /// The pane's visible bounds in the window.
@@ -3391,10 +3578,20 @@ impl SettingsView {
         Some(bounds)
     }
 
-    /// Suggests `families` in font fields made from now on, as the
-    /// installed families.
-    pub(super) fn set_families(&mut self, families: &'static [&'static str]) {
-        self.families = Some(families);
+    /// How many reads of the file the window has started.
+    pub(super) fn reads_started(&self) -> u64 {
+        self.reads
+    }
+
+    /// Makes `families` the installed families every scan finds from now
+    /// on, and scans.
+    pub(super) fn set_families(
+        &mut self,
+        families: &'static [&'static str],
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.test_families = Some(families);
+        self.scan_fonts(cx);
     }
 
     /// The suggestions under a font family field.

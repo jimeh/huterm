@@ -343,6 +343,7 @@ fn global_shortcut_edits_change_only_their_entry() {
     let file = Scratch::new("globals", original);
     let added = file.apply(&Edit::AddGlobal {
         key: "ctrl-alt-shift-y".into(),
+        command: ids::TOGGLE_QUAKE,
         profile: Some("logs".into()),
     });
     assert!(added.starts_with(original), "{added}");
