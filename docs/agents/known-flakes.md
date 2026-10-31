@@ -385,6 +385,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   without asking for a frame, so a wheel that arrives before a frame drawn
   with the pointer there may miss the list. The palette's own list before
   #322 redrew on hover. This is unconfirmed.
+- **Second occurrence:** 2026-10-31 on PR #358 (run 41180152337, job
+  124475722569, head `5199386c`), x86_64 this time, with the same last state
+  (`results=84`, `highlighted_row=Some(0)`, `hover=Some(0)`,
+  `scroll_offset=0.0`). The PR changes neither the palette nor
+  `option_list`.
 - **Triage:** rerun and record the run here. If it recurs, have the smoke
   wait for a frame drawn after `movePointerToRow` before the wheel, or make
   a hover change in `option_list` request a frame.
@@ -453,6 +458,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   against about 13 locally, and the PR touched no tab code. The last state
   still held both tabs with the active one unchanged, so the click had not
   closed the inactive tab before the harness deadline.
+- **Fifth occurrence:** 2026-10-31 on PR #358 (run 41180152337, job
+  124475722453, head `5199386c`), in `Checks (Linux aarch64)`, so not
+  macOS only. The `huterm-gpui` suite took 77.22 seconds there. The PR
+  changes Settings and the terminal window's title row, not menus or
+  selection.
 - **Triage:** compare the suite's wall time with a passing run. If it
   recurs on a normal-speed run, the harness wait or the close path needs a
   closer look; otherwise record the run here and rerun.
