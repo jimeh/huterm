@@ -215,6 +215,26 @@ impl Presentation {
             eprintln!("Quake cleanup: {error}");
         }
     }
+    /// Moves a hidden window to the display its next show uses, carrying
+    /// its regular-presentation bounds along. A failed display query keeps
+    /// the previous display rather than failing the show.
+    fn place(&mut self, native: &native::Platform, selector: &str) {
+        match place(native, selector, &mut self.pin) {
+            Ok(display) if display != self.model.display => {
+                self.model.regular_bounds = placement::carry(
+                    self.model.regular_bounds,
+                    &self.model.display,
+                    &display,
+                );
+                self.model.display = display;
+                self.work.invalidate();
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!(
+                "Quake display: {error:#}; keeping the previous display"
+            ),
+        }
+    }
     fn request(&mut self, visible: bool, restore_focus: bool) {
         self.model.request(visible, restore_focus, Instant::now());
         self.work.failure.clear();
@@ -543,12 +563,7 @@ fn invoke_now(
                     state.profile = config.clone();
                     if !state.regular {
                         if hidden {
-                            let display = place(&native, &config.display, &mut state.pin)
-                                .map_err(|error| error.to_string())?;
-                            if display != state.display {
-                                state.display = display;
-                                state.work.invalidate();
-                            }
+                            state.place(&native, &config.display);
                         }
                         state.target = state.profile.geometry(&state.display);
                     }
@@ -890,6 +905,19 @@ fn step_transition(
     };
     state.focus_observations = state.focus_observations.wrapping_add(1);
     state.sampled_focus = Some((facts.active, facts.blurred));
+    if state.regular
+        && state.pin.is_some()
+        && flags & crate::quake::observation::DISPLAY != 0
+        && let Ok(displays) = platform.displays()
+    {
+        // Regular presentation skips refits, but a display change must
+        // still end a move made before it.
+        placement::expire(
+            &displays,
+            &state.model.profile.display,
+            &mut state.pin,
+        );
+    }
     if (state.work.display_due(now)
         || flags & crate::quake::observation::DISPLAY != 0
         || matches!(
@@ -909,6 +937,11 @@ fn step_transition(
                 {
                     let target = state.profile.geometry(display);
                     let geometry_changed = target != state.target;
+                    state.model.regular_bounds = placement::carry(
+                        state.model.regular_bounds,
+                        &state.model.display,
+                        display,
+                    );
                     state.model.display = display.clone();
                     state.target = target;
                     state.work.invalidate();

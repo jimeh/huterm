@@ -223,6 +223,10 @@ the profile's `display` again; treating the fallback as the window's display
 kept a reconnected primary from ever winning. A regular-presentation move pins
 its display only while the display arrangement and selector are unchanged,
 and any observed change drops the pin even if a reconnect restores it.
+Expire pins on display changes during regular presentation as well, since
+refits skip it. Carry `regular_bounds` whenever the display changes: they
+otherwise stay on the creation display, and a no-op toggle round trip would
+pin that stale display.
 
 For withdrawn X11 windows, merge ABOVE/STICKY into `_NET_WM_STATE` before mapping;
 window managers ignore state client messages until they manage the window.

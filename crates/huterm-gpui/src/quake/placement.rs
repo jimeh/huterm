@@ -3,7 +3,7 @@
 //! to another display in regular presentation and the displays have not
 //! changed since.
 
-use super::Display;
+use super::{Display, Rect};
 
 /// A display the user moved the window to in regular presentation. It holds
 /// only while the profile names the same selector and the same displays are
@@ -89,23 +89,33 @@ pub(crate) fn show<'a>(
     select(displays, selector, point)
 }
 
-/// The display after the connected displays change. The window keeps a
-/// display that is still connected, refreshing its geometry, so a visible
-/// window never jumps; otherwise it moves where a show would place it, with
-/// `active` and `pointer` using the primary display. Any change to the
-/// arrangement drops a pin, even one the displays later restore.
-pub(crate) fn changed<'a>(
-    displays: &'a [Display],
-    current: &str,
+/// Drops a pin the connected displays no longer match. Every observed
+/// display change runs this, in regular presentation too, so a pin stays
+/// dropped when a reconnect later restores its arrangement.
+pub(crate) fn expire(
+    displays: &[Display],
     selector: &str,
     pin: &mut Option<Pin>,
-) -> Option<&'a Display> {
+) {
     if pin
         .as_ref()
         .is_some_and(|pin| pin.holds(displays, selector).is_none())
     {
         *pin = None;
     }
+}
+
+/// The display after the connected displays change. The window keeps a
+/// display that is still connected, refreshing its geometry, so a visible
+/// window never jumps; otherwise it moves where a show would place it, with
+/// `active` and `pointer` using the primary display.
+pub(crate) fn changed<'a>(
+    displays: &'a [Display],
+    current: &str,
+    selector: &str,
+    pin: &mut Option<Pin>,
+) -> Option<&'a Display> {
+    expire(displays, selector, pin);
     displays
         .iter()
         .find(|display| display.id == current)
@@ -113,8 +123,9 @@ pub(crate) fn changed<'a>(
 }
 
 /// Records the display a window returns to quake presentation on. Only a
-/// move to another display pins it; returning on the display it left keeps
-/// any earlier pin.
+/// move away from a display that is still connected pins it; returning on
+/// the display it left keeps any earlier pin, and a window the system moved
+/// off a disconnected display is not pinned.
 pub(crate) fn moved(
     displays: &[Display],
     from: &str,
@@ -122,7 +133,7 @@ pub(crate) fn moved(
     selector: &str,
     pin: &mut Option<Pin>,
 ) {
-    if to.id != from {
+    if to.id != from && displays.iter().any(|display| display.id == from) {
         *pin = Some(Pin {
             display: to.id.clone(),
             selector: selector.to_owned(),
@@ -131,10 +142,29 @@ pub(crate) fn moved(
     }
 }
 
+/// Moves regular-presentation bounds along with the window's display,
+/// keeping their offset within the work area, so entering regular
+/// presentation opens on the display the window shows on.
+pub(crate) fn carry(bounds: Rect, from: &Display, to: &Display) -> Rect {
+    if from.id == to.id {
+        return bounds;
+    }
+    let (work, old) = (to.work, from.work);
+    let width = bounds.width.min(work.width);
+    let height = bounds.height.min(work.height);
+    Rect {
+        x: (work.x + bounds.x - old.x)
+            .clamp(work.x, work.x + work.width - width),
+        y: (work.y + bounds.y - old.y)
+            .clamp(work.y, work.y + work.height - height),
+        width,
+        height,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::quake::Rect;
 
     const BUILT_IN: &str = "built-in";
     const EXTERNAL: &str = "external";
@@ -229,6 +259,11 @@ mod tests {
             &self.display
         }
 
+        /// A display change observed in regular presentation.
+        fn change_while_regular(&mut self, displays: &[Display]) {
+            expire(displays, self.selector, &mut self.pin);
+        }
+
         fn move_to(&mut self, displays: &[Display], id: &str) {
             let to = displays
                 .iter()
@@ -255,23 +290,14 @@ mod tests {
     }
 
     #[test]
-    fn primary_changed_while_hidden_applies_on_the_next_show() {
+    fn a_primary_change_applies_on_the_next_show() {
         let mut window = Window::open("primary", &docked());
-        let swapped = swapped();
-        assert_eq!(window.change(&swapped), EXTERNAL);
-        assert_eq!(window.show(&swapped), BUILT_IN);
-    }
-
-    #[test]
-    fn primary_changed_while_visible_keeps_the_window_until_it_shows_again() {
-        let mut window = Window::open("primary", &docked());
-        let swapped = swapped();
         assert_eq!(
-            window.change(&swapped),
+            window.change(&swapped()),
             EXTERNAL,
-            "a visible window stays on a display that is still connected"
+            "a window stays on a display that is still connected"
         );
-        assert_eq!(window.show(&swapped), BUILT_IN);
+        assert_eq!(window.show(&swapped()), BUILT_IN);
     }
 
     #[test]
@@ -403,6 +429,78 @@ mod tests {
             window.show_at(&docked(), Some((1500.0, 400.0))),
             BUILT_IN,
             "a move to another display overrides the active display"
+        );
+    }
+
+    #[test]
+    fn a_display_change_in_regular_presentation_ends_a_move() {
+        let mut window = Window::open("primary", &docked());
+        window.move_to(&docked(), BUILT_IN);
+        window.change_while_regular(&undocked());
+        window.change_while_regular(&docked());
+        // Toggling back on the display it was pinned to keeps no stale pin.
+        window.move_to(&docked(), BUILT_IN);
+        assert_eq!(window.show(&docked()), EXTERNAL);
+    }
+
+    #[test]
+    fn a_window_moved_off_a_disconnected_display_is_not_pinned() {
+        let mut window = Window::open("primary", &docked());
+        // The external display goes away while the window is regular, and
+        // the system moves the window to the built-in display.
+        window.change_while_regular(&undocked());
+        window.move_to(&undocked(), BUILT_IN);
+        assert!(window.pin.is_none());
+        assert_eq!(window.show(&docked()), EXTERNAL);
+    }
+
+    #[test]
+    fn regular_bounds_follow_the_display_and_stay_inside_its_work_area() {
+        let built_in = display(BUILT_IN, 0.0, false);
+        let external = display(EXTERNAL, 1000.0, true);
+        let bounds = Rect {
+            x: 100.0,
+            y: 50.0,
+            width: 600.0,
+            height: 400.0,
+        };
+        assert_eq!(carry(bounds, &built_in, &built_in), bounds);
+        let carried = carry(bounds, &built_in, &external);
+        assert_eq!(
+            carried,
+            Rect {
+                x: 1100.0,
+                ..bounds
+            }
+        );
+        assert_eq!(
+            select(
+                &[built_in.clone(), external.clone()],
+                "pointer",
+                Some((
+                    carried.x + carried.width / 2.0,
+                    carried.y + carried.height / 2.0
+                ))
+            )
+            .map(|display| display.id.as_str()),
+            Some(EXTERNAL),
+            "a toggle round trip finds the display the window showed on"
+        );
+        let mut small = display(SIDE, -500.0, false);
+        small.work = Rect {
+            x: -500.0,
+            y: 0.0,
+            width: 500.0,
+            height: 300.0,
+        };
+        assert_eq!(
+            carry(Rect { x: 900.0, ..bounds }, &built_in, &small),
+            Rect {
+                x: -500.0,
+                y: 0.0,
+                width: 500.0,
+                height: 300.0
+            }
         );
     }
 }
