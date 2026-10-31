@@ -244,9 +244,8 @@ impl Menu {
     /// The content height before any scrolling: every row's height at the
     /// window's rem size `rem` plus the panel's padding and border, for the
     /// tallest of the top rows and each submenu's. Placement uses it, so
-    /// the menu opens in the direction every level fits, and with
-    /// [`Self::shown_height`] keeps its anchored edge where it is when a
-    /// submenu opens.
+    /// every level fits in the window, and with [`Self::shown_height`] keeps
+    /// the panel's placed edge where it is when a submenu opens.
     #[must_use]
     pub fn content_height(model: &Model, rem: Pixels) -> Pixels {
         levels(model)
