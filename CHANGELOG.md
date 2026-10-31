@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.26.0](https://github.com/jimeh/huterm/compare/v0.25.0...v0.26.0) (2026-10-31)
+
+
+### Features
+
+* add split buttons to pane title bars, show the title bar on a tab's only pane, and turn auto-hide on or off from the bar's menu ([#364](https://github.com/jimeh/huterm/issues/364)) ([ced5df4](https://github.com/jimeh/huterm/commit/ced5df4bab5a7434788998723277cfcca3518b74))
+* drag a pane from anywhere inside it while holding a modifier combination ([#345](https://github.com/jimeh/huterm/issues/345)) ([2f58b14](https://github.com/jimeh/huterm/commit/2f58b14a2cdca9134169afe05d7dfcccabf55546))
+* drop a dragged pane on the title bar to open a new tab while the tab bar is hidden, and show a closed hand while dragging a tab ([#365](https://github.com/jimeh/huterm/issues/365)) ([a106969](https://github.com/jimeh/huterm/commit/a106969c86033b325fa1d59dda7ec255dac74554))
+* follow the system's light or dark mode with a theme for each, make Tokyo Night the default, and add 18 themes ([#348](https://github.com/jimeh/huterm/issues/348)) ([6a9a3fb](https://github.com/jimeh/huterm/commit/6a9a3fb7c0a7dca8428e478c08123ce2dd381585))
+* give text fields their own key context and a right-click Edit menu ([#330](https://github.com/jimeh/huterm/issues/330)) ([7848c9d](https://github.com/jimeh/huterm/commit/7848c9d849d6927efc8b88eaa1ff80b7da96bece))
+* mark the focused pane with an optional accent line, and dim the panes without focus ([#342](https://github.com/jimeh/huterm/issues/342)) ([1dde7d6](https://github.com/jimeh/huterm/commit/1dde7d637e2bd0849bb7e1e1ef4bc1fcd01b45d8))
+* open the window, tab, pane, and terminal menus as native macOS menus ([#333](https://github.com/jimeh/huterm/issues/333)) ([c245a1c](https://github.com/jimeh/huterm/commit/c245a1c717ee6e0f842d88c5ec705eab38b94818))
+* outline syncing and zoomed tabs with one line that follows the window's rounded corners, and choose each indicator's style ([#360](https://github.com/jimeh/huterm/issues/360)) ([7d192a7](https://github.com/jimeh/huterm/commit/7d192a7efbc55216761ecf988723e3879eef328c))
+* polish Settings controls, spell out config warnings, and add Check for Updates ([#328](https://github.com/jimeh/huterm/issues/328)) ([14edc6e](https://github.com/jimeh/huterm/commit/14edc6e122c8c2664496083437bb14e14d80343f))
+* put pane title bars at the top or bottom, reveal them on hover, or hide them ([#340](https://github.com/jimeh/huterm/issues/340)) ([c8b49c6](https://github.com/jimeh/huterm/commit/c8b49c641ff25db91fbac8f1d93dfec6fd3076c2))
+* rename panes from a title bar menu, and keep names when panes and tabs trade places ([#329](https://github.com/jimeh/huterm/issues/329)) ([3a617db](https://github.com/jimeh/huterm/commit/3a617dbd6becca0306e671609cc63a4db1606018))
+* run left and right tab sidebars the full window height, draw a line above split panes under a tab-less title bar, and fit the pill tab's right-click outline to the pill ([#363](https://github.com/jimeh/huterm/issues/363)) ([0052a20](https://github.com/jimeh/huterm/commit/0052a20acb82fd73594e7b5f9db6a2b91d6cd185))
+* set Huterm's interface font and size, show inline code in Settings, and give windows and panes their own sections ([#344](https://github.com/jimeh/huterm/issues/344)) ([2f50678](https://github.com/jimeh/huterm/commit/2f50678c50e45e2face3c7df3052970a22b74cbb))
+* shorten Settings descriptions, scroll its sidebar, keep Show advanced for every section, list global shortcuts in Keybindings, and change pane and resize defaults ([#347](https://github.com/jimeh/huterm/issues/347)) ([e777da9](https://github.com/jimeh/huterm/commit/e777da94992252155b11091c473969b7909c1c0b))
+* show a lone tab's sync mark in the title row, toggle sync from the tab menu, and keep a global shortcut on a default's key from breaking the config ([#358](https://github.com/jimeh/huterm/issues/358)) ([49802b0](https://github.com/jimeh/huterm/commit/49802b0bc7f41a4624dbe4309cbf481b49badeb2))
+* show a text cursor over the terminal, add hover title bar and size indicator settings, and match the macOS window frame to the theme ([#343](https://github.com/jimeh/huterm/issues/343)) ([221df8b](https://github.com/jimeh/huterm/commit/221df8b21eda4bdc9508899a79cb3706d54527e0))
+* tint pane title bars for sync and zoom by default, and add a setting that darkens unfocused panes ([#362](https://github.com/jimeh/huterm/issues/362)) ([4187672](https://github.com/jimeh/huterm/commit/4187672032000ab47d5994754ef68fa2c845f635))
+* turn off the visual bell and turn on the audible bell on macOS by default, split Settings' Bell and Clipboard groups, and keep a row's height when its value is set ([#357](https://github.com/jimeh/huterm/issues/357)) ([630db13](https://github.com/jimeh/huterm/commit/630db132595f3386bc248a682cd587b5495acb29))
+* type into every pane of a tab at once with pane input sync ([#353](https://github.com/jimeh/huterm/issues/353)) ([14a42ff](https://github.com/jimeh/huterm/commit/14a42ffac4bf705efbd61a5daf9fa4234665d2d1))
+
+
+### Bug Fixes
+
+* default to TERM=xterm-256color so SSH sessions keep working ([#346](https://github.com/jimeh/huterm/issues/346)) ([a694f59](https://github.com/jimeh/huterm/commit/a694f593bc4727318ac236c561f8d4f4c876816e))
+* give Theme mode its own Settings row with a compact switch, as the chosen mockup shows ([#355](https://github.com/jimeh/huterm/issues/355)) ([b4d3cbf](https://github.com/jimeh/huterm/commit/b4d3cbf7f997d593482d7c19feba0c66c728e726))
+* run terminal menu picks on the pane that opened the menu, and drop the "a menu is open" notice ([#341](https://github.com/jimeh/huterm/issues/341)) ([84184ec](https://github.com/jimeh/huterm/commit/84184ecb477cb29d3bcbb0f02c86f035313246ef))
+* show a Quake window on the display its profile names after displays change ([#356](https://github.com/jimeh/huterm/issues/356)) ([e232c5b](https://github.com/jimeh/huterm/commit/e232c5b8581f6e273c8dce07e7e00b1d2e978338))
+
 ## [0.25.0](https://github.com/jimeh/huterm/compare/v0.24.0...v0.25.0) (2026-10-29)
 
 
