@@ -1014,18 +1014,8 @@ impl SettingsView {
             return Some(field.read(cx).focus_handle(cx));
         }
         let key = match special(path) {
-            Some(Special::ThemePicker) => {
-                // Before the scan lists it, or for a missing theme, the
-                // first card takes focus.
-                let selected = self.selected_theme(cx);
-                let name =
-                    if self.themes.iter().any(|card| card.name == selected) {
-                        selected
-                    } else {
-                        self.ordered_theme_names().first()?.clone()
-                    };
-                format!("theme:{name}")
-            }
+            // The row's own control, as for every segmented row.
+            Some(Special::ThemePicker) => themes::MODE_KEY.to_owned(),
             Some(Special::Modifiers) => format!(
                 "chip:{path}:{}",
                 if cfg!(target_os = "macos") {

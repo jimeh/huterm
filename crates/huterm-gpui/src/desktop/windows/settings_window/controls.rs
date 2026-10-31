@@ -74,7 +74,7 @@ impl SettingsView {
         let locked = read_only.is_some();
         match special(&setting.path) {
             Some(Special::ThemePicker) => {
-                return self.render_themes(read_only, swatch, cx);
+                return self.render_theme_mode(read_only, swatch, cx);
             }
             // Search results lead to the section's editors.
             Some(Special::GlobalShortcuts | Special::QuakeProfiles) => {

@@ -553,6 +553,9 @@ impl SettingsView {
                 .debug_selector(move || format!("settings-reset-{path}"))
                 .child(reset)
         });
+        // The theme row's slot cards and grid sit under its line.
+        let body = (special(path) == Some(Special::ThemePicker))
+            .then(|| self.render_theme_body(read_only.clone(), swatch, cx));
         let conflict = self.render_conflict(setting, swatch, cx);
         // A conflict's alert says what the error would, and more. A family
         // that saved but fell back says so where its error would.
@@ -563,14 +566,11 @@ impl SettingsView {
             .or_else(|| Self::fallback_note(setting, cx))
             .filter(|_| conflict.is_none())
             .map(SharedString::from);
-        // The theme picker's cards need the row's width.
-        let wide = special(path) == Some(Special::ThemePicker);
         let field = Field::new(
             id(format!("settings-row-{path}")),
             setting.label.clone(),
             swatch,
         )
-        .when(wide, Field::vertical)
         .label_debug_selector(|| format!("settings-label-{path}"))
         .when(changed, |field| field.before_label(changed_dot(swatch)))
         .when(setting.advanced, |field| {
@@ -591,6 +591,7 @@ impl SettingsView {
             .flex_col()
             .debug_selector(move || format!("settings-row-{path}"))
             .child(field)
+            .children(body)
             .children(conflict)
             .into_any_element()
     }

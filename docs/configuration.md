@@ -754,10 +754,10 @@ Huterm switches themes in every window as soon as macOS or the Linux
 desktop changes mode. On Linux the mode comes from the desktop portal's
 color scheme, so a desktop without one counts as light, and a dark desktop
 can show the light theme for a moment while Huterm starts. Color overrides
-in `[theme]` apply in both modes. In Settings, Appearance's **Match
-system** switch writes both keys, the Light mode and Dark mode cards choose
-which mode the theme cards set, and **One theme** keeps the theme in use
-now as `name`.
+in `[theme]` apply in both modes. In Settings, the **Theme mode** row in
+Appearance switches between them: **Match system** writes both keys, the
+Light mode and Dark mode cards under it choose which mode the theme cards
+set, and **One theme** keeps the theme in use now as `name`.
 
 The built-in themes are embedded in the application:
 

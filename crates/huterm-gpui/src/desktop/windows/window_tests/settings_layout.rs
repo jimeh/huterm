@@ -290,6 +290,31 @@ fn arrows_on_the_mode_cards_pick_the_mode_the_theme_cards_set(
 }
 
 #[gpui::test]
+fn the_theme_mode_switch_sits_at_its_rows_end_sized_to_its_options(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("layout-theme-mode-row", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    let mut visual = visual(&harness);
+    let label = visual
+        .debug_bounds("settings-label-theme")
+        .expect("the Theme mode row drew");
+    let switch = visual
+        .debug_bounds("settings-theme-mode")
+        .expect("the mode switch drew");
+    let row = visual
+        .debug_bounds("settings-row-theme")
+        .expect("the Theme mode row drew");
+    // On the label's line, at the row's end inside its 14-point padding,
+    // as a segmented row's control is, and far narrower than the row.
+    assert!(switch.top() < label.bottom() && label.top() < switch.bottom());
+    let inset = row.right() - switch.right();
+    assert!((inset - px(14.0)).abs() < px(1.0), "{row:?} {switch:?}");
+    assert!(switch.size.width < row.size.width / 2.0, "{switch:?}");
+}
+
+#[gpui::test]
 fn the_theme_mode_switch_works_from_the_keyboard(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("layout-theme-mode", "");
     let mut harness = DesktopHarness::new(cx);

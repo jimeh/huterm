@@ -187,6 +187,41 @@ fn an_accessible_name_replaces_the_label_for_assistive_technology(
 }
 
 #[gpui::test]
+fn stretched_cards_share_the_line_and_keep_their_trailing_element(
+    cx: &mut TestAppContext,
+) {
+    let handles: Vec<FocusHandle> =
+        cx.update(|cx| (0..2).map(|_| cx.focus_handle()).collect());
+    let (_, cx) = host(cx, move |_, _| {
+        let status = |selector: &'static str| {
+            div()
+                .debug_selector(move || selector.to_owned())
+                .child("dark")
+        };
+        div()
+            .w(px(500.0))
+            .child(
+                RadioGroup::new("slots", "Theme to choose", tokens())
+                    .card(px(120.0))
+                    .stretch()
+                    .option("light", "nord", true, &handles[0])
+                    .trailing(status("light-status"))
+                    .option("dark", "dracula", false, &handles[1])
+                    .trailing(status("dark-status")),
+            )
+            .into_any_element()
+    });
+    cx.run_until_parked();
+    let light = cx.debug_bounds("light-status").expect("drawn");
+    let dark = cx.debug_bounds("dark-status").expect("drawn");
+    // Each card ends its label's line, so the statuses end where the two
+    // cards that share the 500-point line do, well past 120 points.
+    assert!(light.right() > px(200.0), "{light:?}");
+    assert!(dark.right() > px(450.0), "{dark:?}");
+    assert!(dark.left() > light.right(), "{light:?} {dark:?}");
+}
+
+#[gpui::test]
 fn a_pointer_click_checks_and_focuses_a_radio(cx: &mut TestAppContext) {
     let (probe, cx) = themes(cx, Kind::Cards);
     click(cx, "Solarized");
