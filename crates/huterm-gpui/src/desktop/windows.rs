@@ -13974,7 +13974,11 @@ impl WorkspaceView {
         // The menu's labels follow the interface scale, and so does its
         // width.
         let width = menu_min_width(window);
-        let placement = place(anchor, size(width, height), viewport);
+        // Placed for its tallest level, the menu opens where every level
+        // fits; the level it shows keeps the edge on the anchor.
+        let shown = menu.read(cx).shown_height(window.rem_size());
+        let placement =
+            place(anchor, size(width, height), viewport).holding(height, shown);
         menu.update(cx, |menu, cx| {
             menu.set_max_height(Some(placement.max_height), cx);
         });

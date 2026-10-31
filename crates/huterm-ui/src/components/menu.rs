@@ -244,21 +244,22 @@ impl Menu {
     /// The content height before any scrolling: every row's height at the
     /// window's rem size `rem` plus the panel's padding and border, for the
     /// tallest of the top rows and each submenu's. Placement uses it, so
-    /// the menu sits flush against its anchor when it opens upward and
-    /// stays where it is when a submenu opens.
+    /// the menu opens in the direction every level fits, and with
+    /// [`Self::shown_height`] keeps its anchored edge where it is when a
+    /// submenu opens.
     #[must_use]
     pub fn content_height(model: &Model, rem: Pixels) -> Pixels {
-        let height = |model: &Model| {
-            model
-                .rows
-                .iter()
-                .map(|row| row_height(row, rem))
-                .fold(Pixels::ZERO, |sum, height| sum + height)
-        };
-        let tallest = levels(model)
-            .map(|level| height(&level))
-            .fold(Pixels::ZERO, Pixels::max);
-        tallest + px((PANEL_PADDING + PANEL_BORDER) * 2.0)
+        levels(model)
+            .map(|level| panel_height(&level, rem))
+            .fold(Pixels::ZERO, Pixels::max)
+    }
+
+    /// The content height of the rows the menu shows now, the top rows or
+    /// an open submenu's, measured as [`Self::content_height`] measures
+    /// each level.
+    #[must_use]
+    pub fn shown_height(&self, rem: Pixels) -> Pixels {
+        panel_height(&self.shown, rem)
     }
 
     /// The width the rows ask for: the widest row's text, measured in the
@@ -1069,6 +1070,18 @@ pub fn select_width(
     trigger
         .max(Menu::content_width(model, window, cx))
         .min(room)
+}
+
+/// The panel's height for `model`'s rows at the rem size `rem`, before
+/// scrolling: every row plus the panel's padding and border.
+fn panel_height(model: &Model, rem: Pixels) -> Pixels {
+    model
+        .rows
+        .iter()
+        .map(|row| row_height(row, rem))
+        .fold(px((PANEL_PADDING + PANEL_BORDER) * 2.0), |sum, height| {
+            sum + height
+        })
 }
 
 /// A row's height at the rem size `rem`: text rows follow the interface

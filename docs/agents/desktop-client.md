@@ -544,10 +544,12 @@ Huterm's menu drills into a `listbox::Row::Submenu` in place: a click opens
 it on release, and its rows carry their own element ids (`menu-subitem`), so
 the release that opens it cannot complete a click on the row drawn where the
 pointer rests. `Menu::content_height` measures the tallest level, so the
-panel stays put when a submenu opens. Native menus cascade instead, and tags
-number every entry depth-first, separators and submenu items included;
-`NativeMenu::entries` and `id_at` read the same order, and `appkit_menu`'s
-`check_built` checks it in `smoke:macos-menus`.
+menu opens in the direction every level fits, and `Placement::holding` keeps
+the shown level's edge on the anchor: an upward menu's bottom, a downward
+one's top. Native menus cascade instead, and tags number every entry
+depth-first, separators and submenu items included; `NativeMenu::entries` and
+`id_at` read the same order, and `appkit_menu`'s `check_built` checks it in
+`smoke:macos-menus`.
 
 Each open menu carries a `MenuKind` and pointer anchor; derive button state
 and pick targets from them, not from whether any menu is open. A terminal

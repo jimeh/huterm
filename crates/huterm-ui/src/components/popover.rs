@@ -317,6 +317,26 @@ pub struct Placement {
     pub max_height: Pixels,
 }
 
+impl Placement {
+    /// This placement, made for content `placed` tall, holding content
+    /// `shown` tall instead, such as a menu showing a shorter level than
+    /// the one it was placed for. An upward placement keeps its bottom
+    /// edge, so the content stays flush against its anchor; a downward one
+    /// keeps its top edge as it is.
+    #[must_use]
+    pub fn holding(self, placed: Pixels, shown: Pixels) -> Self {
+        if !self.opens_up {
+            return self;
+        }
+        let rise = (placed.min(self.max_height) - shown.min(self.max_height))
+            .max(px(0.0));
+        Self {
+            origin: point(self.origin.x, self.origin.y + rise),
+            ..self
+        }
+    }
+}
+
 /// Distance kept between a popover and the window edges.
 pub const MARGIN: Pixels = px(6.0);
 /// Gap between a button anchor and its menu.
@@ -524,6 +544,39 @@ mod tests {
         );
         assert_eq!(tall.origin.y, px(6.0));
         assert_eq!(tall.max_height, px(588.0));
+    }
+
+    #[test]
+    fn shorter_content_keeps_the_edge_on_the_anchor() {
+        let pointer = point(px(300.0), px(500.0));
+        let up = place(
+            Anchor::Pointer(pointer),
+            size(px(264.0), px(300.0)),
+            window(),
+        );
+        assert!(up.opens_up);
+        let held = up.holding(px(300.0), px(200.0));
+        assert_eq!(
+            held.origin.y + px(200.0),
+            pointer.y,
+            "flush on the pointer"
+        );
+        assert_eq!(held.origin.x, up.origin.x);
+        assert_eq!(up.holding(px(300.0), px(300.0)), up, "the placed height");
+        let down = place(
+            Anchor::Pointer(point(px(300.0), px(100.0))),
+            size(px(264.0), px(300.0)),
+            window(),
+        );
+        assert!(!down.opens_up);
+        assert_eq!(down.holding(px(300.0), px(200.0)), down, "the top stays");
+        // Content past `max_height` scrolls at it, so it rises no further.
+        let tall = place(
+            Anchor::Pointer(pointer),
+            size(px(264.0), px(900.0)),
+            window(),
+        );
+        assert_eq!(tall.holding(px(900.0), px(700.0)), tall);
     }
 }
 
