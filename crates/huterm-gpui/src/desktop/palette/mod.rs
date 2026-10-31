@@ -772,9 +772,13 @@ impl CommandPalette {
         &mut self,
         availability: HashMap<CommandId, String>,
         titles: HashMap<CommandId, String>,
+        cx: &mut Context<'_, Self>,
     ) {
         self.availability = availability;
-        self.titles = titles;
+        if self.titles != titles {
+            self.titles = titles;
+            self.relabel_results(cx);
+        }
     }
 
     /// Applies reloaded theme colours, placement, profiles, and layouts to
@@ -1016,19 +1020,35 @@ impl CommandPalette {
         }
     }
 
+    /// The ranked results as list rows, under their current titles.
+    fn result_options(&self, search: &SearchState) -> Vec<ListOption> {
+        search
+            .results
+            .iter()
+            .map(|matched| {
+                ListOption::new(matched.spec.id.as_str(), self.title(matched))
+            })
+            .collect()
+    }
+
+    /// Retitles the shown results in place, keeping the highlight, as when
+    /// a toggle's row changes its wording while the palette is open.
+    fn relabel_results(&mut self, cx: &mut Context<'_, Self>) {
+        let (Stage::Search(search), Some(list)) = (&self.stage, &self.list)
+        else {
+            return;
+        };
+        let options = self.result_options(search);
+        list.update(cx, |list, cx| list.set_options(options, cx));
+    }
+
     /// Puts the ranked results in the list, highlighting the first.
     fn show_results(&mut self, cx: &mut Context<'_, Self>) {
         let (Stage::Search(search), Some(list)) = (&self.stage, &self.list)
         else {
             return;
         };
-        let options = search
-            .results
-            .iter()
-            .map(|matched| {
-                ListOption::new(matched.spec.id.as_str(), self.title(matched))
-            })
-            .collect();
+        let options = self.result_options(search);
         let empty = format!("No commands match “{}”", search.query);
         list.update(cx, |list, cx| {
             list.set_empty(empty, cx);
@@ -1578,6 +1598,22 @@ impl CommandPalette {
     /// The search and argument field.
     pub(super) fn field(&self) -> Entity<Input> {
         self.input.clone()
+    }
+
+    /// The label the shown result row for `command` carries, if any.
+    #[cfg(test)]
+    pub(super) fn shown_label(
+        &self,
+        command: CommandId,
+        cx: &App,
+    ) -> Option<gpui::SharedString> {
+        self.list
+            .as_ref()?
+            .read(cx)
+            .options()
+            .iter()
+            .find(|option| option.id.as_ref() == command.as_str())
+            .map(|option| option.label.clone())
     }
 
     pub(super) fn smoke_state(&self, cx: &App) -> String {

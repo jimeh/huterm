@@ -906,6 +906,11 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
         Platform::MacOs => ("cmd-ctrl", "cmd-shift-enter"),
         Platform::Linux => ("ctrl-super-shift", "ctrl-shift-enter"),
     };
+    // iTerm2's Broadcast Input key, with Linux's `ctrl-shift` for `cmd`.
+    let input_sync = match platform {
+        Platform::MacOs => "cmd-alt-i",
+        Platform::Linux => "ctrl-shift-alt-i",
+    };
     // GPUI folds Shift+bracket into a brace, so the Linux cycle keys add
     // Alt to the `ctrl-super` focus keys instead.
     let (next_layout, previous_layout, balance) = match platform {
@@ -936,6 +941,11 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
             "Resize the pane down",
         ),
         default(zoom, ids::TOGGLE_PANE_ZOOM, "Zoom the pane"),
+        default(
+            input_sync,
+            ids::TOGGLE_PANE_INPUT_SYNC,
+            "Type into every pane of the tab",
+        ),
         default(
             next_layout,
             ids::NEXT_PANE_LAYOUT,

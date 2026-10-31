@@ -86,7 +86,7 @@ impl WorkspaceInfo {
     }
 }
 
-/// Identity, pane layout, and names of one tab.
+/// Identity, pane layout, names, and modes of one tab.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TabInfo {
     /// Stable tab identity.
@@ -98,6 +98,8 @@ pub struct TabInfo {
     /// The pane zoomed for every client that shares zoom state; always a
     /// pane of a layout with more than one pane.
     pub zoomed: Option<PaneId>,
+    /// Typing into the tab's focused pane also types into its other panes.
+    pub input_sync: bool,
 }
 
 impl TabInfo {
@@ -190,6 +192,8 @@ pub struct TabRecord {
     pub layout: PaneLayout,
     /// The tab's shared zoom.
     pub zoomed: Option<PaneId>,
+    /// The tab's input sync.
+    pub input_sync: bool,
 }
 
 /// One tab's record, or its absence, at one moment.
@@ -206,7 +210,8 @@ impl TabSnapshot {
     /// structure this one recorded, so a layout restore may leave it: both
     /// absent, or both present with the same splits, panes, and terminals,
     /// ignoring weights, in the same session. A `placed` tab must also be
-    /// in the same workspace. Zoom, position, and name never matter.
+    /// in the same workspace. Zoom, input sync, position, and name never
+    /// matter.
     #[must_use]
     pub fn still_matches(&self, now: &Self, placed: bool) -> bool {
         match (&self.record, &now.record) {
@@ -353,6 +358,13 @@ pub enum HierarchyEvent {
         /// Its shared zoom after the change.
         zoomed: Option<PaneId>,
     },
+    /// A tab's input sync was turned on or off.
+    TabInputSyncChanged {
+        /// The tab.
+        tab: TabId,
+        /// Whether the tab now syncs input.
+        input_sync: bool,
+    },
     /// A tab's shared zoom was set or cleared.
     PaneZoomChanged {
         /// The tab.
@@ -411,10 +423,10 @@ pub enum ResyncReason {
 ///
 /// Workspaces are listed when their tab membership or order changed, when
 /// they were created, moved, or closed, or when one of their tabs' layouts
-/// changed. Tabs are listed when their name or layout changed or they
-/// opened, moved, or closed; layouts list the tabs whose pane layout or
-/// shared zoom changed or that opened. The names flag records any change to
-/// the session or workspace lists or their names.
+/// changed. Tabs are listed when their name, input sync, or layout changed
+/// or they opened, moved, or closed; layouts list the tabs whose pane
+/// layout or shared zoom changed or that opened. The names flag records any
+/// change to the session or workspace lists or their names.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Touched {
     everything: bool,
@@ -463,7 +475,8 @@ impl Touched {
         self.everything || self.workspaces.contains(&workspace)
     }
 
-    /// Whether the tab's name, membership, or placement changed.
+    /// Whether the tab's name, input sync, membership, or placement
+    /// changed.
     #[must_use]
     pub fn contains_tab(&self, tab: TabId) -> bool {
         self.everything || self.tabs.contains(&tab)
@@ -662,6 +675,7 @@ impl HierarchyState {
                 custom_name: entry.info.custom_name.clone(),
                 layout: entry.info.layout.clone(),
                 zoomed: entry.info.zoomed,
+                input_sync: entry.info.input_sync,
             })
         });
         TabSnapshot { tab: id, record }
@@ -713,10 +727,10 @@ impl HierarchyState {
     /// - Session: `b'S'`, ID, custom name, automatic name, workspace count.
     /// - Workspace: `b'W'`, ID, custom name, automatic name, tab count.
     /// - Tab: `b'T'`, ID, custom name, shared zoom (`0`, or `1` and the pane
-    ///   ID), then its layout in traversal order: for a pane, `b'P'`, pane
-    ///   ID, terminal ID, fallback name, custom name; for a split, `b'X'`,
-    ///   split ID, axis (`0` columns, `1` rows), child count, then each
-    ///   child's weight followed by the child.
+    ///   ID), input sync (`0` or `1`), then its layout in traversal order:
+    ///   for a pane, `b'P'`, pane ID, terminal ID, fallback name, custom
+    ///   name; for a split, `b'X'`, split ID, axis (`0` columns, `1` rows),
+    ///   child count, then each child's weight followed by the child.
     ///
     /// The stream and sequence are not part of the digest. The cost is
     /// proportional to the hierarchy, so do not compute it per event.
@@ -749,6 +763,7 @@ impl HierarchyState {
                             hash.number(pane.get());
                         }
                     }
+                    hash.byte(u8::from(tab.input_sync));
                     hash.node(tab.layout.root());
                 }
             }
@@ -863,6 +878,13 @@ impl HierarchyState {
             } => {
                 let workspace = self.replace_layout(tab, layout, zoomed)?;
                 touched.layout_changed(workspace, tab);
+            }
+            HierarchyEvent::TabInputSyncChanged { tab, input_sync } => {
+                let entry = self.tabs.get_mut(&tab)?;
+                if entry.info.input_sync != input_sync {
+                    entry.info.input_sync = input_sync;
+                    touched.tabs.insert(tab);
+                }
             }
             HierarchyEvent::PaneZoomChanged { tab, zoomed } => {
                 self.replace_zoom(tab, zoomed, &mut touched)?;

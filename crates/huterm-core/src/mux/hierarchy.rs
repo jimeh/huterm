@@ -254,6 +254,7 @@ impl Tab {
             custom_name: self.custom_name.clone(),
             layout: self.layout.clone(),
             zoomed: self.zoomed,
+            input_sync: self.input_sync,
         }
     }
 }
@@ -606,6 +607,87 @@ mod tests {
         assert_eq!(state.workspace_tabs(gamma).unwrap().len(), 2);
         mux.shutdown().unwrap();
         step(&mut mux, &mut state);
+    }
+
+    #[test]
+    fn input_sync_follows_its_tab_through_moves_and_undo() {
+        use crate::mux::{
+            Beside, MoveDestination, PaneRef, RestoreDirection::Undo,
+        };
+        let mut mux = Mux::default();
+        let (mut state, subscription) = mux.subscribe_hierarchy();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let one = open(&mut mux, workspace);
+        let two = open(&mut mux, workspace);
+        let a = mux.tab(one).unwrap().first_pane().id;
+        let b = split(&mut mux, workspace, one, a, SplitDirection::Right);
+        converge(&mut mux, &mut state, &subscription);
+        let revision = mux.revision;
+        mux.set_input_sync(workspace, one, true).unwrap();
+        converge(&mut mux, &mut state, &subscription);
+        assert!(state.tab(one).unwrap().input_sync);
+        assert!(!state.tab(two).unwrap().input_sync);
+        // Setting it again emits nothing, and neither changes which
+        // terminals a close covers.
+        let seq = mux.hierarchy_seq();
+        mux.set_input_sync(workspace, one, true).unwrap();
+        assert_eq!(mux.hierarchy_seq(), seq);
+        assert_eq!(mux.revision, revision);
+        let other = mux.create_workspace(session, None).unwrap();
+        assert!(matches!(
+            mux.set_input_sync(other, one, false),
+            Err(crate::MuxError::UnknownTab(_))
+        ));
+        assert!(matches!(
+            mux.set_input_sync(workspace, TabId::new(one.get()), false),
+            Err(crate::MuxError::ForeignRuntime(_))
+        ));
+        converge(&mut mux, &mut state, &subscription);
+        // A pane moved to a tab of its own starts without sync, and the tab
+        // it left keeps it.
+        let change = mux
+            .move_pane(
+                PaneRef {
+                    workspace,
+                    tab: one,
+                    pane: b,
+                },
+                MoveDestination::NewTab {
+                    workspace,
+                    before: None,
+                },
+            )
+            .unwrap();
+        converge(&mut mux, &mut state, &subscription);
+        let three = change.after[1].tab;
+        assert!(!state.tab(three).unwrap().input_sync);
+        assert!(state.tab(one).unwrap().input_sync);
+        // Nesting the syncing tab gives its pane the destination's state;
+        // undo reopens the tab with its own.
+        let target = mux.tab(two).unwrap().first_pane().id;
+        let change = mux
+            .move_tab_to_pane(
+                workspace,
+                one,
+                Beside {
+                    target: PaneRef {
+                        workspace,
+                        tab: two,
+                        pane: target,
+                    },
+                    side: SplitDirection::Down,
+                },
+            )
+            .unwrap();
+        converge(&mut mux, &mut state, &subscription);
+        assert!(state.tab(one).is_none());
+        assert!(!state.tab(two).unwrap().input_sync);
+        mux.restore_tabs(&change, Undo).unwrap();
+        converge(&mut mux, &mut state, &subscription);
+        assert!(state.tab(one).unwrap().input_sync);
+        mux.shutdown().unwrap();
+        converge(&mut mux, &mut state, &subscription);
     }
 
     #[test]

@@ -54,6 +54,7 @@ fn tab(value: u64) -> TabInfo {
         custom_name: None,
         layout: PaneLayout::single(pane(value + 100)),
         zoomed: None,
+        input_sync: false,
     }
 }
 
@@ -614,6 +615,23 @@ fn layout_and_zoom_events_replace_a_tab_layout_and_its_pane_indexes() {
 }
 
 #[test]
+fn an_input_sync_change_touches_only_its_tab_and_reaches_its_record() {
+    let mut state = seeded(1);
+    let sync = |input_sync| HierarchyEvent::TabInputSyncChanged {
+        tab: tab_id(20),
+        input_sync,
+    };
+    assert_eq!(apply(&mut state, sync(true)), touched(false, &[], &[20]));
+    assert!(state.tab(tab_id(20)).unwrap().input_sync);
+    assert!(!state.tab(tab_id(21)).unwrap().input_sync);
+    assert!(state.tab_snapshot(tab_id(20)).record.unwrap().input_sync);
+    // Setting the current state again changes nothing.
+    assert_eq!(apply(&mut state, sync(true)), touched(false, &[], &[]));
+    assert_eq!(apply(&mut state, sync(false)), touched(false, &[], &[20]));
+    assert!(!state.tab(tab_id(20)).unwrap().input_sync);
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one table of inconsistent layout events, each applied alike"
@@ -701,6 +719,10 @@ fn layouts_that_reuse_another_tabs_panes_or_name_foreign_zoom_are_inconsistent()
             tab: tab_id(99),
             zoomed: None,
         },
+        HierarchyEvent::TabInputSyncChanged {
+            tab: tab_id(99),
+            input_sync: true,
+        },
         HierarchyEvent::PaneLayoutChanged {
             tab: tab_id(99),
             layout: PaneLayout::single(pane(199)),
@@ -767,7 +789,7 @@ fn digest_is_stable_and_sensitive_to_every_structural_difference() {
     let state = seeded(1);
     // Fixed value, cross-checked against an independent implementation of
     // the documented encoding: the digest must not vary by process.
-    assert_eq!(state.digest(), 0x43e8_caa9_4013_6e70);
+    assert_eq!(state.digest(), 0x19d9_e102_069d_102e);
     assert_eq!(seeded(9).digest(), state.digest());
     assert_eq!(HierarchyState::new(STREAM).digest(), FNV_OFFSET);
 
@@ -817,6 +839,10 @@ fn digest_is_stable_and_sensitive_to_every_structural_difference() {
             400_000,
             Some(pane_id(130)),
         )),
+        variant(HierarchyEvent::TabInputSyncChanged {
+            tab: tab_id(20),
+            input_sync: true,
+        }),
     ];
     for (index, digest) in digests.iter().enumerate() {
         assert!(

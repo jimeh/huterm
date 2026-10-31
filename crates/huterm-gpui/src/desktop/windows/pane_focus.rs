@@ -6,11 +6,13 @@ use huterm_config::{MAX_INACTIVE_DIM, PaneTitleBarMode};
 use huterm_protocol::PaneId;
 
 /// The focus marks a frame drew: each dimmed pane with its layer's opacity,
-/// and the pane with the accent line, with its alpha.
+/// the pane with the accent line, with its alpha, and each pane framed
+/// because its tab syncs input.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct FocusMarks {
     pub(super) dimmed: Vec<(PaneId, f32)>,
     pub(super) accent: Option<(PaneId, f32)>,
+    pub(super) synced: Vec<PaneId>,
 }
 
 impl FocusMarks {

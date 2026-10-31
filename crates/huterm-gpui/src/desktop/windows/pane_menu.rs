@@ -15,6 +15,8 @@ pub(super) struct PaneMenuInput {
     pub(super) platform: Platform,
     /// The pane shows across its whole tab, so the zoom row unzooms.
     pub(super) zoomed: bool,
+    /// The tab syncs input, so the sync row stops it.
+    pub(super) input_sync: bool,
     /// The pane has reported a working directory Copy Directory Path can
     /// copy.
     pub(super) directory_known: bool,
@@ -53,6 +55,7 @@ pub(super) fn pane_menu(
             }
             .to_owned(),
         )),
+        MenuRow::Item(input_sync_item(input.input_sync, item)),
         MenuRow::Item(catalog(ids::MOVE_PANE_TO_NEW_TAB)),
         MenuRow::Item(item(
             ids::MOVE_PANE_TO_PANE,
@@ -61,6 +64,28 @@ pub(super) fn pane_menu(
         MenuRow::Separator,
         MenuRow::Item(catalog(ids::CLOSE_PANE)),
     ])
+}
+
+/// The row that toggles the tab's input sync, worded for what a pick
+/// does, built by `item` from its command and label.
+pub(super) fn input_sync_item(
+    input_sync: bool,
+    item: impl Fn(CommandId, String) -> MenuItem,
+) -> MenuItem {
+    item(
+        ids::TOGGLE_PANE_INPUT_SYNC,
+        input_sync_label(input_sync).to_owned(),
+    )
+}
+
+/// What toggling a tab's input sync does from its current state, for menu
+/// rows and the palette.
+pub(super) fn input_sync_label(input_sync: bool) -> &'static str {
+    if input_sync {
+        "Stop Syncing Pane Input"
+    } else {
+        "Sync Pane Input"
+    }
 }
 
 #[cfg(test)]
@@ -86,6 +111,7 @@ mod tests {
         PaneMenuInput {
             platform: Platform::MacOs,
             zoomed: false,
+            input_sync: false,
             directory_known: true,
         }
     }
@@ -120,6 +146,7 @@ mod tests {
                 "split_down=Split Down",
                 "-",
                 "toggle_pane_zoom=Zoom Pane",
+                "toggle_pane_input_sync=Sync Pane Input",
                 "move_pane_to_new_tab=Move Pane to New Tab",
                 "move_pane_to_pane=Move Pane to Another Pane…",
                 "-",
@@ -135,6 +162,15 @@ mod tests {
             ..input()
         });
         assert_eq!(rows[6], "toggle_pane_zoom=Unzoom Pane");
+    }
+
+    #[test]
+    fn a_syncing_tab_offers_to_stop_syncing() {
+        let rows = rows(PaneMenuInput {
+            input_sync: true,
+            ..input()
+        });
+        assert_eq!(rows[7], "toggle_pane_input_sync=Stop Syncing Pane Input");
     }
 
     #[test]
@@ -169,6 +205,7 @@ mod tests {
             _ => panic!("row {index} is an item"),
         };
         assert_eq!(shortcut(0), "⌃⌥N");
-        assert_ne!(shortcut(10), "", "Close Pane has a default shortcut");
+        assert_eq!(shortcut(7), "⌥⌘I");
+        assert_ne!(shortcut(11), "", "Close Pane has a default shortcut");
     }
 }

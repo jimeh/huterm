@@ -1293,12 +1293,14 @@ fn keybindings_lists_global_shortcuts_under_their_commands_and_edits_them(
     // Show Quake adds one that runs it on the default profile.
     press(&mut harness, "kcmd:show_quake");
     press(&mut harness, "gadd:show_quake");
-    keystrokes(&mut harness, "ctrl-alt-shift-i");
+    // A key no binding uses: a bound one runs its command instead of
+    // reaching the recorder.
+    keystrokes(&mut harness, "ctrl-alt-shift-k");
     saved(&mut harness, &file, |text| text.contains("show_quake"));
     assert_eq!(
         file.text(),
         format!(
-            "{}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-i\"\n\
+            "{}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-k\"\n\
              command = \"show_quake\"\n",
             globals.replace("-y", "-u")
         )

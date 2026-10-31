@@ -85,6 +85,7 @@ impl Feed {
                     custom_name: None,
                 }),
                 zoomed: None,
+                input_sync: false,
             },
             index: u32::try_from(index).unwrap(),
         });
@@ -1306,6 +1307,7 @@ fn a_failed_install_waits_for_a_batch_that_touches_its_workspace() {
                 custom_name: None,
             }),
             zoomed: None,
+            input_sync: false,
         },
         index: 1,
     });

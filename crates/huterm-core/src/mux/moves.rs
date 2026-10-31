@@ -324,6 +324,7 @@ impl Mux {
             custom_name: pane.custom_name.take(),
             layout: PaneLayout::single(pane),
             zoomed: None,
+            input_sync: false,
         };
         let tabs = &mut self
             .workspaces
@@ -500,6 +501,7 @@ impl Mux {
                 custom_name: record.custom_name.clone(),
                 layout: record.layout.clone(),
                 zoomed: record.zoomed,
+                input_sync: record.input_sync,
             })
         });
         TabSnapshot { tab, record }

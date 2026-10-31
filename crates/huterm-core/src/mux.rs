@@ -26,7 +26,7 @@ use thiserror::Error;
 pub const DEFAULT_SOCKET_NAME: &str = "default";
 static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
 
-/// One tab: its split tree of panes and its shared zoom.
+/// One tab: its split tree of panes, its shared zoom, and its input sync.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Tab {
     /// Stable tab identity.
@@ -34,6 +34,7 @@ pub struct Tab {
     custom_name: Option<String>,
     layout: PaneLayout,
     zoomed: Option<PaneId>,
+    input_sync: bool,
 }
 impl Tab {
     /// Returns the custom override, if set.
@@ -55,6 +56,12 @@ impl Tab {
     #[must_use]
     pub fn zoomed(&self) -> Option<PaneId> {
         self.zoomed
+    }
+    /// Whether typing into the tab's focused pane also types into its
+    /// other panes. Each client sends that input through its own viewers.
+    #[must_use]
+    pub fn input_sync(&self) -> bool {
+        self.input_sync
     }
     /// Every terminal the tab's panes show, in traversal order.
     #[must_use]
@@ -546,6 +553,7 @@ impl Mux {
             custom_name: None,
             layout: PaneLayout::single(pane),
             zoomed: None,
+            input_sync: false,
         };
         let runtime =
             TerminalRuntime::spawn_in(self.runtime_id, terminal_id, command)?;
@@ -720,6 +728,30 @@ impl Mux {
         self.emit_hierarchy(|_| HierarchyEvent::PaneZoomChanged {
             tab,
             zoomed,
+        });
+        Ok(())
+    }
+    /// Turns the tab's input sync on or off. Panes the tab gains later
+    /// follow it, and a pane that leaves takes its new tab's. Sync never
+    /// changes which terminals a close covers, so pending close
+    /// assessments stay valid.
+    /// # Errors
+    /// Rejects foreign, missing, or nonmember targets.
+    pub fn set_input_sync(
+        &mut self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        input_sync: bool,
+    ) -> Result<(), MuxError> {
+        self.select_workspace_tab(workspace, tab)?;
+        let record = self.tab_record_mut(workspace, tab)?;
+        if record.input_sync == input_sync {
+            return Ok(());
+        }
+        record.input_sync = input_sync;
+        self.emit_hierarchy(|_| HierarchyEvent::TabInputSyncChanged {
+            tab,
+            input_sync,
         });
         Ok(())
     }

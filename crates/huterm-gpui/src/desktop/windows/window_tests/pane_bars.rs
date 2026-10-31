@@ -384,7 +384,10 @@ fn a_revealed_bars_overlay_follows_its_pane_through_a_resize(
 }
 
 /// The focus marks `window` last drew.
-fn focus_marks(cx: &mut App, window: AnyWindowHandle) -> Option<FocusMarks> {
+pub(super) fn focus_marks(
+    cx: &mut App,
+    window: AnyWindowHandle,
+) -> Option<FocusMarks> {
     window
         .update(cx, |root, _, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
@@ -405,8 +408,11 @@ fn focus_marks_follow_focus_zoom_and_the_bar_mode(cx: &mut TestAppContext) {
         panes.focus_accent = 0.5;
         panes.inactive_dim = 0.4;
     });
-    let marks =
-        |dimmed: Vec<(PaneId, f32)>, accent| FocusMarks { dimmed, accent };
+    let marks = |dimmed: Vec<(PaneId, f32)>, accent| FocusMarks {
+        dimmed,
+        accent,
+        synced: Vec::new(),
+    };
     // The focused pane carries the accent; the other dims.
     let expected = marks(vec![(first, 0.4)], Some((second, 0.5)));
     harness.wait_for("the right pane to carry the accent", |cx| {

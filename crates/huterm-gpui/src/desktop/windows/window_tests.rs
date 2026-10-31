@@ -5266,4 +5266,5 @@ mod settings_lists;
 mod settings_quake;
 mod settings_selects;
 mod settings_themes;
+mod synced_input;
 mod system_appearance;

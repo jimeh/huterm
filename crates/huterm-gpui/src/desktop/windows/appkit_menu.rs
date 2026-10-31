@@ -579,6 +579,7 @@ pub(in crate::desktop) fn check_terminal_menu(
         exited: false,
         scrolled_back: false,
         panes: 3,
+        input_sync: false,
         directory: DirectoryState::Local,
     };
     let panes = huterm_config::PanesConfig {

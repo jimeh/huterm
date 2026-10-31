@@ -6,6 +6,7 @@
 
 use super::menu_spec::{Item as MenuItem, MenuSpec, Row as MenuRow};
 use super::pane_layouts::holds_at_most;
+use super::pane_menu::input_sync_item;
 use super::window_menu::{label, shortcut_key};
 use crate::keymap::{InstalledKeymap, Platform};
 use gpui::KeyContext;
@@ -49,6 +50,9 @@ pub(super) struct TerminalMenuInput {
     /// The panes the tab holds. With more than one, its panes can balance
     /// and arrange, and its pane can move to a tab of its own.
     pub(super) panes: usize,
+    /// The tab syncs input. Its sync row shows while this holds or the tab
+    /// is split.
+    pub(super) input_sync: bool,
     pub(super) directory: DirectoryState,
 }
 
@@ -129,6 +133,15 @@ pub(super) fn terminal_menu(
             MenuRow::Item(item(ids::MOVE_PANE_TO_NEW_TAB)),
         ]);
     }
+    if input.panes > 1 || input.input_sync {
+        rows.push(MenuRow::Item(input_sync_item(
+            input.input_sync,
+            |id, label| {
+                MenuItem::new(id.as_str(), label)
+                    .shortcut(shortcut_key(keymap, contexts, id))
+            },
+        )));
+    }
     rows.extend([
         MenuRow::Separator,
         MenuRow::Item(item(ids::NEW_TAB)),
@@ -196,6 +209,7 @@ mod tests {
             exited: false,
             scrolled_back: false,
             panes: 1,
+            input_sync: false,
             directory: DirectoryState::Local,
         }
     }
@@ -242,22 +256,43 @@ mod tests {
     }
 
     #[test]
-    fn a_split_tab_adds_balance_arrange_and_move_after_close_pane() {
+    fn a_split_tab_adds_balance_arrange_move_and_sync_after_close_pane() {
         let rows = rows(TerminalMenuInput {
             panes: 2,
             ..input()
         });
         let close = rows.iter().position(|row| row == "close_pane").unwrap();
         assert_eq!(
-            rows[close..close + 5],
+            rows[close..close + 6],
             [
                 "close_pane",
                 "balance_panes",
                 "arrange_panes_menu>",
                 "move_pane_to_new_tab",
+                "toggle_pane_input_sync",
                 "-"
             ]
         );
+    }
+
+    #[test]
+    fn a_syncing_tab_of_one_pane_still_offers_to_stop_syncing() {
+        let model = model(TerminalMenuInput {
+            input_sync: true,
+            ..input()
+        });
+        let sync = model
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                MenuRow::Item(item) if item.id == "toggle_pane_input_sync" => {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .expect("a syncing tab shows its sync row");
+        assert_eq!(sync.label, "Stop Syncing Pane Input");
+        assert_eq!(kbd::text(&sync.shortcut), "⌥⌘I");
     }
 
     #[test]
