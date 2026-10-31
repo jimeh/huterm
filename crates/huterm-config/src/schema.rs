@@ -18,7 +18,7 @@ impl JsonSchema for LinkModifiers {
         let mut combinations = Vec::new();
         modifier_combinations(&mut combinations, &mut Vec::new());
         schemars::json_schema!({"type":"string", "enum":combinations,
-            "description":"Modifiers joined with hyphens, without duplicates. Defaults to cmd on macOS and ctrl on Linux. macOS rejects ctrl; this platform restriction is checked at runtime."})
+            "description":"The modifiers to hold when clicking a link, joined with hyphens. Defaults to `cmd` on macOS, which does not allow `ctrl`, and `ctrl` on Linux."})
     }
 }
 impl JsonSchema for PaneDrag {

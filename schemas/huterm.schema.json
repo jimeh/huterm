@@ -102,7 +102,7 @@
     },
     "Config": {
       "additionalProperties": false,
-      "description": "Named quake windows. The built-in default profile remains available when\nomitted. Profile references and display identifiers are resolved at\nruntime.",
+      "description": "Named quake windows. The `default` profile exists even when unset.",
       "properties": {
         "profiles": {
           "additionalProperties": {
@@ -122,7 +122,7 @@
       "properties": {
         "watch_config": {
           "default": true,
-          "description": "Reload the configuration file automatically when it, or a theme file\nit uses, changes on disk.",
+          "description": "Reload config.toml when it, or a theme file it uses, changes on disk.",
           "type": "boolean",
           "x-huterm-apply": "live",
           "x-huterm-group": "Configuration file",
@@ -329,7 +329,7 @@
       ]
     },
     "LinkModifiers": {
-      "description": "Modifiers joined with hyphens, without duplicates. Defaults to cmd on macOS and ctrl on Linux. macOS rejects ctrl; this platform restriction is checked at runtime.",
+      "description": "The modifiers to hold when clicking a link, joined with hyphens. Defaults to `cmd` on macOS, which does not allow `ctrl`, and `ctrl` on Linux.",
       "enum": [
         "cmd",
         "cmd-ctrl",
@@ -427,7 +427,7 @@
       ]
     },
     "NewTabDirectory": {
-      "description": "Working-directory policy for newly opened tabs.",
+      "description": "Where new tabs and panes start.",
       "oneOf": [
         {
           "const": "inherit",
@@ -463,7 +463,7 @@
         },
         "retain_query": {
           "default": true,
-          "description": "Keep the search text after the palette is cancelled, so reopening\nwithin `retain_query_seconds` restores it selected.",
+          "description": "Keep the search text when the palette is cancelled, so reopening it\nwithin `retain_query_seconds` restores it.",
           "type": "boolean",
           "x-huterm-apply": "next_palette_open",
           "x-huterm-group": "Palette",
@@ -473,7 +473,7 @@
         },
         "retain_query_seconds": {
           "default": 15,
-          "description": "How long a cancelled palette's search text is retained, 0 to 3600.",
+          "description": "How long a cancelled palette keeps its search text, in seconds, from 0\nto 3600.",
           "format": "uint32",
           "maximum": 3600,
           "minimum": 0,
@@ -503,7 +503,7 @@
         },
         {
           "const": "center",
-          "description": "Centred on the window at the palette's full height, so filtering\nresults never moves the input line.",
+          "description": "Centred at full height, so filtering never moves the input.",
           "type": "string",
           "x-huterm-label": "Center"
         }
@@ -560,7 +560,7 @@
         },
         {
           "const": "shared",
-          "description": "The tab owns the zoom: every window set to `shared` shows the same\nzoomed pane, and windows set to `view` ignore it.",
+          "description": "The tab owns the zoom, which every window set to `shared` shows.",
           "type": "string",
           "x-huterm-label": "Shared"
         }
@@ -571,7 +571,7 @@
       "description": "Split pane behavior.",
       "properties": {
         "drag_modifier": {
-          "description": "Hold these modifiers to move panes by dragging anywhere inside\nthem, as a title bar drag does, which helps when title bars are\nhidden. Unset, the default, is off. Join two or more of `cmd`,\n`ctrl`, `alt`, and `shift` with hyphens: `cmd-ctrl` suits macOS and\n`ctrl-alt` Linux.",
+          "description": "Hold these modifiers to drag a pane from anywhere inside it: two or more\nof `cmd`, `ctrl`, `alt`, and `shift` joined with hyphens, or `off`.\nDefaults to `cmd-ctrl` on macOS and `ctrl-alt` on Linux.",
           "pattern": "^(off|(cmd|super|ctrl|alt|shift)(-(cmd|super|ctrl|alt|shift)){1,3})$",
           "type": "string",
           "x-huterm-apply": "live",
@@ -582,7 +582,7 @@
         },
         "focus_accent": {
           "default": 0.0,
-          "description": "How strongly a thin accent line marks the focused pane while its\ntitle bar is not on screen, from 0 (off) to 1. It draws only under\n`hover` and `hidden` bars, and only while more than one pane shows.",
+          "description": "How strongly an accent line marks the focused pane under `hover` or\n`hidden` title bars, from 0 (off) to 1.",
           "format": "float",
           "maximum": 1,
           "minimum": 0,
@@ -608,7 +608,7 @@
         },
         "inactive_dim": {
           "default": 0.20000000298023224,
-          "description": "How much the panes without focus dim, from 0 (off) to 0.8, while\nmore than one pane shows. Their title bars stay as they are.",
+          "description": "How much the panes without focus dim, from 0 (off) to 0.8.",
           "format": "float",
           "maximum": 0.8,
           "minimum": 0,
@@ -630,7 +630,7 @@
             "main_top",
             "tiled"
           ],
-          "description": "The layouts `next_pane_layout` and `previous_pane_layout` step\nthrough, in order: built-in names (`columns`, `rows`, `main_left`,\n`main_top`, and `tiled`) or names from `[panes.layouts]`.",
+          "description": "The layouts Next and Previous Pane Layout step through, in order:\n`columns`, `rows`, `main_left`, `main_top`, `tiled`, or a name from\n`[panes.layouts]`.",
           "items": {
             "pattern": "^[a-z][a-z0-9_]{0,31}$",
             "type": "string"
@@ -651,7 +651,7 @@
             "minLength": 1,
             "type": "string"
           },
-          "description": "Named pane layouts, each a layout template: `columns(...)` places\nits children left to right and `rows(...)` top to bottom; `pane`\ntakes one pane, `*` shares the remaining panes, and `grid(*)` tiles\nthem; a child may end with a share such as `60%`. For example,\n`columns(pane 60%, rows(*))`. Names are lowercase letters, digits,\nand underscores, starting with a letter, and may not be a built-in\nlayout's name.",
+          "description": "Your own pane layouts, each a template such as `columns(pane 60%,\nrows(*))`: `columns` and `rows` place their children across or down,\n`pane` takes one pane, `*` the rest, and `grid(*)` tiles them.\n\nNames are lowercase letters, digits, and underscores, start with a\nletter, and cannot be a built-in layout's name.",
           "maxProperties": 64,
           "propertyNames": {
             "not": {
@@ -680,7 +680,7 @@
             }
           ],
           "default": "visible",
-          "description": "How a split tab's panes show their title bars. `visible` bars always\nshow and take space from the terminal. `hover` bars take no space:\nrest the pointer along the pane's edge where the bar would be, and it\nfades in over the terminal. `hidden` bars never show.",
+          "description": "How a split tab's panes show title bars: `visible` bars take space,\n`hover` bars fade in over the terminal when the pointer rests at their\nedge, and `hidden` bars never show.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Pane title bars",
@@ -689,7 +689,7 @@
         },
         "title_bar_fade_ms": {
           "default": 75,
-          "description": "How long, in milliseconds, a `hover` title bar takes to fade in or\nout, from 0 to 1000.",
+          "description": "How long a `hover` title bar takes to fade in or out, in milliseconds,\nfrom 0 to 1000.",
           "format": "uint16",
           "maximum": 1000,
           "minimum": 0,
@@ -708,7 +708,7 @@
         },
         "title_bar_hide_delay_ms": {
           "default": 400,
-          "description": "How long, in milliseconds, a `hover` title bar stays after the\npointer leaves it before it fades out, from 0 to 5000.",
+          "description": "How long a `hover` title bar stays after the pointer leaves, in\nmilliseconds, from 0 to 5000.",
           "format": "uint16",
           "maximum": 5000,
           "minimum": 0,
@@ -727,7 +727,7 @@
         },
         "title_bar_hover_delay_ms": {
           "default": 75,
-          "description": "How long, in milliseconds, the pointer rests along a pane's edge\nbefore a `hover` title bar fades in, from 0 to 2000.",
+          "description": "How long the pointer rests at a pane's edge before its `hover` title bar\nappears, in milliseconds, from 0 to 2000.",
           "format": "uint16",
           "maximum": 2000,
           "minimum": 0,
@@ -751,7 +751,7 @@
             }
           ],
           "default": "top",
-          "description": "Which edge of a pane its title bar, or the focus accent that stands\nin for a hidden bar, runs along: `top` or `bottom`.",
+          "description": "The pane edge the title bar and focus accent run along: `top` or\n`bottom`.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Title bar position",
@@ -814,7 +814,7 @@
             }
           ],
           "default": "auto",
-          "description": "How the window shows and hides. Auto fades fullscreen windows and\nfades and slides others from their side.",
+          "description": "How the window shows and hides. Auto fades fullscreen windows and slides\nothers in.",
           "x-huterm-apply": "later_events",
           "x-huterm-group": "Profile",
           "x-huterm-label": "Animation",
@@ -823,7 +823,7 @@
         },
         "animation_ms": {
           "default": 150,
-          "description": "Animation duration in milliseconds, from 0 to 1000.",
+          "description": "How long it animates, in milliseconds, from 0 to 1000.",
           "format": "uint16",
           "maximum": 1000,
           "minimum": 0,
@@ -837,7 +837,7 @@
         },
         "display": {
           "default": "active",
-          "description": "The display the window opens on: the active one, the one under the\npointer, the primary one, or `id:` and a platform display\nidentifier. Display availability is checked at runtime.",
+          "description": "The display the window opens on: the active one, the one under the\npointer, the primary one, or `id:` and a display identifier.",
           "pattern": "^(active|pointer|primary|id:.*\\S.*)$",
           "type": "string",
           "x-huterm-apply": "later_events",
@@ -858,7 +858,7 @@
         },
         "height": {
           "default": 0.5,
-          "description": "Fraction of the display work area, greater than zero and at most\none. Fullscreen uses the full display frame.",
+          "description": "The fraction of the display's work area it takes, above 0 and at\nmost 1.",
           "exclusiveMinimum": 0,
           "format": "double",
           "maximum": 1,
@@ -892,7 +892,7 @@
             }
           ],
           "default": "top",
-          "description": "The display edge the window sits against. Center centers it on both\naxes. A fullscreen window uses it only as the edge Slide animates\nfrom.",
+          "description": "The display edge the window sits against, or Center. Fullscreen uses it\nonly for Slide.",
           "x-huterm-apply": "later_events",
           "x-huterm-group": "Profile",
           "x-huterm-label": "Position",
@@ -911,7 +911,7 @@
         },
         "width": {
           "default": 1.0,
-          "description": "Fraction of the display work area, greater than zero and at most\none. Fullscreen uses the full display frame.",
+          "description": "The fraction of the display's work area it takes, above 0 and at\nmost 1.",
           "exclusiveMinimum": 0,
           "format": "double",
           "maximum": 1,
@@ -935,7 +935,7 @@
       "additionalProperties": false,
       "properties": {
         "family": {
-          "description": "Font family. Defaults to Menlo on macOS and monospace on Linux.",
+          "description": "The terminal font family. Defaults to Menlo on macOS and `monospace` on\nLinux.",
           "pattern": "\\S",
           "type": "string",
           "x-huterm-apply": "live",
@@ -959,7 +959,7 @@
         },
         "ui_family": {
           "default": "",
-          "description": "The font family of Huterm's own interface: tabs, pane title bars,\nSettings, the command palette, menus, dialogs, and notices. Empty\nuses the system interface font. The terminal grid, native menus, and\ntext set in a monospace family, such as process names, keep their\nfonts.",
+          "description": "The font of Huterm's tabs, title bars, menus, dialogs, and Settings.\nEmpty uses the system font.",
           "type": "string",
           "x-huterm-apply": "live",
           "x-huterm-group": "Font",
@@ -969,7 +969,7 @@
         },
         "ui_size": {
           "default": 13.0,
-          "description": "The size of interface text, in points, from 10 to 16. At 13 the\ninterface draws at its design sizes; other sizes scale its text, and\nthe controls and rows that hold text, in proportion. Terminal\nwindows' tab and title bars keep their heights.",
+          "description": "The interface text size in points, from 10 to 16. At 13 the interface\ndraws at its design size.",
           "format": "float",
           "maximum": 16,
           "minimum": 10,
@@ -8627,7 +8627,7 @@
             }
           ],
           "default": "allow",
-          "description": "Allow or deny system clipboard writes requested by terminal content.\nReload applies to existing terminals; explicit Copy and Paste commands\nare unaffected.",
+          "description": "Whether programs in the terminal may replace the system clipboard. Copy\nand Paste always work.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Bell and clipboard",
           "x-huterm-label": "Clipboard writes from programs",
@@ -8731,7 +8731,7 @@
             }
           ],
           "default": "menu",
-          "description": "What a right-click on the terminal does: open the context menu,\npaste, copy the selection or else paste, or nothing. While an\napplication takes the mouse, Shift+right-click applies it.",
+          "description": "What a right-click on the terminal does. While a program takes the\nmouse, Shift-right-click does it.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Mouse",
           "x-huterm-label": "Right-click",
@@ -8739,7 +8739,7 @@
           "x-huterm-section": "terminal"
         },
         "scrollback_bytes": {
-          "description": "Optional size limit on each terminal's screen and history: a byte count,\nor digits and a unit such as \"64MiB\" or \"50MB\" (B, KB, MB, GB in powers\nof 1000; KiB, MiB, GiB in powers of 1024; units ignore case, so b also\nmeans bytes), at most 16GiB. 0 keeps no history. Whichever of it and\n`scrollback_rows` is reached first applies. Ghostty frees history a page\nat a time and always allows the visible screen rounded up to whole pages\nplus one more, so a tiny value keeps up to about two pages. Reload\napplies it to open terminals.",
+          "description": "An optional size limit on each terminal's history, such as `64MiB` or\n`50MB`, up to `16GiB`; `0` keeps no history. Whichever of this and\n`scrollback_rows` is reached first applies.",
           "maximum": 17179869184,
           "minimum": 0,
           "pattern": "^[0-9]+( ?([bB]|[kKmMgG][iI]?[bB]))?$",
@@ -8756,7 +8756,7 @@
         },
         "scrollback_compression": {
           "default": true,
-          "description": "Compress each terminal's history once it has been idle for a quarter\nof a second. Text-heavy history shrinks to about a tenth of its memory\nand reads back exactly as before. The first width change after\ncompression takes two to three times longer, because it restores all\nhistory. Reload applies it to open terminals; turning it off leaves\nhistory already compressed until something reads it.",
+          "description": "Compress idle history to about a tenth of its memory. The first width\nchange afterwards takes longer.",
           "type": "boolean",
           "x-huterm-apply": "live",
           "x-huterm-group": "Memory",
@@ -8766,7 +8766,7 @@
         },
         "scrollback_rows": {
           "default": 10000,
-          "description": "Live history each terminal keeps above its screen, in screen rows: a\nline that wraps counts once for each row it fills. 0 keeps none,\nwhatever `scrollback_bytes` says. The oldest history is freed a page\nat a time, about 570 rows at 80 columns, so a terminal can hold up to\na page fewer, and a smaller nonzero limit keeps up to one page. It\ncounts rows; `scrollback_bytes` limits size. Reload applies it to open\nterminals; lowering it discards the oldest rows at once.",
+          "description": "Live history each terminal keeps above its screen, in rows, from 0 to\n100000; 0 keeps none.",
           "format": "uint32",
           "maximum": 100000,
           "minimum": 0,
@@ -8785,7 +8785,7 @@
             }
           ],
           "default": "xterm-256color",
-          "description": "Terminal identity for newly spawned shells.",
+          "description": "The `TERM` new shells see.",
           "x-huterm-advanced": true,
           "x-huterm-apply": "new_terminals",
           "x-huterm-group": "Compatibility",
@@ -8797,17 +8797,17 @@
       "type": "object"
     },
     "RefreshMode": {
-      "description": "Client-side terminal snapshot admission policy.",
+      "description": "How often terminals redraw.",
       "oneOf": [
         {
           "const": "display",
-          "description": "Admit one snapshot per delivered display frame, plus at most one extra\nsnapshot for pending viewport changes.",
+          "description": "Once per display frame.",
           "type": "string",
           "x-huterm-label": "Display frames"
         },
         {
           "const": "unlimited",
-          "description": "Admit another dirty snapshot as soon as its predecessor completes.",
+          "description": "As soon as the last frame finishes.",
           "type": "string",
           "x-huterm-label": "Unlimited"
         }
@@ -9068,7 +9068,7 @@
       ]
     },
     "TabLabel": {
-      "description": "Metadata used to resolve automatic tab labels. A custom tab name always\nwins; each mode falls back to the terminal title, then the launched\nprogram.",
+      "description": "What automatic tab labels show. A tab's own name always wins.",
       "oneOf": [
         {
           "const": "smart",
@@ -9103,7 +9103,7 @@
       ]
     },
     "TabNotch": {
-      "description": "Where a top tab bar goes on a notched display in non-native fullscreen:\nbelow the notch across the window, or beside the camera housing on one\nside, giving that height back to the terminal.",
+      "description": "Where a top tab bar goes on a notched display in non-native fullscreen:\nbelow the notch, or beside it on one side.",
       "oneOf": [
         {
           "const": "off",
@@ -9146,7 +9146,7 @@
         },
         {
           "const": "titlebar",
-          "description": "Tabs share the window's title-bar row. Where no title bar exists\n(fullscreen, Quake windows, or a window manager drawing the title\nbar) the tabs take a top bar instead.",
+          "description": "Tabs share the title bar. Without one, they take a top bar.",
           "type": "string",
           "x-huterm-label": "Title bar"
         }
@@ -9512,10 +9512,10 @@
     },
     "UpdateConfig": {
       "additionalProperties": false,
-      "description": "Optional overrides for the platform updater.\n\nLeaving either field unset preserves the updater's stored preference. On a\nfresh macOS profile, Sparkle asks about automatic checks on the second\nlaunch and uses a 24-hour interval.",
+      "description": "Overrides for the updater. Unset fields keep Sparkle's stored preferences.",
       "properties": {
         "automatic_checks": {
-          "description": "Enable or disable scheduled update checks without Sparkle's consent\nprompt. Omit to preserve Sparkle's stored choice; a fresh macOS\nprofile asks on its second launch.",
+          "description": "Turn scheduled update checks on or off. Unset keeps Sparkle's stored\nchoice.",
           "type": "boolean",
           "x-huterm-apply": "live",
           "x-huterm-group": "Updates",
@@ -9525,7 +9525,7 @@
           "x-huterm-section": "updates"
         },
         "check_interval_hours": {
-          "description": "Scheduled update-check interval in whole hours. Omit to preserve\nSparkle's stored interval; a fresh profile uses 24 hours.",
+          "description": "Hours between scheduled update checks, at least 1. Unset keeps Sparkle's\ninterval, 24 on a fresh profile.",
           "format": "uint32",
           "minimum": 1,
           "type": "integer",
@@ -9559,7 +9559,7 @@
         },
         "macos_native_menus": {
           "default": true,
-          "description": "Open the window, tab, pane, terminal, and text field menus as\nnative macOS menus. Off draws them in Huterm's own style, as Linux\nalways does.",
+          "description": "Open Huterm's menus as native macOS menus. Off draws them in Huterm's\nstyle.",
           "type": "boolean",
           "x-huterm-apply": "live",
           "x-huterm-group": "Window",
@@ -9570,7 +9570,7 @@
         },
         "menu_button": {
           "default": true,
-          "description": "Show the window menu button in the title bar, or in the tab bar\nwhen the window has no title bar. Every item stays reachable through\nshortcuts or the command palette.",
+          "description": "Show the window menu button in the title bar, or in the tab bar without\none.",
           "type": "boolean",
           "x-huterm-apply": "live",
           "x-huterm-group": "Window",
@@ -9615,7 +9615,7 @@
         },
         "shortcut_hints": {
           "default": false,
-          "description": "Show key hints on the scroll pill and on dialog and panel buttons.\nThe command palette and menus always show their shortcuts.",
+          "description": "Show key hints on the scroll pill and on dialog and panel buttons.",
           "type": "boolean",
           "x-huterm-apply": "live",
           "x-huterm-group": "Window",
@@ -9630,7 +9630,7 @@
             }
           ],
           "default": "full",
-          "description": "The centred `columns × rows` indicator while a window or pane\nresizes: `full` shows the size panel, falling back to the compact\nbadge in a small pane, `compact` always shows the badge, and `off`\nshows neither.",
+          "description": "The `columns × rows` indicator while a window or pane resizes: the\n`full` panel, the `compact` badge, or `off`.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Window",
           "x-huterm-label": "Size indicator",
@@ -9639,7 +9639,7 @@
         },
         "size_indicator_linger_ms": {
           "default": 100,
-          "description": "How long, in milliseconds, the size indicator stays after resizing\nstops, from 0 to 10000. While a window edge or a pane divider is\nstill being dragged it stays regardless; on Linux a window edge\ndrag counts from the last resize.",
+          "description": "How long the size indicator stays after resizing stops, in milliseconds,\nfrom 0 to 10000.",
           "format": "uint16",
           "maximum": 10000,
           "minimum": 0,

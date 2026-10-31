@@ -743,7 +743,7 @@ impl SettingsView {
                             .text_size(ui(11.5))
                             .text_color(swatch.muted)
                             .child(
-                                "Settings changes only the lines a setting owns; comments, order, and formatting stay as you wrote them.",
+                                "Settings changes only the lines it edits, so your comments and formatting stay.",
                             ),
                     ),
             )

@@ -46,8 +46,7 @@ impl KeybindingEntry {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct GeneralConfig {
-    /// Reload the configuration file automatically when it, or a theme file
-    /// it uses, changes on disk.
+    /// Reload config.toml when it, or a theme file it uses, changes on disk.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "general",
         "x-huterm-group" = "Configuration file",
@@ -152,22 +151,21 @@ pub enum RightClickAction {
     Ignore,
 }
 
-/// Client-side terminal snapshot admission policy.
+/// How often terminals redraw.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum RefreshMode {
-    /// Admit one snapshot per delivered display frame, plus at most one extra
-    /// snapshot for pending viewport changes.
+    /// Once per display frame.
     #[default]
     #[cfg_attr(
         feature = "schema",
         schemars(extend("x-huterm-label" = "Display frames"))
     )]
     Display,
-    /// Admit another dirty snapshot as soon as its predecessor completes.
+    /// As soon as the last frame finishes.
     #[cfg_attr(
         feature = "schema",
         schemars(extend("x-huterm-label" = "Unlimited"))
@@ -175,7 +173,7 @@ pub enum RefreshMode {
     Unlimited,
 }
 
-/// Working-directory policy for newly opened tabs.
+/// Where new tabs and panes start.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
 )]
@@ -708,9 +706,8 @@ pub struct WindowConfig {
         "x-huterm-apply" = "live",
     )))]
     pub padding_balance: bool,
-    /// Show the window menu button in the title bar, or in the tab bar
-    /// when the window has no title bar. Every item stays reachable through
-    /// shortcuts or the command palette.
+    /// Show the window menu button in the title bar, or in the tab bar without
+    /// one.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
@@ -720,7 +717,6 @@ pub struct WindowConfig {
     )))]
     pub menu_button: bool,
     /// Show key hints on the scroll pill and on dialog and panel buttons.
-    /// The command palette and menus always show their shortcuts.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
@@ -729,9 +725,8 @@ pub struct WindowConfig {
         "x-huterm-apply" = "live",
     )))]
     pub shortcut_hints: bool,
-    /// Open the window, tab, pane, terminal, and text field menus as
-    /// native macOS menus. Off draws them in Huterm's own style, as Linux
-    /// always does.
+    /// Open Huterm's menus as native macOS menus. Off draws them in Huterm's
+    /// style.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
@@ -741,10 +736,8 @@ pub struct WindowConfig {
         "x-huterm-platform" = "macos",
     )))]
     pub macos_native_menus: bool,
-    /// The centred `columns × rows` indicator while a window or pane
-    /// resizes: `full` shows the size panel, falling back to the compact
-    /// badge in a small pane, `compact` always shows the badge, and `off`
-    /// shows neither.
+    /// The `columns × rows` indicator while a window or pane resizes: the
+    /// `full` panel, the `compact` badge, or `off`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
@@ -753,10 +746,8 @@ pub struct WindowConfig {
         "x-huterm-apply" = "live",
     )))]
     pub size_indicator: SizeIndicator,
-    /// How long, in milliseconds, the size indicator stays after resizing
-    /// stops, from 0 to 10000. While a window edge or a pane divider is
-    /// still being dragged it stays regardless; on Linux a window edge
-    /// drag counts from the last resize.
+    /// How long the size indicator stays after resizing stops, in milliseconds,
+    /// from 0 to 10000.
     #[cfg_attr(feature = "schema", schemars(range(max = 10000), extend(
         "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
@@ -910,20 +901,15 @@ pub struct TabsConfig {
     pub directory: TabDirectory,
 }
 
-/// Optional overrides for the platform updater.
-///
-/// Leaving either field unset preserves the updater's stored preference. On a
-/// fresh macOS profile, Sparkle asks about automatic checks on the second
-/// launch and uses a 24-hour interval.
+/// Overrides for the updater. Unset fields keep Sparkle's stored preferences.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct UpdateConfig {
-    /// Enable or disable scheduled update checks without Sparkle's consent
-    /// prompt. Omit to preserve Sparkle's stored choice; a fresh macOS
-    /// profile asks on its second launch.
+    /// Turn scheduled update checks on or off. Unset keeps Sparkle's stored
+    /// choice.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "updates",
         "x-huterm-group" = "Updates",
@@ -933,8 +919,8 @@ pub struct UpdateConfig {
         "x-huterm-platform" = "macos",
     )))]
     pub automatic_checks: Option<bool>,
-    /// Scheduled update-check interval in whole hours. Omit to preserve
-    /// Sparkle's stored interval; a fresh profile uses 24 hours.
+    /// Hours between scheduled update checks, at least 1. Unset keeps Sparkle's
+    /// interval, 24 on a fresh profile.
     #[cfg_attr(feature = "schema", schemars(range(min = 1), extend(
         "x-huterm-section" = "updates",
         "x-huterm-group" = "Updates",
@@ -988,9 +974,7 @@ impl Default for TabsConfig {
     }
 }
 
-/// Metadata used to resolve automatic tab labels. A custom tab name always
-/// wins; each mode falls back to the terminal title, then the launched
-/// program.
+/// What automatic tab labels show. A tab's own name always wins.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
 )]
@@ -1075,8 +1059,7 @@ pub enum PaneZoomScope {
         schemars(extend("x-huterm-label" = "Each window"))
     )]
     View,
-    /// The tab owns the zoom: every window set to `shared` shows the same
-    /// zoomed pane, and windows set to `view` ignore it.
+    /// The tab owns the zoom, which every window set to `shared` shows.
     #[cfg_attr(
         feature = "schema",
         schemars(extend("x-huterm-label" = "Shared"))
@@ -1143,10 +1126,9 @@ pub const MAX_INACTIVE_DIM: f32 = 0.8;
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct PanesConfig {
-    /// How a split tab's panes show their title bars. `visible` bars always
-    /// show and take space from the terminal. `hover` bars take no space:
-    /// rest the pointer along the pane's edge where the bar would be, and it
-    /// fades in over the terminal. `hidden` bars never show.
+    /// How a split tab's panes show title bars: `visible` bars take space,
+    /// `hover` bars fade in over the terminal when the pointer rests at their
+    /// edge, and `hidden` bars never show.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1155,8 +1137,8 @@ pub struct PanesConfig {
         "x-huterm-apply" = "live",
     )))]
     pub title_bar: PaneTitleBarMode,
-    /// How long, in milliseconds, the pointer rests along a pane's edge
-    /// before a `hover` title bar fades in, from 0 to 2000.
+    /// How long the pointer rests at a pane's edge before its `hover` title bar
+    /// appears, in milliseconds, from 0 to 2000.
     #[cfg_attr(feature = "schema", schemars(range(max = 2000), extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1168,8 +1150,8 @@ pub struct PanesConfig {
         "x-huterm-visible-when" = {"setting": "panes.title_bar", "equals": "hover"},
     )))]
     pub title_bar_hover_delay_ms: u16,
-    /// How long, in milliseconds, a `hover` title bar takes to fade in or
-    /// out, from 0 to 1000.
+    /// How long a `hover` title bar takes to fade in or out, in milliseconds,
+    /// from 0 to 1000.
     #[cfg_attr(feature = "schema", schemars(range(max = 1000), extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1181,8 +1163,8 @@ pub struct PanesConfig {
         "x-huterm-visible-when" = {"setting": "panes.title_bar", "equals": "hover"},
     )))]
     pub title_bar_fade_ms: u16,
-    /// How long, in milliseconds, a `hover` title bar stays after the
-    /// pointer leaves it before it fades out, from 0 to 5000.
+    /// How long a `hover` title bar stays after the pointer leaves, in
+    /// milliseconds, from 0 to 5000.
     #[cfg_attr(feature = "schema", schemars(range(max = 5000), extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1194,8 +1176,8 @@ pub struct PanesConfig {
         "x-huterm-visible-when" = {"setting": "panes.title_bar", "equals": "hover"},
     )))]
     pub title_bar_hide_delay_ms: u16,
-    /// Which edge of a pane its title bar, or the focus accent that stands
-    /// in for a hidden bar, runs along: `top` or `bottom`.
+    /// The pane edge the title bar and focus accent run along: `top` or
+    /// `bottom`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1204,9 +1186,8 @@ pub struct PanesConfig {
         "x-huterm-apply" = "live",
     )))]
     pub title_bar_position: PaneTitleBarPosition,
-    /// How strongly a thin accent line marks the focused pane while its
-    /// title bar is not on screen, from 0 (off) to 1. It draws only under
-    /// `hover` and `hidden` bars, and only while more than one pane shows.
+    /// How strongly an accent line marks the focused pane under `hover` or
+    /// `hidden` title bars, from 0 (off) to 1.
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 1), extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1222,8 +1203,7 @@ pub struct PanesConfig {
         ],
     )))]
     pub focus_accent: f32,
-    /// How much the panes without focus dim, from 0 (off) to 0.8, while
-    /// more than one pane shows. Their title bars stay as they are.
+    /// How much the panes without focus dim, from 0 (off) to 0.8.
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 0.8), extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1235,11 +1215,9 @@ pub struct PanesConfig {
         "x-huterm-zero-label" = "Off",
     )))]
     pub inactive_dim: f32,
-    /// Hold these modifiers to move panes by dragging anywhere inside
-    /// them, as a title bar drag does, which helps when title bars are
-    /// hidden. Unset, the default, is off. Join two or more of `cmd`,
-    /// `ctrl`, `alt`, and `shift` with hyphens: `cmd-ctrl` suits macOS and
-    /// `ctrl-alt` Linux.
+    /// Hold these modifiers to drag a pane from anywhere inside it: two or more
+    /// of `cmd`, `ctrl`, `alt`, and `shift` joined with hyphens, or `off`.
+    /// Defaults to `cmd-ctrl` on macOS and `ctrl-alt` on Linux.
     #[cfg_attr(feature = "schema", schemars(with = "PaneDrag", extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1257,13 +1235,12 @@ pub struct PanesConfig {
         "x-huterm-apply" = "live",
     )))]
     pub zoom: PaneZoomScope,
-    /// Named pane layouts, each a layout template: `columns(...)` places
-    /// its children left to right and `rows(...)` top to bottom; `pane`
-    /// takes one pane, `*` shares the remaining panes, and `grid(*)` tiles
-    /// them; a child may end with a share such as `60%`. For example,
-    /// `columns(pane 60%, rows(*))`. Names are lowercase letters, digits,
-    /// and underscores, starting with a letter, and may not be a built-in
-    /// layout's name.
+    /// Your own pane layouts, each a template such as `columns(pane 60%,
+    /// rows(*))`: `columns` and `rows` place their children across or down,
+    /// `pane` takes one pane, `*` the rest, and `grid(*)` tiles them.
+    ///
+    /// Names are lowercase letters, digits, and underscores, start with a
+    /// letter, and cannot be a built-in layout's name.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Pane layouts",
@@ -1275,9 +1252,9 @@ pub struct PanesConfig {
         "additionalProperties" = crate::schema::layout_template(),
     )))]
     pub layouts: BTreeMap<String, String>,
-    /// The layouts `next_pane_layout` and `previous_pane_layout` step
-    /// through, in order: built-in names (`columns`, `rows`, `main_left`,
-    /// `main_top`, and `tiled`) or names from `[panes.layouts]`.
+    /// The layouts Next and Previous Pane Layout step through, in order:
+    /// `columns`, `rows`, `main_left`, `main_top`, `tiled`, or a name from
+    /// `[panes.layouts]`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Pane layouts",
@@ -1489,8 +1466,7 @@ pub enum PalettePlacement {
         schemars(extend("x-huterm-label" = "Top"))
     )]
     Top,
-    /// Centred on the window at the palette's full height, so filtering
-    /// results never moves the input line.
+    /// Centred at full height, so filtering never moves the input.
     #[cfg_attr(
         feature = "schema",
         schemars(extend("x-huterm-label" = "Center"))
@@ -1512,8 +1488,8 @@ pub struct PaletteConfig {
         "x-huterm-apply" = "live",
     )))]
     pub placement: PalettePlacement,
-    /// Keep the search text after the palette is cancelled, so reopening
-    /// within `retain_query_seconds` restores it selected.
+    /// Keep the search text when the palette is cancelled, so reopening it
+    /// within `retain_query_seconds` restores it.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "palette",
         "x-huterm-group" = "Palette",
@@ -1522,7 +1498,8 @@ pub struct PaletteConfig {
         "x-huterm-apply" = "next_palette_open",
     )))]
     pub retain_query: bool,
-    /// How long a cancelled palette's search text is retained, 0 to 3600.
+    /// How long a cancelled palette keeps its search text, in seconds, from 0
+    /// to 3600.
     #[cfg_attr(feature = "schema", schemars(range(max = 3600), extend(
         "x-huterm-section" = "palette",
         "x-huterm-group" = "Palette",
@@ -1592,9 +1569,7 @@ pub enum TabPosition {
         schemars(extend("x-huterm-label" = "Right"))
     )]
     Right,
-    /// Tabs share the window's title-bar row. Where no title bar exists
-    /// (fullscreen, Quake windows, or a window manager drawing the title
-    /// bar) the tabs take a top bar instead.
+    /// Tabs share the title bar. Without one, they take a top bar.
     #[cfg_attr(
         feature = "schema",
         schemars(extend("x-huterm-label" = "Title bar"))
@@ -1668,8 +1643,7 @@ pub enum TabCloseButton {
 }
 
 /// Where a top tab bar goes on a notched display in non-native fullscreen:
-/// below the notch across the window, or beside the camera housing on one
-/// side, giving that height back to the terminal.
+/// below the notch, or beside it on one side.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
 )]
@@ -2172,7 +2146,7 @@ pub struct RawTerminal {
         "deprecated" = true,
     )))]
     pub engine: Option<LegacyTerminalEngine>,
-    /// Terminal identity for newly spawned shells.
+    /// The `TERM` new shells see.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Compatibility",
@@ -2182,9 +2156,8 @@ pub struct RawTerminal {
         "x-huterm-advanced" = true,
     )))]
     pub term: TerminalIdentity,
-    /// Allow or deny system clipboard writes requested by terminal content.
-    /// Reload applies to existing terminals; explicit Copy and Paste commands
-    /// are unaffected.
+    /// Whether programs in the terminal may replace the system clipboard. Copy
+    /// and Paste always work.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Bell and clipboard",
@@ -2245,9 +2218,8 @@ pub struct RawTerminal {
         "x-huterm-platform" = "macos",
     )))]
     pub macos_option_as_alt: MacosOptionAsAlt,
-    /// What a right-click on the terminal does: open the context menu,
-    /// paste, copy the selection or else paste, or nothing. While an
-    /// application takes the mouse, Shift+right-click applies it.
+    /// What a right-click on the terminal does. While a program takes the
+    /// mouse, Shift-right-click does it.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Mouse",
@@ -2256,13 +2228,8 @@ pub struct RawTerminal {
         "x-huterm-apply" = "live",
     )))]
     pub right_click: RightClickAction,
-    /// Live history each terminal keeps above its screen, in screen rows: a
-    /// line that wraps counts once for each row it fills. 0 keeps none,
-    /// whatever `scrollback_bytes` says. The oldest history is freed a page
-    /// at a time, about 570 rows at 80 columns, so a terminal can hold up to
-    /// a page fewer, and a smaller nonzero limit keeps up to one page. It
-    /// counts rows; `scrollback_bytes` limits size. Reload applies it to open
-    /// terminals; lowering it discards the oldest rows at once.
+    /// Live history each terminal keeps above its screen, in rows, from 0 to
+    /// 100000; 0 keeps none.
     #[cfg_attr(feature = "schema", schemars(range(max = ScrollbackLimit::MAX.rows()), extend(
         "x-huterm-section" = "scrollback",
         "x-huterm-group" = "Limits",
@@ -2272,14 +2239,9 @@ pub struct RawTerminal {
         "x-huterm-unit" = "rows",
     )))]
     pub scrollback_rows: u32,
-    /// Optional size limit on each terminal's screen and history: a byte count,
-    /// or digits and a unit such as "64MiB" or "50MB" (B, KB, MB, GB in powers
-    /// of 1000; KiB, MiB, GiB in powers of 1024; units ignore case, so b also
-    /// means bytes), at most 16GiB. 0 keeps no history. Whichever of it and
-    /// `scrollback_rows` is reached first applies. Ghostty frees history a page
-    /// at a time and always allows the visible screen rounded up to whole pages
-    /// plus one more, so a tiny value keeps up to about two pages. Reload
-    /// applies it to open terminals.
+    /// An optional size limit on each terminal's history, such as `64MiB` or
+    /// `50MB`, up to `16GiB`; `0` keeps no history. Whichever of this and
+    /// `scrollback_rows` is reached first applies.
     #[cfg_attr(feature = "schema", schemars(with = "ScrollbackSize", extend(
         "x-huterm-section" = "scrollback",
         "x-huterm-group" = "Limits",
@@ -2289,12 +2251,8 @@ pub struct RawTerminal {
         "x-huterm-advanced" = true,
     )))]
     pub scrollback_bytes: Option<ScrollbackSize>,
-    /// Compress each terminal's history once it has been idle for a quarter
-    /// of a second. Text-heavy history shrinks to about a tenth of its memory
-    /// and reads back exactly as before. The first width change after
-    /// compression takes two to three times longer, because it restores all
-    /// history. Reload applies it to open terminals; turning it off leaves
-    /// history already compressed until something reads it.
+    /// Compress idle history to about a tenth of its memory. The first width
+    /// change afterwards takes longer.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "scrollback",
         "x-huterm-group" = "Memory",
@@ -2361,7 +2319,8 @@ pub enum LegacyTerminalEngine {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct RawFont {
-    /// Font family. Defaults to Menlo on macOS and monospace on Linux.
+    /// The terminal font family. Defaults to Menlo on macOS and `monospace` on
+    /// Linux.
     #[cfg_attr(feature = "schema", schemars(regex(pattern = r"\S"), transform = schema::without_default, extend(
         "x-huterm-section" = "appearance",
         "x-huterm-group" = "Font",
@@ -2379,11 +2338,8 @@ pub struct RawFont {
         "x-huterm-unit" = "pt",
     )))]
     pub size: f32,
-    /// The font family of Huterm's own interface: tabs, pane title bars,
-    /// Settings, the command palette, menus, dialogs, and notices. Empty
-    /// uses the system interface font. The terminal grid, native menus, and
-    /// text set in a monospace family, such as process names, keep their
-    /// fonts.
+    /// The font of Huterm's tabs, title bars, menus, dialogs, and Settings.
+    /// Empty uses the system font.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "appearance",
         "x-huterm-group" = "Font",
@@ -2392,10 +2348,8 @@ pub struct RawFont {
         "x-huterm-apply" = "live",
     )))]
     pub ui_family: String,
-    /// The size of interface text, in points, from 10 to 16. At 13 the
-    /// interface draws at its design sizes; other sizes scale its text, and
-    /// the controls and rows that hold text, in proportion. Terminal
-    /// windows' tab and title bars keep their heights.
+    /// The interface text size in points, from 10 to 16. At 13 the interface
+    /// draws at its design size.
     #[cfg_attr(feature = "schema", schemars(range(min = 10, max = 16), extend(
         "x-huterm-section" = "appearance",
         "x-huterm-group" = "Font",

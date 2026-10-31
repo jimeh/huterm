@@ -2199,10 +2199,8 @@ impl SettingsView {
                 .text_color(swatch.muted)
                 .child(
                     "A condition limits where a shortcut works, such as \
-                     \"Terminal && selection\". Shortcuts on one key with \
-                     different conditions coexist; the one matching closest \
-                     to focus wins. Switching off a default writes a \
-                     disabled = true entry for just that shortcut.",
+                     \"Terminal && selection\"; on a shared key, the one \
+                     matching closest to focus wins.",
                 )
                 .into_any_element(),
         );

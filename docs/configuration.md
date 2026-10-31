@@ -22,8 +22,16 @@ so comments, ordering, and formatting stay as you wrote them. A dot marks each
 setting the file sets, and its Reset button, a counterclockwise arrow, removes
 it and returns the setting to its default. A setting that does not apply at
 once says when it does, such as "Applies to new terminals". Search finds
-settings in every section, and settings marked Advanced appear after you turn
-on Show advanced settings in their section.
+settings in every section. Settings marked Advanced appear in every section
+once you turn on Show advanced settings at the foot of any section, or the
+switch in General; either writes `show_advanced`, and hiding them removes it.
+The sidebar's sections scroll when the window is too short to list them all,
+and moving between them with the keyboard keeps the selected one in view.
+
+```toml
+[settings]
+show_advanced = false # show the settings marked Advanced
+```
 
 Saving applies the change even when `watch_config` is off. When the file does
 not parse or has an invalid setting, Settings shows the error, keeps the
@@ -181,14 +189,15 @@ keeps its own timing.
 `title_bar = "hidden"` removes the bars and gives their space to the terminals;
 closing, zooming, moving, and renaming panes stay available as commands.
 
-Two optional indicators show which pane has focus while more than one pane is
-on screen; both are off at 0. `focus_accent` draws a thin accent line along the
-focused pane's edge where its title bar would be, at that opacity from 0 to 1.
-It draws only under hover or hidden bars, and under hover bars only until the
-focused pane's bar appears. `inactive_dim` dims every other pane's terminal by
-laying the theme's background color over it, from 0 to 0.8; their title bars
-stay as they are, and clicks, selections, scrolling, links, and drops reach a
-dimmed pane as usual. All seven settings apply on reload:
+Two indicators show which pane has focus while more than one pane is on
+screen; each is off at 0. `focus_accent` draws a thin accent line along the
+focused pane's edge where its title bar would be, at that opacity from 0 to 1,
+and is off by default. It draws only under hover or hidden bars, and under
+hover bars only until the focused pane's bar appears. `inactive_dim` dims every
+other pane's terminal by laying the theme's background color over it, from 0
+to 0.8, and defaults to 0.2; their title bars stay as they are, and clicks,
+selections, scrolling, links, and drops reach a dimmed pane as usual. All
+seven settings apply on reload:
 
 ```toml
 [panes]
@@ -198,21 +207,21 @@ title_bar_hover_delay_ms = 75 # 0 to 2000
 title_bar_fade_ms = 75 # 0 to 1000
 title_bar_hide_delay_ms = 400 # 0 to 5000
 focus_accent = 0.0 # 0 (off) to 1
-inactive_dim = 0.0 # 0 (off) to 0.8
+inactive_dim = 0.2 # 0 (off) to 0.8
 ```
 
 ### Modifier pane drags
 
 `drag_modifier` lets you drag a pane by pressing anywhere in it while you hold
 a modifier combination, which helps when title bars are hidden or out of
-reach. It is off unless you set it. Name two or more of `cmd` (or `super`, its
-Linux spelling), `ctrl`, `alt`, and `shift`, joined with hyphens. `cmd-ctrl`
-suits macOS. On Linux `ctrl-alt` is a good choice, since many desktops move
-windows with a Super combination:
+reach. It defaults to `cmd-ctrl` on macOS and `ctrl-alt` on Linux, where many
+desktops move windows with a Super combination; `"off"` turns it off. Name two
+or more of `cmd` (or `super`, its Linux spelling), `ctrl`, `alt`, and `shift`,
+joined with hyphens:
 
 ```toml
 [panes]
-drag_modifier = "cmd-ctrl" # off when unset; Linux: "ctrl-alt"
+drag_modifier = "cmd-ctrl" # Linux default: "ctrl-alt"; "off" turns it off
 ```
 
 While the combination is held over a pane of a split tab in the active window,
@@ -239,9 +248,11 @@ Option and Alt clicks stay free for pointer conventions. macOS also refuses
 `ctrl-alt`, which VoiceOver uses, and `ctrl-shift`, whose click opens the menu
 inside programs that take the mouse. The combination may not be
 `terminal.link_modifiers`, or that chord plus `shift`. A file that breaks
-these rules does not load, and a reload keeps the running settings. Settings
-offers only the combinations that pass, and writes `cmd` on macOS and `super`
-on Linux.
+these rules does not load, and a reload keeps the running settings. When
+`drag_modifier` is unset and a custom link chord is the default combination,
+such as `link_modifiers = "ctrl-alt"` on Linux, modifier drags stay off
+instead. Settings offers only the combinations that pass, writes `cmd` on
+macOS and `super` on Linux, and writes `"off"` for Off.
 
 ### Pane layouts
 
@@ -340,7 +351,7 @@ apply on reload:
 ```toml
 [window]
 size_indicator = "full" # full, compact, or off
-size_indicator_linger_ms = 2000 # 0 to 10000
+size_indicator_linger_ms = 100 # 0 to 10000
 ```
 
 ## Tab bar
@@ -609,7 +620,10 @@ The `default` profile exists without configuration. Add named tables, such as
 `[quake.profiles.logs]`, for independent windows. The Quake windows section of
 Settings picks a profile from a dropdown, adds, renames, and deletes named
 profiles, and records global shortcuts, each with a switch that sets
-`disabled`. It edits profiles whose names are bare
+`disabled`. The Keybindings section lists the same global shortcuts under Show
+Quake, Hide Quake, and Toggle Quake, tagged Global, and edits the same
+entries; its Add global shortcut writes one for that command on the `default`
+profile. It edits profiles whose names are bare
 TOML keys (letters, digits, `-`, and `_`); others, such as
 `[quake.profiles."my logs"]`, are listed but stay in the file, where you edit,
 rename, or delete them. `show_quake`, `hide_quake`, and `toggle_quake` accept
@@ -696,6 +710,11 @@ menus keep the system font, and text set in a monospace family, such as
 process names, keeps that family. A family that is not installed falls back
 to the system interface font, and Settings says so under the field, as it does
 for a terminal `family` that falls back to the platform's monospace font.
+Settings lists the installed fonts again when it opens, comes forward, or
+follows a reload, without holding up the window. On macOS a family installed
+while Huterm runs then shows in the list, and when the file names it, Huterm
+reloads so it applies and the note goes. On Linux the font list is read once
+at startup, so a newly installed font needs a restart.
 
 At the default `ui_size` of 13, the interface draws at its design sizes.
 Other sizes scale its text, and the controls, rows, and menus that hold text,

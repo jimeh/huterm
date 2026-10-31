@@ -614,7 +614,8 @@ Moving to a section shows it, and moving to a theme card chooses that theme.
 sidebar moves into the shown section's first control, and Shift-Tab from that
 control returns to the sidebar; the footer's links come after the section.
 Moving focus with the keyboard scrolls the focused control into view; a click
-does not. Enter and Space reach a switch, segmented control, chip, theme card,
+does not. Selecting a section, by key, command, or click, scrolls the sidebar
+to show it. Enter and Space reach a switch, segmented control, chip, theme card,
 section, button, or key recorder only through these bindings, so removing a
 binding removes its key there.
 

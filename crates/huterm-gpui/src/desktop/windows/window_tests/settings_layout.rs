@@ -1214,10 +1214,10 @@ fn a_search_matches_a_description_as_it_reads(cx: &mut TestAppContext) {
     with_window(&mut harness, |view, window, cx| {
         view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
     });
-    // Pane title bars' description reads "`visible` bars always show",
-    // which shows as "visible bars always show".
+    // Pane title bars' description reads "`visible` bars take space",
+    // which shows as "visible bars take space".
     let mut typing = visual(&harness);
-    typing.simulate_input("visible bars always");
+    typing.simulate_input("visible bars take");
     typing.run_until_parked();
     assert!(
         visual(&harness)
