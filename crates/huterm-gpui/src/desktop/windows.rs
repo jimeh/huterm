@@ -2617,7 +2617,6 @@ fn open_window_with_profile(
                 window_button_bounds: Rc::default(),
                 title_row_press: Rc::new(Cell::new(false)),
                 title_row_moves: Rc::new(Cell::new(0)),
-                diag_pointer: Rc::new(RefCell::new(Vec::new())),
                 about: None,
                 about_buttons: AboutButtons::new(cx),
                 about_initial: AboutButton::default(),
@@ -3845,8 +3844,6 @@ struct WorkspaceView {
     title_row_press: Rc<Cell<bool>>,
     /// How many window moves the title row has started, for smokes.
     title_row_moves: Rc<Cell<u32>>,
-    /// TEMP DIAG: recent pointer presses and releases, for smokes.
-    diag_pointer: Rc<RefCell<Vec<String>>>,
     /// The About panel's details while it is showing.
     about: Option<AboutDetails>,
     about_buttons: AboutButtons,
@@ -11887,13 +11884,6 @@ impl Render for WorkspaceView {
                               cx| {
                             if phase == DispatchPhase::Capture {
                                 let _ = press_view.update(cx, |view, cx| {
-                                    view.diag(format!(
-                                        "down@{:.0},{:.0}x{}f{}",
-                                        f32::from(event.position.x),
-                                        f32::from(event.position.y),
-                                        event.click_count,
-                                        event.first_mouse
-                                    ));
                                     view.pointer_reveal.outside = false;
                                     // Only a press the title row itself
                                     // accepts (in its bubble handler) may
@@ -11948,11 +11938,6 @@ impl Render for WorkspaceView {
                             if phase == DispatchPhase::Capture {
                                 let _ =
                                     release_view.update(cx, |view, cx| {
-                                        view.diag(format!(
-                                            "up@{:.0},{:.0}",
-                                            f32::from(event.position.x),
-                                            f32::from(event.position.y)
-                                        ));
                                         view.defer_pointer_refresh(window, cx);
                                         // The release of a Right press the
                                         // press listener stopped.
@@ -14033,7 +14018,6 @@ impl WorkspaceView {
             .rounded_md()
             .when(open, |button| button.bg(colors.control_hover))
             .on_click(Self::button_action(cx, |view, window, cx| {
-                view.diag("menu-click".to_owned());
                 view.toggle_menu(window, cx);
                 cx.stop_propagation();
             }))
@@ -14071,14 +14055,6 @@ impl WorkspaceView {
     /// the press itself: `_NET_WM_MOVERESIZE` and `AppKit`'s window drag
     /// take over the pointer, which would swallow the release and keep a
     /// second press from counting as the double-click.
-    /// TEMP DIAG: records a pointer event for smoke state.
-    fn diag(&self, entry: String) {
-        let mut log = self.diag_pointer.borrow_mut();
-        log.push(entry);
-        let excess = log.len().saturating_sub(12);
-        log.drain(..excess);
-    }
-
     fn title_row_gestures<E: InteractiveElement>(&self, row: E) -> E {
         let pressed = Rc::clone(&self.title_row_press);
         let dragged = Rc::clone(&self.title_row_press);
@@ -14588,7 +14564,7 @@ impl WorkspaceView {
         #[cfg(not(target_os = "macos"))]
         let traffic_lights = "none";
         format!(
-            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {licenses} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}window_radii={},{} {prefix}radius_source={} {prefix}title_row_moves={} {prefix}diag_pointer={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {licenses} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}window_radii={},{} {prefix}radius_source={} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
             self.close.confirmation.is_some(),
             self.drawn_dialog_groups.as_deref().unwrap_or("none"),
             self.notice_focus.is_focused(window),
@@ -14597,7 +14573,6 @@ impl WorkspaceView {
             f32::from(radii.bottom),
             self.native_radii.source.name(),
             self.title_row_moves.get(),
-            self.diag_pointer.borrow().join(";"),
             window.scale_factor(),
             self.frame_state.client_decorations(),
             f32::from(self.window_frame().inset.top),
