@@ -489,6 +489,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   `huterm-gpui` suite took 127.96 seconds; both tests passed eight times in
   a row locally on the same head, about 0.9 seconds a run. The PR adds
   pane input sync and changes neither menus nor selection.
+- **Third occurrence:** 2026-10-31 on PR #356 (run 41168895933, job
+  124442367197, head `7f3ee93b`). The `huterm-gpui` suite took 134.12
+  seconds; local `mise run verify` passed on the same code. The PR changes
+  only Quake display placement.
 - **Triage:** compare the suite's wall time with a passing run. If it
   recurs on a normal-speed run, log the terminal's selection and snapshot
   generation around the dispatch; otherwise record the run here and rerun.

@@ -102,7 +102,8 @@ fn expire(displays: &[Display], selector: &str, pin: &mut Option<Pin>) {
 /// What a window in regular presentation saw of the displays. Refits skip
 /// regular presentation, so this still drops a pin on a display change, and
 /// it tells a move the user made from one the system made when a display
-/// went away, which must not pin.
+/// went away, which must not pin. A window in regular presentation without
+/// one keeps no pin.
 pub(crate) struct Excursion {
     arrangement: Arrangement,
     displays_changed: bool,

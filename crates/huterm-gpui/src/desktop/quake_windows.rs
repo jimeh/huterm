@@ -547,7 +547,6 @@ fn invoke_now(
                         .map_err(|error| error.to_string())?;
                 }
                 let active = state.native.active().map_err(|error| error.to_string())?;
-                let hidden = !state.native.visible().map_err(|error| error.to_string())?;
                 let show = command == ids::SHOW_QUAKE
                     || (command == ids::TOGGLE_QUAKE
                         && (!state.transition.visible()
@@ -564,7 +563,7 @@ fn invoke_now(
                 if show {
                     state.profile = config.clone();
                     if !state.regular {
-                        if hidden {
+                        if !state.native.visible().map_err(|error| error.to_string())? {
                             state.place(&native, &config.display);
                         }
                         state.target = state.profile.geometry(&state.display);
@@ -758,8 +757,10 @@ pub(super) fn toggle(
         state.display = display;
         state.target = state.profile.geometry(&state.display);
     } else {
-        // Without the displays, the return cannot tell a user's move from
-        // the system's and pins nothing.
+        // A pin survives regular presentation only while an excursion sees
+        // every display change. Without the displays, the return cannot
+        // tell a user's move from the system's, pins nothing, and drops
+        // any earlier pin.
         state.excursion = cx
             .global::<Desktop>()
             .quake
@@ -767,6 +768,9 @@ pub(super) fn toggle(
             .as_ref()
             .and_then(|native| native.displays().ok())
             .map(|displays| placement::Excursion::start(&displays));
+        if state.excursion.is_none() {
+            state.pin = None;
+        }
     }
     state.regular = !state.regular;
     state.request(true, false);
@@ -815,6 +819,7 @@ fn recover(
                 state.recovering = true;
                 state.regular = true;
                 state.excursion = None;
+                state.pin = None;
                 state.deadline = now + Duration::from_secs(3);
                 state.activation.request();
                 let effect = NativeEffect::for_state(
@@ -923,13 +928,17 @@ fn step_transition(
     if state.regular
         && flags & crate::quake::observation::DISPLAY != 0
         && let Some(excursion) = state.excursion.as_mut()
-        && let Ok(displays) = platform.displays()
     {
-        excursion.observe(
-            &displays,
-            &state.model.profile.display,
-            &mut state.pin,
-        );
+        if let Ok(displays) = platform.displays() {
+            excursion.observe(
+                &displays,
+                &state.model.profile.display,
+                &mut state.pin,
+            );
+        } else {
+            state.excursion = None;
+            state.pin = None;
+        }
     }
     if (state.work.display_due(now)
         || flags & crate::quake::observation::DISPLAY != 0

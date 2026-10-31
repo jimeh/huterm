@@ -695,10 +695,11 @@ primary, and logs a warning.
 Moving the window to another display in regular presentation keeps it there
 across hides until a display is connected or disconnected, the primary display
 changes, the profile's `display` changes, or the window closes. A change in
-resolution keeps it. A move made after a display was connected or disconnected
-during the same regular presentation does not count, since the system may have
-moved the window. Explicit IDs use CoreGraphics display UUIDs on macOS and
-RandR monitor names on X11.
+resolution keeps it. A move made after a display was connected or disconnected,
+or the primary display changed, during the same regular presentation does not
+count, since the system may have moved the window. A window hidden in regular
+presentation shows again where it was. Explicit IDs use CoreGraphics display
+UUIDs on macOS and RandR monitor names on X11.
 
 Global bindings use a single keystroke, no `when`, and only the three quake
 commands. They must not conflict with the first keystroke of a local binding.
