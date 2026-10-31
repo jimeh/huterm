@@ -570,6 +570,9 @@ impl SettingsView {
         typed: Option<String>,
         cx: &mut Context<'_, Self>,
     ) {
+        // Its row stays in place as rows around it come and go, and as an
+        // error shows under it.
+        self.hold_setting(&setting.path);
         // A size's forms are checked by the validator.
         if let Some(value) = &value
             && special(&setting.path) != Some(Special::Size)
@@ -597,6 +600,7 @@ impl SettingsView {
         if self.locked() {
             return;
         }
+        self.hold_setting(key);
         if let Some(platform) = setting.platform
             && platform != current()
         {
@@ -1794,6 +1798,7 @@ impl SettingsView {
         let Some(field) = self.fields.get(path) else {
             return;
         };
+        self.hold_control(path);
         let text = field.read(cx).text().to_owned();
         // A field still showing what it last synced has nothing to save,
         // even when the file spells the value differently, such as the

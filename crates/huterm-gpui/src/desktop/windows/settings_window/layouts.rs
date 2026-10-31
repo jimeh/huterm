@@ -984,31 +984,35 @@ impl SettingsView {
             })
             .collect();
         for name in &names {
-            rows.push(self.render_user_layout(
-                name,
-                reason.as_ref(),
-                swatch,
-                window,
-                cx,
-            ));
+            rows.push(self.anchored(format!("layout:{name}"), |view| {
+                view.render_user_layout(
+                    name,
+                    reason.as_ref(),
+                    swatch,
+                    window,
+                    cx,
+                )
+            }));
         }
-        let new = self
-            .action_button(
-                "settings-lnew".to_owned(),
-                "New layout",
-                "lnew".to_owned(),
-                swatch,
-                cx,
-            )
-            .when_some(reason, |button, reason| button.disabled(Some(reason)));
-        rows.push(
+        rows.push(self.anchored("lnew".to_owned(), |view| {
+            let new = view
+                .action_button(
+                    "settings-lnew".to_owned(),
+                    "New layout",
+                    "lnew".to_owned(),
+                    swatch,
+                    cx,
+                )
+                .when_some(reason, |button, reason| {
+                    button.disabled(Some(reason))
+                });
             div()
                 .flex()
                 .px(px(14.0))
                 .py(px(10.0))
                 .child(new)
-                .into_any_element(),
-        );
+                .into_any_element()
+        }));
         rows
     }
 
@@ -1162,53 +1166,58 @@ impl SettingsView {
                 .into_any_element(),
         ];
         for name in names {
-            let member = cycle.iter().position(|member| *member == name);
-            let title = Self::layout_title(&name);
-            let key = format!("lcyc:{name}");
-            let handle = self.action_stop(key.clone(), cx);
-            let focus = handle.clone();
-            let include = Switch::new(
-                id(format!("settings-lcyc-{name}")),
-                format!("Include {title} in the cycle"),
-                member.is_some(),
-                &handle,
-                swatch,
-            )
-            .key_context("SettingsGroup")
-            .when_some(reason.clone(), |switch, reason| {
-                switch.disabled(Some(reason))
-            })
-            .on_toggle(Self::listen(
-                cx,
-                move |view, _: bool, window, cx| {
-                    focus.focus(window, cx);
-                    view.act(&key, window, cx);
-                },
-            ));
-            let refusal = |end: bool, at_end: &str| -> Option<SharedString> {
-                reason.clone().or_else(|| match member {
-                    None => Some("Turn it on to place it in the cycle".into()),
-                    Some(_) if end => Some(at_end.to_owned().into()),
-                    Some(_) => None,
+            // A switch that turns a layout on holds its row; a move does
+            // not, since the row itself moves.
+            rows.push(self.anchored(format!("cycle:{name}"), |view| {
+                let member = cycle.iter().position(|member| *member == name);
+                let title = Self::layout_title(&name);
+                let key = format!("lcyc:{name}");
+                let handle = view.action_stop(key.clone(), cx);
+                let focus = handle.clone();
+                let include = Switch::new(
+                    id(format!("settings-lcyc-{name}")),
+                    format!("Include {title} in the cycle"),
+                    member.is_some(),
+                    &handle,
+                    swatch,
+                )
+                .key_context("SettingsGroup")
+                .when_some(reason.clone(), |switch, reason| {
+                    switch.disabled(Some(reason))
                 })
-            };
-            let first = member == Some(0);
-            let last = member.is_some_and(|at| at + 1 == cycle.len());
-            let up = self.move_button(
-                &name,
-                false,
-                refusal(first, "First in the cycle"),
-                swatch,
-                cx,
-            );
-            let down = self.move_button(
-                &name,
-                true,
-                refusal(last, "Last in the cycle"),
-                swatch,
-                cx,
-            );
-            rows.push(
+                .on_toggle(Self::listen(
+                    cx,
+                    move |view, _: bool, window, cx| {
+                        focus.focus(window, cx);
+                        view.act(&key, window, cx);
+                    },
+                ));
+                let refusal =
+                    |end: bool, at_end: &str| -> Option<SharedString> {
+                        reason.clone().or_else(|| match member {
+                            None => Some(
+                                "Turn it on to place it in the cycle".into(),
+                            ),
+                            Some(_) if end => Some(at_end.to_owned().into()),
+                            Some(_) => None,
+                        })
+                    };
+                let first = member == Some(0);
+                let last = member.is_some_and(|at| at + 1 == cycle.len());
+                let up = view.move_button(
+                    &name,
+                    false,
+                    refusal(first, "First in the cycle"),
+                    swatch,
+                    cx,
+                );
+                let down = view.move_button(
+                    &name,
+                    true,
+                    refusal(last, "Last in the cycle"),
+                    swatch,
+                    cx,
+                );
                 div()
                     .key_context("SettingsControl")
                     .child(
@@ -1221,8 +1230,8 @@ impl SettingsView {
                         .action(up)
                         .action(down),
                     )
-                    .into_any_element(),
-            );
+                    .into_any_element()
+            }));
         }
         rows
     }

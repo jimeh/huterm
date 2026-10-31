@@ -494,8 +494,23 @@ impl SettingsView {
     /// A setting's row: a `Field` with the setting's name, a dot when the
     /// file sets it, its descriptions and error, Reset while it is changed,
     /// and its control, then any conflict with the file. The rows that
-    /// lead to another section's editor are `Item`s with that button.
+    /// lead to another section's editor are `Item`s with that button. A
+    /// change to the setting holds the row in place.
     pub(super) fn render_row(
+        &mut self,
+        setting: &'static Setting,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let path = setting.path.as_str();
+        self.anchored(format!("row:{path}"), |view| {
+            view.note_control(path);
+            view.render_setting_row(setting, swatch, window, cx)
+        })
+    }
+
+    fn render_setting_row(
         &mut self,
         setting: &'static Setting,
         swatch: Swatch,
@@ -774,6 +789,8 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let searching = !query.is_empty();
+        // The rows below note their controls afresh.
+        self.anchor_rows.clear();
         let mut body = div()
             .flex()
             .flex_col()
@@ -846,6 +863,7 @@ impl SettingsView {
         let view = cx.entity();
         let area = ScrollArea::new("settings-main", &self.scroll)
             .fill()
+            .hold_rows(&self.anchor)
             .child(body)
             .render(
                 &mut self.scrollbar,
@@ -984,8 +1002,9 @@ impl SettingsView {
             .model
             .setting(super::SHOW_ADVANCED)
             .and_then(|setting| self.read_only_reason(setting));
-        Some(
-            self.action_button(
+        // The rows it shows come above it, so it stays under the pointer.
+        Some(self.anchored("advanced".to_owned(), |view| {
+            view.action_button(
                 "settings-advanced".to_owned(),
                 if on {
                     "Hide advanced settings in every section"
@@ -1000,8 +1019,8 @@ impl SettingsView {
             .when_some(read_only, |button, reason| {
                 button.disabled(Some(reason))
             })
-            .into_any_element(),
-        )
+            .into_any_element()
+        }))
     }
 }
 

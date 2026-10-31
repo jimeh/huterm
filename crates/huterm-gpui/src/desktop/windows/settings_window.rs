@@ -55,7 +55,9 @@ use huterm_ui::components::number_field::{
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
 use huterm_ui::components::prose;
-use huterm_ui::components::scroll_area::{ContentBounds, ScrollArea};
+use huterm_ui::components::scroll_area::{
+    ContentBounds, RowAnchor, ScrollArea,
+};
 use huterm_ui::components::toggle_group::roving_target;
 use huterm_ui::list_scrollbar::ListScrollbar;
 use huterm_ui::listbox::{
@@ -390,6 +392,17 @@ pub(super) struct SettingsView {
     scroll: ScrollHandle,
     /// The pane's overlay scrollbar.
     scrollbar: ListScrollbar,
+    /// Keeps the pane's row the user changed in place while rows around it
+    /// come and go.
+    anchor: RowAnchor,
+    /// The anchored row each control drew in, by action key, setting path,
+    /// or keybinding field key, as the last frame drew them.
+    anchor_rows: HashMap<String, gpui::ElementId>,
+    /// The innermost anchored row drawing now.
+    anchoring: Option<gpui::ElementId>,
+
+    /// The action key of the control the open dialog returns focus to.
+    dialog_from: Option<String>,
     /// The sidebar's section list, which scrolls between the search field
     /// and the footer, and its overlay scrollbar.
     nav_scroll: ScrollHandle,
@@ -424,6 +437,7 @@ impl SettingsView {
         let _ = search.read(cx).focus_handle(cx).tab_stop(true);
         cx.subscribe(&search, |view, _, _: &Changed, cx| {
             view.scroll.set_offset(point(px(0.0), px(0.0)));
+            view.anchor.reset();
             cx.notify();
         })
         .detach();
@@ -524,6 +538,10 @@ impl SettingsView {
             list_wake: Wake::default(),
             scrollbar: ListScrollbar::new(scroll.clone()),
             scroll,
+            anchor: RowAnchor::new(),
+            anchor_rows: HashMap::new(),
+            anchoring: None,
+            dialog_from: None,
             nav_scrollbar: ListScrollbar::new(nav_scroll.clone()),
             nav_scroll,
             reveal_section: None,
@@ -648,6 +666,7 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> Entity<Input> {
         let path = setting.path.as_str();
+        self.note_control(path);
         if let Some(field) = self.fields.get(path) {
             return field.clone();
         }
@@ -827,10 +846,57 @@ impl SettingsView {
         path: &'static str,
         cx: &mut Context<'_, Self>,
     ) -> FocusHandle {
+        self.note_control(path);
         self.stops
             .entry(path)
             .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone()
+    }
+
+    /// Draws the row `build` returns as one the pane holds in place when
+    /// the user changes it, under `key`: the controls it draws hold it.
+    /// Inside another such row, the innermost row holds them, so a control
+    /// below rows that come and go in the same outer row stays put.
+    fn anchored(
+        &mut self,
+        key: String,
+        build: impl FnOnce(&mut Self) -> gpui::AnyElement,
+    ) -> gpui::AnyElement {
+        let key = gpui::ElementId::Name(key.into());
+        let outer = self.anchoring.replace(key.clone());
+        let row = build(self);
+        self.anchoring = outer;
+        self.anchor.row(key, row).into_any_element()
+    }
+
+    /// Notes that the control `key` names draws in the anchored row drawing
+    /// now, if any.
+    fn note_control(&mut self, key: &str) {
+        if let Some(row) = &self.anchoring {
+            self.anchor_rows.insert(key.to_owned(), row.clone());
+        }
+    }
+
+    /// Holds the row the control `key` names drew in, so the change the
+    /// user makes through it leaves the row in place. A control outside
+    /// every anchored row releases the anchor, since rows that move for
+    /// its change must not move the pane to keep an older row put.
+    fn hold_control(&self, key: &str) {
+        if !self.hold_setting(key) {
+            self.anchor.release();
+        }
+    }
+
+    /// Holds the row of the setting at `path` as it changes, when a row
+    /// drew it, and returns whether one did. A setting no row draws, such
+    /// as the one the advanced button writes, leaves the hold of the
+    /// control that changed it.
+    fn hold_setting(&self, path: &str) -> bool {
+        let Some(row) = self.anchor_rows.get(path) else {
+            return false;
+        };
+        self.anchor.hold(row.clone());
+        true
     }
 
     fn section_stop(
@@ -899,6 +965,7 @@ impl SettingsView {
     ) -> FocusHandle {
         // Controls ask for their stop while they draw, which marks them
         // drawn for focus recovery.
+        self.note_control(&key);
         self.drawn.insert(key.clone());
         self.actions
             .entry(key)
@@ -922,6 +989,17 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) {
         let (kind, argument) = key.split_once(':').unwrap_or((key, ""));
+        // A dialog's controls act for the one that opened it. A reorder
+        // moves its row, which should not drag the pane after it.
+        let from = match self.dialog.prompt() {
+            Some(_) => self.dialog_from.clone(),
+            None => Some(key.to_owned()),
+        }
+        .filter(|_| !matches!(kind, "lup" | "ldown"));
+        // Before the action, so a write it queues counts for the hold.
+        if let Some(from) = from {
+            self.hold_control(&from);
+        }
         if self.act_keys(kind, argument, window, cx)
             || self.act_quake(kind, argument, window, cx)
             || self.act_layouts(kind, argument, window, cx)
@@ -1129,6 +1207,7 @@ impl SettingsView {
         self.reveal_section = Some(section);
         self.search.update(cx, |search, cx| search.set_text("", cx));
         self.scroll.set_offset(point(px(0.0), px(0.0)));
+        self.anchor.reset();
         cx.notify();
     }
 
@@ -1350,6 +1429,7 @@ impl SettingsView {
         // The pane has not scrolled since the ring painted.
         let target = ContentBounds::record(&self.scroll, painted);
         if ScrollArea::reveal(&self.scroll, target) {
+            self.anchor.release();
             self.scrollbar.show();
             cx.notify();
         }
@@ -3288,8 +3368,14 @@ impl SettingsView {
         -self.scroll.offset().y
     }
 
+    /// How far the pane can scroll down.
+    pub(super) fn pane_max_scroll(&self) -> gpui::Pixels {
+        self.scroll.max_offset().y
+    }
+
     /// Scrolls the pane `y` down from its top, as the wheel does.
     pub(super) fn scroll_pane_to(&self, y: gpui::Pixels) {
+        self.anchor.release();
         self.scroll.set_offset(point(px(0.0), -y));
     }
 
@@ -3321,6 +3407,11 @@ impl SettingsView {
     /// The pane's visible bounds in the window.
     pub(super) fn pane_viewport(&self) -> gpui::Bounds<gpui::Pixels> {
         self.scroll.bounds()
+    }
+
+    /// The anchor that holds the pane's changed row in place.
+    pub(super) fn pane_anchor(&self) -> RowAnchor {
+        self.anchor.clone()
     }
 
     /// Every select trigger the last frame drew, by menu key, with its

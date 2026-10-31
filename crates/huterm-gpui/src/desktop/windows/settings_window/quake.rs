@@ -1000,7 +1000,9 @@ impl SettingsView {
         cx: &mut Context<'_, Self>,
     ) -> Vec<AnyElement> {
         vec![
-            self.render_profile_bar(swatch, window, cx),
+            self.anchored("quake-profile-bar".to_owned(), |view| {
+                view.render_profile_bar(swatch, window, cx)
+            }),
             self.render_profile(swatch, window, cx),
             self.render_globals(swatch, cx),
         ]
@@ -1088,7 +1090,11 @@ impl SettingsView {
             );
         }
         if profile != DEFAULT && bare(&profile) {
-            rows.push(self.render_profile_actions(swatch, cx));
+            rows.push(
+                self.anchored("quake-profile-actions".to_owned(), |view| {
+                    view.render_profile_actions(swatch, cx)
+                }),
+            );
         }
         group_card("settings-qprofile", &title, rows, swatch)
     }
@@ -1399,8 +1405,24 @@ impl SettingsView {
             );
         }
         for (index, global) in globals.iter().enumerate() {
-            rows.push(self.render_global(index, global, false, swatch, cx));
+            rows.push(self.anchored(format!("global:{index}"), |view| {
+                view.render_global(index, global, false, swatch, cx)
+            }));
         }
+        rows.push(self.anchored("gadd".to_owned(), |view| {
+            view.render_add_global_row(read_only, swatch, cx)
+        }));
+        group_card("settings-globals", "Global shortcuts", rows, swatch)
+    }
+
+    /// Add global shortcut, under the list, with its recorder's hint and
+    /// any refusal.
+    fn render_add_global_row(
+        &mut self,
+        read_only: bool,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
         let recorder = self.recorder("gadd", cx);
         let add = KeyRecorderButton::new(
             "settings-gadd",
@@ -1412,30 +1434,27 @@ impl SettingsView {
         .key_context("SettingsControl")
         .px(px(10.0))
         .when(read_only, |add| add.disabled(self.keys_lock_reason()));
-        rows.push(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .px(px(14.0))
-                .py(px(10.0))
-                .child(div().flex().child(add))
-                .children(self.recording_hint("gadd", swatch, cx))
-                .children(self.keys.errors.get("gadd").cloned().map(|error| {
-                    error_message("settings-message-gadd", error, swatch)
-                }))
-                .when(wayland(), |block| {
-                    block.child(small(
-                        "Global shortcuts need macOS or a native X11 \
-                         session; this Wayland session does not support \
-                         them."
-                            .to_owned(),
-                        swatch.muted,
-                    ))
-                })
-                .into_any_element(),
-        );
-        group_card("settings-globals", "Global shortcuts", rows, swatch)
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .px(px(14.0))
+            .py(px(10.0))
+            .child(div().flex().child(add))
+            .children(self.recording_hint("gadd", swatch, cx))
+            .children(self.keys.errors.get("gadd").cloned().map(|error| {
+                error_message("settings-message-gadd", error, swatch)
+            }))
+            .when(wayland(), |block| {
+                block.child(small(
+                    "Global shortcuts need macOS or a native X11 \
+                     session; this Wayland session does not support \
+                     them."
+                        .to_owned(),
+                    swatch.muted,
+                ))
+            })
+            .into_any_element()
     }
 
     /// One global shortcut's row: its key, command, profile, switch, and

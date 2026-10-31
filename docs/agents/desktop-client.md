@@ -989,6 +989,30 @@ they draw, and `focus::ring_bounds` reports where it last painted; a
 control that draws its focus some other way adds `focus::probe` itself, or
 Tab to it never scrolls.
 
+`ScrollArea::hold_rows` with a `RowAnchor` keeps the row a user changed where it
+painted while rows around it come and go; GPUI's own `ScrollAnchor` corrects a
+frame late. `RowAnchor::row` wraps a row without an element id, which would
+change every id, state, and accessibility id inside it, and passes on the row's
+`LayoutId`. The area's correction takes that id each frame, because a `LayoutId`
+from an earlier frame panics in Taffy, so a row laid out during another
+element's prepaint, as a list lays out its items, is never corrected. The hold
+is about layout only, never about config I/O: it ends once the row has needed no
+correction for `HOLD_QUIET`, read from the executor's clock so tests advance it,
+or on any other scroll. Keep it off write, read, and reload state: each of those
+has orderings, such as a failed write that rereads or an older reload finishing
+late, that release a hold too early. While it holds, the content keeps a
+viewport more than the offset needs, which lets rows come above the row even in
+content shorter than the area; ending the hold drops that hidden space so a
+scroll never reaches it. A clamp, from more than a viewport coming above in one
+frame, asks for one more frame, again on every clamp. Settings draws each row a
+user can change through `SettingsView::anchored`, which maps the action keys,
+setting paths, and field keys drawn inside it to the innermost such row. `act`
+holds that row before it runs the action, field commits and finished recordings
+hold theirs, and `write` and `submit` hold a setting's row when one drew it and
+otherwise keep the hold of the control that changed it. A control drawn outside
+every `anchored` row releases the hold, so a notice opening above an older held
+row never scrolls the pane.
+
 Open a dialog in a `huterm_ui::components::dialog::Modal`, draw its `Dialog`
 or `AlertDialog` as the last child of the area it covers while it is open, and
 mount `Modal::guard` on every frame, as for a popover. The guard stops presses

@@ -179,6 +179,11 @@ impl SettingsView {
         return_to: &FocusHandle,
     ) {
         let _ = self.drop_menu();
+        self.dialog_from = self
+            .actions
+            .iter()
+            .find(|(_, handle)| *handle == return_to)
+            .map(|(key, _)| key.clone());
         self.dialog.prompt = Some(prompt);
         self.dialog.field = None;
         self.dialog.modal.open(return_to);

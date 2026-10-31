@@ -5259,6 +5259,7 @@ mod pane_layouts;
 mod pane_moves;
 mod pane_names;
 mod settings;
+mod settings_anchor;
 mod settings_controls;
 mod settings_dialog;
 mod settings_fields;

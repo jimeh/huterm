@@ -205,6 +205,9 @@ impl SettingsView {
         if auto == self.theme_auto() {
             return;
         }
+        // The slot cards under it come and go, from the pointer's segments
+        // as from the keyboard's.
+        self.hold_control(MODE_KEY);
         self.theme_slot = None;
         let changes = if auto {
             let current = self.theme_name();

@@ -1137,8 +1137,11 @@ impl SettingsView {
                 }
             }
             KeyRecorderEvent::Recorded(keys) => {
-                let target =
-                    self.key_of_recorder(recorder).and_then(Target::of);
+                let key = self.key_of_recorder(recorder);
+                if let Some(key) = key {
+                    self.hold_control(key);
+                }
+                let target = key.and_then(Target::of);
                 if let Some(target) = target {
                     self.finish_recording(target, keys.clone(), cx);
                 }
@@ -1396,6 +1399,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Entity<Input> {
+        self.note_control(&key);
         self.drawn.insert(key.clone());
         if let Some(field) = self.keys.fields.get(&key) {
             return field.clone();
@@ -1710,6 +1714,7 @@ impl SettingsView {
         let Some(field) = self.keys.fields.get(key) else {
             return;
         };
+        self.hold_control(key);
         let text = field.read(cx).text().trim().to_owned();
         let (name, field_kind) = if let Some(name) = key.strip_prefix("when:") {
             (name.to_owned(), None)
@@ -2162,8 +2167,17 @@ impl SettingsView {
                 .enumerate()
                 .map(|(index, spec)| {
                     let corners = card::row_corners(index, count);
-                    self.render_command(
-                        &inventory, &globals, spec, corners, swatch, window, cx,
+                    // Its toggle holds the command row in place; each
+                    // shortcut row, and the buttons under them, hold
+                    // themselves.
+                    self.anchored(
+                        format!("kcmd:{}", spec.id.as_str()),
+                        |view| {
+                            view.render_command(
+                                &inventory, &globals, spec, corners, swatch,
+                                window, cx,
+                            )
+                        },
                     )
                 })
                 .collect();
@@ -2212,19 +2226,20 @@ impl SettingsView {
         }
         let mut rows = Vec::new();
         for (entry, key) in &inventory.unbinds {
-            let remove = self
-                .remove_button(
-                    format!("settings-kunbind-{entry}"),
-                    format!("kunbind:{entry}"),
-                    key,
-                    swatch,
-                    cx,
-                )
-                .when_some(self.keys_lock_reason(), |button, reason| {
-                    button.disabled(Some(reason))
-                });
-            let hint = KeyHint::parse(key, Platform::current());
-            rows.push(
+            let entry = *entry;
+            rows.push(self.anchored(format!("kunbind:{entry}"), |view| {
+                let remove = view
+                    .remove_button(
+                        format!("settings-kunbind-{entry}"),
+                        format!("kunbind:{entry}"),
+                        key,
+                        swatch,
+                        cx,
+                    )
+                    .when_some(view.keys_lock_reason(), |button, reason| {
+                        button.disabled(Some(reason))
+                    });
+                let hint = KeyHint::parse(key, Platform::current());
                 Item::new(
                     id(format!("settings-kunbound-{entry}")),
                     hint.text(),
@@ -2237,8 +2252,8 @@ impl SettingsView {
                 )
                 .description("Unbound; programs receive this key.")
                 .action(remove)
-                .into_any_element(),
-            );
+                .into_any_element()
+            }));
         }
         Some(group_card(
             "settings-kunbinds",
@@ -2405,81 +2420,29 @@ impl SettingsView {
             .pb(px(12.0))
             .pl(px(24.0));
         for (name, binding) in listed {
-            block = block.child(
-                self.render_shortcut(spec, name, binding, swatch, window, cx),
-            );
+            block = block.child(self.anchored(
+                format!("kshortcut:{}:{name}", spec.id.as_str()),
+                |view| {
+                    view.render_shortcut(
+                        spec, name, binding, swatch, window, cx,
+                    )
+                },
+            ));
         }
         // The Quake windows section edits the same entries.
         for (index, global) in globals {
-            block = block
-                .child(self.render_global(*index, global, true, swatch, cx));
+            block = block.child(self.anchored(
+                format!("kglobal:{}:{index}", spec.id.as_str()),
+                |view| view.render_global(*index, global, true, swatch, cx),
+            ));
         }
         let add_key = format!("kadd:{}", spec.id.as_str());
-        let recorder = self.recorder(&add_key, cx);
-        let add = KeyRecorderButton::new(
-            id(format!("settings-kadd-{}", spec.id.as_str())),
-            format!("Add shortcut for {}", spec.title),
-            &recorder,
-            swatch,
-        )
-        .placeholder("Add shortcut")
-        .key_context("SettingsControl")
-        .px(px(10.0))
-        .when_some(self.keys_lock_reason(), |add, reason| {
-            add.disabled(Some(reason))
-        });
-        let add_global = self.render_add_global(spec, swatch, cx);
-        let mut buttons = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(8.0))
-            .pt(px(4.0))
-            .child(add)
-            .children(add_global);
-        // Restore defaults appears when it has entries to remove, and says
-        // when those include shortcuts the user added.
-        let (entries, added) = self
-            .keys
-            .inventory
-            .as_ref()
-            .map_or((Vec::new(), 0), |inventory| {
-                restorable(inventory, spec.id)
+        // Its own row, so recording a shortcut, which adds a row above it,
+        // leaves Add shortcut where it was pressed.
+        let buttons = self
+            .anchored(format!("kbuttons:{}", spec.id.as_str()), |view| {
+                view.render_shortcut_buttons(spec, &add_key, swatch, cx)
             });
-        if !entries.is_empty() {
-            let reason = self.keys_lock_reason();
-            buttons = buttons.child(
-                self.action_button(
-                    format!("settings-kreset-{}", spec.id.as_str()),
-                    "Restore defaults",
-                    format!("kreset:{}", spec.id.as_str()),
-                    swatch,
-                    cx,
-                )
-                .when_some(reason, |button, reason| {
-                    button.disabled(Some(reason))
-                }),
-            );
-            // With no defaults, removing what the user added is all the
-            // button does, and it needs no note.
-            let has_defaults =
-                self.keys.inventory.as_ref().is_some_and(|inventory| {
-                    inventory.bindings.iter().any(|listed| {
-                        listed.binding.command == spec.id
-                            && listed.binding.origin == Origin::Default
-                    })
-                });
-            if added > 0 && has_defaults {
-                buttons = buttons.child(small(
-                    if added == 1 {
-                        "Also removes the shortcut you added.".to_owned()
-                    } else {
-                        format!("Also removes the {added} shortcuts you added.")
-                    },
-                    swatch.muted,
-                ));
-            }
-        }
         block
             .child(buttons)
             .children(self.recording_hint(&add_key, swatch, cx))
@@ -2559,6 +2522,83 @@ impl SettingsView {
     ) -> Option<gpui::Div> {
         let hint = self.keys.recorders.get(key)?.read(cx).hint()?;
         Some(small(hint.to_string(), swatch.accent_text()))
+    }
+
+    /// An expanded command's buttons: Add shortcut, Add global shortcut,
+    /// and Restore defaults with its note.
+    fn render_shortcut_buttons(
+        &mut self,
+        spec: &'static CommandSpec,
+        add_key: &str,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let recorder = self.recorder(add_key, cx);
+        let add = KeyRecorderButton::new(
+            id(format!("settings-kadd-{}", spec.id.as_str())),
+            format!("Add shortcut for {}", spec.title),
+            &recorder,
+            swatch,
+        )
+        .placeholder("Add shortcut")
+        .key_context("SettingsControl")
+        .px(px(10.0))
+        .when_some(self.keys_lock_reason(), |add, reason| {
+            add.disabled(Some(reason))
+        });
+        let add_global = self.render_add_global(spec, swatch, cx);
+        let mut buttons = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.0))
+            .pt(px(4.0))
+            .child(add)
+            .children(add_global);
+        // Restore defaults appears when it has entries to remove, and says
+        // when those include shortcuts the user added.
+        let (entries, added) = self
+            .keys
+            .inventory
+            .as_ref()
+            .map_or((Vec::new(), 0), |inventory| {
+                restorable(inventory, spec.id)
+            });
+        if !entries.is_empty() {
+            let reason = self.keys_lock_reason();
+            buttons = buttons.child(
+                self.action_button(
+                    format!("settings-kreset-{}", spec.id.as_str()),
+                    "Restore defaults",
+                    format!("kreset:{}", spec.id.as_str()),
+                    swatch,
+                    cx,
+                )
+                .when_some(reason, |button, reason| {
+                    button.disabled(Some(reason))
+                }),
+            );
+            // With no defaults, removing what the user added is all the
+            // button does, and it needs no note.
+            let has_defaults =
+                self.keys.inventory.as_ref().is_some_and(|inventory| {
+                    inventory.bindings.iter().any(|listed| {
+                        listed.binding.command == spec.id
+                            && listed.binding.origin == Origin::Default
+                    })
+                });
+            if added > 0 && has_defaults {
+                buttons = buttons.child(small(
+                    if added == 1 {
+                        "Also removes the shortcut you added.".to_owned()
+                    } else {
+                        format!("Also removes the {added} shortcuts you added.")
+                    },
+                    swatch.muted,
+                ));
+            }
+        }
+        buttons.into_any_element()
     }
 
     /// One shortcut: key, condition, arguments, tag, switch, and remove,
