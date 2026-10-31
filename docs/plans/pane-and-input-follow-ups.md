@@ -1,6 +1,6 @@
 # Pane and input follow-ups
 
-Status: in progress
+Status: implemented
 
 Six follow-ups to the pane layout, context menu, and modifier drag work,
 delivered in one PR on `origin/main` at `2f58b14a` or later.
