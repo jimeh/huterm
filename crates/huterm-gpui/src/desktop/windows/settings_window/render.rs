@@ -977,9 +977,9 @@ impl SettingsView {
             self.action_button(
                 "settings-advanced".to_owned(),
                 if on {
-                    "Hide advanced settings"
+                    "Hide advanced settings in every section"
                 } else {
-                    "Show advanced settings"
+                    "Show advanced settings in every section"
                 },
                 "advanced:pane".to_owned(),
                 swatch,

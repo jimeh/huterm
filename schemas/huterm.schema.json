@@ -463,7 +463,7 @@
         },
         "retain_query": {
           "default": true,
-          "description": "Keep the search text when the palette is cancelled, so reopening it\nwithin `retain_query_seconds` restores it.",
+          "description": "Keep the search text when the palette is cancelled, and restore it if\nthe palette reopens soon after.",
           "type": "boolean",
           "x-huterm-apply": "next_palette_open",
           "x-huterm-group": "Palette",
@@ -571,7 +571,7 @@
       "description": "Split pane behavior.",
       "properties": {
         "drag_modifier": {
-          "description": "Hold these modifiers to drag a pane from anywhere inside it: two or more\nof `cmd`, `ctrl`, `alt`, and `shift` joined with hyphens, or `off`.\nDefaults to `cmd-ctrl` on macOS and `ctrl-alt` on Linux.",
+          "description": "Hold these modifiers, such as `cmd-ctrl`, to drag a pane from anywhere\ninside it. Off turns this off.",
           "pattern": "^(off|(cmd|super|ctrl|alt|shift)(-(cmd|super|ctrl|alt|shift)){1,3})$",
           "type": "string",
           "x-huterm-apply": "live",
@@ -582,7 +582,7 @@
         },
         "focus_accent": {
           "default": 0.0,
-          "description": "How strongly an accent line marks the focused pane under `hover` or\n`hidden` title bars, from 0 (off) to 1.",
+          "description": "How strongly an accent line marks the focused pane under `hover` or\n`hidden` title bars, from 0 (off) to 1 (100%).",
           "format": "float",
           "maximum": 1,
           "minimum": 0,
@@ -608,7 +608,7 @@
         },
         "inactive_dim": {
           "default": 0.20000000298023224,
-          "description": "How much the panes without focus dim, from 0 (off) to 0.8.",
+          "description": "How much the panes without focus dim, from 0 (off) to 0.8 (80%).",
           "format": "float",
           "maximum": 0.8,
           "minimum": 0,
@@ -765,7 +765,7 @@
             }
           ],
           "default": "view",
-          "description": "Who owns a pane's zoom: `view` or `shared`.",
+          "description": "Each window zooms panes on its own (`view`), or the tab's zoom shows in\nevery window set to `shared`.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Pane zoom",
@@ -9068,7 +9068,7 @@
       ]
     },
     "TabLabel": {
-      "description": "What automatic tab labels show. A tab's own name always wins.",
+      "description": "What automatic tab labels show. Smart shows a running program's title or\nname, and the directory at an idle shell; a tab's own name always wins.",
       "oneOf": [
         {
           "const": "smart",

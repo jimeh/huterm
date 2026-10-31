@@ -974,7 +974,8 @@ impl Default for TabsConfig {
     }
 }
 
-/// What automatic tab labels show. A tab's own name always wins.
+/// What automatic tab labels show. Smart shows a running program's title or
+/// name, and the directory at an idle shell; a tab's own name always wins.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
 )]
@@ -1187,7 +1188,7 @@ pub struct PanesConfig {
     )))]
     pub title_bar_position: PaneTitleBarPosition,
     /// How strongly an accent line marks the focused pane under `hover` or
-    /// `hidden` title bars, from 0 (off) to 1.
+    /// `hidden` title bars, from 0 (off) to 1 (100%).
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 1), extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1203,7 +1204,7 @@ pub struct PanesConfig {
         ],
     )))]
     pub focus_accent: f32,
-    /// How much the panes without focus dim, from 0 (off) to 0.8.
+    /// How much the panes without focus dim, from 0 (off) to 0.8 (80%).
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 0.8), extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1215,9 +1216,8 @@ pub struct PanesConfig {
         "x-huterm-zero-label" = "Off",
     )))]
     pub inactive_dim: f32,
-    /// Hold these modifiers to drag a pane from anywhere inside it: two or more
-    /// of `cmd`, `ctrl`, `alt`, and `shift` joined with hyphens, or `off`.
-    /// Defaults to `cmd-ctrl` on macOS and `ctrl-alt` on Linux.
+    /// Hold these modifiers, such as `cmd-ctrl`, to drag a pane from anywhere
+    /// inside it. Off turns this off.
     #[cfg_attr(feature = "schema", schemars(with = "PaneDrag", extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1226,7 +1226,8 @@ pub struct PanesConfig {
         "x-huterm-apply" = "live",
     )))]
     pub drag_modifier: Option<PaneDrag>,
-    /// Who owns a pane's zoom: `view` or `shared`.
+    /// Each window zooms panes on its own (`view`), or the tab's zoom shows in
+    /// every window set to `shared`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
@@ -1488,8 +1489,8 @@ pub struct PaletteConfig {
         "x-huterm-apply" = "live",
     )))]
     pub placement: PalettePlacement,
-    /// Keep the search text when the palette is cancelled, so reopening it
-    /// within `retain_query_seconds` restores it.
+    /// Keep the search text when the palette is cancelled, and restore it if
+    /// the palette reopens soon after.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "palette",
         "x-huterm-group" = "Palette",
