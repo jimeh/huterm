@@ -103,12 +103,15 @@ pub(super) enum OptionSide {
 
 /// `NX_DEVICELALTKEYMASK` and `NX_DEVICERALTKEYMASK`, the device-dependent
 /// bits of an `NSEvent`'s modifier flags.
+#[cfg(any(target_os = "macos", test))]
 const LEFT_OPTION: usize = 0x20;
+#[cfg(any(target_os = "macos", test))]
 const RIGHT_OPTION: usize = 0x40;
 
 /// The Option key a key-down's modifier `flags` name, or `None` when they
 /// name neither or both. Remapping tools and Screen Sharing can omit the
 /// device bits.
+#[cfg(any(target_os = "macos", test))]
 pub(super) fn option_side(flags: usize) -> Option<OptionSide> {
     match (flags & LEFT_OPTION != 0, flags & RIGHT_OPTION != 0) {
         (true, false) => Some(OptionSide::Left),
