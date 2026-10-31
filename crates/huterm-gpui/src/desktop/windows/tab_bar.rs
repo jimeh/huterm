@@ -15,7 +15,8 @@ use super::{
     App, Bounds, CloseTarget, Context, FluentBuilder, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, PaneId, ParentElement, Pixels,
     Presentation, StatefulInteractiveElement, Styled, TAB_HEIGHT, TabId,
-    TabPosition, Theme, Window, WorkspaceView, color, div, px,
+    TabPosition, TabView, Theme, Window, WorkspaceView, color, div, px,
+    with_status_suffix,
 };
 
 /// Bounds the title width cache so long-lived windows with changing titles
@@ -254,8 +255,8 @@ pub(super) struct TabItem {
     pub(super) index: usize,
     pub(super) title: String,
     pub(super) status: TabStatus,
-    /// The tab syncs input, so it shows the sync mark.
-    pub(super) input_sync: bool,
+    /// The tab's state marks, in display order.
+    pub(super) marks: Vec<TabMark>,
     pub(super) activity: Activity,
     /// The first tab while the strip is scrolled to its start, so its edge
     /// meets the bar's own edge.
@@ -276,10 +277,10 @@ impl TabItem {
     }
 }
 
-/// Content shared by every tab style: the sync mark, status, title, and
+/// Content shared by every tab style: the state marks, status, title, and
 /// close button.
 struct TabParts {
-    sync: Option<gpui::AnyElement>,
+    marks: Vec<gpui::AnyElement>,
     status: Option<gpui::AnyElement>,
     title: Div,
     close: Div,
@@ -346,9 +347,7 @@ impl WorkspaceView {
                 )
             });
         let parts = TabParts {
-            sync: item
-                .input_sync
-                .then(|| input_sync_icon(colors).into_any_element()),
+            marks: mark_elements(&item.marks, colors),
             status: status_icon(item.status, colors),
             // GPUI caches nowrap text at its first measured width, which
             // skips truncation; a one-line clamp truncates at the final width.
@@ -406,7 +405,7 @@ impl WorkspaceView {
         let mut widths = Vec::with_capacity(self.tabs.len());
         for tab in &self.tabs {
             let (title, status) = tab.label(self.config.tabs, cx);
-            let input_sync = super::input_sync::syncs_input(tab.id, cx);
+            let marks = self.tab_marks(tab, cx);
             let text = if let Some(width) = self.title_widths.get(&title) {
                 *width
             } else {
@@ -425,7 +424,7 @@ impl WorkspaceView {
                 self.title_widths.insert(title, width);
                 width
             };
-            widths.push(fit_tab_width(text, tabs, status, input_sync));
+            widths.push(fit_tab_width(text, tabs, status, &marks));
         }
         self.tab_widths = widths;
     }
@@ -500,14 +499,16 @@ impl WorkspaceView {
         point(close.x - CLOSE_SIZE - PANE_TITLE_GAP, close.y)
     }
 
-    /// One pane's title bar in a split tab: its status, its title, a zoom
-    /// toggle, and a close button. A press focuses the pane, starts a pane
-    /// drag once it moves, and never reaches the terminal; the focused pane
-    /// uses the active tab colours, and the toggle stays highlighted while
-    /// the pane is zoomed. Both buttons act on release over themselves.
+    /// One pane's title bar in a split tab: its sync mark, its status, its
+    /// title, a zoom toggle, and a close button, reported as a group named
+    /// by the title. A press focuses the pane, starts a pane drag once it
+    /// moves, and never reaches the terminal; the focused pane uses the
+    /// active tab colours, and the toggle stays highlighted while the pane
+    /// is zoomed. Both buttons act on release over themselves.
     pub(super) fn pane_title_bar(
         bar: PaneTitleBar,
         colors: TabColors,
+        swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> Stateful<Div> {
         let PaneTitleBar {
@@ -521,8 +522,15 @@ impl WorkspaceView {
             input_sync,
             bottom,
         } = bar;
+        let marks: &[TabMark] = if input_sync {
+            &[TabMark::InputSync]
+        } else {
+            &[]
+        };
         div()
             .id(("pane-title", pane.get()))
+            .role(gpui::Role::Group)
+            .aria_label(with_status_suffix(title.clone(), status))
             .group("pane-title")
             // Over a terminal, whose text cursor would otherwise show.
             .cursor(gpui::CursorStyle::Arrow)
@@ -570,79 +578,89 @@ impl WorkspaceView {
                     cx.stop_propagation();
                 }),
             )
-            .children(input_sync.then(|| input_sync_icon(colors)))
+            .children(mark_elements(marks, colors))
             .children(status_icon(status, colors))
             .child(pane_title_text(title, status))
-            .child(
-                Self::pane_title_button(
-                    ("zoom-pane", pane.get()),
-                    if zoomed {
-                        Icon::Minimize
-                    } else {
-                        Icon::Maximize
-                    },
-                    zoomed,
-                    colors,
-                )
-                .on_click(cx.listener(
-                    move |view, _, window, cx| {
-                        cx.stop_propagation();
-                        view.toggle_zoom_of(tab, pane, window, cx);
-                    },
-                )),
-            )
-            .child(
-                Self::pane_title_button(
-                    ("close-pane", pane.get()),
-                    Icon::X,
-                    false,
-                    colors,
-                )
-                .on_click(cx.listener(
-                    move |view, _, window, cx| {
-                        cx.stop_propagation();
-                        view.request_close(
-                            CloseTarget::Pane { tab, pane },
-                            window,
-                            cx,
-                        );
-                    },
-                )),
-            )
+            .children(Self::pane_title_buttons(
+                tab, pane, zoomed, colors, swatch, cx,
+            ))
     }
 
-    /// A square title bar button whose press never reaches the bar or the
-    /// terminal; `active` keeps it highlighted.
+    /// A pane title bar's zoom toggle, worded as the pane menu's row, and
+    /// its close button.
+    fn pane_title_buttons(
+        tab: TabId,
+        pane: PaneId,
+        zoomed: bool,
+        colors: TabColors,
+        swatch: Swatch,
+        cx: &Context<'_, Self>,
+    ) -> [Button; 2] {
+        let zoom = Self::pane_title_button(
+            ("zoom-pane", pane.get()),
+            if zoomed { "Unzoom Pane" } else { "Zoom Pane" },
+            if zoomed {
+                Icon::Minimize
+            } else {
+                Icon::Maximize
+            },
+            Some(zoomed),
+            colors,
+            swatch,
+        )
+        .on_click(Self::button_action(cx, move |view, window, cx| {
+            cx.stop_propagation();
+            view.toggle_zoom_of(tab, pane, window, cx);
+        }));
+        let close = Self::pane_title_button(
+            ("close-pane", pane.get()),
+            "Close Pane",
+            Icon::X,
+            None,
+            colors,
+            swatch,
+        )
+        .on_click(Self::button_action(cx, move |view, window, cx| {
+            cx.stop_propagation();
+            view.request_close(CloseTarget::Pane { tab, pane }, window, cx);
+        }));
+        [zoom, close]
+    }
+
+    /// A square icon-only title bar button named `label`, whose press never
+    /// reaches the bar or the terminal. A toggle reports `toggled`, and
+    /// while on it keeps the hover fill and the full-strength icon.
     fn pane_title_button(
         id: (&'static str, u64),
+        label: &'static str,
         icon: Icon,
-        active: bool,
+        toggled: Option<bool>,
         colors: TabColors,
-    ) -> Stateful<Div> {
+        swatch: Swatch,
+    ) -> Button {
         let foreground = colors.foreground;
-        div()
-            .id(id)
-            .group(id.0)
-            .flex_shrink_0()
-            .w(CLOSE_SIZE)
-            .h(CLOSE_SIZE)
-            .rounded(px(4.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .when(active, |button| button.bg(colors.control_hover))
-            .hover(|style| style.bg(colors.control_hover))
-            .active(|style| style.bg(colors.control_pressed))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                cx.stop_propagation();
+        let on = toggled == Some(true);
+        let button = Button::new(id, label, swatch)
+            .colors(ButtonColors {
+                fill: on.then_some(colors.control_hover),
+                ..colors.control()
             })
-            .child(
+            .icon(
                 icon_element(
                     icon,
-                    if active { foreground } else { colors.inactive },
+                    if on { foreground } else { colors.inactive },
                 )
                 .group_hover(id.0, |style| style.text_color(foreground)),
             )
+            .icon_only()
+            .group(id.0)
+            .stop_presses()
+            .size(CLOSE_SIZE)
+            .rounded(px(4.0));
+        match toggled {
+            Some(on) => button.toggled(on),
+            None => button,
+        }
     }
 }
 
@@ -741,10 +759,75 @@ fn status_icon(
     }
 }
 
-/// The mark of a tab, or a pane of a tab, that syncs input: broadcast
-/// waves in the accent colour.
-pub(super) fn input_sync_icon(colors: TabColors) -> Svg {
-    icon_element(Icon::Radio, colors.accent)
+/// A state a tab shows as a mark before its title: in its tab, and in the
+/// window's title row while the tab bar is hidden.
+/// [`WorkspaceView::tab_marks`] lists a tab's marks and [`mark_elements`]
+/// draws them, so a new state needs a variant, its place in that list, and
+/// its drawing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TabMark {
+    /// The tab syncs input.
+    InputSync,
+}
+
+impl TabMark {
+    /// What assistive technology reads for the mark.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::InputSync => "Syncing pane input",
+        }
+    }
+
+    /// The mark's element id, unique among one tab's marks.
+    fn id(self) -> &'static str {
+        match self {
+            Self::InputSync => "input-sync-mark",
+        }
+    }
+}
+
+impl WorkspaceView {
+    /// `tab`'s state marks in display order. Input sync follows the tab's
+    /// flag in core, not its focused pane, so a tab whose focused pane has
+    /// exited keeps its mark.
+    #[expect(
+        clippy::unused_self,
+        reason = "the window decides a tab's marks, as it decides which of \
+                  its panes shows zoomed"
+    )]
+    pub(super) fn tab_marks(&self, tab: &TabView, cx: &App) -> Vec<TabMark> {
+        let mut marks = Vec::new();
+        if super::input_sync::syncs_input(tab.id, cx) {
+            marks.push(TabMark::InputSync);
+        }
+        marks
+    }
+}
+
+/// The elements drawing `marks`, in order: each an icon-sized image named
+/// for its state, so assistive technology reads what the icon shows.
+/// [`fit_tab_width`] counts each one icon wide.
+pub(super) fn mark_elements(
+    marks: &[TabMark],
+    colors: TabColors,
+) -> Vec<gpui::AnyElement> {
+    marks
+        .iter()
+        .map(|&mark| {
+            let icon = match mark {
+                // Broadcast waves in the accent colour.
+                TabMark::InputSync => icon_element(Icon::Radio, colors.accent),
+            };
+            div()
+                .id(mark.id())
+                .role(gpui::Role::Image)
+                .aria_label(mark.name())
+                .flex_shrink_0()
+                .size(ICON_SIZE)
+                .child(icon)
+                .into_any_element()
+        })
+        .collect()
 }
 
 /// The running dot: a small yellow circle before the title.
@@ -804,7 +887,7 @@ fn vertical_pill_tab(
                     style.bg(hover).text_color(foreground)
                 })
             })
-            .children(parts.sync)
+            .children(parts.marks)
             .children(parts.status)
             .child(parts.title)
             .child(parts.close),
@@ -846,7 +929,7 @@ fn vertical_strip_tab(
         .when(!item.active(), |tab| {
             tab.hover(|style| style.bg(hover).text_color(foreground))
         })
-        .children(parts.sync)
+        .children(parts.marks)
         .children(parts.status)
         .child(parts.title)
         .child(parts.close)
@@ -881,7 +964,7 @@ fn strip_tab(
             tab.hover(|style| style.bg(hover).text_color(foreground))
         })
         .when(item.divided(), |tab| tab.child(divider(colors)))
-        .children(parts.sync)
+        .children(parts.marks)
         .children(parts.status)
         .child(parts.title)
         .child(parts.close)
@@ -923,7 +1006,7 @@ fn pill_tab(
                         style.bg(hover).text_color(foreground)
                     })
                 })
-                .children(parts.sync)
+                .children(parts.marks)
                 .children(parts.status)
                 .child(parts.title)
                 .child(parts.close),
@@ -941,23 +1024,21 @@ fn pill_padding_left(accent: bool) -> Pixels {
 /// The width a horizontal Fit tab needs around `title_width` of text, clamped
 /// to the configured bounds. It mirrors the padding, gaps, and slots rendered
 /// by `strip_tab` and `pill_tab`, including the indicator `status` draws
-/// and the sync mark of a tab that syncs input.
+/// and the tab's `marks`, each one icon wide.
 pub(super) fn fit_tab_width(
     title_width: Pixels,
     tabs: TabsConfig,
     status: TabStatus,
-    input_sync: bool,
+    marks: &[TabMark],
 ) -> Pixels {
     let style = tabs.style;
     let status = if status == TabStatus::Idle {
         px(0.0)
     } else {
         status.indicator_width() + gap(style)
-    } + if input_sync {
-        ICON_SIZE + gap(style)
-    } else {
-        px(0.0)
-    };
+    } + marks
+        .iter()
+        .fold(px(0.0), |width, _| width + ICON_SIZE + gap(style));
     // Every tab has a title and a close button separated by one gap.
     let chrome = match style {
         TabStyle::Strip => STRIP_PADDING_LEFT + STRIP_PADDING_RIGHT,

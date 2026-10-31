@@ -1,6 +1,7 @@
 # Pane input sync
 
-Status: implemented in PR #353.
+Status: implemented in PR #353. A later change gave the command an optional
+`tab` argument and added the tab menu row this plan left out.
 
 ## Outcome
 

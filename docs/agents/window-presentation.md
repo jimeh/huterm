@@ -293,6 +293,14 @@ window, including after regular-to-Quake conversion; it skips a borderless
 window, which has no buttons, and Quake windows never request a position.
 `smoke:macos-palette` asserts the centring from the `traffic_lights` state.
 
+While the tab bar is hidden (`Presentation::Hidden`), the active tab's marks
+from `WorkspaceView::tab_marks` come before the row's title, on the macOS
+strip or an unmerged Linux client row, drawn by `tab_bar::mark_elements` as
+in a tab. Add a new mark to that list, not to the row. Fullscreen and Quake
+windows have no title row and Linux server decorations no Huterm row, so
+they show no mark there, and native window titles never carry one. Window
+tests read the row's marks from `drawn_title_marks`.
+
 The macOS Settings window hides AppKit's title bar the same way: a
 transparent title bar with `app_owns_titlebar_drag`, the title still
 "Settings" for accessibility and the Window menu, and the traffic lights

@@ -40,7 +40,9 @@ use super::notices::{
     Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
     ToastHandlers, render_notice_stack,
 };
-use super::overlay::{OverlayColors, overlay_colors, theme_is_dark, tokens};
+use super::overlay::{
+    OverlayColors, Swatch, overlay_colors, theme_is_dark, tokens,
+};
 use super::palette::{
     CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
     PaletteHierarchy, PaletteOpen, PaletteScope, PaletteTarget,
@@ -248,7 +250,8 @@ use projection::{
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
     TabColors, TabItem, TabStatus, VERTICAL_ROW_MARGIN_X,
-    VERTICAL_ROW_MARGIN_Y, icon_element, tab_bar_height, top_chrome_uses_bar,
+    VERTICAL_ROW_MARGIN_Y, icon_element, mark_elements, tab_bar_height,
+    top_chrome_uses_bar,
 };
 use tab_menu::{TabMenuInput, tab_menu};
 use tab_position::{TabHost, resolve_tab_position};
@@ -273,6 +276,9 @@ const TRAFFIC_LIGHT_INSET: Pixels = px(84.0);
 /// Where the tabs start in the title row Huterm draws on Linux, which has
 /// no traffic lights.
 const TITLE_ROW_LEAD: Pixels = px(8.0);
+/// The space between the title row's tab marks and between them and the
+/// title, as in a pane title bar.
+const TITLE_MARK_GAP: Pixels = px(6.0);
 /// Space kept below a vertical column's new-tab button when tabs overflow,
 /// matching the rows' horizontal inset.
 const VERTICAL_END_MARGIN: Pixels = px(5.0);
@@ -2559,6 +2565,8 @@ fn open_window_with_profile(
                 drawn_panes: RefCell::new(None),
                 drawn_drop: RefCell::new(None),
                 drawn_focus: RefCell::new(FocusMarks::default()),
+                #[cfg(test)]
+                drawn_title_marks: RefCell::new(None),
                 drawn_badges: RefCell::new(Vec::new()),
                 pane_drag: None,
                 reveal: Reveal::default(),
@@ -3743,6 +3751,10 @@ struct WorkspaceView {
     drawn_badges: RefCell<Vec<String>>,
     /// The focus marks the last frame drew, for smoke state.
     drawn_focus: RefCell<FocusMarks>,
+    /// The tab marks the last frame's title row drew before the active
+    /// tab's title, or `None` when it drew no title.
+    #[cfg(test)]
+    drawn_title_marks: RefCell<Option<Vec<tab_bar::TabMark>>>,
     /// A press on a pane title bar, or the drag it became.
     pane_drag: Option<PaneDrag>,
     reveal: Reveal,
@@ -4733,6 +4745,7 @@ impl WorkspaceView {
         &self,
         bounds: Bounds<Pixels>,
         colors: TabColors,
+        swatch: Swatch,
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Vec<gpui::AnyElement> {
@@ -4825,6 +4838,7 @@ impl WorkspaceView {
                             bottom,
                         },
                         colors,
+                        swatch,
                         cx,
                     )
                     .opacity(opacity)
@@ -8457,7 +8471,13 @@ impl WorkspaceView {
                 }
                 ids::TOGGLE_PANE_INPUT_SYNC => {
                     self.check_runtime_available(cx)?;
-                    self.active_tab_id(cx).map(|_| ())
+                    target
+                        .tab
+                        .map_or_else(
+                            || self.active_tab_id(cx),
+                            |tab| self.existing_tab(tab),
+                        )
+                        .map(|_| ())
                 }
                 ids::FOCUS_NEXT_PANE
                 | ids::FOCUS_PREVIOUS_PANE
@@ -9067,7 +9087,10 @@ impl WorkspaceView {
                 self.toggle_zoom_of(tab, pane, window, cx);
                 Ok(CommandOutcome::Completed)
             }
-            ids::TOGGLE_PANE_INPUT_SYNC => self.toggle_input_sync(window, cx),
+            ids::TOGGLE_PANE_INPUT_SYNC => {
+                let tab = self.target_tab(invocation, cx)?;
+                self.toggle_input_sync(tab, window, cx)
+            }
             other => Err(CommandError::UnknownCommand(other)),
         }
     }
@@ -12089,6 +12112,8 @@ impl Render for WorkspaceView {
         // reports is ignored.
         root = root.child(self.dialog.guard(|_, _, _| {}));
         let titlebar = self.title_row();
+        #[cfg(test)]
+        self.drawn_title_marks.replace(None);
         let top_chrome = titlebar + self.fullscreen_insets.top.max(px(0.0));
         let bar_drawn = self.bar_drawn();
         // The tab bar and the title strip are one row: the tabs cover the
@@ -12176,14 +12201,25 @@ impl Render for WorkspaceView {
                         // The active tab's title, centred across the strip
                         // and kept clear of the traffic lights and the
                         // menu button. A merged row shows the tabs instead.
-                        let strip_title = self
+                        // While the tab bar is hidden, the tab's marks
+                        // come before the title, since they would
+                        // otherwise show nowhere.
+                        let active = self
                             .tabs
                             .iter()
-                            .find(|tab| Some(tab.id) == active_tab)
-                            .map_or_else(
-                                || "Huterm".to_owned(),
-                                |tab| tab.title(self.config.tabs, cx),
-                            );
+                            .find(|tab| Some(tab.id) == active_tab);
+                        let strip_title = active.map_or_else(
+                            || "Huterm".to_owned(),
+                            |tab| tab.title(self.config.tabs, cx),
+                        );
+                        let marks = active
+                            .filter(|_| {
+                                self.presentation() == Presentation::Hidden
+                            })
+                            .map(|tab| self.tab_marks(tab, cx))
+                            .unwrap_or_default();
+                        #[cfg(test)]
+                        self.drawn_title_marks.replace(Some(marks.clone()));
                         bar.child(
                             div()
                                 .absolute()
@@ -12192,7 +12228,36 @@ impl Render for WorkspaceView {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .child(div().truncate().child(strip_title)),
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .flex()
+                                        .items_center()
+                                        .gap(TITLE_MARK_GAP)
+                                        .when(!marks.is_empty(), |row| {
+                                            row.child(
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(TITLE_MARK_GAP)
+                                                    .debug_selector(|| {
+                                                        "title-marks".to_owned()
+                                                    })
+                                                    .children(mark_elements(
+                                                        &marks, colors,
+                                                    )),
+                                            )
+                                        })
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .debug_selector(|| {
+                                                    "strip-title".to_owned()
+                                                })
+                                                .child(strip_title),
+                                        ),
+                                ),
                         )
                     }),
             );
@@ -12200,6 +12265,7 @@ impl Render for WorkspaceView {
         root = root.children(self.pane_elements(
             layout.terminal,
             colors,
+            swatch,
             window,
             cx,
         ));
@@ -12375,7 +12441,7 @@ impl Render for WorkspaceView {
                     index,
                     title,
                     status,
-                    input_sync: input_sync::syncs_input(tab.id, cx),
+                    marks: self.tab_marks(tab, cx),
                     activity: if Some(tab.id) == active_tab {
                         Activity::Active
                     } else if index > 0
@@ -13466,6 +13532,8 @@ impl WorkspaceView {
             active: self.active_tab(cx) == Some(tab),
             vertical: self.layout_tabs().position.vertical(),
             directory_known,
+            panes: view.panes.len(),
+            input_sync: input_sync::syncs_input(tab, cx),
         };
         Some(tab_menu(&input, &cx.global::<Desktop>().keymap, contexts))
     }

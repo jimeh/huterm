@@ -768,8 +768,8 @@ pub mod ids {
     pub const RESIZE_PANE_DOWN: CommandId = CommandId::new("resize_pane_down");
     /// Zooms the focused pane across its tab, or unzooms it.
     pub const TOGGLE_PANE_ZOOM: CommandId = CommandId::new("toggle_pane_zoom");
-    /// Sends typing in the active tab's focused pane to its other panes
-    /// too, or stops.
+    /// Sends typing in a tab's focused pane to its other panes too, or
+    /// stops; defaults to the active tab.
     pub const TOGGLE_PANE_INPUT_SYNC: CommandId =
         CommandId::new("toggle_pane_input_sync");
     /// Swaps the focused pane with the next one in its tab, wrapping.
@@ -1513,8 +1513,9 @@ const CATALOG: &[CommandSpec] = &[
         ids::TOGGLE_PANE_INPUT_SYNC,
         CommandScope::Window,
         "Toggle Pane Input Sync",
-        "Broadcast typing to every shown pane of the active tab, or stop.",
-        &[],
+        "Broadcast typing to every shown pane of a tab, or stop; defaults to \
+         the active tab.",
+        TAB,
     ),
     spec(
         ids::SWAP_PANE_NEXT,

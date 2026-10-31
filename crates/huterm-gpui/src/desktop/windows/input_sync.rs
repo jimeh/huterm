@@ -1,4 +1,4 @@
-//! Pane input sync: the toggle for the active tab, and the fan-out that
+//! Pane input sync: the toggle for a tab, and the fan-out that
 //! types a syncing tab's focused pane's input into its other panes too.
 //!
 //! Core holds each tab's flag; this window sends the input through its
@@ -16,14 +16,14 @@ use super::{
 };
 
 impl WorkspaceView {
-    /// Turns the active tab's input sync on or off. The change reaches
-    /// this window through the hierarchy, as another window's would.
+    /// Turns `tab`'s input sync on or off. The change reaches this window
+    /// through the hierarchy, as another window's would.
     pub(super) fn toggle_input_sync(
         &mut self,
+        tab: TabId,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        let tab = self.active_tab_id(cx)?;
         let workspace = self.workspace_id(cx).ok_or_else(|| {
             CommandError::Unavailable("window has no workspace".to_owned())
         })?;

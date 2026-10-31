@@ -539,6 +539,9 @@ outlines the tab while the menu is open. The menu has:
 - **Close Other Tabs**, disabled when there is one tab.
 - **Close Tabs to the Right**, worded **Close Tabs Below** in a left or right
   column, disabled on the last tab.
+- **Sync Pane Input**, worded **Stop Syncing Pane Input** while the tab
+  syncs, for a split tab or one that syncs. It toggles that tab's input
+  sync, with its shortcut shown only on the active tab.
 
 The tab menu does not open during a tab drag or while a close confirmation is
 showing. It uses the same keys, dismissal, and focus return as the window menu.
