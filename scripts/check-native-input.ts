@@ -271,7 +271,8 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await configure("off", false);
     await key(43, command | (1 << 17), "<", "<");
     await state("policy=Off", "reloading=false");
-    // A title-bar drag onto the hidden tab bar's title row opens a tab.
+    // A pane title-bar drag onto the window's title row, while the tab bar
+    // is hidden, moves the pane into a new tab.
     // Undo restores the split; close the temporary pane before the tab tests.
     await rm(ready);
     await key(2, command, "d");
