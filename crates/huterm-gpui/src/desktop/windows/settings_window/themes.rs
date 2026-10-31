@@ -653,8 +653,8 @@ fn preview_block(theme: Option<&Theme>, height: f32) -> Div {
     let dots = (1..=6).fold(div().flex().gap(px(2.0)), |dots, index| {
         dots.child(
             div()
-                .size(px(6.0))
-                .rounded(px(2.0))
+                .size(px(5.0))
+                .rounded(px(1.5))
                 .bg(color(theme.ansi[index])),
         )
     });
@@ -680,14 +680,22 @@ fn preview_block(theme: Option<&Theme>, height: f32) -> Div {
                 .child(text(theme.ansi[5], "$"))
                 .child(text(theme.foreground, "cargo test")),
         )
+        // The words give way before the accents, which always show whole.
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(5.0))
-                .child(text(theme.ansi[1], "error"))
-                .child(text(theme.ansi[3], "warn"))
-                .child(div().flex_1())
-                .child(dots),
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .gap(px(5.0))
+                        .child(text(theme.ansi[1], "error"))
+                        .child(text(theme.ansi[3], "warn")),
+                )
+                .child(dots.flex_none()),
         )
 }
