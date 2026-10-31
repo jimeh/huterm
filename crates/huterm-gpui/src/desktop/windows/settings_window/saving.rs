@@ -220,6 +220,23 @@ fn writes(patch: &Patch, at: &str) -> bool {
     written.iter().all(|key| keys.next() == Some(key.as_str()))
 }
 
+/// Whether a setting's row has a Reset while the file sets it: every row
+/// but the editors that later work adds, and pane layout templates. A
+/// template has no default: resetting it would delete the layout without
+/// asking, so only Delete removes it.
+pub(super) fn has_reset(setting: &Setting) -> bool {
+    !matches!(
+        special(&setting.path),
+        Some(
+            Special::Keybindings
+                | Special::GlobalShortcuts
+                | Special::QuakeProfiles
+                | Special::PaneLayouts
+                | Special::LayoutCycle,
+        )
+    ) && !layouts::is_template(&setting.path)
+}
+
 /// The patches for the theme picker's `changes`: sets first, so removing
 /// the last key the table holds never drops and recreates `[theme]`.
 fn theme_patches(changes: &[(&'static str, Option<String>)]) -> Vec<Patch> {
@@ -1735,24 +1752,15 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Whether Reset applies: the file sets the setting, and its row is not
-    /// an editor that later work adds. The theme resets the keys its
-    /// picker writes, keeping color overrides. A
-    /// pane layout's template has no default: resetting it would delete
-    /// the layout without asking, so only Delete removes it.
+    /// Whether Reset applies: the file sets the setting, and its row has a
+    /// Reset. The theme resets the keys its picker writes, keeping color
+    /// overrides.
     pub(super) fn resettable(&self, setting: &Setting) -> bool {
-        match special(&setting.path) {
-            Some(
-                Special::Keybindings
-                | Special::GlobalShortcuts
-                | Special::QuakeProfiles
-                | Special::PaneLayouts
-                | Special::LayoutCycle,
-            ) => false,
-            _ if layouts::is_template(&setting.path) => false,
-            Some(Special::ThemePicker) => self.theme_set(),
-            _ => self.file.is_set(&setting.path),
-        }
+        has_reset(setting)
+            && match special(&setting.path) {
+                Some(Special::ThemePicker) => self.theme_set(),
+                _ => self.file.is_set(&setting.path),
+            }
     }
 
     pub(super) fn reset(

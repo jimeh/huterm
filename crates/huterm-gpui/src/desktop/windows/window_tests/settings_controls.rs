@@ -461,6 +461,9 @@ fn the_last_held_modifier_says_why_it_stays_on(cx: &mut TestAppContext) {
         a11y_find(harness, |node| node["aria"]["label"] == label)
             .unwrap_or_else(|| panic!("no chip labelled {label}"))
     };
+    // The window grows to keep the chips on it, for the click.
+    visual(&harness).simulate_resize(gpui::size(px(860.0), px(1600.0)));
+    visual(&harness).run_until_parked();
     let last = chip(&mut harness, held);
     assert_eq!(last["aria"]["toggled"], "True", "{last}");
     assert_eq!(last["aria"]["description"], "Keep at least one modifier");

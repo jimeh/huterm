@@ -88,7 +88,7 @@ async function check(executable: string, engine: string, wm?: X11Process) {
   const recorder = join(directory, "recorder.ts");
   await writeFile(
     config,
-    `[terminal]\nclose_on_exit=false\nnew_tab_directory="inherit"\n\n[terminal.bell]\nvisual=true\n\n[tabs]\nlabel="process_and_directory"\n`,
+    `[terminal]\nclose_on_exit=false\nnew_tab_directory="inherit"\n\n[terminal.bell]\nvisual=true\naudio=false\n\n[tabs]\nlabel="process_and_directory"\n`,
   );
   await writeFile(
     recorder,

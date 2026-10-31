@@ -61,13 +61,14 @@ links = true
 # terminal application takes the mouse, Shift+right-click applies it.
 right_click = "menu"
 
-# Flash active terminals and mark inactive tabs when a bell rings.
 [terminal.bell]
-visual = true
-# macOS: also play "system" (the macOS alert sound) or a sound from
-# /System/Library/Sounds, such as "glass". volume (0 to 1) applies to named
-# sounds; the alert sound follows the macOS alert volume.
-audio = false
+# Flash active terminals and mark inactive tabs when a bell rings.
+visual = false
+# macOS plays a sound when a bell rings: "system" (the macOS alert sound) or a
+# sound from /System/Library/Sounds, such as "glass". volume (0 to 1) applies
+# to named sounds; the alert sound follows the macOS alert volume. Linux has
+# no audible bell.
+# audio = true # macOS default; Linux default: false
 sound = "system"
 volume = 0.5
 

@@ -72,11 +72,10 @@
       "description": "Terminal bell presentation settings.",
       "properties": {
         "audio": {
-          "default": false,
-          "description": "Play a sound when a bell rings in any terminal, focused or not.",
+          "description": "Play a sound when a bell rings in any terminal, focused or not; on by\ndefault on macOS.",
           "type": "boolean",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Bell and clipboard",
+          "x-huterm-group": "Bell",
           "x-huterm-label": "Audible bell",
           "x-huterm-order": 71,
           "x-huterm-platform": "macos",
@@ -91,7 +90,7 @@
           "default": "system",
           "description": "The sound the audible bell plays: `system`, the macOS alert sound, or\none from `/System/Library/Sounds`.",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Bell and clipboard",
+          "x-huterm-group": "Bell",
           "x-huterm-label": "Bell sound",
           "x-huterm-order": 72,
           "x-huterm-platform": "macos",
@@ -102,10 +101,10 @@
           }
         },
         "visual": {
-          "default": true,
+          "default": false,
           "type": "boolean",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Bell and clipboard",
+          "x-huterm-group": "Bell",
           "x-huterm-label": "Visual bell",
           "x-huterm-order": 70,
           "x-huterm-section": "terminal"
@@ -119,7 +118,7 @@
           "type": "number",
           "x-huterm-apply": "live",
           "x-huterm-control": "slider",
-          "x-huterm-group": "Bell and clipboard",
+          "x-huterm-group": "Bell",
           "x-huterm-label": "Bell volume",
           "x-huterm-order": 73,
           "x-huterm-platform": "macos",
@@ -8824,9 +8823,9 @@
           "default": "allow",
           "description": "Whether programs in the terminal may replace the system clipboard. Copy\nand Paste always work.",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Bell and clipboard",
+          "x-huterm-group": "Clipboard",
           "x-huterm-label": "Clipboard writes from programs",
-          "x-huterm-order": 80,
+          "x-huterm-order": 65,
           "x-huterm-section": "terminal"
         },
         "close_on_exit": {

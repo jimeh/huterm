@@ -337,7 +337,13 @@ mod tests {
         );
         assert_eq!(
             shown(setting("terminal.bell.visual"), &file, &defaults),
-            Some(Value::Boolean(true))
+            Some(Value::Boolean(false))
+        );
+        // The schema leaves out a default that differs by platform.
+        assert_eq!(setting("terminal.bell.audio").default, None);
+        assert_eq!(
+            shown(setting("terminal.bell.audio"), &file, &defaults),
+            Some(Value::Boolean(cfg!(target_os = "macos")))
         );
         assert_eq!(
             shown(setting("updates.check_interval_hours"), &file, &defaults),
