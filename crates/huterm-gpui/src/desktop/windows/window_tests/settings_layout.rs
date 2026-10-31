@@ -332,16 +332,25 @@ fn the_theme_mode_switch_works_from_the_keyboard(cx: &mut TestAppContext) {
         "[theme]\nlight = \"tokyo-night\"\ndark = \"tokyo-night\"\n"
     );
     assert_eq!(focus(&mut harness), "action:theme-mode");
-    // Left steps back to one theme; Space toggles.
+    // Left steps back to one theme.
     keys(&harness, "left");
     harness.wait_for("one theme to save", |cx| {
         settled(cx) && !file.text().contains("light")
     });
     assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
+    // Space opens the options on the current one, as on every segmented
+    // row; Down and Return pick Match system.
     keys(&harness, "space");
-    harness.wait_for("Space to toggle", |cx| {
+    assert_eq!(
+        with_view(&mut harness, |view, cx| view.menu_labels(cx)),
+        ["One theme", "Match system"]
+    );
+    keys(&harness, "down enter");
+    harness.wait_for("the menu's pick to save", |cx| {
         settled(cx) && file.text().contains("light")
     });
+    assert!(!with_view(&mut harness, |view, _| view.menu_open()));
+    assert_eq!(focus(&mut harness), "action:theme-mode");
 }
 
 /// A click on a theme card draws no ring, and keyboard focus on it does.

@@ -8,8 +8,8 @@
 //! keys it moves in one save (`Batch::Theme`).
 
 use gpui::{
-    AnyElement, Context, Div, FontWeight, SharedString, div, prelude::*, px,
-    svg,
+    AnyElement, Context, Div, FontWeight, SharedString, Window, div,
+    prelude::*, px, svg,
 };
 use huterm_ui::components::badge::{Tone as BadgeTone, badge};
 use huterm_ui::components::radio_group::RadioGroup;
@@ -19,8 +19,8 @@ use toml::Value;
 
 use super::super::super::overlay::{Swatch, mono_font_family, theme_is_dark};
 use super::super::Desktop;
-use super::SettingsView;
 use super::saving::Batch;
+use super::{MenuFor, MenuItem, MenuModel, MenuRow, SettingsView};
 use crate::assets::Icon;
 use crate::config::Theme;
 use crate::renderer::rgb_color as color;
@@ -263,12 +263,37 @@ impl SettingsView {
                 view.set_theme_auto(picked.as_ref() == "auto", cx);
             },
         ));
-        // Sized as the group is, so the wrapper changes no layout.
+        // The menu Space and Return open anchors to the switch.
+        let control = self.with_menu(MODE_KEY, group.into_any_element());
         div()
             .flex_none()
             .debug_selector(|| "settings-theme-mode".to_owned())
-            .child(group)
+            .child(control)
             .into_any_element()
+    }
+
+    /// Opens the Theme mode options under the switch, as Space and Return
+    /// open a segmented row's choices.
+    pub(super) fn open_theme_mode(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.locked() {
+            return;
+        }
+        let rows = [("single", "One theme"), ("auto", "Match system")]
+            .into_iter()
+            .map(|(value, label)| MenuRow::Item(MenuItem::new(value, label)))
+            .collect();
+        let opener = self.action_stop(MODE_KEY.to_owned(), cx);
+        self.show_menu(
+            MenuFor::ThemeMode,
+            MenuModel::new(rows),
+            opener,
+            window,
+            cx,
+        );
     }
 
     /// What the Theme mode row holds under its line: the slot cards while
@@ -475,7 +500,9 @@ impl SettingsView {
                         &handle,
                     )
                     .content(preview_block(preview.as_ref(), 52.0))
-                    .trailing(card_marks(name, marks, swatch));
+                    .when(marks.any(), |cards| {
+                        cards.footer(card_marks(name, marks, swatch))
+                    });
             }
             let cards = cards
                 .when_some(read_only.cloned(), |cards, reason| {
@@ -567,6 +594,12 @@ struct Marks {
     dark: bool,
 }
 
+impl Marks {
+    fn any(self) -> bool {
+        self.active || self.light || self.dark
+    }
+}
+
 fn icon(icon: Icon, color: gpui::Hsla) -> gpui::Svg {
     svg()
         .path(icon.asset_path())
@@ -575,8 +608,9 @@ fn icon(icon: Icon, color: gpui::Hsla) -> gpui::Svg {
         .text_color(color)
 }
 
-/// A card's marks beside its name: the light and dark mode themes, while
-/// the theme follows the system, and the theme in use.
+/// A card's marks under its name: the light and dark mode themes, while
+/// the theme follows the system, and the theme in use. They take a line of
+/// their own so the name keeps the card's width.
 fn card_marks(name: &str, marks: Marks, swatch: Swatch) -> Div {
     let mut row = div().flex().items_center().gap(px(3.0));
     for (on, slot) in [(marks.light, Slot::Light), (marks.dark, Slot::Dark)] {

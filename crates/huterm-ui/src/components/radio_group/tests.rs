@@ -187,7 +187,7 @@ fn an_accessible_name_replaces_the_label_for_assistive_technology(
 }
 
 #[gpui::test]
-fn stretched_cards_share_the_line_and_keep_their_trailing_element(
+fn stretched_cards_share_the_line_with_trailing_and_footer_elements(
     cx: &mut TestAppContext,
 ) {
     let handles: Vec<FocusHandle> =
@@ -207,7 +207,8 @@ fn stretched_cards_share_the_line_and_keep_their_trailing_element(
                     .option("light", "nord", true, &handles[0])
                     .trailing(status("light-status"))
                     .option("dark", "dracula", false, &handles[1])
-                    .trailing(status("dark-status")),
+                    .trailing(status("dark-status"))
+                    .footer(status("dark-footer")),
             )
             .into_any_element()
     });
@@ -219,6 +220,9 @@ fn stretched_cards_share_the_line_and_keep_their_trailing_element(
     assert!(light.right() > px(200.0), "{light:?}");
     assert!(dark.right() > px(450.0), "{dark:?}");
     assert!(dark.left() > light.right(), "{light:?} {dark:?}");
+    // A footer takes the line under the label.
+    let footer = cx.debug_bounds("dark-footer").expect("drawn");
+    assert!(footer.top() >= dark.bottom(), "{dark:?} {footer:?}");
 }
 
 #[gpui::test]
