@@ -4915,10 +4915,14 @@ impl WorkspaceView {
         [dim, background].into_iter().flatten()
     }
 
-    /// The `inactive_dim_background` darkening this frame drew over the
-    /// terminal under `corner`, the rounded patch beside a vertical tab bar,
-    /// and records it for tests.
-    fn corner_darkening(&self, corner: Bounds<Pixels>) -> Option<f32> {
+    /// The fill of `corner`, the rounded patch beside a vertical tab bar:
+    /// `background`, darkened as `inactive_dim_background` darkened the
+    /// pane beneath it this frame. A darkened fill is recorded for tests.
+    fn corner_fill(
+        &self,
+        corner: Bounds<Pixels>,
+        background: gpui::Hsla,
+    ) -> gpui::Hsla {
         let center = corner.center();
         let alpha =
             self.drawn_panes.borrow().as_ref().and_then(|(_, rects)| {
@@ -4933,8 +4937,10 @@ impl WorkspaceView {
                     .find(|(id, _)| *id == pane)
                     .map(|(_, alpha)| *alpha)
             });
-        self.drawn_focus.borrow_mut().corner_darkened = alpha;
-        alpha
+        let fill =
+            alpha.map(|alpha| background.blend(gpui::black().opacity(alpha)));
+        self.drawn_focus.borrow_mut().corner_darkened = fill;
+        fill.unwrap_or(background)
     }
 
     /// How many of `tab`'s panes `pane_elements` draws: each installed view
@@ -12790,11 +12796,7 @@ impl Render for WorkspaceView {
                     let outer = radius + px(1.0);
                     // The patch draws above the panes, so it carries the
                     // darkening of the pane beneath it.
-                    let fill = self
-                        .corner_darkening(corner)
-                        .map_or(background, |alpha| {
-                            background.blend(gpui::black().opacity(alpha))
-                        });
+                    let fill = self.corner_fill(corner, background);
                     root = root.child(
                         div()
                             .absolute()

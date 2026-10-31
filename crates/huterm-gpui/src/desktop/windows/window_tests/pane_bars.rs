@@ -541,11 +541,16 @@ fn the_rounded_corner_beside_a_vertical_tab_bar_darkens_with_its_pane(
         panes.title_bar = PaneTitleBarMode::Hidden;
         panes.inactive_dim_background = 0.4;
     });
+    let background = harness.update_view(window, |view, _, _| {
+        crate::renderer::rgb_color(view.config.theme.background)
+    });
+    let darkened = background.blend(gpui::black().opacity(0.4));
+    assert_ne!(darkened, background);
     harness.wait_for("the corner to darken with the unfocused pane", |cx| {
         pane_focused(cx, window, tab, second)
             && focus_marks(cx, window).is_some_and(|marks| {
                 marks.darkened == [(first, 0.4)]
-                    && marks.corner_darkened == Some(0.4)
+                    && marks.corner_darkened == Some(darkened)
             })
     });
     harness.invoke(window, ids::FOCUS_PANE_LEFT).unwrap();
