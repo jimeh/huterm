@@ -150,6 +150,7 @@ fn targeted_pills_outline_the_pill_bounds_in_every_position(
     harness.activate(window, tab);
     let pill = format!("tab-pill-{}", tab.get()).leak();
     let outline = format!("tab-pill-target-{}", tab.get()).leak();
+    let strip_outline = format!("tab-strip-target-{}", tab.get()).leak();
     for position in [
         TabPosition::Titlebar,
         TabPosition::Top,
@@ -181,6 +182,10 @@ fn targeted_pills_outline_the_pill_bounds_in_every_position(
         assert_eq!(
             bounds(&harness, window, outline),
             Some(pill_bounds),
+            "{position:?}"
+        );
+        assert!(
+            bounds(&harness, window, strip_outline).is_none(),
             "{position:?}"
         );
         harness.press(window, "escape");
@@ -228,4 +233,55 @@ fn targeted_strip_tabs_keep_their_shell_outline(cx: &mut TestAppContext) {
     assert!(bounds(&harness, window, outline).is_some());
     harness.press(window, "escape");
     assert!(bounds(&harness, window, outline).is_none());
+}
+
+#[gpui::test]
+#[cfg(target_os = "macos")]
+fn a_flush_active_strip_row_leaves_its_top_line_only_to_a_pane_border(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+        config.tabs.style = TabStyle::Strip;
+        config.tabs.position = TabPosition::Left;
+    });
+    let tab = harness.open_tab(ECHO);
+    let first = harness.first_pane(tab);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let shell = format!("tab-shell-{}", tab.get()).leak();
+    let top_line = format!("tab-strip-top-line-{}", tab.get()).leak();
+    // One pane: no pane border, so the row under the sidebar's title strip
+    // outlines its own top edge.
+    let row = bounds(&harness, window, shell).expect("strip row painted");
+    assert!(bounds(&harness, window, "pane-area-top-border").is_none());
+    assert_eq!(
+        bounds(&harness, window, top_line),
+        Some(Bounds::new(row.origin, size(row.size.width, px(1.0))))
+    );
+    // Two panes: the pane border spans the sidebar just above the row, which
+    // then leaves out its own line.
+    harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("two drawn panes", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .unwrap()
+                    .read(cx)
+                    .drawn_panes
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(_, panes)| panes.len() == 2)
+            })
+            .unwrap_or(false)
+    });
+    harness.cx.run_until_parked();
+    let layout = harness
+        .update_view(window, |view, window, _| view.chrome_layout(window));
+    assert_eq!(
+        bounds(&harness, window, "pane-area-top-border"),
+        Some(layout.top_chrome_border(true))
+    );
+    assert!(bounds(&harness, window, top_line).is_none());
 }

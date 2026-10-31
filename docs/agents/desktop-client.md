@@ -1261,9 +1261,12 @@ beside it.
 
 A title row without tabs has a one-point line above the pane area when the
 shown layout has multiple panes, including while zoomed, or a drawn visible
-pane title bar touches its top edge. Hover bars do not add this line. The line
-uses the terminal's actual origin, including a Linux client frame's inset;
-fullscreen, Quake, and server-decorated Linux windows have no such title row.
+pane title bar touches its top edge. That check compares the bar's top with the
+pane area's top exactly, so a bar placed with an inset never adds the line.
+Hover bars do not add it either. The line uses the terminal's actual origin,
+including a Linux client frame's inset; fullscreen, Quake, and server-decorated
+Linux windows have no such title row.
+
 Under a notch in non-native fullscreen the column and its edge run to the top
 of the screen, its rows stay below the safe area, and the strip beside it keeps
 the terminal background. While a top bar is visible or revealing, the macOS

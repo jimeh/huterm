@@ -1075,7 +1075,21 @@ fn vertical_strip_tab(
             tab.bg(colors.terminal)
                 .border_color(colors.border)
                 .border_b(px(1.0))
-                .when(!item.flush_start, |tab| tab.border_t(px(1.0)))
+                .when(!item.flush_start, |tab| {
+                    let id = item.id;
+                    tab.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(1.0))
+                            .bg(colors.border)
+                            .debug_selector(move || {
+                                format!("tab-strip-top-line-{}", id.get())
+                            }),
+                    )
+                })
                 .child(
                     div()
                         .absolute()
