@@ -1544,7 +1544,7 @@ impl TerminalView {
             cx.notify();
         }
         let (application, cell) =
-            self.application_mouse(event.position, event.modifiers, window);
+            self.application_wheel(event.position, event.modifiers, window);
         if self.mouse.wheel_route(application) {
             self.scroll.reset_wheel();
             self.input_queue.boundary();
@@ -1898,17 +1898,42 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Whether a press, motion, or release at `position` goes to the
+    /// program, and the cell it names. A press focuses its pane before it
+    /// routes, so an unfocused pane's program never sees motion.
     fn application_mouse(
         &self,
         position: gpui::Point<Pixels>,
         modifiers: GpuiModifiers,
         window: &Window,
     ) -> (bool, MousePosition) {
+        let focused = self.focus.is_focused(window);
+        self.application_route_at(position, modifiers, focused, window)
+    }
+
+    /// [`Self::application_mouse`] for the wheel, which reaches the program
+    /// in an unfocused pane too, since scrolling never moves focus. The
+    /// window must still be active.
+    fn application_wheel(
+        &self,
+        position: gpui::Point<Pixels>,
+        modifiers: GpuiModifiers,
+        window: &Window,
+    ) -> (bool, MousePosition) {
+        self.application_route_at(position, modifiers, true, window)
+    }
+
+    fn application_route_at(
+        &self,
+        position: gpui::Point<Pixels>,
+        modifiers: GpuiModifiers,
+        focused: bool,
+        window: &Window,
+    ) -> (bool, MousePosition) {
         let geometry = self.grid_geometry(window);
         let cell = geometry.cell(position);
-        let in_grid = geometry.contains(position)
-            && window.is_window_active()
-            && self.focus.is_focused(window);
+        let in_grid =
+            geometry.contains(position) && window.is_window_active() && focused;
         let position = position - self.content_bounds(window).origin;
         let route = self.snapshot.as_ref().is_some_and(|snapshot| {
             application_route(

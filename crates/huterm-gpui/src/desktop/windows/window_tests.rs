@@ -4113,6 +4113,130 @@ fn escape_or_losing_the_split_cancels_a_divider_drag(cx: &mut TestAppContext) {
     assert_eq!(harness.cx.update(|cx| root_weights(cx, tab)), None);
 }
 
+/// Whether `window` runs a divider drag.
+#[cfg(target_os = "macos")]
+fn divider_dragging(cx: &mut App, window: AnyWindowHandle) -> bool {
+    window
+        .update(cx, |root, _, cx| {
+            root.downcast::<WorkspaceView>()
+                .is_ok_and(|view| view.read(cx).divider_drag.is_some())
+        })
+        .unwrap_or(false)
+}
+
+impl DesktopHarness {
+    /// Starts a divider drag in `window` and moves it 120 points left,
+    /// returning where the pointer rests.
+    #[cfg(target_os = "macos")]
+    fn start_divider_drag(
+        &mut self,
+        window: AnyWindowHandle,
+    ) -> gpui::Point<Pixels> {
+        let start = self.divider_center(window);
+        let end = start + gpui::point(px(-120.0), px(0.0));
+        let mut visual = VisualTestContext::from_window(window, &self.cx);
+        visual.simulate_mouse_down(
+            start,
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        visual.simulate_mouse_move(
+            end,
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        self.wait_for("the drag to start", |cx| divider_dragging(cx, window));
+        end
+    }
+
+    /// Lets Control go down mid-drag and releases Left, which macOS GPUI
+    /// delivers as a Right release with Control cleared.
+    #[cfg(target_os = "macos")]
+    fn remapped_release(
+        &mut self,
+        window: AnyWindowHandle,
+        at: gpui::Point<Pixels>,
+    ) {
+        let mut visual = VisualTestContext::from_window(window, &self.cx);
+        visual.simulate_modifiers_change(gpui::Modifiers {
+            control: true,
+            ..gpui::Modifiers::default()
+        });
+        visual.simulate_mouse_up(
+            at,
+            MouseButton::Right,
+            gpui::Modifiers::none(),
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn a_remapped_right_release_ends_a_divider_drag(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, _, _) = harness.split_window(tab);
+    let end = harness.start_divider_drag(window);
+    harness.remapped_release(window, end);
+    harness.wait_for("the Right release to commit the weights", |cx| {
+        !divider_dragging(cx, window)
+            && root_weights(cx, tab).is_some_and(|weights| weights[0] < 500_000)
+    });
+    harness.update_view(window, |view, _, _| assert!(view.menu.is_none()));
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn a_right_click_during_a_divider_drag_opens_nothing_and_ends_nothing(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, _, second) = harness.split_window(tab);
+    let end = harness.start_divider_drag(window);
+    // A real Right click over the second pane's terminal, which opens its
+    // context menu outside a drag.
+    let click = harness
+        .update_view(window, |view, _, _| {
+            view.drawn_panes.borrow().as_ref().and_then(|(_, rects)| {
+                rects
+                    .iter()
+                    .find(|rect| rect.pane == second)
+                    .map(|rect| rect.terminal.center())
+            })
+        })
+        .expect("a drawn pane");
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_down(
+        click,
+        MouseButton::Right,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_up(
+        click,
+        MouseButton::Right,
+        gpui::Modifiers::none(),
+    );
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, _, _| {
+        assert!(view.menu.is_none(), "the Right press opened a menu");
+        assert!(
+            view.divider_drag.is_some(),
+            "the Right click ended the drag"
+        );
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(root_weights(cx, tab), Some(vec![500_000, 500_000]));
+    });
+    // Its release cleared the record, so the remapped release still ends
+    // the drag.
+    harness.remapped_release(window, end);
+    harness.wait_for("the Right release to commit the weights", |cx| {
+        !divider_dragging(cx, window)
+            && root_weights(cx, tab).is_some_and(|weights| weights[0] < 500_000)
+    });
+}
+
 #[gpui::test]
 fn resize_commands_move_the_pane_edge_and_stop_at_the_minimum(
     cx: &mut TestAppContext,
@@ -4203,6 +4327,81 @@ fn a_selection_drag_stops_at_its_panes_edge(cx: &mut TestAppContext) {
             other.read(cx).selection.is_none(),
             "the drag selected in the other pane"
         );
+    });
+}
+
+#[gpui::test]
+fn the_wheel_reaches_an_unfocused_panes_program_in_an_active_window(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{ScrollDelta, ScrollEvent, TouchPhase};
+    // Reports every motion and wheel as SGR, then prints each byte it
+    // receives as two hex digits.
+    const MOTION: &str = "stty raw -echo; \
+         printf '\\033[?1003h\\033[?1006hREADY'; \
+         while byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); \
+         [ -n \"$byte\" ]; do printf '%s' \"$byte\"; done";
+    // `ESC [ <` and the SGR wheel button, as the program prints them.
+    const WHEEL_UP: &str = "1b5b3c36343b";
+    const WHEEL_DOWN: &str = "1b5b3c36353b";
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(MOTION);
+    let (window, first, second) = harness.split_window(tab);
+    harness.focus(window, tab, second);
+    let centre = harness
+        .update_view(window, |view, _, _| {
+            view.drawn_panes.borrow().as_ref().and_then(|(_, rects)| {
+                rects
+                    .iter()
+                    .find(|rect| rect.pane == first)
+                    .map(|rect| rect.terminal.center())
+            })
+        })
+        .expect("a drawn pane");
+    let reported = |cx: &mut App| -> String {
+        pane_screen(cx, window, tab, first)
+            .and_then(|text| {
+                let (_, echoed) = text.split_once("READY")?;
+                Some(echoed.chars().filter(char::is_ascii_hexdigit).collect())
+            })
+            .unwrap_or_default()
+    };
+    let hover = |harness: &mut DesktopHarness| {
+        let mut visual = VisualTestContext::from_window(window, &harness.cx);
+        visual.simulate_mouse_move(centre, None, gpui::Modifiers::none());
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+    };
+    let wheel = |harness: &mut DesktopHarness, lines: f32| {
+        let mut visual = VisualTestContext::from_window(window, &harness.cx);
+        visual.simulate_event(ScrollEvent {
+            position: centre,
+            delta: ScrollDelta::Lines(gpui::point(0.0, lines)),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: TouchPhase::Moved,
+            ..Default::default()
+        });
+    };
+    // Motion over the unfocused pane, and the wheel down while the window
+    // is inactive, report nothing.
+    hover(&mut harness);
+    harness.deactivate(window);
+    wheel(&mut harness, -1.0);
+    harness.cx.run_until_parked();
+    harness.activate(window, tab);
+    hover(&mut harness);
+    // In the active window the wheel reaches the program. Input reaches
+    // it in order, so nothing came before.
+    wheel(&mut harness, 1.0);
+    harness.wait_for("the wheel to reach the unfocused pane", |cx| {
+        reported(cx).contains(WHEEL_UP)
+    });
+    harness.cx.update(|cx| {
+        let reported = reported(cx);
+        assert!(reported.starts_with(WHEEL_UP), "{reported}");
+        assert!(!reported.contains(WHEEL_DOWN), "{reported}");
+        assert!(pane_moves::pane_focused(cx, window, tab, second));
+        assert!(!pane_moves::pane_focused(cx, window, tab, first));
     });
 }
 
