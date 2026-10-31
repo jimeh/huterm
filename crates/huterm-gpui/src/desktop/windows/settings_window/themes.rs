@@ -33,8 +33,9 @@ pub(super) const NAME: &str = "theme.name";
 pub(super) const LIGHT: &str = "theme.light";
 pub(super) const DARK: &str = "theme.dark";
 
-/// The mode switch's focus stop.
-pub(super) const MODE_STOP: &str = "theme-mode";
+/// The mode switch's action key: Space and Return toggle it, and the
+/// arrows step to One theme or Match system.
+pub(super) const MODE_KEY: &str = "theme-mode";
 
 /// The light and dark mode cards' action keys, in order.
 pub(super) const SLOT_KEYS: [&str; 2] = ["theme-slot:light", "theme-slot:dark"];
@@ -121,13 +122,25 @@ impl SettingsView {
             .unwrap_or_else(|| self.theme_name())
     }
 
-    /// The theme in use for the system's mode now.
-    fn active_theme(&self, cx: &gpui::App) -> String {
+    /// The theme in use for the system's mode now, as the file chooses it.
+    pub(super) fn chosen_theme(&self, cx: &gpui::App) -> String {
         if self.theme_auto() {
             self.slot_theme(Slot::current(cx))
         } else {
             self.theme_name()
         }
+    }
+
+    /// The theme in use now, when the file's choice is: `None` while the
+    /// file fails to load, when Huterm keeps its last working settings, or
+    /// for a theme that does not resolve.
+    pub(super) fn active_theme(&self, cx: &gpui::App) -> Option<String> {
+        let name = self.chosen_theme(cx);
+        let resolves = self
+            .themes
+            .iter()
+            .any(|(theme, preview)| *theme == name && preview.is_some());
+        (resolves && !self.status.invalid()).then_some(name)
     }
 
     /// The slot the grid sets: the one chosen, else the system's now.
@@ -204,7 +217,7 @@ impl SettingsView {
             ]
         } else {
             [
-                (NAME, Some(self.active_theme(cx))),
+                (NAME, Some(self.chosen_theme(cx))),
                 (LIGHT, None),
                 (DARK, None),
             ]
@@ -283,7 +296,7 @@ impl SettingsView {
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let handle = self.stop(MODE_STOP, cx);
+        let handle = self.action_stop(MODE_KEY.to_owned(), cx);
         let focus = handle.clone();
         ToggleGroup::single(
             "settings-theme-mode",
@@ -315,6 +328,7 @@ impl SettingsView {
     ) -> AnyElement {
         let target = self.target_slot(cx);
         let current = Slot::current(cx);
+        let active = self.active_theme(cx).is_some();
         let mut cards =
             RadioGroup::new("settings-theme-slots", "Theme to choose", swatch)
                 .card(px(CARD_WIDTH * 2.0))
@@ -335,7 +349,7 @@ impl SettingsView {
                 .child(icon(slot.icon(), swatch.fg))
                 .child(slot.label())
                 .child(div().flex_1())
-                .when(slot == current, |header| {
+                .when(active && slot == current, |header| {
                     header.child(badge(
                         format!("settings-theme-slot-active-{}", slot.id()),
                         "Active",
@@ -345,6 +359,7 @@ impl SettingsView {
                 });
             cards = cards
                 .option(slot.id(), name.clone(), slot == target, &handle)
+                .accessible_name(format!("{} theme: {name}", slot.label()))
                 .content(
                     div()
                         .flex()
@@ -426,7 +441,7 @@ impl SettingsView {
             for (name, preview) in group {
                 let handle = self.action_stop(format!("theme:{name}"), cx);
                 let marks = Marks {
-                    active: *name == active,
+                    active: active.as_deref() == Some(name.as_str()),
                     light: light.as_deref() == Some(name.as_str()),
                     dark: dark.as_deref() == Some(name.as_str()),
                 };

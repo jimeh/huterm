@@ -289,6 +289,36 @@ fn arrows_on_the_mode_cards_pick_the_mode_the_theme_cards_set(
     );
 }
 
+#[gpui::test]
+fn the_theme_mode_switch_works_from_the_keyboard(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("layout-theme-mode", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    let mode =
+        with_view(&mut harness, |view, _| view.action_handle("theme-mode"));
+    keyboard_focus(&mut harness, &mode);
+    // Right steps to Match system, which starts both modes on the theme.
+    keys(&harness, "right");
+    harness.wait_for("Match system to save", |cx| {
+        settled(cx) && file.text().contains("light")
+    });
+    assert_eq!(
+        file.text(),
+        "[theme]\nlight = \"tokyo-night\"\ndark = \"tokyo-night\"\n"
+    );
+    assert_eq!(focus(&mut harness), "action:theme-mode");
+    // Left steps back to one theme; Space toggles.
+    keys(&harness, "left");
+    harness.wait_for("one theme to save", |cx| {
+        settled(cx) && !file.text().contains("light")
+    });
+    assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
+    keys(&harness, "space");
+    harness.wait_for("Space to toggle", |cx| {
+        settled(cx) && file.text().contains("light")
+    });
+}
+
 /// A click on a theme card draws no ring, and keyboard focus on it does.
 fn a_theme_card_rings_for_the_keyboard_alone(harness: &mut DesktopHarness) {
     // The click lands at the card's center, so the cards must be on screen

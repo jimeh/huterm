@@ -168,6 +168,25 @@ fn a_group_reports_radio_buttons_and_their_state(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn an_accessible_name_replaces_the_label_for_assistive_technology(
+    cx: &mut TestAppContext,
+) {
+    let focus = cx.update(|cx| cx.focus_handle());
+    let (_, cx) = host(cx, move |_, _| {
+        RadioGroup::new("slots", "Theme to choose", tokens())
+            .card(px(200.0))
+            .option("light", "nord", true, &focus)
+            .accessible_name("Light mode theme: nord")
+            .into_any_element()
+    });
+    cx.update(|window, _| {
+        let radio = &a11y_labelled(window, "Light mode theme: nord")["aria"];
+        assert_eq!(radio["role"], "RadioButton");
+        assert_eq!(radio["toggled"], "True");
+    });
+}
+
+#[gpui::test]
 fn a_pointer_click_checks_and_focuses_a_radio(cx: &mut TestAppContext) {
     let (probe, cx) = themes(cx, Kind::Cards);
     click(cx, "Solarized");

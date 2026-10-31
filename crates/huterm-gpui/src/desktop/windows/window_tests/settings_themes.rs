@@ -6,6 +6,7 @@ use super::super::system_appearance::tests::DARK;
 use super::settings::{
     ScratchConfig, open_settings, settled, with_view, with_window,
 };
+use super::settings_controls::break_file;
 use super::*;
 
 fn press(harness: &mut DesktopHarness, key: &str) {
@@ -92,4 +93,34 @@ fn reset_clears_every_theme_choice_but_keeps_overrides(
         settled(cx) && !file.text().contains("dracula")
     });
     assert_eq!(file.text(), "theme = { background = \"#000000\" }\n");
+}
+
+#[gpui::test]
+fn a_theme_that_does_not_resolve_is_never_marked_active(
+    cx: &mut TestAppContext,
+) {
+    DARK.set(false);
+    let file = ScratchConfig::new(
+        "theme-active-missing",
+        "[theme]\nlight = \"one-light\"\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    harness.wait_for("the themes to list", |cx| {
+        settled(cx)
+            && super::settings::settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, cx| view.marked_active(cx).is_some())
+                    .unwrap_or(false)
+            })
+    });
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.marked_active(cx).as_deref(), Some("one-light"));
+    });
+    // The file now names a theme that does not exist: Huterm keeps its
+    // last working theme, so the file's choice is not the one in use.
+    break_file(&mut harness, &file, "[theme]\nlight = \"nope\"\n");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.marked_active(cx), None);
+    });
 }

@@ -56,16 +56,29 @@ pub(super) fn resolve(
             resolve_named(name, inline, directory, consumed, &mut Vec::new())?;
         overrides.apply(base)
     };
-    let light_theme = resolve(light)?;
+    let light_theme = resolve(light)
+        .map_err(|error| named(error, "light", selected.light.is_some()))?;
     let dark_theme = if dark == light {
         light_theme.clone()
     } else {
-        resolve(dark)?
+        resolve(dark)
+            .map_err(|error| named(error, "dark", selected.dark.is_some()))?
     };
     Ok(ThemePair {
         light: light_theme,
         dark: dark_theme,
     })
+}
+
+/// A theme error under the `[theme]` key that chose the theme, when the
+/// file `set` it.
+fn named(error: ConfigError, key: &str, set: bool) -> ConfigError {
+    match error {
+        ConfigError::Theme(message) if set => {
+            ConfigError::Theme(format!("[theme] {key}: {message}"))
+        }
+        error => error,
+    }
 }
 
 /// The bundled [`DEFAULT`] theme, for a configuration that sets none.

@@ -920,6 +920,11 @@ impl SettingsView {
                     self.choose_theme(argument, cx);
                 }
             }
+            // Space and Return switch between one theme and one per mode.
+            "theme-mode" => {
+                let auto = self.theme_auto();
+                self.set_theme_auto(!auto, cx);
+            }
             "theme-slot" => {
                 if let Some(slot) = themes::Slot::from_id(argument) {
                     self.theme_slot = Some(slot);
@@ -2049,7 +2054,13 @@ impl SettingsView {
             // A group's arrows run these; they step nothing there.
             ids::SETTINGS_INCREASE | ids::SETTINGS_DECREASE => {
                 let forward = invocation.id == ids::SETTINGS_INCREASE;
-                if !self.step_filter(forward, window) {
+                if self.focused_action(window).as_deref()
+                    == Some(themes::MODE_KEY)
+                {
+                    // On, as a segmented control's next segment, is Match
+                    // system.
+                    self.set_theme_auto(forward, cx);
+                } else if !self.step_filter(forward, window) {
                     self.step(Jump::Step(forward), window, cx);
                 }
             }
@@ -3383,6 +3394,11 @@ impl SettingsView {
     ) {
         self.action_stop(key.to_owned(), cx).focus(window, cx);
         self.command(ids::SETTINGS_TOGGLE, window, cx).unwrap();
+    }
+
+    /// The theme the picker marks Active, if any.
+    pub(super) fn marked_active(&self, cx: &App) -> Option<String> {
+        self.active_theme(cx)
     }
 
     /// Picks one theme, or one for each mode, as the mode switch does.

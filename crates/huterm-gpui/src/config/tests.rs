@@ -578,8 +578,9 @@ fn light_and_dark_pick_a_theme_for_each_mode_and_fall_back_to_name() {
     assert_eq!(both.themes.light.ansi[1], rgb(0x0001_0203));
     assert_eq!(both.themes.dark.ansi[1], rgb(0x0001_0203));
     assert_eq!(both.themes.dark.background, theme("dracula").background);
-    // An unknown theme fails even in the mode not in use.
-    assert!(parse("[theme]\nlight = 'nope'").is_err());
+    // An unknown theme fails even in the mode not in use, naming its key.
+    let error = parse("[theme]\nlight = 'nope'").unwrap_err().to_string();
+    assert!(error.contains("[theme] light: unknown theme"), "{error}");
     // Only the selected `[theme]` picks themes.
     assert!(parse("[themes.mine]\nlight = 'nord'").is_err());
     assert!(parse("[themes.mine]\ndark = 'nord'").is_err());
