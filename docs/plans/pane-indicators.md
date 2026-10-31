@@ -1,6 +1,9 @@
 # Pane sync and zoom indicators
 
-Status: implemented in PR #360.
+Status: implemented in PR #360. PR #362 made `title_bar` at 0.5 opacity
+the default for both states and dropped `dividers` from the zoom
+indicator; [configuration](../configuration.md#sync-and-zoom-indicators)
+describes the current behavior.
 
 Replaces the indicator part of [pane input sync](pane-input-sync.md) (#353).
 

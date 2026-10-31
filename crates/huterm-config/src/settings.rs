@@ -1179,9 +1179,11 @@ mod tests {
     #[test]
     fn focus_indicators_are_sliders_that_read_off_at_zero() {
         let model = SettingsModel::load().unwrap();
-        for (path, max) in
-            [("panes.focus_accent", 1.0), ("panes.inactive_dim", 0.8)]
-        {
+        for (path, max) in [
+            ("panes.focus_accent", 1.0),
+            ("panes.inactive_dim", 0.8),
+            ("panes.inactive_dim_background", 0.5),
+        ] {
             let setting = model.setting(path).unwrap();
             assert_eq!(setting.control, Some(Control::Slider), "{path}");
             assert_eq!(setting.zero_label.as_deref(), Some("Off"), "{path}");
@@ -1206,13 +1208,41 @@ mod tests {
         );
         // The position also places the accent under hidden bars, so it
         // shows in every mode, as dimming does.
-        for path in ["panes.title_bar_position", "panes.inactive_dim"] {
+        for path in [
+            "panes.title_bar_position",
+            "panes.inactive_dim",
+            "panes.inactive_dim_background",
+        ] {
             assert_eq!(
                 model.setting(path).unwrap().visible_when,
                 Vec::new(),
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn zoom_style_choices_exclude_dividers_while_sync_keeps_it() {
+        let model = SettingsModel::load().unwrap();
+        let choices = |path: &str| {
+            let SettingKind::Choice(choices) =
+                &model.setting(path).unwrap().kind
+            else {
+                panic!("{path} is not a choice");
+            };
+            choices
+                .iter()
+                .map(|choice| choice.value.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            choices("panes.zoom_indicator.style"),
+            ["outline", "glow", "edge", "title_bar", "off"]
+        );
+        assert_eq!(
+            choices("panes.sync_indicator.style"),
+            ["outline", "dividers", "glow", "edge", "title_bar", "off"]
+        );
     }
 
     #[test]
@@ -1229,7 +1259,7 @@ mod tests {
         };
         let visible =
             |path: &str| model.setting(path).unwrap().visible_when.clone();
-        // Under zoom, `dividers` draws nothing, so it shows no rows.
+        // Zoom styles exclude `dividers`.
         for (table, lines, opacity, pattern) in [
             (
                 "sync_indicator",
@@ -1294,7 +1324,7 @@ mod tests {
             .filter(|setting| setting.path.contains("_indicator."))
             .map(|setting| setting.order)
             .collect();
-        assert_eq!(orders, (41..=48).collect::<Vec<_>>());
+        assert_eq!(orders, (42..=49).collect::<Vec<_>>());
     }
 
     #[test]

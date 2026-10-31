@@ -1469,11 +1469,12 @@ fn a_search_matches_a_description_as_it_reads(cx: &mut TestAppContext) {
 /// A row of each control type: a switch, a select, a segmented control, a
 /// slider, a stepper, modifier chips, and a text field, and Theme mode,
 /// whose theme cards sit under its line.
-const CONTROL_ROWS: [(SectionId, &str); 8] = [
+const CONTROL_ROWS: [(SectionId, &str); 9] = [
     (SectionId::Terminal, "terminal.bell.visual"),
     (SectionId::Tabs, "tabs.label"),
     (SectionId::Tabs, "tabs.style"),
     (SectionId::Panes, "panes.inactive_dim"),
+    (SectionId::Panes, "panes.inactive_dim_background"),
     (SectionId::Appearance, "font.size"),
     (SectionId::Terminal, "terminal.link_modifiers"),
     (SectionId::Scrollback, "terminal.scrollback_bytes"),
@@ -1532,7 +1533,7 @@ fn a_rows_height_does_not_depend_on_whether_the_file_sets_it(
              scrollback_bytes = \"64MiB\"\n\n\
              [terminal.bell]\nvisual = false\n\n\
              [tabs]\nlabel = \"smart\"\nstyle = \"pill\"\n\n\
-             [panes]\ninactive_dim = 0.2\n\n\
+             [panes]\ninactive_dim = 0.2\ninactive_dim_background = 0.0\n\n\
              [font]\nsize = 14.0\n\n\
              [theme]\nname = \"tokyo-night\"\n"
         ),

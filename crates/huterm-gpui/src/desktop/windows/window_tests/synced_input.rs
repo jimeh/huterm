@@ -428,7 +428,11 @@ fn sync_mark_nodes(cx: &mut App, window: AnyWindowHandle) -> usize {
 }
 
 /// How many state marks named `label` `window`'s accessibility tree holds.
-fn mark_nodes(cx: &mut App, window: AnyWindowHandle, label: &str) -> usize {
+pub(super) fn mark_nodes(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    label: &str,
+) -> usize {
     let json = window
         .update(cx, |_, window, _| window.debug_a11y_tree_json())
         .unwrap()

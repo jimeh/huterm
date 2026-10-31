@@ -778,7 +778,7 @@
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Drag panes with",
-          "x-huterm-order": 39,
+          "x-huterm-order": 40,
           "x-huterm-section": "panes"
         },
         "focus_accent": {
@@ -823,6 +823,22 @@
           "x-huterm-step": 0.05,
           "x-huterm-zero-label": "Off"
         },
+        "inactive_dim_background": {
+          "default": 0.0,
+          "description": "How much the panes without focus darken toward black, background\nincluded, from 0 (off) to 0.5 (50%).",
+          "format": "float",
+          "maximum": 0.5,
+          "minimum": 0,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Darken unfocused panes",
+          "x-huterm-order": 39,
+          "x-huterm-section": "panes",
+          "x-huterm-step": 0.05,
+          "x-huterm-zero-label": "Off"
+        },
         "layout_cycle": {
           "default": [
             "columns",
@@ -843,7 +859,7 @@
           "x-huterm-apply": "live",
           "x-huterm-group": "Pane layouts",
           "x-huterm-label": "Layout cycle",
-          "x-huterm-order": 60,
+          "x-huterm-order": 61,
           "x-huterm-section": "panes"
         },
         "layouts": {
@@ -873,7 +889,7 @@
           "x-huterm-apply": "live",
           "x-huterm-group": "Pane layouts",
           "x-huterm-label": "Pane layouts",
-          "x-huterm-order": 50,
+          "x-huterm-order": 51,
           "x-huterm-section": "panes"
         },
         "sync_indicator": {
@@ -979,7 +995,7 @@
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Pane zoom",
-          "x-huterm-order": 40,
+          "x-huterm-order": 41,
           "x-huterm-section": "panes"
         },
         "zoom_indicator": {
@@ -9307,7 +9323,7 @@
       "description": "`[panes.sync_indicator]`: how a tab that syncs input marks its panes.",
       "properties": {
         "opacity": {
-          "default": 0.8999999761581421,
+          "default": 0.5,
           "description": "How strongly the sync indicator draws, from 0.1 to 1.",
           "format": "float",
           "maximum": 1,
@@ -9317,7 +9333,7 @@
           "x-huterm-control": "slider",
           "x-huterm-group": "Input sync indicator",
           "x-huterm-label": "Sync indicator opacity",
-          "x-huterm-order": 43,
+          "x-huterm-order": 44,
           "x-huterm-section": "panes",
           "x-huterm-step": 0.05,
           "x-huterm-visible-when": [
@@ -9354,7 +9370,7 @@
           "x-huterm-apply": "live",
           "x-huterm-group": "Input sync indicator",
           "x-huterm-label": "Sync indicator pattern",
-          "x-huterm-order": 44,
+          "x-huterm-order": 45,
           "x-huterm-section": "panes",
           "x-huterm-visible-when": [
             {
@@ -9377,12 +9393,12 @@
               "$ref": "#/definitions/IndicatorStyle"
             }
           ],
-          "default": "outline",
+          "default": "title_bar",
           "description": "How a syncing tab marks its panes: an `outline` with matching\ndividers, the `dividers` alone, a `glow`, an `edge` bar, a\n`title_bar` tint, or `off`.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Input sync indicator",
           "x-huterm-label": "Sync indicator",
-          "x-huterm-order": 41,
+          "x-huterm-order": 42,
           "x-huterm-section": "panes"
         },
         "width": {
@@ -9396,7 +9412,7 @@
           "x-huterm-control": "slider",
           "x-huterm-group": "Input sync indicator",
           "x-huterm-label": "Sync indicator width",
-          "x-huterm-order": 42,
+          "x-huterm-order": 43,
           "x-huterm-section": "panes",
           "x-huterm-step": 1,
           "x-huterm-unit": "pt",
@@ -10070,7 +10086,7 @@
       "description": "`[panes.zoom_indicator]`: how a tab showing a zoomed pane marks it.",
       "properties": {
         "opacity": {
-          "default": 0.800000011920929,
+          "default": 0.5,
           "description": "How strongly the zoom indicator draws, from 0.1 to 1.",
           "format": "float",
           "maximum": 1,
@@ -10080,7 +10096,7 @@
           "x-huterm-control": "slider",
           "x-huterm-group": "Zoom indicator",
           "x-huterm-label": "Zoom indicator opacity",
-          "x-huterm-order": 47,
+          "x-huterm-order": 48,
           "x-huterm-section": "panes",
           "x-huterm-step": 0.05,
           "x-huterm-visible-when": [
@@ -10113,7 +10129,7 @@
           "x-huterm-apply": "live",
           "x-huterm-group": "Zoom indicator",
           "x-huterm-label": "Zoom indicator pattern",
-          "x-huterm-order": 48,
+          "x-huterm-order": 49,
           "x-huterm-section": "panes",
           "x-huterm-visible-when": [
             {
@@ -10129,15 +10145,15 @@
         "style": {
           "allOf": [
             {
-              "$ref": "#/definitions/IndicatorStyle"
+              "$ref": "#/definitions/ZoomIndicatorStyle"
             }
           ],
-          "default": "outline",
-          "description": "How a tab showing a zoomed pane marks it: an `outline`, a `glow`, an\n`edge` bar, a `title_bar` tint, or `off`, while `dividers` draws\nnothing because a zoomed tab shows none.",
+          "default": "title_bar",
+          "description": "How a tab showing a zoomed pane marks it: an `outline`, a `glow`, an\n`edge` bar, a `title_bar` tint, or `off`.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Zoom indicator",
           "x-huterm-label": "Zoom indicator",
-          "x-huterm-order": 45,
+          "x-huterm-order": 46,
           "x-huterm-section": "panes"
         },
         "width": {
@@ -10151,7 +10167,7 @@
           "x-huterm-control": "slider",
           "x-huterm-group": "Zoom indicator",
           "x-huterm-label": "Zoom indicator width",
-          "x-huterm-order": 46,
+          "x-huterm-order": 47,
           "x-huterm-section": "panes",
           "x-huterm-step": 1,
           "x-huterm-unit": "pt",
@@ -10172,6 +10188,41 @@
         }
       },
       "type": "object"
+    },
+    "ZoomIndicatorStyle": {
+      "description": "The shape that marks a tab showing a zoomed pane.",
+      "oneOf": [
+        {
+          "const": "outline",
+          "description": "One line around the zoomed pane that follows the window's corners.",
+          "type": "string",
+          "x-huterm-label": "Outline"
+        },
+        {
+          "const": "glow",
+          "description": "A soft glow inside the zoomed pane's edge.",
+          "type": "string",
+          "x-huterm-label": "Glow"
+        },
+        {
+          "const": "edge",
+          "description": "A bar along the top of the zoomed pane.",
+          "type": "string",
+          "x-huterm-label": "Edge bar"
+        },
+        {
+          "const": "title_bar",
+          "description": "A tint on the zoomed pane's title bar, or a small chip where its bar\nis not shown.",
+          "type": "string",
+          "x-huterm-label": "Title bar tint"
+        },
+        {
+          "const": "off",
+          "description": "No shape; the tab bar and title bar marks stay.",
+          "type": "string",
+          "x-huterm-label": "Off"
+        }
+      ]
     }
   },
   "properties": {

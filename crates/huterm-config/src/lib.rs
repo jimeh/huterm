@@ -1248,6 +1248,11 @@ pub const MAX_LAYOUTS: usize = 64;
 /// The most `[panes] inactive_dim` dims a pane, so it never goes dark.
 pub const MAX_INACTIVE_DIM: f32 = 0.8;
 
+/// The most `[panes] inactive_dim_background` darkens a pane: at 0.5 a white
+/// light-theme background becomes mid grey (#808080), where black text keeps
+/// about 5.3:1 contrast. At 0.6 (#666666), contrast falls below WCAG AA's 4.5:1.
+pub const MAX_INACTIVE_DIM_BACKGROUND: f32 = 0.5;
+
 /// The thinnest and thickest a pane indicator's lines draw, in points.
 pub const MIN_INDICATOR_WIDTH: u8 = 1;
 pub const MAX_INDICATOR_WIDTH: u8 = 6;
@@ -1287,6 +1292,41 @@ pub enum IndicatorStyle {
     Edge,
     /// A tint on each marked pane's title bar, or a small chip where its
     /// bar is not shown.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Title bar tint"))
+    )]
+    TitleBar,
+    /// No shape; the tab bar and title bar marks stay.
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Off")))]
+    Off,
+}
+
+/// The shape that marks a tab showing a zoomed pane.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ZoomIndicatorStyle {
+    /// One line around the zoomed pane that follows the window's corners.
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Outline"))
+    )]
+    Outline,
+    /// A soft glow inside the zoomed pane's edge.
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Glow")))]
+    Glow,
+    /// A bar along the top of the zoomed pane.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Edge bar"))
+    )]
+    Edge,
+    /// A tint on the zoomed pane's title bar, or a small chip where its bar
+    /// is not shown.
     #[cfg_attr(
         feature = "schema",
         schemars(extend("x-huterm-label" = "Title bar tint"))
@@ -1344,7 +1384,7 @@ pub struct SyncIndicatorConfig {
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Input sync indicator",
         "x-huterm-label" = "Sync indicator",
-        "x-huterm-order" = 41,
+        "x-huterm-order" = 42,
         "x-huterm-apply" = "live",
     )))]
     pub style: IndicatorStyle,
@@ -1353,7 +1393,7 @@ pub struct SyncIndicatorConfig {
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Input sync indicator",
         "x-huterm-label" = "Sync indicator width",
-        "x-huterm-order" = 42,
+        "x-huterm-order" = 43,
         "x-huterm-apply" = "live",
         "x-huterm-unit" = "pt",
         "x-huterm-step" = 1,
@@ -1371,7 +1411,7 @@ pub struct SyncIndicatorConfig {
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Input sync indicator",
         "x-huterm-label" = "Sync indicator opacity",
-        "x-huterm-order" = 43,
+        "x-huterm-order" = 44,
         "x-huterm-apply" = "live",
         "x-huterm-step" = 0.05,
         "x-huterm-control" = "slider",
@@ -1390,7 +1430,7 @@ pub struct SyncIndicatorConfig {
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Input sync indicator",
         "x-huterm-label" = "Sync indicator pattern",
-        "x-huterm-order" = 44,
+        "x-huterm-order" = 45,
         "x-huterm-apply" = "live",
         "x-huterm-visible-when" = [
             {"setting": "panes.sync_indicator.style", "equals": "outline"},
@@ -1404,9 +1444,9 @@ pub struct SyncIndicatorConfig {
 impl Default for SyncIndicatorConfig {
     fn default() -> Self {
         Self {
-            style: IndicatorStyle::Outline,
+            style: IndicatorStyle::TitleBar,
             width: 2,
-            opacity: 0.9,
+            opacity: 0.5,
             pattern: LinePattern::Dashed,
         }
     }
@@ -1429,22 +1469,21 @@ impl From<SyncIndicatorConfig> for IndicatorLook {
 #[serde(default, deny_unknown_fields)]
 pub struct ZoomIndicatorConfig {
     /// How a tab showing a zoomed pane marks it: an `outline`, a `glow`, an
-    /// `edge` bar, a `title_bar` tint, or `off`, while `dividers` draws
-    /// nothing because a zoomed tab shows none.
+    /// `edge` bar, a `title_bar` tint, or `off`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Zoom indicator",
         "x-huterm-label" = "Zoom indicator",
-        "x-huterm-order" = 45,
+        "x-huterm-order" = 46,
         "x-huterm-apply" = "live",
     )))]
-    pub style: IndicatorStyle,
+    pub style: ZoomIndicatorStyle,
     /// The thickness of the zoom indicator's lines, from 1 to 6 points.
     #[cfg_attr(feature = "schema", schemars(range(min = 1, max = 6), extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Zoom indicator",
         "x-huterm-label" = "Zoom indicator width",
-        "x-huterm-order" = 46,
+        "x-huterm-order" = 47,
         "x-huterm-apply" = "live",
         "x-huterm-unit" = "pt",
         "x-huterm-step" = 1,
@@ -1461,7 +1500,7 @@ pub struct ZoomIndicatorConfig {
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Zoom indicator",
         "x-huterm-label" = "Zoom indicator opacity",
-        "x-huterm-order" = 47,
+        "x-huterm-order" = 48,
         "x-huterm-apply" = "live",
         "x-huterm-step" = 0.05,
         "x-huterm-control" = "slider",
@@ -1479,7 +1518,7 @@ pub struct ZoomIndicatorConfig {
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Zoom indicator",
         "x-huterm-label" = "Zoom indicator pattern",
-        "x-huterm-order" = 48,
+        "x-huterm-order" = 49,
         "x-huterm-apply" = "live",
         "x-huterm-visible-when" = [
             {"setting": "panes.zoom_indicator.style", "equals": "outline"},
@@ -1492,9 +1531,9 @@ pub struct ZoomIndicatorConfig {
 impl Default for ZoomIndicatorConfig {
     fn default() -> Self {
         Self {
-            style: IndicatorStyle::Outline,
+            style: ZoomIndicatorStyle::TitleBar,
             width: 2,
-            opacity: 0.8,
+            opacity: 0.5,
             pattern: LinePattern::Solid,
         }
     }
@@ -1503,7 +1542,13 @@ impl Default for ZoomIndicatorConfig {
 impl From<ZoomIndicatorConfig> for IndicatorLook {
     fn from(config: ZoomIndicatorConfig) -> Self {
         Self {
-            style: config.style,
+            style: match config.style {
+                ZoomIndicatorStyle::Outline => IndicatorStyle::Outline,
+                ZoomIndicatorStyle::Glow => IndicatorStyle::Glow,
+                ZoomIndicatorStyle::Edge => IndicatorStyle::Edge,
+                ZoomIndicatorStyle::TitleBar => IndicatorStyle::TitleBar,
+                ZoomIndicatorStyle::Off => IndicatorStyle::Off,
+            },
             width: config.width,
             opacity: config.opacity,
             pattern: config.pattern,
@@ -1605,13 +1650,26 @@ pub struct PanesConfig {
         "x-huterm-zero-label" = "Off",
     )))]
     pub inactive_dim: f32,
+    /// How much the panes without focus darken toward black, background
+    /// included, from 0 (off) to 0.5 (50%).
+    #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 0.5), extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Darken unfocused panes",
+        "x-huterm-order" = 39,
+        "x-huterm-apply" = "live",
+        "x-huterm-step" = 0.05,
+        "x-huterm-control" = "slider",
+        "x-huterm-zero-label" = "Off",
+    )))]
+    pub inactive_dim_background: f32,
     /// Hold these modifiers to drag a pane from anywhere inside it. Defaults to
     /// `cmd-ctrl` on macOS and `ctrl-alt` on Linux; `off` turns it off.
     #[cfg_attr(feature = "schema", schemars(with = "PaneDrag", extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Drag panes with",
-        "x-huterm-order" = 39,
+        "x-huterm-order" = 40,
         "x-huterm-apply" = "live",
     )))]
     pub drag_modifier: Option<PaneDrag>,
@@ -1621,7 +1679,7 @@ pub struct PanesConfig {
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Pane zoom",
-        "x-huterm-order" = 40,
+        "x-huterm-order" = 41,
         "x-huterm-apply" = "live",
     )))]
     pub zoom: PaneZoomScope,
@@ -1637,7 +1695,7 @@ pub struct PanesConfig {
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Pane layouts",
         "x-huterm-label" = "Pane layouts",
-        "x-huterm-order" = 50,
+        "x-huterm-order" = 51,
         "x-huterm-apply" = "live",
         "maxProperties" = MAX_LAYOUTS,
         "propertyNames" = crate::schema::user_layout_name(),
@@ -1651,7 +1709,7 @@ pub struct PanesConfig {
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Pane layouts",
         "x-huterm-label" = "Layout cycle",
-        "x-huterm-order" = 60,
+        "x-huterm-order" = 61,
         "x-huterm-apply" = "live",
         "minItems" = 1,
         "uniqueItems" = true,
@@ -1670,6 +1728,7 @@ impl Default for PanesConfig {
             title_bar_hide_delay_ms: 400,
             focus_accent: 0.0,
             inactive_dim: 0.2,
+            inactive_dim_background: 0.0,
             drag_modifier: None,
             zoom: PaneZoomScope::default(),
             sync_indicator: SyncIndicatorConfig::default(),
@@ -1734,6 +1793,14 @@ impl PanesConfig {
         if !(0.0..=MAX_INACTIVE_DIM).contains(&self.inactive_dim) {
             return Err(format!(
                 "panes.inactive_dim must be between 0 and {MAX_INACTIVE_DIM}"
+            ));
+        }
+        if !(0.0..=MAX_INACTIVE_DIM_BACKGROUND)
+            .contains(&self.inactive_dim_background)
+        {
+            return Err(format!(
+                "panes.inactive_dim_background must be between 0 and \
+                 {MAX_INACTIVE_DIM_BACKGROUND}"
             ));
         }
         for (key, look) in [
@@ -3625,6 +3692,45 @@ mod panes_tests {
     }
 
     #[test]
+    fn background_dimming_accepts_its_range_and_rejects_the_rest() {
+        assert_eq!(panes("").unwrap().inactive_dim_background, 0.0);
+        for amount in [0.0, 0.5] {
+            let config =
+                panes(&format!("[panes]\ninactive_dim_background = {amount}"))
+                    .unwrap();
+            assert_eq!(config.inactive_dim_background, amount);
+        }
+        for amount in ["0.51", "-0.01", "nan", "inf"] {
+            assert_eq!(
+                panes(&format!("[panes]\ninactive_dim_background = {amount}"))
+                    .unwrap_err(),
+                "panes.inactive_dim_background must be between 0 and 0.5",
+                "{amount}"
+            );
+        }
+    }
+
+    #[test]
+    fn dividers_are_a_sync_style_only() {
+        assert_eq!(
+            panes("[panes.sync_indicator]\nstyle = 'dividers'")
+                .unwrap()
+                .sync_indicator
+                .style,
+            IndicatorStyle::Dividers
+        );
+        let error =
+            panes("[panes.zoom_indicator]\nstyle = 'dividers'").unwrap_err();
+        assert!(error.contains("unknown variant `dividers`"), "{error}");
+        assert!(
+            error.contains(
+                "expected one of `outline`, `glow`, `edge`, `title_bar`, `off`"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn indicator_tables_fill_from_their_own_defaults() {
         let defaults = panes("").unwrap();
         let sync = IndicatorLook::from(defaults.sync_indicator);
@@ -3632,18 +3738,18 @@ mod panes_tests {
         assert_eq!(
             sync,
             IndicatorLook {
-                style: IndicatorStyle::Outline,
+                style: IndicatorStyle::TitleBar,
                 width: 2,
-                opacity: 0.9,
+                opacity: 0.5,
                 pattern: LinePattern::Dashed,
             }
         );
         assert_eq!(
             zoom,
             IndicatorLook {
-                style: IndicatorStyle::Outline,
+                style: IndicatorStyle::TitleBar,
                 width: 2,
-                opacity: 0.8,
+                opacity: 0.5,
                 pattern: LinePattern::Solid,
             }
         );
@@ -3666,7 +3772,6 @@ mod panes_tests {
         );
         for (name, style) in [
             ("outline", IndicatorStyle::Outline),
-            ("dividers", IndicatorStyle::Dividers),
             ("glow", IndicatorStyle::Glow),
             ("edge", IndicatorStyle::Edge),
             ("title_bar", IndicatorStyle::TitleBar),
@@ -3675,7 +3780,11 @@ mod panes_tests {
             let config =
                 panes(&format!("[panes.zoom_indicator]\nstyle = '{name}'"))
                     .unwrap();
-            assert_eq!(config.zoom_indicator.style, style, "{name}");
+            assert_eq!(
+                IndicatorLook::from(config.zoom_indicator).style,
+                style,
+                "{name}"
+            );
         }
         for (name, pattern) in [
             ("solid", LinePattern::Solid),

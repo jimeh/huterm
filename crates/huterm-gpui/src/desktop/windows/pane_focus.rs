@@ -1,35 +1,46 @@
 //! Which panes of a split tab draw a focus indicator under `[panes]
-//! focus_accent` and `inactive_dim`, and how strongly. Both stay off while
-//! only one pane shows, as in a zoomed or single-pane tab.
+//! focus_accent`, `inactive_dim`, and `inactive_dim_background`, and how
+//! strongly. All stay off while only one pane shows, as in a zoomed or
+//! single-pane tab.
 
-use gpui::{Bounds, Pixels};
+use gpui::{Bounds, Hsla, Pixels};
 use huterm_config::{MAX_INACTIVE_DIM, PaneTitleBarMode};
 use huterm_protocol::PaneId;
 
 use super::pane_indicators::IndicatorRecord;
 
-/// The focus marks a frame drew: each dimmed pane with its layer's opacity,
-/// the pane with the accent line, with its alpha and drawn bounds, and the
-/// sync or zoom indicator.
+/// The focus marks a frame drew: each dimmed or darkened pane with its
+/// opacity, the corner patch's darkening, the pane with the accent line,
+/// with its alpha and drawn bounds, and the sync or zoom indicator.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct FocusMarks {
     pub(super) dimmed: Vec<(PaneId, f32)>,
+    pub(super) darkened: Vec<(PaneId, f32)>,
+    /// The darkened fill the rounded corner patch beside a vertical tab
+    /// bar drew to match the pane beneath it.
+    pub(super) corner_darkened: Option<Hsla>,
     pub(super) accent: Option<(PaneId, f32)>,
     pub(super) cue: Option<Bounds<Pixels>>,
     pub(super) indicator: IndicatorRecord,
 }
 
 impl FocusMarks {
-    /// `pane`'s marks for smoke state: `dim:<opacity>`, `accent:<alpha>`, or
-    /// `none`.
+    /// `pane`'s marks for smoke state: `dim:<opacity>`, `bg:<opacity>`, both
+    /// joined with a comma, `accent:<alpha>`, or `none`.
     pub(super) fn describe(&self, pane: PaneId) -> String {
         if let Some((_, alpha)) = self.accent.filter(|(id, _)| *id == pane) {
             return format!("accent:{alpha:.2}");
         }
-        self.dimmed.iter().find(|(id, _)| *id == pane).map_or_else(
-            || "none".to_owned(),
-            |(_, alpha)| format!("dim:{alpha:.2}"),
-        )
+        let dim = self.dimmed.iter().find(|(id, _)| *id == pane);
+        let bg = self.darkened.iter().find(|(id, _)| *id == pane);
+        match (dim, bg) {
+            (Some((_, dim)), Some((_, bg))) => {
+                format!("dim:{dim:.2},bg:{bg:.2}")
+            }
+            (Some((_, alpha)), None) => format!("dim:{alpha:.2}"),
+            (None, Some((_, alpha))) => format!("bg:{alpha:.2}"),
+            (None, None) => "none".to_owned(),
+        }
     }
 }
 
@@ -61,6 +72,16 @@ pub(super) fn inactive_dim(
         .then(|| amount.min(MAX_INACTIVE_DIM))
 }
 
+/// The opacity of the black layer that darkens an unfocused pane's
+/// terminal, including its background, while several panes show.
+pub(super) fn inactive_dim_background(
+    focused: bool,
+    panes_shown: usize,
+    amount: f32,
+) -> Option<f32> {
+    (!focused && panes_shown > 1 && amount > 0.0).then_some(amount)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +110,29 @@ mod tests {
         assert_eq!(inactive_dim(false, 1, 0.4), None);
         assert_eq!(inactive_dim(false, 2, 0.0), None);
         assert_eq!(inactive_dim(false, 2, 1.0), Some(MAX_INACTIVE_DIM));
+    }
+
+    #[test]
+    fn only_unfocused_panes_darken_while_several_show() {
+        assert_eq!(inactive_dim_background(false, 2, 0.3), Some(0.3));
+        assert_eq!(inactive_dim_background(true, 2, 0.3), None);
+        assert_eq!(inactive_dim_background(false, 1, 0.3), None);
+        assert_eq!(inactive_dim_background(false, 2, 0.0), None);
+    }
+
+    #[test]
+    fn descriptions_include_each_dim_layer_and_preserve_existing_marks() {
+        let pane = PaneId::new(1);
+        let mut marks = FocusMarks::default();
+        assert_eq!(marks.describe(pane), "none");
+        marks.dimmed.push((pane, 0.2));
+        assert_eq!(marks.describe(pane), "dim:0.20");
+        marks.darkened.push((pane, 0.3));
+        assert_eq!(marks.describe(pane), "dim:0.20,bg:0.30");
+        marks.dimmed.clear();
+        assert_eq!(marks.describe(pane), "bg:0.30");
+        marks.darkened.clear();
+        marks.accent = Some((pane, 0.5));
+        assert_eq!(marks.describe(pane), "accent:0.50");
     }
 }

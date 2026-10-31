@@ -4830,7 +4830,7 @@ impl WorkspaceView {
                         },
                     ))
                     .child(pane.view.clone())
-                    .children(self.inactive_dim(id, focused, shown, colors))
+                    .children(self.dim_layers(id, focused, shown, colors))
                     .children(grab)
                     .into_any_element(),
             );
@@ -4882,22 +4882,65 @@ impl WorkspaceView {
         elements
     }
 
-    /// The layer dimming `pane`'s terminal, while `[panes] inactive_dim`
-    /// dims it.
-    fn inactive_dim(
+    /// The layers dimming `pane`'s terminal: the theme background under
+    /// `[panes] inactive_dim`, then black under `inactive_dim_background`.
+    /// Title bars are separate elements and stay unchanged.
+    fn dim_layers(
         &self,
         pane: PaneId,
         focused: PaneId,
         shown: usize,
         colors: TabColors,
-    ) -> Option<gpui::Div> {
-        let alpha = pane_focus::inactive_dim(
+    ) -> impl Iterator<Item = gpui::Div> + use<> {
+        let panes = &self.config.panes;
+        let mut drawn = self.drawn_focus.borrow_mut();
+        let dim = pane_focus::inactive_dim(
             pane == focused,
             shown,
-            self.config.panes.inactive_dim,
-        )?;
-        self.drawn_focus.borrow_mut().dimmed.push((pane, alpha));
-        Some(tab_bar::pane_dim(colors, alpha))
+            panes.inactive_dim,
+        )
+        .map(|alpha| {
+            drawn.dimmed.push((pane, alpha));
+            tab_bar::pane_dim(colors, alpha)
+        });
+        let background = pane_focus::inactive_dim_background(
+            pane == focused,
+            shown,
+            panes.inactive_dim_background,
+        )
+        .map(|alpha| {
+            drawn.darkened.push((pane, alpha));
+            div().absolute().inset_0().bg(gpui::black().opacity(alpha))
+        });
+        [dim, background].into_iter().flatten()
+    }
+
+    /// The fill of `corner`, the rounded patch beside a vertical tab bar:
+    /// `background`, darkened as `inactive_dim_background` darkened the
+    /// pane beneath it this frame. A darkened fill is recorded for tests.
+    fn corner_fill(
+        &self,
+        corner: Bounds<Pixels>,
+        background: gpui::Hsla,
+    ) -> gpui::Hsla {
+        let center = corner.center();
+        let alpha =
+            self.drawn_panes.borrow().as_ref().and_then(|(_, rects)| {
+                let pane = rects
+                    .iter()
+                    .find(|rect| rect.terminal.contains(&center))?
+                    .pane;
+                self.drawn_focus
+                    .borrow()
+                    .darkened
+                    .iter()
+                    .find(|(id, _)| *id == pane)
+                    .map(|(_, alpha)| *alpha)
+            });
+        let fill =
+            alpha.map(|alpha| background.blend(gpui::black().opacity(alpha)));
+        self.drawn_focus.borrow_mut().corner_darkened = fill;
+        fill.unwrap_or(background)
     }
 
     /// How many of `tab`'s panes `pane_elements` draws: each installed view
@@ -12751,6 +12794,9 @@ impl Render for WorkspaceView {
                 {
                     let left = position == TabPosition::Left;
                     let outer = radius + px(1.0);
+                    // The patch draws above the panes, so it carries the
+                    // darkening of the pane beneath it.
+                    let fill = self.corner_fill(corner, background);
                     root = root.child(
                         div()
                             .absolute()
@@ -12762,7 +12808,7 @@ impl Render for WorkspaceView {
                             .child(
                                 div()
                                     .size_full()
-                                    .bg(background)
+                                    .bg(fill)
                                     .border_color(colors.border)
                                     .border_t(px(1.0))
                                     .when(left, |patch| {
