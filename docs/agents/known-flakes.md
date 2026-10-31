@@ -446,7 +446,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   which does not touch the palette or its smoke, with the same state and
   the same last bytes. It recurred on x86_64 on 2026-10-31 (PR #355 at
   `88542f14`, run 41167918791, job 124439483926) with the same state,
-  failing both Verify gates; the rerun passed.
+  failing both Verify gates; the rerun passed. It recurred on aarch64 the
+  same day (PR #363 at `c87cb93a`, run 41213983677, job 124574569527),
+  which changes window chrome and not the palette, with the same state.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused
