@@ -532,7 +532,7 @@ args = { layout = "smoke" }
     await state("settings.focus=action:lcyc:work");
     await key("space");
     await saved(
-      (text) => text.includes('layout_cycle = ["columns", "rows", "main_left", "main_top", "tiled", "work"]'),
+      (text) => text.includes('layout_cycle = ["columns", "rows", "main_left", "main_top", "main_centered", "tiled", "work"]'),
       "layout added to the cycle in config.toml",
     );
 

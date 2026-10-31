@@ -17,7 +17,7 @@ fn schema_fixtures_match_application_parsing_and_keymap_compilation() {
         serde_json::from_str(include_str!("../../../../schemas/fixtures.json"))
             .unwrap();
     let fixtures = fixtures.as_array().unwrap();
-    assert_eq!(fixtures.len(), 251);
+    assert_eq!(fixtures.len(), 254);
     for fixture in fixtures {
         let source = fixture["toml"].as_str().unwrap();
         let expected = fixture["valid"].as_bool().unwrap();
@@ -313,6 +313,8 @@ fn option_policy_defaults_and_validation_are_explicit() {
     for (value, expected) in [
         ("off", MacosOptionAsAlt::Off),
         ("both", MacosOptionAsAlt::Both),
+        ("left", MacosOptionAsAlt::Left),
+        ("right", MacosOptionAsAlt::Right),
     ] {
         assert_eq!(
             parse(&format!("[terminal]\nmacos_option_as_alt = '{value}'"))
@@ -322,12 +324,17 @@ fn option_policy_defaults_and_validation_are_explicit() {
             expected
         );
     }
-    for value in ["left", "right", "yes", "BOTH"] {
+    for value in ["yes", "BOTH", "LEFT"] {
         let error =
             parse(&format!("[terminal]\nmacos_option_as_alt = '{value}'"))
                 .unwrap_err()
                 .to_string();
-        assert!(error.contains("off") && error.contains("both"), "{error}");
+        assert!(
+            ["off", "both", "left", "right"]
+                .iter()
+                .all(|name| error.contains(name)),
+            "{error}"
+        );
     }
 }
 
@@ -339,7 +346,7 @@ fn option_policy_reload_rejects_invalid_values_without_fallback() {
     fs::write(&path, "[terminal]\nmacos_option_as_alt = 'both'").unwrap();
     let working = reload(&path).config.unwrap();
     assert_eq!(working.terminal.macos_option_as_alt, MacosOptionAsAlt::Both);
-    fs::write(&path, "[terminal]\nmacos_option_as_alt = 'left'").unwrap();
+    fs::write(&path, "[terminal]\nmacos_option_as_alt = 'yes'").unwrap();
     assert!(reload(&path).config.is_err());
     assert_eq!(working.terminal.macos_option_as_alt, MacosOptionAsAlt::Both);
     fs::write(&path, "[terminal]\nmacos_option_as_alt = 'off'").unwrap();
@@ -439,6 +446,58 @@ fn legacy_engine_values_select_ghostty_and_only_alacritty_warns() {
     {
         assert!(parse(source).is_err(), "{source}");
     }
+}
+
+#[test]
+fn bell_audio_settings_parse_validate_and_warn_on_linux() {
+    use huterm_config::BellSound;
+    let defaults = parse("").unwrap().terminal.bell;
+    assert_eq!(
+        (defaults.audio, defaults.sound, defaults.volume),
+        (false, BellSound::System, 0.5)
+    );
+    let configured =
+        parse("[terminal.bell]\naudio = true\nsound = 'submarine'\nvolume = 1")
+            .unwrap()
+            .terminal
+            .bell;
+    assert_eq!(
+        (configured.audio, configured.sound, configured.volume),
+        (true, BellSound::Submarine, 1.0)
+    );
+    for volume in ["-0.1", "1.01", "nan", "inf"] {
+        let error = parse(&format!("[terminal.bell]\nvolume = {volume}"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("terminal.bell.volume must be between 0 and 1"),
+            "{volume}: {error}"
+        );
+    }
+    assert!(parse("[terminal.bell]\nsound = 'Glass'").is_err());
+    // Linux loads `audio = true` with a warning, joined to any other.
+    assert_eq!(
+        join_warnings(Some("First.".into()), Some("Second.")).as_deref(),
+        Some("First. Second.")
+    );
+    assert_eq!(join_warnings(None, Some("Only.")).as_deref(), Some("Only."));
+    let linux = cfg!(target_os = "linux");
+    assert_eq!(
+        parse("[terminal.bell]\naudio = true").unwrap().warning,
+        linux.then(|| LINUX_AUDIBLE_BELL_WARNING.to_owned())
+    );
+    assert_eq!(
+        parse(
+            "[terminal]\nengine = 'alacritty'\n[terminal.bell]\naudio = true"
+        )
+        .unwrap()
+        .warning,
+        Some(if linux {
+            format!("{LEGACY_ALACRITTY_WARNING} {LINUX_AUDIBLE_BELL_WARNING}")
+        } else {
+            LEGACY_ALACRITTY_WARNING.to_owned()
+        })
+    );
 }
 
 #[test]

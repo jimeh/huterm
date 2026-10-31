@@ -222,6 +222,45 @@ impl OptionComposition {
     }
 }
 
+/// The modifier flags of the key-down `window` is handling, including the
+/// device-dependent bits that tell the left Option key from the right.
+/// `None` unless `AppKit`'s current event is a key-down for this window
+/// whose Option bit agrees with the keystroke's `alt`; it never fails.
+pub(crate) fn current_key_flags(
+    window: &gpui::Window,
+    alt: bool,
+) -> Option<usize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    if !is_main_thread().ok()? {
+        return None;
+    }
+    let RawWindowHandle::AppKit(handle) =
+        HasWindowHandle::window_handle(window).ok()?.as_raw()
+    else {
+        return None;
+    };
+    let application = application().ok()?;
+    // SAFETY: AppKit owns the current event and the window handle's live
+    // NSView. All values are read synchronously on the main thread.
+    unsafe {
+        let event: *mut Object = msg_send![application, currentEvent];
+        if event.is_null() {
+            return None;
+        }
+        let event_type: usize = msg_send![event, type];
+        let modifiers: usize = msg_send![event, modifierFlags];
+        let view = handle.ns_view.as_ptr().cast::<Object>();
+        let target: *mut Object = msg_send![view, window];
+        let event_window: *mut Object = msg_send![event, window];
+        (event_type == 10
+            && !target.is_null()
+            && target == event_window
+            && (modifiers & (1 << 19) != 0) == alt)
+            .then_some(modifiers)
+    }
+}
+
 /// The caller keeps the OS-owned Unicode layout alive for the entire call.
 unsafe fn translate_key(
     layout: *const c_void,

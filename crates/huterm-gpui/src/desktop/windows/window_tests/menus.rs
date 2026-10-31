@@ -502,6 +502,71 @@ impl DesktopHarness {
 }
 
 #[gpui::test]
+fn the_terminal_menus_arrange_submenu_drills_in_and_arranges_the_tab(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, _, _) = harness.split_menu_window();
+    harness.cx.update(|cx| {
+        assert_eq!(root_axis(cx, tab), Some(SplitAxis::Columns));
+    });
+    harness.open_painted(window, ids::OPEN_CONTEXT_MENU);
+    let menu = |cx: &mut App| {
+        window
+            .update(cx, |root, _, cx| {
+                let view = root.downcast::<WorkspaceView>().ok()?;
+                let menu = view.read(cx).menu.as_ref()?.view.read(cx);
+                Some((
+                    menu.submenu().map(ToString::to_string),
+                    menu.selected_id().map(|id| id.to_string()),
+                ))
+            })
+            .ok()
+            .flatten()
+    };
+    harness.update_view(window, |view, _, cx| {
+        let menu = view.menu.as_ref().unwrap().view.clone();
+        menu.update(cx, |menu, cx| menu.select_item("arrange_panes_menu", cx));
+    });
+    // Right opens the submenu on its first layout, and Left returns.
+    harness.press(window, "right");
+    harness.cx.update(|cx| {
+        assert_eq!(
+            menu(cx),
+            Some((
+                Some("arrange_panes_menu".to_owned()),
+                Some("arrange_panes:columns".to_owned())
+            ))
+        );
+    });
+    harness.press(window, "left");
+    harness.cx.update(|cx| {
+        assert_eq!(
+            menu(cx),
+            Some((None, Some("arrange_panes_menu".to_owned())))
+        );
+    });
+    // Enter opens it too; Equal Rows follows Equal Columns, and Enter
+    // arranges the tab into it.
+    harness.press(window, "enter");
+    harness.press(window, "down");
+    harness.cx.update(|cx| {
+        assert_eq!(
+            menu(cx).and_then(|(_, selected)| selected).as_deref(),
+            Some("arrange_panes:rows")
+        );
+    });
+    harness.press(window, "enter");
+    harness.wait_for("the tab to arrange into rows", |cx| {
+        root_axis(cx, tab) == Some(SplitAxis::Rows)
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(menu_kind(cx, window), None, "the pick closes the menu");
+        assert_eq!(notices(cx, window), Vec::<String>::new());
+    });
+}
+
+#[gpui::test]
 fn a_terminal_menu_closes_when_its_pane_closes_under_it(
     cx: &mut TestAppContext,
 ) {

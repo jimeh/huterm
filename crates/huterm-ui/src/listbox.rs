@@ -1,6 +1,6 @@
 //! The selection model behind menus, selects, and later suggestion lists:
-//! rows of items, separators, and button rows, and a selection that moves
-//! over the enabled targets.
+//! rows of items, separators, button rows, and submenus, and a selection
+//! that moves over the enabled targets.
 //!
 //! The model is pure, so its navigation is testable without a window.
 //! Keyboard navigation wraps and skips separators and disabled targets;
@@ -121,6 +121,15 @@ pub enum Row {
         /// The buttons, selected one at a time.
         buttons: Vec<Button>,
     },
+    /// An item that opens `rows` in its place rather than being picked.
+    /// It is selected, matched, and enabled as an item is; its `rows` are
+    /// one level deep.
+    Submenu {
+        /// The row itself; its shortcut is not drawn.
+        item: Item,
+        /// The rows it opens.
+        rows: Vec<Row>,
+    },
 }
 
 /// A list's rows.
@@ -150,7 +159,7 @@ impl Model {
     /// first enabled button. `None` for separators and disabled rows.
     fn enter_row(&self, row: usize) -> Option<Selection> {
         match self.rows.get(row)? {
-            Row::Item(item) if item.enabled => {
+            Row::Item(item) | Row::Submenu { item, .. } if item.enabled => {
                 Some(Selection { row, button: None })
             }
             Row::Buttons { buttons, .. } => buttons
@@ -174,7 +183,11 @@ impl Model {
     #[must_use]
     pub fn id_at(&self, selection: Selection) -> Option<ItemId> {
         match (self.rows.get(selection.row)?, selection.button) {
-            (Row::Item(item), None) if item.enabled => Some(item.id.clone()),
+            (Row::Item(item) | Row::Submenu { item, .. }, None)
+                if item.enabled =>
+            {
+                Some(item.id.clone())
+            }
             (Row::Buttons { buttons, .. }, Some(index)) => buttons
                 .get(index)
                 .filter(|button| button.enabled)
@@ -188,7 +201,9 @@ impl Model {
     pub fn selection_of(&self, id: &str) -> Option<Selection> {
         self.rows.iter().enumerate().find_map(|(row, model_row)| {
             let selection = match model_row {
-                Row::Item(item) if item.id == id => {
+                Row::Item(item) | Row::Submenu { item, .. }
+                    if item.id == id =>
+                {
                     Selection { row, button: None }
                 }
                 Row::Buttons { buttons, .. } => Selection {
@@ -197,7 +212,9 @@ impl Model {
                         buttons.iter().position(|button| button.id == id)?,
                     ),
                 },
-                Row::Item(_) | Row::Separator => return None,
+                Row::Item(_) | Row::Submenu { .. } | Row::Separator => {
+                    return None;
+                }
             };
             self.id_at(selection).map(|_| selection)
         })
@@ -317,7 +334,9 @@ impl Model {
             return None;
         }
         let matches = |row: usize| match self.rows.get(row) {
-            Some(Row::Item(item)) if item.enabled => {
+            Some(Row::Item(item) | Row::Submenu { item, .. })
+                if item.enabled =>
+            {
                 item.label.to_lowercase().starts_with(&text)
             }
             _ => false,
@@ -329,6 +348,24 @@ impl Model {
             .filter(|row| matches(*row))
             .map(|row| Selection { row, button: None })
             .next()
+    }
+
+    /// The enabled submenu named `id` among these rows: its item and the
+    /// rows it opens.
+    #[must_use]
+    pub fn submenu(&self, id: &str) -> Option<(&Item, &[Row])> {
+        self.rows.iter().find_map(|row| match row {
+            Row::Submenu { item, rows } if item.id == id && item.enabled => {
+                Some((item, rows.as_slice()))
+            }
+            _ => None,
+        })
+    }
+
+    /// Whether `selection` names a submenu row.
+    #[must_use]
+    pub fn is_submenu(&self, selection: Selection) -> bool {
+        matches!(self.rows.get(selection.row), Some(Row::Submenu { .. }))
     }
 }
 
@@ -481,6 +518,35 @@ mod tests {
         assert_eq!(model.hover(5, Some(0)), None, "disabled button");
         assert_eq!(model.hover(5, Some(1)), button(5, 1));
         assert_eq!(model.hover(5, None), None, "the row itself is no target");
+    }
+
+    #[test]
+    fn a_submenu_row_selects_matches_and_resolves_as_an_item() {
+        let model = Model::new(vec![
+            item("balance", "Balance Panes"),
+            Row::Submenu {
+                item: Item::new("arrange", "Arrange Panes"),
+                rows: vec![item("arrange:rows", "Equal Rows")],
+            },
+            Row::Submenu {
+                item: Item::new("off", "Disabled").disabled(None),
+                rows: vec![item("off:a", "A")],
+            },
+        ]);
+        assert_eq!(model.next(at(0)), at(1));
+        assert_eq!(model.next(at(1)), at(0), "skips the disabled submenu");
+        assert_eq!(model.id_at(at(1).unwrap()), Some("arrange".into()));
+        assert_eq!(model.selection_of("arrange"), at(1));
+        assert_eq!(model.selection_of("arrange:rows"), None, "one level");
+        assert_eq!(model.type_ahead(None, "ar"), at(1));
+        assert_eq!(model.hover(1, None), at(1));
+        assert!(model.is_submenu(at(1).unwrap()));
+        assert!(!model.is_submenu(at(0).unwrap()));
+        let (submenu, rows) = model.submenu("arrange").unwrap();
+        assert_eq!(submenu.label, "Arrange Panes");
+        assert_eq!(rows, [item("arrange:rows", "Equal Rows")]);
+        assert!(model.submenu("off").is_none(), "disabled");
+        assert!(model.submenu("balance").is_none(), "an item");
     }
 
     #[test]

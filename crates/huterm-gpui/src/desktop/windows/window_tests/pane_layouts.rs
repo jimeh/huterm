@@ -110,6 +110,7 @@ const COLUMNS: &str = "C[333334:0,333333:1,333333:2]";
 const ROWS: &str = "R[333334:0,333333:1,333333:2]";
 const MAIN_LEFT: &str = "C[600000:0,400000:R[500000:1,500000:2]]";
 const MAIN_TOP: &str = "R[600000:0,400000:C[500000:1,500000:2]]";
+const MAIN_CENTERED: &str = "C[250000:0,500000:1,250000:2]";
 const TILED: &str = "R[500000:C[500000:0,500000:1],500000:2]";
 
 impl DesktopHarness {
@@ -206,6 +207,7 @@ fn each_layout_command_arranges_the_tab_and_the_picker_matches_bindings(
         ("columns", COLUMNS),
         ("rows", ROWS),
         ("main_left", MAIN_LEFT),
+        ("main_centered", MAIN_CENTERED),
         ("tiled", TILED),
     ] {
         harness.invoke_with(window, &arrange_panes(layout)).unwrap();
@@ -305,7 +307,7 @@ fn user_layouts_arrange_and_cycle_until_a_reload_replaces_them(
     harness.wait_for("the layout picker", |cx| {
         picker_rows(cx, window).is_some_and(|rows| {
             rows.starts_with(
-                r#""Equal Columns;Equal Rows;Main Left;Main Top;Tiled;dev;sides""#,
+                r#""Equal Columns;Equal Rows;Main Left;Main Top;Main Centered;Tiled;dev;sides""#,
             )
         })
     });
@@ -321,7 +323,7 @@ fn user_layouts_arrange_and_cycle_until_a_reload_replaces_them(
     harness.wait_for("the reloaded picker", |cx| {
         picker_rows(cx, window).is_some_and(|rows| {
             rows.starts_with(
-                r#""Equal Columns;Equal Rows;Main Left;Main Top;Tiled""#,
+                r#""Equal Columns;Equal Rows;Main Left;Main Top;Main Centered;Tiled""#,
             )
         })
     });

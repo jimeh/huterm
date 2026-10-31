@@ -132,6 +132,7 @@ mod tests {
                 ),
                 MenuRow::Separator => "-".to_owned(),
                 MenuRow::Group { .. } => "group".to_owned(),
+                MenuRow::Submenu { .. } => "submenu".to_owned(),
             })
             .collect()
     }

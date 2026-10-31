@@ -201,7 +201,7 @@ fn option_meta_uses_base_key_instead_of_composed_character() {
         },
     };
     assert_eq!(
-        translate(&stroke, Platform::MacOs, MacosOptionAsAlt::Both),
+        translate(&stroke, Platform::MacOs, true),
         Some(TerminalInput::Character {
             text: "r".into(),
             meta: true
@@ -245,7 +245,7 @@ fn meta_characters_preserve_shift_punctuation_digits_space_and_control() {
         let input =
             stroke(key, Some("option-composed"), true, shifted, control);
         assert_eq!(
-            translate(&input, Platform::MacOs, MacosOptionAsAlt::Both),
+            translate(&input, Platform::MacOs, true),
             Some(TerminalInput::Character {
                 text: expected.into(),
                 meta: true
@@ -257,7 +257,7 @@ fn meta_characters_preserve_shift_punctuation_digits_space_and_control() {
 
 #[test]
 fn macos_printable_text_is_deferred_to_local_or_native_composition() {
-    for option in [MacosOptionAsAlt::Off, MacosOptionAsAlt::Both] {
+    for option in [false, true] {
         assert_eq!(
             translate(
                 &stroke("e", Some("e"), false, false, false),
@@ -272,7 +272,7 @@ fn macos_printable_text_is_deferred_to_local_or_native_composition() {
             translate(
                 &stroke(key, Some(text), true, false, false),
                 Platform::MacOs,
-                MacosOptionAsAlt::Off
+                false
             ),
             None
         );
@@ -281,7 +281,7 @@ fn macos_printable_text_is_deferred_to_local_or_native_composition() {
 
 #[test]
 fn linux_alt_uses_native_character_and_ignores_macos_option_setting() {
-    for option in [MacosOptionAsAlt::Off, MacosOptionAsAlt::Both] {
+    for option in [false, true] {
         for (key, text, shifted) in [
             ("r", "r", false),
             ("r", "R", true),
@@ -328,7 +328,7 @@ fn linux_alt_uses_native_character_and_ignores_macos_option_setting() {
 #[test]
 fn special_keys_keep_alt_independent_of_option_policy() {
     for platform in [Platform::MacOs, Platform::Linux] {
-        for option in [MacosOptionAsAlt::Off, MacosOptionAsAlt::Both] {
+        for option in [false, true] {
             assert_eq!(
                 translate(
                     &stroke("left", None, true, true, true),
@@ -421,16 +421,13 @@ fn matcher_consumes_alt_bindings_and_allows_conditional_and_unbound_meta() {
         assert!(!pending);
         if !consumed {
             assert_eq!(
-                translate(&key, Platform::MacOs, MacosOptionAsAlt::Both),
+                translate(&key, Platform::MacOs, true),
                 Some(TerminalInput::Character {
                     text: "r".into(),
                     meta: true
                 })
             );
-            assert_eq!(
-                translate(&key, Platform::MacOs, MacosOptionAsAlt::Off),
-                None
-            );
+            assert_eq!(translate(&key, Platform::MacOs, false), None);
         }
     }
 }
@@ -461,4 +458,43 @@ fn real_matcher_reports_an_option_chord_prefix_for_composition_cancellation() {
     );
     assert!(bindings.is_empty());
     assert!(pending);
+}
+
+#[test]
+fn option_sends_meta_for_each_policy_and_side() {
+    use OptionSide::{Left, Right};
+    let sides = [Some(Left), Some(Right), None];
+    for side in sides {
+        // Without Alt no policy sends Meta.
+        for policy in [
+            MacosOptionAsAlt::Off,
+            MacosOptionAsAlt::Both,
+            MacosOptionAsAlt::Left,
+            MacosOptionAsAlt::Right,
+        ] {
+            assert!(!option_sends_meta(policy, side, false));
+        }
+        assert!(!option_sends_meta(MacosOptionAsAlt::Off, side, true));
+        assert!(option_sends_meta(MacosOptionAsAlt::Both, side, true));
+        assert_eq!(
+            option_sends_meta(MacosOptionAsAlt::Left, side, true),
+            side == Some(Left),
+            "{side:?}"
+        );
+        assert_eq!(
+            option_sends_meta(MacosOptionAsAlt::Right, side, true),
+            side == Some(Right),
+            "{side:?}"
+        );
+    }
+}
+
+#[test]
+fn the_device_bits_name_one_option_key_or_none() {
+    // Option's device-independent bit, which every Option key-down carries.
+    let option = 0x8_0000;
+    assert_eq!(option_side(option | 0x20), Some(OptionSide::Left));
+    assert_eq!(option_side(option | 0x40), Some(OptionSide::Right));
+    assert_eq!(option_side(option), None);
+    assert_eq!(option_side(option | 0x20 | 0x40), None);
 }

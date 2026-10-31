@@ -1800,16 +1800,18 @@ const CATALOG: &[CommandSpec] = &[
         "menu",
         ids::MENU_SELECT_RIGHT,
         CommandScope::Window,
-        "Menu: Next Button",
-        "Open the menu to the right of the open one.",
+        "Menu: Next Button or Open Submenu",
+        "Select the next button in a button row, or open the selected \
+         submenu.",
         &[],
     ),
     spec_in(
         "menu",
         ids::MENU_SELECT_LEFT,
         CommandScope::Window,
-        "Menu: Previous Button",
-        "Open the menu to the left of the open one.",
+        "Menu: Previous Button or Back",
+        "Select the previous button in a button row, or return from a \
+         submenu to its row.",
         &[],
     ),
     spec_in(

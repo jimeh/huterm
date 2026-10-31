@@ -250,6 +250,23 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await send("clipboard\t®é\x1b[200~literal\x1b[201~");
     await key(9, command, "v");
     await check("paste-unchanged", "®é\x1b[200~literal\x1b[201~");
+    // Per-side policies read AppKit's device bits: under `left` only the
+    // left Option key sends Meta and the right one types its macOS
+    // character, and the reverse under `right`.
+    const leftOption = option | 0x20;
+    const rightOption = option | 0x40;
+    await configure("left", false);
+    await key(43, command | (1 << 17), "<", "<");
+    await state("policy=Left", "reloading=false");
+    await key(15, leftOption, "®", "r");
+    await key(15, rightOption, "®", "r");
+    await check("left-option-meta", "\x1br®");
+    await configure("right", false);
+    await key(43, command | (1 << 17), "<", "<");
+    await state("policy=Right", "reloading=false");
+    await key(15, leftOption, "®", "r");
+    await key(15, rightOption, "®", "r");
+    await check("right-option-meta", "®\x1br");
 
     await configure("off", false);
     await key(43, command | (1 << 17), "<", "<");
@@ -348,6 +365,28 @@ exec ${quote(process.execPath)} ${quote(recorder)}
       return Number(grid!.split(",")[0]) <= leftColumns - narrowed;
     }, "the divider drag to narrow the left pane");
     await check("divider-drag-reaches-no-shell", "");
+    // Control going down mid-drag makes GPUI deliver the Left release as
+    // Right, which still ends the drag and commits it, reaching neither
+    // shell.
+    const leftWeight = (text: string) => Number(/^C\[(\d+):/.exec(field(text, "pane_layout"))?.[1]);
+    let narrowedWeight = 0;
+    await waitFor(async () => {
+      narrowedWeight = leftWeight(await currentState());
+      return narrowedWeight < 500_000;
+    }, "the divider drag to commit");
+    const [remapGrab] = rects(field(await currentState(), "pane_dividers"));
+    const remapX = remapGrab!.x + remapGrab!.w / 2;
+    const remapY = remapGrab!.y + remapGrab!.h / 2;
+    await send(`mouse\t1\t${remapX}\t${remapY}`);
+    await send(`mouse\t6\t${remapX + 40}\t${remapY}`);
+    await state("window_drag=true");
+    await key(59, control, "");
+    await send(`mouse\t6\t${remapX + 80}\t${remapY}\t${control}`);
+    await send(`mouse\t2\t${remapX + 80}\t${remapY}\t${control}`);
+    await state("window_drag=false");
+    await waitFor(async () => leftWeight(await currentState()) > narrowedWeight, "the remapped release to commit the divider");
+    await key(59, 0, "");
+    await check("remapped-release-ends-divider-drag", "");
     // The title bar's zoom toggle zooms its pane and unzooms it again.
     const zoomAt = async () => {
       const [, zoom] = field(await currentState(), "pane_zoom").split(";");

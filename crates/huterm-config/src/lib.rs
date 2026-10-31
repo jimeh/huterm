@@ -81,7 +81,7 @@ pub struct SettingsConfig {
     pub show_advanced: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerminalConfig {
     pub term: TerminalIdentity,
     pub close_on_exit: bool,
@@ -196,7 +196,7 @@ pub enum NewTabDirectory {
 }
 
 /// Terminal bell presentation settings.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct BellConfig {
@@ -208,11 +208,125 @@ pub struct BellConfig {
         "x-huterm-apply" = "live",
     )))]
     pub visual: bool,
+    /// Play a sound when a bell rings in any terminal, focused or not.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Bell and clipboard",
+        "x-huterm-label" = "Audible bell",
+        "x-huterm-order" = 71,
+        "x-huterm-apply" = "live",
+        "x-huterm-platform" = "macos",
+    )))]
+    pub audio: bool,
+    /// The sound the audible bell plays: `system`, the macOS alert sound, or
+    /// one from `/System/Library/Sounds`.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Bell and clipboard",
+        "x-huterm-label" = "Bell sound",
+        "x-huterm-order" = 72,
+        "x-huterm-apply" = "live",
+        "x-huterm-platform" = "macos",
+        "x-huterm-visible-when" = {"setting": "terminal.bell.audio", "equals": true},
+    )))]
+    pub sound: BellSound,
+    /// How loud a named sound plays, from 0 to 1; `system` follows the macOS
+    /// alert volume.
+    #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 1), extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Bell and clipboard",
+        "x-huterm-label" = "Bell volume",
+        "x-huterm-order" = 73,
+        "x-huterm-apply" = "live",
+        "x-huterm-platform" = "macos",
+        "x-huterm-step" = 0.05,
+        "x-huterm-control" = "slider",
+        "x-huterm-visible-when" = {"setting": "terminal.bell.audio", "equals": true},
+    )))]
+    pub volume: f32,
 }
 
 impl Default for BellConfig {
     fn default() -> Self {
-        Self { visual: true }
+        Self {
+            visual: true,
+            audio: false,
+            sound: BellSound::System,
+            volume: 0.5,
+        }
+    }
+}
+
+/// A sound the audible bell plays.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum BellSound {
+    /// The alert sound chosen in macOS's Sound settings, at its alert
+    /// volume.
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "System alert"))
+    )]
+    System,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Basso")))]
+    Basso,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Blow")))]
+    Blow,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Bottle")))]
+    Bottle,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Frog")))]
+    Frog,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Funk")))]
+    Funk,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Glass")))]
+    Glass,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Hero")))]
+    Hero,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Morse")))]
+    Morse,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Ping")))]
+    Ping,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Pop")))]
+    Pop,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Purr")))]
+    Purr,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Sosumi")))]
+    Sosumi,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Submarine"))
+    )]
+    Submarine,
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Tink")))]
+    Tink,
+}
+
+impl BellSound {
+    /// The name of the sound in `/System/Library/Sounds`, or `None` for the
+    /// system alert sound.
+    #[must_use]
+    pub fn system_sound_name(self) -> Option<&'static str> {
+        Some(match self {
+            Self::System => return None,
+            Self::Basso => "Basso",
+            Self::Blow => "Blow",
+            Self::Bottle => "Bottle",
+            Self::Frog => "Frog",
+            Self::Funk => "Funk",
+            Self::Glass => "Glass",
+            Self::Hero => "Hero",
+            Self::Morse => "Morse",
+            Self::Ping => "Ping",
+            Self::Pop => "Pop",
+            Self::Purr => "Purr",
+            Self::Sosumi => "Sosumi",
+            Self::Submarine => "Submarine",
+            Self::Tink => "Tink",
+        })
     }
 }
 
@@ -661,6 +775,16 @@ pub enum MacosOptionAsAlt {
         schemars(extend("x-huterm-label" = "Both Option keys"))
     )]
     Both,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Left Option key"))
+    )]
+    Left,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Right Option key"))
+    )]
+    Right,
 }
 
 #[expect(
@@ -1254,8 +1378,8 @@ pub struct PanesConfig {
     )))]
     pub layouts: BTreeMap<String, String>,
     /// The layouts Next and Previous Pane Layout step through, in order:
-    /// `columns`, `rows`, `main_left`, `main_top`, `tiled`, or a name from
-    /// `[panes.layouts]`.
+    /// `columns`, `rows`, `main_left`, `main_top`, `main_centered`, `tiled`,
+    /// or a name from `[panes.layouts]`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Pane layouts",
@@ -2214,6 +2338,8 @@ pub struct RawTerminal {
     )))]
     pub new_tab_directory: NewTabDirectory,
     pub bell: BellConfig,
+    /// Which Option keys send Meta: `both`, only the `left` or `right` one, or
+    /// `off`; any other Option key types macOS characters.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Keyboard",
@@ -2456,6 +2582,12 @@ impl RawConfig {
         if self.window.size_indicator_linger_ms > 10_000 {
             return Err(ConfigError::Invalid(
                 "window.size_indicator_linger_ms must be between 0 and 10000",
+            ));
+        }
+        let volume = self.terminal.bell.volume;
+        if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
+            return Err(ConfigError::Invalid(
+                "terminal.bell.volume must be between 0 and 1",
             ));
         }
         if self.palette.retain_query_seconds > 3600 {
@@ -3075,7 +3207,14 @@ mod panes_tests {
         let defaults = panes("").unwrap();
         assert_eq!(
             defaults.layout_cycle,
-            ["columns", "rows", "main_left", "main_top", "tiled"]
+            [
+                "columns",
+                "rows",
+                "main_left",
+                "main_top",
+                "main_centered",
+                "tiled"
+            ]
         );
         let configured = panes(
             "[panes.layouts]\n\
@@ -3111,6 +3250,7 @@ mod panes_tests {
                 "rows",
                 "main_left",
                 "main_top",
+                "main_centered",
                 "tiled",
                 "dev",
                 "sides"

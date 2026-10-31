@@ -44,6 +44,15 @@ window deactivation alone leaves its pending sequence alive. Native commits must
 never be classified by their text. Accepted replay actions still skip the current
 native event lookup.
 
+`macos_option_as_alt = "left"` or `"right"` needs the Option key's side,
+which GPUI's `Modifiers` drop. `handle_keystroke` runs inside `AppKit`'s
+key-down dispatch, so `native_quit::option::current_key_flags` reads it from
+`[NSApp currentEvent]`'s device-dependent bits, `0x20` left and `0x40` right,
+after checking that the event is a key-down for this window whose Option bit
+matches the keystroke's Alt. Anything else leaves the side unknown and
+sends no Meta. A replayed chord prefix reads the key-down that triggered the
+replay. `smoke:macos-input` posts Option key-downs with each bit.
+
 `UCKeyTranslate` can emit text while starting another dead key, and completed
 state can remain nonzero. Probe Space with NoDeadKeys on copied state and compare
 against zero-state output; never send probe text to the PTY or decode state bits.
@@ -139,7 +148,12 @@ only an occluding hitbox hides those beneath it. The terminal root sets
 program takes the mouse in an active window, unless Shift is held, and a
 hand on a link. Focus does not count, because a press focuses its pane
 before `application_mouse` routes it; an unfocused pane over vim shows the
-arrow. A held gesture keeps its owner's cursor until release, whatever
+arrow. The wheel follows the same rule through `application_wheel`: it
+reaches the program in an unfocused pane while the window is active, and
+never moves focus. Presses, motion, and releases still need the pane
+focused, and Shift still scrolls locally. A wheel over a neighbouring pane
+during one of Huterm's own drags reaches that pane's program, as local
+scrolling would. A held gesture keeps its owner's cursor until release, whatever
 Shift does meanwhile, and a scrollbar drag keeps the arrow off the strip.
 Modifier events reach only the focus path, so the workspace root refreshes
 the hovered pane's cursor when Shift changes; that root listener is the
@@ -224,6 +238,18 @@ dialogs) keep theirs. A window-level capture listener would claim presses
 those overlays own. A pane's scroll pill is drawn inside its terminal, below
 the zones, so a zone wins where a pane is narrower than the pill. The
 window's capture listeners own motion and release once a drag starts.
+
+macOS GPUI turns a Left release with Control held into a Right release, so
+Control pressed mid-drag would leave a drag running. The release listener
+asks `pane_grab::release_ends_drag`: a Left release ends any of the window's
+drags (divider, sidebar, reorder, pane drag, tab scrollbar), and on macOS so
+does a Right release while no real Right press is held. While a drag runs,
+the press capture listener records a macOS Right press in
+`drag_right_press` and stops it, so no context menu opens and cancels the
+drag; its release clears the record and ends nothing. Linux has no remap,
+so Right never ends a drag there. `smoke:macos-input` posts a real Left
+down, a Control `flagsChanged`, and a Left up carrying Control over a
+divider drag.
 
 A drag holds its boundary, the sum of the weights before it, and applies it
 over the split as other changes leave it, so another window's resize of a
@@ -311,13 +337,14 @@ is held, macOS GPUI's `synthetic_drag` replays the last move every 16 ms
 with that move's original modifiers, so a move with a pressed button never
 writes `held`: it would bring back modifiers already let go and re-arm the
 panes after the release. A Left release records its modifiers instead, and
-the Right release that ends a `remapped` drag records them plus Control,
-since GPUI remaps only while Control is down. A window-level
+a Right release that ends any window drag records them plus Control, since
+GPUI remaps only while Control is down. A window-level
 `window.on_modifiers_changed` never runs: GPUI dispatches the event only
 along the focused element's path, so with nothing focused only a pointer
 event updates `held`. `grab_press` accepts that Right press only while
-`held` holds the whole combination, and a drag it starts is `remapped`, so
-the release listener ends it on Right or Left, whichever arrives.
+`held` holds the whole combination, and a drag it starts is `remapped`.
+Like every window drag, it ends on Right or Left, whichever arrives (see
+"Panes and divider drags").
 
 Arming recomputes on every pointer refresh from `pane_bar_pointer`, so
 anything that claims the pointer or the window disarms. The badges wait

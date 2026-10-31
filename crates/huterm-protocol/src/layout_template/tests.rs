@@ -143,11 +143,25 @@ fn built_in_layouts_give_the_planned_trees_for_one_to_ten_panes() {
                 format!("{outer}[600000:1 400000:{}]", equal_split(inner, 2, n))
             }
         };
+        // The centre is pane `ceil((n - 1) / 2) + 1`; with two panes the
+        // right stack is empty.
+        let left = n / 2;
+        let centered = match n {
+            1 => "1".to_owned(),
+            2 => "C[333334:1 666666:2]".to_owned(),
+            _ => format!(
+                "C[250000:{} 500000:{} 250000:{}]",
+                equal_split("R", 1, left),
+                left + 1,
+                equal_split("R", left + 2, n)
+            ),
+        };
         for (name, expected) in [
             ("columns", equal_split("C", 1, n)),
             ("rows", equal_split("R", 1, n)),
             ("main_left", main("C", "R")),
             ("main_top", main("R", "C")),
+            ("main_centered", centered),
             ("tiled", tiled(TILED[n - 1])),
         ] {
             let arrangement = built_in(name).template.expand(&ids(n)).unwrap();
@@ -188,6 +202,18 @@ fn built_in_layouts_past_the_child_limit_are_unavailable() {
         assert_eq!(layout_of(&arrangement).pane_count(), 257);
         assert_eq!(at(name, 258), Err(LayoutError::TooManyChildren));
     }
+    // Main centered shares the rest between two stacks.
+    let arrangement = at("main_centered", 513).unwrap();
+    assert_eq!(
+        render(&arrangement),
+        format!(
+            "C[250000:{} 500000:257 250000:{}]",
+            equal_split("R", 1, 256),
+            equal_split("R", 258, 513)
+        )
+    );
+    assert_eq!(layout_of(&arrangement).pane_count(), 513);
+    assert_eq!(at("main_centered", 514), Err(LayoutError::TooManyChildren));
     // 17 columns: fifteen full rows and a last row of the rest.
     for (n, last) in [(257, 2), (258, 3)] {
         let mut rows = vec![17; 15];
@@ -217,6 +243,11 @@ fn built_in_layouts_have_their_names_titles_and_templates() {
             ("rows", "Equal Rows", "rows(*)"),
             ("main_left", "Main Left", "columns(pane 60%, rows(*))"),
             ("main_top", "Main Top", "rows(pane 60%, columns(*))"),
+            (
+                "main_centered",
+                "Main Centered",
+                "columns(rows(*), pane 50%, rows(*))"
+            ),
             ("tiled", "Tiled", "grid(*)"),
         ]
     );
@@ -697,8 +728,8 @@ fn matching_finds_the_nearest_layout_of_the_same_shape() {
         resized("main_left", 3, [650_000, 350_000]).matching_layout(&cycle),
         Some(2)
     );
-    // Two panes: main left and columns share a shape, and tiled equals
-    // columns.
+    // Two panes: main left, main centered, and columns share a shape, and
+    // tiled equals columns.
     for (weights, expected) in [
         ([600_000, 400_000], 2),
         ([650_000, 350_000], 2),
@@ -725,7 +756,7 @@ fn matching_finds_the_nearest_layout_of_the_same_shape() {
     );
     assert_eq!(
         in_layout(&cycle, "tiled", 257).matching_layout(&cycle),
-        Some(4)
+        Some(5)
     );
     assert_eq!(unmatched.matching_layout(&[]), None);
     // Two layouts that differ only in a nested split's weights: the
@@ -773,9 +804,10 @@ fn walk(
 #[test]
 fn stepping_the_default_cycle_visits_every_available_layout() {
     let cycle = default_cycle();
+    let count = cycle.len();
     let unmatched = |n: usize| {
         layout_of(
-            &template("columns(rows(pane, pane), *)")
+            &template("columns(rows(pane, pane), rows(*))")
                 .expand(&ids(n))
                 .unwrap(),
         )
@@ -784,27 +816,29 @@ fn stepping_the_default_cycle_visits_every_available_layout() {
         for (start, name) in cycle.iter().enumerate() {
             let layout = in_layout(&cycle, &name.name, n);
             let forward: Vec<usize> =
-                (1..=5).map(|step| (start + step) % 5).collect();
-            let back: Vec<usize> =
-                (1..=5).map(|step| (start + 5 * 2 - step) % 5).collect();
-            assert_eq!(walk(&cycle, layout.clone(), true, 5), forward);
-            assert_eq!(walk(&cycle, layout, false, 5), back);
+                (1..=count).map(|step| (start + step) % count).collect();
+            let back: Vec<usize> = (1..=count)
+                .map(|step| (start + count * 2 - step) % count)
+                .collect();
+            assert_eq!(walk(&cycle, layout.clone(), true, count), forward);
+            assert_eq!(walk(&cycle, layout, false, count), back);
         }
-        assert_eq!(walk(&cycle, unmatched(n), true, 6), [0, 1, 2, 3, 4, 0]);
-        assert_eq!(walk(&cycle, unmatched(n), false, 6), [4, 3, 2, 1, 0, 4]);
+        assert_eq!(walk(&cycle, unmatched(n), true, 7), [0, 1, 2, 3, 4, 5, 0]);
+        assert_eq!(walk(&cycle, unmatched(n), false, 7), [5, 4, 3, 2, 1, 0, 5]);
     }
-    // Two panes: tiled equals columns, so a cycle has four layouts, and a
+    // Two panes: tiled equals columns, so a cycle has five layouts, and a
     // step back from columns skips tiled.
     for (name, forward, back) in [
-        ("columns", [1, 2, 3, 4, 1], [3, 2, 1, 0, 3]),
-        ("rows", [2, 3, 4, 1, 2], [0, 3, 2, 1, 0]),
-        ("main_left", [3, 4, 1, 2, 3], [1, 0, 3, 2, 1]),
-        ("main_top", [4, 1, 2, 3, 4], [2, 1, 0, 3, 2]),
-        ("tiled", [1, 2, 3, 4, 1], [3, 2, 1, 0, 3]),
+        ("columns", [1, 2, 3, 4, 5, 1], [4, 3, 2, 1, 0, 4]),
+        ("rows", [2, 3, 4, 5, 1, 2], [0, 4, 3, 2, 1, 0]),
+        ("main_left", [3, 4, 5, 1, 2, 3], [1, 0, 4, 3, 2, 1]),
+        ("main_top", [4, 5, 1, 2, 3, 4], [2, 1, 0, 4, 3, 2]),
+        ("main_centered", [5, 1, 2, 3, 4, 5], [3, 2, 1, 0, 4, 3]),
+        ("tiled", [1, 2, 3, 4, 5, 1], [4, 3, 2, 1, 0, 4]),
     ] {
         let layout = in_layout(&cycle, name, 2);
-        assert_eq!(walk(&cycle, layout.clone(), true, 5), forward, "{name}");
-        assert_eq!(walk(&cycle, layout, false, 5), back, "{name}");
+        assert_eq!(walk(&cycle, layout.clone(), true, 6), forward, "{name}");
+        assert_eq!(walk(&cycle, layout, false, 6), back, "{name}");
     }
     let distinct = |n: usize, steps: usize| {
         let mut layout = in_layout(&cycle, "columns", n);
@@ -818,17 +852,18 @@ fn stepping_the_default_cycle_visits_every_available_layout() {
         }
         seen.len()
     };
-    assert_eq!(distinct(2, 8), 4);
-    assert_eq!(distinct(4, 10), 5);
+    assert_eq!(distinct(2, 10), 5);
+    assert_eq!(distinct(4, 12), 6);
     // 257 panes: columns and rows are unavailable.
     for (name, forward, back) in [
-        ("main_left", [3, 4, 2, 3], [4, 3, 2, 4]),
-        ("main_top", [4, 2, 3, 4], [2, 4, 3, 2]),
-        ("tiled", [2, 3, 4, 2], [3, 2, 4, 3]),
+        ("main_left", [3, 4, 5, 2, 3], [5, 4, 3, 2, 5]),
+        ("main_top", [4, 5, 2, 3, 4], [2, 5, 4, 3, 2]),
+        ("main_centered", [5, 2, 3, 4, 5], [3, 2, 5, 4, 3]),
+        ("tiled", [2, 3, 4, 5, 2], [4, 3, 2, 5, 4]),
     ] {
         let layout = in_layout(&cycle, name, 257);
-        assert_eq!(walk(&cycle, layout.clone(), true, 4), forward, "{name}");
-        assert_eq!(walk(&cycle, layout, false, 4), back, "{name}");
+        assert_eq!(walk(&cycle, layout.clone(), true, 5), forward, "{name}");
+        assert_eq!(walk(&cycle, layout, false, 5), back, "{name}");
     }
     let unmatched_257 = layout_of(
         &template("rows(columns(*), columns(*))")
@@ -836,17 +871,19 @@ fn stepping_the_default_cycle_visits_every_available_layout() {
             .unwrap(),
     );
     assert_eq!(unmatched_257.matching_layout(&cycle), None);
-    assert_eq!(walk(&cycle, unmatched_257.clone(), true, 4), [2, 3, 4, 2]);
-    assert_eq!(walk(&cycle, unmatched_257, false, 4), [4, 3, 2, 4]);
-    // 258 panes: only tiled is available.
+    assert_eq!(
+        walk(&cycle, unmatched_257.clone(), true, 5),
+        [2, 3, 4, 5, 2]
+    );
+    assert_eq!(walk(&cycle, unmatched_257, false, 5), [5, 4, 3, 2, 5]);
+    // 258 panes: only main centered and tiled are available.
     let unmatched = layout_of(
         &template("rows(columns(*), columns(*))")
             .expand(&ids(258))
             .unwrap(),
     );
-    for forward in [true, false] {
-        assert_eq!(walk(&cycle, unmatched.clone(), forward, 3), [4]);
-    }
+    assert_eq!(walk(&cycle, unmatched.clone(), true, 3), [4, 5, 4]);
+    assert_eq!(walk(&cycle, unmatched, false, 3), [5, 4, 5]);
 }
 
 #[test]
@@ -875,7 +912,17 @@ fn stepping_skips_layouts_that_do_not_fit_or_change_nothing() {
         None
     });
     assert_eq!(step, None);
-    assert_eq!(tried, ["tiled", "main_top", "main_left", "rows", "columns"]);
+    assert_eq!(
+        tried,
+        [
+            "tiled",
+            "main_centered",
+            "main_top",
+            "main_left",
+            "rows",
+            "columns"
+        ]
+    );
 }
 
 #[test]

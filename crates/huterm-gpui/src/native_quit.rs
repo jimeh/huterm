@@ -17,8 +17,10 @@ use objc::runtime::{self, Class, NO, Object, Sel, YES};
 use objc::{Encode as _, msg_send, sel, sel_impl};
 
 #[path = "native_quit/option.rs"]
-mod option;
+pub(crate) mod option;
 pub(crate) type OptionComposition = option::OptionComposition;
+#[path = "native_quit/sound.rs"]
+pub(crate) mod sound;
 
 struct Bridge {
     requests: Sender<()>,

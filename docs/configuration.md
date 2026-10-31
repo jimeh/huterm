@@ -256,7 +256,7 @@ macOS and `super` on Linux, and writes `"off"` for Off.
 
 ### Pane layouts
 
-`arrange_panes` and the layout cycle start with five built-in layouts,
+`arrange_panes` and the layout cycle start with six built-in layouts,
 described in [pane layouts](keybindings.md#pane-layouts). Define your own
 under `[panes.layouts]`, each a name and a layout template, and choose the
 layouts the cycle visits with `layout_cycle`:
@@ -268,7 +268,9 @@ pair = "rows(columns(pane, pane) 70%, columns(*))"
 sides = "columns(rows(*) 25%, pane, rows(*) 25%)"
 
 [panes]
-layout_cycle = ["columns", "rows", "main_left", "main_top", "tiled", "dev"]
+layout_cycle = [
+  "columns", "rows", "main_left", "main_top", "main_centered", "tiled", "dev",
+]
 ```
 
 A template describes a layout for any number of panes. The built-ins are
@@ -291,8 +293,9 @@ templates too: `main_left` is `columns(pane 60%, rows(*))`.
 
 Panes fill the slots in template order, which is the order focus and swaps
 follow. A slot that receives no pane drops out, and its siblings' shares
-grow in proportion to fill its space. With six panes, `sides` puts three on
-the left, one in the centre, and two on the right. With two panes its right
+grow in proportion to fill its space. `sides` arranges panes as the built-in
+`main_centered` does: with six panes it puts three on the left, one in the
+centre, and two on the right. With two panes its right
 stack is empty, so the left pane and the centre pane take one third and two
 thirds of the width. A template without a `*` holds no more panes than it
 has `pane` slots: `arrange_panes` refuses a tab with more, with a notice,
@@ -301,7 +304,7 @@ and the cycle skips that layout.
 A layout name is up to 32 lowercase letters, digits, and underscores,
 starting with a letter, and cannot be a built-in's name. The file holds at
 most 64 layouts; each template is at most 1 KiB, with splits nested at most
-16 deep. `layout_cycle` defaults to the five built-ins in the table's order,
+16 deep. `layout_cycle` defaults to the six built-ins in the table's order,
 may name any built-in or user layout, and must not be empty or repeat a
 name. A layout that breaks these rules, or a `layout_cycle` entry naming a
 layout that does not exist, makes the whole configuration invalid. The
@@ -975,6 +978,25 @@ Reloading `visual = false` clears existing bell marks:
 visual = true
 ```
 
+On macOS, `audio = true` also plays a sound when a bell rings in any
+terminal, focused or not, in a visible tab or a hidden one. Huterm plays at
+most one sound every 200 ms across all terminals, so a burst of bells plays
+once. `sound` is `"system"`, the alert sound chosen in macOS's Sound settings,
+or one of the sounds in `/System/Library/Sounds`: `"basso"`, `"blow"`,
+`"bottle"`, `"frog"`, `"funk"`, `"glass"`, `"hero"`, `"morse"`, `"ping"`,
+`"pop"`, `"purr"`, `"sosumi"`, `"submarine"`, or `"tink"`. `volume`, from 0
+to 1, sets how loud a named sound plays; the system alert sound always plays
+at the macOS alert volume. A named sound that fails to load plays the alert
+sound instead. Linux has no audible bell: `audio = true` loads with a
+warning, and bells stay silent.
+
+```toml
+[terminal.bell]
+audio = true
+sound = "glass"
+volume = 0.5
+```
+
 ## Links and file drops
 
 Hold Cmd on macOS or Ctrl on Linux and click an underlined HTTP(S) link to open
@@ -1063,8 +1085,12 @@ The default, `"off"`, uses the macOS keyboard layout for Option characters and
 dead-key composition. With `"both"`, Option-r sends ESC followed by `r`, and
 Option-Shift-r sends ESC followed by `R`. Supported Control combinations keep
 the Control byte after the ESC prefix. Special keys, such as Option-arrow, keep
-their Alt-modified escape sequences with either setting. Separate left and
-right Option settings are not supported.
+their Alt-modified escape sequences with every setting.
+
+`"left"` and `"right"` send Meta from that Option key only, so the other one
+still types macOS characters and dead keys. Huterm tells the keys apart from
+the side bits macOS attaches to each key press. Some key remapping tools and
+Screen Sharing leave those bits out, and then neither key sends Meta.
 
 Linux always sends unbound Alt character chords as Meta. Huterm shortcuts take
 precedence on both platforms, including Linux's default Alt-1 through Alt-9 tab

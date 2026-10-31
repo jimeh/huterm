@@ -12,6 +12,7 @@ export function checkNativeMenus(exitCode: number, output: string): void {
     "startup-palette-shortcut",
     "startup-special-shortcuts",
     "native-window-menu-items",
+    "native-terminal-menu-submenu",
     "reloaded-update-command",
     "reloaded-user-shortcut",
     "reloaded-palette-shortcut",

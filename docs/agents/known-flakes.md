@@ -430,7 +430,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   #318 at `bbeb8be1`, run 40767320033, job 123094963780) with the same
   state, `w0.busy=true` and `w0.palette=false`; the next head passed. It
   reached aarch64 on 2026-10-30 (PR #331 at `45219c47`, run 41007277899,
-  job 123905010885) with the same state.
+  job 123905010885) with the same state. It recurred on aarch64 on
+  2026-10-31 (PR #354 at `ef1d7012`, run 41161794041, job 124420826357),
+  which does not touch the palette or its smoke, with the same state and
+  the same last bytes.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused

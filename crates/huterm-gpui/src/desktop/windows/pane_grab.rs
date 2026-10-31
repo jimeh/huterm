@@ -1,8 +1,9 @@
 //! Modifier pane drags under `[panes] drag_modifier`: which modifiers are
 //! held, whether the pointer rests where a press would grab a pane, when
-//! the pane title badges show, and whether a press grabs. Everything here
-//! is pure, driven by the window with the inputs it samples and instants
-//! the caller supplies.
+//! the pane title badges show, and whether a press grabs; and whether a
+//! release ends one of the window's drags. Everything here is pure, driven
+//! by the window with the inputs it samples and instants the caller
+//! supplies.
 
 use std::time::{Duration, Instant};
 
@@ -105,18 +106,36 @@ pub(super) fn held_bits(modifiers: gpui::Modifiers) -> u8 {
     crate::config::modifier_bits(modifiers).unwrap_or(FUNCTION)
 }
 
+/// Whether a `button` release ends a running window drag (divider,
+/// sidebar, reorder, pane drag, or tab scrollbar), every one of which a
+/// Left press starts, physically. macOS GPUI turns a Left release with
+/// Control held into a Right release with Control cleared, so there a
+/// Right release ends the drag unless `right_held` says a real Right
+/// press is held, whose release this is.
+pub(super) fn release_ends_drag(
+    button: MouseButton,
+    right_held: bool,
+    macos: bool,
+) -> bool {
+    match button {
+        MouseButton::Left => true,
+        MouseButton::Right => macos && !right_held,
+        _ => false,
+    }
+}
+
 /// The held record a `button` release carrying `modifiers` reports, or
 /// `None` for a release that says nothing reliable. A Left release reports
-/// its modifiers. The Right release that ends a `remapped` pane drag was a
-/// Control-left release, so Control was still down.
+/// its modifiers. A Right release that `ends_drag` was a Control-left
+/// release, so Control was still down.
 pub(super) fn released_held(
     button: MouseButton,
     modifiers: gpui::Modifiers,
-    remapped: bool,
+    ends_drag: bool,
 ) -> Option<u8> {
     match button {
         MouseButton::Left => Some(held_bits(modifiers)),
-        MouseButton::Right if remapped => Some(held_bits(modifiers) | CONTROL),
+        MouseButton::Right if ends_drag => Some(held_bits(modifiers) | CONTROL),
         _ => None,
     }
 }
@@ -246,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn a_release_reports_its_modifiers_and_a_remapped_one_adds_control() {
+    fn a_release_reports_its_modifiers_and_a_drag_ending_right_adds_control() {
         let cmd = gpui::Modifiers {
             platform: true,
             ..gpui::Modifiers::default()
@@ -260,6 +279,29 @@ mod tests {
         );
         assert_eq!(released_held(MouseButton::Right, cmd, false), None);
         assert_eq!(released_held(MouseButton::Middle, cmd, true), None);
+    }
+
+    #[test]
+    fn a_right_release_ends_a_drag_only_on_macos_without_a_real_right_press() {
+        for macos in [false, true] {
+            for right_held in [false, true] {
+                assert!(release_ends_drag(
+                    MouseButton::Left,
+                    right_held,
+                    macos
+                ));
+                assert!(!release_ends_drag(
+                    MouseButton::Middle,
+                    right_held,
+                    macos
+                ));
+            }
+            // A real Right press's own release ends nothing.
+            assert!(!release_ends_drag(MouseButton::Right, true, macos));
+        }
+        // Only macOS GPUI remaps a Control-left release to Right.
+        assert!(release_ends_drag(MouseButton::Right, false, true));
+        assert!(!release_ends_drag(MouseButton::Right, false, false));
     }
 
     #[test]

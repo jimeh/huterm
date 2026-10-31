@@ -1088,6 +1088,8 @@ impl TerminalView {
             }
         }
         if update.bells > 0 {
+            // Every terminal's bells in one update ring once, focused or not.
+            windows::ring_audible_bell(cx);
             let active = self.visible && window.is_window_active();
             if active && self.visual_bell {
                 self.bell_flash_count =
@@ -1473,16 +1475,26 @@ impl TerminalView {
             self.clear_option_composition();
             return true;
         }
-        let input = keyboard::translate(
-            keystroke,
-            Platform::current(),
+        // The key dispatch runs inside AppKit's handling of this key-down,
+        // so its device bits tell which Option key is held.
+        #[cfg(target_os = "macos")]
+        let side = crate::native_quit::option::current_key_flags(
+            window,
+            keystroke.modifiers.alt,
+        )
+        .and_then(keyboard::option_side);
+        #[cfg(not(target_os = "macos"))]
+        let side = None;
+        let option_meta = keyboard::option_sends_meta(
             self.option_as_alt,
+            side,
+            keystroke.modifiers.alt,
         );
+        let input =
+            keyboard::translate(keystroke, Platform::current(), option_meta);
         #[cfg(target_os = "macos")]
         let input = {
-            if input.is_some()
-                || self.option_as_alt != config::MacosOptionAsAlt::Off
-            {
+            if input.is_some() || option_meta {
                 self.clear_option_composition();
                 input
             } else if self.composition.is_empty()
@@ -1544,7 +1556,7 @@ impl TerminalView {
             cx.notify();
         }
         let (application, cell) =
-            self.application_mouse(event.position, event.modifiers, window);
+            self.application_wheel(event.position, event.modifiers, window);
         if self.mouse.wheel_route(application) {
             self.scroll.reset_wheel();
             self.input_queue.boundary();
@@ -1898,17 +1910,42 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Whether a press, motion, or release at `position` goes to the
+    /// program, and the cell it names. A press focuses its pane before it
+    /// routes, so an unfocused pane's program never sees motion.
     fn application_mouse(
         &self,
         position: gpui::Point<Pixels>,
         modifiers: GpuiModifiers,
         window: &Window,
     ) -> (bool, MousePosition) {
+        let focused = self.focus.is_focused(window);
+        self.application_route_at(position, modifiers, focused, window)
+    }
+
+    /// [`Self::application_mouse`] for the wheel, which reaches the program
+    /// in an unfocused pane too, since scrolling never moves focus. The
+    /// window must still be active.
+    fn application_wheel(
+        &self,
+        position: gpui::Point<Pixels>,
+        modifiers: GpuiModifiers,
+        window: &Window,
+    ) -> (bool, MousePosition) {
+        self.application_route_at(position, modifiers, true, window)
+    }
+
+    fn application_route_at(
+        &self,
+        position: gpui::Point<Pixels>,
+        modifiers: GpuiModifiers,
+        focused: bool,
+        window: &Window,
+    ) -> (bool, MousePosition) {
         let geometry = self.grid_geometry(window);
         let cell = geometry.cell(position);
-        let in_grid = geometry.contains(position)
-            && window.is_window_active()
-            && self.focus.is_focused(window);
+        let in_grid =
+            geometry.contains(position) && window.is_window_active() && focused;
         let position = position - self.content_bounds(window).origin;
         let route = self.snapshot.as_ref().is_some_and(|snapshot| {
             application_route(

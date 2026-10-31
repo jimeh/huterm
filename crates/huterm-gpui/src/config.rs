@@ -15,6 +15,9 @@ pub(super) use huterm_config::{
 
 pub(super) const LEGACY_ALACRITTY_WARNING: &str = "terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration.";
 
+pub(super) const LINUX_AUDIBLE_BELL_WARNING: &str =
+    "terminal.bell.audio plays sounds only on macOS; Linux bells stay silent.";
+
 pub(super) const DEFAULT_CONFIG: &str = r##"#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
 
 [general]
@@ -46,8 +49,9 @@ new_tab_directory = "inherit"
 # Allow terminal content such as tmux to replace the system clipboard.
 # Reload applies this to existing terminals: "allow" or "deny".
 clipboard_write = "allow"
-# Send Option character chords as terminal Meta: "off" or "both".
-# Reload applies this to existing terminals. Linux always uses Alt as Meta.
+# Send Option character chords as terminal Meta: "off", "both", "left", or
+# "right"; the other Option key still types macOS characters. Reload applies
+# this to existing terminals. Linux always uses Alt as Meta.
 macos_option_as_alt = "off"
 # Hold Cmd on macOS or Ctrl on Linux to open HTTP/HTTPS links.
 # Also hold Shift when terminal applications request mouse reporting.
@@ -60,6 +64,12 @@ right_click = "menu"
 # Flash active terminals and mark inactive tabs when a bell rings.
 [terminal.bell]
 visual = true
+# macOS: also play "system" (the macOS alert sound) or a sound from
+# /System/Library/Sounds, such as "glass". volume (0 to 1) applies to named
+# sounds; the alert sound follows the macOS alert volume.
+audio = false
+sound = "system"
+volume = 0.5
 
 [font]
 family = "Menlo"
@@ -566,6 +576,11 @@ fn parse_consumed(
         }
         Some(LegacyTerminalEngine::Ghostty) | None => None,
     };
+    let warning = join_warnings(
+        warning,
+        (cfg!(target_os = "linux") && raw.terminal.bell.audio)
+            .then_some(LINUX_AUDIBLE_BELL_WARNING),
+    );
     raw.validate_values()?;
     let directory = path
         .parent()
@@ -620,6 +635,17 @@ fn parse_consumed(
             .map(|(index, entry)| entry.validate(index + 1))
             .collect::<Result<Vec<_>, _>>()?,
     })
+}
+
+/// `warning` with `another` after it, so neither replaces the other.
+fn join_warnings(
+    warning: Option<String>,
+    another: Option<&str>,
+) -> Option<String> {
+    match (warning, another) {
+        (Some(warning), Some(another)) => Some(format!("{warning} {another}")),
+        (warning, another) => warning.or_else(|| another.map(str::to_owned)),
+    }
 }
 
 fn reject_moved_tab_settings(value: &toml::Value) -> Result<(), ConfigError> {

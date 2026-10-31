@@ -94,6 +94,8 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     marker("startup-special-shortcuts");
     windows::check_native_window_menu(&installed)?;
     marker("native-window-menu-items");
+    windows::check_native_terminal_menu(&installed)?;
+    marker("native-terminal-menu-submenu");
 
     config.keybindings[1].key = "cmd-y".into();
     config.keybindings[2].key = "cmd-f".into();

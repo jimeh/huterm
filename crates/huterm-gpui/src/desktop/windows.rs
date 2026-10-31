@@ -172,7 +172,12 @@ pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 #[cfg(target_os = "macos")]
 mod appkit_menu;
 #[cfg(target_os = "macos")]
-pub(super) use appkit_menu::check_window_menu as check_native_window_menu;
+pub(super) use appkit_menu::{
+    check_terminal_menu as check_native_terminal_menu,
+    check_window_menu as check_native_window_menu,
+};
+mod audible_bell;
+pub(super) use audible_bell::ring as ring_audible_bell;
 mod button_layout;
 mod client_frame;
 mod exit_closes;
@@ -888,6 +893,8 @@ struct Desktop {
     system_mode: system_appearance::Mode,
     /// Shows native menus; `None` where windows draw every menu themselves.
     menu_presenter: Option<Rc<dyn MenuPresenter>>,
+    /// Plays bell sounds under `[terminal.bell] audio`.
+    audible_bell: audible_bell::AudibleBell,
     /// Close failures reported in any window, including windows since
     /// removed.
     #[cfg(test)]
@@ -1621,6 +1628,7 @@ fn install_desktop(
         menu_presenter: Some(Rc::new(appkit_menu::AppKitPresenter)),
         #[cfg(not(target_os = "macos"))]
         menu_presenter: None,
+        audible_bell: audible_bell::AudibleBell::platform(),
         #[cfg(test)]
         close_failures: 0,
         #[cfg(all(target_os = "macos", feature = "macos-updater"))]
@@ -2537,6 +2545,7 @@ fn open_window_with_profile(
                 ),
                 pane_bar_pointer: None,
                 pane_grab: PaneGrab::default(),
+                drag_right_press: false,
                 layout_pending: false,
                 synced_presentation: None,
                 reorder: None,
@@ -2632,6 +2641,7 @@ fn open_window_with_profile(
                         view.cancel_divider_drag(cx);
                         view.cancel_reorder(window, cx);
                         view.cancel_pane_drag(window, cx);
+                        view.drag_right_press = false;
                         // An open menu closes, as AppKit menus and GTK
                         // popovers do, and focus is on the terminal when
                         // the window comes back.
@@ -3642,6 +3652,10 @@ struct PointerReveal {
     hovered_in_tests: bool,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "window busy, layout, and drag states are independent"
+)]
 struct WorkspaceView {
     frame_clock: Rc<refresh::FrameClock>,
     quake: Option<quake_windows::Presentation>,
@@ -3718,6 +3732,9 @@ struct WorkspaceView {
     pane_bar_pointer: Option<gpui::Point<Pixels>>,
     /// The held modifiers and the modifier pane drag they arm.
     pane_grab: PaneGrab,
+    /// On macOS, a real Right press that came during a window drag and was
+    /// stopped, so no menu opened. Its release clears it and ends nothing.
+    drag_right_press: bool,
     layout_pending: bool,
     /// The tab bar presentation the last layout sync pushed, so a sync can
     /// tell the bar appearing or hiding from a resize.
@@ -6294,6 +6311,16 @@ impl WorkspaceView {
             self.config.terminal.link_modifiers,
             cfg!(target_os = "macos"),
         )
+    }
+
+    /// Whether one of the window's own drags runs: a divider, sidebar,
+    /// reorder, pane, or tab scrollbar drag, from its press on.
+    fn window_drag_running(&self) -> bool {
+        self.divider_drag.is_some()
+            || self.resizing_sidebar
+            || self.reorder.is_some()
+            || self.pane_drag.is_some()
+            || self.tab_scrollbars.dragging()
     }
 
     /// Whether a modifier press may grab a pane of the active tab now: the
@@ -11803,7 +11830,10 @@ impl Render for WorkspaceView {
                         },
                     );
                     window.on_mouse_event(
-                        move |_: &gpui::MouseDownEvent, phase, window, cx| {
+                        move |event: &gpui::MouseDownEvent,
+                              phase,
+                              window,
+                              cx| {
                             if phase == DispatchPhase::Capture {
                                 let _ = press_view.update(cx, |view, cx| {
                                     view.pointer_reveal.outside = false;
@@ -11812,6 +11842,17 @@ impl Render for WorkspaceView {
                                     // become a window move.
                                     view.title_row_press.set(false);
                                     view.defer_pointer_refresh(window, cx);
+                                    // On macOS a Right release can end a
+                                    // drag, so a real Right press mid-drag
+                                    // is recorded, and stopped so no menu
+                                    // opens.
+                                    if cfg!(target_os = "macos")
+                                        && event.button == MouseButton::Right
+                                        && view.window_drag_running()
+                                    {
+                                        view.drag_right_press = true;
+                                        cx.stop_propagation();
+                                    }
                                 });
                             }
                         },
@@ -11850,27 +11891,36 @@ impl Render for WorkspaceView {
                                 let _ =
                                     release_view.update(cx, |view, cx| {
                                         view.defer_pointer_refresh(window, cx);
-                                        // A drag from a remapped Control-left
-                                        // press ends on a Right release, or on a
-                                        // Left one once Control is let go first.
-                                        let remapped = view
-                                            .pane_drag
-                                            .as_ref()
-                                            .is_some_and(PaneDrag::remapped);
+                                        // The release of a Right press the
+                                        // press listener stopped.
+                                        let right_held = event.button
+                                            == MouseButton::Right
+                                            && std::mem::take(
+                                                &mut view.drag_right_press,
+                                            );
+                                        if right_held {
+                                            cx.stop_propagation();
+                                        }
+                                        // macOS GPUI turns a Left release
+                                        // with Control held into Right, so a
+                                        // drag ends on either there.
+                                        let ends_drag = view
+                                            .window_drag_running()
+                                            && pane_grab::release_ends_drag(
+                                                event.button,
+                                                right_held,
+                                                cfg!(target_os = "macos"),
+                                            );
                                         if let Some(held) =
                                             pane_grab::released_held(
                                                 event.button,
                                                 event.modifiers,
-                                                remapped,
+                                                ends_drag,
                                             )
                                         {
                                             view.record_held_bits(held, cx);
                                         }
-                                        if event.button != MouseButton::Left
-                                            && !(remapped
-                                                && event.button
-                                                    == MouseButton::Right)
-                                        {
+                                        if !ends_drag {
                                             return;
                                         }
                                         if view.divider_drag.is_some() {
@@ -13272,13 +13322,12 @@ impl WorkspaceView {
             selection: terminal.command_availability(ids::COPY).is_ok(),
             exited: terminal.command_availability(ids::PASTE).is_err(),
             scrolled_back: terminal.scrolled_back(),
-            split: self
-                .active_tab_view(cx)
-                .is_some_and(|tab| tab.panes.len() > 1),
+            panes: self.active_tab_view(cx).map_or(0, |tab| tab.panes.len()),
             directory,
         };
         Some(terminal_menu(
             input,
+            &self.config.panes.layouts(),
             &cx.global::<Desktop>().keymap,
             contexts,
         ))
@@ -13535,6 +13584,37 @@ impl WorkspaceView {
         } = kind
             && self.run_link_pick(id, link, cx)
         {
+            return;
+        }
+        // An Arrange Panes item runs `arrange_panes` with its layout, as the
+        // palette's picker does.
+        if matches!(kind, MenuKind::Terminal { .. })
+            && let Some(layout) =
+                id.strip_prefix(terminal_menu::ARRANGE_PANES_PREFIX)
+        {
+            let invocation = CommandInvocation::new(
+                ids::ARRANGE_PANES,
+                vec![CommandArgument::new(
+                    "layout",
+                    CommandValue::Text(layout.to_owned()),
+                )],
+            );
+            match self.invoke_interactive(&invocation, window, cx) {
+                Ok(_) => {
+                    self.recent.record(ids::ARRANGE_PANES);
+                    cx.global_mut::<Desktop>()
+                        .frequency
+                        .record(ids::ARRANGE_PANES);
+                }
+                Err(error) => {
+                    self.report_failure(
+                        "Command failed",
+                        error.to_string(),
+                        cx,
+                    );
+                }
+            }
+            cx.notify();
             return;
         }
         let Some(spec) = huterm_protocol::lookup(id) else {
@@ -13894,7 +13974,12 @@ impl WorkspaceView {
         // The menu's labels follow the interface scale, and so does its
         // width.
         let width = menu_min_width(window);
-        let placement = place(anchor, size(width, height), viewport);
+        // Placed for its tallest level, every level fits; the level it
+        // shows keeps the placed edge, on the anchor unless placement slid
+        // the menu along the window.
+        let shown = menu.read(cx).shown_height(window.rem_size());
+        let placement =
+            place(anchor, size(width, height), viewport).holding(height, shown);
         menu.update(cx, |menu, cx| {
             menu.set_max_height(Some(placement.max_height), cx);
         });
@@ -13914,10 +13999,8 @@ impl WorkspaceView {
         let menu = match &self.menu {
             Some(open) => {
                 let menu = open.view.read(cx);
-                let selection = menu
-                    .selection()
-                    .and_then(|selection| menu.model().id_at(selection))
-                    .unwrap_or_else(|| "none".into());
+                let selection =
+                    menu.selected_id().unwrap_or_else(|| "none".into());
                 let kind = match open.kind {
                     MenuKind::Window => "window",
                     MenuKind::Tab(_) => "tab",
@@ -13961,14 +14044,15 @@ impl WorkspaceView {
     }
 
     /// Smoke output for modifier pane drags: whether the pointer is armed,
-    /// how many badges the last frame drew, and whether a pane drag came
-    /// from a remapped Control-left press.
+    /// how many badges the last frame drew, whether a pane drag came from
+    /// a remapped Control-left press, and whether any window drag runs.
     fn grab_smoke_state(&self, prefix: &str) -> String {
         format!(
-            "{prefix}grab_armed={} {prefix}grab_badges={} {prefix}drag_remapped={}",
+            "{prefix}grab_armed={} {prefix}grab_badges={} {prefix}drag_remapped={} {prefix}window_drag={}",
             self.pane_grab.armed(),
             self.drawn_badges.borrow().len(),
             self.pane_drag.as_ref().is_some_and(PaneDrag::remapped),
+            self.window_drag_running(),
         )
     }
 
@@ -14282,6 +14366,15 @@ fn menu_items_state(model: &MenuModel) -> String {
                         if button.enabled { "" } else { "!" }
                     )
                 }));
+            }
+            MenuRow::Submenu { item, rows } => {
+                let rows = menu_items_state(&MenuModel::new(rows.clone()));
+                ids.push(format!(
+                    "{}{}[{}]",
+                    item.id,
+                    if item.enabled { "" } else { "!" },
+                    rows.replace(',', ";")
+                ));
             }
             MenuRow::Separator => {}
         }

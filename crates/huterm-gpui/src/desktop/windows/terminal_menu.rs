@@ -5,16 +5,21 @@
 //! without a window.
 
 use super::menu_spec::{Item as MenuItem, MenuSpec, Row as MenuRow};
+use super::pane_layouts::holds_at_most;
 use super::window_menu::{label, shortcut_key};
 use crate::keymap::{InstalledKeymap, Platform};
 use gpui::KeyContext;
-use huterm_protocol::{CommandId, ids};
+use huterm_protocol::{CommandId, NamedLayout, ids};
 
 /// Opens the link under the pointer. Link rows are not catalog commands:
 /// they act on the destination captured when the menu opened.
 pub(super) const OPEN_LINK: &str = "open_link";
 /// Copies the link under the pointer.
 pub(super) const COPY_LINK: &str = "copy_link";
+/// The Arrange Panes submenu's row.
+pub(super) const ARRANGE_PANES_MENU: &str = "arrange_panes_menu";
+/// What starts an Arrange Panes item's id, before its layout's name.
+pub(super) const ARRANGE_PANES_PREFIX: &str = "arrange_panes:";
 
 /// What the tab's working directory allows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,16 +46,18 @@ pub(super) struct TerminalMenuInput {
     pub(super) exited: bool,
     /// The view shows history rather than live output.
     pub(super) scrolled_back: bool,
-    /// The tab holds more than one pane, so its panes can balance and its
-    /// pane can move to a tab of its own.
-    pub(super) split: bool,
+    /// The panes the tab holds. With more than one, its panes can balance
+    /// and arrange, and its pane can move to a tab of its own.
+    pub(super) panes: usize,
     pub(super) directory: DirectoryState,
 }
 
 /// The rows for `input`, with shortcuts from `keymap` as seen from
-/// `contexts`, the stack captured when the menu opened.
+/// `contexts`, the stack captured when the menu opened. A split tab's
+/// Arrange Panes submenu lists `layouts`, in order.
 pub(super) fn terminal_menu(
     input: TerminalMenuInput,
+    layouts: &[NamedLayout],
     keymap: &InstalledKeymap,
     contexts: &[KeyContext],
 ) -> MenuSpec {
@@ -115,9 +122,10 @@ pub(super) fn terminal_menu(
         MenuRow::Item(item(ids::SPLIT_DOWN)),
         MenuRow::Item(item(ids::CLOSE_PANE)),
     ]);
-    if input.split {
+    if input.panes > 1 {
         rows.extend([
             MenuRow::Item(item(ids::BALANCE_PANES)),
+            arrange_panes(layouts, input.panes),
             MenuRow::Item(item(ids::MOVE_PANE_TO_NEW_TAB)),
         ]);
     }
@@ -130,6 +138,31 @@ pub(super) fn terminal_menu(
     MenuSpec::new(rows)
 }
 
+/// The Arrange Panes submenu: one item per layout, named
+/// `arrange_panes:<name>` and labelled by its title. A layout that cannot
+/// hold the tab's `panes` is disabled with its capacity.
+fn arrange_panes(layouts: &[NamedLayout], panes: usize) -> MenuRow {
+    let rows = layouts
+        .iter()
+        .map(|layout| {
+            let item = MenuItem::new(
+                format!("{ARRANGE_PANES_PREFIX}{}", layout.name),
+                layout.title.clone(),
+            );
+            MenuRow::Item(match holds_at_most(layout, panes) {
+                Some(most) => {
+                    item.disabled(Some(format!("Holds at most {most} panes")))
+                }
+                None => item,
+            })
+        })
+        .collect();
+    MenuRow::Submenu {
+        item: MenuItem::new(ARRANGE_PANES_MENU, "Arrange Panes"),
+        rows,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,7 +172,7 @@ mod tests {
         Item as MenuItem, Model as MenuModel, Row as MenuRow,
     };
 
-    fn model(input: TerminalMenuInput) -> MenuModel {
+    fn spec(input: TerminalMenuInput, layouts: &[NamedLayout]) -> MenuSpec {
         let (bindings, keymap) =
             compile(input.platform, &[]).unwrap().install_parts();
         drop(bindings);
@@ -147,7 +180,12 @@ mod tests {
             KeyContext::parse("Workspace").unwrap(),
             KeyContext::parse("Terminal").unwrap(),
         ];
-        terminal_menu(input, &keymap, &contexts).to_listbox(input.platform)
+        terminal_menu(input, layouts, &keymap, &contexts)
+    }
+
+    fn model(input: TerminalMenuInput) -> MenuModel {
+        let layouts = huterm_config::PanesConfig::default().layouts();
+        spec(input, &layouts).to_listbox(input.platform)
     }
 
     fn input() -> TerminalMenuInput {
@@ -157,7 +195,7 @@ mod tests {
             selection: true,
             exited: false,
             scrolled_back: false,
-            split: false,
+            panes: 1,
             directory: DirectoryState::Local,
         }
     }
@@ -172,6 +210,7 @@ mod tests {
                 MenuRow::Item(item) => format!("{}!", item.id),
                 MenuRow::Separator => "-".to_owned(),
                 MenuRow::Buttons { .. } => "buttons".to_owned(),
+                MenuRow::Submenu { item, .. } => format!("{}>", item.id),
             })
             .collect()
     }
@@ -203,16 +242,104 @@ mod tests {
     }
 
     #[test]
-    fn a_split_tab_adds_balance_and_move_after_close_pane() {
+    fn a_split_tab_adds_balance_arrange_and_move_after_close_pane() {
         let rows = rows(TerminalMenuInput {
-            split: true,
+            panes: 2,
             ..input()
         });
         let close = rows.iter().position(|row| row == "close_pane").unwrap();
         assert_eq!(
-            rows[close..close + 4],
-            ["close_pane", "balance_panes", "move_pane_to_new_tab", "-"]
+            rows[close..close + 5],
+            [
+                "close_pane",
+                "balance_panes",
+                "arrange_panes_menu>",
+                "move_pane_to_new_tab",
+                "-"
+            ]
         );
+    }
+
+    #[test]
+    fn arrange_panes_lists_every_layout_and_disables_those_too_small() {
+        let panes = huterm_config::PanesConfig {
+            layouts: [
+                ("pair".to_owned(), "columns(pane, pane)".to_owned()),
+                ("dev".to_owned(), "columns(pane 55%, rows(*))".to_owned()),
+            ]
+            .into(),
+            ..huterm_config::PanesConfig::default()
+        };
+        let layouts = panes.layouts();
+        let arrange = |count: usize| {
+            let input = TerminalMenuInput {
+                panes: count,
+                ..input()
+            };
+            spec(input, &layouts)
+                .to_listbox(Platform::MacOs)
+                .rows
+                .into_iter()
+                .find_map(|row| match row {
+                    MenuRow::Submenu { item, rows } => Some((item, rows)),
+                    _ => None,
+                })
+        };
+        let (item, rows) = arrange(3).expect("a split tab arranges");
+        assert_eq!(item.label, "Arrange Panes");
+        // The built-ins in the default cycle's order, then user layouts by
+        // name, as the palette lists them; `pair` holds two panes, not
+        // three.
+        let shown: Vec<_> = rows
+            .iter()
+            .map(|row| match row {
+                MenuRow::Item(item) => (
+                    item.id.to_string(),
+                    item.label.clone(),
+                    item.disabled_hint.clone(),
+                ),
+                other => panic!("an item row, not {other:?}"),
+            })
+            .collect();
+        let some = |text: &str| Some(text.to_owned());
+        assert_eq!(
+            shown,
+            [
+                (
+                    "arrange_panes:columns".to_owned(),
+                    "Equal Columns".to_owned(),
+                    None
+                ),
+                (
+                    "arrange_panes:rows".to_owned(),
+                    "Equal Rows".to_owned(),
+                    None
+                ),
+                (
+                    "arrange_panes:main_left".to_owned(),
+                    "Main Left".to_owned(),
+                    None
+                ),
+                (
+                    "arrange_panes:main_top".to_owned(),
+                    "Main Top".to_owned(),
+                    None
+                ),
+                (
+                    "arrange_panes:main_centered".to_owned(),
+                    "Main Centered".to_owned(),
+                    None
+                ),
+                ("arrange_panes:tiled".to_owned(), "Tiled".to_owned(), None),
+                ("arrange_panes:dev".to_owned(), "dev".to_owned(), None),
+                (
+                    "arrange_panes:pair".to_owned(),
+                    "pair".to_owned(),
+                    some("Holds at most 2 panes")
+                ),
+            ]
+        );
+        assert!(arrange(1).is_none(), "a lone pane has nothing to arrange");
     }
 
     #[test]
@@ -220,7 +347,7 @@ mod tests {
         let rows = rows(TerminalMenuInput {
             link: true,
             scrolled_back: true,
-            split: false,
+            panes: 1,
             ..input()
         });
         assert_eq!(rows[..3], ["open_link", "copy_link", "-"]);
