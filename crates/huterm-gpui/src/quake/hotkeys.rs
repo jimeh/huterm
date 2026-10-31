@@ -10,7 +10,8 @@ use global_hotkey::{
 use gpui::Keystroke;
 use huterm_protocol::{CommandArgument, CommandInvocation, CommandValue, ids};
 
-use crate::{config::KeybindingEntry, keymap::CompiledKeymap};
+use crate::config::KeybindingEntry;
+use crate::keymap::{CompiledKeymap, EffectiveBinding, Origin};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Binding {
@@ -20,14 +21,35 @@ pub(crate) struct Binding {
     pub invocation: CommandInvocation,
 }
 
+/// The global shortcuts a configuration registers, with a warning for each
+/// one that takes its key from an in-app default.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Compiled {
+    pub bindings: Vec<Binding>,
+    /// Non-fatal: the shortcut wins its key while registered, and the
+    /// default still works in Huterm when registration is refused.
+    pub shadowed: Vec<String>,
+}
+
+/// Compiles `entries`. A key that starts an in-app binding the user wrote
+/// is an error, since one press cannot honour both; one that starts only
+/// in-app defaults is a warning, so a new default never makes an existing
+/// configuration fail to load.
 pub(crate) fn compile(
     entries: &[KeybindingEntry],
     profiles: &super::Config,
     local: &CompiledKeymap,
-) -> Result<Vec<Binding>, String> {
-    let mut result = Vec::new();
+) -> Result<Compiled, String> {
+    let mut result = Compiled::default();
     let mut keys = HashSet::new();
     for (index, entry) in entries.iter().enumerate() {
+        let message = |error: &str| {
+            format!(
+                "global_keybinding {} ({:?}): {error}",
+                index + 1,
+                entry.key
+            )
+        };
         let parsed = (|| {
             if entry.when.is_some() {
                 return Err(
@@ -61,39 +83,62 @@ pub(crate) fn compile(
             if entry.is_disabled() {
                 return Ok(None);
             }
-            for binding in &local.bindings {
-                if binding.keystrokes().first().is_some_and(|other| {
-                    *other.modifiers() == stroke.modifiers
-                        && other.key() == stroke.key
-                }) {
-                    return Err(
-                        "conflicts with the first stroke of an in-app binding"
-                            .into(),
-                    );
-                }
+            let starts = |binding: &&EffectiveBinding| {
+                binding
+                    .key
+                    .split_whitespace()
+                    .next()
+                    .and_then(|first| {
+                        Keystroke::parse_with_os(
+                            first,
+                            crate::keymap::Platform::current().os(),
+                        )
+                        .ok()
+                    })
+                    .is_some_and(|other| {
+                        other.modifiers == stroke.modifiers
+                            && other.key == stroke.key
+                    })
+            };
+            let started: Vec<&EffectiveBinding> =
+                local.effective.iter().filter(starts).collect();
+            if started.iter().any(|binding| binding.origin == Origin::User) {
+                return Err(
+                    "conflicts with the first stroke of an in-app binding"
+                        .into(),
+                );
             }
             if !keys.insert(key.id()) {
                 return Err("duplicate global shortcut".into());
             }
-            Ok(Some(Binding {
-                key,
-                keystroke: entry.key.clone(),
-                invocation: CommandInvocation::new(
-                    id,
-                    vec![CommandArgument::new(
-                        "profile",
-                        CommandValue::Text(profile.into()),
-                    )],
-                ),
-            }))
+            let shadowed = started.first().map(|binding| {
+                format!(
+                    "takes the key from the default {} keybinding; disable \
+                     or unbind that keybinding to silence this warning",
+                    binding.command
+                )
+            });
+            Ok(Some((
+                Binding {
+                    key,
+                    keystroke: entry.key.clone(),
+                    invocation: CommandInvocation::new(
+                        id,
+                        vec![CommandArgument::new(
+                            "profile",
+                            CommandValue::Text(profile.into()),
+                        )],
+                    ),
+                },
+                shadowed,
+            )))
         })();
-        result.extend(parsed.map_err(|error: String| {
-            format!(
-                "global_keybinding {} ({:?}): {error}",
-                index + 1,
-                entry.key
-            )
-        })?);
+        if let Some((binding, shadowed)) =
+            parsed.map_err(|error: String| message(&error))?
+        {
+            result.bindings.push(binding);
+            result.shadowed.extend(shadowed.as_deref().map(message));
+        }
     }
     Ok(result)
 }
@@ -523,7 +568,10 @@ mod tests {
             )
             .is_ok()
         );
-        assert_eq!(compiled[0].invocation.text("profile"), Some("default"));
+        assert_eq!(
+            compiled.bindings[0].invocation.text("profile"),
+            Some("default")
+        );
         for invalid in [
             KeybindingEntry {
                 key: "ctrl-k ctrl-t".into(),
@@ -565,8 +613,8 @@ mod tests {
             &local,
         )
         .unwrap();
-        assert_eq!(compiled.len(), 1);
-        assert_eq!(compiled[0].keystroke, "ctrl-alt-t");
+        assert_eq!(compiled.bindings.len(), 1);
+        assert_eq!(compiled.bindings[0].keystroke, "ctrl-alt-t");
         assert!(
             compile(
                 &[KeybindingEntry {
@@ -578,20 +626,86 @@ mod tests {
             )
             .is_err()
         );
-        let mut local = local;
-        local.bindings.push(gpui::KeyBinding::new(
-            "ctrl-alt-t x",
-            crate::commands::InvokeApp(CommandInvocation::new(
-                ids::SHOW_QUAKE,
-                Vec::new(),
-            )),
-            None,
-        ));
+        let local = crate::keymap::compile(
+            crate::keymap::Platform::current(),
+            &[KeybindingEntry {
+                key: "ctrl-alt-t x".into(),
+                command: "show_quake".into(),
+                ..entry.clone()
+            }],
+        )
+        .unwrap();
         assert!(
             compile(std::slice::from_ref(&entry), &profiles, &local)
                 .unwrap_err()
                 .contains("conflicts")
         );
-        assert_eq!(compile(&[disabled], &profiles, &local), Ok(Vec::new()));
+        assert_eq!(
+            compile(&[disabled], &profiles, &local),
+            Ok(Compiled::default())
+        );
+    }
+
+    #[test]
+    fn a_shortcut_on_an_in_app_default_wins_it_with_a_warning() {
+        let profiles = super::super::Config::default().validated().unwrap();
+        let platform = crate::keymap::Platform::current();
+        let defaults = crate::keymap::compile_defaults(platform);
+        // `cmd-alt-i` on macOS and `ctrl-shift-alt-i` on Linux.
+        let key = defaults
+            .effective
+            .iter()
+            .find(|binding| binding.command == ids::TOGGLE_PANE_INPUT_SYNC)
+            .unwrap()
+            .key
+            .clone();
+        let entry = KeybindingEntry {
+            key: key.clone(),
+            command: "toggle_quake".into(),
+            args: None,
+            when: None,
+            description: None,
+            disabled: None,
+        };
+        let compiled =
+            compile(std::slice::from_ref(&entry), &profiles, &defaults)
+                .unwrap();
+        assert_eq!(compiled.bindings.len(), 1);
+        assert_eq!(
+            compiled.shadowed,
+            [format!(
+                "global_keybinding 1 ({key:?}): takes the key from the \
+                 default toggle_pane_input_sync keybinding; disable or \
+                 unbind that keybinding to silence this warning"
+            )]
+        );
+        // Disabling the default leaves the key to the shortcut alone.
+        let quiet = crate::keymap::compile(
+            platform,
+            &[KeybindingEntry {
+                command: "toggle_pane_input_sync".into(),
+                disabled: Some(true),
+                ..entry.clone()
+            }],
+        )
+        .unwrap();
+        let compiled =
+            compile(std::slice::from_ref(&entry), &profiles, &quiet).unwrap();
+        assert_eq!(compiled.bindings.len(), 1);
+        assert_eq!(compiled.shadowed, Vec::<String>::new());
+        // A binding the user wrote on the same key still conflicts.
+        let mine = crate::keymap::compile(
+            platform,
+            &[KeybindingEntry {
+                command: "toggle_pane_input_sync".into(),
+                ..entry.clone()
+            }],
+        )
+        .unwrap();
+        assert!(
+            compile(std::slice::from_ref(&entry), &profiles, &mine)
+                .unwrap_err()
+                .contains("conflicts")
+        );
     }
 }

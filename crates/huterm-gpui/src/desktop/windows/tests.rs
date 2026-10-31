@@ -350,7 +350,7 @@ fn refused_global_shortcuts_warn_after_a_reload_with_reload_offered() {
     let config = Config::default();
     let compiled = keymap::compile_defaults(Platform::current());
     let notices = |refused: &[String]| {
-        ConfigReport::reloaded(&config, &compiled, refused.to_vec())
+        ConfigReport::reloaded(&config, &compiled, Vec::new(), refused.to_vec())
             .notices(path)
     };
     assert_eq!(notices(&[]), []);
@@ -378,6 +378,23 @@ fn refused_global_shortcuts_warn_after_a_reload_with_reload_offered() {
             .collect::<Vec<_>>(),
         [ids::OPEN_CONFIG_FILE, ids::RELOAD_CONFIG]
     );
+}
+
+#[test]
+fn a_reload_reports_shadowed_defaults_with_the_keymap_conflicts() {
+    let config = Config::default();
+    let compiled = keymap::compile_defaults(Platform::current());
+    let shadowed = "global_keybinding 1 (\"cmd-alt-i\"): takes the key from \
+                    the default toggle_pane_input_sync keybinding"
+        .to_owned();
+    let report = ConfigReport::reloaded(
+        &config,
+        &compiled,
+        vec![shadowed.clone()],
+        Vec::new(),
+    );
+    assert_eq!(report.conflicts.last(), Some(&shadowed));
+    assert_eq!(report.for_settings(), Ok(report.conflicts.clone()));
 }
 
 #[test]

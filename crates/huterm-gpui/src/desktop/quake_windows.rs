@@ -379,20 +379,24 @@ impl Stage {
     }
 }
 
-/// Registers the startup configuration's global shortcuts and returns a
-/// warning for each one the platform refused. An invalid shortcut is
-/// reported as a failure and registers nothing.
-pub(super) fn install(cx: &mut App) -> Vec<String> {
+/// Registers the startup configuration's global shortcuts and returns the
+/// warnings for those that shadow an in-app default, then for each one the
+/// platform refused. An invalid shortcut is reported as a failure and
+/// registers nothing.
+pub(super) fn install(cx: &mut App) -> (Vec<String>, Vec<String>) {
     let config = cx.global::<Desktop>().config.clone();
     let compiled = keymap::compile(Platform::current(), &config.keybindings);
-    let bindings = compiled
+    let shortcuts = compiled
         .map_err(|error| error.to_string())
         .and_then(|compiled| compile_shortcuts(&config, &compiled));
-    match bindings {
-        Ok(bindings) => replace_registrations(cx, bindings),
+    match shortcuts {
+        Ok(shortcuts) => (
+            shortcuts.shadowed,
+            replace_registrations(cx, shortcuts.bindings),
+        ),
         Err(error) => {
             report(cx, &error, None);
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
     }
 }
@@ -402,7 +406,7 @@ pub(super) fn install(cx: &mut App) -> Vec<String> {
 pub(super) fn compile_shortcuts(
     config: &Config,
     compiled: &keymap::CompiledKeymap,
-) -> Result<Vec<hotkeys::Binding>, String> {
+) -> Result<hotkeys::Compiled, String> {
     hotkeys::compile(&config.global_keybindings, &config.quake, compiled)
 }
 

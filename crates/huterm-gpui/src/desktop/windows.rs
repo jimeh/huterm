@@ -1318,17 +1318,21 @@ pub(super) struct ConfigReport {
 
 impl ConfigReport {
     /// The report for a reload that applied `config`, with the global
-    /// shortcuts the platform `refused`.
+    /// shortcuts that `shadowed` an in-app default and those the platform
+    /// `refused`.
     fn reloaded(
         config: &Config,
         compiled: &CompiledKeymap,
+        shadowed: Vec<String>,
         refused: Vec<String>,
     ) -> Self {
         if let Some(warning) = &config.warning {
             eprintln!("Huterm configuration warning: {warning}");
         }
+        let mut conflicts = compiled.conflicts.clone();
+        conflicts.extend(shadowed);
         let mut report = Self {
-            conflicts: compiled.conflicts.clone(),
+            conflicts,
             warning: config.warning.clone(),
             ..Self::default()
         };
@@ -1561,8 +1565,10 @@ pub(super) fn run_with_startup(
         #[cfg(target_os = "linux")]
         follow_button_layout(cx);
         install_native_quit(cx);
-        let refused = quake_windows::install(cx);
-        cx.global_mut::<Desktop>().config_report.refuse(refused);
+        let (shadowed, refused) = quake_windows::install(cx);
+        let report = &mut cx.global_mut::<Desktop>().config_report;
+        report.conflicts.extend(shadowed);
+        report.refuse(refused);
         cx.on_app_quit(move |cx| {
             commit_quit(cx);
             quake_windows::shutdown(cx);
@@ -10977,14 +10983,19 @@ fn finish_reload(
             config.follow_appearance(dark);
             // A shortcut the platform refuses, such as one another application
             // holds, warns without blocking the rest of the configuration.
-            let refused = quake_windows::replace_registrations(cx, shortcuts);
+            let refused =
+                quake_windows::replace_registrations(cx, shortcuts.bindings);
             #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             apply_update_config(cx, &config);
             let desktop = cx.global_mut::<Desktop>();
             desktop.system_mode = system_appearance::Mode::of(dark);
             desktop.config = config.clone();
-            desktop.config_report =
-                ConfigReport::reloaded(&config, &compiled, refused);
+            desktop.config_report = ConfigReport::reloaded(
+                &config,
+                &compiled,
+                shortcuts.shadowed,
+                refused,
+            );
             desktop.latched.clear();
             note_terminal_font(cx, &config, &family);
             apply_typography(cx);

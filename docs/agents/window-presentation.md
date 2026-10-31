@@ -159,7 +159,10 @@ together; native key support and OS registration remain runtime checks.
 Global shortcut registration is partial, never transactional: each refused
 grab is a warning naming the key, a failed release is logged, the rest of the
 configuration applies, and the next reconcile retries both. Only a compile
-error, such as an unknown profile or a duplicate, fails a reload. Keepalive
+error, such as an unknown profile or a duplicate, fails a reload. A key that
+starts an in-app binding the user wrote is such an error; one that starts
+only in-app defaults is a `shadowed` warning in the report's conflicts, so a
+new default never stops an existing configuration from loading. Keepalive
 requires a dispatchable binding whose native grab is still owned. A grab whose
 release failed stays tracked for cleanup but must not keep a zero-window
 application alive by itself.

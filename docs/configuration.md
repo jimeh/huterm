@@ -702,14 +702,17 @@ presentation shows again where it was. Explicit IDs use CoreGraphics display
 UUIDs on macOS and RandR monitor names on X11.
 
 Global bindings use a single keystroke, no `when`, and only the three quake
-commands. They must not conflict with the first keystroke of a local binding.
-An unsupported key or an invalid binding is a configuration error, and a
-rejected reload keeps the previous configuration and shortcuts. A shortcut
-another application already holds is only a warning: the rest of the
-configuration applies, the other shortcuts register, and the next reload,
-including the one a save starts, tries it again. Global shortcuts work on macOS
-and native X11 sessions, but not on Wayland or XWayland, where configuring one
-warns the same way.
+commands. They must not conflict with the first keystroke of a local binding you
+wrote. One that takes the key of a default binding, such as
+`toggle_pane_input_sync`'s, is only a warning: the shortcut gets the key while
+it is registered, and the default still works in Huterm when it is not. Disable
+or unbind that default to silence the warning. An unsupported key or an invalid
+binding is a configuration error, and a rejected reload keeps the previous
+configuration and shortcuts. A shortcut another application already holds is
+only a warning: the rest of the configuration applies, the other shortcuts
+register, and the next reload, including the one a save starts, tries it again.
+Global shortcuts work on macOS and native X11 sessions, but not on Wayland or
+XWayland, where configuring one warns the same way.
 
 ## Fonts and themes
 
