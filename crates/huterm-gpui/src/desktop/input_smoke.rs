@@ -134,7 +134,8 @@ fn read_state(cx: &mut gpui::App) -> String {
 
 /// The active tab's panes, the focused pane's grid (its painted origin in
 /// window points, its cell size, and its mouse tracking mode), and whether
-/// a close is running or asking for confirmation.
+/// a close is running or asking for confirmation. `title_row_moves` counts
+/// platform window moves started by a press and drag on the title row.
 fn pane_state(
     root: gpui::AnyView,
     window: &mut gpui::Window,
@@ -164,9 +165,10 @@ fn pane_state(
         },
     );
     format!(
-        "{} {grid} busy={} confirming={}",
+        "{} {grid} busy={} confirming={} title_row_moves={}",
         view.pane_smoke_state("", window, cx),
         view.busy,
         view.close.confirmation.is_some(),
+        view.title_row_move_count(),
     )
 }

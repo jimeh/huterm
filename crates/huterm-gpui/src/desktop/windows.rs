@@ -14307,6 +14307,11 @@ impl WorkspaceView {
         )
     }
 
+    /// How many platform window moves the title row has started, for smokes.
+    pub(super) fn title_row_move_count(&self) -> u32 {
+        self.title_row_moves.get()
+    }
+
     /// Smoke output for modifier pane drags: whether the pointer is armed,
     /// how many badges the last frame drew, whether a pane drag came from
     /// a remapped Control-left press, and whether any window drag runs.
@@ -14608,7 +14613,7 @@ impl WorkspaceView {
             f32::from(radii.top),
             f32::from(radii.bottom),
             self.native_radii.source.name(),
-            self.title_row_moves.get(),
+            self.title_row_move_count(),
             window.scale_factor(),
             self.frame_state.client_decorations(),
             f32::from(self.window_frame().inset.top),
