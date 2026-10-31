@@ -36,13 +36,11 @@ fn corners(
 }
 
 /// The pane area's corners in an 800×600 macOS window with a titlebar
-/// and a tab bar at `position` shown as `presentation`, and the rounded
-/// terminal corner beside a vertical bar when `inner` holds.
+/// and a tab bar at `position` shown as `presentation`.
 fn macos_corners(
     position: TabPosition,
     presentation: Presentation,
     chrome_hidden: bool,
-    inner: bool,
 ) -> Corners {
     let titlebar = if chrome_hidden { px(0.0) } else { TITLEBAR };
     let layout = ChromeLayout::new(VIEWPORT, titlebar, position).present(
@@ -51,64 +49,46 @@ fn macos_corners(
         1.0,
     );
     let radii = window_radii(chrome_hidden, Platform::MacOs, MACOS, false);
-    let terminal = inner.then(|| TerminalCorner {
-        at: if position == TabPosition::Left {
-            layout.terminal.origin
-        } else {
-            layout.terminal.top_right()
-        },
-        radius: px(6.0),
-    });
-    area_corners(layout.content, layout.terminal, radii, terminal)
+    area_corners(layout.content, layout.terminal, radii)
 }
 
 #[test]
-fn only_corners_on_a_window_corner_or_huterms_own_rounding_are_round() {
+fn only_corners_on_a_window_corner_are_round() {
     use Presentation::{Hidden, Reserved};
     use TabPosition::{Bottom, Left, Right, Titlebar, Top};
     // The titlebar strip always sits above the panes, so only the bottom
     // corners can meet the window's.
     for position in [Top, Titlebar] {
         assert_eq!(
-            macos_corners(position, Reserved, false, false),
+            macos_corners(position, Reserved, false),
             corners(0.0, 0.0, 16.0, 16.0),
             "{position:?}"
         );
     }
     assert_eq!(
-        macos_corners(Bottom, Reserved, false, false),
+        macos_corners(Bottom, Reserved, false),
         corners(0.0, 0.0, 0.0, 0.0)
     );
     assert_eq!(
-        macos_corners(Left, Reserved, false, false),
+        macos_corners(Left, Reserved, false),
         corners(0.0, 0.0, 16.0, 0.0)
     );
     assert_eq!(
-        macos_corners(Right, Reserved, false, false),
+        macos_corners(Right, Reserved, false),
         corners(0.0, 0.0, 0.0, 16.0)
     );
     // A hidden bar gives the panes its room, down to the window's corners.
     for position in [Bottom, Left, Right] {
         assert_eq!(
-            macos_corners(position, Hidden, false, false),
+            macos_corners(position, Hidden, false),
             corners(0.0, 0.0, 16.0, 16.0),
             "{position:?}"
         );
     }
-    // The corner Huterm rounds beside a vertical tab bar takes its own
-    // radius; a flush active row leaves it square.
-    assert_eq!(
-        macos_corners(Left, Reserved, false, true),
-        corners(6.0, 0.0, 16.0, 0.0)
-    );
-    assert_eq!(
-        macos_corners(Right, Reserved, false, true),
-        corners(0.0, 6.0, 0.0, 16.0)
-    );
     // Fullscreen and a Quake presentation hide the chrome: every corner
     // is square, even where the panes reach the window's corners.
     assert_eq!(
-        macos_corners(Top, Hidden, true, false),
+        macos_corners(Top, Hidden, true),
         corners(0.0, 0.0, 0.0, 0.0)
     );
 }
@@ -146,7 +126,7 @@ fn window_radii_follow_the_current_presentation_and_platform() {
         ChromeLayout::with_frame(VIEWPORT, TabPosition::Titlebar, frame);
     assert!(title_row_height(false, frame) > px(0.0));
     assert_eq!(
-        area_corners(layout.content, layout.terminal, decorated, None),
+        area_corners(layout.content, layout.terminal, decorated),
         Corners::default()
     );
 }

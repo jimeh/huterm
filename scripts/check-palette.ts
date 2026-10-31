@@ -1146,7 +1146,7 @@ if (import.meta.main) {
     if (process.platform === "darwin") {
       await checks();
       if (!only || only === "titlebar") {
-        for (const position of ["titlebar", "top"] as const) await checkMacTitlebar(executable, pointer, position);
+        for (const position of ["titlebar", "top", "left", "right"] as const) await checkMacTitlebar(executable, pointer, position);
       }
     }
     else {

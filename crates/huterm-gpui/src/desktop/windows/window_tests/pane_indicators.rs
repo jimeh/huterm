@@ -290,7 +290,7 @@ fn the_focus_cue_keeps_a_lines_width_clear_of_the_sync_lines(
 /// A titlebar puts the strip above a vertical tab bar only on macOS.
 #[cfg(target_os = "macos")]
 #[gpui::test]
-fn a_left_tab_bar_rounds_the_pane_areas_inner_corner_unless_flush(
+fn a_left_tab_bar_keeps_the_pane_areas_inner_corners_square(
     cx: &mut TestAppContext,
 ) {
     use huterm_config::TabStyle;
@@ -309,16 +309,15 @@ fn a_left_tab_bar_rounds_the_pane_areas_inner_corner_unless_flush(
         view.select_tab(second, true, window, cx);
     });
     harness.activate(window, second);
-    let radius = terminal_corner_radius(
-        harness.update_view(window, |view, _, _| view.config.window),
+    harness.wait_for(
+        "square inner corners beside a non-flush active row",
+        |cx| {
+            record(cx, window).is_some_and(|record| {
+                record.corners.top_left == px(0.0)
+                    && record.corners.top_right == px(0.0)
+            })
+        },
     );
-    assert!(radius > px(0.0));
-    harness.wait_for("the inner corner beside a non-flush active row", |cx| {
-        record(cx, window).is_some_and(|record| {
-            record.corners.top_left == radius
-                && record.corners.top_right == px(0.0)
-        })
-    });
     // The first row is flush with the bar's top, so the corner is square.
     harness.update_view(window, |view, window, cx| {
         view.select_tab(first, true, window, cx);

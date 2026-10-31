@@ -1997,19 +1997,22 @@ fn all_placements_share_nonoverlapping_terminal_and_tab_bounds() {
                 titlebar,
                 position,
             );
-            // The merged row lives in the titlebar, so it and the
-            // terminal partition the whole window instead.
-            let shared = if position == TabPosition::Titlebar {
-                px(600.0)
+            // Sidebars include the strip above their rows; only the
+            // terminal column loses the title row. A merged row is itself
+            // the title row, so tabs and terminal partition the window.
+            let title_width = if position == TabPosition::Titlebar {
+                px(0.0)
+            } else if position.vertical() {
+                layout.terminal.size.width
             } else {
-                px(600.0) - titlebar
+                px(800.0)
             };
             assert_eq!(
                 layout.terminal.size.width
                     * f32::from(layout.terminal.size.height)
                     + layout.tabs.size.width
                         * f32::from(layout.tabs.size.height),
-                px(800.0) * f32::from(shared)
+                px(800.0) * 600.0 - title_width * f32::from(titlebar)
             );
             match position {
                 TabPosition::Top | TabPosition::Titlebar => {
@@ -2811,5 +2814,97 @@ fn a_resize_keeps_each_panes_minimum_or_does_not_shrink_one_below_it() {
     assert!(!keeps_minimum(
         &before,
         &[(pane(1), grid(3, 20)), (pane(2), grid(40, 20))]
+    ));
+}
+
+#[test]
+fn a_tabless_title_row_outlines_splits_and_visible_top_bars_only() {
+    use huterm_config::{
+        PaneTitleBarMode as Mode, PaneTitleBarPosition as Position,
+    };
+    let area =
+        Bounds::new(point(px(0.0), px(32.0)), size(px(800.0), px(568.0)));
+    let top_bar = PaneRect {
+        pane: PaneId::new(1),
+        frame: area,
+        terminal: area,
+        title_bar: Some(Bounds::new(area.origin, size(px(800.0), px(24.0)))),
+    };
+    let bars = |mode, position| TitleBars { mode, position };
+    let visible = bars(Mode::Visible, Position::Top);
+    let border = |row, position, shown, count, bars, drawn: &[PaneRect]| {
+        pane_area_top_border(row, position, shown, count, bars, area, drawn)
+    };
+    assert!(!border(true, TabPosition::Titlebar, false, 1, visible, &[]));
+    assert!(border(true, TabPosition::Bottom, true, 2, visible, &[]));
+    for position in [TabPosition::Top, TabPosition::Titlebar] {
+        // Reserved and revealing Overlay bars both set bar_drawn.
+        assert!(!border(true, position, true, 2, visible, &[top_bar]));
+        assert!(border(true, position, false, 2, visible, &[]));
+    }
+    // A zoom keeps the shown layout's split count despite one drawn pane.
+    assert!(border(
+        true,
+        TabPosition::Titlebar,
+        false,
+        2,
+        visible,
+        &[top_bar]
+    ));
+    assert!(border(
+        true,
+        TabPosition::Left,
+        true,
+        1,
+        visible,
+        &[top_bar]
+    ));
+    assert!(!border(
+        true,
+        TabPosition::Left,
+        true,
+        1,
+        bars(Mode::Hover, Position::Top),
+        &[top_bar]
+    ));
+    assert!(!border(
+        true,
+        TabPosition::Left,
+        true,
+        1,
+        bars(Mode::Visible, Position::Bottom),
+        &[top_bar]
+    ));
+    let lower_bar = PaneRect {
+        title_bar: Some(Bounds::new(
+            point(px(0.0), px(60.0)),
+            size(px(800.0), px(24.0)),
+        )),
+        ..top_bar
+    };
+    assert!(!border(
+        true,
+        TabPosition::Right,
+        true,
+        1,
+        visible,
+        &[lower_bar]
+    ));
+    // Fullscreen, Quake and server decorations have no Huterm title row.
+    assert!(!border(
+        false,
+        TabPosition::Right,
+        true,
+        2,
+        visible,
+        &[top_bar]
+    ));
+    assert!(!border(
+        false,
+        TabPosition::Titlebar,
+        false,
+        2,
+        visible,
+        &[]
     ));
 }
