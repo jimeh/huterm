@@ -2287,8 +2287,8 @@ fn layout_tabs(tabs: TabsConfig, host: TabHost) -> TabsConfig {
 }
 
 /// The window size that gives the initial grid its columns and rows
-/// beside the chrome: the tab bar, the title row above the terminal, and
-/// the frame's border on every side.
+/// beside the chrome: the tab bar, a lone pane's visible title bar, the
+/// title row above the terminal, and the frame's border on every side.
 fn initial_window_size(
     config: &Config,
     metrics: GridMetrics,
@@ -2313,6 +2313,7 @@ fn initial_window_size(
             + px(config.window.padding_y * 2.0)
             + title_row_height(false, frame)
             + reserved.height
+            + TitleBars::new(&config.panes).lone_reserved()
             + frame.inset.top
             + frame.inset.bottom,
     )
@@ -13798,6 +13799,25 @@ impl WorkspaceView {
             cx.update(|cx| match result {
                 Ok(_) => {
                     reload(cx);
+                }
+                // The file changed, so follow it, but warn that the change
+                // may not survive a crash.
+                Err(
+                    error @ huterm_config::document::ApplyError::WrittenNotDurable(_),
+                ) => {
+                    reload(cx);
+                    let _ = view.update(cx, |view, cx| {
+                        view.notify(
+                            NoticeContent {
+                                severity: Severity::Warning,
+                                ..NoticeContent::command_failure(
+                                    "Title bars changed",
+                                    error.to_string(),
+                                )
+                            },
+                            cx,
+                        );
+                    });
                 }
                 Err(error) => {
                     let _ = view.update(cx, |view, cx| {

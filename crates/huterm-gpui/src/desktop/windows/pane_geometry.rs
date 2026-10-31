@@ -51,6 +51,16 @@ impl TitleBars {
         }
     }
 
+    /// The height a tab of one pane gives its bar, which a new window adds
+    /// so its lone pane still gets the initial grid.
+    pub(super) fn lone_reserved(self) -> Pixels {
+        if self.always_show {
+            self.reserved()
+        } else {
+            px(0.0)
+        }
+    }
+
     /// Whether panes have a bar rectangle at all.
     fn placed(self) -> bool {
         self.mode != PaneTitleBarMode::Hidden

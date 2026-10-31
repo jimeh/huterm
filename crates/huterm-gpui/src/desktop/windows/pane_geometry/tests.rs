@@ -764,3 +764,27 @@ fn lone_pane_bars_honor_mode_position_and_default_off() {
         }
     }
 }
+
+#[test]
+fn a_new_window_reserves_only_a_visible_lone_bar() {
+    let bars = |mode, always_show| TitleBars {
+        mode,
+        always_show,
+        position: PaneTitleBarPosition::Top,
+    };
+    assert_eq!(
+        bars(PaneTitleBarMode::Visible, true).lone_reserved(),
+        TITLE_BAR_HEIGHT
+    );
+    for (mode, always_show) in [
+        (PaneTitleBarMode::Visible, false),
+        (PaneTitleBarMode::Hover, true),
+        (PaneTitleBarMode::Hidden, true),
+    ] {
+        assert_eq!(
+            bars(mode, always_show).lone_reserved(),
+            px(0.0),
+            "{mode:?} always_show={always_show}"
+        );
+    }
+}

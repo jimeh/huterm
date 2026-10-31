@@ -1373,7 +1373,8 @@ including Settings' queues and the pane menu's Auto-hide Title Bars preference,
 holds `config::write_lock()` on its background worker through load and apply.
 The process-wide lock keeps the patch service's final recheck and rename
 serialized across windows. A successful menu save calls `reload` even with
-watching disabled; a failed save leaves the in-memory mode alone.
+watching disabled, and so does `WrittenNotDurable`, whose file already changed,
+with a warning; any other failure leaves the in-memory mode alone.
 
 Configuration schemas are generated from `huterm-config` with its `schema`
 feature; that crate must remain independent of GPUI and terminal engines.
