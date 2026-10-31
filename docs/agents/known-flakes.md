@@ -474,9 +474,32 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   from the current snapshot, so a missing selection after
   `run_until_parked` suggests a later snapshot cleared it or the action
   reached another focus target; neither is confirmed.
+- **Second occurrence:** 2026-10-31 on PR #353 (run 41163015658, job
+  124424493459, head `65daebae`), beside the pane rename flake below. The
+  `huterm-gpui` suite took 127.96 seconds; both tests passed eight times in
+  a row locally on the same head, about 0.9 seconds a run. The PR adds
+  pane input sync and changes neither menus nor selection.
 - **Triage:** compare the suite's wall time with a passing run. If it
   recurs on a normal-speed run, log the terminal's selection and snapshot
   generation around the dispatch; otherwise record the run here and rerun.
+
+## huterm-gpui pane rename title on hosted macOS
+
+- **Label:** `desktop::windows::window_tests::pane_names::renaming_an_unfocused_pane_republishes_its_title`
+  in `Checks (macOS arm64)` timed out "waiting for the cleared name to
+  leave the published title".
+- **Occurrences:** 2026-10-31 on PR #353 (run 41163015658, job
+  124424493459, head `65daebae`), in the same slow 127.96-second suite as
+  the Edit menu flake above. It passed eight times in a row locally on
+  the same head.
+- **Evidence:** the test captures the right pane's default label before
+  any rename and waits for the published title to return to it. That label
+  resolves the terminal's title and directory, and the first foreground
+  probe publishes the shell's directory about 50 ms after its first output
+  (see the core runtime guide), so on a slow runner the label the test
+  captured may have changed by the time the name clears. Unconfirmed.
+- **Triage:** record the run here and rerun. A hardening is to wait for the
+  pane's directory before capturing the default label.
 
 ## `smoke-process.test.ts` retained-pipe deadline
 
