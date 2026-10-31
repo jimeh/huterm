@@ -140,13 +140,28 @@ fn synced_keys_and_paste_encode_for_each_panes_own_modes(
 }
 
 #[gpui::test]
-fn a_split_key_acts_once_and_the_new_pane_joins_the_sync(
+fn a_pane_split_in_joins_the_sync_and_a_split_key_acts_once(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let (window, first, second) = harness.split_window(tab);
     harness.toggle_sync(window, tab, true);
+    // A pane split in while the tab syncs receives what the focused pane
+    // types once its view installs.
+    let third = harness.split(tab, second, SplitDirection::Down, ECHO);
+    harness.wait_for("the new pane to start", |cx| {
+        pane_screen(cx, window, tab, third)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.type_line(window, "all");
+    harness.wait_for("every pane to answer", |cx| {
+        [first, second, third]
+            .into_iter()
+            .all(|pane| answered(cx, window, tab, pane, &["all"]))
+    });
+    // The split key runs its command once, not once per synced pane. Its
+    // new pane runs the login shell, so nothing is typed into it.
     let split = match crate::keymap::Platform::current() {
         crate::keymap::Platform::MacOs => "cmd-d",
         crate::keymap::Platform::Linux => "ctrl-shift-o",
@@ -154,28 +169,8 @@ fn a_split_key_acts_once_and_the_new_pane_joins_the_sync(
     harness.press(window, split);
     harness.wait_for("one new pane to install and focus", |cx| {
         panes_shown(cx, window, tab).is_some_and(|(panes, focused)| {
-            panes.len() == 3
-                && panes.contains(&focused)
-                && focused != first
-                && focused != second
+            panes.len() == 4 && ![first, second, third].contains(&focused)
         })
-    });
-    let third = harness
-        .cx
-        .update(|cx| panes_shown(cx, window, tab))
-        .unwrap()
-        .1;
-    harness.wait_for("the new pane's shell to start", |cx| {
-        pane_screen(cx, window, tab, third).is_some_and(|text| !text.is_empty())
-    });
-    harness.type_line(window, "all");
-    // The new pane runs the configured shell, which echoes the line.
-    harness.wait_for("every pane to receive the line", |cx| {
-        [first, second]
-            .into_iter()
-            .all(|pane| answered(cx, window, tab, pane, &["all"]))
-            && pane_screen(cx, window, tab, third)
-                .is_some_and(|text| text.contains("all"))
     });
     assert_eq!(
         harness
@@ -185,7 +180,7 @@ fn a_split_key_acts_once_and_the_new_pane_joins_the_sync(
             .unwrap()
             .layout()
             .pane_count(),
-        3,
+        4,
         "the split key split once"
     );
 }
