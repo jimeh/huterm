@@ -285,3 +285,47 @@ fn a_flush_active_strip_row_leaves_its_top_line_only_to_a_pane_border(
     );
     assert!(bounds(&harness, window, top_line).is_none());
 }
+
+#[gpui::test]
+fn a_lone_pane_with_a_visible_top_title_bar_gets_the_pane_top_border(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.position = TabPosition::Titlebar;
+        config.panes.title_bar_always_show = true;
+    });
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    // A decorated Linux frame gives a tab-less title row on every host.
+    harness.update_view(window, |view, window, cx| {
+        view.decorations_override = Some(gpui::Decorations::Client {
+            tiling: gpui::Tiling::default(),
+        });
+        view.sync_frame(window);
+        view.refresh_tab_visibility(window, cx);
+        cx.notify();
+    });
+    harness.cx.run_until_parked();
+    let layout = harness
+        .update_view(window, |view, window, _| view.chrome_layout(window));
+    assert_eq!(
+        bounds(&harness, window, "pane-area-top-border"),
+        Some(layout.top_chrome_border(false)),
+        "a lone pane's visible top bar"
+    );
+    for (mode, position) in [
+        (PaneTitleBarMode::Hover, PaneTitleBarPosition::Top),
+        (PaneTitleBarMode::Visible, PaneTitleBarPosition::Bottom),
+    ] {
+        harness.reload_panes(window, |panes| {
+            panes.title_bar = mode;
+            panes.title_bar_position = position;
+        });
+        harness.cx.run_until_parked();
+        assert!(
+            bounds(&harness, window, "pane-area-top-border").is_none(),
+            "{mode:?} {position:?}"
+        );
+    }
+}

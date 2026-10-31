@@ -2830,7 +2830,11 @@ fn a_tabless_title_row_outlines_splits_and_visible_top_bars_only() {
         terminal: area,
         title_bar: Some(Bounds::new(area.origin, size(px(800.0), px(24.0)))),
     };
-    let bars = |mode, position| TitleBars { mode, position };
+    let bars = |mode, position| TitleBars {
+        mode,
+        always_show: true,
+        position,
+    };
     let visible = bars(Mode::Visible, Position::Top);
     let border = |row, position, shown, count, bars, drawn: &[PaneRect]| {
         pane_area_top_border(row, position, shown, count, bars, area, drawn)
