@@ -1,6 +1,6 @@
 # Pane sync and zoom indicators
 
-Status: in progress.
+Status: implemented in PR #360.
 
 Replaces the indicator part of [pane input sync](pane-input-sync.md) (#353).
 
@@ -163,8 +163,9 @@ back broken lines.
 
 ### Patterns and paths
 
-- `dashed`: dashes of `3 × width` with gaps of `2 × width`, stretched or
-  shrunk a little so a whole number fit: a closed outline's seam gap
+- `dashed`: dashes of `3 × width` with gaps of `2 × width`, scaled together
+  so a whole number fit, by up to about a third on a line only two dashes
+  long and barely on a long one: a closed outline's seam gap
   matches the others, and an open line starts and ends on a dash. A closed
   outline starts on the middle of a straight edge so the seam never lands
   on a corner. A line shorter than one dash and one gap draws solid.

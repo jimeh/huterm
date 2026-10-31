@@ -664,7 +664,8 @@ fn pattern_marks(track: &Track, pattern: LinePattern, width: f32) -> Vec<Mark> {
 }
 
 /// The dashes along a line `length` long, as start and end distances, with
-/// `dash` and `gap` stretched or shrunk a little so a whole number fit. A
+/// `dash` and `gap` scaled together so a whole number fit: barely on a long
+/// line, by up to about a third on one only two dashes long. A
 /// closed line's dashes run all the way round, so its seam's gap matches
 /// the others. An open line starts and ends on a dash, so it never ends in
 /// a sliver.
