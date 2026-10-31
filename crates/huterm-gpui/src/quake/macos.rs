@@ -273,8 +273,9 @@ impl Platform {
             Ok(result)
         }
     }
-    pub fn resolve_display(&self, selector: &str) -> anyhow::Result<Display> {
-        let displays = self.displays()?;
+    /// The point `pointer` and `active` select a display by: the pointer, or
+    /// the focused window's centre, falling back to the pointer.
+    pub fn point(&self, selector: &str) -> anyhow::Result<Option<(f64, f64)>> {
         let pointer = || -> anyhow::Result<(f64, f64)> {
             // SAFETY: NSEvent mouseLocation is a main-thread screen point.
             unsafe {
@@ -283,31 +284,14 @@ impl Platform {
                 Ok((point.x, desktop_top()? - point.y))
             }
         };
-        let point = if selector == "pointer" {
-            Some(pointer()?)
-        } else if selector == "active" {
-            match self.active_center()? {
+        Ok(match selector {
+            "pointer" => Some(pointer()?),
+            "active" => match self.active_center()? {
                 Some(center) => Some(center),
                 None => Some(pointer()?),
-            }
-        } else {
-            None
-        };
-        if let Some(display) = displays.iter().find(|display| {
-            selector.strip_prefix("id:") == Some(display.id.as_str())
-                || point.is_some_and(|(x, y)| display.frame.contains(x, y))
-        }) {
-            return Ok(display.clone());
-        }
-        if selector.starts_with("id:") {
-            eprintln!(
-                "Quake display {selector:?} is unavailable; using primary"
-            );
-        }
-        displays
-            .into_iter()
-            .find(|display| display.primary)
-            .context("no display available")
+            },
+            _ => None,
+        })
     }
     fn active_center(&self) -> anyhow::Result<Option<(f64, f64)>> {
         let Some(focus) = self.focused()? else {

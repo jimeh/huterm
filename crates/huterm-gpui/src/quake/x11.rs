@@ -197,38 +197,23 @@ impl Platform {
         }
         Ok(result)
     }
-    pub fn resolve_display(&self, selector: &str) -> anyhow::Result<Display> {
-        let displays = self.displays()?;
-        let point = if selector == "pointer" {
-            let pointer = self.connection.query_pointer(self.root)?.reply()?;
-            Some((f64::from(pointer.root_x), f64::from(pointer.root_y)))
-        } else if selector == "active" {
-            self.focused()?
+    /// The point `pointer` and `active` select a display by: the pointer, or
+    /// the focused window's centre.
+    pub fn point(&self, selector: &str) -> anyhow::Result<Option<(f64, f64)>> {
+        Ok(match selector {
+            "pointer" => {
+                let pointer =
+                    self.connection.query_pointer(self.root)?.reply()?;
+                Some((f64::from(pointer.root_x), f64::from(pointer.root_y)))
+            }
+            "active" => self
+                .focused()?
                 .and_then(|focus| self.frame(focus.0).ok())
                 .map(|frame| {
                     (frame.x + frame.width / 2.0, frame.y + frame.height / 2.0)
-                })
-        } else {
-            None
-        };
-        let requested = displays.iter().find(|display| {
-            selector.strip_prefix("id:") == Some(display.id.as_str())
-                || point.is_some_and(|(x, y)| display.frame.contains(x, y))
-        });
-        if let Some(display) = requested {
-            return Ok(display.clone());
-        }
-        if selector.starts_with("id:") {
-            eprintln!(
-                "Quake display {selector:?} is unavailable; using primary"
-            );
-        }
-        displays
-            .iter()
-            .find(|display| display.primary)
-            .or_else(|| displays.first())
-            .cloned()
-            .context("no display available")
+                }),
+            _ => None,
+        })
     }
     fn frame(&self, id: u32) -> anyhow::Result<Rect> {
         let geometry = self.connection.get_geometry(id)?.reply()?;

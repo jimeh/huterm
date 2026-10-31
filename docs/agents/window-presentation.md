@@ -217,6 +217,20 @@ native view and drawable dimensions, GPUI viewport/scale, and PTY rows/columns.
 RandR can return monitors with no primary flag. Missing retained monitors and
 regular-to-quake conversion must fall back to the first remaining monitor.
 
+`quake::placement` owns which display a Quake window uses. A fallback chosen
+after a disconnect only lasts until the next show from hidden, which resolves
+the profile's `display` again; treating the fallback as the window's display
+kept a reconnected primary from ever winning. A regular-presentation move pins
+its display only while the display arrangement and selector are unchanged,
+and any observed change drops the pin even if a reconnect restores it.
+Refits skip regular presentation, so a `placement::Excursion` started on
+entry observes display notifications there: it drops pins, and a return
+after any display change pins nothing, because the system, not the user,
+may have moved the window. Carry `regular_bounds` whenever the display's
+frame changes, by its origin delta: they otherwise stay on the creation
+display, and macOS re-anchors every display's coordinates when the primary
+changes, so a no-op toggle round trip would pin a stale display.
+
 For withdrawn X11 windows, merge ABOVE/STICKY into `_NET_WM_STATE` before mapping;
 window managers ignore state client messages until they manage the window.
 

@@ -979,7 +979,7 @@
         },
         "display": {
           "default": "active",
-          "description": "The display the window opens on: the active one, the one under the\npointer, the primary one, or `id:` and a display identifier.",
+          "description": "The display each show uses: the active one, the one under the\npointer, the primary one, or `id:` and a display identifier.",
           "pattern": "^(active|pointer|primary|id:.*\\S.*)$",
           "type": "string",
           "x-huterm-apply": "later_events",
