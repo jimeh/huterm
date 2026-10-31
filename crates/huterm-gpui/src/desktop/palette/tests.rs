@@ -441,6 +441,7 @@ fn projected() -> HierarchyState {
                     custom_name: None,
                 }),
                 zoomed: None,
+                input_sync: false,
             },
             index: u32::try_from(index).unwrap(),
         });
@@ -1351,6 +1352,7 @@ mod lists {
                             custom_name: None,
                         }),
                         zoomed: None,
+                        input_sync: false,
                     },
                     index: u32::try_from(value - 1).unwrap(),
                 },

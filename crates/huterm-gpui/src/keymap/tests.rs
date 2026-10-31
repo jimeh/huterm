@@ -83,6 +83,7 @@ fn defaults_compile_on_both_platforms_with_descriptions() {
         "cmd-v",
         "cmd-h",
         "cmd-alt-h",
+        "cmd-alt-i",
         "cmd-enter",
         "cmd-<",
         "cmd-9",
@@ -102,6 +103,7 @@ fn defaults_compile_on_both_platforms_with_descriptions() {
         "alt-9",
         "ctrl-shift-q",
         "ctrl-shift-tab",
+        "ctrl-shift-alt-i",
     ] {
         assert!(linux.is_reserved(&keystroke(chord)), "{chord}");
     }

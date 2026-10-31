@@ -182,6 +182,8 @@ mod button_layout;
 mod client_frame;
 mod exit_closes;
 mod field_menu;
+mod input_sync;
+pub(super) use input_sync::terminal_syncs_input;
 mod layout_history;
 mod layout_undo;
 mod menu_spec;
@@ -569,6 +571,19 @@ impl DesktopRuntime {
         zoomed: Option<PaneId>,
     ) -> Result<(), MuxError> {
         self.lock().set_pane_zoom(workspace, tab, zoomed)
+    }
+
+    /// Turns `tab`'s input sync off when it is on and on when it is off,
+    /// under one lock, so two quick toggles cancel out in either order.
+    fn toggle_input_sync(
+        &self,
+        workspace: WorkspaceId,
+        tab: TabId,
+    ) -> Result<(), MuxError> {
+        let mut mux = self.lock();
+        let input_sync = mux.tab(tab).ok_or(MuxError::UnknownTab(tab))?;
+        let input_sync = !input_sync.input_sync();
+        mux.set_input_sync(workspace, tab, input_sync)
     }
 
     /// The options a desktop view's viewer starts with: full capabilities,
@@ -1873,9 +1888,12 @@ fn reconcile(cx: &mut App, touched: &Touched) {
             retitled.insert(view.window);
         }
         // A resize or shared zoom elsewhere changes what this window draws
-        // and the grids its panes request.
+        // and the grids its panes request, and an input sync toggle changes
+        // its tab's marks without changing a title.
         if change.changed
-            || view.tabs.iter().any(|tab| touched.contains_layout(tab.id))
+            || view.tabs.iter().any(|tab| {
+                touched.contains_layout(tab.id) || touched.contains_tab(tab.id)
+            })
         {
             cx.notify();
         }
@@ -4790,6 +4808,7 @@ impl WorkspaceView {
                             status: pane.status(cx),
                             focused: id == focused,
                             zoomed: zoomed == Some(id),
+                            input_sync: input_sync::syncs_input(tab_id, cx),
                             bottom,
                         },
                         colors,
@@ -4800,12 +4819,8 @@ impl WorkspaceView {
                 );
             }
         }
-        elements.extend(self.focus_accent(
-            rects.as_ref(),
-            focused,
-            shown,
-            colors,
-        ));
+        let marks = self.pane_marks(tab, rects.as_ref(), bounds, colors, cx);
+        elements.extend(marks);
         if let Some(rects) = &rects {
             elements.extend(Self::divider_elements(
                 &rects.dividers,
@@ -4840,6 +4855,58 @@ impl WorkspaceView {
             tab_bar::pane_focus_cue(frame, bottom, colors, alpha)
                 .into_any_element(),
         )
+    }
+
+    /// The marks drawn over `tab`'s panes: each one's sync frame while the
+    /// tab syncs input, then the focused pane's accent line over them, so
+    /// the cue stays readable.
+    fn pane_marks(
+        &self,
+        tab: &TabView,
+        rects: Option<&TabPanes>,
+        bounds: Bounds<Pixels>,
+        colors: TabColors,
+        cx: &App,
+    ) -> Vec<gpui::AnyElement> {
+        let shown = Self::panes_shown(tab, rects);
+        let mut marks = if input_sync::syncs_input(tab.id, cx) {
+            self.sync_frames(tab, rects, bounds, colors)
+        } else {
+            Vec::new()
+        };
+        let focused = tab.focused().pane;
+        marks.extend(self.focus_accent(rects, focused, shown, colors));
+        marks
+    }
+
+    /// The frame around each pane of `tab` drawn this frame: every pane
+    /// the layout places, or, without a layout, the focused pane across
+    /// `bounds`.
+    fn sync_frames(
+        &self,
+        tab: &TabView,
+        rects: Option<&TabPanes>,
+        bounds: Bounds<Pixels>,
+        colors: TabColors,
+    ) -> Vec<gpui::AnyElement> {
+        let frames: Vec<(PaneId, Bounds<Pixels>)> = match rects {
+            Some(rects) => tab
+                .panes
+                .iter()
+                .filter_map(|pane| {
+                    Some((pane.pane, rects.pane(pane.pane)?.frame))
+                })
+                .collect(),
+            None => vec![(tab.focused().pane, bounds)],
+        };
+        let mut marks = self.drawn_focus.borrow_mut();
+        frames
+            .into_iter()
+            .map(|(pane, frame)| {
+                marks.synced.push(pane);
+                tab_bar::pane_sync_frame(frame, colors).into_any_element()
+            })
+            .collect()
     }
 
     /// The layer dimming `pane`'s terminal, while `[panes] inactive_dim`
@@ -7758,6 +7825,8 @@ impl WorkspaceView {
         }
         cx.subscribe_in(&terminal, window, Self::handle_context_menu_request)
             .detach();
+        cx.subscribe_in(&terminal, window, Self::handle_synced_input)
+            .detach();
         let failure_wakes = terminal.read(cx).failure_wakes.clone();
         let activity_task = Self::pane_activity_task(
             key.tab,
@@ -8359,6 +8428,10 @@ impl WorkspaceView {
                 }
                 ids::CLOSE_PANE => {
                     self.check_tab_close_available()?;
+                    self.active_tab_id(cx).map(|_| ())
+                }
+                ids::TOGGLE_PANE_INPUT_SYNC => {
+                    self.check_runtime_available(cx)?;
                     self.active_tab_id(cx).map(|_| ())
                 }
                 ids::FOCUS_NEXT_PANE
@@ -8969,6 +9042,7 @@ impl WorkspaceView {
                 self.toggle_zoom_of(tab, pane, window, cx);
                 Ok(CommandOutcome::Completed)
             }
+            ids::TOGGLE_PANE_INPUT_SYNC => self.toggle_input_sync(window, cx),
             other => Err(CommandError::UnknownCommand(other)),
         }
     }
@@ -12271,6 +12345,7 @@ impl Render for WorkspaceView {
                     index,
                     title,
                     status,
+                    input_sync: input_sync::syncs_input(tab.id, cx),
                     activity: if Some(tab.id) == active_tab {
                         Activity::Active
                     } else if index > 0
@@ -12862,7 +12937,8 @@ fn modal_layer(
         .into_any_element()
 }
 
-/// The split, close, and focus commands for panes.
+/// The split, close, focus, resize, zoom, and input sync commands for
+/// panes.
 fn is_pane_command(command: huterm_protocol::CommandId) -> bool {
     matches!(
         command,
@@ -12882,6 +12958,7 @@ fn is_pane_command(command: huterm_protocol::CommandId) -> bool {
             | ids::RESIZE_PANE_UP
             | ids::RESIZE_PANE_DOWN
             | ids::TOGGLE_PANE_ZOOM
+            | ids::TOGGLE_PANE_INPUT_SYNC
     )
 }
 
@@ -13164,6 +13241,7 @@ impl WorkspaceView {
         let input = PaneMenuInput {
             platform: Platform::current(),
             zoomed: self.shown_zoom(view, cx) == Some(pane),
+            input_sync: input_sync::syncs_input(view.id, cx),
             directory_known: tab_directory_path(
                 &focused.view.read(cx).metadata,
             )
@@ -13323,6 +13401,9 @@ impl WorkspaceView {
             exited: terminal.command_availability(ids::PASTE).is_err(),
             scrolled_back: terminal.scrolled_back(),
             panes: self.active_tab_view(cx).map_or(0, |tab| tab.panes.len()),
+            input_sync: self
+                .active_tab_view(cx)
+                .is_some_and(|tab| input_sync::syncs_input(tab.id, cx)),
             directory,
         };
         Some(terminal_menu(

@@ -33,7 +33,8 @@ GPUI for rendering.
   their title bars, and a tab dragged onto a pane joins it as a split. With
   an optional [drag modifier](docs/configuration.md#modifier-pane-drags) held,
   a press anywhere in a pane drags it too. Panes can be renamed, and a name
-  moves with a pane that becomes a tab.
+  moves with a pane that becomes a tab. Input sync types into every pane of
+  a tab at once, as tmux's `synchronize-panes` does.
 - **Commands:** every action is a catalog command with typed arguments. The
   command palette finds commands by fuzzy search and prompts for arguments, and
   keybindings can bind any command with arguments and `when` conditions.

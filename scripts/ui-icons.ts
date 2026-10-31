@@ -34,6 +34,7 @@ export const iconNames = [
   "rotate-ccw",
   "sun",
   "moon",
+  "radio",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {

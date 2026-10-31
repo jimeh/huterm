@@ -38,6 +38,11 @@ A view showing one pane of a split tab across the whole tab, without changing
 the shared layout. Zoom is view-local unless a client shares it through the
 runtime.
 
+**Input sync**:
+A tab's mode in which typing into its focused pane also types into each of
+its other shown panes. The tab holds the mode; each client sends the input
+through its own viewers.
+
 **Named layout**:
 A built-in or user-defined layout, such as main left, that arranges a tab's
 existing panes into a new split tree. It keeps every pane, its terminal, and

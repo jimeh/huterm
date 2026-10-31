@@ -158,6 +158,7 @@ impl Mux {
                                 .tab(tab, to.custom_name.as_deref()),
                             layout: names.restored(&to.layout),
                             zoomed: to.zoomed.filter(|_| valid_zoom(to)),
+                            input_sync: to.input_sync,
                         },
                         index: to.index,
                     });

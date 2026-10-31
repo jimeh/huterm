@@ -5,7 +5,7 @@ use gpui::{Application, AssetSource, QuitMode, SharedString};
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
 
-const ASSETS: [(&str, &[u8]); 29] = [
+const ASSETS: [(&str, &[u8]); 30] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -94,6 +94,10 @@ const ASSETS: [(&str, &[u8]); 29] = [
     ),
     ("icons/sun.svg", include_bytes!("../assets/icons/sun.svg")),
     ("icons/moon.svg", include_bytes!("../assets/icons/moon.svg")),
+    (
+        "icons/radio.svg",
+        include_bytes!("../assets/icons/radio.svg"),
+    ),
     (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
 
@@ -127,11 +131,12 @@ pub(crate) enum Icon {
     RotateCcw,
     Sun,
     Moon,
+    Radio,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 28] = [
+    const ALL: [Self; 29] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -160,6 +165,7 @@ impl Icon {
         Self::RotateCcw,
         Self::Sun,
         Self::Moon,
+        Self::Radio,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -192,6 +198,7 @@ impl Icon {
             Self::RotateCcw => "icons/rotate-ccw.svg",
             Self::Sun => "icons/sun.svg",
             Self::Moon => "icons/moon.svg",
+            Self::Radio => "icons/radio.svg",
         }
     }
 }

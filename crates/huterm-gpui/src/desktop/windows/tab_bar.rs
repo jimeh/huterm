@@ -37,8 +37,14 @@ const PANE_TITLE_GAP: Pixels = px(6.0);
 /// The thickness of the focused pane's mark while its title bar is not
 /// shown.
 const PANE_FOCUS_CUE_HEIGHT: Pixels = px(2.0);
+/// The thickness of the frame around each pane of a tab that syncs input.
+const PANE_SYNC_FRAME_WIDTH: Pixels = px(2.0);
 
 /// What one pane's title bar shows.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact about the pane"
+)]
 pub(super) struct PaneTitleBar {
     pub(super) tab: TabId,
     pub(super) pane: PaneId,
@@ -47,6 +53,8 @@ pub(super) struct PaneTitleBar {
     pub(super) status: TabStatus,
     pub(super) focused: bool,
     pub(super) zoomed: bool,
+    /// The pane's tab syncs input, so the bar shows the sync mark.
+    pub(super) input_sync: bool,
     /// The bar runs along its pane's bottom edge, so its border is on top.
     pub(super) bottom: bool,
 }
@@ -246,6 +254,8 @@ pub(super) struct TabItem {
     pub(super) index: usize,
     pub(super) title: String,
     pub(super) status: TabStatus,
+    /// The tab syncs input, so it shows the sync mark.
+    pub(super) input_sync: bool,
     pub(super) activity: Activity,
     /// The first tab while the strip is scrolled to its start, so its edge
     /// meets the bar's own edge.
@@ -266,8 +276,10 @@ impl TabItem {
     }
 }
 
-/// Content shared by every tab style: status, title, and close button.
+/// Content shared by every tab style: the sync mark, status, title, and
+/// close button.
 struct TabParts {
+    sync: Option<gpui::AnyElement>,
     status: Option<gpui::AnyElement>,
     title: Div,
     close: Div,
@@ -334,6 +346,9 @@ impl WorkspaceView {
                 )
             });
         let parts = TabParts {
+            sync: item
+                .input_sync
+                .then(|| input_sync_icon(colors).into_any_element()),
             status: status_icon(item.status, colors),
             // GPUI caches nowrap text at its first measured width, which
             // skips truncation; a one-line clamp truncates at the final width.
@@ -391,6 +406,7 @@ impl WorkspaceView {
         let mut widths = Vec::with_capacity(self.tabs.len());
         for tab in &self.tabs {
             let (title, status) = tab.label(self.config.tabs, cx);
+            let input_sync = super::input_sync::syncs_input(tab.id, cx);
             let text = if let Some(width) = self.title_widths.get(&title) {
                 *width
             } else {
@@ -409,7 +425,7 @@ impl WorkspaceView {
                 self.title_widths.insert(title, width);
                 width
             };
-            widths.push(fit_tab_width(text, tabs, status));
+            widths.push(fit_tab_width(text, tabs, status, input_sync));
         }
         self.tab_widths = widths;
     }
@@ -502,6 +518,7 @@ impl WorkspaceView {
             status,
             focused,
             zoomed,
+            input_sync,
             bottom,
         } = bar;
         div()
@@ -553,6 +570,7 @@ impl WorkspaceView {
                     cx.stop_propagation();
                 }),
             )
+            .children(input_sync.then(|| input_sync_icon(colors)))
             .children(status_icon(status, colors))
             .child(pane_title_text(title, status))
             .child(
@@ -664,6 +682,23 @@ pub(super) fn pane_focus_cue(
         .bg(colors.accent.opacity(alpha))
 }
 
+/// The frame around each pane of a tab that syncs input: a dashed accent
+/// border inset along every edge of its `frame`, over its terminal and
+/// title bar. Dashes keep the solid focus cue drawn over it readable. It
+/// carries no listeners, cursor, or hover style, so GPUI gives it no
+/// hitbox and all pointer input reaches what lies beneath.
+pub(super) fn pane_sync_frame(frame: Bounds<Pixels>, colors: TabColors) -> Div {
+    div()
+        .absolute()
+        .left(frame.origin.x)
+        .top(frame.origin.y)
+        .w(frame.size.width)
+        .h(frame.size.height)
+        .border(PANE_SYNC_FRAME_WIDTH)
+        .border_dashed()
+        .border_color(colors.accent)
+}
+
 /// The layer that dims a pane without focus: the terminal's background at
 /// `alpha` over its whole terminal area. It carries no listeners, cursor,
 /// or hover style, so GPUI gives it no hitbox and every press, wheel,
@@ -704,6 +739,12 @@ fn status_icon(
         TabStatus::Busy => Some(running_dot(colors).into_any_element()),
         TabStatus::Idle => None,
     }
+}
+
+/// The mark of a tab, or a pane of a tab, that syncs input: broadcast
+/// waves in the accent colour.
+pub(super) fn input_sync_icon(colors: TabColors) -> Svg {
+    icon_element(Icon::Radio, colors.accent)
 }
 
 /// The running dot: a small yellow circle before the title.
@@ -763,6 +804,7 @@ fn vertical_pill_tab(
                     style.bg(hover).text_color(foreground)
                 })
             })
+            .children(parts.sync)
             .children(parts.status)
             .child(parts.title)
             .child(parts.close),
@@ -804,6 +846,7 @@ fn vertical_strip_tab(
         .when(!item.active(), |tab| {
             tab.hover(|style| style.bg(hover).text_color(foreground))
         })
+        .children(parts.sync)
         .children(parts.status)
         .child(parts.title)
         .child(parts.close)
@@ -838,6 +881,7 @@ fn strip_tab(
             tab.hover(|style| style.bg(hover).text_color(foreground))
         })
         .when(item.divided(), |tab| tab.child(divider(colors)))
+        .children(parts.sync)
         .children(parts.status)
         .child(parts.title)
         .child(parts.close)
@@ -879,6 +923,7 @@ fn pill_tab(
                         style.bg(hover).text_color(foreground)
                     })
                 })
+                .children(parts.sync)
                 .children(parts.status)
                 .child(parts.title)
                 .child(parts.close),
@@ -895,17 +940,23 @@ fn pill_padding_left(accent: bool) -> Pixels {
 
 /// The width a horizontal Fit tab needs around `title_width` of text, clamped
 /// to the configured bounds. It mirrors the padding, gaps, and slots rendered
-/// by `strip_tab` and `pill_tab`, including the indicator `status` draws.
+/// by `strip_tab` and `pill_tab`, including the indicator `status` draws
+/// and the sync mark of a tab that syncs input.
 pub(super) fn fit_tab_width(
     title_width: Pixels,
     tabs: TabsConfig,
     status: TabStatus,
+    input_sync: bool,
 ) -> Pixels {
     let style = tabs.style;
     let status = if status == TabStatus::Idle {
         px(0.0)
     } else {
         status.indicator_width() + gap(style)
+    } + if input_sync {
+        ICON_SIZE + gap(style)
+    } else {
+        px(0.0)
     };
     // Every tab has a title and a close button separated by one gap.
     let chrome = match style {

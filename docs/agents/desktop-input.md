@@ -388,6 +388,24 @@ wheel, hover, link, and drop then reaches the terminal beneath.
 `a_dimmed_pane_takes_the_wheel_and_a_selection_through_its_dim_layer` fails
 if the dim layer starts taking input.
 
+The input sync frame is another such background: a dashed border with no
+listeners, drawn before the focus cue so the cue stays on top.
+
+## Pane input sync
+
+A tab's `input_sync` lives in core; each window fans its own typing out.
+`TerminalView::sync_input` runs after translation in `handle_keystroke`,
+`send_composed_text`, and the Paste command, so a copy is exactly what the
+focused pane got, and it emits `SyncedInput` only while the projection says
+the tab syncs. The window sends that structured input to each other pane
+the layout places and `zoom_shows` shows, through `receive_synced_input`,
+which never syncs again. Each runtime encodes it against its own modes.
+Mouse reports, focus, and file drops call `admit_input` directly and stay
+with one pane; keep any new typing path on `sync_input` and any new pointer
+path off it. In Tier 2 tests, live terminals redraw their window often
+enough to hide a missing `cx.notify()`, so a test that a toggle redraws
+passes either way.
+
 GPUI reports a macOS window as hovered only while it is active, so hover bars
 reveal only in the active window. The Linux test platform never reports a
 hovered window, so window tests feed `pane_bar_pointer` directly;

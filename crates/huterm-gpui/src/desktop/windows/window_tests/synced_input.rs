@@ -1,0 +1,333 @@
+//! Tier 2 tests for pane input sync: typing into a syncing tab's focused
+//! pane reaches each of its other panes' real shells in order, encoded for
+//! each pane's own modes, while Huterm commands still act once and panes
+//! that left, exited, or are hidden get nothing.
+
+use huterm_core::{MoveDestination, PaneRef};
+
+use super::super::input_sync::syncs_input;
+use super::pane_bars::focus_marks;
+use super::*;
+
+/// A child like [`HEX_ECHO`] that first turns on application cursor keys
+/// and bracketed paste, so Up and a paste encode differently from a pane
+/// without them.
+const MODAL_HEX_ECHO: &str = "printf '\\033[?1h\\033[?2004h'; \
+     stty raw -echo; printf READY; \
+     while byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); \
+     [ -n \"$byte\" ]; do printf '%s' \"$byte\"; done";
+
+/// The bytes a hex-echo child in `pane` reports after `marker`.
+fn pane_received(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    tab: TabId,
+    pane: PaneId,
+    marker: &str,
+) -> Option<String> {
+    let text = pane_screen(cx, window, tab, pane)?;
+    let (_, echoed) = text.split_once(marker)?;
+    Some(echoed.chars().filter(char::is_ascii_hexdigit).collect())
+}
+
+/// Whether `pane` shows each of `lines` an [`ECHO`] child answered, in
+/// order.
+fn answered(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    tab: TabId,
+    pane: PaneId,
+    lines: &[&str],
+) -> bool {
+    let Some(text) = pane_screen(cx, window, tab, pane) else {
+        return false;
+    };
+    let mut rest = text.as_str();
+    lines.iter().all(|line| {
+        let answer = format!("got:{line} ");
+        rest.split_once(&answer)
+            .map(|(_, after)| rest = after)
+            .is_some()
+    })
+}
+
+impl DesktopHarness {
+    /// Toggles the active tab's input sync in `window` and waits for the
+    /// projection to show `tab` at `on`.
+    fn toggle_sync(&mut self, window: AnyWindowHandle, tab: TabId, on: bool) {
+        self.invoke(window, ids::TOGGLE_PANE_INPUT_SYNC).unwrap();
+        self.wait_for("the tab's input sync to change", |cx| {
+            syncs_input(tab, cx) == on
+        });
+    }
+}
+
+#[gpui::test]
+fn typing_reaches_every_pane_of_a_syncing_tab_in_order(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    harness.type_line(window, "solo");
+    harness.wait_for("the focused pane to answer", |cx| {
+        answered(cx, window, tab, first, &["solo"])
+    });
+    harness.toggle_sync(window, tab, true);
+    harness.type_line(window, "ab");
+    harness.type_line(window, "cd");
+    harness.wait_for("both shells to answer both lines in order", |cx| {
+        [first, second]
+            .into_iter()
+            .all(|pane| answered(cx, window, tab, pane, &["ab", "cd"]))
+    });
+    harness.toggle_sync(window, tab, false);
+    harness.type_line(window, "ef");
+    harness.focus(window, tab, second);
+    harness.type_line(window, "gh");
+    // The second shell reads its input in order, so "ef" would have
+    // answered before "gh" had it been sent there.
+    harness.wait_for("each pane to answer its own line", |cx| {
+        answered(cx, window, tab, first, &["ab", "cd", "ef"])
+            && answered(cx, window, tab, second, &["ab", "cd", "gh"])
+    });
+    harness.cx.update(|cx| {
+        let first = pane_screen(cx, window, tab, first).unwrap();
+        let second = pane_screen(cx, window, tab, second).unwrap();
+        assert!(!second.contains("got:solo") && !second.contains("got:ef"));
+        assert!(!first.contains("got:gh"));
+    });
+}
+
+#[gpui::test]
+fn synced_keys_and_paste_encode_for_each_panes_own_modes(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(HEX_ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let plain = harness.first_pane(tab);
+    let modal =
+        harness.split(tab, plain, SplitDirection::Right, MODAL_HEX_ECHO);
+    harness.wait_for("the modal pane to start", |cx| {
+        pane_screen(cx, window, tab, modal)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.toggle_sync(window, tab, true);
+    harness.press(window, "up");
+    harness
+        .cx
+        .write_to_clipboard(gpui::ClipboardItem::new_string("x".to_owned()));
+    harness.press(
+        window,
+        match crate::keymap::Platform::current() {
+            crate::keymap::Platform::MacOs => "cmd-v",
+            crate::keymap::Platform::Linux => "ctrl-shift-v",
+        },
+    );
+    // Up, then the pasted `x`, bracketed only where the child asked.
+    let plain_bytes = "1b5b41".to_owned() + "78";
+    let modal_bytes =
+        "1b4f41".to_owned() + "1b5b3230307e" + "78" + "1b5b3230317e";
+    harness.wait_for("both children to report the key and the paste", |cx| {
+        pane_received(cx, window, tab, plain, "READY").as_deref()
+            == Some(plain_bytes.as_str())
+            && pane_received(cx, window, tab, modal, "READY").as_deref()
+                == Some(modal_bytes.as_str())
+    });
+}
+
+#[gpui::test]
+fn a_split_key_acts_once_and_the_new_pane_joins_the_sync(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    harness.toggle_sync(window, tab, true);
+    let split = match crate::keymap::Platform::current() {
+        crate::keymap::Platform::MacOs => "cmd-d",
+        crate::keymap::Platform::Linux => "ctrl-shift-o",
+    };
+    harness.press(window, split);
+    harness.wait_for("one new pane to install and focus", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(panes, focused)| {
+            panes.len() == 3
+                && panes.contains(&focused)
+                && focused != first
+                && focused != second
+        })
+    });
+    let third = harness
+        .cx
+        .update(|cx| panes_shown(cx, window, tab))
+        .unwrap()
+        .1;
+    harness.wait_for("the new pane's shell to start", |cx| {
+        pane_screen(cx, window, tab, third).is_some_and(|text| !text.is_empty())
+    });
+    harness.type_line(window, "all");
+    // The new pane runs the configured shell, which echoes the line.
+    harness.wait_for("every pane to receive the line", |cx| {
+        [first, second]
+            .into_iter()
+            .all(|pane| answered(cx, window, tab, pane, &["all"]))
+            && pane_screen(cx, window, tab, third)
+                .is_some_and(|text| text.contains("all"))
+    });
+    assert_eq!(
+        harness
+            .runtime
+            .lock()
+            .tab(tab)
+            .unwrap()
+            .layout()
+            .pane_count(),
+        3,
+        "the split key split once"
+    );
+}
+
+#[gpui::test]
+fn panes_that_left_or_exited_get_no_synced_input_and_break_nothing(
+    cx: &mut TestAppContext,
+) {
+    // The exited pane stays, so the sync passes over it.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.terminal.close_on_exit = false;
+    });
+    let tab = harness.open_tab(ECHO);
+    let (window, first, leaving) = harness.split_window(tab);
+    let exiting = harness.split(
+        tab,
+        leaving,
+        SplitDirection::Down,
+        "printf READY; exit 0",
+    );
+    harness.wait_for("the third pane to exit", |cx| {
+        pane_view(cx, window, tab, exiting)
+            .is_some_and(|view| view.read(cx).exited)
+    });
+    harness.toggle_sync(window, tab, true);
+    let from = PaneRef {
+        workspace: harness.workspace,
+        tab,
+        pane: leaving,
+    };
+    let change = harness
+        .runtime
+        .lock()
+        .move_pane(
+            from,
+            MoveDestination::NewTab {
+                workspace: harness.workspace,
+                before: None,
+            },
+        )
+        .unwrap();
+    let other = change.after[1].tab;
+    harness.wait_for("the moved pane to leave the tab", |cx| {
+        panes_shown(cx, window, tab)
+            .is_some_and(|(panes, _)| panes == [first, exiting])
+            && pane_view(cx, window, other, leaving).is_some()
+    });
+    harness.cx.update(|cx| {
+        assert!(!syncs_input(other, cx), "a moved pane's new tab starts off");
+    });
+    harness.type_line(window, "stay");
+    harness.wait_for("the focused pane to answer", |cx| {
+        answered(cx, window, tab, first, &["stay"])
+    });
+    harness.focus(window, other, leaving);
+    harness.type_line(window, "own");
+    harness.wait_for("the moved pane to answer its own line", |cx| {
+        answered(cx, window, other, leaving, &["own"])
+    });
+    harness.cx.update(|cx| {
+        let moved = pane_screen(cx, window, other, leaving).unwrap();
+        assert!(!moved.contains("got:stay"), "{moved}");
+        // Only the exit's own notice: no pane refused or failed its copy.
+        assert_eq!(
+            notices(cx, window),
+            ["info|terminal:sh|Process exited with status 0"]
+        );
+    });
+}
+
+#[gpui::test]
+fn a_pane_a_zoom_hides_gets_no_synced_input(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    harness.toggle_sync(window, tab, true);
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_for("the focused pane to zoom", |cx| {
+        harness_zoom(cx, window, tab) == Some(first)
+    });
+    harness.type_line(window, "hidden");
+    harness.wait_for("the zoomed pane to answer", |cx| {
+        answered(cx, window, tab, first, &["hidden"])
+    });
+    harness.invoke(window, ids::TOGGLE_PANE_ZOOM).unwrap();
+    harness.wait_for("the tab to unzoom", |cx| {
+        harness_zoom(cx, window, tab).is_none()
+    });
+    harness.type_line(window, "shown");
+    harness.wait_for("both panes to answer the line typed unzoomed", |cx| {
+        answered(cx, window, tab, first, &["hidden", "shown"])
+            && answered(cx, window, tab, second, &["shown"])
+    });
+    harness.cx.update(|cx| {
+        let hidden = pane_screen(cx, window, tab, second).unwrap();
+        assert!(!hidden.contains("got:hidden"), "{hidden}");
+    });
+}
+
+/// The pane `window` shows across `tab`, if any.
+fn harness_zoom(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    tab: TabId,
+) -> Option<PaneId> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            let view = view.read(cx);
+            let tab = view.tabs.iter().find(|view| view.id == tab)?;
+            view.shown_zoom(tab, cx)
+        })
+        .ok()
+        .flatten()
+}
+
+#[gpui::test]
+fn a_toggle_elsewhere_redraws_the_frames_of_every_pane(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    harness.wait_for("a frame without sync frames", |cx| {
+        focus_marks(cx, window).is_some_and(|marks| marks.synced.is_empty())
+    });
+    // Another client's toggle changes no title, so only the hierarchy
+    // change can redraw this window.
+    let set = |harness: &DesktopHarness, on| {
+        harness
+            .runtime
+            .lock()
+            .set_input_sync(harness.workspace, tab, on)
+            .unwrap();
+    };
+    set(&harness, true);
+    harness.wait_for("both panes to draw their sync frames", |cx| {
+        focus_marks(cx, window)
+            .is_some_and(|marks| marks.synced == [first, second])
+    });
+    set(&harness, false);
+    harness.wait_for("the sync frames to go", |cx| {
+        focus_marks(cx, window).is_some_and(|marks| marks.synced.is_empty())
+    });
+}

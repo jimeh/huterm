@@ -240,6 +240,7 @@ fn install_menus(cx: &mut App) {
                 item(ids::NEXT_PANE_LAYOUT),
                 item(ids::PREVIOUS_PANE_LAYOUT),
                 item(ids::BALANCE_PANES),
+                item(ids::TOGGLE_PANE_INPUT_SYNC),
             ],
         },
     ]);
@@ -311,6 +312,13 @@ pub(super) struct ContextMenuRequest {
 }
 
 impl EventEmitter<ContextMenuRequest> for TerminalView {}
+
+/// Input typed into a terminal whose tab syncs input, for the window to
+/// send to the tab's other panes as well.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SyncedInput(pub(super) TerminalInput);
+
+impl EventEmitter<SyncedInput> for TerminalView {}
 
 fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
     if selection.and_then(Selection::range).is_none() {
@@ -1526,6 +1534,7 @@ impl TerminalView {
         let Some(input) = input else {
             return false;
         };
+        self.sync_input(&input, cx);
         let (accepted, changed) = self.enqueue_input(input);
         if changed {
             cx.notify();
@@ -1720,8 +1729,9 @@ impl TerminalView {
                 if let Some(text) =
                     cx.read_from_clipboard().and_then(|item| item.text())
                 {
-                    let (accepted, changed) =
-                        self.enqueue_input(TerminalInput::Paste(text));
+                    let paste = TerminalInput::Paste(text);
+                    self.sync_input(&paste, cx);
+                    let (accepted, changed) = self.enqueue_input(paste);
                     if changed {
                         cx.notify();
                     }
@@ -2767,6 +2777,34 @@ impl TerminalView {
             "Terminal error",
             error.to_string(),
         )
+    }
+
+    /// Offers typed `input` to the tab's other panes while the tab syncs
+    /// input. Only typing syncs: mouse reports, focus, and drops target
+    /// this pane alone.
+    fn sync_input(&self, input: &TerminalInput, cx: &mut Context<'_, Self>) {
+        if windows::terminal_syncs_input(self.viewer.terminal_id(), cx) {
+            cx.emit(SyncedInput(input.clone()));
+        }
+    }
+
+    /// Types `input` that another pane of this view's tab synced to it,
+    /// as its own typing would. An exited terminal takes none, so the
+    /// tab's other panes still get theirs.
+    fn receive_synced_input(
+        &mut self,
+        input: TerminalInput,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.exited {
+            return;
+        }
+        let (accepted, changed) = self.enqueue_input(input);
+        if changed {
+            cx.notify();
+        }
+        self.return_to_live_output(accepted);
+        self.start_snapshot_if_needed(cx);
     }
 
     /// Returns whether the input was accepted and whether a notice changed.
