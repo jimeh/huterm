@@ -37,7 +37,7 @@ use super::super::super::settings::keybindings::names_layout;
 use super::super::super::settings::values::{self, FileValues};
 use super::SettingsView;
 use super::dialog::Prompt;
-use super::keybindings::small;
+use super::keybindings::error_message;
 use super::saving::{Batch, Outcome};
 use crate::assets::Icon;
 use crate::keymap::Platform;
@@ -1093,10 +1093,11 @@ impl SettingsView {
                     .child(delete),
             )
             .children(message.map(|message| {
-                small(message.clone(), swatch.danger_text())
-                    .id(id(format!("settings-ltemplate-message-{name}")))
-                    .role(gpui::Role::Label)
-                    .aria_label(message)
+                error_message(
+                    id(format!("settings-ltemplate-message-{name}")),
+                    message,
+                    swatch,
+                )
             }));
         let conflict = self.render_conflict(setting, swatch, cx);
         div()

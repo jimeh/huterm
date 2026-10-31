@@ -1188,6 +1188,88 @@ fn a_command_row_toggles_from_its_title_and_from_its_shortcuts(
 }
 
 #[gpui::test]
+fn a_command_row_describes_its_shortcut_summary(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("layout-command-summary", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Keybindings);
+    let key = if cfg!(target_os = "macos") {
+        "cmd-t"
+    } else {
+        "ctrl-shift-t"
+    };
+    let summary = |harness: &mut DesktopHarness, id: &str| {
+        let description = a11y_node(harness, id)["aria"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        description
+            .rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // The trigger draws the summary as key caps, which report no node.
+    let new_tab = summary(&mut harness, "settings-kcmd-new_tab");
+    let hint = KeyHint::parse(key, Platform::current()).text();
+    assert!(new_tab.starts_with(&hint), "{new_tab:?} names {hint:?}");
+    // A command without shortcuts says so.
+    let unbound = a11y_find(&mut harness, |node| {
+        node["element_id"]
+            .as_str()
+            .is_some_and(|id| id.contains("settings-kcmd-"))
+            && node["aria"]["description"]
+                .as_str()
+                .is_some_and(|text| text.ends_with("\nNo shortcut"))
+    });
+    assert!(unbound.is_some(), "no command reads No shortcut");
+}
+
+#[gpui::test]
+fn validation_messages_are_polite_status_nodes_named_by_their_message(
+    cx: &mut TestAppContext,
+) {
+    let original = "[[keybinding]]\nkey = \"ctrl-alt-l\"\n\
+                    command = \"resize_pane_right\"\nargs = { amount = 5 }\n";
+    let file = ScratchConfig::new("layout-messages", original);
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Keybindings);
+    let message = |harness: &mut DesktopHarness, text: &str| {
+        a11y_find(harness, |node| {
+            node["aria"]["role"] == "Status" && node["aria"]["label"] == text
+        })
+        .unwrap_or_else(|| panic!("no Status node reads {text:?}"))
+    };
+    // A shortcut's condition that does not parse.
+    with_window(&mut harness, |view, window, cx| {
+        view.press("kcmd:resize_pane_right", window, cx);
+        view.type_key("when:u0", "Terminal &&", window, cx);
+        view.enter_key("when:u0", cx);
+    });
+    visual(&harness).run_until_parked();
+    let error = with_view(&mut harness, |view, _| view.key_error("u0"))
+        .expect("the condition's error");
+    let node = message(&mut harness, &error);
+    assert_eq!(node["aria"]["live"], "Polite", "{node}");
+    // A global shortcut without a modifier, in Quake windows.
+    with_window(&mut harness, |view, window, cx| {
+        view.show_section(SectionId::Quake, cx);
+        window.refresh();
+    });
+    visual(&harness).run_until_parked();
+    with_window(&mut harness, |view, window, cx| {
+        view.press("gadd", window, cx);
+    });
+    visual(&harness).run_until_parked();
+    keys(&harness, "a");
+    let error = with_view(&mut harness, |view, _| view.global_error("gadd"))
+        .expect("the recording's error");
+    let node = a11y_node(&mut harness, "settings-message-gadd");
+    assert_eq!(node["aria"]["role"], "Status", "{node}");
+    assert_eq!(node["aria"]["label"], error.as_str(), "{node}");
+    assert_eq!(node["aria"]["live"], "Polite", "{node}");
+}
+
+#[gpui::test]
 fn the_banner_conflicts_and_an_empty_list_report_their_roles(
     cx: &mut TestAppContext,
 ) {

@@ -19,7 +19,7 @@ use super::super::super::settings::keybindings::{Edit, names_profile};
 use super::super::Desktop;
 use super::controls::Opener;
 use super::dialog::Prompt;
-use super::keybindings::{CAP_WIDTH, global_tag, small};
+use super::keybindings::{CAP_WIDTH, error_message, global_tag, small};
 use super::render::group_card;
 use super::saving::Batch;
 use super::{MenuFor, SettingsView};
@@ -1133,12 +1133,9 @@ impl SettingsView {
                     .to_owned(),
                 swatch.muted,
             ))
-            .children(
-                self.quake
-                    .delete_error
-                    .clone()
-                    .map(|error| small(error, swatch.danger_text())),
-            )
+            .children(self.quake.delete_error.clone().map(|error| {
+                error_message("settings-message-qdel", error, swatch)
+            }))
             .into_any_element()
     }
 
@@ -1424,13 +1421,9 @@ impl SettingsView {
                 .py(px(10.0))
                 .child(div().flex().child(add))
                 .children(self.recording_hint("gadd", swatch, cx))
-                .children(
-                    self.keys
-                        .errors
-                        .get("gadd")
-                        .cloned()
-                        .map(|error| small(error, swatch.danger_text())),
-                )
+                .children(self.keys.errors.get("gadd").cloned().map(|error| {
+                    error_message("settings-message-gadd", error, swatch)
+                }))
                 .when(wayland(), |block| {
                     block.child(small(
                         "Global shortcuts need macOS or a native X11 \
@@ -1542,7 +1535,13 @@ impl SettingsView {
                     }),
             )
             .children(self.recording_hint(&record_key, swatch, cx))
-            .children(error.map(|error| small(error, swatch.danger_text())))
+            .children(error.map(|error| {
+                error_message(
+                    format!("settings-message-g{index}"),
+                    error,
+                    swatch,
+                )
+            }))
             .into_any_element()
     }
 

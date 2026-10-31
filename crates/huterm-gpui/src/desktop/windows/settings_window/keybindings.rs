@@ -2338,7 +2338,10 @@ impl SettingsView {
             .filter(|(_, global)| !global.disabled)
             .map(|(_, global)| global.key.as_str())
             .collect();
-        let summary = summary(&active, &global_keys, swatch)
+        let summary = Summary::of(&active, &global_keys);
+        let described = summary.text();
+        let summary = summary
+            .element(swatch)
             .debug_selector(move || format!("settings-ksummary-{command}"));
         let item = Item::new(
             id(format!("settings-kitem-{command}")),
@@ -2364,8 +2367,9 @@ impl SettingsView {
         )
         .item(item)
         // The summary is content, so the trigger spans it: the whole row
-        // hovers and toggles.
+        // hovers and toggles, and describes it.
         .actions_in_trigger()
+        .summary(described)
         .corners(corners)
         .key_context("SettingsControl")
         .on_toggle(Self::listen(cx, move |view, _, window, cx| {
@@ -2519,23 +2523,29 @@ impl SettingsView {
         spec: &'static CommandSpec,
         swatch: Swatch,
         cx: &gpui::App,
-    ) -> Vec<gpui::Div> {
+    ) -> Vec<AnyElement> {
         if !quake::COMMANDS.contains(&spec.id) {
             return Vec::new();
         }
         let key = quake::add_key(spec.id.as_str());
-        let error = self.keys.errors.get(&key).cloned();
+        let error = self.keys.errors.get(&key).cloned().map(|error| {
+            error_message(id(format!("settings-message-{key}")), error, swatch)
+                .into_any_element()
+        });
+        let wayland = quake::wayland().then(|| {
+            small(
+                "Global shortcuts need macOS or a native X11 session; \
+                 this Wayland session does not support them."
+                    .to_owned(),
+                swatch.muted,
+            )
+            .into_any_element()
+        });
         self.recording_hint(&key, swatch, cx)
+            .map(IntoElement::into_any_element)
             .into_iter()
-            .chain(error.map(|error| small(error, swatch.danger_text())))
-            .chain(quake::wayland().then(|| {
-                small(
-                    "Global shortcuts need macOS or a native X11 session; \
-                     this Wayland session does not support them."
-                        .to_owned(),
-                    swatch.muted,
-                )
-            }))
+            .chain(error)
+            .chain(wayland)
             .collect()
     }
 
@@ -2835,8 +2845,13 @@ impl SettingsView {
         let errors = self.keys.errors.iter().filter(|(key, _)| {
             key.as_str() == name || field_row(key) == Some(name)
         });
-        let error = errors.map(|(_, error)| {
-            small(error.clone(), swatch.danger_text()).into_any_element()
+        let error = errors.map(|(key, error)| {
+            error_message(
+                id(format!("settings-message-{key}")),
+                error.clone(),
+                swatch,
+            )
+            .into_any_element()
         });
         let notes = self
             .keys
@@ -3009,45 +3024,82 @@ pub(super) fn global_tag(index: usize, swatch: Swatch) -> gpui::Div {
 /// A collapsed command's shortcuts: up to two active keys, in-app ones
 /// first, then its active global shortcuts' `globals`, a count of the rest,
 /// a "when" tag when one has a condition and a "global" tag when a global
-/// one shows, or "No shortcut". The tags draw outlined, since the rows they
-/// sit in hover.
-fn summary(
-    active: &[&ListedBinding],
-    globals: &[&str],
-    swatch: Swatch,
-) -> gpui::Div {
-    let tag = |label: &'static str| {
-        div()
-            .px(px(6.0))
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(swatch.accent_text().opacity(0.35))
-            .text_size(ui(11.0))
-            .text_color(swatch.accent_text())
-            .child(label)
-    };
-    let mut summary = div().flex().flex_none().items_center().gap(px(6.0));
-    let keys = active
-        .iter()
-        .map(|listed| (listed.binding.key.as_str(), listed.binding.origin))
-        .chain(globals.iter().map(|key| (*key, Origin::User)));
-    for (key, origin) in keys.take(2) {
-        summary = summary.child(cap(key, origin, swatch));
+/// one shows, or "No shortcut".
+struct Summary<'a> {
+    keys: Vec<(&'a str, Origin)>,
+    more: usize,
+    when: bool,
+    global: bool,
+}
+
+impl<'a> Summary<'a> {
+    fn of(active: &[&'a ListedBinding], globals: &[&'a str]) -> Self {
+        let keys: Vec<(&str, Origin)> = active
+            .iter()
+            .map(|listed| (listed.binding.key.as_str(), listed.binding.origin))
+            .chain(globals.iter().map(|key| (*key, Origin::User)))
+            .collect();
+        Self {
+            more: keys.len().saturating_sub(2),
+            keys: keys.into_iter().take(2).collect(),
+            when: active.iter().any(|listed| listed.binding.when.is_some()),
+            global: !globals.is_empty() && active.len() < 2,
+        }
     }
-    let count = active.len() + globals.len();
-    if count > 2 {
-        summary = summary.child(small(format!("+{}", count - 2), swatch.muted));
+
+    /// The summary drawn: key caps, then the count and tags. The tags draw
+    /// outlined, since the rows they sit in hover.
+    fn element(&self, swatch: Swatch) -> gpui::Div {
+        let tag = |label: &'static str| {
+            div()
+                .px(px(6.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(swatch.accent_text().opacity(0.35))
+                .text_size(ui(11.0))
+                .text_color(swatch.accent_text())
+                .child(label)
+        };
+        let mut summary = div().flex().flex_none().items_center().gap(px(6.0));
+        for (key, origin) in &self.keys {
+            summary = summary.child(cap(key, *origin, swatch));
+        }
+        if self.more > 0 {
+            summary =
+                summary.child(small(format!("+{}", self.more), swatch.muted));
+        }
+        if self.when {
+            summary = summary.child(tag("when"));
+        }
+        if self.global {
+            summary = summary.child(tag("global"));
+        }
+        if self.keys.is_empty() {
+            summary =
+                summary.child(small("No shortcut".to_owned(), swatch.muted));
+        }
+        summary
     }
-    if active.iter().any(|listed| listed.binding.when.is_some()) {
-        summary = summary.child(tag("when"));
+
+    /// The summary as text, for the row's accessible description, in the
+    /// words it draws: "⌘T, +1, when".
+    fn text(&self) -> String {
+        let keys = self
+            .keys
+            .iter()
+            .map(|(key, _)| KeyHint::parse(key, Platform::current()).text());
+        let more = (self.more > 0).then(|| format!("+{}", self.more));
+        let tags = [(self.when, "when"), (self.global, "global")]
+            .into_iter()
+            .filter(|(shown, _)| *shown)
+            .map(|(_, tag)| tag.to_owned());
+        let none = self.keys.is_empty().then(|| "No shortcut".to_owned());
+        keys.chain(more)
+            .chain(tags)
+            .chain(none)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
-    if !globals.is_empty() && active.len() < 2 {
-        summary = summary.child(tag("global"));
-    }
-    if count == 0 {
-        summary = summary.child(small("No shortcut".to_owned(), swatch.muted));
-    }
-    summary
 }
 
 impl SettingsView {
@@ -3077,6 +3129,27 @@ impl SettingsView {
 
 pub(super) fn small(text: String, color: gpui::Hsla) -> gpui::Div {
     div().text_size(ui(11.5)).text_color(color).child(text)
+}
+
+/// A validation or failure message under a control, as [`small`] draws it
+/// in the danger text color: a polite live `Status` node named by the
+/// message, so assistive technology reads it.
+pub(super) fn error_message(
+    id: impl Into<ElementId>,
+    message: String,
+    swatch: Swatch,
+) -> gpui::Stateful<gpui::Div> {
+    let message = SharedString::from(message);
+    huterm_ui::a11y::States {
+        live: true,
+        ..huterm_ui::a11y::States::default()
+    }
+    .apply(
+        small(message.to_string(), swatch.danger_text())
+            .id(id)
+            .role(gpui::Role::Status)
+            .aria_label(message),
+    )
 }
 
 /// A shortcut drawn as a key cap; a user binding gets an accent border.
