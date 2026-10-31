@@ -966,9 +966,10 @@ fn a_short_window_scrolls_the_sections_between_the_search_and_the_footer(
     });
     visual(&harness).run_until_parked();
     assert_eq!(scrolled(&mut harness), px(0.0));
-    with_window(&mut harness, |view, window, cx| {
-        view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
-    });
+    // The sidebar's search: in Keybindings, the last section on Linux,
+    // the search command focuses the section's own search instead.
+    let search = with_view(&mut harness, |view, cx| view.search_handle(cx));
+    keyboard_focus(&mut harness, &search);
     keys(&harness, "tab");
     assert_eq!(focus(&mut harness), format!("section:{}", last.id()));
     assert!(scrolled(&mut harness) > px(0.0), "Tab left the tab hidden");

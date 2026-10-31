@@ -3287,6 +3287,11 @@ impl SettingsView {
         -self.nav_scroll.offset().y
     }
 
+    /// The focus handle of the sidebar's search field.
+    pub(super) fn search_handle(&self, cx: &App) -> FocusHandle {
+        self.search.read(cx).focus_handle(cx)
+    }
+
     /// Whether the sidebar's sections are taller than their list.
     pub(super) fn sections_overflow(&self) -> bool {
         self.nav_scroll.max_offset().y > px(0.0)
