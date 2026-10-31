@@ -506,6 +506,56 @@ fn focus_marks_follow_focus_zoom_and_the_bar_mode(cx: &mut TestAppContext) {
     });
 }
 
+/// A titlebar rounds the terminal's corner beside a vertical tab bar only
+/// on macOS.
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn the_rounded_corner_beside_a_vertical_tab_bar_darkens_with_its_pane(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.position = TabPosition::Left;
+        config.window.padding_x = 8.0;
+        config.window.padding_y = 8.0;
+    });
+    // Two tabs show the bar, and the second's row is not flush with its
+    // top, so the corner rounds.
+    let other = harness.open_tab(ECHO);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, other, "READY");
+    harness.update_view(window, |view, window, cx| {
+        view.select_tab(tab, true, window, cx);
+    });
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    // The first pane sits under the top-left corner, beside the tab bar.
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("the second pane's shell", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.invoke(window, ids::FOCUS_PANE_RIGHT).unwrap();
+    harness.reload_panes(window, |panes| {
+        panes.title_bar = PaneTitleBarMode::Hidden;
+        panes.inactive_dim_background = 0.4;
+    });
+    harness.wait_for("the corner to darken with the unfocused pane", |cx| {
+        pane_focused(cx, window, tab, second)
+            && focus_marks(cx, window).is_some_and(|marks| {
+                marks.darkened == [(first, 0.4)]
+                    && marks.corner_darkened == Some(0.4)
+            })
+    });
+    harness.invoke(window, ids::FOCUS_PANE_LEFT).unwrap();
+    harness.wait_for("the corner to clear with the focused pane", |cx| {
+        focus_marks(cx, window).is_some_and(|marks| {
+            marks.darkened == [(second, 0.4)] && marks.corner_darkened.is_none()
+        })
+    });
+}
+
 #[gpui::test]
 fn a_dimmed_pane_takes_the_wheel_and_a_selection_through_its_dim_layer(
     cx: &mut TestAppContext,

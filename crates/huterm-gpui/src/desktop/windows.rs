@@ -4915,6 +4915,28 @@ impl WorkspaceView {
         [dim, background].into_iter().flatten()
     }
 
+    /// The `inactive_dim_background` darkening this frame drew over the
+    /// terminal under `corner`, the rounded patch beside a vertical tab bar,
+    /// and records it for tests.
+    fn corner_darkening(&self, corner: Bounds<Pixels>) -> Option<f32> {
+        let center = corner.center();
+        let alpha =
+            self.drawn_panes.borrow().as_ref().and_then(|(_, rects)| {
+                let pane = rects
+                    .iter()
+                    .find(|rect| rect.terminal.contains(&center))?
+                    .pane;
+                self.drawn_focus
+                    .borrow()
+                    .darkened
+                    .iter()
+                    .find(|(id, _)| *id == pane)
+                    .map(|(_, alpha)| *alpha)
+            });
+        self.drawn_focus.borrow_mut().corner_darkened = alpha;
+        alpha
+    }
+
     /// How many of `tab`'s panes `pane_elements` draws: each installed view
     /// the layout places, or the focused pane alone without a layout.
     fn panes_shown(tab: &TabView, rects: Option<&TabPanes>) -> usize {
@@ -12766,6 +12788,13 @@ impl Render for WorkspaceView {
                 {
                     let left = position == TabPosition::Left;
                     let outer = radius + px(1.0);
+                    // The patch draws above the panes, so it carries the
+                    // darkening of the pane beneath it.
+                    let fill = self
+                        .corner_darkening(corner)
+                        .map_or(background, |alpha| {
+                            background.blend(gpui::black().opacity(alpha))
+                        });
                     root = root.child(
                         div()
                             .absolute()
@@ -12777,7 +12806,7 @@ impl Render for WorkspaceView {
                             .child(
                                 div()
                                     .size_full()
-                                    .bg(background)
+                                    .bg(fill)
                                     .border_color(colors.border)
                                     .border_t(px(1.0))
                                     .when(left, |patch| {

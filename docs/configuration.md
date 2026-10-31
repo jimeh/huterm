@@ -245,12 +245,13 @@ divider. `dividers` draws the dividers alone and is available only for sync;
 a zoomed tab shows no dividers. `glow` draws a soft band inside the edge, and
 along each divider for sync. `edge` draws one bar along the top of the panes.
 `title_bar` tints the title bar of each pane typing reaches, or of the zoomed
-pane, and shows a small chip in the pane's corner where its bar is hidden or
-has not appeared yet. `off` draws no shape and keeps the marks. `width` sets
-the thickness of the lines, `opacity` how strongly the shape draws, and
-`pattern` whether `outline`, `dividers`, and `edge` lines are solid, dashed,
-or dotted. A table you write only part of keeps its own defaults for the
-rest. Every key applies on reload. The corners are square in fullscreen, in
+pane, and shows a small chip in the pane's corner where it has no bar, as in a
+tab of one pane, or its bar is hidden or has not appeared yet. `off` draws
+no shape and keeps the marks. `width` sets the thickness of the lines,
+`opacity` how strongly the shape draws, and `pattern` whether `outline`,
+`dividers`, and `edge` lines are solid, dashed, or dotted. A table you write
+only part of keeps its own defaults for the rest. Every key applies on
+reload. The corners are square in fullscreen, in
 a Quake window's drop-down, and on Linux, where the window's bottom corners
 are square.
 

@@ -9,13 +9,16 @@ use huterm_protocol::PaneId;
 
 use super::pane_indicators::IndicatorRecord;
 
-/// The focus marks a frame drew: each dimmed or darkened pane with its opacity,
-/// the pane with the accent line, with its alpha and drawn bounds, and the
-/// sync or zoom indicator.
+/// The focus marks a frame drew: each dimmed or darkened pane with its
+/// opacity, the corner patch's darkening, the pane with the accent line,
+/// with its alpha and drawn bounds, and the sync or zoom indicator.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct FocusMarks {
     pub(super) dimmed: Vec<(PaneId, f32)>,
     pub(super) darkened: Vec<(PaneId, f32)>,
+    /// The darkening the rounded corner patch beside a vertical tab bar
+    /// drew to match the pane beneath it.
+    pub(super) corner_darkened: Option<f32>,
     pub(super) accent: Option<(PaneId, f32)>,
     pub(super) cue: Option<Bounds<Pixels>>,
     pub(super) indicator: IndicatorRecord,
