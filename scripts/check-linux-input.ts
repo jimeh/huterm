@@ -175,7 +175,8 @@ command = "quit"
     }
     // Saved changes apply without Reload while watch_config is on, and
     // only through Reload (alt-b here) while it is off.
-    await backgroundIs("1d1d/1f1f/2121", "the initial background");
+    // The default theme, tokyo-night.
+    await backgroundIs("1a1a/1b1b/2626", "the initial background");
     await configure('[theme]\nbackground = "#123456"\n');
     await backgroundIs("1212/3434/5656", "an automatic reload");
     await configure('[general]\nwatch_config = false\n[theme]\nbackground = "#234567"\n');

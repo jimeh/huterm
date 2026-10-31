@@ -16,12 +16,15 @@ pub(crate) fn run() -> anyhow::Result<()> {
     super::run_with_startup(move |cx| {
         cx.spawn(async move |cx| {
             let mut sequence = 0;
+            let mut samples: u64 = 0;
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(10))
                     .await;
                 let mut state = cx.update(read_state);
-                writeln!(state, "commands={sequence}").unwrap();
+                samples += 1;
+                writeln!(state, "commands={sequence}\nsamples={samples}")
+                    .unwrap();
                 publish(&directory, "state", &state);
                 if let Ok(command) = std::fs::read_to_string(
                     directory.join(format!("command-{sequence}")),
@@ -48,6 +51,18 @@ fn execute(cx: &mut App, command: &str) -> anyhow::Result<()> {
         cx.quit();
         return Ok(());
     }
+    // Sets this application's own appearance, as the system's light or dark
+    // mode would, without changing the system's.
+    if let Some(mode) = command.strip_prefix("app_appearance:") {
+        let appearance = match mode {
+            "light" => Some(gpui::WindowAppearance::Light),
+            "dark" => Some(gpui::WindowAppearance::Dark),
+            "system" => None,
+            _ => anyhow::bail!("unknown appearance {mode}"),
+        };
+        cx.set_window_appearance(appearance);
+        return Ok(());
+    }
     let spec = lookup(command).context("unknown smoke command")?;
     let outcome = Desktop::invoke(
         cx,
@@ -70,9 +85,10 @@ fn publish(directory: &Path, name: &str, text: &str) {
 
 fn read_state(cx: &mut App) -> String {
     let mut output = format!(
-        "windows={}\nreloading={}\n",
+        "windows={}\nreloading={}\nappearance_follows={}\n",
         cx.windows().len(),
-        cx.global::<Desktop>().reloads.reloading()
+        cx.global::<Desktop>().reloads.reloading(),
+        cx.global::<Desktop>().appearance_follows
     );
     if let Some(handle) = cx.windows().first().copied() {
         let _ = handle.update(cx, |root, window, cx| {

@@ -1029,9 +1029,12 @@ The Settings layout is built from the step 6 components. The sidebar is a
 vertical `Tabs` with the section handles, one tab stop that the group
 commands move and select along; the footer's links take `tab_index(1)`
 (`footer_stop`), so Tab from the sidebar enters the section and Shift-Tab
-from its first control returns. The theme cards are a card `RadioGroup` whose
-moves choose the theme. A setting's row is a `Field` (`render_row`), with its
-conflict under it as a warning `Alert`; the rows that only lead to another
+from its first control returns. The theme cards are two card `RadioGroup`s,
+light themes then dark ones (`settings_window/themes.rs`), whose moves run
+through both and choose the theme; every picker write is one
+`Batch::Theme` over the `theme.*` keys, sets before removals. A setting's
+row is a `Field` (`render_row`), with its conflict under it as a warning
+`Alert`; the rows that only lead to another
 section are `Item`s, as are the `unbind` rows, whose key caps draw through
 `Item::title_element` while the key's text names the row; a command search
 result is a link `Item` (`Item::link`) on its `kgo:` action stop, so it is

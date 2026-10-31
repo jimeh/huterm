@@ -5,7 +5,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::themes;
+use crate::themes::{self, ThemePair};
 pub(super) use huterm_config::{
     ClipboardWritePolicy, ConfigError, FontConfig, GeneralConfig,
     KeybindingEntry, LegacyTerminalEngine, LinkModifiers, MacosFullscreenMode,
@@ -148,11 +148,15 @@ zoom = "view"
 # check_interval_hours = 24
 
 [theme]
-name = "huterm-dark"
+name = "tokyo-night"
+# Follow the system's light or dark mode with a theme for each; setting
+# either replaces name for that mode:
+# light = "tokyo-night-day"
+# dark = "tokyo-night"
 # Override individual colors without replacing the whole palette:
-# background = "#1d1f21"
-# ansi_red = "#cc6666"
-# ansi_bright_red = "#d54e53"
+# background = "#1a1b26"
+# ansi_red = "#f7768e"
+# ansi_bright_red = "#ff899d"
 
 # Keybindings extend the platform defaults; later entries win for the same key.
 # `key` uses GPUI keystroke syntax (cmd, ctrl, alt, shift, fn); `when` is an
@@ -181,7 +185,10 @@ pub(super) struct Config {
     pub(super) palette: huterm_config::PaletteConfig,
     pub(super) panes: huterm_config::PanesConfig,
     pub(super) terminal: TerminalConfig,
+    /// The theme in use: one of `themes`, chosen by the system appearance
+    /// through [`Config::follow_appearance`].
     pub(super) theme: Theme,
+    pub(super) themes: ThemePair,
     pub(super) keybindings: Vec<KeybindingEntry>,
     pub(super) quake: huterm_config::quake::Config,
     pub(super) global_keybindings: Vec<KeybindingEntry>,
@@ -265,13 +272,28 @@ pub(super) fn fingerprint(
     Some(consumed.finish().fingerprint)
 }
 
+impl Config {
+    /// Uses the theme for a `dark` or light system appearance, returning
+    /// whether the theme in use changed. Without `[theme] light` or `dark`
+    /// both are the same theme and nothing changes.
+    pub(super) fn follow_appearance(&mut self, dark: bool) -> bool {
+        let theme = self.themes.get(dark);
+        if self.theme == *theme {
+            return false;
+        }
+        self.theme = theme.clone();
+        true
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             warning: None,
             general: GeneralConfig::default(),
             font: FontConfig::default(),
-            theme: Theme::huterm_dark(),
+            theme: themes::default_theme(),
+            themes: ThemePair::default_pair(),
             window: WindowConfig::default(),
             tabs: TabsConfig::default(),
             updates: UpdateConfig::default(),
@@ -549,7 +571,8 @@ fn parse_consumed(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("themes");
-    let theme = themes::resolve(&raw.theme, &raw.themes, &directory, consumed)?;
+    let themes =
+        themes::resolve(&raw.theme, &raw.themes, &directory, consumed)?;
     let keybindings = raw
         .keybinding
         .into_iter()
@@ -585,7 +608,9 @@ fn parse_consumed(
                 .filter(|family| !family.is_empty()),
             ui_size: raw.font.ui_size,
         },
-        theme,
+        // Until the caller follows the system appearance.
+        theme: themes.dark.clone(),
+        themes,
         keybindings,
         quake: raw.quake.validated().map_err(ConfigError::Quake)?,
         global_keybindings: raw

@@ -37,6 +37,8 @@ mod native_live_resize;
 #[cfg(target_os = "macos")]
 mod native_quit;
 #[cfg(target_os = "macos")]
+mod native_system_appearance;
+#[cfg(target_os = "macos")]
 mod native_titlebar;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 mod native_updater;

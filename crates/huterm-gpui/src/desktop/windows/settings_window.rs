@@ -41,7 +41,6 @@ use super::native_menus::{MenuAnchor, PresentedMenu};
 use super::{Desktop, UnavailableFonts};
 use crate::APP_ID;
 use crate::commands::{InvokeFocused, InvokeWindow};
-use crate::config::Theme;
 use crate::native_appearance::FrameAppearance;
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
@@ -198,6 +197,7 @@ mod layouts;
 mod quake;
 mod render;
 mod saving;
+mod themes;
 
 #[cfg(all(test, feature = "test-support"))]
 pub(super) use huterm_ui::components::key_recorder::CHORD_TIMEOUT;
@@ -400,7 +400,10 @@ pub(super) struct SettingsView {
     /// Where the header and the search field last painted, for smokes.
     painted: Rc<RefCell<Painted>>,
     /// Every selectable theme with its colors, read when the window opens.
-    themes: Vec<(String, Option<Theme>)>,
+    themes: Vec<themes::ThemeCard>,
+    /// The mode whose theme the theme cards choose while the theme follows
+    /// the system; `None` is the system's mode now.
+    theme_slot: Option<themes::Slot>,
 }
 
 impl SettingsView {
@@ -468,6 +471,7 @@ impl SettingsView {
             _recorder: recorder,
             model,
             themes: Vec::new(),
+            theme_slot: None,
             path,
             base: None,
             file: FileValues::default(),
@@ -534,6 +538,10 @@ impl SettingsView {
             weak.update(cx, |view, cx| view.request_close(window, cx))
                 .unwrap_or(true)
         });
+        cx.observe_window_appearance(window, |_, _, cx| {
+            Self::window_appearance_changed(cx);
+        })
+        .detach();
         // With watching off nothing reports an edit made elsewhere, so the
         // window looks when it comes forward.
         cx.observe_window_activation(window, |view, window, cx| {
@@ -578,6 +586,16 @@ impl SettingsView {
         foreign_note(setting)
             .map(SharedString::from)
             .or_else(|| self.lock_reason())
+    }
+
+    /// Follows GPUI's report that this window's appearance changed. The
+    /// desktop portal's mode changes reach every window on Linux, including
+    /// this one when it is the only window open; `follow` reads the
+    /// application's appearance, never this window's.
+    fn window_appearance_changed(cx: &mut App) {
+        cx.defer(|cx| {
+            super::system_appearance::follow(cx);
+        });
     }
 
     /// Brings every text field to the current theme's colors, which a
@@ -911,17 +929,18 @@ impl SettingsView {
         let model = self.model;
         match kind {
             "theme" => {
-                if let Some(theme) = model.setting("theme")
-                    && self.selected_theme() != argument
-                {
-                    let name = Value::String(argument.to_owned());
-                    self.submit(
-                        theme,
-                        values::patch_at("theme.name", Some(name.clone())),
-                        Some(name),
-                        None,
-                        cx,
-                    );
+                if self.selected_theme(cx) != argument {
+                    self.choose_theme(argument, cx);
+                }
+            }
+            // Space and Return switch between one theme and one per mode.
+            "theme-mode" => {
+                let auto = self.theme_auto();
+                self.set_theme_auto(!auto, cx);
+            }
+            "theme-slot" => {
+                if let Some(slot) = themes::Slot::from_id(argument) {
+                    self.theme_slot = Some(slot);
                 }
             }
             "chip" => {
@@ -984,17 +1003,6 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// The theme the picker marks: a pending choice, else the file's.
-    fn selected_theme(&self) -> String {
-        let name = match self.pending.get("theme") {
-            Some(pending) => pending.as_ref(),
-            None => self.file.get("theme.name"),
-        };
-        name.and_then(Value::as_str)
-            .unwrap_or("huterm-dark")
-            .to_owned()
-    }
-
     /// The first control a setting's row renders, for search to focus.
     fn focus_target(
         &mut self,
@@ -1009,12 +1017,12 @@ impl SettingsView {
             Some(Special::ThemePicker) => {
                 // Before the scan lists it, or for a missing theme, the
                 // first card takes focus.
-                let selected = self.selected_theme();
+                let selected = self.selected_theme(cx);
                 let name =
-                    if self.themes.iter().any(|(name, _)| *name == selected) {
+                    if self.themes.iter().any(|card| card.name == selected) {
                         selected
                     } else {
-                        self.themes.first().map(|(name, _)| name.clone())?
+                        self.ordered_theme_names().first()?.clone()
                     };
                 format!("theme:{name}")
             }
@@ -1262,32 +1270,46 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        let names: Vec<String> =
-            self.themes.iter().map(|(name, _)| name.clone()).collect();
-        let handles: Vec<FocusHandle> = names
+        // The focused group's action keys, in the order they show, and the
+        // checked one: the mode cards, or the theme cards of both groups.
+        let (keys, selected) = if themes::SLOT_KEYS
             .iter()
-            .filter_map(|name| self.actions.get(&format!("theme:{name}")))
+            .filter_map(|key| self.actions.get(*key))
+            .any(|handle| handle.is_focused(window))
+        {
+            let keys = themes::SLOT_KEYS.map(str::to_owned).to_vec();
+            (keys, self.selected_slot(cx).to_owned())
+        } else {
+            let keys = self
+                .ordered_theme_names()
+                .iter()
+                .map(|name| format!("theme:{name}"))
+                .collect();
+            (keys, format!("theme:{}", self.selected_theme(cx)))
+        };
+        let handles: Vec<FocusHandle> = keys
+            .iter()
+            .filter_map(|key| self.actions.get(key))
             .cloned()
             .collect();
-        if handles.len() != names.len()
+        if handles.len() != keys.len()
             || roving::focused(&handles, window).is_none()
         {
             return false;
         }
-        let selected = self.selected_theme();
         let enabled = self
             .model
             .setting("theme")
             .is_some_and(|theme| self.read_only_reason(theme).is_none());
         let group = Group {
             handles: &handles,
-            selected: names.iter().position(|name| *name == selected),
+            selected: keys.iter().position(|key| *key == selected),
             enabled,
         };
         if let Some(index) = roving::move_focus(group, step, window, cx)
-            && let Some(name) = names.get(index)
+            && let Some(key) = keys.get(index)
         {
-            self.act(&format!("theme:{name}"), window, cx);
+            self.act(key, window, cx);
         }
         true
     }
@@ -2045,7 +2067,13 @@ impl SettingsView {
             // A group's arrows run these; they step nothing there.
             ids::SETTINGS_INCREASE | ids::SETTINGS_DECREASE => {
                 let forward = invocation.id == ids::SETTINGS_INCREASE;
-                if !self.step_filter(forward, window) {
+                if self.focused_action(window).as_deref()
+                    == Some(themes::MODE_KEY)
+                {
+                    // On, as a segmented control's next segment, is Match
+                    // system.
+                    self.set_theme_auto(forward, cx);
+                } else if !self.step_filter(forward, window) {
                     self.step(Jump::Step(forward), window, cx);
                 }
             }
@@ -2459,20 +2487,6 @@ pub(super) fn traffic_lights(
     #[expect(clippy::cast_possible_truncation, reason = "point-sized geometry")]
     let (left, height) = (native.origin.x as f32, native.size.height as f32);
     point(px(left), px(((HEADER_HEIGHT - height) / 2.0).max(0.0)))
-}
-
-/// Every selectable theme with its preview colors.
-fn themes(config: &std::path::Path) -> Vec<(String, Option<Theme>)> {
-    let directory = config
-        .parent()
-        .map_or_else(PathBuf::new, |parent| parent.join("themes"));
-    crate::themes::names(Some(&directory))
-        .into_iter()
-        .map(|name| {
-            let preview = crate::themes::preview(&name, &directory);
-            (name, preview)
-        })
-        .collect()
 }
 
 impl SettingsView {
@@ -3025,8 +3039,8 @@ impl SettingsView {
         self.base.is_some() && !self.busy() && self.loading == 0
     }
 
-    pub(super) fn selected(&self) -> String {
-        self.selected_theme()
+    pub(super) fn selected(&self, cx: &App) -> String {
+        self.selected_theme(cx)
     }
 
     /// The search field's text and placeholder colors.
@@ -3248,7 +3262,7 @@ impl SettingsView {
 
     /// Every theme card's name, in order.
     pub(super) fn theme_names(&self) -> Vec<String> {
-        self.themes.iter().map(|(name, _)| name.clone()).collect()
+        self.ordered_theme_names()
     }
 
     /// Whether the pane's scrollbar indicator draws.
@@ -3379,6 +3393,30 @@ impl SettingsView {
     ) {
         self.action_stop(key.to_owned(), cx).focus(window, cx);
         self.command(ids::SETTINGS_TOGGLE, window, cx).unwrap();
+    }
+
+    /// The theme the picker marks Active.
+    pub(super) fn marked_active(cx: &App) -> String {
+        Self::active_theme(cx)
+    }
+
+    /// Runs the window's appearance callback, as GPUI does.
+    pub(super) fn appearance_changed(cx: &mut App) {
+        Self::window_appearance_changed(cx);
+    }
+
+    /// The action key of the mode card the theme cards set.
+    pub(super) fn target_mode(&self, cx: &App) -> &'static str {
+        self.selected_slot(cx)
+    }
+
+    /// Picks one theme, or one for each mode, as the mode switch does.
+    pub(super) fn set_theme_mode(
+        &mut self,
+        auto: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.set_theme_auto(auto, cx);
     }
 
     /// Escape in the setting's field.

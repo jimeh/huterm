@@ -26,7 +26,8 @@
 //! Focus: the focused radio, row or card, draws the focus ring after a key.
 //!
 //! Accessibility: a `RadioGroup` named by its label, with its size, of
-//! `RadioButton`s whose toggled state marks the checked one (AccessKit's
+//! `RadioButton`s, each named by its label or an accessible name that says
+//! more, whose toggled state marks the checked one (AccessKit's
 //! macOS and Linux adapters read radio state from `toggled`), with their
 //! position in the set. Each radio reports a disabled group's disabled
 //! state, since AccessKit states are per node.
@@ -62,6 +63,8 @@ struct Radio {
     checked: bool,
     focus: FocusHandle,
     content: Option<AnyElement>,
+    /// The accessible name, when it says more than the label.
+    name: Option<SharedString>,
 }
 
 /// A radio group.
@@ -135,7 +138,21 @@ impl RadioGroup {
             checked,
             focus: focus.clone(),
             content: None,
+            name: None,
         });
+        self
+    }
+
+    /// Names the option added last for assistive technology as `name`
+    /// rather than its label, where the label alone is ambiguous, such as
+    /// two cards that both show one theme for different purposes.
+    #[must_use]
+    pub fn accessible_name(mut self, name: impl Into<SharedString>) -> Self {
+        let radio = self.radios.last_mut();
+        debug_assert!(radio.is_some(), "`accessible_name` follows an option");
+        if let Some(radio) = radio {
+            radio.name = Some(name.into());
+        }
         self
     }
 
@@ -237,7 +254,7 @@ fn render_radio(
     let element = div()
         .id(ElementId::NamedChild(parent, radio.value))
         .role(gpui::Role::RadioButton)
-        .aria_label(radio.label)
+        .aria_label(radio.name.unwrap_or(radio.label))
         .aria_toggled(if checked {
             Toggled::True
         } else {

@@ -198,9 +198,9 @@ fn an_arrow_during_a_search_shows_the_section_it_reaches(
 
 /// The theme names and the index of the one the picker marks.
 fn themes(harness: &mut DesktopHarness) -> (Vec<String>, usize) {
-    with_view(harness, |view, _| {
+    with_view(harness, |view, cx| {
         let names = view.theme_names();
-        let selected = view.selected();
+        let selected = view.selected(cx);
         let index = names
             .iter()
             .position(|name| *name == selected)
@@ -257,13 +257,76 @@ fn arrows_move_between_theme_cards_and_choose_each(cx: &mut TestAppContext) {
     assert_eq!(file.text(), format!("[theme]\nname = \"{}\"\n", names[0]));
 }
 
+#[gpui::test]
+fn arrows_on_the_mode_cards_pick_the_mode_the_theme_cards_set(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "layout-theme-slots",
+        "[theme]\nlight = \"one-light\"\ndark = \"dracula\"\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    // The test platform's system is light, so the light card starts checked.
+    assert_eq!(themes(&mut harness).0[themes(&mut harness).1], "one-light");
+    let light = with_view(&mut harness, |view, _| {
+        view.action_handle("theme-slot:light")
+    });
+    keyboard_focus(&mut harness, &light);
+    keys(&harness, "right");
+    assert_eq!(focus(&mut harness), "action:theme-slot:dark");
+    let (names, at) = themes(&mut harness);
+    assert_eq!(names[at], "dracula");
+    keys(&harness, "right");
+    assert_eq!(focus(&mut harness), "action:theme-slot:light");
+    assert!(
+        harness.cx.update(settled),
+        "a mode card move queued a write"
+    );
+    assert_eq!(
+        file.text(),
+        "[theme]\nlight = \"one-light\"\ndark = \"dracula\"\n"
+    );
+}
+
+#[gpui::test]
+fn the_theme_mode_switch_works_from_the_keyboard(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("layout-theme-mode", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    let mode =
+        with_view(&mut harness, |view, _| view.action_handle("theme-mode"));
+    keyboard_focus(&mut harness, &mode);
+    // Right steps to Match system, which starts both modes on the theme.
+    keys(&harness, "right");
+    harness.wait_for("Match system to save", |cx| {
+        settled(cx) && file.text().contains("light")
+    });
+    assert_eq!(
+        file.text(),
+        "[theme]\nlight = \"tokyo-night\"\ndark = \"tokyo-night\"\n"
+    );
+    assert_eq!(focus(&mut harness), "action:theme-mode");
+    // Left steps back to one theme; Space toggles.
+    keys(&harness, "left");
+    harness.wait_for("one theme to save", |cx| {
+        settled(cx) && !file.text().contains("light")
+    });
+    assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
+    keys(&harness, "space");
+    harness.wait_for("Space to toggle", |cx| {
+        settled(cx) && file.text().contains("light")
+    });
+}
+
 /// A click on a theme card draws no ring, and keyboard focus on it does.
 fn a_theme_card_rings_for_the_keyboard_alone(harness: &mut DesktopHarness) {
     // The click lands at the card's center, so the cards must be on screen
     // below the Font rows.
     visual(harness).simulate_resize(gpui::size(px(860.0), px(900.0)));
+    // The first card, at the top of the grid.
     let (names, start) = themes(harness);
-    let other = names[(start + 1) % names.len()].clone();
+    let other = names[usize::from(start == 0)].clone();
     let card = labelled(harness, "RadioButton", &other);
     a11y_click(harness, &card);
     assert_eq!(focus(harness), format!("action:theme:{other}"));
@@ -322,13 +385,16 @@ fn arrows_on_a_theme_card_that_turned_read_only_move_and_write_nothing(
 }
 
 #[gpui::test]
-fn the_theme_cards_are_one_tab_stop_of_radio_buttons(cx: &mut TestAppContext) {
+fn the_theme_cards_are_tab_stops_of_radio_buttons(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("layout-theme-stop", "");
     let mut harness = DesktopHarness::new(cx);
     show(&mut harness, &file, SectionId::Appearance);
     let (names, start) = themes(&mut harness);
-    let group = labelled(&mut harness, "RadioGroup", "Theme");
-    assert_eq!(group["aria"]["size_of_set"], names.len(), "{group}");
+    // Light themes, then dark ones, the default's group.
+    let light = labelled(&mut harness, "RadioGroup", "Light themes");
+    let dark = labelled(&mut harness, "RadioGroup", "Dark themes");
+    assert_eq!(light["aria"]["size_of_set"], 10, "{light}");
+    assert_eq!(dark["aria"]["size_of_set"], names.len() - 10, "{dark}");
     let checked = labelled(&mut harness, "RadioButton", &names[start]);
     assert_eq!(checked["aria"]["toggled"], "True", "{checked}");
     let next = &names[(start + 1) % names.len()];

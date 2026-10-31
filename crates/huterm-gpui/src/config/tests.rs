@@ -17,7 +17,7 @@ fn schema_fixtures_match_application_parsing_and_keymap_compilation() {
         serde_json::from_str(include_str!("../../../../schemas/fixtures.json"))
             .unwrap();
     let fixtures = fixtures.as_array().unwrap();
-    assert_eq!(fixtures.len(), 247);
+    assert_eq!(fixtures.len(), 251);
     for fixture in fixtures {
         let source = fixture["toml"].as_str().unwrap();
         let expected = fixture["valid"].as_bool().unwrap();
@@ -556,55 +556,120 @@ background = "#040506"
 }
 
 #[test]
+fn light_and_dark_pick_a_theme_for_each_mode_and_fall_back_to_name() {
+    let theme = |name| crate::themes::preview(name, Path::new("")).unwrap();
+    // One theme, named or not, is the same in both modes.
+    let single = parse("[theme]\nname = 'nord'").unwrap();
+    assert_eq!(single.themes.light, theme("nord"));
+    assert_eq!(single.themes.dark, theme("nord"));
+    // Either slot alone follows the system; the other uses name, then the
+    // default.
+    let light = parse("[theme]\nlight = 'github-light'").unwrap();
+    assert_eq!(light.themes.light, theme("github-light"));
+    assert_eq!(light.themes.dark, crate::themes::default_theme());
+    let dark = parse("[theme]\nname = 'nord'\ndark = 'one-light'").unwrap();
+    assert_eq!(dark.themes.light, theme("nord"));
+    assert_eq!(dark.themes.dark, theme("one-light"));
+    // Overrides apply to both.
+    let both = parse(
+        "[theme]\nlight = 'github-light'\ndark = 'dracula'\nansi_red = '#010203'",
+    )
+    .unwrap();
+    assert_eq!(both.themes.light.ansi[1], rgb(0x0001_0203));
+    assert_eq!(both.themes.dark.ansi[1], rgb(0x0001_0203));
+    assert_eq!(both.themes.dark.background, theme("dracula").background);
+    // An unknown theme fails even in the mode not in use, naming its key.
+    let error = parse("[theme]\nlight = 'nope'").unwrap_err().to_string();
+    assert!(error.contains("[theme] light: unknown theme"), "{error}");
+    // A name both modes replace still has to exist.
+    let error =
+        parse("[theme]\nname = 'nrod'\nlight = 'one-light'\ndark = 'dracula'")
+            .unwrap_err()
+            .to_string();
+    assert!(error.contains("unknown theme \"nrod\""), "{error}");
+    // Only the selected `[theme]` picks themes.
+    assert!(parse("[themes.mine]\nlight = 'nord'").is_err());
+    assert!(parse("[themes.mine]\ndark = 'nord'").is_err());
+}
+
+#[test]
+fn following_the_appearance_switches_only_between_different_themes() {
+    let mut config =
+        parse("[theme]\nlight = 'github-light'\ndark = 'dracula'").unwrap();
+    assert!(config.follow_appearance(false));
+    assert_eq!(config.theme, config.themes.light);
+    assert!(!config.follow_appearance(false));
+    assert!(config.follow_appearance(true));
+    assert_eq!(config.theme, config.themes.dark);
+    let mut single = parse("[theme]\nname = 'nord'").unwrap();
+    assert!(!single.follow_appearance(false));
+    assert!(!single.follow_appearance(true));
+}
+
+#[test]
 fn every_builtin_resolves_and_default_stays_unchanged() {
     assert_eq!(parse("").unwrap(), Config::default());
     assert_eq!(
         parse("[theme]\nname = 'huterm-dark'").unwrap().theme,
         Theme::huterm_dark()
     );
-    // No `[theme]`, or an empty one, is huterm-dark with its hand-picked
-    // chrome, so a fresh install matches the named theme.
-    assert_eq!(parse("[theme]").unwrap().theme, Theme::huterm_dark());
-    // Setting a key, even to its default value, is a real definition
-    // that derives its chrome rather than taking the hand-picked set.
-    let same = parse("[theme]\nbackground = '#1d1f21'").unwrap().theme;
-    assert_eq!(same.background, Theme::default().background);
-    assert_eq!(same.tab_bar_background, None);
-    // An empty named definition follows the same rule.
+    // No `[theme]`, or one without a name, is tokyo-night.
+    let default = crate::themes::default_theme();
+    assert_eq!(parse("[theme]").unwrap().theme, default);
+    assert_eq!(
+        parse("[theme]\nname = 'tokyo-night'").unwrap().theme,
+        default
+    );
+    // Overrides without a name apply to tokyo-night and keep its chrome,
+    // as they do on any bundled theme.
+    let light =
+        parse("[theme]\nbackground = '#ffffff'\nforeground = '#000000'")
+            .unwrap()
+            .theme;
+    assert_eq!(light.background, rgb(0x00ff_ffff));
+    assert_eq!(light.ansi, default.ansi);
+    assert_eq!(light.tab_bar_background, default.tab_bar_background);
+    // An empty named definition is huterm-dark with its hand-picked
+    // chrome, and one that sets a key derives its chrome instead.
     assert_eq!(
         parse("[theme]\nname = 'bare'\n[themes.bare]")
             .unwrap()
             .theme,
         Theme::huterm_dark()
     );
-    // An unnamed theme derives its chrome from its own colors rather
-    // than inheriting huterm-dark's hand-picked dark set.
-    let light =
-        parse("[theme]\nbackground = '#ffffff'\nforeground = '#000000'")
+    let same =
+        parse("[theme]\nname = 'mine'\n[themes.mine]\nbackground = '#1d1f21'")
             .unwrap()
             .theme;
-    assert_eq!(light.tab_bar_background, None);
-    assert_ne!(
-        light.ui().tab_bar_background,
-        Theme::huterm_dark().ui().tab_bar_background
-    );
-    for name in [
-        "tokyo-night",
-        "tokyo-night-storm",
-        "tokyo-night-moon",
-        "tokyo-night-day",
+    assert_eq!(same.background, Theme::default().background);
+    assert_eq!(same.tab_bar_background, None);
+    // Every built-in resolves, on a light or a dark background.
+    let light = [
+        "ayu-light",
         "catppuccin-latte",
-        "catppuccin-frappe",
-        "catppuccin-macchiato",
-        "catppuccin-mocha",
-        "one-dark-pro",
-        "tomorrow-night",
-        "dracula",
-        "nord",
-        "tango-with-monokai",
-    ] {
+        "everforest-light",
+        "github-light",
+        "gruvbox-light",
+        "kanagawa-lotus",
+        "one-light",
+        "rose-pine-dawn",
+        "solarized-light",
+        "tokyo-night-day",
+    ];
+    let names = crate::themes::names(None);
+    assert_eq!(names.len(), 32);
+    for name in names {
         let config = parse(&format!("[theme]\nname = '{name}'")).unwrap();
         assert_ne!(config.theme.background, config.theme.foreground, "{name}");
+        let background = config.theme.background;
+        let brightness = 0.2126 * f32::from(background.red)
+            + 0.7152 * f32::from(background.green)
+            + 0.0722 * f32::from(background.blue);
+        assert_eq!(
+            brightness > 128.0,
+            light.contains(&name.as_str()),
+            "{name}"
+        );
     }
     assert_eq!(
         parse("[theme]\nname = 'tango-with-monokai'")

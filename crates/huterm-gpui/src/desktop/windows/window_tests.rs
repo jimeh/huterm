@@ -4985,3 +4985,5 @@ mod settings_layouts;
 mod settings_lists;
 mod settings_quake;
 mod settings_selects;
+mod settings_themes;
+mod system_appearance;

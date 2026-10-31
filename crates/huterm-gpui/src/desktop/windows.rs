@@ -192,6 +192,7 @@ mod pane_menu;
 mod pane_moves;
 mod projection;
 mod settings_window;
+mod system_appearance;
 mod tab_bar;
 mod tab_menu;
 mod tab_position;
@@ -879,6 +880,12 @@ struct Desktop {
     external_drag_window: Option<gpui::WindowId>,
     /// The window buttons the desktop asks title rows to draw.
     button_layout: ButtonLayout,
+    /// How many times the theme changed to follow the system's mode, for
+    /// tests and smokes that check it settles.
+    appearance_follows: u64,
+    /// The system's mode when last followed; Settings shows and edits that
+    /// mode's theme.
+    system_mode: system_appearance::Mode,
     /// Shows native menus; `None` where windows draw every menu themselves.
     menu_presenter: Option<Rc<dyn MenuPresenter>>,
     /// Close failures reported in any window, including windows since
@@ -1527,6 +1534,7 @@ pub(super) fn run_with_startup(
     });
     application.run(move |cx| {
         install_desktop(cx, Arc::clone(&app_runtime), hierarchy, loaded);
+        system_appearance::watch(cx);
         start_config_watch(cx, inputs);
         #[cfg(target_os = "linux")]
         follow_button_layout(cx);
@@ -1607,6 +1615,8 @@ fn install_desktop(
         unavailable_fonts: UnavailableFonts::default(),
         external_drag_window: None,
         button_layout: ButtonLayout::standard(),
+        appearance_follows: 0,
+        system_mode: system_appearance::Mode::Light,
         #[cfg(target_os = "macos")]
         menu_presenter: Some(Rc::new(appkit_menu::AppKitPresenter)),
         #[cfg(not(target_os = "macos"))]
@@ -1616,6 +1626,7 @@ fn install_desktop(
         #[cfg(all(target_os = "macos", feature = "macos-updater"))]
         updater,
     });
+    system_appearance::follow(cx);
     apply_typography(cx);
     start_hierarchy_drain(cx);
     cx.on_window_closed(|cx, window| {
@@ -2309,6 +2320,9 @@ fn open_window_with_profile(
     ) {
         return;
     }
+    // Linux reports the system's mode through windows; with none open,
+    // the mode may have changed unseen.
+    system_appearance::follow(cx);
     let config = cx.global::<Desktop>().config.clone();
     let (family, metrics) = match resolve_metrics(&config, cx) {
         Ok(value) => {
@@ -2644,13 +2658,10 @@ fn open_window_with_profile(
                 .detach();
                 // GPUI reports a decoration change, including the
                 // no-compositor fallback, as an appearance change.
-                cx.observe_window_appearance(window, |view, window, cx| {
-                    if view.sync_frame(window) {
-                        view.refresh_tab_visibility(window, cx);
-                        view.sync_tab_layout(window, cx);
-                        cx.notify();
-                    }
-                })
+                cx.observe_window_appearance(
+                    window,
+                    WorkspaceView::window_appearance_changed,
+                )
                 .detach();
             });
             let weak = view.downgrade();
@@ -10840,14 +10851,17 @@ fn finish_reload(
         let shortcuts = quake_windows::compile_shortcuts(&config, &compiled)?;
         Ok((config, family, metrics, compiled, shortcuts))
     });
+    let dark = system_appearance::system_dark(cx);
     let result =
-        result.map(|(config, family, metrics, compiled, shortcuts)| {
+        result.map(|(mut config, family, metrics, compiled, shortcuts)| {
+            config.follow_appearance(dark);
             // A shortcut the platform refuses, such as one another application
             // holds, warns without blocking the rest of the configuration.
             let refused = quake_windows::replace_registrations(cx, shortcuts);
             #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             apply_update_config(cx, &config);
             let desktop = cx.global_mut::<Desktop>();
+            desktop.system_mode = system_appearance::Mode::of(dark);
             desktop.config = config.clone();
             desktop.config_report =
                 ConfigReport::reloaded(&config, &compiled, refused);
@@ -10900,6 +10914,41 @@ fn follow_up_reload(cx: &mut App) {
 }
 
 impl WorkspaceView {
+    /// Follows GPUI's report that this window's appearance changed.
+    fn window_appearance_changed(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        // The desktop portal's mode changes arrive here on Linux. `follow`
+        // reads the application's appearance, so this window's own frame
+        // following the theme on macOS finds nothing to follow.
+        cx.defer(|cx| {
+            system_appearance::follow(cx);
+        });
+        if self.sync_frame(window) {
+            self.refresh_tab_visibility(window, cx);
+            self.sync_tab_layout(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Uses `theme` in this window and every terminal in it, as a reload
+    /// that changes only the theme does.
+    fn apply_theme(&mut self, theme: &Theme, cx: &mut Context<'_, Self>) {
+        self.config.theme = theme.clone();
+        let views: Vec<_> = self
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.panes.iter().map(|pane| pane.view.clone()))
+            .collect();
+        for view in views {
+            view.update(cx, |view, cx| view.apply_theme(theme, cx));
+        }
+        self.reload_palette(cx);
+        cx.notify();
+    }
+
     /// Applies a reload's outcome: a new configuration when it loaded, and
     /// the replacement configuration notices either way.
     fn apply_reload(

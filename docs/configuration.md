@@ -733,11 +733,40 @@ ansi_red = "#f38ba8"
 ansi_bright_red = "#eba0ac"
 ```
 
-The built-in themes are `huterm-dark` (the default), `tokyo-night`,
-`tokyo-night-storm`, `tokyo-night-moon`, `tokyo-night-day`,
-`catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`,
-`catppuccin-mocha`, `dracula`, `nord`, `one-dark-pro`, `tomorrow-night`, and
-`tango-with-monokai`. They are embedded in the application.
+Without a `name`, the theme is `tokyo-night`, and any color overrides apply
+on top of it.
+
+To follow the system's light or dark mode, set a theme for each:
+
+```toml
+[theme]
+light = "github-light"
+dark = "tokyo-night"
+```
+
+Setting `light` or `dark` turns this on; a mode without a theme uses `name`,
+or `tokyo-night` without one. A `name` must still be a theme that exists
+when both modes replace it. Either mode can use any theme, light or dark.
+Huterm switches themes in every window as soon as macOS or the Linux
+desktop changes mode. On Linux the mode comes from the desktop portal's
+color scheme, so a desktop without one counts as light, and a dark desktop
+can show the light theme for a moment while Huterm starts. Color overrides
+in `[theme]` apply in both modes. In Settings, Appearance's **Match
+system** switch writes both keys, the Light mode and Dark mode cards choose
+which mode the theme cards set, and **One theme** keeps the theme in use
+now as `name`.
+
+The built-in themes are embedded in the application:
+
+- Light: `ayu-light`, `catppuccin-latte`, `everforest-light`,
+  `github-light`, `gruvbox-light`, `kanagawa-lotus`, `one-light`,
+  `rose-pine-dawn`, `solarized-light`, and `tokyo-night-day`.
+- Dark: `tokyo-night` (the default), `tokyo-night-storm`, `tokyo-night-moon`,
+  `ayu-dark`, `ayu-mirage`, `catppuccin-frappe`, `catppuccin-macchiato`,
+  `catppuccin-mocha`, `dracula`, `everforest-dark`, `github-dark`,
+  `gruvbox-dark`, `huterm-dark`, `kanagawa-dragon`, `kanagawa-wave`, `nord`,
+  `one-dark-pro`, `rose-pine`, `rose-pine-moon`, `solarized-dark`,
+  `tango-with-monokai`, and `tomorrow-night`.
 
 Define a named theme in your config:
 
@@ -765,8 +794,10 @@ extension. Lookup checks inline definitions, then theme files, then built-ins,
 and the first match wins; definitions with the same name do not merge. Use a
 distinct name when extending a built-in. A definition without `extends` starts
 from Huterm Dark's palette, and any tab chrome key it leaves unset derives from
-its resulting colors rather than from Huterm Dark's hand-picked set. An empty
-`[theme]` is Huterm Dark. Overrides in the config's `[theme]` table apply last.
+its resulting colors rather than from Huterm Dark's hand-picked set. Overrides
+in the config's `[theme]` table apply last. Named definitions and theme files
+use `extends`; `name`, `light`, and `dark` belong to the config's `[theme]`
+alone.
 
 All color keys are flat:
 
@@ -791,7 +822,7 @@ On macOS the window frame, its title bar and traffic lights, and native menus
 follow the theme rather than the system's light or dark mode: a theme with a
 light background gets the light frame even while macOS is dark, and the other
 way round. Every window follows, including Settings and Quake windows, and a
-theme change or reload updates them.
+theme change, reload, or switch between `light` and `dark` updates them.
 
 See [theme sources and licenses](../crates/huterm-gpui/themes/README.md) for
 attribution and palette import details.

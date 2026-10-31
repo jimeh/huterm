@@ -117,6 +117,40 @@ async function main(executableArgument: string): Promise<void> {
     if (error) throw new Error(`${phase} query child failed: ${error}`);
     return readOptional(join(directory, `replies-${phase}-${pid}`));
   }, `${phase} query replies`);
+  /**
+   * `[theme] light` and `dark` follow this application's appearance, which
+   * the smoke sets without touching the system's. Each mode's theme gives
+   * the frame the other mode's appearance, so a theme choice that read a
+   * window's appearance would keep switching.
+   */
+  const followsApplicationAppearance = async () => {
+    await writeFile(config, `[font]\nfamily = "${family}"\nsize = 14.0\n[theme]\nlight = "tokyo-night"\ndark = "tokyo-night-day"\n`);
+    await command("reload_config");
+    for (const [mode, foreground, frame] of [
+      ["dark", "3760bf", "NSAppearanceNameAqua"],
+      ["light", "c0caf5", "NSAppearanceNameDarkAqua"],
+      ["dark", "3760bf", "NSAppearanceNameAqua"],
+    ] as const) {
+      await command(`app_appearance:${mode}`);
+      const settledState = await waitFor(async () => {
+        const value = await state();
+        return value?.reloading === "false" && value["tab0.foreground"] === foreground
+          && value.appearance === frame ? value : undefined;
+      }, `${mode} mode theme with the opposite frame`);
+      // Through 30 more samples, about 300 ms of frames, the theme stays put.
+      const follows = settledState.appearance_follows;
+      const until = Number(settledState.samples) + 30;
+      const later = await waitFor(async () => {
+        const value = await state();
+        return Number(value?.samples) >= until ? value : undefined;
+      }, `samples after ${mode} mode`);
+      if (later?.appearance_follows !== follows || later["tab0.foreground"] !== foreground || later.appearance !== frame) {
+        throw new Error(`${mode} mode theme switched again: follows ${follows} -> ${later?.appearance_follows}, foreground ${later?.["tab0.foreground"]}, frame ${later?.appearance}`);
+      }
+    }
+    await command("app_appearance:system");
+    return "followed";
+  };
   try {
     const firstPid = await waitFor(async () => (await childPids())[0], "first child");
     const initial = await waitFor(async () => {
@@ -161,7 +195,8 @@ async function main(executableArgument: string): Promise<void> {
     await writeFile(join(directory, `query-reload-${firstPid}`), "query");
     const reloadReplies = await queryReplies("reload", firstPid);
     if (!reloadReplies.equals(expectedReplies(reloaded, 0))) throw new Error(`reload replies differ: ${reloadReplies.toString("hex")}`);
-    console.log(`PRESENTATION_QUERY_SMOKE native=${process.platform} inactive=true initial=${initialReplies.toString("hex")} padding=${paddingReplies.toString("hex")} reload=${reloadReplies.toString("hex")}`);
+    const appearance = process.platform === "darwin" ? await followsApplicationAppearance() : "none";
+    console.log(`PRESENTATION_QUERY_SMOKE native=${process.platform} appearance=${appearance} inactive=true initial=${initialReplies.toString("hex")} padding=${paddingReplies.toString("hex")} reload=${reloadReplies.toString("hex")}`);
     await writeFile(join(directory, "stop-all"), "stop");
     const pids = await childPids();
     await waitFor(async () => (await Promise.all(pids.map(pid => Bun.file(join(directory, `stopped-${pid}`)).exists()))).every(Boolean) ? true : undefined, "query children to stop");

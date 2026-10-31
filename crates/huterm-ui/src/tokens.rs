@@ -84,17 +84,18 @@ impl Tokens {
     #[must_use]
     pub fn new(colors: OverlayColors) -> Self {
         let bg = colors.background;
-        // Body text keeps 4.5:1 even on the faintest fills drawn under it;
-        // a theme whose foreground has too little headroom for that has it
-        // moved away from the background, as little as that takes.
+        // Body text keeps 4.5:1 even on the faintest fills drawn under it,
+        // with room left for a hover and a stronger press; a theme whose
+        // foreground has too little headroom for that has it moved away
+        // from the background, as little as that takes.
         let away = if luminance(bg) > 0.18 {
             hsla(0.0, 0.0, 0.0, 1.0)
         } else {
             hsla(0.0, 0.0, 1.0, 1.0)
         };
-        let fg = (0..=20_u8)
+        let mut readable = (0..=20_u8)
             .map(|step| mix(colors.foreground, away, f32::from(step) / 20.0))
-            .find(|fg| {
+            .filter(|fg| {
                 let faintest = [
                     bg,
                     mix(bg, *fg, 0.01),
@@ -105,7 +106,22 @@ impl Tokens {
                     .iter()
                     .all(|under| contrast(*fg, *under) >= TEXT_CONTRAST)
             })
-            .unwrap_or(away);
+            .map(|fg| Self::with_foreground(colors, fg))
+            .peekable();
+        let first = readable
+            .peek()
+            .copied()
+            .unwrap_or_else(|| Self::with_foreground(colors, away));
+        readable
+            .find(|tokens| {
+                tokens.hover.a > 0.0 && tokens.pressed().a > tokens.hover.a
+            })
+            .unwrap_or(first)
+    }
+
+    /// Derives every other shade from `colors` with body text in `fg`.
+    fn with_foreground(colors: OverlayColors, fg: Hsla) -> Self {
+        let bg = colors.background;
         // The surface lifts toward the foreground by 7%, or less where that
         // would leave body text below 4.5:1 on it or on the faintest fills
         // drawn over it.
@@ -776,6 +792,29 @@ mod tests {
         unders
             .iter()
             .all(|under| contrast(over(text, *under), *under) >= minimum)
+    }
+
+    #[test]
+    fn a_foreground_without_room_to_hover_moves_until_hover_and_press_show() {
+        // Solarized Dark's base0 reads on its background, but not on any
+        // hover fill over its surface and footers.
+        let foreground: Hsla = gpui::rgb(0x0083_9496).into();
+        let background: Hsla = gpui::rgb(0x0000_2b36).into();
+        let t = Tokens::new(OverlayColors {
+            foreground,
+            background,
+            selection: gpui::rgb(0x0007_3642).into(),
+            accent: gpui::rgb(0x0026_8bd2).into(),
+            danger: gpui::rgb(0x00dc_322f).into(),
+            warning: gpui::rgb(0x00b5_8900).into(),
+            scrollbar: ScrollbarColors {
+                thumb: foreground,
+                track: background,
+            },
+        });
+        assert!(t.hover.a > 0.0, "{t:?}");
+        assert!(t.pressed().a > t.hover.a, "{t:?}");
+        assert!(contrast(t.fg, background) > contrast(foreground, background));
     }
 
     #[test]

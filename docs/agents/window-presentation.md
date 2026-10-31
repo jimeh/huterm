@@ -93,12 +93,26 @@ Each window's `NSWindow.appearance` follows the theme through
 `native_appearance::FrameAppearance`, from the same `theme_is_dark` that
 native menus use, so a light theme keeps a light frame under a dark system.
 The setter runs on a foreground turn after the render that noticed the
-change, since `AppKit` relays it to GPUI's window state at once. Huterm picks
-no theme from an appearance, and `observe_window_appearance` only resyncs
-decorations, so forcing the frame cannot loop. Any future theme choice that
-follows light or dark mode must read the application's appearance
-(`App::window_appearance`), never `Window::appearance`, which this override
-changes.
+change, since `AppKit` relays it to GPUI's window state at once.
+
+`[theme] light` and `dark` pick the theme from the application's appearance
+only, through `system_appearance::system_dark`; never read
+`Window::appearance`, which the frame override changes. A light theme for
+dark mode would otherwise light the frame, pick the light-mode theme, and
+keep switching. A forced window appearance also hides system changes from
+GPUI's per-window callback, so `native_system_appearance` observes
+`NSApp.effectiveAppearance` by KVO and reads it with
+`bestMatchFromAppearancesWithNames`: GPUI's `App::window_appearance` maps
+the high-contrast appearances that Increase Contrast selects to light. On
+Linux the desktop portal's changes reach every window's appearance
+callback, Settings' included, which follows too, and the portal answers
+after startup, so a dark desktop can start on the light theme for a
+moment. `Desktop::system_mode` records the mode last followed; Settings
+reads it rather than the platform, and `follow` redraws every window on a
+change of mode even when both modes use one theme. Never call
+`App::set_window_appearance` outside smokes: it pins `NSApp.appearance`.
+`window_tests::system_appearance` and the presentation-query smoke, which
+sets the smoke application's own appearance, cover the no-loop property.
 
 GPUI reports each new size during a window edge drag but neither its end nor
 a pointer resting mid-drag. `native_live_resize` observes the will-start and

@@ -2004,6 +2004,8 @@ pub struct RawConfig {
     pub palette: PaletteConfig,
     #[serde(default)]
     pub panes: PanesConfig,
+    /// The color theme, or one for each of the system's light and dark
+    /// modes with `light` and `dark`.
     #[serde(default)]
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "appearance",
@@ -2013,6 +2015,8 @@ pub struct RawConfig {
         "x-huterm-apply" = "live",
     )))]
     pub theme: ThemeDefinition,
+    /// Named themes that `[theme]` can select, each starting from another
+    /// theme with `extends`.
     #[serde(default)]
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "appearance",
@@ -2514,6 +2518,10 @@ impl RawConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeDefinition {
     pub name: Option<String>,
+    /// The theme while the system is in light mode.
+    pub light: Option<String>,
+    /// The theme while the system is in dark mode.
+    pub dark: Option<String>,
     pub extends: Option<String>,
     pub foreground: Option<String>,
     pub background: Option<String>,
