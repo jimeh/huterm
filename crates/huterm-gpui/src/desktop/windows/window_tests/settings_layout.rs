@@ -82,7 +82,7 @@ fn arrows_move_between_sections_and_show_each(cx: &mut TestAppContext) {
     // the section focus reaches.
     for (key, expected) in [
         ("down", SectionId::Appearance),
-        ("right", SectionId::Tabs),
+        ("right", SectionId::Windows),
         ("up", SectionId::Appearance),
         ("left", SectionId::General),
         ("up", last),
@@ -894,6 +894,69 @@ fn the_pane_shows_its_scrollbar_when_it_scrolls(cx: &mut TestAppContext) {
     }
     assert!(scrolled(&mut harness) > px(0.0), "no Tab scrolled the pane");
     assert!(shows(&mut harness), "the reveal left the indicator hidden");
+}
+
+#[gpui::test]
+fn a_short_window_scrolls_the_sections_between_the_search_and_the_footer(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("layout-sidebar-scroll", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::General);
+    // The window's minimum height, too short for every section.
+    let height = px(420.0);
+    visual(&harness).simulate_resize(gpui::size(px(860.0), height));
+    visual(&harness).run_until_parked();
+    let search = with_view(&mut harness, |view, _| view.search_bounds())
+        .expect("the search field painted");
+    let footer = |harness: &mut DesktopHarness| {
+        visual(harness)
+            .debug_bounds("settings-footer")
+            .expect("the footer painted")
+    };
+    assert!(
+        footer(&mut harness).bottom() <= height,
+        "the footer overflows"
+    );
+    let scrolled = |harness: &mut DesktopHarness| {
+        with_view(harness, |view, _| view.sections_scrolled())
+    };
+    assert_eq!(scrolled(&mut harness), px(0.0));
+    // Up from the first section wraps to the last, which the list scrolls
+    // into view with its ring.
+    let general = with_view(&mut harness, |view, _| {
+        view.section_handle(SectionId::General)
+    });
+    keyboard_focus(&mut harness, &general);
+    keys(&harness, "up");
+    let last = *sections(&mut harness).last().expect("sections");
+    assert_eq!(section(&mut harness), last);
+    assert!(scrolled(&mut harness) > px(0.0), "the list did not scroll");
+    let (ring, viewport) = with_window(&mut harness, |view, window, cx| {
+        let focused = window.focused(cx).expect("a focused tab");
+        (
+            huterm_ui::focus::ring_bounds(&focused, window, cx),
+            view.sections_viewport(),
+        )
+    });
+    let ring = ring.expect("the tab drew its ring");
+    assert!(
+        ring.top() >= viewport.top() && ring.bottom() <= viewport.bottom(),
+        "{ring:?} is outside {viewport:?}"
+    );
+    // The search field and the footer stay where they were.
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.search_bounds()),
+        Some(search)
+    );
+    assert!(footer(&mut harness).bottom() <= height);
+    // Next Tab, a command that moves no focus, scrolls back to the first.
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::NEXT_TAB, window, cx).unwrap();
+    });
+    visual(&harness).run_until_parked();
+    assert_eq!(section(&mut harness), SectionId::General);
+    assert_eq!(scrolled(&mut harness), px(0.0));
 }
 
 #[test]

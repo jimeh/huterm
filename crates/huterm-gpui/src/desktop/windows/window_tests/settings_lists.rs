@@ -10,12 +10,13 @@ use huterm_config::settings::SectionId;
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 
 use super::settings::{
-    ScratchConfig, open_settings, settled, with_view, with_window,
+    ScratchConfig, open_settings, settings, settled, with_view, with_window,
 };
 use super::settings_controls::{
     a11y_click, a11y_find, a11y_node, break_file, focus, keys, visual,
 };
 use super::*;
+use crate::desktop::windows::UnavailableFonts;
 
 /// The families the font field suggests in place of the installed ones,
 /// sorted as the platform's list is.
@@ -409,7 +410,7 @@ fn condition_suggestions_float_over_the_rows_below(cx: &mut TestAppContext) {
 /// families, and focuses the font family field.
 fn font_field(harness: &mut DesktopHarness, file: &ScratchConfig) {
     open_settings(harness, &file.path());
-    with_view(harness, |view, _| view.set_families(FAMILIES));
+    with_view(harness, |view, cx| view.set_families(FAMILIES, cx));
     with_window(harness, |view, window, cx| {
         view.show_section(SectionId::Appearance, cx);
         window.refresh();
@@ -774,7 +775,15 @@ fn a_family_that_is_not_installed_says_what_draws_instead(
         config.font.ui_family = Some("Missing Sans".into());
     });
     open_settings(&mut harness, &file.path());
-    with_view(&mut harness, |view, _| view.set_families(FAMILIES));
+    // As Huterm last applied them on a system with `FAMILIES`, which a
+    // test platform does not list.
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().unavailable_fonts = UnavailableFonts {
+            terminal: None,
+            interface: Some("Missing Sans".into()),
+        };
+    });
+    with_view(&mut harness, |view, cx| view.set_families(FAMILIES, cx));
     with_window(&mut harness, |view, window, cx| {
         view.show_section(SectionId::Appearance, cx);
         window.refresh();
@@ -801,4 +810,55 @@ fn a_family_that_is_not_installed_says_what_draws_instead(
         "{}",
         description(&mut harness, FAMILY)
     );
+}
+
+#[gpui::test]
+fn a_family_installed_while_settings_is_open_reapplies_the_fonts(
+    cx: &mut TestAppContext,
+) {
+    const INSTALLED: &[&str] = &["Menlo", "Missing Sans"];
+    let file = ScratchConfig::new(
+        "lists-font-installed",
+        "[font]\nui_family = \"Missing Sans\"\n",
+    );
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.font.ui_family = Some("Missing Sans".into());
+    });
+    open_settings(&mut harness, &file.path());
+    let unavailable = UnavailableFonts {
+        terminal: None,
+        interface: Some("Missing Sans".into()),
+    };
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().unavailable_fonts = unavailable.clone();
+    });
+    let reads = |harness: &mut DesktopHarness| {
+        with_view(harness, |view, _| view.reads_started())
+    };
+    // A scan that agrees with what Huterm applied reloads nothing.
+    let before = reads(&mut harness);
+    with_view(&mut harness, |view, cx| view.set_families(&["Menlo"], cx));
+    harness.cx.run_until_parked();
+    assert_eq!(reads(&mut harness), before, "an agreeing scan reloaded");
+    // The family installs while Settings is open, and the window comes
+    // forward: its scan finds it and reloads, so the fonts apply.
+    with_view(&mut harness, |view, cx| view.set_families(INSTALLED, cx));
+    harness.wait_for("the reload", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| view.status_text() == "Reloaded")
+                    .unwrap_or(false)
+            })
+    });
+    // A reload that still cannot apply it, as here where the test platform
+    // lists no fonts, is not tried again for the same families.
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().unavailable_fonts = unavailable;
+    });
+    harness.cx.run_until_parked();
+    let before = reads(&mut harness);
+    with_view(&mut harness, |view, cx| view.set_families(INSTALLED, cx));
+    harness.cx.run_until_parked();
+    assert_eq!(reads(&mut harness), before, "the same scan reloaded again");
 }

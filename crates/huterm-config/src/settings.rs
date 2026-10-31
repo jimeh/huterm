@@ -35,8 +35,8 @@ const KEYS: [&str; 12] = [
 pub enum SectionId {
     General,
     Appearance,
-    Tabs,
     Windows,
+    Tabs,
     Panes,
     Terminal,
     Scrollback,
@@ -50,8 +50,8 @@ impl SectionId {
     pub const ALL: [Self; 11] = [
         Self::General,
         Self::Appearance,
-        Self::Tabs,
         Self::Windows,
+        Self::Tabs,
         Self::Panes,
         Self::Terminal,
         Self::Scrollback,
@@ -825,6 +825,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_sidebar_lists_windows_above_tabs() {
+        assert_eq!(
+            SectionId::ALL.map(SectionId::title),
+            [
+                "General",
+                "Appearance",
+                "Windows",
+                "Tabs",
+                "Panes",
+                "Terminal",
+                "Scrollback",
+                "Command palette",
+                "Quake windows",
+                "Keybindings",
+                "Updates",
+            ]
+        );
+    }
+
+    #[test]
     fn the_committed_schema_lists_every_setting_by_section() {
         let model = SettingsModel::load().unwrap();
         let sections: Vec<_> =
@@ -1049,6 +1069,7 @@ mod tests {
         let model = SettingsModel::load().unwrap();
         let defaults = toml::Value::try_from(crate::RawConfig {
             general: crate::GeneralConfig::default(),
+            settings: crate::SettingsConfig::default(),
             terminal: crate::RawTerminal::default(),
             font: crate::RawFont::default(),
             window: crate::WindowConfig::default(),

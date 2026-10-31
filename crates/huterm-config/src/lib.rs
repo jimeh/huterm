@@ -64,6 +64,24 @@ impl Default for GeneralConfig {
     }
 }
 
+/// The Settings window's own state.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct SettingsConfig {
+    /// Show the settings marked Advanced in every section.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "general",
+        "x-huterm-group" = "Settings window",
+        "x-huterm-label" = "Show advanced settings",
+        "x-huterm-order" = 20,
+        "x-huterm-apply" = "live",
+    )))]
+    pub show_advanced: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TerminalConfig {
     pub term: TerminalIdentity,
@@ -527,6 +545,18 @@ impl PaneDragModifiers {
         Ok(Self(bits))
     }
 
+    /// The combination an unset `drag_modifier` holds: `cmd-ctrl` on
+    /// macOS and `ctrl-alt` on Linux, where Super combinations often move
+    /// windows.
+    #[must_use]
+    pub fn platform_default(macos: bool) -> Self {
+        Self(if macos {
+            1 | Self::CTRL
+        } else {
+            Self::CTRL | Self::ALT
+        })
+    }
+
     /// Every combination the platform accepts, fewest modifiers first.
     pub fn accepted(macos: bool) -> impl Iterator<Item = Self> {
         let mut all: Vec<u8> = (1..16).collect();
@@ -575,6 +605,34 @@ impl PaneDragModifiers {
             Some(LinkCollision::WithShift)
         } else {
             None
+        }
+    }
+}
+
+/// `[panes] drag_modifier` as written: `off`, or a combination.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum PaneDrag {
+    Off,
+    Modifiers(PaneDragModifiers),
+}
+
+impl TryFrom<String> for PaneDrag {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value == "off" {
+            Ok(Self::Off)
+        } else {
+            PaneDragModifiers::try_from(value).map(Self::Modifiers)
+        }
+    }
+}
+
+impl From<PaneDrag> for String {
+    fn from(value: PaneDrag) -> Self {
+        match value {
+            PaneDrag::Off => "off".to_owned(),
+            PaneDrag::Modifiers(combination) => combination.into(),
         }
     }
 }
@@ -900,7 +958,7 @@ impl Default for WindowConfig {
             shortcut_hints: false,
             macos_native_menus: true,
             size_indicator: SizeIndicator::Full,
-            size_indicator_linger_ms: 2000,
+            size_indicator_linger_ms: 100,
         }
     }
 }
@@ -1182,14 +1240,14 @@ pub struct PanesConfig {
     /// hidden. Unset, the default, is off. Join two or more of `cmd`,
     /// `ctrl`, `alt`, and `shift` with hyphens: `cmd-ctrl` suits macOS and
     /// `ctrl-alt` Linux.
-    #[cfg_attr(feature = "schema", schemars(with = "PaneDragModifiers", extend(
+    #[cfg_attr(feature = "schema", schemars(with = "PaneDrag", extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Panes",
         "x-huterm-label" = "Drag panes with",
         "x-huterm-order" = 39,
         "x-huterm-apply" = "live",
     )))]
-    pub drag_modifier: Option<PaneDragModifiers>,
+    pub drag_modifier: Option<PaneDrag>,
     /// Who owns a pane's zoom: `view` or `shared`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "panes",
@@ -1242,7 +1300,7 @@ impl Default for PanesConfig {
             title_bar_fade_ms: 75,
             title_bar_hide_delay_ms: 400,
             focus_accent: 0.0,
-            inactive_dim: 0.0,
+            inactive_dim: 0.2,
             drag_modifier: None,
             zoom: PaneZoomScope::default(),
             layouts: BTreeMap::new(),
@@ -1255,6 +1313,26 @@ impl Default for PanesConfig {
 }
 
 impl PanesConfig {
+    /// The combination that drags panes on the selected platform, with
+    /// `link` as the link chord: the file's, or the platform default when
+    /// it sets none. The default yields to a link chord it would collide
+    /// with, which only a custom chord can do, and drags stay off.
+    #[must_use]
+    pub fn drag_modifiers(
+        &self,
+        link: LinkModifiers,
+        macos: bool,
+    ) -> Option<PaneDragModifiers> {
+        match self.drag_modifier {
+            Some(PaneDrag::Off) => None,
+            Some(PaneDrag::Modifiers(combination)) => Some(combination),
+            None => {
+                let default = PaneDragModifiers::platform_default(macos);
+                default.link_collision(link).is_none().then_some(default)
+            }
+        }
+    }
+
     /// Checks the title bar timings, the focus indicator amounts, the user
     /// layouts, and the cycle.
     ///
@@ -1936,6 +2014,8 @@ pub struct RawConfig {
     #[serde(default)]
     pub general: GeneralConfig,
     #[serde(default)]
+    pub settings: SettingsConfig,
+    #[serde(default)]
     pub terminal: RawTerminal,
     #[serde(default)]
     pub font: RawFont,
@@ -2400,7 +2480,7 @@ impl RawConfig {
     pub fn validate_values(&self) -> Result<(), ConfigError> {
         self.quake.validate().map_err(ConfigError::Quake)?;
         self.panes.validate().map_err(ConfigError::Panes)?;
-        if let Some(drag) = self.panes.drag_modifier
+        if let Some(PaneDrag::Modifiers(drag)) = self.panes.drag_modifier
             && let Some(collision) =
                 drag.link_collision(self.terminal.link_modifiers)
         {
@@ -3120,7 +3200,7 @@ mod panes_tests {
     #[test]
     fn focus_indicator_amounts_accept_their_range_and_reject_the_rest() {
         let defaults = panes("").unwrap();
-        assert_eq!((defaults.focus_accent, defaults.inactive_dim), (0.0, 0.0));
+        assert_eq!((defaults.focus_accent, defaults.inactive_dim), (0.0, 0.2));
         let ends =
             panes("[panes]\nfocus_accent = 1\ninactive_dim = 0.8").unwrap();
         assert_eq!((ends.focus_accent, ends.inactive_dim), (1.0, 0.8));
@@ -3208,7 +3288,7 @@ mod panes_tests {
         let defaults = window("").unwrap();
         assert_eq!(
             (defaults.size_indicator, defaults.size_indicator_linger_ms),
-            (SizeIndicator::Full, 2000)
+            (SizeIndicator::Full, 100)
         );
         let compact = window(
             "[window]\nsize_indicator = 'compact'\nsize_indicator_linger_ms = 10000",
@@ -3365,10 +3445,62 @@ mod panes_tests {
         ))
         .unwrap();
         assert!(loaded.drag_modifier.is_some());
+        // Off is explicit, and an unset key holds the platform default.
+        let off = load("[panes]\ndrag_modifier = 'off'\n".to_owned()).unwrap();
+        assert_eq!(off.drag_modifier, Some(PaneDrag::Off));
+        assert_eq!(
+            off.drag_modifiers(
+                LinkModifiers::default(),
+                cfg!(target_os = "macos")
+            ),
+            None
+        );
         assert!(
             load(format!("[panes]\ndrag_modifier = '{other}-alt-shift'\n"))
                 .is_ok()
         );
-        assert_eq!(load(String::new()).unwrap().drag_modifier, None);
+        let unset = load(String::new()).unwrap();
+        assert_eq!(unset.drag_modifier, None);
+        let macos = cfg!(target_os = "macos");
+        assert_eq!(
+            unset.drag_modifiers(LinkModifiers::default(), macos),
+            Some(PaneDragModifiers::platform_default(macos))
+        );
+    }
+
+    #[test]
+    fn the_default_drag_combination_yields_to_the_link_chord() {
+        let spelled = |macos: bool| {
+            PaneDragModifiers::platform_default(macos).spelled(macos)
+        };
+        assert_eq!(spelled(true), "cmd-ctrl");
+        assert_eq!(spelled(false), "ctrl-alt");
+        let unset = PanesConfig::default();
+        for macos in [true, false] {
+            // Each platform accepts its own default, which an unset key
+            // holds beside the default link chord, Cmd or Ctrl.
+            let default = PaneDragModifiers::platform_default(macos);
+            assert_eq!(
+                PaneDragModifiers::parse(&spelled(macos), macos),
+                Ok(default)
+            );
+            let link = LinkModifiers(if macos { 1 } else { 2 });
+            assert_eq!(unset.drag_modifiers(link, macos), Some(default));
+            // A link chord that is the default turns it off rather than
+            // failing the load.
+            let link = LinkModifiers(default.bits());
+            assert_eq!(unset.drag_modifiers(link, macos), None);
+        }
+        // Only Linux can write that chord, since macOS keeps ctrl out of
+        // it; a written drag combination on it still fails.
+        if cfg!(target_os = "linux") {
+            let source = "[terminal]\nlink_modifiers = 'ctrl-alt'\n";
+            let raw: RawConfig = toml::from_str(source).unwrap();
+            raw.validate_values().unwrap();
+            let written =
+                format!("{source}[panes]\ndrag_modifier = 'ctrl-alt'\n");
+            let raw: RawConfig = toml::from_str(&written).unwrap();
+            assert!(raw.validate_values().is_err());
+        }
     }
 }

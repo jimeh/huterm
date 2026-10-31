@@ -276,12 +276,16 @@ impl SettingsView {
                 view.loading -= 1;
                 // A read that finishes while this window's writes are
                 // pending would mix its list with theirs, so the file is
-                // read again when the queue drains.
-                if view.epoch == epoch && view.reads == read {
+                // read again when the queue drains. One that a write
+                // finished during may be stale, and a write that failed
+                // reads nothing itself, so it is read again too.
+                if view.reads == read {
                     if view.busy() {
                         view.reread = true;
-                    } else {
+                    } else if view.epoch == epoch {
                         view.loaded(loaded, cx);
+                    } else {
+                        view.load(cx);
                     }
                 }
                 cx.notify();
@@ -436,6 +440,7 @@ impl SettingsView {
         self.reload_outcome = Some(outcome);
         self.load(cx);
         self.load_themes(cx);
+        self.scan_fonts(cx);
     }
 
     /// The value a control shows: a pending change, else the file's, else

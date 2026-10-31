@@ -37,6 +37,7 @@ impl Seg {
 /// removed once it has no keys and no comments.
 const GROUPING_TABLES: &[&[&str]] = &[
     &["general"],
+    &["settings"],
     &["terminal"],
     &["terminal", "bell"],
     &["font"],

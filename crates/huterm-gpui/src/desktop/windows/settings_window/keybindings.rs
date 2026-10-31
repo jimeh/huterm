@@ -31,6 +31,7 @@ use super::super::super::settings::keybindings::{
 use super::super::Desktop;
 use super::controls::Opener;
 use super::dialog::Prompt;
+use super::quake::{self, Global};
 use super::render::{changed_dot, group_card};
 use super::saving::Queued;
 use super::{MenuFor, SettingsView};
@@ -95,7 +96,9 @@ pub(super) enum Target {
     Add(CommandId),
     /// A global shortcut's key, by entry.
     Global(usize),
-    AddGlobal,
+    /// A new global shortcut: the Quake windows section's, which toggles
+    /// the profile it shows, or one for a quake command in Keybindings.
+    AddGlobal(Option<CommandId>),
 }
 
 impl Target {
@@ -106,7 +109,10 @@ impl Target {
             "krec" => Some(Self::Row(argument.to_owned())),
             "kadd" => lookup(argument).map(|spec| Self::Add(spec.id)),
             "grec" => argument.parse().ok().map(Self::Global),
-            "gadd" => Some(Self::AddGlobal),
+            "gadd" if argument.is_empty() => Some(Self::AddGlobal(None)),
+            "gadd" => {
+                lookup(argument).map(|spec| Self::AddGlobal(Some(spec.id)))
+            }
             _ => None,
         }
     }
@@ -153,7 +159,7 @@ pub(super) struct Keys {
     /// which keeps them as the field moves between rows.
     pub(super) completions: HashMap<EntityId, Entity<Combobox>>,
     /// Key recorders by action key: `krec:<row>`, `kadd:<command>`,
-    /// `grec:<entry>`, and `gadd`.
+    /// `grec:<entry>`, `gadd`, and `gadd:<command>`.
     pub(super) recorders: HashMap<String, Entity<KeyRecorder>>,
     /// The recorder that started last, which the window's interceptor
     /// feeds, even after it stops, so it can swallow what follows.
@@ -566,17 +572,26 @@ impl SettingsView {
         true
     }
 
-    /// Whether a command has a user entry or a default that is not active.
-    fn customized(inventory: &Inventory, command: CommandId) -> bool {
-        inventory.bindings.iter().any(|listed| {
-            listed.binding.command == command
-                && (listed.binding.origin == Origin::User
-                    || listed.state != BindingState::Active)
-        })
+    /// Whether a command has a user entry, a default that is not active,
+    /// or a global shortcut, which only the file adds.
+    fn customized(
+        inventory: &Inventory,
+        globals: &[Global],
+        command: CommandId,
+    ) -> bool {
+        globals
+            .iter()
+            .any(|global| global.command == command.as_str())
+            || inventory.bindings.iter().any(|listed| {
+                listed.binding.command == command
+                    && (listed.binding.origin == Origin::User
+                        || listed.state != BindingState::Active)
+            })
     }
 
     fn command_matches(
         inventory: &Inventory,
+        globals: &[Global],
         spec: &CommandSpec,
         filter: Filter,
         query: &str,
@@ -586,24 +601,35 @@ impl SettingsView {
             .iter()
             .filter(|listed| listed.binding.command == spec.id)
             .collect();
+        let globals: Vec<&Global> = globals
+            .iter()
+            .filter(|global| global.command == spec.id.as_str())
+            .collect();
         let passes = match filter {
             Filter::All => true,
-            Filter::Customized => Self::customized(inventory, spec.id),
+            Filter::Customized => {
+                Self::customized(inventory, &[], spec.id) || !globals.is_empty()
+            }
             Filter::Conditional => listed.iter().any(|listed| {
                 listed.state == BindingState::Active
                     && listed.binding.when.is_some()
             }),
-            Filter::Disabled => listed.iter().any(|listed| {
-                matches!(
-                    listed.state,
-                    BindingState::Disabled(_) | BindingState::SwitchedOff
-                )
-            }),
+            Filter::Disabled => {
+                globals.iter().any(|global| global.disabled)
+                    || listed.iter().any(|listed| {
+                        matches!(
+                            listed.state,
+                            BindingState::Disabled(_)
+                                | BindingState::SwitchedOff
+                        )
+                    })
+            }
         };
         passes
             && (query.is_empty()
                 || spec.title.to_lowercase().contains(query)
                 || spec.id.as_str().contains(query)
+                || globals.iter().any(|global| global.key.contains(query))
                 || listed.iter().any(|listed| {
                     listed.binding.key.contains(query)
                         || listed.binding.when.as_deref().is_some_and(|when| {
@@ -620,11 +646,18 @@ impl SettingsView {
         let Some(inventory) = &self.keys.inventory else {
             return Vec::new();
         };
+        let globals = self.globals();
         grouped()
             .into_iter()
             .flat_map(|(_, commands)| commands)
             .filter(|spec| {
-                Self::command_matches(inventory, spec, Filter::All, query)
+                Self::command_matches(
+                    inventory,
+                    &globals,
+                    spec,
+                    Filter::All,
+                    query,
+                )
             })
             .collect()
     }
@@ -1211,7 +1244,9 @@ impl SettingsView {
                 )
             }
             Target::Add(command) => (None, *command, &[][..], None),
-            Target::Global(_) | Target::AddGlobal => return Taking::default(),
+            Target::Global(_) | Target::AddGlobal(_) => {
+                return Taking::default();
+            }
         };
         let context = lookup(command.as_str()).and_then(|spec| spec.context);
         let mut taking = Taking {
@@ -1354,8 +1389,8 @@ impl SettingsView {
                     cx,
                 );
             }
-            Target::Global(entry) => self.finish_global(Some(entry), key, cx),
-            Target::AddGlobal => self.finish_global(None, key, cx),
+            Target::Global(entry) => self.finish_global(entry, key, cx),
+            Target::AddGlobal(command) => self.add_global(command, key, cx),
         }
     }
 
@@ -1827,12 +1862,14 @@ impl SettingsView {
             return;
         };
         let query = self.keys.search.read(cx).text().trim().to_lowercase();
+        let globals = self.globals();
         let first = grouped()
             .into_iter()
             .flat_map(|(_, commands)| commands)
             .find(|spec| {
                 Self::command_matches(
                     &inventory,
+                    &globals,
                     spec,
                     self.keys.filter,
                     &query,
@@ -2111,12 +2148,15 @@ impl SettingsView {
         };
         let query = self.keys.search.read(cx).text().trim().to_lowercase();
         let filter = self.keys.filter;
+        let globals = self.globals();
         let mut any = false;
         for (group, commands) in grouped() {
             let commands: Vec<&CommandSpec> = commands
                 .into_iter()
                 .filter(|spec| {
-                    Self::command_matches(&inventory, spec, filter, &query)
+                    Self::command_matches(
+                        &inventory, &globals, spec, filter, &query,
+                    )
                 })
                 .collect();
             if commands.is_empty() {
@@ -2130,7 +2170,7 @@ impl SettingsView {
                 .map(|(index, spec)| {
                     let corners = card::row_corners(index, count);
                     self.render_command(
-                        &inventory, spec, corners, swatch, window, cx,
+                        &inventory, &globals, spec, corners, swatch, window, cx,
                     )
                 })
                 .collect();
@@ -2271,9 +2311,14 @@ impl SettingsView {
     /// when it is customized, and summarizes its shortcuts beside its
     /// trigger, and its shortcuts when expanded. `corners` round the
     /// trigger to the card row it fills.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a command row needs its bindings, globals, and place"
+    )]
     fn render_command(
         &mut self,
         inventory: &Inventory,
+        globals: &[Global],
         spec: &'static CommandSpec,
         corners: gpui::Corners<gpui::Pixels>,
         swatch: Swatch,
@@ -2291,7 +2336,18 @@ impl SettingsView {
             .filter(|listed| listed.state == BindingState::Active)
             .collect();
         let command = spec.id.as_str();
-        let summary = summary(&active, swatch)
+        // Global shortcuts list after the in-app ones, by entry.
+        let globals: Vec<(usize, &Global)> = globals
+            .iter()
+            .enumerate()
+            .filter(|(_, global)| global.command == command)
+            .collect();
+        let global_keys: Vec<&str> = globals
+            .iter()
+            .filter(|(_, global)| !global.disabled)
+            .map(|(_, global)| global.key.as_str())
+            .collect();
+        let summary = summary(&active, &global_keys, swatch)
             .debug_selector(move || format!("settings-ksummary-{command}"));
         let item = Item::new(
             id(format!("settings-kitem-{command}")),
@@ -2300,9 +2356,10 @@ impl SettingsView {
         )
         .description(spec.description)
         .media(chevron(Icon::ChevronRight.asset_path(), open, swatch))
-        .when(Self::customized(inventory, spec.id), |item| {
-            item.before_title(changed_dot(swatch))
-        })
+        .when(
+            !globals.is_empty() || Self::customized(inventory, &[], spec.id),
+            |item| item.before_title(changed_dot(swatch)),
+        )
         .action(summary);
         let key = format!("kcmd:{command}");
         let handle = self.action_stop(key.clone(), cx);
@@ -2325,18 +2382,21 @@ impl SettingsView {
             view.act(&key, window, cx);
         }));
         if open {
-            section = section.child(
-                self.render_shortcuts(spec, &listed, swatch, window, cx),
-            );
+            section =
+                section.child(self.render_shortcuts(
+                    spec, &listed, &globals, swatch, window, cx,
+                ));
         }
         section.into_any_element()
     }
 
-    /// An expanded command's shortcut rows and its buttons.
+    /// An expanded command's shortcut rows, then its global shortcuts, and
+    /// its buttons.
     fn render_shortcuts(
         &mut self,
         spec: &'static CommandSpec,
         listed: &[(String, &ListedBinding)],
+        globals: &[(usize, &Global)],
         swatch: Swatch,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
@@ -2354,6 +2414,11 @@ impl SettingsView {
                 self.render_shortcut(spec, name, binding, swatch, window, cx),
             );
         }
+        // The Quake windows section edits the same entries.
+        for (index, global) in globals {
+            block = block
+                .child(self.render_global(*index, global, true, swatch, cx));
+        }
         let add_key = format!("kadd:{}", spec.id.as_str());
         let recorder = self.recorder(&add_key, cx);
         let add = KeyRecorderButton::new(
@@ -2368,13 +2433,15 @@ impl SettingsView {
         .when_some(self.keys_lock_reason(), |add, reason| {
             add.disabled(Some(reason))
         });
+        let add_global = self.render_add_global(spec, swatch, cx);
         let mut buttons = div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(px(8.0))
             .pt(px(4.0))
-            .child(add);
+            .child(add)
+            .children(add_global);
         // Restore defaults appears when it has entries to remove, and says
         // when those include shortcuts the user added.
         let (entries, added) = self
@@ -2421,7 +2488,64 @@ impl SettingsView {
         block
             .child(buttons)
             .children(self.recording_hint(&add_key, swatch, cx))
+            .children(self.add_global_notes(spec, swatch, cx))
             .into_any_element()
+    }
+
+    /// The button that records a global shortcut for a quake command,
+    /// which can also run while another application has focus.
+    fn render_add_global(
+        &mut self,
+        spec: &'static CommandSpec,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<KeyRecorderButton> {
+        if !quake::COMMANDS.contains(&spec.id) {
+            return None;
+        }
+        let recorder = self.recorder(&quake::add_key(spec.id.as_str()), cx);
+        Some(
+            KeyRecorderButton::new(
+                id(format!("settings-gadd-{}", spec.id.as_str())),
+                format!("Add global shortcut for {}", spec.title),
+                &recorder,
+                swatch,
+            )
+            .placeholder("Add global shortcut")
+            .key_context("SettingsControl")
+            .px(px(10.0))
+            .when_some(self.keys_lock_reason(), |add, reason| {
+                add.disabled(Some(reason))
+            }),
+        )
+    }
+
+    /// What shows under a quake command's Add global shortcut: the
+    /// recorder's hint, why a recording was refused, and that a Wayland
+    /// session registers no global shortcuts.
+    fn add_global_notes(
+        &self,
+        spec: &'static CommandSpec,
+        swatch: Swatch,
+        cx: &gpui::App,
+    ) -> Vec<gpui::Div> {
+        if !quake::COMMANDS.contains(&spec.id) {
+            return Vec::new();
+        }
+        let key = quake::add_key(spec.id.as_str());
+        let error = self.keys.errors.get(&key).cloned();
+        self.recording_hint(&key, swatch, cx)
+            .into_iter()
+            .chain(error.map(|error| small(error, swatch.danger_text())))
+            .chain(quake::wayland().then(|| {
+                small(
+                    "Global shortcuts need macOS or a native X11 session; \
+                     this Wayland session does not support them."
+                        .to_owned(),
+                    swatch.muted,
+                )
+            }))
+            .collect()
     }
 
     /// What the recorder for an action key is waiting for, under the row it
@@ -2763,7 +2887,7 @@ impl SettingsView {
                 .and_then(|inventory| row(inventory, name))
                 .map(|listed| listed.binding.command),
             Target::Add(command) => Some(*command),
-            Target::Global(_) | Target::AddGlobal => None,
+            Target::Global(_) | Target::AddGlobal(_) => None,
         };
         let title = command
             .and_then(|command| lookup(command.as_str()))
@@ -2809,6 +2933,7 @@ impl SettingsView {
         if commands.is_empty() {
             return None;
         }
+        let globals = self.globals();
         let mut rows = Vec::new();
         let count = commands.len().min(20);
         for (index, spec) in commands.into_iter().take(count).enumerate() {
@@ -2824,11 +2949,22 @@ impl SettingsView {
                             listed.binding.command == spec.id
                                 && listed.state == BindingState::Active
                         })
-                        .take(2)
                         .map(|listed| listed.binding.key.clone())
-                        .collect()
+                        .collect::<Vec<_>>()
                 })
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .into_iter()
+                .chain(
+                    globals
+                        .iter()
+                        .filter(|global| {
+                            global.command == spec.id.as_str()
+                                && !global.disabled
+                        })
+                        .map(|global| global.key.clone()),
+                )
+                .take(2)
+                .collect();
             let key = format!("kgo:{}", spec.id.as_str());
             let handle = self.action_stop(key.clone(), cx);
             let focus = handle.clone();
@@ -2860,35 +2996,64 @@ impl SettingsView {
     }
 }
 
-/// A collapsed command's shortcuts: up to two active keys, a count of the
-/// rest, a "when" tag when one has a condition, or "No shortcut". The tag
-/// draws outlined, since the rows it sits in hover.
-fn summary(active: &[&ListedBinding], swatch: Swatch) -> gpui::Div {
+/// The tag that marks a global shortcut listed under its command, in the
+/// slot a shortcut's Default or Custom tag takes.
+pub(super) fn global_tag(index: usize, swatch: Swatch) -> gpui::Div {
+    div()
+        .flex_none()
+        .w(px(TAG_WIDTH))
+        .flex()
+        .justify_end()
+        .child(
+            badge(
+                id(format!("settings-gtag-{index}")),
+                "Global",
+                BadgeTone::Neutral,
+                swatch,
+            )
+            .text_color(swatch.accent_text()),
+        )
+}
+
+/// A collapsed command's shortcuts: up to two active keys, in-app ones
+/// first, then its active global shortcuts' `globals`, a count of the rest,
+/// a "when" tag when one has a condition and a "global" tag when a global
+/// one shows, or "No shortcut". The tags draw outlined, since the rows they
+/// sit in hover.
+fn summary(
+    active: &[&ListedBinding],
+    globals: &[&str],
+    swatch: Swatch,
+) -> gpui::Div {
+    let tag = |label: &'static str| {
+        div()
+            .px(px(6.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(swatch.accent_text().opacity(0.35))
+            .text_size(ui(11.0))
+            .text_color(swatch.accent_text())
+            .child(label)
+    };
     let mut summary = div().flex().flex_none().items_center().gap(px(6.0));
-    for listed in active.iter().take(2) {
-        summary = summary.child(cap(
-            &listed.binding.key,
-            listed.binding.origin,
-            swatch,
-        ));
+    let keys = active
+        .iter()
+        .map(|listed| (listed.binding.key.as_str(), listed.binding.origin))
+        .chain(globals.iter().map(|key| (*key, Origin::User)));
+    for (key, origin) in keys.take(2) {
+        summary = summary.child(cap(key, origin, swatch));
     }
-    if active.len() > 2 {
-        summary = summary
-            .child(small(format!("+{}", active.len() - 2), swatch.muted));
+    let count = active.len() + globals.len();
+    if count > 2 {
+        summary = summary.child(small(format!("+{}", count - 2), swatch.muted));
     }
     if active.iter().any(|listed| listed.binding.when.is_some()) {
-        summary = summary.child(
-            div()
-                .px(px(6.0))
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(swatch.accent_text().opacity(0.35))
-                .text_size(ui(11.0))
-                .text_color(swatch.accent_text())
-                .child("when"),
-        );
+        summary = summary.child(tag("when"));
     }
-    if active.is_empty() {
+    if !globals.is_empty() && active.len() < 2 {
+        summary = summary.child(tag("global"));
+    }
+    if count == 0 {
         summary = summary.child(small("No shortcut".to_owned(), swatch.muted));
     }
     summary
