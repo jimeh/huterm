@@ -1,8 +1,8 @@
 //! Terminal-window buttons on `huterm-ui`'s `Button`. Dialog buttons take
 //! focus inside their dialog, keep their `confirming` commands and focus
 //! return, show their ring only after keys, and ignore GPUI's implicit
-//! Enter click; title-row and tab-bar buttons are named buttons that leave
-//! focus on the terminal.
+//! Enter click; title-row, tab-bar, and pane title bar buttons are named
+//! buttons that leave focus on the terminal.
 
 use gpui::{
     KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -52,11 +52,21 @@ fn about(button: AboutButton) -> impl Fn(&WorkspaceView) -> &FocusHandle {
 /// Clicks the element named `id` as an assistive technology does: GPUI
 /// presses and releases the pointer at its center.
 fn a11y_click(harness: &mut DesktopHarness, window: AnyWindowHandle, id: &str) {
+    let node = harness.cx.update(|cx| a11y_node(cx, window, id));
+    a11y_click_node(harness, window, &node);
+}
+
+/// Clicks `node` of `window`'s accessibility tree as [`a11y_click`] does.
+fn a11y_click_node(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    node: &Value,
+) {
+    let target = node["accesskit_id"]
+        .as_str()
+        .and_then(|id| id.parse().ok())
+        .expect("every node reports its AccessKit id");
     harness.cx.update(|cx| {
-        let target = a11y_node(cx, window, id)["accesskit_id"]
-            .as_str()
-            .and_then(|id| id.parse().ok())
-            .expect("every node reports its AccessKit id");
         window
             .update(cx, |_, window, cx| {
                 window.simulate_a11y_action(
@@ -696,4 +706,109 @@ fn tab_close_and_toast_buttons_are_named_after_what_they_act_on(
     labelled(&mut harness, "Dismiss Config has errors".to_owned());
     // The action looks like a link but runs a command.
     labelled(&mut harness, "Reload".to_owned());
+}
+
+/// `window`'s last accessibility tree: its nodes by key.
+fn a11y_nodes(
+    cx: &mut App,
+    window: AnyWindowHandle,
+) -> serde_json::Map<String, Value> {
+    let json = window
+        .update(cx, |_, window, _| window.debug_a11y_tree_json())
+        .unwrap()
+        .expect("test windows report an accessibility tree for every frame");
+    let tree: Value = serde_json::from_str(&json).unwrap();
+    tree["nodes"].as_object().unwrap().clone()
+}
+
+/// The node `window` drew for the element `id`, with its children's nodes.
+fn a11y_node_with_children(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    id: impl Into<gpui::ElementId>,
+) -> Option<(Value, Vec<Value>)> {
+    let spelled = format!("{:?}", id.into());
+    let nodes = a11y_nodes(cx, window);
+    let node = nodes
+        .values()
+        .find(|node| node["element_id"].as_str() == Some(spelled.as_str()))?
+        .clone();
+    let children = node["children"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|key| nodes.get(key.as_str()?).cloned())
+        .collect();
+    Some((node, children))
+}
+
+/// The child of `children` with `role` and `label`.
+fn child<'a>(children: &'a [Value], role: &str, label: &str) -> &'a Value {
+    children
+        .iter()
+        .find(|node| {
+            node["aria"]["role"] == role && node["aria"]["label"] == label
+        })
+        .unwrap_or_else(|| panic!("no {role} `{label}` in {children:#?}"))
+}
+
+#[gpui::test]
+fn pane_title_bars_are_named_groups_whose_buttons_zoom_and_close(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    harness
+        .runtime
+        .lock()
+        .set_input_sync(harness.workspace, tab, true)
+        .unwrap();
+    let title = harness.update_view(window, |view, _, cx| {
+        let shown = view.tabs.iter().find(|shown| shown.id == tab).unwrap();
+        let pane = shown.pane(first).unwrap();
+        shown.pane_label(pane, view.config.tabs, cx)
+    });
+    assert_ne!(title, "");
+    let bar = |harness: &mut DesktopHarness, pane: PaneId| {
+        harness.cx.update(|cx| {
+            a11y_node_with_children(cx, window, ("pane-title", pane.get()))
+        })
+    };
+    harness.wait_for("the bars to draw their sync marks", |cx| {
+        a11y_node_with_children(cx, window, ("pane-title", first.get()))
+            .is_some_and(|(_, children)| {
+                children.iter().any(|node| node["aria"]["role"] == "Image")
+            })
+    });
+    let (group, children) = bar(&mut harness, first).unwrap();
+    assert_eq!(group["aria"]["role"], "Group");
+    assert_eq!(group["aria"]["label"], title.as_str());
+    child(&children, "Image", "Syncing pane input");
+    let zoom = child(&children, "Button", "Zoom Pane").clone();
+    assert_eq!(zoom["aria"]["toggled"], "False");
+    child(&children, "Button", "Close Pane");
+    a11y_click_node(&mut harness, window, &zoom);
+    harness.wait_for("the click to zoom the pane", |cx| {
+        a11y_node_with_children(cx, window, ("pane-title", first.get()))
+            .is_some_and(|(_, children)| {
+                children.iter().any(|node| {
+                    node["aria"]["label"] == "Unzoom Pane"
+                        && node["aria"]["toggled"] == "True"
+                })
+            })
+    });
+    let (_, children) = bar(&mut harness, first).unwrap();
+    let unzoom = child(&children, "Button", "Unzoom Pane").clone();
+    a11y_click_node(&mut harness, window, &unzoom);
+    harness.wait_for("the click to unzoom and show the other bar", |cx| {
+        a11y_node_with_children(cx, window, ("pane-title", second.get()))
+            .is_some()
+    });
+    let (_, children) = bar(&mut harness, second).unwrap();
+    let close = child(&children, "Button", "Close Pane").clone();
+    a11y_click_node(&mut harness, window, &close);
+    harness.wait_for("the click to close the pane", |cx| {
+        pane_view(cx, window, tab, second).is_none()
+    });
 }

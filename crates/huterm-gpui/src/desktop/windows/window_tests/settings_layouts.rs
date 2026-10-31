@@ -193,6 +193,9 @@ fn a_template_saves_on_enter_or_blur_and_never_invalid(
          the template",
         "{message}"
     );
+    // A polite live status, so assistive technology reads it.
+    assert_eq!(message["aria"]["role"], "Status", "{message}");
+    assert_eq!(message["aria"]["live"], "Polite", "{message}");
     with_window(&mut harness, |view, window, cx| {
         view.type_into(DEV, "columns(pane 5", window, cx);
         assert!(view.template_problem("dev", cx).is_some());

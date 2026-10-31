@@ -1,11 +1,17 @@
 //! Tier 2 tests for pane input sync: typing into a syncing tab's focused
 //! pane reaches each of its other panes' real shells in order, encoded for
 //! each pane's own modes, while Huterm commands still act once and panes
-//! that left, exited, or are hidden get nothing.
+//! that left, exited, or are hidden get nothing. The tab's mark shows in
+//! the title row while the tab bar is hidden, and the tab menu toggles its
+//! own tab.
 
 use huterm_core::{MoveDestination, PaneRef};
+use huterm_ui::components::kbd;
+use huterm_ui::listbox::Row as ListRow;
+use serde_json::Value;
 
 use super::super::input_sync::syncs_input;
+use super::super::tab_bar::TabMark;
 use super::pane_bars::focus_marks;
 use super::*;
 
@@ -394,4 +400,359 @@ fn the_palette_row_says_what_the_toggle_will_do_while_open(
             "the highlight stays on the row: {state}"
         );
     });
+}
+
+/// The marks `window`'s last frame drew in its title row before the active
+/// tab's title, or `None` when the row drew no title.
+fn title_marks(cx: &mut App, window: AnyWindowHandle) -> Option<Vec<TabMark>> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            view.read(cx).drawn_title_marks.borrow().clone()
+        })
+        .ok()
+        .flatten()
+}
+
+/// How many image nodes in `window`'s last accessibility tree read
+/// "Syncing pane input".
+fn sync_mark_nodes(cx: &mut App, window: AnyWindowHandle) -> usize {
+    let json = window
+        .update(cx, |_, window, _| window.debug_a11y_tree_json())
+        .unwrap()
+        .expect("test windows report an accessibility tree for every frame");
+    let tree: Value = serde_json::from_str(&json).unwrap();
+    tree["nodes"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|node| {
+            node["aria"]["role"] == "Image"
+                && node["aria"]["label"] == TabMark::InputSync.name()
+        })
+        .count()
+}
+
+/// Whether `window`'s title row drew `marks` and no others.
+fn title_shows(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    marks: &[TabMark],
+) -> bool {
+    title_marks(cx, window).is_some_and(|drawn| drawn == marks)
+}
+
+/// A harness whose windows have a title row on every host: macOS's strip,
+/// or Linux's client-decorated row, which only the title-bar tab position
+/// draws and [`DesktopHarness::client_row`] turns on.
+fn title_row_harness(
+    cx: &mut TestAppContext,
+    configure: impl FnOnce(&mut Config),
+) -> DesktopHarness {
+    DesktopHarness::with_config(cx, |config| {
+        if cfg!(not(target_os = "macos")) {
+            config.tabs.position = crate::config::TabPosition::Titlebar;
+        }
+        configure(config);
+    })
+}
+
+impl DesktopHarness {
+    /// Gives `window` the client frame a Linux desktop without a title bar
+    /// grants, on any host, as GPUI reports a decoration change; the test
+    /// platform itself reports server decorations.
+    fn client_row(&mut self, window: AnyWindowHandle) {
+        self.update_view(window, |view, window, cx| {
+            view.decorations_override = Some(gpui::Decorations::Client {
+                tiling: gpui::Tiling::default(),
+            });
+            view.sync_frame(window);
+            view.refresh_tab_visibility(window, cx);
+            view.sync_tab_layout(window, cx);
+            cx.notify();
+        });
+    }
+
+    /// A window on a new [`ECHO`] tab with the title row
+    /// [`title_row_harness`] promises.
+    fn title_row_window(&mut self) -> (AnyWindowHandle, TabId) {
+        let tab = self.open_tab(ECHO);
+        let window = self.attach_window();
+        self.wait_text(window, tab, "READY");
+        self.activate(window, tab);
+        if cfg!(not(target_os = "macos")) {
+            self.client_row(window);
+        }
+        self.wait_for("the title row to draw the title", |cx| {
+            title_shows(cx, window, &[])
+        });
+        (window, tab)
+    }
+}
+
+#[gpui::test]
+fn the_title_row_shows_the_tabs_marks_only_while_the_tab_bar_is_hidden(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = title_row_harness(cx, |_| {});
+    let (window, tab) = harness.title_row_window();
+    harness.toggle_sync(window, tab, true);
+    harness.wait_for("the title row to show the sync mark", |cx| {
+        title_shows(cx, window, &[TabMark::InputSync])
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(sync_mark_nodes(cx, window), 1, "the mark is an image");
+    });
+    // The marks sit before the title, inside the row.
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    let marks = visual.debug_bounds("title-marks").expect("the marks drew");
+    let title = visual.debug_bounds("strip-title").expect("the title drew");
+    assert!(marks.right() <= title.origin.x, "{marks:?} {title:?}");
+    assert!(marks.origin.y >= px(0.0) && marks.bottom() <= TAB_HEIGHT);
+    // A second tab shows the tab bar, whose tab carries the mark instead.
+    let other = harness.open_tab(ECHO);
+    harness.wait_for("the tab bar's mark and no title mark", |cx| {
+        terminal(cx, window, other).is_some()
+            && sync_mark_nodes(cx, window) == 1
+            && title_marks(cx, window).unwrap_or_default().is_empty()
+    });
+    harness.close_tab(other);
+    harness.wait_for("the title mark to return with one tab", |cx| {
+        title_shows(cx, window, &[TabMark::InputSync])
+    });
+    harness.toggle_sync(window, tab, false);
+    harness.wait_for("the title mark to go", |cx| {
+        title_shows(cx, window, &[]) && sync_mark_nodes(cx, window) == 0
+    });
+}
+
+#[gpui::test]
+fn an_always_shown_tab_bar_keeps_the_mark_out_of_the_title_row(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = title_row_harness(cx, |config| {
+        config.tabs.always_show = true;
+    });
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    if cfg!(not(target_os = "macos")) {
+        harness.client_row(window);
+    }
+    harness.toggle_sync(window, tab, true);
+    // The tab bar's mark is the only one.
+    harness.wait_for("the tab's mark to draw", |cx| {
+        sync_mark_nodes(cx, window) == 1
+    });
+    harness.cx.update(|cx| {
+        let drawn = title_marks(cx, window).unwrap_or_default();
+        assert!(drawn.is_empty(), "{drawn:?}");
+    });
+}
+
+#[gpui::test]
+fn the_title_row_keeps_the_mark_while_the_focused_pane_has_exited(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = title_row_harness(cx, |config| {
+        config.terminal.close_on_exit = false;
+    });
+    let tab = harness.open_tab("printf READY; exit 0");
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    if cfg!(not(target_os = "macos")) {
+        harness.client_row(window);
+    }
+    let exited = harness.first_pane(tab);
+    harness.split(tab, exited, SplitDirection::Right, ECHO);
+    harness.focus(window, tab, exited);
+    harness.wait_for("the focused pane to exit", |cx| {
+        pane_view(cx, window, tab, exited)
+            .is_some_and(|view| view.read(cx).exited)
+    });
+    harness.toggle_sync(window, tab, true);
+    // Typing reaches no pane, so no frame or pane bar mark shows; the
+    // title row still says the tab syncs.
+    harness.wait_for("the title row's mark alone", |cx| {
+        title_shows(cx, window, &[TabMark::InputSync])
+            && sync_mark_nodes(cx, window) == 1
+            && focus_marks(cx, window)
+                .is_some_and(|marks| marks.synced.is_empty())
+    });
+}
+
+/// macOS keeps its strip under the title-bar tab position while one tab
+/// hides the bar; Linux draws that row only with client decorations, which
+/// the next test covers on every host.
+#[gpui::test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Linux draws the title-bar row only with client decorations"
+)]
+fn the_title_bar_position_with_one_tab_shows_the_mark_in_the_strip(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.position = crate::config::TabPosition::Titlebar;
+    });
+    let (window, tab) = harness.title_row_window();
+    harness.toggle_sync(window, tab, true);
+    harness.wait_for("the strip to show the sync mark", |cx| {
+        title_shows(cx, window, &[TabMark::InputSync])
+    });
+}
+
+#[gpui::test]
+fn the_linux_client_row_shows_the_mark_before_the_title(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.position = crate::config::TabPosition::Titlebar;
+    });
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    harness.client_row(window);
+    harness.toggle_sync(window, tab, true);
+    harness.wait_for("the client row to show the sync mark", |cx| {
+        title_shows(cx, window, &[TabMark::InputSync])
+            && window
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>()
+                        .is_ok_and(|view| view.read(cx).window_frame().controls)
+                })
+                .unwrap_or(false)
+    });
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    let marks = visual.debug_bounds("title-marks").expect("the marks drew");
+    let title = visual.debug_bounds("strip-title").expect("the title drew");
+    assert!(marks.right() <= title.origin.x, "{marks:?} {title:?}");
+    assert!(marks.bottom() <= TAB_HEIGHT, "inside the row: {marks:?}");
+}
+
+#[gpui::test]
+fn fullscreen_draws_no_title_row_and_so_no_mark(cx: &mut TestAppContext) {
+    let mut harness = title_row_harness(cx, |_| {});
+    let (window, tab) = harness.title_row_window();
+    harness.toggle_sync(window, tab, true);
+    harness.wait_for("the title row to show the sync mark", |cx| {
+        title_shows(cx, window, &[TabMark::InputSync])
+    });
+    harness.update_view(window, |view, window, cx| {
+        window.toggle_fullscreen();
+        view.refresh_fullscreen(window, cx);
+        cx.notify();
+    });
+    // With one tab and the fullscreen bar not auto-hiding, the bar stays
+    // hidden too, so nothing shows the mark.
+    harness.wait_for("fullscreen to drop the title row", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .is_ok_and(|view| view.read(cx).fullscreen.chrome_hidden)
+            })
+            .unwrap_or(false)
+            && title_marks(cx, window).is_none()
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(sync_mark_nodes(cx, window), 0);
+    });
+}
+
+/// The label and shortcut text of the open menu's sync row, if it has one.
+fn menu_sync_row(
+    cx: &mut App,
+    window: AnyWindowHandle,
+) -> Option<(String, String)> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            let model = view.read(cx).current_menu_model(cx)?;
+            model.rows.iter().find_map(|row| match row {
+                ListRow::Item(item)
+                    if item.id.as_ref()
+                        == ids::TOGGLE_PANE_INPUT_SYNC.as_str() =>
+                {
+                    Some((item.label.clone(), kbd::text(&item.shortcut)))
+                }
+                _ => None,
+            })
+        })
+        .ok()
+        .flatten()
+}
+
+#[gpui::test]
+fn the_tab_menu_toggles_its_own_tab_and_not_the_active_one(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let active = harness.open_tab(ECHO);
+    let other = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[active, other]);
+    harness.wait_text(window, active, "READY");
+    harness.update_view(window, |view, window, cx| {
+        view.select(active, window, cx);
+    });
+    harness.activate(window, active);
+    let first = harness.first_pane(other);
+    harness.split(other, first, SplitDirection::Right, ECHO);
+    harness.wait_for("the inactive tab to hold two panes", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx)
+                        .tabs
+                        .iter()
+                        .any(|tab| tab.id == other && tab.panes.len() == 2)
+                })
+            })
+            .unwrap_or(false)
+    });
+    let open = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, window, cx| {
+            view.open_tab_menu(other, point(px(40.0), px(10.0)), window, cx);
+        });
+    };
+    let pick = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, window, cx| {
+            let menu = view.menu.as_ref().unwrap().view.clone();
+            view.handle_menu_event(
+                &menu,
+                &MenuEvent::Picked(ids::TOGGLE_PANE_INPUT_SYNC.as_str().into()),
+                window,
+                cx,
+            );
+        });
+    };
+    open(&mut harness);
+    // The shortcut would toggle the active tab, so the row shows none.
+    assert_eq!(
+        harness.cx.update(|cx| menu_sync_row(cx, window)),
+        Some(("Sync Pane Input".to_owned(), String::new()))
+    );
+    pick(&mut harness);
+    harness.wait_for("the menu's tab to sync", |cx| syncs_input(other, cx));
+    harness.cx.update(|cx| {
+        assert!(!syncs_input(active, cx), "the active tab synced");
+    });
+    assert_eq!(
+        harness.update_view(window, |view, _, cx| view.active_tab(cx)),
+        Some(active),
+        "the pick changed the active tab"
+    );
+    // Without a tab, the command still toggles the active one.
+    harness.toggle_sync(window, active, true);
+    harness.cx.update(|cx| assert!(syncs_input(other, cx)));
+    open(&mut harness);
+    assert_eq!(
+        harness.cx.update(|cx| menu_sync_row(cx, window)),
+        Some(("Stop Syncing Pane Input".to_owned(), String::new()))
+    );
+    pick(&mut harness);
+    harness.wait_for("the menu's tab to stop", |cx| !syncs_input(other, cx));
+    harness.cx.update(|cx| assert!(syncs_input(active, cx)));
 }

@@ -284,26 +284,6 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   view either. A higher epoch means a second replacement. Record which,
   then rerun once.
 
-## huterm-gpui terminfo temp-directory abort on hosted macOS
-
-- **Label:**
-  `terminfo::tests::linux_bundle_discovery_is_relative_to_the_executable` in
-  `Checks (macOS arm64)`, where `create_dir_all` under `temp_dir()` returns
-  EINVAL. The `TestDirectory` drop then panics on NotFound, and the double
-  panic aborts every huterm-gpui lib test.
-- **Occurrences:** once, 2026-10-01 (PR #204); the next push passed.
-  2026-10-31, locally on macOS under load: a different variant, where
-  `auto_falls_back_when_no_entry_is_available` panicked in the drop's
-  `remove_dir_all` with "Directory not empty". It failed once in four
-  isolated runs of `terminfo::`.
-- **Suspected cause (inference):** `TestDirectory` names its directory from
-  the process ID and a nanosecond timestamp, which macOS reports in whole
-  microseconds. Two parallel tests can then share one directory, and one
-  test's drop removes it while the other writes `x/xterm-huterm`.
-- **Triage:** check whether the change touches `terminfo.rs` or temp-directory
-  handling, then rerun. A per-process counter in the directory name, and a
-  non-panicking cleanup in the drop, would remove both variants.
-
 ## `smoke:macos-input` empty state read
 
 - **Label:** `Smoke macOS input` in `Rust smoke (macOS arm64)`, "no
@@ -361,6 +341,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   dialog nor tab closing. The last state matched the first occurrence:
   `w0.confirming=false`, `w0.tabs=3`, `w0.active_index=2`, and
   `w0.terminal_focused=false`.
+- **Fifth occurrence:** 2026-10-31 on PR #358 (run 41176975476, job
+  124466434006, head `b7aae6e9`), aarch64 only, under `Smoke Linux
+  overlays`; x86_64 passed on the same head. The PR changes neither the
+  close dialog nor tab closing. The last state matched the first
+  occurrence: `w0.confirming=false`, `w0.tabs=3`, `w0.active_index=2`, and
+  `w0.terminal_focused=false`.
 - **Triage:** rerun and record the run here. A hardening is to wait for
   `w0.dialog_focus=primary` before Enter, as the neighboring steps do.
 
@@ -399,6 +385,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   without asking for a frame, so a wheel that arrives before a frame drawn
   with the pointer there may miss the list. The palette's own list before
   #322 redrew on hover. This is unconfirmed.
+- **Second occurrence:** 2026-10-31 on PR #358 (run 41180152337, job
+  124475722569, head `5199386c`), x86_64 this time, with the same last state
+  (`results=84`, `highlighted_row=Some(0)`, `hover=Some(0)`,
+  `scroll_offset=0.0`). The PR changes neither the palette nor
+  `option_list`.
 - **Triage:** rerun and record the run here. If it recurs, have the smoke
   wait for a frame drawn after `movePointerToRow` before the wheel, or make
   a hover change in `option_list` request a frame.
@@ -467,6 +458,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   against about 13 locally, and the PR touched no tab code. The last state
   still held both tabs with the active one unchanged, so the click had not
   closed the inactive tab before the harness deadline.
+- **Fifth occurrence:** 2026-10-31 on PR #358 (run 41180152337, job
+  124475722453, head `5199386c`), in `Checks (Linux aarch64)`, so not
+  macOS only. The `huterm-gpui` suite took 77.22 seconds there. The PR
+  changes Settings and the terminal window's title row, not menus or
+  selection.
 - **Triage:** compare the suite's wall time with a passing run. If it
   recurs on a normal-speed run, the harness wait or the close path needs a
   closer look; otherwise record the run here and rerun.
@@ -493,6 +489,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   124442367197, head `7f3ee93b`). The `huterm-gpui` suite took 134.12
   seconds; local `mise run verify` passed on the same code. The PR changes
   only Quake display placement.
+- **Fourth occurrence:** 2026-10-31 (run 41171440439, job 124450056001,
+  head `5d501107`). The `huterm-gpui` suite took 138.87 seconds, and the
+  job passed on rerun.
 - **Triage:** compare the suite's wall time with a passing run. If it
   recurs on a normal-speed run, log the terminal's selection and snapshot
   generation around the dispatch; otherwise record the run here and rerun.

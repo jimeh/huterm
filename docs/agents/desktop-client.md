@@ -572,8 +572,8 @@ Clickable controls pair their hover style with an `.active` pressed style:
 `Swatch::pressed`, `accent_pressed`, or `selection_pressed` in overlays.
 Title-row and tab-bar buttons are `Button`s in `TabColors::control()`, which
 carries the bar's control hover and pressed overlays. Pane title-bar buttons
-are not `Button`s yet and still use `TabColors::control_hover` and
-`control_pressed` directly. `Swatch` is passed
+are too; the zoom toggle reports `Button::toggled` and takes `control_hover` as
+its fill while zoomed. `Swatch` is passed
 by value and must stay under Clippy's 256-byte limit, so derive further shades
 through methods rather than fields.
 
@@ -734,10 +734,10 @@ recording whose global shortcut moved, so it marks the recording stale, and the
 next frame or keystroke cancels it.
 
 The terminal window's dialog, title-row, tab-bar, and toast buttons are
-`huterm_ui::components::button::Button`s; tabs, pane title-bar buttons, and
-the scroll pill are not. An owner sizes, places, and restyles a `Button`
-through `Styled`, which applies over its variant, adds overlays such as the
-menu button's notice dot as children, and gives a button on another surface's
+`huterm_ui::components::button::Button`s, as are pane title-bar buttons;
+tabs and the scroll pill are not. An owner sizes, places, and restyles a
+`Button` through `Styled`, which applies over its variant, adds overlays such
+as the menu button's notice dot as children, and gives a button on another surface's
 palette its own `Colors`. Its click action takes no event, so
 `WorkspaceView::button_action` adapts a view method. Chrome buttons take no
 focus handle, so they never hold focus, and `stop_presses` keeps their
@@ -1212,6 +1212,11 @@ GPUI performs an accessibility `Click` on a node with no action listener as a
 pointer press and release at the node's center, so it arrives as
 `ClickEvent::Mouse` and passes the keyboard filter; tests click child-id items
 that way through `testing::a11y_send`.
+
+GPUI's `Svg` reports no role, so an icon that needs a node, such as a tab state
+mark (`tab_bar::mark_elements`, an `Image` named by `TabMark::name`), sits in a
+`div` that carries the id and role. Pane title bars are `Group`s named by the
+pane's title.
 
 ## Tab bar layout
 

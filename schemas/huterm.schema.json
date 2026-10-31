@@ -4134,7 +4134,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Broadcast typing to every shown pane of the active tab, or stop.",
+            "description": "Broadcast typing to every shown pane of a tab, or stop; defaults to the active tab.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -4144,7 +4144,7 @@
               },
               "command": {
                 "const": "toggle_pane_input_sync",
-                "description": "Broadcast typing to every shown pane of the active tab, or stop.",
+                "description": "Broadcast typing to every shown pane of a tab, or stop; defaults to the active tab.",
                 "type": "string"
               },
               "description": {

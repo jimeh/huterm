@@ -288,18 +288,17 @@ fn a_held_key_records_one_global_shortcut(cx: &mut TestAppContext) {
 fn a_global_key_an_in_app_binding_starts_with_writes_nothing(
     cx: &mut TestAppContext,
 ) {
-    let file = ScratchConfig::new("quake-conflict", LOGS);
+    // A key that starts only a default binding is a warning, so the clash
+    // is with a binding the file itself writes.
+    let original = format!(
+        "{LOGS}\n[[keybinding]]\nkey = \"ctrl-alt-shift-u\"\n\
+         command = \"new_tab\"\n"
+    );
+    let file = ScratchConfig::new("quake-conflict", &original);
     let mut harness = DesktopHarness::new(cx);
     open_quake(&mut harness, &file);
     press(&mut harness, "gadd");
-    keystrokes(
-        &mut harness,
-        if cfg!(target_os = "macos") {
-            "cmd-t"
-        } else {
-            "ctrl-shift-t"
-        },
-    );
+    keystrokes(&mut harness, "ctrl-alt-shift-u");
     harness.wait_for("the refused save", |cx| {
         settled(cx)
             && settings(cx).is_some_and(|handle| {
@@ -310,12 +309,12 @@ fn a_global_key_an_in_app_binding_starts_with_writes_nothing(
                     .unwrap_or(false)
             })
     });
-    assert_eq!(file.text(), LOGS);
+    assert_eq!(file.text(), original);
     // The message goes once another editor changes the shortcuts.
     std::fs::write(
         file.path(),
         format!(
-            "{LOGS}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
+            "{original}\n[[global_keybinding]]\nkey = \"ctrl-alt-shift-y\"\n\
              command = \"toggle_quake\"\n"
         ),
     )

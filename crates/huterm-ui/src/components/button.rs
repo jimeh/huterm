@@ -32,7 +32,8 @@
 //! Accessibility: a `Button` (or a `Link`, unless a link-look action takes
 //! [`Button::button_role`]) named by its label, reporting its
 //! shortcut, its tooltip or disabled reason as its description, whether a
-//! menu it opens is expanded, and its disabled state. The current button is
+//! menu it opens is expanded, whether a toggle it is turns on
+//! ([`Button::toggled`]), and its disabled state. The current button is
 //! its focused owner's active descendant, so assistive technology follows
 //! the keyboard's place.
 
@@ -41,7 +42,7 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Hsla, IntoElement,
     MouseButton, ParentElement, Refineable, RenderOnce, SharedString, Stateful,
-    StyleRefinement, Styled, Window, div, prelude::*, px,
+    StyleRefinement, Styled, Toggled, Window, div, prelude::*, px,
 };
 
 use crate::a11y::States;
@@ -108,6 +109,7 @@ pub struct Button {
     icon_only: bool,
     small: bool,
     expanded: Option<bool>,
+    toggled: Option<bool>,
     plain_role: bool,
     group: Option<SharedString>,
     occlude: bool,
@@ -153,6 +155,7 @@ impl Button {
             icon_only: false,
             small: false,
             expanded: None,
+            toggled: None,
             plain_role: false,
             group: None,
             occlude: false,
@@ -262,6 +265,16 @@ impl Button {
     #[must_use]
     pub fn expanded(mut self, expanded: bool) -> Self {
         self.expanded = Some(expanded);
+        self
+    }
+
+    /// Reports the button as a toggle that is `on` or off, such as a zoom
+    /// button that stays highlighted while its pane is zoomed. It changes
+    /// only what assistive technology reads; the owner draws the on state,
+    /// such as through [`Colors::fill`].
+    #[must_use]
+    pub fn toggled(mut self, on: bool) -> Self {
+        self.toggled = Some(on);
         self
     }
 
@@ -450,6 +463,13 @@ impl Button {
             })
             .when_some(self.expanded, |button, expanded| {
                 button.aria_expanded(expanded)
+            })
+            .when_some(self.toggled, |button, on| {
+                button.aria_toggled(if on {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
             })
             .when_some(focus, InteractiveElement::track_focus)
             .when(current, StatefulInteractiveElement::aria_active_descendant)
@@ -786,6 +806,22 @@ mod tests {
         assert!(!drawn(cx), "a press hides it");
         key(cx);
         assert!(drawn(cx), "the next key shows it again");
+    }
+
+    #[gpui::test]
+    fn a_toggle_button_reports_whether_it_is_on(cx: &mut TestAppContext) {
+        let (_, cx) = host(cx, |_, _| {
+            gpui::div()
+                .child(Button::new("on", "Unzoom", tokens()).toggled(true))
+                .child(Button::new("off", "Zoom", tokens()).toggled(false))
+                .child(Button::new("plain", "Reload", tokens()))
+                .into_any_element()
+        });
+        cx.update(|window, _| {
+            assert_eq!(a11y_node(window, "on")["aria"]["toggled"], "True");
+            assert_eq!(a11y_node(window, "off")["aria"]["toggled"], "False");
+            assert!(a11y_node(window, "plain")["aria"]["toggled"].is_null());
+        });
     }
 
     #[gpui::test]

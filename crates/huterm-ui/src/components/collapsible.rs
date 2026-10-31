@@ -33,8 +33,10 @@
 //!
 //! Accessibility: the trigger is a `Button` named by the label, or by the
 //! item's title, whose expanded state follows the content; its description
-//! is a disabled reason, else the item's description. GPUI cannot name
-//! another node, so the trigger does not name the content it controls.
+//! is a disabled reason, else the item's description, then the text form of
+//! actions drawn inside it ([`Collapsible::summary`]), which report no nodes
+//! of their own. GPUI cannot name another node, so the trigger does not name
+//! the content it controls.
 //!
 //! Reference: WAI-ARIA's disclosure pattern and Radix's Collapsible.
 
@@ -65,6 +67,7 @@ pub struct Collapsible {
     tokens: Tokens,
     item: Option<Item>,
     actions_in_trigger: bool,
+    summary: Option<SharedString>,
     corners: Option<Corners<Pixels>>,
     disabled: Option<SharedString>,
     key_context: Option<SharedString>,
@@ -103,6 +106,7 @@ impl Collapsible {
             tokens,
             item: None,
             actions_in_trigger: false,
+            summary: None,
             corners: None,
             disabled: None,
             key_context: None,
@@ -127,6 +131,15 @@ impl Collapsible {
     #[must_use]
     pub fn actions_in_trigger(mut self) -> Self {
         self.actions_in_trigger = true;
+        self
+    }
+
+    /// What the actions drawn inside the trigger show, as text, such as
+    /// "⌘T, +1": the trigger's description ends with it, since those
+    /// actions are content that reports no node.
+    #[must_use]
+    pub fn summary(mut self, text: impl Into<SharedString>) -> Self {
+        self.summary = Some(text.into());
         self
     }
 
@@ -286,13 +299,19 @@ impl RenderOnce for Collapsible {
             Some(parts) => (parts.title.clone(), parts.description.clone()),
             None => (self.label.clone(), None),
         };
+        let description: Vec<SharedString> = reason
+            .clone()
+            .or(description)
+            .into_iter()
+            .chain(self.summary)
+            .collect();
         let trigger = div()
             .id(self.id)
             .role(gpui::Role::Button)
             .aria_label(label)
             .aria_expanded(open)
-            .when_some(reason.clone().or(description), |trigger, text| {
-                trigger.aria_description(text)
+            .when(!description.is_empty(), |trigger| {
+                trigger.aria_description(description.join("\n"))
             })
             .when_some(reason, |trigger, reason| {
                 trigger.tooltip(move |_, cx| {
@@ -504,6 +523,25 @@ mod tests {
         a11y_action(cx, "copy", AccessibleAction::Click);
         assert_eq!(*probe.toggles.borrow(), [true, false]);
         assert!(!shows_content(cx));
+    }
+
+    #[gpui::test]
+    fn a_summary_in_the_trigger_ends_its_description(cx: &mut TestAppContext) {
+        let focus = cx.update(|cx| cx.focus_handle());
+        let (_, cx) = host(cx, move |_, _| {
+            let header = Item::new("copy-item", "Copy", tokens())
+                .description("Copy the selection")
+                .action(div().child("⌘C"));
+            Collapsible::new("copy", "Copy", false, &focus, tokens())
+                .item(header)
+                .actions_in_trigger()
+                .summary("⌘C, +1")
+                .into_any_element()
+        });
+        cx.update(|window, _| {
+            let trigger = &a11y_node(window, "copy")["aria"];
+            assert_eq!(trigger["description"], "Copy the selection\n⌘C, +1");
+        });
     }
 
     #[gpui::test]

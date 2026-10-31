@@ -1,14 +1,19 @@
 //! The tab context menu: the rows a right-clicked tab offers, with their
-//! enablement decided from the tab's position and directory. Everything
-//! here is pure so it can be tested without a window.
+//! enablement decided from the tab's position, directory, and panes.
+//! Everything here is pure so it can be tested without a window.
 
 use super::menu_spec::{Item as MenuItem, MenuSpec, Row as MenuRow};
+use super::pane_menu::input_sync_item;
 use super::window_menu::{label, shortcut_key};
 use crate::keymap::{InstalledKeymap, Platform};
 use gpui::KeyContext;
 use huterm_protocol::{CommandId, ids};
 
 /// The state the tab menu's rows depend on.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact about the tab"
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct TabMenuInput {
     pub(super) platform: Platform,
@@ -16,23 +21,36 @@ pub(super) struct TabMenuInput {
     pub(super) index: usize,
     /// How many tabs the window has.
     pub(super) count: usize,
-    /// The targeted tab is the active one, which shows Close Tab's shortcut.
+    /// The targeted tab is the active one, which shows the shortcuts of
+    /// Close Tab and the sync row, since those act on the active tab.
     pub(super) active: bool,
     /// Tabs run down a column, which words the last item "Close Tabs Below".
     pub(super) vertical: bool,
     /// The tab has reported a working directory Copy Directory Path can copy.
     pub(super) directory_known: bool,
+    /// The panes the tab holds. With more than one, it offers to sync
+    /// their input.
+    pub(super) panes: usize,
+    /// The tab syncs input, so its sync row shows, worded to stop.
+    pub(super) input_sync: bool,
 }
 
-/// The rows for `input`, with Close Tab's shortcut from `keymap` as seen from
-/// `contexts` (the stack captured when the menu opened), preferring a user
-/// binding as the window menu does.
+/// The rows for `input`, with the active tab's shortcuts from `keymap` as
+/// seen from `contexts` (the stack captured when the menu opened),
+/// preferring a user binding as the window menu does.
 pub(super) fn tab_menu(
     input: &TabMenuInput,
     keymap: &InstalledKeymap,
     contexts: &[KeyContext],
 ) -> MenuSpec {
-    let shortcut = |id: CommandId| shortcut_key(keymap, contexts, id);
+    // A shortcut acts on the active tab, so only its menu shows them.
+    let shortcut = |id: CommandId| {
+        if input.active {
+            shortcut_key(keymap, contexts, id)
+        } else {
+            None
+        }
+    };
     let item = |id: CommandId| MenuItem::new(id.as_str(), label(id));
     let last = input.count == 0 || input.index + 1 >= input.count;
     let copy_directory = item(ids::COPY_TAB_DIRECTORY);
@@ -41,11 +59,7 @@ pub(super) fn tab_menu(
     } else {
         copy_directory.disabled(Some("Directory unknown".to_owned()))
     };
-    let close_tab = item(ids::CLOSE_TAB).shortcut(if input.active {
-        shortcut(ids::CLOSE_TAB)
-    } else {
-        None
-    });
+    let close_tab = item(ids::CLOSE_TAB).shortcut(shortcut(ids::CLOSE_TAB));
     let close_others = item(ids::CLOSE_OTHER_TABS);
     let close_others = if input.count > 1 {
         close_others
@@ -65,7 +79,7 @@ pub(super) fn tab_menu(
     } else {
         close_after
     };
-    MenuSpec::new(vec![
+    let mut rows = vec![
         MenuRow::Item(item(ids::RENAME_TAB)),
         MenuRow::Item(copy_directory),
         MenuRow::Separator,
@@ -73,11 +87,22 @@ pub(super) fn tab_menu(
         MenuRow::Item(close_others),
         MenuRow::Item(close_after),
         MenuRow::Separator,
-        MenuRow::Item(MenuItem::new(
-            ids::MOVE_TAB_TO_PANE.as_str(),
-            "Move Tab into Pane…",
-        )),
-    ])
+    ];
+    // As in the terminal menu: a split tab, or one that syncs, so a tab
+    // that lost its other panes can still stop.
+    if input.panes > 1 || input.input_sync {
+        rows.push(MenuRow::Item(input_sync_item(
+            input.input_sync,
+            |id, label| {
+                MenuItem::new(id.as_str(), label).shortcut(shortcut(id))
+            },
+        )));
+    }
+    rows.push(MenuRow::Item(MenuItem::new(
+        ids::MOVE_TAB_TO_PANE.as_str(),
+        "Move Tab into Pane…",
+    )));
+    MenuSpec::new(rows)
 }
 
 #[cfg(test)]
@@ -121,6 +146,8 @@ mod tests {
             active: false,
             vertical: false,
             directory_known: true,
+            panes: 1,
+            input_sync: false,
         }
     }
 
@@ -218,6 +245,64 @@ mod tests {
         assert!(!copy.enabled);
         assert_eq!(copy.disabled_hint.as_deref(), Some("Directory unknown"));
         assert!(items(&model(&input(0, 2)))[1].enabled);
+    }
+
+    /// The sync row's label, or `None` while the menu leaves it out.
+    fn sync_row(input: &TabMenuInput) -> Option<String> {
+        items(&model(input))
+            .iter()
+            .find(|item| item.id.as_ref() == "toggle_pane_input_sync")
+            .map(|item| item.label.clone())
+    }
+
+    #[test]
+    fn a_split_or_syncing_tab_offers_its_sync_toggle_before_the_move() {
+        assert_eq!(
+            sync_row(&input(0, 2)),
+            None,
+            "one pane has nothing to sync"
+        );
+        let split = TabMenuInput {
+            panes: 2,
+            ..input(0, 2)
+        };
+        assert_eq!(sync_row(&split).as_deref(), Some("Sync Pane Input"));
+        let syncing = TabMenuInput {
+            input_sync: true,
+            ..input(0, 2)
+        };
+        assert_eq!(
+            sync_row(&syncing).as_deref(),
+            Some("Stop Syncing Pane Input"),
+            "a syncing tab that lost its other panes can still stop"
+        );
+        let model = model(&split);
+        assert!(matches!(model.rows[6], MenuRow::Separator));
+        let last: Vec<&str> = items(&model)[5..]
+            .iter()
+            .map(|item| item.id.as_ref())
+            .collect();
+        assert_eq!(last, ["toggle_pane_input_sync", "move_tab_to_pane"]);
+    }
+
+    #[test]
+    fn the_sync_row_shows_its_shortcut_only_on_the_active_tab() {
+        let shortcut = |input: &TabMenuInput| {
+            items(&model(input))
+                .iter()
+                .find(|item| item.id.as_ref() == "toggle_pane_input_sync")
+                .map(|item| kbd::text(&item.shortcut))
+        };
+        let split = TabMenuInput {
+            panes: 2,
+            ..input(0, 2)
+        };
+        let active = TabMenuInput {
+            active: true,
+            ..split
+        };
+        assert_eq!(shortcut(&active).as_deref(), Some("⌥⌘I"));
+        assert_eq!(shortcut(&split).as_deref(), Some(""));
     }
 
     #[test]

@@ -21,29 +21,29 @@ fn tabs(style: TabStyle, pill_accent: bool, min: f32, max: f32) -> TabsConfig {
 fn fit_widths_add_style_chrome_and_clamp_to_bounds() {
     let idle = TabStatus::Idle;
     let strip_tabs = tabs(TabStyle::Strip, false, 48.0, 600.0);
-    let strip = fit_tab_width(px(20.0), strip_tabs, idle, false);
+    let strip = fit_tab_width(px(20.0), strip_tabs, idle, &[]);
     assert_eq!(strip, px(20.0 + 12.0 + 6.0 + 7.0 + 18.0));
     for status in [TabStatus::Exited, TabStatus::Failed, TabStatus::Bell] {
         assert_eq!(
-            fit_tab_width(px(20.0), strip_tabs, status, false),
+            fit_tab_width(px(20.0), strip_tabs, status, &[]),
             strip + ICON_SIZE + STRIP_GAP,
             "{status:?}"
         );
     }
     assert_eq!(
-        fit_tab_width(px(20.0), strip_tabs, TabStatus::Busy, false),
+        fit_tab_width(px(20.0), strip_tabs, TabStatus::Busy, &[]),
         strip + DOT_SIZE + STRIP_GAP,
         "the running dot takes its own width"
     );
     let pill_tabs = tabs(TabStyle::Pill, false, 48.0, 600.0);
-    let pill = fit_tab_width(px(20.0), pill_tabs, idle, false);
+    let pill = fit_tab_width(px(20.0), pill_tabs, idle, &[]);
     assert_eq!(pill, px(20.0 + 3.0 + 2.0 + 9.0 + 5.0 + 6.0 + 18.0));
     assert_eq!(
-        fit_tab_width(px(20.0), pill_tabs, TabStatus::Exited, false),
+        fit_tab_width(px(20.0), pill_tabs, TabStatus::Exited, &[]),
         pill + ICON_SIZE + PILL_GAP
     );
     assert_eq!(
-        fit_tab_width(px(20.0), pill_tabs, TabStatus::Busy, false),
+        fit_tab_width(px(20.0), pill_tabs, TabStatus::Busy, &[]),
         pill + DOT_SIZE + PILL_GAP
     );
     assert_eq!(
@@ -51,26 +51,32 @@ fn fit_widths_add_style_chrome_and_clamp_to_bounds() {
             px(20.0),
             tabs(TabStyle::Pill, true, 48.0, 600.0),
             idle,
-            false
+            &[]
         ),
         pill + PILL_ACCENT_PADDING_LEFT - PILL_PADDING_LEFT
     );
-    assert_eq!(fit_tab_width(px(20.4), strip_tabs, idle, false), px(64.0));
-    // The sync mark adds an icon and a gap, before any status.
+    assert_eq!(fit_tab_width(px(20.4), strip_tabs, idle, &[]), px(64.0));
+    // Each mark adds an icon and a gap, before any status.
+    let sync = [TabMark::InputSync];
     assert_eq!(
-        fit_tab_width(px(20.0), strip_tabs, idle, true),
+        fit_tab_width(px(20.0), strip_tabs, idle, &sync),
         strip + ICON_SIZE + STRIP_GAP
     );
     assert_eq!(
-        fit_tab_width(px(20.0), pill_tabs, TabStatus::Bell, true),
+        fit_tab_width(px(20.0), pill_tabs, TabStatus::Bell, &sync),
         pill + (ICON_SIZE + PILL_GAP) * 2.0
+    );
+    assert_eq!(
+        fit_tab_width(px(20.0), strip_tabs, idle, &[sync[0], sync[0]]),
+        strip + (ICON_SIZE + STRIP_GAP) * 2.0,
+        "the width grows with the list, whatever its marks"
     );
     assert_eq!(
         fit_tab_width(
             px(1.0),
             tabs(TabStyle::Strip, false, 96.0, 240.0),
             idle,
-            false
+            &[]
         ),
         px(96.0)
     );
@@ -79,7 +85,7 @@ fn fit_widths_add_style_chrome_and_clamp_to_bounds() {
             px(900.0),
             tabs(TabStyle::Pill, false, 96.0, 240.0),
             idle,
-            false,
+            &[],
         ),
         px(240.0)
     );
@@ -92,7 +98,7 @@ fn horizontal_dividers_skip_the_first_active_and_following_tabs() {
         index,
         title: String::new(),
         status: TabStatus::Idle,
-        input_sync: false,
+        marks: Vec::new(),
         activity,
         flush_start: false,
         targeted: false,
