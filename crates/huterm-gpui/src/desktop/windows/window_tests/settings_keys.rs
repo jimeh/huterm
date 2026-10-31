@@ -1573,6 +1573,7 @@ fn an_arrange_panes_shortcut_picks_its_layout_from_every_layout(
                 "Equal Rows",
                 "Main Left",
                 "Main Top",
+                "Main Centered",
                 "Tiled",
                 "dev"
             ]
@@ -1580,7 +1581,15 @@ fn an_arrange_panes_shortcut_picks_its_layout_from_every_layout(
         // The titles are labels only: each item writes the layout's name.
         assert_eq!(
             view.menu_ids(cx)[1..],
-            ["columns", "rows", "main_left", "main_top", "tiled", "dev"]
+            [
+                "columns",
+                "rows",
+                "main_left",
+                "main_top",
+                "main_centered",
+                "tiled",
+                "dev"
+            ]
         );
     });
     with_window(&mut harness, |view, window, cx| {

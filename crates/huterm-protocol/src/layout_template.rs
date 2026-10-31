@@ -1,5 +1,5 @@
 //! Layout templates: a small language that describes how to arrange a
-//! tab's existing panes for any pane count, the five built-in layouts
+//! tab's existing panes for any pane count, the six built-in layouts
 //! written in it, and the rules that step a tab through a cycle of named
 //! layouts.
 //!
@@ -277,13 +277,18 @@ impl NamedLayout {
 }
 
 /// The built-in layouts, in the default cycle's order: equal columns,
-/// equal rows, main left, main top, and tiled.
-pub static BUILT_IN_LAYOUTS: LazyLock<[NamedLayout; 5]> = LazyLock::new(|| {
+/// equal rows, main left, main top, main centered, and tiled.
+pub static BUILT_IN_LAYOUTS: LazyLock<[NamedLayout; 6]> = LazyLock::new(|| {
     [
         ("columns", "Equal Columns", "columns(*)"),
         ("rows", "Equal Rows", "rows(*)"),
         ("main_left", "Main Left", "columns(pane 60%, rows(*))"),
         ("main_top", "Main Top", "rows(pane 60%, columns(*))"),
+        (
+            "main_centered",
+            "Main Centered",
+            "columns(rows(*), pane 50%, rows(*))",
+        ),
         ("tiled", "Tiled", "grid(*)"),
     ]
     .map(|(name, title, template)| NamedLayout {

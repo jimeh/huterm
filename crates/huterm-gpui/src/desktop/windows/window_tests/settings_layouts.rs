@@ -877,7 +877,15 @@ fn cycle_rows_turn_on_off_and_move_and_keep_one_layout(
     with_view(&mut harness, |view, _| {
         assert_eq!(
             view.cycle_row_names(),
-            ["rows", "columns", "main_left", "main_top", "tiled", "dev"]
+            [
+                "rows",
+                "columns",
+                "main_left",
+                "main_top",
+                "main_centered",
+                "tiled",
+                "dev"
+            ]
         );
     });
     let cycle = |text: &str| {
@@ -994,6 +1002,7 @@ fn tab_reaches_every_control_and_the_arrows_move_along_the_cycle(
         "action:lcyc:rows",
         "action:lcyc:main_left",
         "action:lcyc:main_top",
+        "action:lcyc:main_centered",
         "action:lcyc:tiled",
     ];
     for expected in order.iter().skip(1) {

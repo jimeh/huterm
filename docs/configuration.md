@@ -256,7 +256,7 @@ macOS and `super` on Linux, and writes `"off"` for Off.
 
 ### Pane layouts
 
-`arrange_panes` and the layout cycle start with five built-in layouts,
+`arrange_panes` and the layout cycle start with six built-in layouts,
 described in [pane layouts](keybindings.md#pane-layouts). Define your own
 under `[panes.layouts]`, each a name and a layout template, and choose the
 layouts the cycle visits with `layout_cycle`:
@@ -268,7 +268,9 @@ pair = "rows(columns(pane, pane) 70%, columns(*))"
 sides = "columns(rows(*) 25%, pane, rows(*) 25%)"
 
 [panes]
-layout_cycle = ["columns", "rows", "main_left", "main_top", "tiled", "dev"]
+layout_cycle = [
+  "columns", "rows", "main_left", "main_top", "main_centered", "tiled", "dev",
+]
 ```
 
 A template describes a layout for any number of panes. The built-ins are
@@ -291,8 +293,9 @@ templates too: `main_left` is `columns(pane 60%, rows(*))`.
 
 Panes fill the slots in template order, which is the order focus and swaps
 follow. A slot that receives no pane drops out, and its siblings' shares
-grow in proportion to fill its space. With six panes, `sides` puts three on
-the left, one in the centre, and two on the right. With two panes its right
+grow in proportion to fill its space. `sides` arranges panes as the built-in
+`main_centered` does: with six panes it puts three on the left, one in the
+centre, and two on the right. With two panes its right
 stack is empty, so the left pane and the centre pane take one third and two
 thirds of the width. A template without a `*` holds no more panes than it
 has `pane` slots: `arrange_panes` refuses a tab with more, with a notice,
@@ -301,7 +304,7 @@ and the cycle skips that layout.
 A layout name is up to 32 lowercase letters, digits, and underscores,
 starting with a letter, and cannot be a built-in's name. The file holds at
 most 64 layouts; each template is at most 1 KiB, with splits nested at most
-16 deep. `layout_cycle` defaults to the five built-ins in the table's order,
+16 deep. `layout_cycle` defaults to the six built-ins in the table's order,
 may name any built-in or user layout, and must not be empty or repeat a
 name. A layout that breaks these rules, or a `layout_cycle` entry naming a
 layout that does not exist, makes the whole configuration invalid. The

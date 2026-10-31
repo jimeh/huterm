@@ -285,7 +285,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `move_pane_to_pane` | Window | `pane` and `side` (`left`, `right`, `up`, or `down`). Moves the focused pane beside a pane in any tab, workspace, or session. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `move_pane_to_new_tab` | Window | Optional `workspace`; defaults to the window's, where the new tab opens after the pane's tab. A tab's only pane moves its whole tab to another workspace. |
 | `move_tab_to_pane` | Window | `pane` and `side`; `tab` defaults to the active tab. Moves the whole tab beside a pane of another tab, keeping its layout. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
-| `arrange_panes` | Window | `layout`: `columns`, `rows`, `main_left`, `main_top`, `tiled`, or a name from `[panes.layouts]` (see [pane layouts](#pane-layouts)). Rearranges the active tab's panes into that layout, keeping every terminal and the pane order. A binding may set `layout`; the palette and the Arrange Panes… menu items prompt for it. |
+| `arrange_panes` | Window | `layout`: `columns`, `rows`, `main_left`, `main_top`, `main_centered`, `tiled`, or a name from `[panes.layouts]` (see [pane layouts](#pane-layouts)). Rearranges the active tab's panes into that layout, keeping every terminal and the pane order. A binding may set `layout`; the palette and the Arrange Panes… menu items prompt for it. |
 | `next_pane_layout` / `previous_pane_layout` | Window | Arranges the active tab's panes into the next or previous layout of the cycle, skipping a layout that does not fit the window or would change nothing. |
 | `balance_panes` | Window | Gives every split of the active tab equal sizes, keeping its shape. |
 | `undo` | Window | Undoes this window's last pane swap, move, extraction, tab drop, arrangement, or balance, putting the same panes and terminals back where they were, with the earlier divider positions. A tab the change removed comes back with its name, at its old position. Renames, reorders, and zooms made since survive. Splits, closes, resizes, and zoom are not recorded, and only the last change can be undone. Once a tab the change touched has another shape, or has moved to another session, the change is dropped and undo does nothing; if the runtime refuses an undo the window could not yet see was stale, a notice says so. With nothing to undo, or while the window is busy, the key does nothing. |
@@ -415,10 +415,12 @@ a shell relies on.
 
 ### Pane layouts
 
-`arrange_panes` takes one of five built-in layouts, or a layout you define in
+`arrange_panes` takes one of six built-in layouts, or a layout you define in
 [the configuration file](configuration.md#pane-layouts). Layouts fill their
 places with the tab's panes in layout order, so no layout reorders them. Swap
-or move a pane first to make it the main pane.
+or move a pane first to make it the main pane. In Main Centered the main pane
+is pane `ceil((n - 1) / 2) + 1` of `n`, so it moves as panes are added: the
+second of two or three, the third of four or five.
 
 | Layout | Name | Arrangement |
 | --- | --- | --- |
@@ -426,6 +428,7 @@ or move a pane first to make it the main pane.
 | Equal Rows | `rows` | Every pane stacked, at equal heights. |
 | Main Left | `main_left` | The first pane on the left at 60 %, the others stacked on the right. |
 | Main Top | `main_top` | The first pane on top at 60 %, the others side by side below. |
+| Main Centered | `main_centered` | The middle pane in the centre at 50 %, the panes before it stacked on the left and the panes after it stacked on the right. With two panes the right stack is empty, and the panes take one third and two thirds. |
 | Tiled | `tiled` | A grid of `ceil(sqrt(n))` columns, filled row by row; the last row's panes share its width. |
 
 Bind a layout by name:

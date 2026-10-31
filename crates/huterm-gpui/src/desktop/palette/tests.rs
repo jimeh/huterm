@@ -881,6 +881,7 @@ fn the_layout_picker_lists_built_ins_by_title_then_user_layouts_by_name() {
             ("Equal Rows", "rows(*)"),
             ("Main Left", "columns(pane 60%, rows(*))"),
             ("Main Top", "rows(pane 60%, columns(*))"),
+            ("Main Centered", "columns(rows(*), pane 50%, rows(*))"),
             ("Tiled", "grid(*)"),
             ("dev", "columns(pane 55%, rows(*))"),
             ("pair", "rows(columns(pane, pane) 70%, columns(*))"),

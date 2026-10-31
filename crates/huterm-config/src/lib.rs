@@ -1254,8 +1254,8 @@ pub struct PanesConfig {
     )))]
     pub layouts: BTreeMap<String, String>,
     /// The layouts Next and Previous Pane Layout step through, in order:
-    /// `columns`, `rows`, `main_left`, `main_top`, `tiled`, or a name from
-    /// `[panes.layouts]`.
+    /// `columns`, `rows`, `main_left`, `main_top`, `main_centered`, `tiled`,
+    /// or a name from `[panes.layouts]`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "panes",
         "x-huterm-group" = "Pane layouts",
@@ -3075,7 +3075,14 @@ mod panes_tests {
         let defaults = panes("").unwrap();
         assert_eq!(
             defaults.layout_cycle,
-            ["columns", "rows", "main_left", "main_top", "tiled"]
+            [
+                "columns",
+                "rows",
+                "main_left",
+                "main_top",
+                "main_centered",
+                "tiled"
+            ]
         );
         let configured = panes(
             "[panes.layouts]\n\
@@ -3111,6 +3118,7 @@ mod panes_tests {
                 "rows",
                 "main_left",
                 "main_top",
+                "main_centered",
                 "tiled",
                 "dev",
                 "sides"

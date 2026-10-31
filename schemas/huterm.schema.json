@@ -628,9 +628,10 @@
             "rows",
             "main_left",
             "main_top",
+            "main_centered",
             "tiled"
           ],
-          "description": "The layouts Next and Previous Pane Layout step through, in order:\n`columns`, `rows`, `main_left`, `main_top`, `tiled`, or a name from\n`[panes.layouts]`.",
+          "description": "The layouts Next and Previous Pane Layout step through, in order:\n`columns`, `rows`, `main_left`, `main_top`, `main_centered`, `tiled`,\nor a name from `[panes.layouts]`.",
           "items": {
             "pattern": "^[a-z][a-z0-9_]{0,31}$",
             "type": "string"
@@ -660,6 +661,7 @@
                 "rows",
                 "main_left",
                 "main_top",
+                "main_centered",
                 "tiled"
               ]
             },
@@ -4782,7 +4784,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "layout": {
-                    "description": "Pane layout name: `columns`, `rows`, `main_left`, `main_top`, `tiled`, or a name from `[panes.layouts]`.",
+                    "description": "Pane layout name: `columns`, `rows`, `main_left`, `main_top`, `main_centered`, `tiled`, or a name from `[panes.layouts]`.",
                     "pattern": "^[a-z][a-z0-9_]{0,31}$",
                     "type": "string"
                   }

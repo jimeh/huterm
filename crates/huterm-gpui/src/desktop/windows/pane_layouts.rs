@@ -651,9 +651,9 @@ mod tests {
             step(&three, &cycle, true, short).unwrap_err().message(),
             "No other pane layout fits this window"
         );
-        // At 258 panes only tiled is available, and the tab is tiled.
+        // At 514 panes only tiled is available, and the tab is tiled.
         assert_eq!(
-            step(&built_in("tiled", 258), &cycle, false, fits)
+            step(&built_in("tiled", 514), &cycle, false, fits)
                 .unwrap_err()
                 .message(),
             "No other pane layout in the cycle changes these panes"
