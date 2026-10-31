@@ -72,7 +72,7 @@
       "description": "Terminal bell presentation settings.",
       "properties": {
         "audio": {
-          "description": "Play a sound when a bell rings in any terminal, focused or not; on by\ndefault on macOS.",
+          "description": "Play a sound when a bell rings in any terminal, focused or not; on by\ndefault on macOS and off on Linux.",
           "type": "boolean",
           "x-huterm-apply": "live",
           "x-huterm-group": "Bell",

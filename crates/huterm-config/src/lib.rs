@@ -209,7 +209,7 @@ pub struct BellConfig {
     )))]
     pub visual: bool,
     /// Play a sound when a bell rings in any terminal, focused or not; on by
-    /// default on macOS.
+    /// default on macOS and off on Linux.
     #[cfg_attr(feature = "schema", schemars(transform = schema::without_default, extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Bell",
