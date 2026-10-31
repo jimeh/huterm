@@ -409,7 +409,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   same third main-window tab active at `w0.active_index=2`. It recurred
   again on 2026-10-30 on PR #343 (run 41108259656, job 124243665211, head
   `10dcb4e7`), which does not touch the palette, with extra tab 16 below
-  `fixture-session` 19 and active at `w0.active_index=2`.
+  `fixture-session` 19 and active at `w0.active_index=2`. It recurred on
+  2026-10-31 on PR #362 (run 41209548791, job 124561468799, head
+  `5bdce63f`), which changes pane indicators and dimming only, again with
+  extra tab 16 below `fixture-session` 19, active at `w0.active_index=2`.
 - **Evidence:** the count includes every core workspace's tabs: two in the
   main window and one in the quake window from step 2. The failure state
   shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux
