@@ -11,7 +11,8 @@ use gpui::{App, Context, Entity, Window};
 use huterm_protocol::{CommandError, CommandOutcome, TabId, TerminalId};
 
 use super::{
-    Desktop, PaneView, SyncedInput, TerminalView, WorkspaceView, terminating,
+    Desktop, PaneView, SyncedInput, TabView, TerminalView, WorkspaceView,
+    terminating,
 };
 
 impl WorkspaceView {
@@ -108,10 +109,14 @@ pub(in crate::desktop) fn terminal_syncs_input(
         .is_some_and(|tab| tab.input_sync)
 }
 
-/// Whether `pane` of `tab` receives synced input, so its title bar shows
-/// the sync mark: the tab syncs and the pane's terminal has not exited.
-pub(super) fn receives(tab: TabId, pane: &PaneView, cx: &App) -> bool {
-    syncs_input(tab, cx) && !pane.view.read(cx).exited
+/// Whether typing now reaches `pane` of `tab` through input sync, so it
+/// draws the sync frame and title bar mark: the tab syncs, and neither the
+/// pane nor the focused pane, where typing starts, has exited. An exited
+/// focused pane takes no input, so it syncs none; the tab keeps its mark.
+pub(super) fn receives(tab: &TabView, pane: &PaneView, cx: &App) -> bool {
+    syncs_input(tab.id, cx)
+        && !pane.view.read(cx).exited
+        && !tab.focused().view.read(cx).exited
 }
 
 /// Whether `tab` syncs input, from the hierarchy projection.

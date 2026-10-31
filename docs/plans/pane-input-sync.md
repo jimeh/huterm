@@ -104,11 +104,14 @@ accent and dim layer are.
   in the theme accent, drawn over its terminal and title bar. This holds
   with title bars hidden, a single pane, or zoom. The solid focus cue draws
   over it, and its dashes keep that cue readable. An exited pane takes no
-  input, so it gets no frame (UX review).
-- The tab item and each live pane's title bar show the Lucide `radio` icon
-  in the accent colour before the title. Fit tab widths count it.
+  input, so it gets no frame, and while the focused pane has exited no
+  pane is framed, since typing reaches none (UX review).
+- The tab item, and the title bar of each pane typing reaches, show the
+  Lucide `radio` icon in the accent colour before the title. Fit tab
+  widths count it.
 - The palette row reads like the menu rows, "Sync Pane Input" or "Stop
-  Syncing Pane Input", through the window's row titles (UX review).
+  Syncing Pane Input", through the window's row titles, and its
+  description says "broadcast", so that search finds it (UX review).
 - Accent, never the error colour; nothing blinks.
 
 No setting turns the indication off. The generated schema and

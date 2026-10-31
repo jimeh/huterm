@@ -4808,7 +4808,7 @@ impl WorkspaceView {
                             status: pane.status(cx),
                             focused: id == focused,
                             zoomed: zoomed == Some(id),
-                            input_sync: input_sync::receives(tab_id, pane, cx),
+                            input_sync: input_sync::receives(tab, pane, cx),
                             bottom,
                         },
                         colors,
@@ -4869,20 +4869,16 @@ impl WorkspaceView {
         cx: &App,
     ) -> Vec<gpui::AnyElement> {
         let shown = Self::panes_shown(tab, rects);
-        let mut marks = if input_sync::syncs_input(tab.id, cx) {
-            self.sync_frames(tab, rects, bounds, colors, cx)
-        } else {
-            Vec::new()
-        };
+        let mut marks = self.sync_frames(tab, rects, bounds, colors, cx);
         let focused = tab.focused().pane;
         marks.extend(self.focus_accent(rects, focused, shown, colors));
         marks
     }
 
-    /// The frame around each pane of `tab` drawn this frame that receives
-    /// synced input: every live pane the layout places, or, without a
-    /// layout, the focused pane across `bounds`. An exited pane takes no
-    /// input, so it has no frame.
+    /// The frame around each pane of `tab` drawn this frame that typing
+    /// would reach through input sync (see [`input_sync::receives`]):
+    /// those the layout places, or, without a layout, the focused pane
+    /// across `bounds`.
     fn sync_frames(
         &self,
         tab: &TabView,
@@ -4895,12 +4891,12 @@ impl WorkspaceView {
             Some(rects) => tab
                 .panes
                 .iter()
-                .filter(|pane| !pane.view.read(cx).exited)
+                .filter(|pane| input_sync::receives(tab, pane, cx))
                 .filter_map(|pane| {
                     Some((pane.pane, rects.pane(pane.pane)?.frame))
                 })
                 .collect(),
-            None if tab.focused().view.read(cx).exited => Vec::new(),
+            None if !input_sync::receives(tab, tab.focused(), cx) => Vec::new(),
             None => vec![(tab.focused().pane, bounds)],
         };
         let mut marks = self.drawn_focus.borrow_mut();

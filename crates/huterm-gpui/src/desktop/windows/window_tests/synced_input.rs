@@ -240,6 +240,16 @@ fn panes_that_left_or_exited_get_no_synced_input_and_break_nothing(
     harness.wait_for("only the live pane to draw a sync frame", |cx| {
         focus_marks(cx, window).is_some_and(|marks| marks.synced == [first])
     });
+    // Typing in the exited pane goes nowhere, so nothing is framed while it
+    // has focus.
+    harness.focus(window, tab, exiting);
+    harness.wait_for("no sync frame while the exited pane has focus", |cx| {
+        focus_marks(cx, window).is_some_and(|marks| marks.synced.is_empty())
+    });
+    harness.focus(window, tab, first);
+    harness.wait_for("the live pane's frame to return", |cx| {
+        focus_marks(cx, window).is_some_and(|marks| marks.synced == [first])
+    });
     harness.type_line(window, "stay");
     harness.wait_for("the focused pane to answer", |cx| {
         answered(cx, window, tab, first, &["stay"])
