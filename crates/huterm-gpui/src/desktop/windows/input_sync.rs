@@ -10,7 +10,9 @@ use std::sync::Arc;
 use gpui::{App, Context, Entity, Window};
 use huterm_protocol::{CommandError, CommandOutcome, TabId, TerminalId};
 
-use super::{Desktop, SyncedInput, TerminalView, WorkspaceView, terminating};
+use super::{
+    Desktop, PaneView, SyncedInput, TerminalView, WorkspaceView, terminating,
+};
 
 impl WorkspaceView {
     /// Turns the active tab's input sync on or off. The change reaches
@@ -104,6 +106,12 @@ pub(in crate::desktop) fn terminal_syncs_input(
         .terminal_tab(terminal)
         .and_then(|tab| state.tab(tab))
         .is_some_and(|tab| tab.input_sync)
+}
+
+/// Whether `pane` of `tab` receives synced input, so its title bar shows
+/// the sync mark: the tab syncs and the pane's terminal has not exited.
+pub(super) fn receives(tab: TabId, pane: &PaneView, cx: &App) -> bool {
+    syncs_input(tab, cx) && !pane.view.read(cx).exited
 }
 
 /// Whether `tab` syncs input, from the hierarchy projection.

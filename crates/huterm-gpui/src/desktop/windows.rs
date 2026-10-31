@@ -4808,7 +4808,7 @@ impl WorkspaceView {
                             status: pane.status(cx),
                             focused: id == focused,
                             zoomed: zoomed == Some(id),
-                            input_sync: input_sync::syncs_input(tab_id, cx),
+                            input_sync: input_sync::receives(tab_id, pane, cx),
                             bottom,
                         },
                         colors,
@@ -4870,7 +4870,7 @@ impl WorkspaceView {
     ) -> Vec<gpui::AnyElement> {
         let shown = Self::panes_shown(tab, rects);
         let mut marks = if input_sync::syncs_input(tab.id, cx) {
-            self.sync_frames(tab, rects, bounds, colors)
+            self.sync_frames(tab, rects, bounds, colors, cx)
         } else {
             Vec::new()
         };
@@ -4879,24 +4879,28 @@ impl WorkspaceView {
         marks
     }
 
-    /// The frame around each pane of `tab` drawn this frame: every pane
-    /// the layout places, or, without a layout, the focused pane across
-    /// `bounds`.
+    /// The frame around each pane of `tab` drawn this frame that receives
+    /// synced input: every live pane the layout places, or, without a
+    /// layout, the focused pane across `bounds`. An exited pane takes no
+    /// input, so it has no frame.
     fn sync_frames(
         &self,
         tab: &TabView,
         rects: Option<&TabPanes>,
         bounds: Bounds<Pixels>,
         colors: TabColors,
+        cx: &App,
     ) -> Vec<gpui::AnyElement> {
         let frames: Vec<(PaneId, Bounds<Pixels>)> = match rects {
             Some(rects) => tab
                 .panes
                 .iter()
+                .filter(|pane| !pane.view.read(cx).exited)
                 .filter_map(|pane| {
                     Some((pane.pane, rects.pane(pane.pane)?.frame))
                 })
                 .collect(),
+            None if tab.focused().view.read(cx).exited => Vec::new(),
             None => vec![(tab.focused().pane, bounds)],
         };
         let mut marks = self.drawn_focus.borrow_mut();
@@ -8291,7 +8295,7 @@ impl WorkspaceView {
         &self,
         cx: &App,
     ) -> std::collections::HashMap<huterm_protocol::CommandId, String> {
-        [
+        let mut titles: std::collections::HashMap<_, _> = [
             (ids::UNDO, RestoreDirection::Undo),
             (ids::REDO, RestoreDirection::Redo),
         ]
@@ -8300,7 +8304,16 @@ impl WorkspaceView {
             let label = self.layout_restore_label(direction, cx)?;
             Some((id, format!("{} {label}", window_menu::label(id))))
         })
-        .collect()
+        .collect();
+        // The toggle says what it will do, as the pane menus do.
+        if let Some(tab) = self.active_tab(cx) {
+            let on = input_sync::syncs_input(tab, cx);
+            titles.insert(
+                ids::TOGGLE_PANE_INPUT_SYNC,
+                pane_menu::input_sync_label(on).to_owned(),
+            );
+        }
+        titles
     }
 
     fn current_palette_refresh_state(&self, cx: &App) -> PaletteRefreshState {

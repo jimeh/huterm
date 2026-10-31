@@ -236,6 +236,10 @@ fn panes_that_left_or_exited_get_no_synced_input_and_break_nothing(
     harness.cx.update(|cx| {
         assert!(!syncs_input(other, cx), "a moved pane's new tab starts off");
     });
+    // The exited pane takes no input, so only the live pane is framed.
+    harness.wait_for("only the live pane to draw a sync frame", |cx| {
+        focus_marks(cx, window).is_some_and(|marks| marks.synced == [first])
+    });
     harness.type_line(window, "stay");
     harness.wait_for("the focused pane to answer", |cx| {
         answered(cx, window, tab, first, &["stay"])
@@ -248,10 +252,13 @@ fn panes_that_left_or_exited_get_no_synced_input_and_break_nothing(
     harness.cx.update(|cx| {
         let moved = pane_screen(cx, window, other, leaving).unwrap();
         assert!(!moved.contains("got:stay"), "{moved}");
-        // Only the exit's own notice: no pane refused or failed its copy.
-        assert_eq!(
-            notices(cx, window),
-            ["info|terminal:sh|Process exited with status 0"]
+        // At most the exit's own notice, which may have expired: no pane
+        // refused or failed its copy.
+        let notices = notices(cx, window);
+        assert!(
+            notices.iter().all(|notice| notice
+                == "info|terminal:sh|Process exited with status 0"),
+            "{notices:?}"
         );
     });
 }
@@ -330,4 +337,40 @@ fn a_toggle_elsewhere_redraws_the_frames_of_every_pane(
     harness.wait_for("the sync frames to go", |cx| {
         focus_marks(cx, window).is_some_and(|marks| marks.synced.is_empty())
     });
+}
+
+/// The title `window`'s open palette gives the sync toggle's row.
+fn palette_sync_title(cx: &mut App, window: AnyWindowHandle) -> Option<String> {
+    window
+        .update(cx, |root, _, cx| {
+            let view = root.downcast::<WorkspaceView>().ok()?;
+            let palette = view.read(cx).palette.clone()?;
+            palette
+                .read(cx)
+                .titles
+                .get(&ids::TOGGLE_PANE_INPUT_SYNC)
+                .cloned()
+        })
+        .ok()
+        .flatten()
+}
+
+#[gpui::test]
+fn the_palette_row_says_what_the_toggle_will_do(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, _, _) = harness.split_window(tab);
+    for (on, title) in [
+        (false, "Sync Pane Input"),
+        (true, "Stop Syncing Pane Input"),
+    ] {
+        if on {
+            harness.toggle_sync(window, tab, true);
+        }
+        harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+        harness.wait_for("the palette to title the sync row", |cx| {
+            palette_sync_title(cx, window).as_deref() == Some(title)
+        });
+        harness.press(window, "escape");
+    }
 }

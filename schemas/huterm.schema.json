@@ -4135,7 +4135,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Type into every pane of the active tab at once, or stop.",
+            "description": "Type into every shown pane of the active tab at once, or stop.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -4145,7 +4145,7 @@
               },
               "command": {
                 "const": "toggle_pane_input_sync",
-                "description": "Type into every pane of the active tab at once, or stop.",
+                "description": "Type into every shown pane of the active tab at once, or stop.",
                 "type": "string"
               },
               "description": {

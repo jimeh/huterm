@@ -1513,7 +1513,7 @@ const CATALOG: &[CommandSpec] = &[
         ids::TOGGLE_PANE_INPUT_SYNC,
         CommandScope::Window,
         "Toggle Pane Input Sync",
-        "Type into every pane of the active tab at once, or stop.",
+        "Type into every shown pane of the active tab at once, or stop.",
         &[],
     ),
     spec(

@@ -74,13 +74,18 @@ pub(super) fn input_sync_item(
 ) -> MenuItem {
     item(
         ids::TOGGLE_PANE_INPUT_SYNC,
-        if input_sync {
-            "Stop Syncing Pane Input"
-        } else {
-            "Sync Pane Input"
-        }
-        .to_owned(),
+        input_sync_label(input_sync).to_owned(),
     )
+}
+
+/// What toggling a tab's input sync does from its current state, for menu
+/// rows and the palette.
+pub(super) fn input_sync_label(input_sync: bool) -> &'static str {
+    if input_sync {
+        "Stop Syncing Pane Input"
+    } else {
+        "Sync Pane Input"
+    }
 }
 
 #[cfg(test)]

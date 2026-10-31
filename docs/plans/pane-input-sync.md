@@ -100,12 +100,15 @@ macOS menu bar's titles are fixed, so its row keeps the catalog title,
 All drawn without listeners, so GPUI gives them no hitbox, as the focus
 accent and dim layer are.
 
-- Each drawn pane of a syncing tab gets a 2-point dashed inset frame in the
-  theme accent, drawn over its terminal and title bar. This holds with
-  title bars hidden, a single pane, or zoom. The solid focus cue draws over
-  it, and its dashes keep that cue readable.
-- The tab item and each pane title bar show the Lucide `radio` icon in the
-  accent colour before the title. Fit tab widths count it.
+- Each drawn live pane of a syncing tab gets a 2-point dashed inset frame
+  in the theme accent, drawn over its terminal and title bar. This holds
+  with title bars hidden, a single pane, or zoom. The solid focus cue draws
+  over it, and its dashes keep that cue readable. An exited pane takes no
+  input, so it gets no frame (UX review).
+- The tab item and each live pane's title bar show the Lucide `radio` icon
+  in the accent colour before the title. Fit tab widths count it.
+- The palette row reads like the menu rows, "Sync Pane Input" or "Stop
+  Syncing Pane Input", through the window's row titles (UX review).
 - Accent, never the error colour; nothing blinks.
 
 No setting turns the indication off. The generated schema and
