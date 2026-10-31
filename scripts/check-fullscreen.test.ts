@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertRefitIntervals, assertRestored, assertTimeout, assertWindowedBounds, nativeFrameIsUsable, newestFailureIs, notices, parseState, ptyMatchesGrid, windowedBoundsOnDisplay } from "./check-fullscreen";
+import { assertRefitIntervals, assertRestored, assertTimeout, assertWindowedBounds, assertWindowRadii, nativeFrameIsUsable, newestFailureIs, notices, parseState, ptyMatchesGrid, windowedBoundsOnDisplay } from "./check-fullscreen";
 
 describe("fullscreen evidence checker", () => {
   test("rejects screen-sized restore bounds and changed PTY geometry", () => {
@@ -8,6 +8,15 @@ describe("fullscreen evidence checker", () => {
     for (const field of ["restore", "grid", "terminal"]) {
       expect(() => assertRestored(before, { ...before, [`w0.${field}`]: "wrong" }, false)).toThrow();
     }
+  });
+  test("window radii square off in fullscreen and round again on macOS once windowed", () => {
+    const radii = (value: string) => parseState(`w0.window_radii=${value}`);
+    expect(() => assertWindowRadii(radii("0,0"), true, true)).not.toThrow();
+    expect(() => assertWindowRadii(radii("16,16"), true, true)).toThrow("square");
+    expect(() => assertWindowRadii(radii("16,16"), false, true)).not.toThrow();
+    expect(() => assertWindowRadii(radii("0,0"), false, true)).toThrow("rounded");
+    expect(() => assertWindowRadii(radii("0,0"), false, false)).not.toThrow();
+    expect(() => assertWindowRadii(parseState("w0.mode=Windowed"), false, false)).toThrow("missing");
   });
   test("ignored EWMH requests need one error notice and a cleared pending request", () => {
     const state = { "w0.mode": "Windowed", "w0.pending": "false", "w0.notices": "1", "w0.notice0": "error|command|Fullscreen transition timed out" };

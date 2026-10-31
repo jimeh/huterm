@@ -71,6 +71,16 @@ fn fit_widths_add_style_chrome_and_clamp_to_bounds() {
         strip + (ICON_SIZE + STRIP_GAP) * 2.0,
         "the width grows with the list, whatever its marks"
     );
+    // The zoom mark takes the same room, and beside the sync mark twice.
+    let both = [TabMark::Zoom, TabMark::InputSync];
+    assert_eq!(
+        fit_tab_width(px(20.0), strip_tabs, idle, &both[..1]),
+        strip + ICON_SIZE + STRIP_GAP
+    );
+    assert_eq!(
+        fit_tab_width(px(20.0), pill_tabs, TabStatus::Busy, &both),
+        pill + DOT_SIZE + PILL_GAP + (ICON_SIZE + PILL_GAP) * 2.0
+    );
     assert_eq!(
         fit_tab_width(
             px(1.0),

@@ -11,6 +11,7 @@ use crate::renderer::rgba_color;
 use crate::ui::scrollbar::ScrollbarColors;
 
 use super::super::scrollbar_colors;
+use super::pane_indicators::DIMMED_SYNC_MARK;
 use super::{
     App, Bounds, CloseTarget, Context, FluentBuilder, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, PaneId, ParentElement, Pixels,
@@ -38,8 +39,6 @@ const PANE_TITLE_GAP: Pixels = px(6.0);
 /// The thickness of the focused pane's mark while its title bar is not
 /// shown.
 const PANE_FOCUS_CUE_HEIGHT: Pixels = px(2.0);
-/// The thickness of the frame around each pane of a tab that syncs input.
-const PANE_SYNC_FRAME_WIDTH: Pixels = px(2.0);
 
 /// What one pane's title bar shows.
 #[expect(
@@ -56,6 +55,11 @@ pub(super) struct PaneTitleBar {
     pub(super) zoomed: bool,
     /// The pane's tab syncs input, so the bar shows the sync mark.
     pub(super) input_sync: bool,
+    /// A zoom shows this pane alone, so syncing reaches nothing else and
+    /// the sync mark dims.
+    pub(super) sync_dimmed: bool,
+    /// The `title_bar` indicator's tint over the bar's background.
+    pub(super) tint: Option<Hsla>,
     /// The bar runs along its pane's bottom edge, so its border is on top.
     pub(super) bottom: bool,
 }
@@ -92,6 +96,8 @@ pub(super) struct TabColors {
     pub(super) error: Hsla,
     /// The running dot: the theme's ANSI yellow.
     pub(super) running: Hsla,
+    /// The zoom indicator and mark: the theme's ANSI magenta.
+    pub(super) zoom: Hsla,
     /// Overlay on a hovered tab.
     pub(super) hover: Hsla,
     /// Overlay on a hovered control, twice as strong as a tab's.
@@ -123,6 +129,7 @@ impl TabColors {
             terminal: color(theme.background),
             error: color(theme.ansi[1]),
             running: color(theme.ansi[3]),
+            zoom: color(theme.ansi[5]),
             hover: rgba_color(hover),
             control_hover: rgba_color(control_hover),
             control_pressed: rgba_color(control_pressed),
@@ -520,13 +527,10 @@ impl WorkspaceView {
             focused,
             zoomed,
             input_sync,
+            sync_dimmed,
+            tint,
             bottom,
         } = bar;
-        let marks: &[TabMark] = if input_sync {
-            &[TabMark::InputSync]
-        } else {
-            &[]
-        };
         div()
             .id(("pane-title", pane.get()))
             .role(gpui::Role::Group)
@@ -546,6 +550,8 @@ impl WorkspaceView {
             .pr(PANE_TITLE_PADDING_RIGHT)
             .overflow_hidden()
             .bg(if focused { colors.active } else { colors.bar })
+            // Absolute, so it tints the background without taking a slot.
+            .children(tint.map(|tint| div().absolute().inset_0().bg(tint)))
             .when(bottom, gpui::Styled::border_t_1)
             .when(!bottom, gpui::Styled::border_b_1)
             .border_color(colors.border)
@@ -578,7 +584,11 @@ impl WorkspaceView {
                     cx.stop_propagation();
                 }),
             )
-            .children(mark_elements(marks, colors))
+            .children(
+                input_sync.then(|| {
+                    mark_element(TabMark::InputSync, colors, sync_dimmed)
+                }),
+            )
             .children(status_icon(status, colors))
             .child(pane_title_text(title, status))
             .children(Self::pane_title_buttons(
@@ -677,44 +687,39 @@ fn pane_title_text(title: String, status: TabStatus) -> Div {
         .child(title)
 }
 
-/// The focused pane's mark while its title bar is off screen: an accent
-/// line at `alpha` along the `bottom` or top edge of its `frame`, where the
-/// bar would be, drawn over the terminal without taking pointer input.
-pub(super) fn pane_focus_cue(
+/// Where the focused pane's mark sits while its title bar is off screen:
+/// along the `bottom` or top edge of its `frame`, where the bar would be.
+pub(super) fn pane_focus_cue_bounds(
     frame: Bounds<Pixels>,
     bottom: bool,
-    colors: TabColors,
-    alpha: f32,
-) -> Div {
+) -> Bounds<Pixels> {
     let top = if bottom {
         frame.bottom() - PANE_FOCUS_CUE_HEIGHT
     } else {
         frame.origin.y
     };
-    div()
-        .absolute()
-        .left(frame.origin.x)
-        .top(top)
-        .w(frame.size.width)
-        .h(PANE_FOCUS_CUE_HEIGHT)
-        .bg(colors.accent.opacity(alpha))
+    Bounds::new(
+        point(frame.origin.x, top),
+        gpui::size(frame.size.width, PANE_FOCUS_CUE_HEIGHT),
+    )
 }
 
-/// The frame around each pane of a tab that syncs input: a dashed accent
-/// border inset along every edge of its `frame`, over its terminal and
-/// title bar. Dashes keep the solid focus cue drawn over it readable. It
-/// carries no listeners, cursor, or hover style, so GPUI gives it no
-/// hitbox and all pointer input reaches what lies beneath.
-pub(super) fn pane_sync_frame(frame: Bounds<Pixels>, colors: TabColors) -> Div {
+/// The focused pane's mark: an accent line at `alpha` across `bounds`,
+/// drawn over the terminal. It carries no listeners, cursor, or hover
+/// style, so GPUI gives it no hitbox and all pointer input reaches what
+/// lies beneath.
+pub(super) fn pane_focus_cue(
+    bounds: Bounds<Pixels>,
+    colors: TabColors,
+    alpha: f32,
+) -> Div {
     div()
         .absolute()
-        .left(frame.origin.x)
-        .top(frame.origin.y)
-        .w(frame.size.width)
-        .h(frame.size.height)
-        .border(PANE_SYNC_FRAME_WIDTH)
-        .border_dashed()
-        .border_color(colors.accent)
+        .left(bounds.origin.x)
+        .top(bounds.origin.y)
+        .w(bounds.size.width)
+        .h(bounds.size.height)
+        .bg(colors.accent.opacity(alpha))
 }
 
 /// The layer that dims a pane without focus: the terminal's background at
@@ -766,6 +771,8 @@ fn status_icon(
 /// its drawing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TabMark {
+    /// This window shows one of the tab's panes zoomed.
+    Zoom,
     /// The tab syncs input.
     InputSync,
 }
@@ -774,6 +781,7 @@ impl TabMark {
     /// What assistive technology reads for the mark.
     pub(super) fn name(self) -> &'static str {
         match self {
+            Self::Zoom => "Zoomed pane",
             Self::InputSync => "Syncing pane input",
         }
     }
@@ -781,22 +789,22 @@ impl TabMark {
     /// The mark's element id, unique among one tab's marks.
     fn id(self) -> &'static str {
         match self {
+            Self::Zoom => "zoom-mark",
             Self::InputSync => "input-sync-mark",
         }
     }
 }
 
 impl WorkspaceView {
-    /// `tab`'s state marks in display order. Input sync follows the tab's
-    /// flag in core, not its focused pane, so a tab whose focused pane has
-    /// exited keeps its mark.
-    #[expect(
-        clippy::unused_self,
-        reason = "the window decides a tab's marks, as it decides which of \
-                  its panes shows zoomed"
-    )]
+    /// `tab`'s state marks in display order: the zoom mark while this
+    /// window shows one of its panes zoomed, then the sync mark. Input sync
+    /// follows the tab's flag in core, not its focused pane, so a tab whose
+    /// focused pane has exited keeps its mark.
     pub(super) fn tab_marks(&self, tab: &TabView, cx: &App) -> Vec<TabMark> {
         let mut marks = Vec::new();
+        if self.shown_zoom(tab, cx).is_some() {
+            marks.push(TabMark::Zoom);
+        }
         if super::input_sync::syncs_input(tab.id, cx) {
             marks.push(TabMark::InputSync);
         }
@@ -805,29 +813,48 @@ impl WorkspaceView {
 }
 
 /// The elements drawing `marks`, in order: each an icon-sized image named
-/// for its state, so assistive technology reads what the icon shows.
-/// [`fit_tab_width`] counts each one icon wide.
+/// for its state, so assistive technology reads what the icon shows. The
+/// sync mark dims beside the zoom mark, since a zoom shows one pane and
+/// typing reaches nothing else. [`fit_tab_width`] counts each one icon
+/// wide.
 pub(super) fn mark_elements(
     marks: &[TabMark],
     colors: TabColors,
 ) -> Vec<gpui::AnyElement> {
+    let zoomed = marks.contains(&TabMark::Zoom);
     marks
         .iter()
-        .map(|&mark| {
-            let icon = match mark {
-                // Broadcast waves in the accent colour.
-                TabMark::InputSync => icon_element(Icon::Radio, colors.accent),
-            };
-            div()
-                .id(mark.id())
-                .role(gpui::Role::Image)
-                .aria_label(mark.name())
-                .flex_shrink_0()
-                .size(ICON_SIZE)
-                .child(icon)
-                .into_any_element()
-        })
+        .map(|&mark| mark_element(mark, colors, zoomed))
         .collect()
+}
+
+/// One mark as [`mark_elements`] draws it, with the sync mark at
+/// [`DIMMED_SYNC_MARK`] while `sync_dimmed`.
+pub(super) fn mark_element(
+    mark: TabMark,
+    colors: TabColors,
+    sync_dimmed: bool,
+) -> gpui::AnyElement {
+    let icon = match mark {
+        // The zoom button's icon in the zoom colour.
+        TabMark::Zoom => icon_element(Icon::Maximize, colors.zoom),
+        TabMark::InputSync => sync_mark(colors, sync_dimmed),
+    };
+    div()
+        .id(mark.id())
+        .role(gpui::Role::Image)
+        .aria_label(mark.name())
+        .flex_shrink_0()
+        .size(ICON_SIZE)
+        .child(icon)
+        .into_any_element()
+}
+
+/// The sync mark, broadcast waves in the accent colour, at
+/// [`DIMMED_SYNC_MARK`] while `dimmed`.
+pub(super) fn sync_mark(colors: TabColors, dimmed: bool) -> Svg {
+    icon_element(Icon::Radio, colors.accent)
+        .when(dimmed, |icon| icon.opacity(DIMMED_SYNC_MARK))
 }
 
 /// The running dot: a small yellow circle before the title.

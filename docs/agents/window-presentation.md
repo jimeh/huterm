@@ -89,6 +89,16 @@ GPUI's inherent `Window::window_handle` returns its own handle; qualify
 Map its `HandleError` explicitly into anyhow; it does not implement
 `std::error::Error` with the current dependency features.
 
+Every window reads its corner radii once as it opens, from `NSWindow`'s
+private `_topCornerRadius` and `_bottomCornerRadius` behind
+`respondsToSelector:` (`native_titlebar::corner_radii`), before a Quake
+attach strips its style; a release without them falls back to a version
+table and logs once. The pane indicator takes the radii from the current
+`chrome_hidden()` and frame state on every frame, never from the open-time
+state, and smoke state publishes them as `window_radii` with
+`radius_source`. GPUI test windows have no `AppKit` handle, so window tests
+set `WorkspaceView::native_radii` themselves.
+
 Each window's `NSWindow.appearance` follows the theme through
 `native_appearance::FrameAppearance`, from the same `theme_is_dark` that
 native menus use, so a light theme keeps a light frame under a dark system.

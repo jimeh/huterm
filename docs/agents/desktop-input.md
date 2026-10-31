@@ -388,8 +388,17 @@ wheel, hover, link, and drop then reaches the terminal beneath.
 `a_dimmed_pane_takes_the_wheel_and_a_selection_through_its_dim_layer` fails
 if the dim layer starts taking input.
 
-The input sync frame is another such background: a dashed border with no
-listeners, drawn before the focus cue so the cue stays on top.
+The sync and zoom indicator (`windows/pane_indicators.rs`) draws the
+same way: tessellated paths in a `canvas`, and state chips, with no
+listeners, cursor, hover style, or `occlude`. It draws after the divider
+lines and the rounded terminal corner beside a vertical tab bar, and the
+focus cue draws after it, inset by the look's width wherever it meets one of
+the indicator's lines. Under a revealed fullscreen tab bar it draws before
+the bar, which covers the panes. While the sync look draws the dividers, the
+plain border-coloured divider lines are left out, so none shows through a
+dash's gap; the grab zones stay. GPUI blends overlapping path coverage
+darker, so divider bands stop at the outline's inner edge and at the band
+they meet at a T-junction.
 
 ## Pane input sync
 

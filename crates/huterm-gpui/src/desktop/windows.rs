@@ -196,6 +196,7 @@ mod pane_drag;
 mod pane_focus;
 mod pane_geometry;
 mod pane_grab;
+mod pane_indicators;
 mod pane_layouts;
 mod pane_menu;
 mod pane_moves;
@@ -240,6 +241,7 @@ use pane_geometry::{
     layout_panes, with_boundary,
 };
 use pane_grab::{GrabPress, PaneGrab};
+use pane_indicators::{NativeRadii, PathCache, TerminalCorner};
 use pane_menu::{PaneMenuInput, pane_menu};
 use projection::{
     Drained, Install, PendingInstalls, Projection, ReconcileTarget, Resolution,
@@ -2474,6 +2476,12 @@ fn open_window_with_profile(
                     frame,
                 ));
             }
+            // Before a Quake attach strips the window's style, so a Quake
+            // window shown as a regular one keeps its rounded corners.
+            #[cfg(target_os = "macos")]
+            let native_radii = pane_indicators::read_native_radii(window);
+            #[cfg(not(target_os = "macos"))]
+            let native_radii = NativeRadii::default();
             let profile_requested = profile.is_some();
             let quake = profile.and_then(|(name, profile, display)| {
                 quake_windows::attach(
@@ -2543,6 +2551,7 @@ fn open_window_with_profile(
                 frame_state: state,
                 #[cfg(test)]
                 decorations_override: None,
+                native_radii,
                 applied_frame: None,
                 button_layout,
                 tabs: Vec::new(),
@@ -2567,6 +2576,7 @@ fn open_window_with_profile(
                 drawn_focus: RefCell::new(FocusMarks::default()),
                 #[cfg(test)]
                 drawn_title_marks: RefCell::new(None),
+                indicator_paths: RefCell::new(PathCache::default()),
                 drawn_badges: RefCell::new(Vec::new()),
                 pane_drag: None,
                 reveal: Reveal::default(),
@@ -3704,6 +3714,9 @@ struct WorkspaceView {
     /// as on Linux, so the title row Huterm draws can be tested on macOS.
     #[cfg(test)]
     decorations_override: Option<gpui::Decorations>,
+    /// The corner radii `AppKit` reported when the window opened. Tests,
+    /// whose windows have no `AppKit` handle, set them directly.
+    native_radii: NativeRadii,
     /// The frame last pushed to GPUI as the client inset and background
     /// appearance; `None` before the first sample.
     applied_frame: Option<WindowFrame>,
@@ -3755,6 +3768,9 @@ struct WorkspaceView {
     /// tab's title, or `None` when it drew no title.
     #[cfg(test)]
     drawn_title_marks: RefCell<Option<Vec<tab_bar::TabMark>>>,
+    /// The sync or zoom indicator's paths, built once per geometry and
+    /// look.
+    indicator_paths: RefCell<PathCache>,
     /// A press on a pane title bar, or the drag it became.
     pane_drag: Option<PaneDrag>,
     reveal: Reveal,
@@ -4682,25 +4698,30 @@ impl WorkspaceView {
     }
 
     /// Each divider's line and the grab zone over it, which shows the resize
-    /// cursor and claims a press to start a drag.
+    /// cursor and claims a press to start a drag. With `lines` false the
+    /// sync indicator draws the lines instead, so no border-coloured line
+    /// shows through its gaps.
     fn divider_elements(
         dividers: &[Divider],
+        lines: bool,
         colors: TabColors,
         cx: &mut Context<'_, Self>,
     ) -> Vec<gpui::AnyElement> {
         let mut elements = Vec::new();
         for divider in dividers {
             let line = divider.line;
-            elements.push(
-                div()
-                    .absolute()
-                    .left(line.origin.x)
-                    .top(line.origin.y)
-                    .w(line.size.width)
-                    .h(line.size.height)
-                    .bg(colors.border)
-                    .into_any_element(),
-            );
+            if lines {
+                elements.push(
+                    div()
+                        .absolute()
+                        .left(line.origin.x)
+                        .top(line.origin.y)
+                        .w(line.size.width)
+                        .h(line.size.height)
+                        .bg(colors.border)
+                        .into_any_element(),
+                );
+            }
             // Occludes the panes beneath, so no terminal sees a press here
             // and starts a selection or mouse report, while overlays drawn
             // later keep theirs.
@@ -4740,7 +4761,8 @@ impl WorkspaceView {
 
     /// The active tab's panes: each pane's terminal view at its rectangle
     /// inside `bounds`, a title bar per pane in a split tab, and the
-    /// dividers between panes.
+    /// dividers between panes. The marks over them, `pane_marks`, draw
+    /// later, above the rounded terminal corner.
     fn pane_elements(
         &self,
         bounds: Bounds<Pixels>,
@@ -4767,6 +4789,7 @@ impl WorkspaceView {
         let focused = tab.focused().pane;
         let bars = self.title_bars();
         let shown = Self::panes_shown(tab, rects.as_ref());
+        let look = self.active_look(tab, cx);
         let grabs = self.draws_grab_layers(tab, rects.as_ref());
         *self.drawn_dividers.borrow_mut() = rects
             .as_ref()
@@ -4811,7 +4834,6 @@ impl WorkspaceView {
                     .children(grab)
                     .into_any_element(),
             );
-            let bottom = bars.position == PaneTitleBarPosition::Bottom;
             // A hover bar draws only while it reveals, at its reveal's
             // opacity; until then the terminal beneath keeps the pointer.
             let opacity = if bars.mode == PaneTitleBarMode::Hover {
@@ -4823,19 +4845,22 @@ impl WorkspaceView {
                 .and_then(|rect| rect.title_bar)
                 .filter(|_| opacity > 0.0)
             {
-                let title = tab.pane_label(pane, self.config.tabs, cx);
+                let input_sync = input_sync::receives(tab, pane, cx);
                 elements.push(
                     Self::pane_title_bar(
                         tab_bar::PaneTitleBar {
                             tab: tab_id,
                             pane: id,
                             bounds: title_bar,
-                            title,
+                            title: tab.pane_label(pane, self.config.tabs, cx),
                             status: pane.status(cx),
                             focused: id == focused,
                             zoomed: zoomed == Some(id),
-                            input_sync: input_sync::receives(tab, pane, cx),
-                            bottom,
+                            input_sync,
+                            sync_dimmed: zoomed.is_some(),
+                            tint: self.bar_tint(look, id, input_sync, colors),
+                            bottom: bars.position
+                                == PaneTitleBarPosition::Bottom,
                         },
                         colors,
                         swatch,
@@ -4846,94 +4871,15 @@ impl WorkspaceView {
                 );
             }
         }
-        let marks = self.pane_marks(tab, rects.as_ref(), bounds, colors, cx);
-        elements.extend(marks);
         if let Some(rects) = &rects {
             elements.extend(Self::divider_elements(
                 &rects.dividers,
+                !pane_indicators::draws_dividers(look),
                 colors,
                 cx,
             ));
         }
         elements
-    }
-
-    /// The `focused` pane's accent line, while `[panes] focus_accent` draws
-    /// one. It draws only while the pane's bar is off screen, so no bar
-    /// covers it.
-    fn focus_accent(
-        &self,
-        rects: Option<&TabPanes>,
-        focused: PaneId,
-        shown: usize,
-        colors: TabColors,
-    ) -> Option<gpui::AnyElement> {
-        let bars = self.title_bars();
-        let alpha = pane_focus::focus_accent(
-            bars.mode,
-            self.pane_bars.progress(focused),
-            shown,
-            self.config.panes.focus_accent,
-        )?;
-        let frame = rects?.pane(focused)?.frame;
-        let bottom = bars.position == PaneTitleBarPosition::Bottom;
-        self.drawn_focus.borrow_mut().accent = Some((focused, alpha));
-        Some(
-            tab_bar::pane_focus_cue(frame, bottom, colors, alpha)
-                .into_any_element(),
-        )
-    }
-
-    /// The marks drawn over `tab`'s panes: each one's sync frame while the
-    /// tab syncs input, then the focused pane's accent line over them, so
-    /// the cue stays readable.
-    fn pane_marks(
-        &self,
-        tab: &TabView,
-        rects: Option<&TabPanes>,
-        bounds: Bounds<Pixels>,
-        colors: TabColors,
-        cx: &App,
-    ) -> Vec<gpui::AnyElement> {
-        let shown = Self::panes_shown(tab, rects);
-        let mut marks = self.sync_frames(tab, rects, bounds, colors, cx);
-        let focused = tab.focused().pane;
-        marks.extend(self.focus_accent(rects, focused, shown, colors));
-        marks
-    }
-
-    /// The frame around each pane of `tab` drawn this frame that typing
-    /// would reach through input sync (see [`input_sync::receives`]):
-    /// those the layout places, or, without a layout, the focused pane
-    /// across `bounds`.
-    fn sync_frames(
-        &self,
-        tab: &TabView,
-        rects: Option<&TabPanes>,
-        bounds: Bounds<Pixels>,
-        colors: TabColors,
-        cx: &App,
-    ) -> Vec<gpui::AnyElement> {
-        let frames: Vec<(PaneId, Bounds<Pixels>)> = match rects {
-            Some(rects) => tab
-                .panes
-                .iter()
-                .filter(|pane| input_sync::receives(tab, pane, cx))
-                .filter_map(|pane| {
-                    Some((pane.pane, rects.pane(pane.pane)?.frame))
-                })
-                .collect(),
-            None if !input_sync::receives(tab, tab.focused(), cx) => Vec::new(),
-            None => vec![(tab.focused().pane, bounds)],
-        };
-        let mut marks = self.drawn_focus.borrow_mut();
-        frames
-            .into_iter()
-            .map(|(pane, frame)| {
-                marks.synced.push(pane);
-                tab_bar::pane_sync_frame(frame, colors).into_any_element()
-            })
-            .collect()
     }
 
     /// The layer dimming `pane`'s terminal, while `[panes] inactive_dim`
@@ -12292,6 +12238,46 @@ impl Render for WorkspaceView {
                 self.last_scroll = Instant::now();
             }
         }
+        // A flush active Strip row continues the terminal's top border
+        // across the bar, so the corner stays square.
+        let flush_active = vertical
+            && tabs.style == TabStyle::Strip
+            && strip.offset == px(0.0)
+            && self
+                .tabs
+                .first()
+                .is_some_and(|tab| Some(tab.id) == active_tab);
+        let corner_radius = terminal_corner_radius(self.config.window);
+        // The terminal corner rounded below beside a vertical tab bar.
+        let terminal_corner = (bar_drawn
+            && self.presentation() == Presentation::Reserved
+            && !flush_active
+            && layout
+                .terminal_corner(position, titlebar, corner_radius)
+                .is_some())
+        .then(|| TerminalCorner {
+            at: if position == TabPosition::Left {
+                layout.terminal.origin
+            } else {
+                layout.terminal.top_right()
+            },
+            radius: corner_radius,
+        });
+        // The indicator and focus cue draw above the dividers and that
+        // corner, and below every overlay: a revealed fullscreen tab bar
+        // covers the panes, so they go before it, while a reserved bar
+        // never does.
+        let mut marks = self.pane_marks(
+            layout.terminal,
+            content,
+            terminal_corner,
+            colors,
+            window,
+            cx,
+        );
+        if self.presentation() != Presentation::Reserved {
+            root = root.children(std::mem::take(&mut marks));
+        }
         if bar_drawn {
             let clip = if self.presentation() == Presentation::Overlay {
                 layout.terminal
@@ -12743,15 +12729,6 @@ impl Render for WorkspaceView {
                 }
             }
             root = root.child(chrome);
-            // A flush active Strip row continues the terminal's top border
-            // across the bar, so the corner stays square.
-            let flush_active = vertical
-                && tabs.style == TabStyle::Strip
-                && strip.offset == px(0.0)
-                && self
-                    .tabs
-                    .first()
-                    .is_some_and(|tab| Some(tab.id) == active_tab);
             // Only a titlebar joins the column through a line and corner; a
             // fullscreen safe area lets the column run to the screen top.
             if self.presentation() == Presentation::Reserved
@@ -12767,7 +12744,7 @@ impl Render for WorkspaceView {
                         .h(edge.size.height)
                         .bg(colors.border),
                 );
-                let radius = terminal_corner_radius(self.config.window);
+                let radius = corner_radius;
                 if !flush_active
                     && let Some(corner) =
                         layout.terminal_corner(position, titlebar, radius)
@@ -12803,6 +12780,7 @@ impl Render for WorkspaceView {
                 }
             }
         }
+        root = root.children(marks);
         if let Some(drag) = &self.reorder
             && drag.dragging
         {
@@ -14390,7 +14368,9 @@ impl WorkspaceView {
     /// confirmation (showing, focused button,
     /// Debug-quoted title), notice focus, the Debug-quoted native window
     /// title, the painted menu button and window-controls bounds in logical
-    /// points, the window scale, the sampled frame (granted client decorations, applied inset,
+    /// points, the window's corner radii this frame as `top,bottom` and
+    /// where they came from (`appkit`, `table`, or `none`), the window
+    /// scale, the sampled frame (granted client decorations, applied inset,
     /// maximized, observed fullscreen mode), and the content bounds inside
     /// the frame. Quoted values may contain spaces.
     pub(super) fn ui_smoke_state(
@@ -14453,6 +14433,9 @@ impl WorkspaceView {
             window_buttons.join(";")
         };
         let content = self.chrome_layout(window).content;
+        // This frame's window corners, and where the open-time read found
+        // them.
+        let radii = self.window_radii();
         #[cfg(target_os = "macos")]
         let traffic_lights = crate::native_titlebar::buttons_in_window(window)
             .map_or_else(
@@ -14470,11 +14453,14 @@ impl WorkspaceView {
         #[cfg(not(target_os = "macos"))]
         let traffic_lights = "none";
         format!(
-            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {licenses} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {licenses} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}window_radii={},{} {prefix}radius_source={} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
             self.close.confirmation.is_some(),
             self.drawn_dialog_groups.as_deref().unwrap_or("none"),
             self.notice_focus.is_focused(window),
             self.window_title,
+            f32::from(radii.top),
+            f32::from(radii.bottom),
+            self.native_radii.source.name(),
             self.title_row_moves.get(),
             window.scale_factor(),
             self.frame_state.client_decorations(),

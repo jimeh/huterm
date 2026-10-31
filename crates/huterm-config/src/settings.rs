@@ -973,7 +973,15 @@ mod tests {
                 .collect()
         };
         assert_eq!(groups(SectionId::Windows), ["Window"]);
-        assert_eq!(groups(SectionId::Panes), ["Panes", "Pane layouts"]);
+        assert_eq!(
+            groups(SectionId::Panes),
+            [
+                "Panes",
+                "Input sync indicator",
+                "Zoom indicator",
+                "Pane layouts"
+            ]
+        );
         // Linux hides macOS-only settings, and Windows keeps others there.
         assert!(
             model.sections()[SectionId::Windows as usize].groups[0]
@@ -1205,6 +1213,88 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn indicator_rows_show_only_for_the_styles_they_change() {
+        let model = SettingsModel::load().unwrap();
+        let styles = |table: &str, styles: &[&str]| -> Vec<VisibleWhen> {
+            styles
+                .iter()
+                .map(|style| VisibleWhen {
+                    setting: format!("panes.{table}.style"),
+                    equals: toml::Value::String((*style).into()),
+                })
+                .collect()
+        };
+        let visible =
+            |path: &str| model.setting(path).unwrap().visible_when.clone();
+        // Under zoom, `dividers` draws nothing, so it shows no rows.
+        for (table, lines, opacity, pattern) in [
+            (
+                "sync_indicator",
+                &["outline", "dividers", "glow", "edge"][..],
+                &["outline", "dividers", "glow", "edge", "title_bar"][..],
+                &["outline", "dividers", "edge"][..],
+            ),
+            (
+                "zoom_indicator",
+                &["outline", "glow", "edge"][..],
+                &["outline", "glow", "edge", "title_bar"][..],
+                &["outline", "edge"][..],
+            ),
+        ] {
+            assert_eq!(
+                model
+                    .setting(&format!("panes.{table}.style"))
+                    .unwrap()
+                    .visible_when,
+                Vec::new()
+            );
+            assert_eq!(
+                visible(&format!("panes.{table}.width")),
+                styles(table, lines)
+            );
+            assert_eq!(
+                visible(&format!("panes.{table}.opacity")),
+                styles(table, opacity)
+            );
+            assert_eq!(
+                visible(&format!("panes.{table}.pattern")),
+                styles(table, pattern)
+            );
+            let width = model.setting(&format!("panes.{table}.width")).unwrap();
+            assert_eq!(width.control, Some(Control::Slider), "{table}");
+            assert_eq!(
+                (width.unit.as_deref(), width.step),
+                (Some("pt"), Some(1.0))
+            );
+            assert!(
+                matches!(
+                    width.kind,
+                    SettingKind::Integer {
+                        min: Some(1),
+                        max: Some(6),
+                        ..
+                    }
+                ),
+                "{table}: {:?}",
+                width.kind
+            );
+            let opacity =
+                model.setting(&format!("panes.{table}.opacity")).unwrap();
+            assert_eq!(
+                (opacity.control, opacity.step),
+                (Some(Control::Slider), Some(0.05)),
+                "{table}"
+            );
+        }
+        let orders: Vec<i64> = model
+            .settings()
+            .filter(|setting| setting.path.contains("_indicator."))
+            .map(|setting| setting.order)
+            .collect();
+        assert_eq!(orders, (41..=48).collect::<Vec<_>>());
     }
 
     #[test]

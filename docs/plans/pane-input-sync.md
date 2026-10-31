@@ -98,6 +98,10 @@ macOS menu bar's titles are fixed, so its row keeps the catalog title,
 
 ### Indication
 
+[Pane sync and zoom indicators](pane-indicators.md) replaced the
+per-pane dashed frames below with one configurable shape around the tab's
+panes, and made the indication configurable. The marks stay as described.
+
 All drawn without listeners, so GPUI gives them no hitbox, as the focus
 accent and dim layer are.
 

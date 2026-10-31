@@ -187,9 +187,12 @@ asserts the cue's bounds.
 
 ### Marks
 
-- The tab bar gains a zoom mark (`Icon::Maximize`, in the zoom colour)
-  before the sync mark, for a tab whose pane this window shows zoomed.
-  `fit_tab_width` counts both marks.
+- A zoom mark (`Icon::Maximize`, in the zoom colour) joins #358's shared
+  `TabMark` list as `TabMark::Zoom`, before `InputSync`, for a tab whose
+  pane this window shows zoomed. The tab bar and the title row of a window
+  whose single tab hides the bar both draw that list, and
+  `tab_bar::mark_elements` dims the sync mark whenever the list also holds
+  the zoom mark. `fit_tab_width` counts every mark.
 - Pane title bars keep the sync mark, dimmed under both states, and their
   existing zoom button.
 

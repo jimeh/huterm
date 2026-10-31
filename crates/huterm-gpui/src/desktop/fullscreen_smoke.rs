@@ -258,6 +258,10 @@ fn read_state(cx: &mut App) -> String {
             // `w<i>.notice<j>=<severity>|<source>|<message>`.
             output.push_str(&super::notices::smoke_lines(&format!("w{index}."), view.notices.contents()));
             writeln!(output, "w{index}.tab_presentation={:?}\nw{index}.tab_reveal={}", view.presentation(), view.reveal.progress).unwrap();
+            // The window's corner radii this frame, `top,bottom`, which
+            // square off while the chrome hides.
+            let radii = view.window_radii();
+            writeln!(output, "w{index}.window_radii={},{}\nw{index}.radius_source={}", f32::from(radii.top), f32::from(radii.bottom), view.native_radii.source.name()).unwrap();
             let insets = view.fullscreen_insets;
             writeln!(output, "w{index}.insets={},{},{},{}", f32::from(insets.top), f32::from(insets.right), f32::from(insets.bottom), f32::from(insets.left)).unwrap();
             writeln!(output, "w{index}.tab_bounds={}", rect(view.tab_strip(window).bounds)).unwrap();

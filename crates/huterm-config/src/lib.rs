@@ -1248,6 +1248,269 @@ pub const MAX_LAYOUTS: usize = 64;
 /// The most `[panes] inactive_dim` dims a pane, so it never goes dark.
 pub const MAX_INACTIVE_DIM: f32 = 0.8;
 
+/// The thinnest and thickest a pane indicator's lines draw, in points.
+pub const MIN_INDICATOR_WIDTH: u8 = 1;
+pub const MAX_INDICATOR_WIDTH: u8 = 6;
+
+/// The faintest a pane indicator draws, so it never vanishes while on.
+pub const MIN_INDICATOR_OPACITY: f32 = 0.1;
+
+/// The shape that marks a tab syncing input or showing a zoomed pane.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum IndicatorStyle {
+    /// One line around the tab's panes that follows the window's corners,
+    /// with every divider drawn the same way.
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Outline"))
+    )]
+    Outline,
+    /// The dividers between panes alone.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Dividers"))
+    )]
+    Dividers,
+    /// A soft glow inside the panes' edge and along each divider.
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Glow")))]
+    Glow,
+    /// A bar along the top of the panes.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Edge bar"))
+    )]
+    Edge,
+    /// A tint on each marked pane's title bar, or a small chip where its
+    /// bar is not shown.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Title bar tint"))
+    )]
+    TitleBar,
+    /// No shape; the tab bar and title bar marks stay.
+    #[cfg_attr(feature = "schema", schemars(extend("x-huterm-label" = "Off")))]
+    Off,
+}
+
+/// How a pane indicator's lines draw.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum LinePattern {
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Solid"))
+    )]
+    Solid,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Dashed"))
+    )]
+    Dashed,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Dotted"))
+    )]
+    Dotted,
+}
+
+/// One state's indicator as the client draws it, from either table.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IndicatorLook {
+    pub style: IndicatorStyle,
+    /// Line thickness in points.
+    pub width: u8,
+    pub opacity: f32,
+    pub pattern: LinePattern,
+}
+
+/// `[panes.sync_indicator]`: how a tab that syncs input marks its panes.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct SyncIndicatorConfig {
+    /// How a syncing tab marks its panes: an `outline` with matching
+    /// dividers, the `dividers` alone, a `glow`, an `edge` bar, a
+    /// `title_bar` tint, or `off`.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Input sync indicator",
+        "x-huterm-label" = "Sync indicator",
+        "x-huterm-order" = 41,
+        "x-huterm-apply" = "live",
+    )))]
+    pub style: IndicatorStyle,
+    /// The thickness of the sync indicator's lines, from 1 to 6 points.
+    #[cfg_attr(feature = "schema", schemars(range(min = 1, max = 6), extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Input sync indicator",
+        "x-huterm-label" = "Sync indicator width",
+        "x-huterm-order" = 42,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "pt",
+        "x-huterm-step" = 1,
+        "x-huterm-control" = "slider",
+        "x-huterm-visible-when" = [
+            {"setting": "panes.sync_indicator.style", "equals": "outline"},
+            {"setting": "panes.sync_indicator.style", "equals": "dividers"},
+            {"setting": "panes.sync_indicator.style", "equals": "glow"},
+            {"setting": "panes.sync_indicator.style", "equals": "edge"}
+        ],
+    )))]
+    pub width: u8,
+    /// How strongly the sync indicator draws, from 0.1 to 1.
+    #[cfg_attr(feature = "schema", schemars(range(min = 0.1, max = 1), extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Input sync indicator",
+        "x-huterm-label" = "Sync indicator opacity",
+        "x-huterm-order" = 43,
+        "x-huterm-apply" = "live",
+        "x-huterm-step" = 0.05,
+        "x-huterm-control" = "slider",
+        "x-huterm-visible-when" = [
+            {"setting": "panes.sync_indicator.style", "equals": "outline"},
+            {"setting": "panes.sync_indicator.style", "equals": "dividers"},
+            {"setting": "panes.sync_indicator.style", "equals": "glow"},
+            {"setting": "panes.sync_indicator.style", "equals": "edge"},
+            {"setting": "panes.sync_indicator.style", "equals": "title_bar"}
+        ],
+    )))]
+    pub opacity: f32,
+    /// Whether the sync indicator's lines are `solid`, `dashed`, or
+    /// `dotted`.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Input sync indicator",
+        "x-huterm-label" = "Sync indicator pattern",
+        "x-huterm-order" = 44,
+        "x-huterm-apply" = "live",
+        "x-huterm-visible-when" = [
+            {"setting": "panes.sync_indicator.style", "equals": "outline"},
+            {"setting": "panes.sync_indicator.style", "equals": "dividers"},
+            {"setting": "panes.sync_indicator.style", "equals": "edge"}
+        ],
+    )))]
+    pub pattern: LinePattern,
+}
+
+impl Default for SyncIndicatorConfig {
+    fn default() -> Self {
+        Self {
+            style: IndicatorStyle::Outline,
+            width: 2,
+            opacity: 0.9,
+            pattern: LinePattern::Dashed,
+        }
+    }
+}
+
+impl From<SyncIndicatorConfig> for IndicatorLook {
+    fn from(config: SyncIndicatorConfig) -> Self {
+        Self {
+            style: config.style,
+            width: config.width,
+            opacity: config.opacity,
+            pattern: config.pattern,
+        }
+    }
+}
+
+/// `[panes.zoom_indicator]`: how a tab showing a zoomed pane marks it.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct ZoomIndicatorConfig {
+    /// How a tab showing a zoomed pane marks it: an `outline`, a `glow`, an
+    /// `edge` bar, a `title_bar` tint, or `off`, while `dividers` draws
+    /// nothing because a zoomed tab shows none.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Zoom indicator",
+        "x-huterm-label" = "Zoom indicator",
+        "x-huterm-order" = 45,
+        "x-huterm-apply" = "live",
+    )))]
+    pub style: IndicatorStyle,
+    /// The thickness of the zoom indicator's lines, from 1 to 6 points.
+    #[cfg_attr(feature = "schema", schemars(range(min = 1, max = 6), extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Zoom indicator",
+        "x-huterm-label" = "Zoom indicator width",
+        "x-huterm-order" = 46,
+        "x-huterm-apply" = "live",
+        "x-huterm-unit" = "pt",
+        "x-huterm-step" = 1,
+        "x-huterm-control" = "slider",
+        "x-huterm-visible-when" = [
+            {"setting": "panes.zoom_indicator.style", "equals": "outline"},
+            {"setting": "panes.zoom_indicator.style", "equals": "glow"},
+            {"setting": "panes.zoom_indicator.style", "equals": "edge"}
+        ],
+    )))]
+    pub width: u8,
+    /// How strongly the zoom indicator draws, from 0.1 to 1.
+    #[cfg_attr(feature = "schema", schemars(range(min = 0.1, max = 1), extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Zoom indicator",
+        "x-huterm-label" = "Zoom indicator opacity",
+        "x-huterm-order" = 47,
+        "x-huterm-apply" = "live",
+        "x-huterm-step" = 0.05,
+        "x-huterm-control" = "slider",
+        "x-huterm-visible-when" = [
+            {"setting": "panes.zoom_indicator.style", "equals": "outline"},
+            {"setting": "panes.zoom_indicator.style", "equals": "glow"},
+            {"setting": "panes.zoom_indicator.style", "equals": "edge"},
+            {"setting": "panes.zoom_indicator.style", "equals": "title_bar"}
+        ],
+    )))]
+    pub opacity: f32,
+    /// Whether the zoom indicator's lines are `solid`, `dashed`, or
+    /// `dotted`.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Zoom indicator",
+        "x-huterm-label" = "Zoom indicator pattern",
+        "x-huterm-order" = 48,
+        "x-huterm-apply" = "live",
+        "x-huterm-visible-when" = [
+            {"setting": "panes.zoom_indicator.style", "equals": "outline"},
+            {"setting": "panes.zoom_indicator.style", "equals": "edge"}
+        ],
+    )))]
+    pub pattern: LinePattern,
+}
+
+impl Default for ZoomIndicatorConfig {
+    fn default() -> Self {
+        Self {
+            style: IndicatorStyle::Outline,
+            width: 2,
+            opacity: 0.8,
+            pattern: LinePattern::Solid,
+        }
+    }
+}
+
+impl From<ZoomIndicatorConfig> for IndicatorLook {
+    fn from(config: ZoomIndicatorConfig) -> Self {
+        Self {
+            style: config.style,
+            width: config.width,
+            opacity: config.opacity,
+            pattern: config.pattern,
+        }
+    }
+}
+
 /// Split pane behavior.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -1362,6 +1625,8 @@ pub struct PanesConfig {
         "x-huterm-apply" = "live",
     )))]
     pub zoom: PaneZoomScope,
+    pub sync_indicator: SyncIndicatorConfig,
+    pub zoom_indicator: ZoomIndicatorConfig,
     /// Your own pane layouts, each a template such as `columns(pane 60%,
     /// rows(*))`: `columns` and `rows` place their children across or down,
     /// `pane` takes one pane, `*` the rest, and `grid(*)` tiles them.
@@ -1407,6 +1672,8 @@ impl Default for PanesConfig {
             inactive_dim: 0.2,
             drag_modifier: None,
             zoom: PaneZoomScope::default(),
+            sync_indicator: SyncIndicatorConfig::default(),
+            zoom_indicator: ZoomIndicatorConfig::default(),
             layouts: BTreeMap::new(),
             layout_cycle: BUILT_IN_LAYOUTS
                 .iter()
@@ -1437,12 +1704,12 @@ impl PanesConfig {
         }
     }
 
-    /// Checks the title bar timings, the focus indicator amounts, the user
-    /// layouts, and the cycle.
+    /// Checks the title bar timings, the focus indicator amounts, the sync
+    /// and zoom indicators, the user layouts, and the cycle.
     ///
     /// # Errors
-    /// Returns the first invalid timing, amount, layout, or cycle entry,
-    /// with its key path.
+    /// Returns the first invalid timing, amount, indicator, layout, or
+    /// cycle entry, with its key path.
     pub fn validate(&self) -> Result<(), String> {
         for (key, value, max) in [
             (
@@ -1468,6 +1735,25 @@ impl PanesConfig {
             return Err(format!(
                 "panes.inactive_dim must be between 0 and {MAX_INACTIVE_DIM}"
             ));
+        }
+        for (key, look) in [
+            ("sync_indicator", IndicatorLook::from(self.sync_indicator)),
+            ("zoom_indicator", IndicatorLook::from(self.zoom_indicator)),
+        ] {
+            if !(MIN_INDICATOR_WIDTH..=MAX_INDICATOR_WIDTH)
+                .contains(&look.width)
+            {
+                return Err(format!(
+                    "panes.{key}.width must be between \
+                     {MIN_INDICATOR_WIDTH} and {MAX_INDICATOR_WIDTH}"
+                ));
+            }
+            if !(MIN_INDICATOR_OPACITY..=1.0).contains(&look.opacity) {
+                return Err(format!(
+                    "panes.{key}.opacity must be between \
+                     {MIN_INDICATOR_OPACITY} and 1"
+                ));
+            }
         }
         if self.layouts.len() > MAX_LAYOUTS {
             return Err(format!(
@@ -3335,6 +3621,108 @@ mod panes_tests {
             ),
         ] {
             assert_eq!(panes(source).unwrap_err(), message, "{source}");
+        }
+    }
+
+    #[test]
+    fn indicator_tables_fill_from_their_own_defaults() {
+        let defaults = panes("").unwrap();
+        let sync = IndicatorLook::from(defaults.sync_indicator);
+        let zoom = IndicatorLook::from(defaults.zoom_indicator);
+        assert_eq!(
+            sync,
+            IndicatorLook {
+                style: IndicatorStyle::Outline,
+                width: 2,
+                opacity: 0.9,
+                pattern: LinePattern::Dashed,
+            }
+        );
+        assert_eq!(
+            zoom,
+            IndicatorLook {
+                style: IndicatorStyle::Outline,
+                width: 2,
+                opacity: 0.8,
+                pattern: LinePattern::Solid,
+            }
+        );
+        // A partial table keeps its own table's defaults, not the other's.
+        let partial = panes(
+            "[panes.sync_indicator]\nwidth = 3\n\
+             [panes.zoom_indicator]\nstyle = 'glow'",
+        )
+        .unwrap();
+        assert_eq!(
+            IndicatorLook::from(partial.sync_indicator),
+            IndicatorLook { width: 3, ..sync }
+        );
+        assert_eq!(
+            IndicatorLook::from(partial.zoom_indicator),
+            IndicatorLook {
+                style: IndicatorStyle::Glow,
+                ..zoom
+            }
+        );
+        for (name, style) in [
+            ("outline", IndicatorStyle::Outline),
+            ("dividers", IndicatorStyle::Dividers),
+            ("glow", IndicatorStyle::Glow),
+            ("edge", IndicatorStyle::Edge),
+            ("title_bar", IndicatorStyle::TitleBar),
+            ("off", IndicatorStyle::Off),
+        ] {
+            let config =
+                panes(&format!("[panes.zoom_indicator]\nstyle = '{name}'"))
+                    .unwrap();
+            assert_eq!(config.zoom_indicator.style, style, "{name}");
+        }
+        for (name, pattern) in [
+            ("solid", LinePattern::Solid),
+            ("dashed", LinePattern::Dashed),
+            ("dotted", LinePattern::Dotted),
+        ] {
+            let config =
+                panes(&format!("[panes.sync_indicator]\npattern = '{name}'"))
+                    .unwrap();
+            assert_eq!(config.sync_indicator.pattern, pattern, "{name}");
+        }
+        assert!(panes("[panes.sync_indicator]\nstyle = 'tint'").is_err());
+        assert!(panes("[panes.sync_indicator]\ncolor = 'red'").is_err());
+    }
+
+    #[test]
+    fn indicator_widths_and_opacities_accept_their_range_and_reject_the_rest() {
+        let ends = panes(
+            "[panes.sync_indicator]\nwidth = 1\nopacity = 0.1\n\
+             [panes.zoom_indicator]\nwidth = 6\nopacity = 1",
+        )
+        .unwrap();
+        assert_eq!(
+            (ends.sync_indicator.width, ends.sync_indicator.opacity),
+            (1, 0.1)
+        );
+        assert_eq!(
+            (ends.zoom_indicator.width, ends.zoom_indicator.opacity),
+            (6, 1.0)
+        );
+        for table in ["sync_indicator", "zoom_indicator"] {
+            for (value, message) in [
+                ("width = 0", "width must be between 1 and 6"),
+                ("width = 7", "width must be between 1 and 6"),
+                ("opacity = 0.09", "opacity must be between 0.1 and 1"),
+                ("opacity = 1.01", "opacity must be between 0.1 and 1"),
+                ("opacity = nan", "opacity must be between 0.1 and 1"),
+            ] {
+                let source = format!("[panes.{table}]\n{value}");
+                assert_eq!(
+                    panes(&source).unwrap_err(),
+                    format!("panes.{table}.{message}"),
+                    "{source}"
+                );
+            }
+            assert!(panes(&format!("[panes.{table}]\nwidth = -1")).is_err());
+            assert!(panes(&format!("[panes.{table}]\nwidth = 2.5")).is_err());
         }
     }
 
