@@ -1034,17 +1034,24 @@ it answers.
 New shells use `TERM=xterm-256color` by default. Nearly every system,
 including remote hosts reached over SSH, has that terminfo entry. Huterm also
 sets `COLORTERM=truecolor`, which tools such as tmux and Emacs use to enable
-24-bit color without a dedicated terminfo entry.
+24-bit color without a dedicated terminfo entry. SSH does not forward
+`COLORTERM` unless the client's `SendEnv` and the server's `AcceptEnv` allow
+it, so remote programs may fall back to 256 colors.
 
 Huterm also carries a private `xterm-huterm` terminfo entry. Development tasks
 compile it into `target/terminfo`, and the macOS and Linux packages carry the
 compiled entry. Opt into it with `auto`, which uses `xterm-huterm` when the
-entry is available locally and `xterm-256color` otherwise, or force it:
+entry is available locally and `xterm-256color` otherwise, or with
+`xterm-huterm`, which always uses it:
 
 ```toml
 [terminal]
 term = "xterm-256color" # Or "auto" / "xterm-huterm" for new shells.
 ```
+
+Huterm 0.10 through 0.25 wrote `term = "auto"` into the configuration files
+they created. Remove that line, or set it to `xterm-256color`, to use the new
+default.
 
 `xterm-huterm` inherits the standard 256-color capabilities and advertises
 `Tc`, for terminfo consumers that read 24-bit color support only from

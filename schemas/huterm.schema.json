@@ -9336,7 +9336,7 @@
       "oneOf": [
         {
           "const": "auto",
-          "description": "Use `xterm-huterm` when its terminfo entry is available locally.",
+          "description": "Use `xterm-huterm` when its terminfo entry is available locally. SSH\nhosts without the entry can garble line editing.",
           "type": "string",
           "x-huterm-label": "Automatic"
         },

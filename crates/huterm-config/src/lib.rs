@@ -206,7 +206,8 @@ impl Default for BellConfig {
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TerminalIdentity {
-    /// Use `xterm-huterm` when its terminfo entry is available locally.
+    /// Use `xterm-huterm` when its terminfo entry is available locally. SSH
+    /// hosts without the entry can garble line editing.
     #[serde(rename = "auto")]
     #[cfg_attr(
         feature = "schema",

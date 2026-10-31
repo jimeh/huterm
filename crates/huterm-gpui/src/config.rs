@@ -23,8 +23,9 @@ watch_config = true
 
 [terminal]
 # Terminal identity for new shells: "xterm-256color", "auto", or
-# "xterm-huterm". Auto uses Huterm's packaged entry when available locally;
-# remote hosts need that entry installed, so SSH may break with it.
+# "xterm-huterm". Auto uses xterm-huterm when any local terminfo entry for
+# it exists, including Huterm's packaged one. SSH hosts need that entry too,
+# or line editing there may break.
 term = "xterm-256color"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.

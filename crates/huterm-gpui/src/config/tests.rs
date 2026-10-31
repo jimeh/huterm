@@ -402,6 +402,10 @@ fn terminal_identity_defaults_to_xterm_256color_and_accepts_known_values() {
         parse("[terminal]\n").unwrap().terminal.term,
         TerminalIdentity::Xterm256Color
     );
+    assert_eq!(
+        parse(DEFAULT_CONFIG).unwrap().terminal.term,
+        TerminalIdentity::Xterm256Color
+    );
     for (value, expected) in [
         ("auto", TerminalIdentity::Auto),
         ("xterm-huterm", TerminalIdentity::XtermHuterm),

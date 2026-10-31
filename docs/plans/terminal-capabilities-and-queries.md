@@ -1,5 +1,9 @@
 # Terminal capabilities and presentation queries
 
+Superseded identity detail: PR #346 made `xterm-256color` the default
+`terminal.term` and `auto` an opt-in, because SSH forwards `xterm-huterm` to
+hosts that lack the entry. See the terminal engines agent guide.
+
 Status: implemented in PR #121.
 
 ## Outcome and delivery
