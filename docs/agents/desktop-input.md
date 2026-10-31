@@ -44,6 +44,15 @@ window deactivation alone leaves its pending sequence alive. Native commits must
 never be classified by their text. Accepted replay actions still skip the current
 native event lookup.
 
+`macos_option_as_alt = "left"` or `"right"` needs the Option key's side,
+which GPUI's `Modifiers` drop. `handle_keystroke` runs inside `AppKit`'s
+key-down dispatch, so `native_quit::option::current_key_flags` reads it from
+`[NSApp currentEvent]`'s device-dependent bits, `0x20` left and `0x40` right,
+after checking that the event is a key-down for this window whose Option bit
+matches the keystroke's Alt. Anything else leaves the side unknown and
+sends no Meta. A replayed chord prefix reads the key-down that triggered the
+replay. `smoke:macos-input` posts Option key-downs with each bit.
+
 `UCKeyTranslate` can emit text while starting another dead key, and completed
 state can remain nonzero. Probe Space with NoDeadKeys on copied state and compare
 against zero-state output; never send probe text to the PTY or decode state bits.

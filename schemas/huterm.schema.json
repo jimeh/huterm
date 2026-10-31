@@ -71,6 +71,36 @@
       "additionalProperties": false,
       "description": "Terminal bell presentation settings.",
       "properties": {
+        "audio": {
+          "default": false,
+          "description": "Play a sound when a bell rings in any terminal, focused or not.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Bell and clipboard",
+          "x-huterm-label": "Audible bell",
+          "x-huterm-order": 71,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "terminal"
+        },
+        "sound": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BellSound"
+            }
+          ],
+          "default": "system",
+          "description": "The sound the audible bell plays: the macOS alert sound or a named\nsystem sound.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Bell and clipboard",
+          "x-huterm-label": "Bell sound",
+          "x-huterm-order": 72,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "terminal",
+          "x-huterm-visible-when": {
+            "equals": true,
+            "setting": "terminal.bell.audio"
+          }
+        },
         "visual": {
           "default": true,
           "type": "boolean",
@@ -79,9 +109,110 @@
           "x-huterm-label": "Visual bell",
           "x-huterm-order": 70,
           "x-huterm-section": "terminal"
+        },
+        "volume": {
+          "default": 0.5,
+          "description": "How loud a named sound plays, from 0 to 1; the system alert sound\nfollows the macOS alert volume instead.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Bell and clipboard",
+          "x-huterm-label": "Bell volume",
+          "x-huterm-order": 73,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "terminal",
+          "x-huterm-step": 0.05,
+          "x-huterm-visible-when": {
+            "equals": true,
+            "setting": "terminal.bell.audio"
+          }
         }
       },
       "type": "object"
+    },
+    "BellSound": {
+      "description": "A sound the audible bell plays.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "The alert sound chosen in macOS's Sound settings, at its alert\nvolume.",
+          "type": "string",
+          "x-huterm-label": "System alert"
+        },
+        {
+          "const": "basso",
+          "type": "string",
+          "x-huterm-label": "Basso"
+        },
+        {
+          "const": "blow",
+          "type": "string",
+          "x-huterm-label": "Blow"
+        },
+        {
+          "const": "bottle",
+          "type": "string",
+          "x-huterm-label": "Bottle"
+        },
+        {
+          "const": "frog",
+          "type": "string",
+          "x-huterm-label": "Frog"
+        },
+        {
+          "const": "funk",
+          "type": "string",
+          "x-huterm-label": "Funk"
+        },
+        {
+          "const": "glass",
+          "type": "string",
+          "x-huterm-label": "Glass"
+        },
+        {
+          "const": "hero",
+          "type": "string",
+          "x-huterm-label": "Hero"
+        },
+        {
+          "const": "morse",
+          "type": "string",
+          "x-huterm-label": "Morse"
+        },
+        {
+          "const": "ping",
+          "type": "string",
+          "x-huterm-label": "Ping"
+        },
+        {
+          "const": "pop",
+          "type": "string",
+          "x-huterm-label": "Pop"
+        },
+        {
+          "const": "purr",
+          "type": "string",
+          "x-huterm-label": "Purr"
+        },
+        {
+          "const": "sosumi",
+          "type": "string",
+          "x-huterm-label": "Sosumi"
+        },
+        {
+          "const": "submarine",
+          "type": "string",
+          "x-huterm-label": "Submarine"
+        },
+        {
+          "const": "tink",
+          "type": "string",
+          "x-huterm-label": "Tink"
+        }
+      ]
     },
     "ClipboardWritePolicy": {
       "description": "Permission for clipboard writes requested by terminal content.",
@@ -423,6 +554,16 @@
           "const": "both",
           "type": "string",
           "x-huterm-label": "Both Option keys"
+        },
+        {
+          "const": "left",
+          "type": "string",
+          "x-huterm-label": "Left Option key"
+        },
+        {
+          "const": "right",
+          "type": "string",
+          "x-huterm-label": "Right Option key"
         }
       ]
     },

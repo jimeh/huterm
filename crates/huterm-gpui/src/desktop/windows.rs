@@ -173,6 +173,8 @@ pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod appkit_menu;
 #[cfg(target_os = "macos")]
 pub(super) use appkit_menu::check_window_menu as check_native_window_menu;
+mod audible_bell;
+pub(super) use audible_bell::ring as ring_audible_bell;
 mod button_layout;
 mod client_frame;
 mod exit_closes;
@@ -888,6 +890,8 @@ struct Desktop {
     system_mode: system_appearance::Mode,
     /// Shows native menus; `None` where windows draw every menu themselves.
     menu_presenter: Option<Rc<dyn MenuPresenter>>,
+    /// Plays bell sounds under `[terminal.bell] audio`.
+    audible_bell: audible_bell::AudibleBell,
     /// Close failures reported in any window, including windows since
     /// removed.
     #[cfg(test)]
@@ -1621,6 +1625,7 @@ fn install_desktop(
         menu_presenter: Some(Rc::new(appkit_menu::AppKitPresenter)),
         #[cfg(not(target_os = "macos"))]
         menu_presenter: None,
+        audible_bell: audible_bell::AudibleBell::platform(),
         #[cfg(test)]
         close_failures: 0,
         #[cfg(all(target_os = "macos", feature = "macos-updater"))]

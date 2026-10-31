@@ -250,6 +250,23 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await send("clipboard\t®é\x1b[200~literal\x1b[201~");
     await key(9, command, "v");
     await check("paste-unchanged", "®é\x1b[200~literal\x1b[201~");
+    // Per-side policies read AppKit's device bits: under `left` only the
+    // left Option key sends Meta and the right one types its macOS
+    // character, and the reverse under `right`.
+    const leftOption = option | 0x20;
+    const rightOption = option | 0x40;
+    await configure("left", false);
+    await key(43, command | (1 << 17), "<", "<");
+    await state("policy=Left", "reloading=false");
+    await key(15, leftOption, "®", "r");
+    await key(15, rightOption, "®", "r");
+    await check("left-option-meta", "\x1br®");
+    await configure("right", false);
+    await key(43, command | (1 << 17), "<", "<");
+    await state("policy=Right", "reloading=false");
+    await key(15, leftOption, "®", "r");
+    await key(15, rightOption, "®", "r");
+    await check("right-option-meta", "®\x1br");
 
     await configure("off", false);
     await key(43, command | (1 << 17), "<", "<");

@@ -1088,6 +1088,8 @@ impl TerminalView {
             }
         }
         if update.bells > 0 {
+            // Every terminal's bells in one update ring once, focused or not.
+            windows::ring_audible_bell(cx);
             let active = self.visible && window.is_window_active();
             if active && self.visual_bell {
                 self.bell_flash_count =
@@ -1473,16 +1475,26 @@ impl TerminalView {
             self.clear_option_composition();
             return true;
         }
-        let input = keyboard::translate(
-            keystroke,
-            Platform::current(),
+        // The key dispatch runs inside AppKit's handling of this key-down,
+        // so its device bits tell which Option key is held.
+        #[cfg(target_os = "macos")]
+        let side = crate::native_quit::option::current_key_flags(
+            window,
+            keystroke.modifiers.alt,
+        )
+        .and_then(keyboard::option_side);
+        #[cfg(not(target_os = "macos"))]
+        let side = None;
+        let option_meta = keyboard::option_sends_meta(
             self.option_as_alt,
+            side,
+            keystroke.modifiers.alt,
         );
+        let input =
+            keyboard::translate(keystroke, Platform::current(), option_meta);
         #[cfg(target_os = "macos")]
         let input = {
-            if input.is_some()
-                || self.option_as_alt != config::MacosOptionAsAlt::Off
-            {
+            if input.is_some() || option_meta {
                 self.clear_option_composition();
                 input
             } else if self.composition.is_empty()

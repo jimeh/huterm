@@ -681,6 +681,72 @@ fn the_refresh_applies_each_status_change_once(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn bells_in_any_pane_play_one_throttled_sound_through_the_sink(
+    cx: &mut TestAppContext,
+) {
+    use std::cell::Cell;
+
+    use huterm_config::BellSound;
+
+    use super::audible_bell::{AudibleBell, BELL_THROTTLE, RecordingSink};
+    // Answers each line by ringing once and then titling itself `t<n>`, so
+    // a view that shows the title has applied the poll with the bell.
+    const RINGS: &str = "printf READY; n=0; while read line; do n=$((n+1)); \
+         printf '\\007\\033]0;t%s\\007' \"$n\"; done";
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.terminal.bell.audio = true;
+        config.terminal.bell.sound = BellSound::Glass;
+        config.terminal.bell.volume = 0.25;
+    });
+    let sink = Rc::new(RecordingSink::default());
+    let start = Instant::now();
+    let now = Rc::new(Cell::new(start));
+    harness.cx.update(|cx| {
+        let clock = Rc::clone(&now);
+        cx.global_mut::<Desktop>().audible_bell =
+            AudibleBell::with_clock(sink.clone(), Rc::new(move || clock.get()));
+    });
+    let tab = harness.open_tab(RINGS);
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, RINGS);
+    let window = harness.attach_window();
+    harness.wait_for("both panes' programs", |cx| {
+        [first, second].into_iter().all(|pane| {
+            pane_screen(cx, window, tab, pane)
+                .is_some_and(|text| text.contains("READY"))
+        })
+    });
+    harness.activate(window, tab);
+    harness.focus(window, tab, second);
+    let title = |cx: &mut App, pane: PaneId| {
+        pane_view(cx, window, tab, pane).map(|view| view.read(cx).title.clone())
+    };
+    let played = || sink.played.borrow().len();
+    // The unfocused pane's bell plays.
+    let _viewer = harness.send_line(tab, "a");
+    harness.wait_for("the unfocused pane's sound", |cx| {
+        title(cx, first).as_deref() == Some("t1") && played() == 1
+    });
+    // Within the throttle, the focused pane's bell plays nothing.
+    harness.type_line(window, "b");
+    harness.wait_for("the focused pane's bell", |cx| {
+        title(cx, second).as_deref() == Some("t1")
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(played(), 1);
+    // After it, the next bell plays again.
+    now.set(start + BELL_THROTTLE);
+    harness.type_line(window, "c");
+    harness.wait_for("the next sound", |cx| {
+        title(cx, second).as_deref() == Some("t2") && played() == 2
+    });
+    assert_eq!(
+        *sink.played.borrow(),
+        [(BellSound::Glass, 0.25), (BellSound::Glass, 0.25)]
+    );
+}
+
+#[gpui::test]
 fn a_view_installed_after_an_exit_shows_it_without_announcing_it(
     cx: &mut TestAppContext,
 ) {

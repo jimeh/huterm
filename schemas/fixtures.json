@@ -906,6 +906,24 @@
     "theme": false
   },
   {
+    "name": "audible bell with a named sound",
+    "toml": "[terminal.bell]\naudio = true\nsound = \"submarine\"\nvolume = 1",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "bell volume above 1",
+    "toml": "[terminal.bell]\nvolume = 1.5",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unknown bell sound",
+    "toml": "[terminal.bell]\nsound = \"Glass\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "pane title bar timings at their maximums",
     "toml": "[panes]\ntitle_bar_hover_delay_ms = 2000\ntitle_bar_fade_ms = 1000\ntitle_bar_hide_delay_ms = 5000",
     "valid": true,

@@ -978,6 +978,25 @@ Reloading `visual = false` clears existing bell marks:
 visual = true
 ```
 
+On macOS, `audio = true` also plays a sound when a bell rings in any
+terminal, focused or not, in a visible tab or a hidden one. Huterm plays at
+most one sound every 200 ms across all terminals, so a burst of bells plays
+once. `sound` is `"system"`, the alert sound chosen in macOS's Sound settings,
+or one of the sounds in `/System/Library/Sounds`: `"basso"`, `"blow"`,
+`"bottle"`, `"frog"`, `"funk"`, `"glass"`, `"hero"`, `"morse"`, `"ping"`,
+`"pop"`, `"purr"`, `"sosumi"`, `"submarine"`, or `"tink"`. `volume`, from 0
+to 1, sets how loud a named sound plays; the system alert sound always plays
+at the macOS alert volume. A named sound that fails to load plays the alert
+sound instead. Linux has no audible bell: `audio = true` loads with a
+warning, and bells stay silent.
+
+```toml
+[terminal.bell]
+audio = true
+sound = "glass"
+volume = 0.5
+```
+
 ## Links and file drops
 
 Hold Cmd on macOS or Ctrl on Linux and click an underlined HTTP(S) link to open
@@ -1066,8 +1085,12 @@ The default, `"off"`, uses the macOS keyboard layout for Option characters and
 dead-key composition. With `"both"`, Option-r sends ESC followed by `r`, and
 Option-Shift-r sends ESC followed by `R`. Supported Control combinations keep
 the Control byte after the ESC prefix. Special keys, such as Option-arrow, keep
-their Alt-modified escape sequences with either setting. Separate left and
-right Option settings are not supported.
+their Alt-modified escape sequences with every setting.
+
+`"left"` and `"right"` send Meta from that Option key only, so the other one
+still types macOS characters and dead keys. Huterm tells the keys apart from
+the side bits macOS attaches to each key press. Some key remapping tools and
+Screen Sharing leave those bits out, and then neither key sends Meta.
 
 Linux always sends unbound Alt character chords as Meta. Huterm shortcuts take
 precedence on both platforms, including Linux's default Alt-1 through Alt-9 tab

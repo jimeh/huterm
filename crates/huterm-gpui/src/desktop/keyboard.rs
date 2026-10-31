@@ -94,11 +94,53 @@ impl PendingShortcuts {
     }
 }
 
+/// Which Option key a macOS key-down carries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OptionSide {
+    Left,
+    Right,
+}
+
+/// `NX_DEVICELALTKEYMASK` and `NX_DEVICERALTKEYMASK`, the device-dependent
+/// bits of an `NSEvent`'s modifier flags.
+const LEFT_OPTION: usize = 0x20;
+const RIGHT_OPTION: usize = 0x40;
+
+/// The Option key a key-down's modifier `flags` name, or `None` when they
+/// name neither or both. Remapping tools and Screen Sharing can omit the
+/// device bits.
+pub(super) fn option_side(flags: usize) -> Option<OptionSide> {
+    match (flags & LEFT_OPTION != 0, flags & RIGHT_OPTION != 0) {
+        (true, false) => Some(OptionSide::Left),
+        (false, true) => Some(OptionSide::Right),
+        _ => None,
+    }
+}
+
+/// Whether a macOS keystroke with Alt `alt` held, from the Option key on
+/// `side`, sends Meta under `policy`. `left` and `right` need the matching
+/// side, so the other Option key still composes, and an unknown side sends
+/// no Meta.
+pub(super) fn option_sends_meta(
+    policy: MacosOptionAsAlt,
+    side: Option<OptionSide>,
+    alt: bool,
+) -> bool {
+    alt && match policy {
+        MacosOptionAsAlt::Off => false,
+        MacosOptionAsAlt::Both => true,
+        MacosOptionAsAlt::Left => side == Some(OptionSide::Left),
+        MacosOptionAsAlt::Right => side == Some(OptionSide::Right),
+    }
+}
+
 /// None defers printable macOS text to local or native composition.
+/// `option_meta` is [`option_sends_meta`]'s decision for this keystroke;
+/// Linux always sends Alt chords as Meta.
 pub(super) fn translate(
     keystroke: &Keystroke,
     platform: Platform,
-    option: MacosOptionAsAlt,
+    option_meta: bool,
 ) -> Option<TerminalInput> {
     let modifiers = protocol_modifiers(keystroke.modifiers);
     let key = match keystroke.key.as_str() {
@@ -120,8 +162,8 @@ pub(super) fn translate(
     if let Some(key) = key {
         return Some(TerminalInput::Key { key, modifiers });
     }
-    let meta = keystroke.modifiers.alt
-        && (platform == Platform::Linux || option == MacosOptionAsAlt::Both);
+    let meta =
+        keystroke.modifiers.alt && (platform == Platform::Linux || option_meta);
     let text = if keystroke.modifiers.control {
         String::from(char::from(control_byte(&keystroke.key)?))
     } else if meta && platform == Platform::MacOs {
