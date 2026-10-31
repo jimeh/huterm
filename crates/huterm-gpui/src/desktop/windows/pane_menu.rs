@@ -103,6 +103,7 @@ mod tests {
                 MenuRow::Item(item) => format!("{}={}!", item.id, item.label),
                 MenuRow::Separator => "-".to_owned(),
                 MenuRow::Buttons { .. } => "buttons".to_owned(),
+                MenuRow::Submenu { .. } => "submenu".to_owned(),
             })
             .collect()
     }

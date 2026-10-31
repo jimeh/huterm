@@ -2,28 +2,41 @@
 //! button, a right-click, or a select.
 //!
 //! Anatomy: rows of items (a label, then a shortcut, a count badge, or a
-//! disabled hint on the right), separators, and button rows such as Edit's
-//! Copy, Paste, and Select All. Rows overflowing the owner's `max_height`
-//! scroll with the fading list scrollbar. The owner places it in a
+//! disabled hint on the right), separators, button rows such as Edit's
+//! Copy, Paste, and Select All, and submenu rows, which show `›` on the
+//! right. Rows overflowing the owner's `max_height` scroll with the fading
+//! list scrollbar. The owner places it in a
 //! [`crate::components::popover::Popover`].
+//!
+//! Submenus drill in: opening one replaces the rows with a back row, `‹`
+//! and the submenu's label, followed by the submenu's rows. The back row
+//! returns to the parent rows with the submenu row selected. The open
+//! submenu is kept by its row's id when the owner replaces the rows, and
+//! closes when that row goes.
 //!
 //! Keyboard: the menu takes focus and carries the [`KEY_CONTEXT`] key
 //! context; the owner routes its commands to [`Menu::select_next`],
 //! [`Menu::select_previous`], [`Menu::select_first`], [`Menu::select_last`],
 //! [`Menu::select_right`], [`Menu::select_left`], [`Menu::confirm`], and
-//! [`Menu::dismiss`]. Printable text selects the next item it starts, through
+//! [`Menu::dismiss`]. Enter or [`Menu::select_right`] on a submenu row opens
+//! it and selects its first row; [`Menu::select_left`] or Enter on the back
+//! row leaves it. Printable text selects the next item it starts, through
 //! GPUI's input handler. A menu opened from the keyboard selects its first
 //! item; a select's menu selects the value its trigger shows.
 //!
 //! Pointer: only a moving pointer selects a row, because GPUI's hover also
-//! fires when layout puts a row under a resting pointer; a click picks.
+//! fires when layout puts a row under a resting pointer; a click picks, or
+//! opens or leaves a submenu, on release. A submenu's rows carry their own
+//! element ids, so the release that opens one never completes a click on
+//! the row that appears under the pointer.
 //! Presses inside stop before what is beneath. GPUI's implicit keyboard
 //! click is ignored, so only the routed commands act on keys.
 //!
 //! Accessibility: a `Menu` of `MenuItem` rows, or with [`Role::ListBox`] a
 //! `ListBox` of selectable `ListBoxOption` rows, named by its label. The
-//! selected row is the active descendant; disabled rows report it, and rows
-//! with shortcuts report them.
+//! selected row is the active descendant; disabled rows report it, rows
+//! with shortcuts report them, a submenu row reports itself collapsed, and
+//! the back row is named "Back from" and the submenu's label.
 
 use std::ops::Range;
 use std::time::Instant;
@@ -87,6 +100,10 @@ const BUTTON_GAP: f32 = 6.0;
 const BUTTON_ROW_END: f32 = 4.0;
 /// A count badge's horizontal padding and border, beyond its digits.
 const BADGE_PADDING: f32 = 14.0;
+/// The back row's id while a submenu shows. `‹` keeps it apart from any
+/// owner's id.
+const BACK: &str = "‹back";
+
 /// The menu's default minimum width at the design size; command labels
 /// never need more, so placement treats it, at the window's interface
 /// scale ([`min_width`]), as the width.
@@ -116,6 +133,11 @@ pub struct Menu {
     label: SharedString,
     role: Role,
     model: Model,
+    /// The open submenu's row id.
+    submenu: Option<ItemId>,
+    /// The rows drawn: `model`, or the open submenu's back row and rows.
+    /// The selection indexes these.
+    shown: Model,
     selection: Option<Selection>,
     tokens: Tokens,
     focus: FocusHandle,
@@ -168,7 +190,9 @@ impl Menu {
         Self {
             label: label.into(),
             role: Role::Menu,
+            shown: model.clone(),
             model,
+            submenu: None,
             selection,
             tokens,
             focus: cx.focus_handle(),
@@ -198,24 +222,43 @@ impl Menu {
         self
     }
 
-    /// The rows.
+    /// The rows, submenus included.
     #[must_use]
     pub fn model(&self) -> &Model {
         &self.model
     }
 
+    /// The id of the open submenu's row.
+    #[must_use]
+    pub fn submenu(&self) -> Option<&ItemId> {
+        self.submenu.as_ref()
+    }
+
+    /// The id under the selection, among the rows the menu shows. The back
+    /// row has an id of its own.
+    #[must_use]
+    pub fn selected_id(&self) -> Option<ItemId> {
+        self.shown.id_at(self.selection?)
+    }
+
     /// The content height before any scrolling: every row's height at the
-    /// window's rem size `rem` plus the panel's padding and border.
-    /// Placement uses it, so the menu sits flush against its anchor when
-    /// it opens upward.
+    /// window's rem size `rem` plus the panel's padding and border, for the
+    /// tallest of the top rows and each submenu's. Placement uses it, so
+    /// the menu sits flush against its anchor when it opens upward and
+    /// stays where it is when a submenu opens.
     #[must_use]
     pub fn content_height(model: &Model, rem: Pixels) -> Pixels {
-        let rows = model
-            .rows
-            .iter()
-            .map(|row| row_height(row, rem))
-            .fold(Pixels::ZERO, |sum, height| sum + height);
-        rows + px((PANEL_PADDING + PANEL_BORDER) * 2.0)
+        let height = |model: &Model| {
+            model
+                .rows
+                .iter()
+                .map(|row| row_height(row, rem))
+                .fold(Pixels::ZERO, |sum, height| sum + height)
+        };
+        let tallest = levels(model)
+            .map(|level| height(&level))
+            .fold(Pixels::ZERO, Pixels::max);
+        tallest + px((PANEL_PADDING + PANEL_BORDER) * 2.0)
     }
 
     /// The width the rows ask for: the widest row's text, measured in the
@@ -240,6 +283,13 @@ impl Menu {
             f32::from(line.width)
         };
         let row = |row: &Row| match row {
+            Row::Submenu { item, .. } => {
+                ROW_PADDING * 2.0
+                    + measure(&item.label, TEXT_SIZE)
+                    + ROW_GAP
+                    + SIDE_INSET
+                    + measure(SUBMENU_MARK, SIDE_TEXT_SIZE)
+            }
             Row::Item(item) => {
                 let side = if let Some(count) = item.badge {
                     ROW_GAP
@@ -276,7 +326,18 @@ impl Menu {
                     + BUTTON_ROW_END
             }
         };
-        let widest = model.rows.iter().map(row).fold(0.0, f32::max);
+        // Each submenu's rows count too, after a back row that draws `‹`
+        // before the submenu's label.
+        let mut widest = model.rows.iter().map(row).fold(0.0, f32::max);
+        for line in &model.rows {
+            if let Row::Submenu { item, rows } = line {
+                let back = ROW_PADDING * 2.0
+                    + measure(BACK_MARK, TEXT_SIZE)
+                    + BACK_GAP
+                    + measure(&item.label, TEXT_SIZE);
+                widest = rows.iter().map(row).fold(widest.max(back), f32::max);
+            }
+        }
         px((widest + (PANEL_PADDING + PANEL_BORDER) * 2.0).ceil())
     }
 
@@ -297,21 +358,39 @@ impl Menu {
     }
 
     /// Replaces the rows, keeping the selection where it still resolves.
-    /// An unchanged model is ignored, so owners may refresh it on every
-    /// notification.
+    /// An open submenu stays open while a submenu row with its id remains,
+    /// and otherwise the top rows show again. An unchanged model is
+    /// ignored, so owners may refresh it on every notification.
     pub fn set_model(&mut self, model: Model, cx: &mut Context<'_, Self>) {
         if self.model == model {
             return;
         }
         let before = self.selection.and_then(|selection| {
-            row_span(&self.model, selection.row, self.rem)
+            row_span(&self.shown, selection.row, self.rem)
         });
-        self.selection = remap_selection(&self.model, self.selection, &model);
+        let was_open = self.submenu.is_some();
+        let submenu = self
+            .submenu
+            .take()
+            .and_then(|id| level(&model, &id).map(|shown| (id, shown)));
+        let closed = was_open && submenu.is_none();
+        let shown = match submenu {
+            Some((id, shown)) => {
+                self.submenu = Some(id);
+                shown
+            }
+            None => model.clone(),
+        };
+        self.selection = remap_selection(&self.shown, self.selection, &shown);
+        self.shown = shown;
         self.model = model;
+        if closed {
+            self.scroll.set_offset(Point::default());
+        }
         // Only a selection the new rows moved scrolls; a refresh leaves a
         // list the user scrolled away from where it is.
         if let Some(selection) = self.selection
-            && row_span(&self.model, selection.row, self.rem) != before
+            && row_span(&self.shown, selection.row, self.rem) != before
         {
             self.reveal(selection.row);
         }
@@ -344,14 +423,14 @@ impl Menu {
     /// old offset, and before the first frame it has no rows to scroll to.
     fn reveal(&self, row: usize) {
         let (Some(height), Some((top, bottom))) =
-            (self.max_height, row_span(&self.model, row, self.rem))
+            (self.max_height, row_span(&self.shown, row, self.rem))
         else {
             return;
         };
         let height = f32::from(height);
         let bottom = bottom + PANEL_PADDING * 2.0;
         let rows: f32 = self
-            .model
+            .shown
             .rows
             .iter()
             .map(|row| f32::from(row_height(row, self.rem)))
@@ -388,62 +467,151 @@ impl Menu {
     /// Selects the item `id`, such as the value a select shows, when it is
     /// enabled.
     pub fn select_item(&mut self, id: &str, cx: &mut Context<'_, Self>) {
-        if let Some(selection) = self.model.selection_of(id) {
+        if let Some(selection) = self.shown.selection_of(id) {
             self.set_selection(Some(selection), cx);
         }
     }
 
     /// Selects the next enabled row, wrapping.
     pub fn select_next(&mut self, cx: &mut Context<'_, Self>) {
-        self.set_selection(self.model.next(self.selection), cx);
+        self.set_selection(self.shown.next(self.selection), cx);
     }
 
     /// Selects the previous enabled row, wrapping.
     pub fn select_previous(&mut self, cx: &mut Context<'_, Self>) {
-        self.set_selection(self.model.previous(self.selection), cx);
+        self.set_selection(self.shown.previous(self.selection), cx);
     }
 
     /// Selects the first enabled row.
     pub fn select_first(&mut self, cx: &mut Context<'_, Self>) {
-        self.set_selection(self.model.first(), cx);
+        self.set_selection(self.shown.first(), cx);
     }
 
     /// Selects the last enabled row.
     pub fn select_last(&mut self, cx: &mut Context<'_, Self>) {
-        self.set_selection(self.model.last(), cx);
+        self.set_selection(self.shown.last(), cx);
     }
 
-    /// Selects the next button in a button row, wrapping.
+    /// Selects the next button in a button row, wrapping, or opens the
+    /// selected submenu and selects its first row.
     pub fn select_right(&mut self, cx: &mut Context<'_, Self>) {
-        self.set_selection(self.model.right(self.selection), cx);
+        if let Some(id) = self.selected_submenu() {
+            self.open_submenu(id, true, cx);
+        } else {
+            self.set_selection(self.shown.right(self.selection), cx);
+        }
     }
 
-    /// Selects the previous button in a button row, wrapping.
+    /// Selects the previous button in a button row, wrapping, or leaves an
+    /// open submenu with its row selected.
     pub fn select_left(&mut self, cx: &mut Context<'_, Self>) {
-        self.set_selection(self.model.left(self.selection), cx);
+        let in_buttons = self.selection.is_some_and(|selection| {
+            matches!(
+                self.shown.rows.get(selection.row),
+                Some(Row::Buttons { .. })
+            )
+        });
+        if self.submenu.is_some() && !in_buttons {
+            self.leave_submenu(cx);
+        } else {
+            self.set_selection(self.shown.left(self.selection), cx);
+        }
+    }
+
+    /// The selected row's id when it opens a submenu.
+    fn selected_submenu(&self) -> Option<ItemId> {
+        let selection = self.selection?;
+        self.shown
+            .is_submenu(selection)
+            .then(|| self.shown.id_at(selection))
+            .flatten()
+    }
+
+    /// Shows the submenu `id` in place of the rows, selecting its first
+    /// row when the keyboard opened it and nothing when a pointer did.
+    fn open_submenu(
+        &mut self,
+        id: ItemId,
+        from_keyboard: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(shown) = level(&self.model, &id) else {
+            return;
+        };
+        self.shown = shown;
+        self.submenu = Some(id);
+        self.selection = None;
+        self.scroll.set_offset(Point::default());
+        let first = from_keyboard
+            .then(|| {
+                self.shown.next(Some(Selection {
+                    row: 0,
+                    button: None,
+                }))
+            })
+            .flatten();
+        self.set_selection(first, cx);
+        cx.notify();
+    }
+
+    /// Shows the top rows again with the submenu's row selected.
+    fn leave_submenu(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(id) = self.submenu.take() else {
+            return;
+        };
+        self.shown = self.model.clone();
+        self.selection = None;
+        self.scroll.set_offset(Point::default());
+        self.set_selection(self.shown.selection_of(&id), cx);
+        cx.notify();
+    }
+
+    /// Whether `selection` is the open submenu's back row.
+    fn is_back(&self, selection: Selection) -> bool {
+        self.submenu.is_some() && selection.row == 0
     }
 
     /// Jumps to the next item starting with `text`; unmatched text leaves
     /// the selection alone.
     pub fn type_ahead(&mut self, text: &str, cx: &mut Context<'_, Self>) {
-        if let Some(selection) = self.model.type_ahead(self.selection, text) {
+        if let Some(selection) = self.shown.type_ahead(self.selection, text) {
             self.set_selection(Some(selection), cx);
         }
     }
 
-    /// Runs the selection; nothing happens without one.
+    /// Runs the selection: picks it, opens its submenu, or leaves the open
+    /// submenu from its back row. Nothing happens without one.
     pub fn confirm(&mut self, cx: &mut Context<'_, Self>) {
-        if let Some(id) = self.selection.and_then(|s| self.model.id_at(s)) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        self.activate(selection, true, cx);
+    }
+
+    fn activate(
+        &mut self,
+        selection: Selection,
+        from_keyboard: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(id) = self.shown.id_at(selection) else {
+            return;
+        };
+        if self.is_back(selection) {
+            self.leave_submenu(cx);
+        } else if self.shown.is_submenu(selection) {
+            self.open_submenu(id, from_keyboard, cx);
+        } else {
             cx.emit(MenuEvent::Picked(id));
         }
     }
 
-    /// Reports a pointer pick of `id` when the current rows still enable
-    /// it: the model may have changed since the frame the press landed on.
-    fn pick(&self, id: &ItemId, cx: &mut Context<'_, Self>) {
+    /// Runs a pointer pick of `id` when the current rows still enable it:
+    /// the model may have changed since the frame the press landed on.
+    fn pick(&mut self, id: &ItemId, cx: &mut Context<'_, Self>) {
         // `selection_of` resolves enabled targets only.
-        if self.model.selection_of(id).is_some() {
-            cx.emit(MenuEvent::Picked(id.clone()));
+        if let Some(selection) = self.shown.selection_of(id) {
+            self.activate(selection, false, cx);
         }
     }
 
@@ -471,17 +639,18 @@ impl Menu {
         button: Option<usize>,
         cx: &mut Context<'_, Self>,
     ) {
-        if let Some(selection) = self.model.hover(row, button) {
+        if let Some(selection) = self.shown.hover(row, button) {
             self.set_selection(Some(selection), cx);
         }
     }
 
-    /// Renders `item` at `row`, at the zero-based `position` among the
-    /// menu's items and buttons.
+    /// Renders `item` at `row` as `kind`, at the zero-based `position`
+    /// among the menu's items and buttons.
     fn render_item(
         &self,
         row: usize,
         item: &Item,
+        kind: ItemKind,
         position: usize,
         cx: &mut Context<'_, Self>,
     ) -> gpui::AnyElement {
@@ -503,43 +672,29 @@ impl Menu {
         } else {
             tokens.dim
         };
-        let side = if let Some(count) = item.badge {
-            Some(div().ml_auto().child(badge(
-                ("menu-badge", row),
-                count.to_string(),
-                Tone::Warning,
-                tokens,
-            )))
-        } else {
-            let side = |content: gpui::Div| {
-                div()
-                    .ml_auto()
-                    .pl(px(SIDE_INSET))
-                    .text_size(ui(SIDE_TEXT_SIZE))
-                    .text_color(side_text)
-                    .whitespace_nowrap()
-                    .child(content)
-            };
-            if item.enabled {
-                (!item.shortcut.is_empty()).then(|| {
-                    side(kbd::glyphs(&item.shortcut, px(11.0), side_text))
-                })
-            } else {
-                item.disabled_hint
-                    .clone()
-                    .map(|hint| side(div().child(hint)))
-            }
-        };
+        let side = self.render_side(row, item, kind, side_text);
         let id = item.id.clone();
         let enabled = item.enabled;
+        // A submenu's rows have ids of their own, so a press on the top
+        // rows never completes a click on the row that replaced it.
+        let element_id = if self.submenu.is_some() {
+            ("menu-subitem", row)
+        } else {
+            ("menu-item", row)
+        };
+        let aria_label = match kind {
+            ItemKind::Back => format!("Back from {}", item.label),
+            ItemKind::Item | ItemKind::Submenu => item.label.clone(),
+        };
         let row_element = div()
-            .id(("menu-item", row))
+            .id(element_id)
             .role(match self.role {
                 Role::Menu => gpui::Role::MenuItem,
                 Role::ListBox => gpui::Role::ListBoxOption,
             })
-            .aria_label(item.label.clone())
+            .aria_label(aria_label)
             .aria_position_in_set(position)
+            .when(kind == ItemKind::Submenu, |row| row.aria_expanded(false))
             .when(self.role == Role::ListBox, |row| {
                 row.aria_selected(selected)
             })
@@ -573,6 +728,7 @@ impl Menu {
                     }
                 }))
             })
+            .when(kind == ItemKind::Back, |row| row.child(BACK_MARK))
             .child(div().truncate().child(item.label.clone()))
             .children(side);
         States {
@@ -581,6 +737,87 @@ impl Menu {
         }
         .apply(row_element)
         .into_any_element()
+    }
+
+    /// What an item row draws on its right, in `color`: a count badge, `›`
+    /// for a submenu, an enabled item's shortcut, or a disabled item's hint.
+    fn render_side(
+        &self,
+        row: usize,
+        item: &Item,
+        kind: ItemKind,
+        color: gpui::Hsla,
+    ) -> Option<gpui::Div> {
+        if let Some(count) = item.badge {
+            return Some(div().ml_auto().child(badge(
+                ("menu-badge", row),
+                count.to_string(),
+                Tone::Warning,
+                self.tokens,
+            )));
+        }
+        let side = |content: gpui::Div| {
+            div()
+                .ml_auto()
+                .pl(px(SIDE_INSET))
+                .text_size(ui(SIDE_TEXT_SIZE))
+                .text_color(color)
+                .whitespace_nowrap()
+                .child(content)
+        };
+        if kind == ItemKind::Submenu {
+            Some(side(div().child(SUBMENU_MARK)))
+        } else if item.enabled {
+            (!item.shortcut.is_empty())
+                .then(|| side(kbd::glyphs(&item.shortcut, px(11.0), color)))
+        } else {
+            item.disabled_hint
+                .clone()
+                .map(|hint| side(div().child(hint)))
+        }
+    }
+
+    /// Renders the rows the menu shows, with the size of the set their
+    /// items and buttons form.
+    fn render_rows(
+        &self,
+        cx: &mut Context<'_, Self>,
+    ) -> (Vec<gpui::AnyElement>, usize) {
+        // Items and buttons form one set: AccessKit positions are
+        // zero-based, and adapters read the set's size from the container.
+        let mut position = 0;
+        let rows = self
+            .shown
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(row, model_row)| match model_row {
+                Row::Item(item) => {
+                    position += 1;
+                    let kind = if self.submenu.is_some() && row == 0 {
+                        ItemKind::Back
+                    } else {
+                        ItemKind::Item
+                    };
+                    self.render_item(row, item, kind, position - 1, cx)
+                }
+                Row::Submenu { item, .. } => {
+                    position += 1;
+                    let kind = ItemKind::Submenu;
+                    self.render_item(row, item, kind, position - 1, cx)
+                }
+                Row::Separator => separator::horizontal(self.tokens)
+                    .mx(px(4.0))
+                    .my(px(4.0))
+                    .into_any_element(),
+                Row::Buttons { label, buttons } => {
+                    position += buttons.len();
+                    let first = position - buttons.len();
+                    self.render_buttons(row, label, buttons, first, cx)
+                }
+            })
+            .collect();
+        (rows, position)
     }
 
     /// Renders a button row at `row`, its first button at the zero-based
@@ -768,6 +1005,43 @@ impl EntityInputHandler for Menu {
     }
 }
 
+/// How an item row draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ItemKind {
+    Item,
+    /// Opens a submenu: `›` in place of a shortcut.
+    Submenu,
+    /// Leaves the open submenu: `‹` before the submenu's label.
+    Back,
+}
+
+/// The submenu row's mark, drawn as a shortcut is.
+const SUBMENU_MARK: &str = "›";
+/// The back row's mark, drawn as its label is.
+const BACK_MARK: &str = "‹";
+/// The space between the back row's mark and its label: the row's gap.
+const BACK_GAP: f32 = ROW_GAP;
+
+/// The rows the submenu `id` of `model` shows: its back row, labelled with
+/// the submenu's label, then its rows. `None` once no enabled submenu row
+/// has that id.
+fn level(model: &Model, id: &str) -> Option<Model> {
+    let (item, rows) = model.submenu(id)?;
+    let mut shown = vec![Row::Item(Item::new(BACK, item.label.clone()))];
+    shown.extend(rows.iter().cloned());
+    Some(Model::new(shown))
+}
+
+/// The rows `model` can show: its own, then each submenu's.
+fn levels(model: &Model) -> impl Iterator<Item = Model> + '_ {
+    std::iter::once(model.clone()).chain(model.rows.iter().filter_map(|row| {
+        match row {
+            Row::Submenu { item, .. } => level(model, &item.id),
+            _ => None,
+        }
+    }))
+}
+
 /// Where `row` sits in `model`'s rows at the rem size `rem`, top and
 /// bottom, before scrolling.
 fn row_span(model: &Model, row: usize, rem: Pixels) -> Option<(f32, f32)> {
@@ -801,7 +1075,7 @@ pub fn select_width(
 /// scale, and separators keep their hairline and margins.
 fn row_height(row: &Row, rem: Pixels) -> Pixels {
     match row {
-        Row::Item(_) => ui(ROW_HEIGHT).to_pixels(rem),
+        Row::Item(_) | Row::Submenu { .. } => ui(ROW_HEIGHT).to_pixels(rem),
         Row::Separator => px(SEPARATOR_HEIGHT),
         Row::Buttons { .. } => ui(BUTTON_ROW_HEIGHT).to_pixels(rem),
     }
@@ -815,32 +1089,7 @@ impl Render for Menu {
     ) -> impl IntoElement {
         self.rem = window.rem_size();
         let tokens = self.tokens;
-        // Items and buttons form one set: AccessKit positions are
-        // zero-based, and adapters read the set's size from the container.
-        let mut position = 0;
-        let rows: Vec<gpui::AnyElement> = self
-            .model
-            .rows
-            .clone()
-            .iter()
-            .enumerate()
-            .map(|(row, model_row)| match model_row {
-                Row::Item(item) => {
-                    position += 1;
-                    self.render_item(row, item, position - 1, cx)
-                }
-                Row::Separator => separator::horizontal(tokens)
-                    .mx(px(4.0))
-                    .my(px(4.0))
-                    .into_any_element(),
-                Row::Buttons { label, buttons } => {
-                    position += buttons.len();
-                    let first = position - buttons.len();
-                    self.render_buttons(row, label, buttons, first, cx)
-                }
-            })
-            .collect();
-        let set_size = position;
+        let (rows, set_size) = self.render_rows(cx);
         let focus = self.focus.clone();
         let menu = cx.entity();
         let scrollbar = self.scrollbar.elements(
@@ -954,6 +1203,28 @@ mod height_tests {
         assert_eq!(
             Menu::content_height(&model, DESIGN_REM * 2.0),
             px(2.0 * 56.0 + 9.0 + 60.0 + 12.0)
+        );
+    }
+
+    #[test]
+    fn the_content_height_is_the_tallest_of_the_rows_and_each_submenu() {
+        let submenu = |count: usize| Row::Submenu {
+            item: Item::new("more", "More"),
+            rows: (0..count)
+                .map(|index| Row::Item(Item::new(format!("{index}"), "Row")))
+                .collect(),
+        };
+        // Two top rows; the submenu shows a back row and its own.
+        let short =
+            Model::new(vec![Row::Item(Item::new("a", "A")), submenu(1)]);
+        assert_eq!(
+            Menu::content_height(&short, DESIGN_REM),
+            px(2.0 * 28.0 + 12.0)
+        );
+        let tall = Model::new(vec![Row::Item(Item::new("a", "A")), submenu(4)]);
+        assert_eq!(
+            Menu::content_height(&tall, DESIGN_REM),
+            px(5.0 * 28.0 + 12.0)
         );
     }
 }
@@ -1359,6 +1630,188 @@ mod tests {
             assert_eq!(menu.selection().map(|s| s.row), Some(30));
             assert!(shows(menu, 30), "offset {:?}", menu.scroll.offset());
         });
+    }
+
+    /// Rows with an Arrange submenu second, whose rows are three layouts.
+    fn with_submenu() -> Model {
+        Model::new(vec![
+            Row::Item(Item::new("balance", "Balance Panes")),
+            Row::Submenu {
+                item: Item::new("arrange", "Arrange Panes"),
+                rows: vec![
+                    Row::Item(Item::new("arrange:columns", "Equal Columns")),
+                    Row::Item(
+                        Item::new("arrange:tiny", "Tiny")
+                            .disabled(Some("Holds at most 2 panes".to_owned())),
+                    ),
+                    Row::Item(Item::new("arrange:rows", "Equal Rows")),
+                ],
+            },
+            Row::Item(Item::new("close", "Close Pane")),
+        ])
+    }
+
+    /// A drawn menu over [`with_submenu`] and the events it reports.
+    fn open_submenu_menu(
+        cx: &mut TestAppContext,
+        from_keyboard: bool,
+    ) -> (
+        Entity<Menu>,
+        Rc<RefCell<Vec<MenuEvent>>>,
+        &mut gpui::VisualTestContext,
+    ) {
+        let (host, cx) = cx.add_window_view(|_, _| Host { menu: None });
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let seen = events.clone();
+        let menu = cx.update(|_, cx| {
+            let menu = cx.new(|cx| {
+                Menu::new("Pane", with_submenu(), tokens(), from_keyboard, cx)
+            });
+            cx.subscribe(&menu, move |_, event: &MenuEvent, _| {
+                seen.borrow_mut().push(event.clone());
+            })
+            .detach();
+            host.update(cx, |host, cx| {
+                host.menu = Some(menu.clone());
+                cx.notify();
+            });
+            menu
+        });
+        cx.run_until_parked();
+        (menu, events, cx)
+    }
+
+    #[gpui::test]
+    fn the_keyboard_drills_into_a_submenu_and_back_to_its_row(
+        cx: &mut TestAppContext,
+    ) {
+        let (menu, events, cx) = open_submenu_menu(cx, true);
+        let state = |cx: &mut gpui::VisualTestContext| {
+            cx.read(|cx| {
+                let menu = menu.read(cx);
+                (
+                    menu.submenu().map(ToString::to_string),
+                    menu.selected_id().map(|id| id.to_string()),
+                )
+            })
+        };
+        let some = |text: &str| Some(text.to_owned());
+        menu.update(cx, Menu::select_next);
+        assert_eq!(state(cx), (None, some("arrange")));
+        // Right opens it on its first row.
+        menu.update(cx, Menu::select_right);
+        assert_eq!(state(cx), (some("arrange"), some("arrange:columns")));
+        // Left returns with the submenu row selected.
+        menu.update(cx, Menu::select_left);
+        assert_eq!(state(cx), (None, some("arrange")));
+        // Enter opens it too, and Enter on the back row leaves.
+        menu.update(cx, Menu::confirm);
+        assert_eq!(state(cx), (some("arrange"), some("arrange:columns")));
+        menu.update(cx, Menu::select_first);
+        menu.update(cx, Menu::confirm);
+        assert_eq!(state(cx), (None, some("arrange")));
+        // A submenu row is picked like any item, skipping disabled ones.
+        menu.update(cx, |menu, cx| {
+            menu.select_right(cx);
+            menu.select_next(cx);
+            menu.confirm(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            *events.borrow(),
+            [MenuEvent::Picked("arrange:rows".into())]
+        );
+    }
+
+    #[gpui::test]
+    fn the_release_that_opens_a_submenu_never_picks_the_row_under_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (menu, events, cx) = open_submenu_menu(cx, false);
+        // The submenu row is the second; the submenu's first layout draws
+        // there once it opens, below the back row.
+        let second = point(px(40.0), px(48.0));
+        cx.simulate_click(second, Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let menu = menu.read(cx);
+            assert_eq!(menu.submenu().map(AsRef::as_ref), Some("arrange"));
+            assert_eq!(menu.selection(), None, "a pointer opens unselected");
+        });
+        assert_eq!(*events.borrow(), []);
+        // The next click there picks that layout, and one on the back row
+        // above leaves.
+        cx.simulate_click(second, Modifiers::none());
+        assert_eq!(
+            *events.borrow(),
+            [MenuEvent::Picked("arrange:columns".into())]
+        );
+        cx.simulate_click(point(px(40.0), px(20.0)), Modifiers::none());
+        cx.read(|cx| {
+            let menu = menu.read(cx);
+            assert_eq!(menu.submenu(), None);
+            assert_eq!(menu.selected_id().as_deref(), Some("arrange"));
+        });
+    }
+
+    #[gpui::test]
+    fn a_refresh_keeps_the_open_submenu_until_its_row_goes(
+        cx: &mut TestAppContext,
+    ) {
+        let (menu, _, cx) = open_submenu_menu(cx, true);
+        menu.update(cx, |menu, cx| {
+            menu.select_next(cx);
+            menu.select_right(cx);
+            menu.select_next(cx);
+        });
+        // Rows above it and in it change; the submenu and its selected
+        // layout stay.
+        let mut rows = with_submenu().rows;
+        rows.insert(0, Row::Item(Item::new("split", "Split Right")));
+        if let Some(Row::Submenu { rows, .. }) = rows.get_mut(2) {
+            rows.insert(0, Row::Item(Item::new("arrange:dev", "dev")));
+        }
+        menu.update(cx, |menu, cx| menu.set_model(Model::new(rows), cx));
+        cx.read(|cx| {
+            let menu = menu.read(cx);
+            assert_eq!(menu.submenu().map(AsRef::as_ref), Some("arrange"));
+            assert_eq!(menu.selected_id().as_deref(), Some("arrange:rows"));
+        });
+        // Without the row, as when the tab stops being split, the top rows
+        // show again.
+        let rows = vec![Row::Item(Item::new("close", "Close Pane"))];
+        menu.update(cx, |menu, cx| menu.set_model(Model::new(rows), cx));
+        cx.read(|cx| {
+            let menu = menu.read(cx);
+            assert_eq!(menu.submenu(), None);
+            assert_eq!(menu.selection(), None);
+        });
+    }
+
+    #[gpui::test]
+    fn a_submenu_row_reports_it_collapsed_and_the_back_row_names_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (menu, _, cx) = open_submenu_menu(cx, true);
+        let labelled = |cx: &mut gpui::VisualTestContext, label: &str| {
+            cx.update(|window, _| {
+                crate::testing::a11y_nodes(window)
+                    .into_iter()
+                    .find(|node| node["aria"]["label"] == label)
+                    .map(|node| node["aria"].clone())
+            })
+        };
+        let row = labelled(cx, "Arrange Panes").expect("the submenu row");
+        assert_eq!(row["expanded"], false, "{row}");
+        menu.update(cx, |menu, cx| {
+            menu.select_next(cx);
+            menu.select_right(cx);
+        });
+        cx.run_until_parked();
+        let back = labelled(cx, "Back from Arrange Panes").expect("back");
+        assert_eq!(back["role"], "MenuItem");
     }
 
     #[gpui::test]

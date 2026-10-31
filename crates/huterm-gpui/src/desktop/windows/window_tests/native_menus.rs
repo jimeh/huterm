@@ -20,30 +20,34 @@ struct Shown {
 }
 
 impl Shown {
+    /// Every entry depth-first, as tags number them: an item's id, `!`
+    /// marking a disabled one, `-` for a separator, and a submenu's title
+    /// and `>` before its own entries.
     fn ids(&self) -> Vec<String> {
         self.menu
-            .items
-            .iter()
+            .entries()
+            .into_iter()
             .map(|item| match item {
                 NativeItem::Item { id, enabled, .. } => {
                     format!("{id}{}", if *enabled { "" } else { "!" })
                 }
                 NativeItem::Separator => "-".to_owned(),
+                NativeItem::Submenu { title, .. } => format!("{title}>"),
             })
             .collect()
     }
 
-    /// Picks the item `id`, as a click on it would.
+    /// Picks the item `id`, in any submenu, as a click on it would.
     fn pick(&self, id: &str) {
-        let index = self
+        let tag = self
             .menu
-            .items
-            .iter()
+            .entries()
+            .into_iter()
             .position(|item| {
                 matches!(item, NativeItem::Item { id: item, .. } if item == id)
             })
             .unwrap_or_else(|| panic!("no item `{id}`"));
-        self.pick.try_send(Some(index)).unwrap();
+        self.pick.try_send(Some(tag)).unwrap();
     }
 
     fn dismiss(&self) {
@@ -180,6 +184,48 @@ fn a_right_click_opens_the_native_terminal_menu_and_runs_its_pick(
         native_kind(cx, window).is_none()
             && terminal(cx, window, tab)
                 .is_some_and(|terminal| terminal.read(cx).selection.is_some())
+    });
+}
+
+#[gpui::test]
+fn a_native_terminal_menu_arranges_a_split_tab_from_its_submenu(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, presenter) = harness.native_window();
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    harness.wait_for("the split pane's shell", |cx| {
+        pane_screen(cx, window, tab, second)
+            .is_some_and(|text| text.contains("READY"))
+    });
+    harness.update_view(window, |view, window, cx| {
+        view.focus_pane(tab, first, window, cx);
+    });
+    let centre = harness.terminal_centre(window);
+    harness.right_press(window, centre);
+    harness.wait_shown(&presenter, 1);
+    {
+        let shown = presenter.shown.borrow();
+        let ids = shown[0].ids();
+        let start = ids
+            .iter()
+            .position(|id| id == "Arrange Panes>")
+            .expect("an Arrange Panes submenu");
+        assert_eq!(
+            ids[start - 1..start + 3],
+            [
+                "balance_panes",
+                "Arrange Panes>",
+                "arrange_panes:columns",
+                "arrange_panes:rows"
+            ]
+        );
+        shown[0].pick("arrange_panes:rows");
+    }
+    harness.wait_for("the tab to arrange into rows", |cx| {
+        native_kind(cx, window).is_none()
+            && root_axis(cx, tab) == Some(SplitAxis::Rows)
     });
 }
 

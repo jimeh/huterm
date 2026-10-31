@@ -172,7 +172,10 @@ pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 #[cfg(target_os = "macos")]
 mod appkit_menu;
 #[cfg(target_os = "macos")]
-pub(super) use appkit_menu::check_window_menu as check_native_window_menu;
+pub(super) use appkit_menu::{
+    check_terminal_menu as check_native_terminal_menu,
+    check_window_menu as check_native_window_menu,
+};
 mod audible_bell;
 pub(super) use audible_bell::ring as ring_audible_bell;
 mod button_layout;
@@ -13319,13 +13322,12 @@ impl WorkspaceView {
             selection: terminal.command_availability(ids::COPY).is_ok(),
             exited: terminal.command_availability(ids::PASTE).is_err(),
             scrolled_back: terminal.scrolled_back(),
-            split: self
-                .active_tab_view(cx)
-                .is_some_and(|tab| tab.panes.len() > 1),
+            panes: self.active_tab_view(cx).map_or(0, |tab| tab.panes.len()),
             directory,
         };
         Some(terminal_menu(
             input,
+            &self.config.panes.layouts(),
             &cx.global::<Desktop>().keymap,
             contexts,
         ))
@@ -13582,6 +13584,37 @@ impl WorkspaceView {
         } = kind
             && self.run_link_pick(id, link, cx)
         {
+            return;
+        }
+        // An Arrange Panes item runs `arrange_panes` with its layout, as the
+        // palette's picker does.
+        if matches!(kind, MenuKind::Terminal { .. })
+            && let Some(layout) =
+                id.strip_prefix(terminal_menu::ARRANGE_PANES_PREFIX)
+        {
+            let invocation = CommandInvocation::new(
+                ids::ARRANGE_PANES,
+                vec![CommandArgument::new(
+                    "layout",
+                    CommandValue::Text(layout.to_owned()),
+                )],
+            );
+            match self.invoke_interactive(&invocation, window, cx) {
+                Ok(_) => {
+                    self.recent.record(ids::ARRANGE_PANES);
+                    cx.global_mut::<Desktop>()
+                        .frequency
+                        .record(ids::ARRANGE_PANES);
+                }
+                Err(error) => {
+                    self.report_failure(
+                        "Command failed",
+                        error.to_string(),
+                        cx,
+                    );
+                }
+            }
+            cx.notify();
             return;
         }
         let Some(spec) = huterm_protocol::lookup(id) else {
@@ -13961,10 +13994,8 @@ impl WorkspaceView {
         let menu = match &self.menu {
             Some(open) => {
                 let menu = open.view.read(cx);
-                let selection = menu
-                    .selection()
-                    .and_then(|selection| menu.model().id_at(selection))
-                    .unwrap_or_else(|| "none".into());
+                let selection =
+                    menu.selected_id().unwrap_or_else(|| "none".into());
                 let kind = match open.kind {
                     MenuKind::Window => "window",
                     MenuKind::Tab(_) => "tab",
@@ -14330,6 +14361,15 @@ fn menu_items_state(model: &MenuModel) -> String {
                         if button.enabled { "" } else { "!" }
                     )
                 }));
+            }
+            MenuRow::Submenu { item, rows } => {
+                let rows = menu_items_state(&MenuModel::new(rows.clone()));
+                ids.push(format!(
+                    "{}{}[{}]",
+                    item.id,
+                    if item.enabled { "" } else { "!" },
+                    rows.replace(',', ";")
+                ));
             }
             MenuRow::Separator => {}
         }

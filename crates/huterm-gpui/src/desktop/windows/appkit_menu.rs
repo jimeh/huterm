@@ -280,7 +280,8 @@ fn target() -> anyhow::Result<*mut Object> {
         .context("native menu target is unavailable")
 }
 
-/// Builds a retained `NSMenu` from `menu`; each item's tag is its index.
+/// Builds a retained `NSMenu` from `menu`. Tags number every entry
+/// depth-first, as [`NativeMenu::id_at`] reads them.
 ///
 /// # Safety
 /// Main thread only; `target` must be the live menu target.
@@ -288,18 +289,131 @@ unsafe fn build(
     menu: &NativeMenu,
     target: *mut Object,
 ) -> anyhow::Result<*mut Object> {
-    let menu_class = Class::get("NSMenu").context("NSMenu")?;
+    let mut tag = 0;
+    // SAFETY: The caller guarantees the main thread and the target.
+    unsafe { build_menu(&menu.items, menu.dark, target, &mut tag) }
+}
+
+/// A retained `NSMenu` of `items`, which never enables items itself and
+/// takes the dark or light appearance. `tag` is the next entry's tag.
+///
+/// # Safety
+/// Main thread only; `target` must be the live menu target.
+unsafe fn build_menu(
+    items: &[NativeItem],
+    dark: bool,
+    target: *mut Object,
+    tag: &mut isize,
+) -> anyhow::Result<*mut Object> {
     let item_class = Class::get("NSMenuItem").context("NSMenuItem")?;
     let badge_class = Class::get("NSMenuItemBadge");
     // SAFETY: The caller guarantees the main thread. New objects are owned
-    // here and handed to the menu, which retains its items.
+    // here and handed to the menu, which retains its items and submenus.
+    unsafe {
+        let native = new_menu(dark)?;
+        for entry in items {
+            let entry_tag = *tag;
+            *tag += 1;
+            match entry {
+                NativeItem::Separator => {
+                    let separator: *mut Object =
+                        msg_send![item_class, separatorItem];
+                    let _: () = msg_send![native, addItem: separator];
+                }
+                NativeItem::Submenu {
+                    title,
+                    enabled,
+                    items,
+                } => {
+                    // No action of ours: `setSubmenu:` gives the item AppKit's
+                    // `submenuAction:`, which opens the submenu.
+                    let item: *mut Object = msg_send![item_class, alloc];
+                    let item: *mut Object = msg_send![
+                        item,
+                        initWithTitle: ns_string(title)?
+                        action: Sel::from_ptr(std::ptr::null())
+                        keyEquivalent: ns_string("")?
+                    ];
+                    ensure!(!item.is_null(), "NSMenuItem is unavailable");
+                    let _: () = msg_send![item, setTag: entry_tag];
+                    let _: () = msg_send![
+                        item,
+                        setEnabled: if *enabled { YES } else { NO }
+                    ];
+                    let submenu = build_menu(items, dark, target, tag);
+                    let submenu = match submenu {
+                        Ok(submenu) => submenu,
+                        Err(error) => {
+                            let _: () = msg_send![item, release];
+                            let _: () = msg_send![native, release];
+                            return Err(error);
+                        }
+                    };
+                    let _: () = msg_send![item, setSubmenu: submenu];
+                    let _: () = msg_send![submenu, release];
+                    let _: () = msg_send![native, addItem: item];
+                    let _: () = msg_send![item, release];
+                }
+                NativeItem::Item {
+                    title,
+                    key,
+                    enabled,
+                    badge,
+                    ..
+                } => {
+                    let (equivalent, mask) = key
+                        .as_ref()
+                        .map_or(("", 0), |key| (key.key.as_str(), mask(key)));
+                    let item: *mut Object = msg_send![item_class, alloc];
+                    let item: *mut Object = msg_send![
+                        item,
+                        initWithTitle: ns_string(title)?
+                        action: sel!(pick:)
+                        keyEquivalent: ns_string(equivalent)?
+                    ];
+                    ensure!(!item.is_null(), "NSMenuItem is unavailable");
+                    let _: () = msg_send![item, setTarget: target];
+                    let _: () = msg_send![item, setTag: entry_tag];
+                    let _: () = msg_send![
+                        item,
+                        setEnabled: if *enabled { YES } else { NO }
+                    ];
+                    let _: () =
+                        msg_send![item, setKeyEquivalentModifierMask: mask];
+                    let _: () = msg_send![item, setAllowsAutomaticKeyEquivalentLocalization: NO];
+                    if let (Some(count), Some(class)) = (badge, badge_class) {
+                        let badge: *mut Object = msg_send![class, alloc];
+                        let badge: *mut Object = msg_send![badge, initWithCount: isize::try_from(*count).unwrap_or(isize::MAX)];
+                        if !badge.is_null() {
+                            let _: () = msg_send![item, setBadge: badge];
+                            let _: () = msg_send![badge, release];
+                        }
+                    }
+                    let _: () = msg_send![native, addItem: item];
+                    let _: () = msg_send![item, release];
+                }
+            }
+        }
+        Ok(native)
+    }
+}
+
+/// A retained, empty `NSMenu` that never enables items itself, in the dark
+/// or light appearance.
+///
+/// # Safety
+/// Main thread only.
+unsafe fn new_menu(dark: bool) -> anyhow::Result<*mut Object> {
+    let menu_class = Class::get("NSMenu").context("NSMenu")?;
+    // SAFETY: The caller guarantees the main thread; the menu is returned
+    // retained to the caller.
     unsafe {
         let native: *mut Object = msg_send![menu_class, new];
         ensure!(!native.is_null(), "NSMenu is unavailable");
         let _: () = msg_send![native, setAutoenablesItems: NO];
         let appearance: *mut Object = msg_send![
             Class::get("NSAppearance").context("NSAppearance")?,
-            appearanceNamed: ns_string(if menu.dark {
+            appearanceNamed: ns_string(if dark {
                 "NSAppearanceNameDarkAqua"
             } else {
                 "NSAppearanceNameAqua"
@@ -307,48 +421,6 @@ unsafe fn build(
         ];
         if !appearance.is_null() {
             let _: () = msg_send![native, setAppearance: appearance];
-        }
-        for (tag, item) in menu.items.iter().enumerate() {
-            let NativeItem::Item {
-                title,
-                key,
-                enabled,
-                badge,
-                ..
-            } = item
-            else {
-                let separator: *mut Object =
-                    msg_send![item_class, separatorItem];
-                let _: () = msg_send![native, addItem: separator];
-                continue;
-            };
-            let (equivalent, mask) = key
-                .as_ref()
-                .map_or(("", 0), |key| (key.key.as_str(), mask(key)));
-            let item: *mut Object = msg_send![item_class, alloc];
-            let item: *mut Object = msg_send![
-                item,
-                initWithTitle: ns_string(title)?
-                action: sel!(pick:)
-                keyEquivalent: ns_string(equivalent)?
-            ];
-            ensure!(!item.is_null(), "NSMenuItem is unavailable");
-            let _: () = msg_send![item, setTarget: target];
-            let _: () = msg_send![item, setTag: tag.cast_signed()];
-            let _: () =
-                msg_send![item, setEnabled: if *enabled { YES } else { NO }];
-            let _: () = msg_send![item, setKeyEquivalentModifierMask: mask];
-            let _: () = msg_send![item, setAllowsAutomaticKeyEquivalentLocalization: NO];
-            if let (Some(count), Some(class)) = (badge, badge_class) {
-                let badge: *mut Object = msg_send![class, alloc];
-                let badge: *mut Object = msg_send![badge, initWithCount: isize::try_from(*count).unwrap_or(isize::MAX)];
-                if !badge.is_null() {
-                    let _: () = msg_send![item, setBadge: badge];
-                    let _: () = msg_send![badge, release];
-                }
-            }
-            let _: () = msg_send![native, addItem: item];
-            let _: () = msg_send![item, release];
         }
         Ok(native)
     }
@@ -481,56 +553,177 @@ pub(in crate::desktop) fn check_window_menu(
     ensure!(is_main_thread()?, "menus are built on the main thread");
     for dark in [true, false] {
         let native = spec.to_native(dark);
-        // SAFETY: The menu is built, read, and released on the main
-        // thread; every item read is bounded by its count.
-        unsafe {
-            let menu = build(&native, target()?)?;
-            let result = check_built(menu, &native);
-            let _: () = msg_send![menu, release];
-            result?;
-        }
+        let items = built_items(&native)?;
+        check_items(&items, &native)?;
     }
     Ok(())
 }
 
+/// Builds the terminal menu `AppKit` would show for a split tab of three
+/// panes with one user layout, and checks its Arrange Panes submenu: the
+/// layouts' titles in order, the user layout that cannot hold three panes
+/// disabled, depth-first tags, and the ids picks resolve to. The menus
+/// smoke runs this.
+pub(in crate::desktop) fn check_terminal_menu(
+    keymap: &crate::keymap::InstalledKeymap,
+) -> anyhow::Result<()> {
+    use super::terminal_menu::{
+        DirectoryState, TerminalMenuInput, terminal_menu,
+    };
+    use crate::keymap::Platform;
+
+    let input = TerminalMenuInput {
+        platform: Platform::MacOs,
+        link: false,
+        selection: false,
+        exited: false,
+        scrolled_back: false,
+        panes: 3,
+        directory: DirectoryState::Local,
+    };
+    let panes = huterm_config::PanesConfig {
+        layouts: [("pair".to_owned(), "columns(pane, pane)".to_owned())].into(),
+        ..huterm_config::PanesConfig::default()
+    };
+    let contexts = ["Workspace", "Terminal"]
+        .into_iter()
+        .map(gpui::KeyContext::parse)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let spec = terminal_menu(input, &panes.layouts(), keymap, &contexts);
+    ensure!(is_main_thread()?, "menus are built on the main thread");
+    let native = spec.to_native(true);
+    let items = built_items(&native)?;
+    let start = items
+        .iter()
+        .position(|item| item == "Arrange Panes>")
+        .with_context(|| format!("no Arrange Panes submenu in {items:?}"))?;
+    let expected = [
+        ("Equal Columns", "arrange_panes:columns"),
+        ("Equal Rows", "arrange_panes:rows"),
+        ("Main Left", "arrange_panes:main_left"),
+        ("Main Top", "arrange_panes:main_top"),
+        ("Main Centered", "arrange_panes:main_centered"),
+        ("Tiled", "arrange_panes:tiled"),
+        ("pair!", ""),
+    ];
+    ensure!(
+        items.get(start + 1..start + 1 + expected.len())
+            == Some(
+                &expected
+                    .iter()
+                    .map(|(title, _)| (*title).to_owned())
+                    .collect::<Vec<_>>()[..]
+            ),
+        "the Arrange Panes submenu lists every layout: {items:?}"
+    );
+    for (offset, (title, id)) in expected.iter().enumerate() {
+        let tag = start + 1 + offset;
+        let picked = native.id_at(tag);
+        ensure!(
+            picked.as_deref() == Some(*id).filter(|id| !id.is_empty()),
+            "{title} at tag {tag} picks {picked:?}"
+        );
+    }
+    ensure!(
+        native.id_at(start).is_none(),
+        "the submenu's own item picks nothing"
+    );
+    Ok(())
+}
+
+/// Builds `native` as `AppKit` would, checks it against `native` through
+/// [`check_built`], and returns its entries depth-first.
+fn built_items(native: &NativeMenu) -> anyhow::Result<Vec<String>> {
+    // SAFETY: The menu is built, read, and released on the main thread;
+    // every item read is bounded by its count.
+    unsafe {
+        let menu = build(native, target()?)?;
+        let result = check_built(menu, native);
+        let _: () = msg_send![menu, release];
+        result
+    }
+}
+
+/// Checks a menu built from `native`, its submenus included, and returns
+/// each entry depth-first: `-` for a separator, a submenu's title and `>`
+/// before its own entries, and an item's title, `!` when disabled, its
+/// shortcut after `@`, and its badge after `#`.
+///
 /// # Safety
 /// Main thread only, with `menu` built from `native`.
 unsafe fn check_built(
     menu: *mut Object,
     native: &NativeMenu,
+) -> anyhow::Result<Vec<String>> {
+    let mut entries = Vec::new();
+    let mut tag = 0;
+    // SAFETY: The caller guarantees a live menu on the main thread.
+    unsafe {
+        read_menu(menu, &native.items, native.dark, &mut tag, &mut entries)?;
+    }
+    Ok(entries)
+}
+
+/// # Safety
+/// Main thread only, with `menu` built from `items`.
+unsafe fn read_menu(
+    menu: *mut Object,
+    items: &[NativeItem],
+    dark: bool,
+    tag: &mut isize,
+    entries: &mut Vec<String>,
 ) -> anyhow::Result<()> {
     // SAFETY: The caller guarantees a live menu on the main thread.
     unsafe {
         let count: usize = msg_send![menu, numberOfItems];
         ensure!(
-            count == native.items.len(),
+            count == items.len(),
             "menu has {count} items, expected {}",
-            native.items.len()
+            items.len()
         );
+        let autoenables: BOOL = msg_send![menu, autoenablesItems];
+        ensure!(autoenables == NO, "the menu enables its own items");
         let appearance: *mut Object = msg_send![menu, appearance];
         ensure!(!appearance.is_null(), "the menu has no appearance");
         let name: *mut Object = msg_send![appearance, name];
-        let expected = if native.dark {
+        let expected = if dark {
             "NSAppearanceNameDarkAqua"
         } else {
             "NSAppearanceNameAqua"
         };
         let name = string(name)?;
         ensure!(name == expected, "the menu's appearance is {name}");
-        let mut items = Vec::new();
-        for index in 0..count {
+        for (index, entry) in items.iter().enumerate() {
+            let entry_tag = *tag;
+            *tag += 1;
             let item: *mut Object = msg_send![menu, itemAtIndex: index];
             ensure!(!item.is_null(), "AppKit returned a null menu item");
             let separator: BOOL = msg_send![item, isSeparatorItem];
             if separator == YES {
-                items.push("-".to_owned());
+                entries.push("-".to_owned());
                 continue;
             }
             let title: *mut Object = msg_send![item, title];
+            let enabled: BOOL = msg_send![item, isEnabled];
+            let item_tag: isize = msg_send![item, tag];
+            ensure!(
+                item_tag == entry_tag,
+                "entry {entry_tag} has tag {item_tag}"
+            );
+            let disabled = if enabled == YES { "" } else { "!" };
+            if let NativeItem::Submenu { items, .. } = entry {
+                let submenu: *mut Object = msg_send![item, submenu];
+                ensure!(!submenu.is_null(), "a submenu item has no submenu");
+                let action: Sel = msg_send![item, action];
+                // AppKit gives a submenu's item its own `submenuAction:`;
+                // it must never report a pick.
+                ensure!(action != sel!(pick:), "a submenu item picks");
+                entries.push(format!("{}{disabled}>", string(title)?));
+                read_menu(submenu, items, dark, tag, entries)?;
+                continue;
+            }
             let key: *mut Object = msg_send![item, keyEquivalent];
             let mask: usize = msg_send![item, keyEquivalentModifierMask];
-            let enabled: BOOL = msg_send![item, isEnabled];
-            let tag: isize = msg_send![item, tag];
             let badge: *mut Object = msg_send![item, badge];
             let badge = if badge.is_null() {
                 String::new()
@@ -538,7 +731,6 @@ unsafe fn check_built(
                 let count: isize = msg_send![badge, itemCount];
                 format!("#{count}")
             };
-            ensure!(tag == index.cast_signed(), "item {index} has tag {tag}");
             let key = string(key)?;
             let shortcut = if key.is_empty() {
                 String::new()
@@ -555,17 +747,14 @@ unsafe fn check_built(
                 .collect();
                 format!("@{modifiers}{key}")
             };
-            items.push(format!(
-                "{}{}{shortcut}{badge}",
-                string(title)?,
-                if enabled == YES { "" } else { "!" },
-            ));
+            entries
+                .push(format!("{}{disabled}{shortcut}{badge}", string(title)?));
         }
-        check_items(&items, native)
+        Ok(())
     }
 }
 
-/// Checks the window menu's items as `check_built` read them.
+/// Checks the window menu's entries as `check_built` read them.
 fn check_items(items: &[String], native: &NativeMenu) -> anyhow::Result<()> {
     let position = |title: &str| {
         items
@@ -601,8 +790,8 @@ fn check_items(items: &[String], native: &NativeMenu) -> anyhow::Result<()> {
     ensure!(
         items.iter().filter(|item| *item == "-").count()
             == native
-                .items
-                .iter()
+                .entries()
+                .into_iter()
                 .filter(|item| matches!(item, NativeItem::Separator))
                 .count(),
         "separators: {items:?}"

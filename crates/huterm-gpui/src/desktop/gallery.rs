@@ -590,6 +590,13 @@ fn command_menu() -> Model {
                 .disabled(Some("Directory unknown".to_owned())),
         ),
         Row::Item(Item::new("notices", "Show Notices").badge(3)),
+        Row::Submenu {
+            item: Item::new("arrange", "Arrange Panes"),
+            rows: vec![
+                Row::Item(Item::new("columns", "Equal Columns")),
+                Row::Item(Item::new("rows", "Equal Rows")),
+            ],
+        },
         Row::Separator,
         Row::Buttons {
             label: "Edit".to_owned(),

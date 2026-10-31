@@ -6047,7 +6047,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Open the menu to the right of the open one.",
+            "description": "Select the next button in a button row, or open the selected submenu.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -6057,7 +6057,7 @@
               },
               "command": {
                 "const": "menu_select_right",
-                "description": "Open the menu to the right of the open one.",
+                "description": "Select the next button in a button row, or open the selected submenu.",
                 "type": "string"
               },
               "description": {
@@ -6098,7 +6098,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Open the menu to the left of the open one.",
+            "description": "Select the previous button in a button row, or return from a submenu to its row.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -6108,7 +6108,7 @@
               },
               "command": {
                 "const": "menu_select_left",
-                "description": "Open the menu to the left of the open one.",
+                "description": "Select the previous button in a button row, or return from a submenu to its row.",
                 "type": "string"
               },
               "description": {

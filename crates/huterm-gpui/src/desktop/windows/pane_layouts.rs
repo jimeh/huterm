@@ -111,17 +111,34 @@ fn prose(layout: &NamedLayout) -> String {
     layout.title.to_lowercase()
 }
 
+/// Stand-in panes for asking a layout what it holds.
+fn stand_ins(count: usize) -> Vec<PaneId> {
+    (0..count)
+        .map(|value| PaneId::in_runtime(RuntimeId::new(u64::MAX), value as u64))
+        .collect()
+}
+
 /// The most panes `layout` holds below `count`, which it cannot hold: the
 /// largest smaller count it expands for.
 fn capacity(layout: &NamedLayout, count: usize) -> Option<usize> {
-    let panes: Vec<PaneId> = (0..count)
-        .map(|value| PaneId::in_runtime(RuntimeId::new(u64::MAX), value as u64))
-        .collect();
+    let panes = stand_ins(count);
     (1..count).rev().find(|held| {
         panes
             .get(..*held)
             .is_some_and(|panes| layout.template.expand(panes).is_ok())
     })
+}
+
+/// The most panes `layout` holds when it cannot hold `count`, as the
+/// terminal menu's Arrange Panes rows say it; `None` when it can.
+pub(super) fn holds_at_most(
+    layout: &NamedLayout,
+    count: usize,
+) -> Option<usize> {
+    if layout.template.expand(&stand_ins(count)).is_ok() {
+        return None;
+    }
+    Some(capacity(layout, count).unwrap_or(1))
 }
 
 /// Why a layout command changes nothing, as its notice says it.

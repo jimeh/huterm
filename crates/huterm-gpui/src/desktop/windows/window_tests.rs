@@ -3535,6 +3535,21 @@ fn pane_shown(
     Some((view.visible, view.requested_grid))
 }
 
+/// The axis of the projected layout's root split of `tab`.
+fn root_axis(cx: &App, tab: TabId) -> Option<SplitAxis> {
+    match cx
+        .global::<Desktop>()
+        .hierarchy
+        .state()
+        .tab(tab)?
+        .layout
+        .root()
+    {
+        huterm_protocol::PaneNode::Split(split) => Some(split.axis),
+        huterm_protocol::PaneNode::Pane(_) => None,
+    }
+}
+
 /// The weights of the projected layout's root split of `tab`.
 fn root_weights(cx: &App, tab: TabId) -> Option<Vec<u32>> {
     match cx
