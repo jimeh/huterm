@@ -83,7 +83,7 @@ pub struct TerminalConfig {
 impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
-            term: TerminalIdentity::Auto,
+            term: TerminalIdentity::Xterm256Color,
             close_on_exit: true,
             refresh: RefreshMode::default(),
             new_tab_directory: NewTabDirectory::Inherit,
@@ -206,8 +206,7 @@ impl Default for BellConfig {
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TerminalIdentity {
-    /// Use `xterm-huterm` when its terminfo entry is available.
-    #[default]
+    /// Use `xterm-huterm` when its terminfo entry is available locally.
     #[serde(rename = "auto")]
     #[cfg_attr(
         feature = "schema",
@@ -222,6 +221,7 @@ pub enum TerminalIdentity {
     )]
     XtermHuterm,
     /// Use the widely installed compatibility entry.
+    #[default]
     #[serde(rename = "xterm-256color")]
     #[cfg_attr(
         feature = "schema",
@@ -2227,7 +2227,7 @@ impl Default for RawTerminal {
     fn default() -> Self {
         Self {
             engine: None,
-            term: TerminalIdentity::Auto,
+            term: TerminalIdentity::Xterm256Color,
             clipboard_write: ClipboardWritePolicy::Allow,
             links: true,
             link_modifiers: LinkModifiers::default(),

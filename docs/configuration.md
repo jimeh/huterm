@@ -1031,23 +1031,35 @@ it answers.
 
 ### Terminal identity, tmux, and SSH
 
-New shells use Huterm's private `xterm-huterm` terminfo entry when it is
-available locally. Development tasks compile it into `target/terminfo`, and the
-macOS and Linux packages carry the compiled entry. If Huterm cannot find the
-entry, the default `auto` setting falls back to `xterm-256color`.
+New shells use `TERM=xterm-256color` by default. Nearly every system,
+including remote hosts reached over SSH, has that terminfo entry. Huterm also
+sets `COLORTERM=truecolor`, which tools such as tmux and Emacs use to enable
+24-bit color without a dedicated terminfo entry.
+
+Huterm also carries a private `xterm-huterm` terminfo entry. Development tasks
+compile it into `target/terminfo`, and the macOS and Linux packages carry the
+compiled entry. Opt into it with `auto`, which uses `xterm-huterm` when the
+entry is available locally and `xterm-256color` otherwise, or force it:
 
 ```toml
 [terminal]
-term = "auto" # Or force "xterm-huterm" / "xterm-256color" for new shells.
+term = "xterm-256color" # Or "auto" / "xterm-huterm" for new shells.
 ```
 
 `xterm-huterm` inherits the standard 256-color capabilities and advertises
-`Tc`, so terminfo consumers such as tmux keep 24-bit color. If you force
-`xterm-huterm`, making the entry available is your responsibility. A missing
-entry usually appears as an "unknown terminal type" error in curses
-applications.
+`Tc`, for terminfo consumers that read 24-bit color support only from
+terminfo. If you choose `xterm-huterm`, making the entry available is your
+responsibility. A missing entry usually appears as an "unknown terminal type"
+error in curses applications.
 
-An SSH server may not have the entry. Use a compatible identity for one SSH
+With `auto` or `xterm-huterm`, SSH passes `xterm-huterm` to the server, and
+local discovery cannot tell whether the server has the entry. zsh does not warn
+about a missing entry. Its line editor loses cursor movement and line clearing,
+so redrawn input piles up on the line: zsh-autosuggestions text stays behind
+and later keystrokes land after it, often with doubled characters. Check on the
+remote host with `infocmp -x "$TERM"`.
+
+When a server lacks the entry, use a compatible identity for one SSH
 command:
 
 ```sh
