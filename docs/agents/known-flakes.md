@@ -292,9 +292,17 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   EINVAL. The `TestDirectory` drop then panics on NotFound, and the double
   panic aborts every huterm-gpui lib test.
 - **Occurrences:** once, 2026-10-01 (PR #204); the next push passed.
+  2026-10-31, locally on macOS under load: a different variant, where
+  `auto_falls_back_when_no_entry_is_available` panicked in the drop's
+  `remove_dir_all` with "Directory not empty". It failed once in four
+  isolated runs of `terminfo::`.
+- **Suspected cause (inference):** `TestDirectory` names its directory from
+  the process ID and a nanosecond timestamp, which macOS reports in whole
+  microseconds. Two parallel tests can then share one directory, and one
+  test's drop removes it while the other writes `x/xterm-huterm`.
 - **Triage:** check whether the change touches `terminfo.rs` or temp-directory
-  handling, then rerun. A non-panicking cleanup in the drop would keep one
-  failure from aborting the binary.
+  handling, then rerun. A per-process counter in the directory name, and a
+  non-panicking cleanup in the drop, would remove both variants.
 
 ## `smoke:macos-input` empty state read
 
