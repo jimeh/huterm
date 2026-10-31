@@ -322,9 +322,9 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
     selected["properties"]
         .as_object_mut()
         .map(|fields| fields.remove("extends"));
-    selected["properties"]["name"] = json!({"type":"string", "pattern":"^[A-Za-z0-9_-]+$", "description":"Bundled, inline, or adjacent theme name. Existence is checked at runtime."});
-    selected["properties"]["light"] = json!({"type":"string", "pattern":"^[A-Za-z0-9_-]+$", "description":"Theme in light mode. Setting light or dark follows the system appearance; an unset one uses name."});
-    selected["properties"]["dark"] = json!({"type":"string", "pattern":"^[A-Za-z0-9_-]+$", "description":"Theme in dark mode. Setting light or dark follows the system appearance; an unset one uses name."});
+    selected["properties"]["name"] = json!({"type":"string", "pattern":"^[A-Za-z0-9_-]+$", "description":"The theme to use, bundled or your own; `light` and `dark` replace it in their mode."});
+    selected["properties"]["light"] = json!({"type":"string", "pattern":"^[A-Za-z0-9_-]+$", "description":"The theme while the system is in light mode; setting `light` or `dark` follows the system, and an unset one uses `name`."});
+    selected["properties"]["dark"] = json!({"type":"string", "pattern":"^[A-Za-z0-9_-]+$", "description":"The theme while the system is in dark mode; setting `light` or `dark` follows the system, and an unset one uses `name`."});
     config["definitions"]["SelectedTheme"] = selected;
     config["properties"]["theme"]["allOf"] =
         json!([{"$ref":"#/definitions/SelectedTheme"}]);

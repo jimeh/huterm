@@ -8927,7 +8927,7 @@
           "type": "string"
         },
         "dark": {
-          "description": "Theme in dark mode. Setting light or dark follows the system appearance; an unset one uses name.",
+          "description": "The theme while the system is in dark mode; setting `light` or `dark` follows the system, and an unset one uses `name`.",
           "pattern": "^[A-Za-z0-9_-]+$",
           "type": "string"
         },
@@ -8936,12 +8936,12 @@
           "type": "string"
         },
         "light": {
-          "description": "Theme in light mode. Setting light or dark follows the system appearance; an unset one uses name.",
+          "description": "The theme while the system is in light mode; setting `light` or `dark` follows the system, and an unset one uses `name`.",
           "pattern": "^[A-Za-z0-9_-]+$",
           "type": "string"
         },
         "name": {
-          "description": "Bundled, inline, or adjacent theme name. Existence is checked at runtime.",
+          "description": "The theme to use, bundled or your own; `light` and `dark` replace it in their mode.",
           "pattern": "^[A-Za-z0-9_-]+$",
           "type": "string"
         },
@@ -9768,6 +9768,7 @@
           "$ref": "#/definitions/SelectedTheme"
         }
       ],
+      "description": "The color theme, or one for each of the system's light and dark\nmodes with `light` and `dark`.",
       "x-huterm-apply": "live",
       "x-huterm-group": "Theme",
       "x-huterm-label": "Theme",
@@ -9778,6 +9779,7 @@
       "additionalProperties": {
         "$ref": "#/definitions/ThemeDefinition"
       },
+      "description": "Named themes that `[theme]` can select, each starting from another\ntheme with `extends`.",
       "propertyNames": {
         "pattern": "^[A-Za-z0-9_-]+$"
       },
