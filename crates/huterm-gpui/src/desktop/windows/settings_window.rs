@@ -222,6 +222,8 @@ pub(super) enum MenuFor {
     },
     /// A text field's context menu, opened where its right press landed.
     Field(WeakEntity<Input>),
+    /// The Theme mode row's One theme / Match system options.
+    ThemeMode,
 }
 
 impl MenuFor {
@@ -237,6 +239,7 @@ impl MenuFor {
             } => format!("gcmd:{entry}"),
             Self::Global { entry, .. } => format!("gprofile:{entry}"),
             Self::Field(field) => format!("field:{}", field.entity_id()),
+            Self::ThemeMode => themes::MODE_KEY.to_owned(),
         }
     }
 }
@@ -933,11 +936,8 @@ impl SettingsView {
                     self.choose_theme(argument, cx);
                 }
             }
-            // Space and Return switch between one theme and one per mode.
-            "theme-mode" => {
-                let auto = self.theme_auto();
-                self.set_theme_auto(!auto, cx);
-            }
+            // Space and Return open the options, as on every segmented row.
+            "theme-mode" => self.open_theme_mode(window, cx),
             "theme-slot" => {
                 if let Some(slot) = themes::Slot::from_id(argument) {
                     self.theme_slot = Some(slot);
@@ -1014,18 +1014,8 @@ impl SettingsView {
             return Some(field.read(cx).focus_handle(cx));
         }
         let key = match special(path) {
-            Some(Special::ThemePicker) => {
-                // Before the scan lists it, or for a missing theme, the
-                // first card takes focus.
-                let selected = self.selected_theme(cx);
-                let name =
-                    if self.themes.iter().any(|card| card.name == selected) {
-                        selected
-                    } else {
-                        self.ordered_theme_names().first()?.clone()
-                    };
-                format!("theme:{name}")
-            }
+            // The row's own control, as for every segmented row.
+            Some(Special::ThemePicker) => themes::MODE_KEY.to_owned(),
             Some(Special::Modifiers) => format!(
                 "chip:{path}:{}",
                 if cfg!(target_os = "macos") {
@@ -1841,6 +1831,9 @@ impl SettingsView {
                             field_menu::run_pick(&field, value, cx);
                         }
                     }
+                    Some(MenuFor::ThemeMode) => {
+                        view.set_theme_auto(value.as_ref() == "auto", cx);
+                    }
                     None => {}
                 }
             }
@@ -1885,6 +1878,7 @@ impl SettingsView {
             } => "Command".to_owned(),
             MenuFor::Profile | MenuFor::Global { .. } => "Profile".to_owned(),
             MenuFor::Field(_) => "Edit".to_owned(),
+            MenuFor::ThemeMode => "Theme mode".to_owned(),
         }
     }
 
@@ -1976,6 +1970,9 @@ impl SettingsView {
                 self.global_choice(*entry, field)
             }
             MenuFor::Field(_) => None,
+            MenuFor::ThemeMode => Some(
+                if self.theme_auto() { "auto" } else { "single" }.to_owned(),
+            ),
         }
     }
 

@@ -8,8 +8,8 @@
 //! keys it moves in one save (`Batch::Theme`).
 
 use gpui::{
-    AnyElement, Context, Div, FontWeight, SharedString, div, prelude::*, px,
-    svg,
+    AnyElement, Context, Div, FontWeight, SharedString, Window, div,
+    prelude::*, px, svg,
 };
 use huterm_ui::components::badge::{Tone as BadgeTone, badge};
 use huterm_ui::components::radio_group::RadioGroup;
@@ -19,8 +19,8 @@ use toml::Value;
 
 use super::super::super::overlay::{Swatch, mono_font_family, theme_is_dark};
 use super::super::Desktop;
-use super::SettingsView;
 use super::saving::Batch;
+use super::{MenuFor, MenuItem, MenuModel, MenuRow, SettingsView};
 use crate::assets::Icon;
 use crate::config::Theme;
 use crate::renderer::rgb_color as color;
@@ -234,21 +234,83 @@ impl SettingsView {
         [NAME, LIGHT, DARK].iter().any(|key| self.file.is_set(key))
     }
 
-    /// The mode switch, the slot cards while the theme follows the system,
-    /// and the grid, with a note on the color overrides the file sets on
-    /// top. `read_only` says why nothing can change, when it cannot.
-    pub(super) fn render_themes(
+    /// The Theme mode row's control: a segmented One theme / Match system
+    /// switch at the row's end, as Settings' other segmented rows have.
+    /// `read_only` says why it cannot change, when it cannot.
+    pub(super) fn render_theme_mode(
         &mut self,
         read_only: Option<SharedString>,
         swatch: Swatch,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
         let auto = self.theme_auto();
+        let handle = self.action_stop(MODE_KEY.to_owned(), cx);
+        let focus = handle.clone();
+        let group = ToggleGroup::single(
+            "settings-theme-mode",
+            "Theme mode",
+            &handle,
+            swatch,
+        )
+        .option("single", "One theme", !auto)
+        .option("auto", "Match system", auto)
+        .key_context("SettingsControl")
+        .when_some(read_only, |group, reason| group.disabled(Some(reason)))
+        .on_select(Self::listen(
+            cx,
+            move |view, picked: SharedString, window, cx| {
+                focus.focus(window, cx);
+                view.set_theme_auto(picked.as_ref() == "auto", cx);
+            },
+        ));
+        // The menu Space and Return open anchors to the switch.
+        let control = self.with_menu(MODE_KEY, group.into_any_element());
+        div()
+            .flex_none()
+            .debug_selector(|| "settings-theme-mode".to_owned())
+            .child(control)
+            .into_any_element()
+    }
+
+    /// Opens the Theme mode options under the switch, as Space and Return
+    /// open a segmented row's choices.
+    pub(super) fn open_theme_mode(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.locked() {
+            return;
+        }
+        let rows = [("single", "One theme"), ("auto", "Match system")]
+            .into_iter()
+            .map(|(value, label)| MenuRow::Item(MenuItem::new(value, label)))
+            .collect();
+        let opener = self.action_stop(MODE_KEY.to_owned(), cx);
+        self.show_menu(
+            MenuFor::ThemeMode,
+            MenuModel::new(rows),
+            opener,
+            window,
+            cx,
+        );
+    }
+
+    /// What the Theme mode row holds under its line: the slot cards while
+    /// the theme follows the system, a note on the color overrides the
+    /// file sets on top, and the grid. `read_only` says why nothing can
+    /// change, when it cannot.
+    pub(super) fn render_theme_body(
+        &mut self,
+        read_only: Option<SharedString>,
+        swatch: Swatch,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
         let locked = read_only.is_some();
-        let slots =
-            auto.then(|| self.render_slots(read_only.clone(), swatch, cx));
         let grid = self.render_theme_grid(read_only.as_ref(), swatch, cx);
-        let mode = self.render_theme_mode(auto, read_only, swatch, cx);
+        let slots = self
+            .theme_auto()
+            .then(|| self.render_slots(read_only, swatch, cx));
         let overrides: Vec<String> = self
             .file
             .get("theme")
@@ -263,13 +325,18 @@ impl SettingsView {
                     .collect()
             })
             .unwrap_or_default();
+        // A hairline sets the picker under the row's line, as a card's
+        // rows are set apart.
         div()
             .key_context("SettingsControl")
             .flex()
             .flex_col()
             .gap(px(10.0))
-            .w_full()
-            .child(mode)
+            .px(px(14.0))
+            .pt(px(12.0))
+            .pb(px(14.0))
+            .border_t_1()
+            .border_color(swatch.line)
             .children(slots)
             .when(!overrides.is_empty(), |block| {
                 block.child(
@@ -287,35 +354,6 @@ impl SettingsView {
             .into_any_element()
     }
 
-    fn render_theme_mode(
-        &mut self,
-        auto: bool,
-        read_only: Option<SharedString>,
-        swatch: Swatch,
-        cx: &mut Context<'_, Self>,
-    ) -> AnyElement {
-        let handle = self.action_stop(MODE_KEY.to_owned(), cx);
-        let focus = handle.clone();
-        ToggleGroup::single(
-            "settings-theme-mode",
-            "Theme mode",
-            &handle,
-            swatch,
-        )
-        .option("single", "One theme", !auto)
-        .option("auto", "Match system", auto)
-        .key_context("SettingsControl")
-        .when_some(read_only, |group, reason| group.disabled(Some(reason)))
-        .on_select(Self::listen(
-            cx,
-            move |view, picked: SharedString, window, cx| {
-                focus.focus(window, cx);
-                view.set_theme_auto(picked.as_ref() == "auto", cx);
-            },
-        ))
-        .into_any_element()
-    }
-
     /// The light and dark mode cards, a radio group choosing the slot the
     /// grid sets, then a line naming it.
     fn render_slots(
@@ -330,7 +368,13 @@ impl SettingsView {
         let mut cards =
             RadioGroup::new("settings-theme-slots", "Theme to choose", swatch)
                 .card(px(CARD_WIDTH * 2.0))
+                .stretch()
                 .key_context("SettingsGroup");
+        let system = if cfg!(target_os = "macos") {
+            "macOS"
+        } else {
+            "The system"
+        };
         for slot in [Slot::Light, Slot::Dark] {
             let name = self.slot_theme(slot);
             let handle =
@@ -357,15 +401,34 @@ impl SettingsView {
                 });
             cards = cards
                 .option(slot.id(), name.clone(), slot == target, &handle)
-                .accessible_name(format!("{} theme: {name}", slot.label()))
+                .accessible_name(if slot == current {
+                    // "macOS" keeps its case; "The system" continues the
+                    // sentence.
+                    let system = system.replacen("The", "the", 1);
+                    format!(
+                        "{} theme: {name}, {system} is {}",
+                        slot.label(),
+                        slot.id()
+                    )
+                } else {
+                    format!("{} theme: {name}", slot.label())
+                })
                 .content(
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(6.0))
                         .child(header)
-                        .child(preview_block(preview.as_ref(), 56.0)),
+                        .child(preview_block(preview.as_ref(), 60.0)),
                 );
+            // The card for the system's mode says which mode that is.
+            if slot == current {
+                cards = cards.trailing(
+                    div()
+                        .text_color(swatch.muted)
+                        .child(format!("{system} is {}", slot.id())),
+                );
+            }
         }
         let cards = cards
             .when_some(read_only, |cards, reason| cards.disabled(Some(reason)))
@@ -379,22 +442,18 @@ impl SettingsView {
                     view.act(&key, window, cx);
                 },
             ));
-        let system = if cfg!(target_os = "macos") {
-            "macOS"
-        } else {
-            "The system"
-        };
-        let mode = match current {
-            Slot::Light => "light",
-            Slot::Dark => "dark",
-        };
         let note = div()
+            .flex()
             .text_size(ui(11.5))
             .text_color(swatch.muted)
-            .child(format!(
-                "{system} is in {mode} mode. Choosing a theme below sets the {} theme.",
-                target.label()
-            ));
+            .child("Choosing a theme below sets the\u{a0}")
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(swatch.fg)
+                    .child(target.label()),
+            )
+            .child("\u{a0}theme.");
         div()
             .flex()
             .flex_col()
@@ -451,12 +510,10 @@ impl SettingsView {
                         *name == selected,
                         &handle,
                     )
-                    .content(card_content(
-                        name,
-                        preview.as_ref(),
-                        marks,
-                        swatch,
-                    ));
+                    .content(preview_block(preview.as_ref(), 52.0))
+                    .when(marks.any(), |cards| {
+                        cards.footer(card_marks(name, marks, swatch))
+                    });
             }
             let cards = cards
                 .when_some(read_only.cloned(), |cards, reason| {
@@ -548,6 +605,12 @@ struct Marks {
     dark: bool,
 }
 
+impl Marks {
+    fn any(self) -> bool {
+        self.active || self.light || self.dark
+    }
+}
+
 fn icon(icon: Icon, color: gpui::Hsla) -> gpui::Svg {
     svg()
         .path(icon.asset_path())
@@ -556,23 +619,14 @@ fn icon(icon: Icon, color: gpui::Hsla) -> gpui::Svg {
         .text_color(color)
 }
 
-/// A card's preview with its marks over the top right corner.
-fn card_content(
-    name: &str,
-    preview: Option<&Theme>,
-    marks: Marks,
-    swatch: Swatch,
-) -> Div {
-    let mut corner = div()
-        .absolute()
-        .top(px(4.0))
-        .right(px(4.0))
-        .flex()
-        .items_center()
-        .gap(px(3.0));
+/// A card's marks under its name: the light and dark mode themes, while
+/// the theme follows the system, and the theme in use. They take a line of
+/// their own so the name keeps the card's width.
+fn card_marks(name: &str, marks: Marks, swatch: Swatch) -> Div {
+    let mut row = div().flex().items_center().gap(px(3.0));
     for (on, slot) in [(marks.light, Slot::Light), (marks.dark, Slot::Dark)] {
         if on {
-            corner = corner.child(
+            row = row.child(
                 div()
                     .p(px(2.0))
                     .rounded(px(4.0))
@@ -582,21 +636,18 @@ fn card_content(
         }
     }
     if marks.active {
-        corner = corner.child(badge(
+        row = row.child(badge(
             SharedString::from(format!("settings-theme-active-{name}")),
             "Active",
             BadgeTone::Accent,
             swatch,
         ));
     }
-    div()
-        .relative()
-        .child(preview_block(preview, 52.0))
-        .child(corner)
+    row
 }
 
-/// A theme's preview: a prompt in its colors over its background, with
-/// its six ANSI accents.
+/// A theme's preview: a prompt and a build's output in its colors over its
+/// background, with its six ANSI accents.
 fn preview_block(theme: Option<&Theme>, height: f32) -> Div {
     // Sized with the interface text it holds.
     let block = div()
@@ -613,8 +664,8 @@ fn preview_block(theme: Option<&Theme>, height: f32) -> Div {
     let dots = (1..=6).fold(div().flex().gap(px(2.0)), |dots, index| {
         dots.child(
             div()
-                .size(px(6.0))
-                .rounded(px(2.0))
+                .size(px(5.0))
+                .rounded(px(1.5))
                 .bg(color(theme.ansi[index])),
         )
     });
@@ -630,15 +681,32 @@ fn preview_block(theme: Option<&Theme>, height: f32) -> Div {
             div()
                 .flex()
                 .gap(px(5.0))
-                .child(text(theme.ansi[4], "~/huterm"))
-                .child(text(theme.ansi[5], "main")),
+                .child(text(theme.ansi[2], "~/huterm"))
+                .child(text(theme.ansi[4], "main")),
         )
         .child(
             div()
                 .flex()
                 .gap(px(5.0))
-                .child(text(theme.ansi[6], "$"))
-                .child(text(theme.foreground, "ls")),
+                .child(text(theme.ansi[5], "$"))
+                .child(text(theme.foreground, "cargo test")),
         )
-        .child(dots)
+        // The words give way before the accents, which always show whole.
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .gap(px(5.0))
+                        .child(text(theme.ansi[1], "error"))
+                        .child(text(theme.ansi[3], "warn")),
+                )
+                .child(dots.flex_none()),
+        )
 }

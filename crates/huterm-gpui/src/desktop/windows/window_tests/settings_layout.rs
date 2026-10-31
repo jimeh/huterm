@@ -267,8 +267,21 @@ fn arrows_on_the_mode_cards_pick_the_mode_the_theme_cards_set(
     );
     let mut harness = DesktopHarness::new(cx);
     show(&mut harness, &file, SectionId::Appearance);
-    // The test platform's system is light, so the light card starts checked.
+    // The test platform's system is light, so the light card starts checked,
+    // and its accessible name says which mode the system is in.
     assert_eq!(themes(&mut harness).0[themes(&mut harness).1], "one-light");
+    let system = if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "the system"
+    };
+    let light = labelled(
+        &mut harness,
+        "RadioButton",
+        &format!("Light mode theme: one-light, {system} is light"),
+    );
+    assert_eq!(light["aria"]["toggled"], "True", "{light}");
+    labelled(&mut harness, "RadioButton", "Dark mode theme: dracula");
     let light = with_view(&mut harness, |view, _| {
         view.action_handle("theme-slot:light")
     });
@@ -290,6 +303,31 @@ fn arrows_on_the_mode_cards_pick_the_mode_the_theme_cards_set(
 }
 
 #[gpui::test]
+fn the_theme_mode_switch_sits_at_its_rows_end_sized_to_its_options(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("layout-theme-mode-row", "");
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    let mut visual = visual(&harness);
+    let label = visual
+        .debug_bounds("settings-label-theme")
+        .expect("the Theme mode row drew");
+    let switch = visual
+        .debug_bounds("settings-theme-mode")
+        .expect("the mode switch drew");
+    let row = visual
+        .debug_bounds("settings-row-theme")
+        .expect("the Theme mode row drew");
+    // On the label's line, at the row's end inside its 14-point padding,
+    // as a segmented row's control is, and far narrower than the row.
+    assert!(switch.top() < label.bottom() && label.top() < switch.bottom());
+    let inset = row.right() - switch.right();
+    assert!((inset - px(14.0)).abs() < px(1.0), "{row:?} {switch:?}");
+    assert!(switch.size.width < row.size.width / 2.0, "{switch:?}");
+}
+
+#[gpui::test]
 fn the_theme_mode_switch_works_from_the_keyboard(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("layout-theme-mode", "");
     let mut harness = DesktopHarness::new(cx);
@@ -307,16 +345,45 @@ fn the_theme_mode_switch_works_from_the_keyboard(cx: &mut TestAppContext) {
         "[theme]\nlight = \"tokyo-night\"\ndark = \"tokyo-night\"\n"
     );
     assert_eq!(focus(&mut harness), "action:theme-mode");
-    // Left steps back to one theme; Space toggles.
+    // Left steps back to one theme.
     keys(&harness, "left");
     harness.wait_for("one theme to save", |cx| {
         settled(cx) && !file.text().contains("light")
     });
     assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
+    // The arrows stop at the ends, as a segmented row's do; one key at a
+    // time, since two steps of a wrapping switch would come back.
+    for key in ["left", "down"] {
+        keys(&harness, key);
+        assert!(harness.cx.update(settled), "{key} past the end wrote");
+        assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
+    }
+    // Return opens the options too, and Escape leaves the choice alone.
+    keys(&harness, "enter");
+    assert!(with_view(&mut harness, |view, _| view.menu_open()));
+    keys(&harness, "escape");
+    assert!(!with_view(&mut harness, |view, _| view.menu_open()));
+    assert_eq!(focus(&mut harness), "action:theme-mode");
+    assert_eq!(file.text(), "[theme]\nname = \"tokyo-night\"\n");
+    // Space opens the options on the current one, as on every segmented
+    // row; Down and Return pick Match system.
     keys(&harness, "space");
-    harness.wait_for("Space to toggle", |cx| {
+    assert_eq!(
+        with_view(&mut harness, |view, cx| view.menu_labels(cx)),
+        ["One theme", "Match system"]
+    );
+    keys(&harness, "down enter");
+    harness.wait_for("the menu's pick to save", |cx| {
         settled(cx) && file.text().contains("light")
     });
+    assert!(!with_view(&mut harness, |view, _| view.menu_open()));
+    assert_eq!(focus(&mut harness), "action:theme-mode");
+    // At Match system the arrows stop too.
+    for key in ["right", "up"] {
+        keys(&harness, key);
+        assert!(harness.cx.update(settled), "{key} past the end wrote");
+        assert!(file.text().contains("light"), "{key}");
+    }
 }
 
 /// A click on a theme card draws no ring, and keyboard focus on it does.

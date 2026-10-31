@@ -187,6 +187,70 @@ fn an_accessible_name_replaces_the_label_for_assistive_technology(
 }
 
 #[gpui::test]
+fn stretched_cards_share_the_line_with_trailing_and_footer_elements(
+    cx: &mut TestAppContext,
+) {
+    let handles: Vec<FocusHandle> =
+        cx.update(|cx| (0..2).map(|_| cx.focus_handle()).collect());
+    let (_, cx) = host(cx, move |_, _| {
+        let status = |selector: &'static str| {
+            div()
+                .debug_selector(move || selector.to_owned())
+                .child("dark")
+        };
+        div()
+            .w(px(500.0))
+            .child(
+                RadioGroup::new("slots", "Theme to choose", tokens())
+                    .card(px(120.0))
+                    .stretch()
+                    .option("light", "nord", true, &handles[0])
+                    .trailing(status("light-status"))
+                    .option("dark", "dracula", false, &handles[1])
+                    .trailing(status("dark-status"))
+                    .footer(status("dark-footer")),
+            )
+            .into_any_element()
+    });
+    cx.run_until_parked();
+    let light = cx.debug_bounds("light-status").expect("drawn");
+    let dark = cx.debug_bounds("dark-status").expect("drawn");
+    // Each card ends its label's line, so the statuses end where the two
+    // cards that share the 500-point line do, well past 120 points.
+    assert!(light.right() > px(200.0), "{light:?}");
+    assert!(dark.right() > px(450.0), "{dark:?}");
+    assert!(dark.left() > light.right(), "{light:?} {dark:?}");
+    // A footer takes the line under the label.
+    let footer = cx.debug_bounds("dark-footer").expect("drawn");
+    assert!(footer.top() >= dark.bottom(), "{dark:?} {footer:?}");
+}
+
+#[gpui::test]
+fn a_row_ends_its_label_line_with_its_trailing_element(
+    cx: &mut TestAppContext,
+) {
+    let focus = cx.update(|cx| cx.focus_handle());
+    let (_, cx) = host(cx, move |_, _| {
+        div()
+            .w(px(400.0))
+            .child(
+                RadioGroup::new("rows", "Theme", tokens())
+                    .option("nord", "nord", true, &focus)
+                    .trailing(
+                        div()
+                            .debug_selector(|| "row-status".to_owned())
+                            .child("Active"),
+                    ),
+            )
+            .into_any_element()
+    });
+    cx.run_until_parked();
+    let status = cx.debug_bounds("row-status").expect("drawn");
+    // At the 400-point row's end, inside its padding, not after "nord".
+    assert!(status.right() > px(380.0), "{status:?}");
+}
+
+#[gpui::test]
 fn a_pointer_click_checks_and_focuses_a_radio(cx: &mut TestAppContext) {
     let (probe, cx) = themes(cx, Kind::Cards);
     click(cx, "Solarized");

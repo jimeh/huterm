@@ -3,9 +3,10 @@
 //!
 //! Anatomy: by default, a column of rows, each a round indicator, filled
 //! with a dot while checked, and its label. The card variant lays out
-//! fixed-width cards that wrap: each shows the owner's content, such as a
-//! theme's color preview, over its label, and a checked card draws its
-//! border in the ring color.
+//! fixed-width cards that wrap, or that grow to share each line when
+//! stretched: each shows the owner's content, such as a theme's color
+//! preview, over its label and anything trailing it, and a checked card
+//! draws its border in the ring color.
 //!
 //! Keyboard: the group is one tab stop, through [`crate::roving`]: the
 //! focused radio, else the checked one, else the first. The owner routes
@@ -65,6 +66,10 @@ struct Radio {
     content: Option<AnyElement>,
     /// The accessible name, when it says more than the label.
     name: Option<SharedString>,
+    /// What shows at the end of the label's line.
+    trailing: Option<AnyElement>,
+    /// What a card shows under its label.
+    footer: Option<AnyElement>,
 }
 
 /// A radio group.
@@ -76,6 +81,8 @@ pub struct RadioGroup {
     radios: Vec<Radio>,
     /// The card variant's card width, or `None` for rows.
     card: Option<Pixels>,
+    /// Whether cards grow to share each line, from their width up.
+    stretch: bool,
     disabled: Option<SharedString>,
     key_context: Option<SharedString>,
     on_select: Option<Select>,
@@ -109,6 +116,7 @@ impl RadioGroup {
             tokens,
             radios: Vec::new(),
             card: None,
+            stretch: false,
             disabled: None,
             key_context: None,
             on_select: None,
@@ -119,6 +127,14 @@ impl RadioGroup {
     #[must_use]
     pub fn card(mut self, width: Pixels) -> Self {
         self.card = Some(width);
+        self
+    }
+
+    /// Lets cards grow from their width to share each line evenly, as a
+    /// few large cards that should fill the row do.
+    #[must_use]
+    pub fn stretch(mut self) -> Self {
+        self.stretch = true;
         self
     }
 
@@ -139,7 +155,33 @@ impl RadioGroup {
             focus: focus.clone(),
             content: None,
             name: None,
+            trailing: None,
+            footer: None,
         });
+        self
+    }
+
+    /// What the option added last shows at the end of its label's line,
+    /// such as a status or a tag; the label truncates first.
+    #[must_use]
+    pub fn trailing(mut self, element: impl IntoElement) -> Self {
+        let radio = self.radios.last_mut();
+        debug_assert!(radio.is_some(), "`trailing` follows an option");
+        if let Some(radio) = radio {
+            radio.trailing = Some(element.into_any_element());
+        }
+        self
+    }
+
+    /// What the card added last shows on a line of its own under its
+    /// label, such as tags that would crowd the label's line.
+    #[must_use]
+    pub fn footer(mut self, element: impl IntoElement) -> Self {
+        let radio = self.radios.last_mut();
+        debug_assert!(radio.is_some(), "`footer` follows an option");
+        if let Some(radio) = radio {
+            radio.footer = Some(element.into_any_element());
+        }
         self
     }
 
@@ -201,6 +243,7 @@ struct Shape {
     parent: Arc<ElementId>,
     index: usize,
     card: Option<Pixels>,
+    stretch: bool,
     enabled: bool,
     stop: bool,
     key_context: Option<SharedString>,
@@ -239,6 +282,7 @@ fn render_radio(
         parent,
         index,
         card,
+        stretch,
         enabled,
         stop,
         key_context,
@@ -246,11 +290,7 @@ fn render_radio(
     let focus = radio.focus.tab_stop(enabled && stop);
     let checked = radio.checked;
     let value = radio.value.clone();
-    let label = div()
-        .min_w_0()
-        .truncate()
-        .text_color(tokens.fg)
-        .child(radio.label.clone());
+    let label = label_line(radio.label.clone(), radio.trailing, tokens);
     let element = div()
         .id(ElementId::NamedChild(parent, radio.value))
         .role(gpui::Role::RadioButton)
@@ -282,7 +322,8 @@ fn render_radio(
         });
     let element = match card {
         Some(width) => element
-            .w(width)
+            .when(!stretch, |card| card.w(width))
+            .when(stretch, |card| card.flex_1().flex_basis(width).min_w(width))
             .flex()
             .flex_col()
             .gap(px(4.0))
@@ -295,7 +336,10 @@ fn render_radio(
                 card.hover(|style| style.border_color(tokens.line_strong))
             })
             .children(radio.content)
-            .child(label.px(px(2.0)).text_size(size::TEXT_SMALL)),
+            .child(label.px(px(2.0)).text_size(size::TEXT_SMALL))
+            .children(
+                radio.footer.map(|footer| div().px(px(2.0)).child(footer)),
+            ),
         None => element
             .flex()
             .items_start()
@@ -309,10 +353,13 @@ fn render_radio(
                     .active(|style| style.bg(tokens.pressed()))
             })
             .child(indicator(checked, tokens).mt(px(1.0)))
+            // The text takes the rest of the row, so anything trailing the
+            // label reaches the row's end.
             .child(
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
                     .min_w_0()
                     .gap(px(2.0))
                     .child(label)
@@ -325,6 +372,30 @@ fn render_radio(
         ..States::default()
     }
     .apply(element)
+}
+
+/// A radio's label, truncating, with anything trailing it at the line's
+/// end.
+fn label_line(
+    label: SharedString,
+    trailing: Option<AnyElement>,
+    tokens: Tokens,
+) -> Div {
+    let label = div()
+        .min_w_0()
+        .truncate()
+        .text_color(tokens.fg)
+        .child(label);
+    match trailing {
+        Some(trailing) => div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .min_w_0()
+            .child(label.flex_1())
+            .child(div().flex_none().child(trailing)),
+        None => label,
+    }
 }
 
 impl RenderOnce for RadioGroup {
@@ -353,6 +424,7 @@ impl RenderOnce for RadioGroup {
                     parent: parent.clone(),
                     index,
                     card,
+                    stretch: self.stretch,
                     enabled,
                     stop: index == stop,
                     key_context: self.key_context.clone(),
