@@ -6,14 +6,34 @@ use huterm_config::{ThemeDefinition, ThemeFile};
 
 use crate::config::{ConfigError, Consumed, Theme};
 
-/// Resolves the selected theme, recording every external theme file it
-/// reads or probes in `consumed`.
+/// The theme an empty `[theme]` selects.
+pub(super) const DEFAULT: &str = "tokyo-night";
+
+/// The themes the selected `[theme]` resolves to while the system is in
+/// light and in dark mode. Without `light` or `dark` both are the same.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ThemePair {
+    pub(crate) light: Theme,
+    pub(crate) dark: Theme,
+}
+
+impl ThemePair {
+    /// The theme for a `dark` or light system appearance.
+    pub(crate) fn get(&self, dark: bool) -> &Theme {
+        if dark { &self.dark } else { &self.light }
+    }
+}
+
+/// Resolves the selected theme for both system appearances, recording
+/// every external theme file it reads or probes in `consumed`. `light`
+/// and `dark` fall back to `name`, and `name` to [`DEFAULT`]; the color
+/// overrides apply to both.
 pub(super) fn resolve(
     selected: &ThemeDefinition,
     inline: &BTreeMap<String, ThemeDefinition>,
     directory: &Path,
     consumed: &mut Consumed,
-) -> Result<Theme, ConfigError> {
+) -> Result<ThemePair, ConfigError> {
     if selected.extends.is_some() {
         return Err(ConfigError::Invalid("use name in [theme], not extends"));
     }
@@ -22,19 +42,38 @@ pub(super) fn resolve(
         validate_name(name)?;
         validate_definition(definition)?;
     }
-    let base = match &selected.name {
-        Some(name) => {
-            resolve_named(name, inline, directory, consumed, &mut Vec::new())?
-        }
-        None => Theme::default(),
+    let name = selected.name.as_deref().unwrap_or(DEFAULT);
+    let light = selected.light.as_deref().unwrap_or(name);
+    let dark = selected.dark.as_deref().unwrap_or(name);
+    let overrides = ThemeDefinition {
+        name: None,
+        light: None,
+        dark: None,
+        ..selected.clone()
     };
-    // A `[theme]` that sets nothing is the built-in huterm-dark, with its
-    // hand-picked chrome; one that sets any key, even to a default value,
-    // derives its unset chrome from its own colors.
-    if *selected == ThemeDefinition::default() {
-        return Ok(Theme::huterm_dark());
-    }
-    selected.apply(base)
+    let mut resolve = |name: &str| {
+        let base =
+            resolve_named(name, inline, directory, consumed, &mut Vec::new())?;
+        overrides.apply(base)
+    };
+    let light_theme = resolve(light)?;
+    let dark_theme = if dark == light {
+        light_theme.clone()
+    } else {
+        resolve(dark)?
+    };
+    Ok(ThemePair {
+        light: light_theme,
+        dark: dark_theme,
+    })
+}
+
+/// The bundled [`DEFAULT`] theme, for a configuration that sets none.
+pub(super) fn default_theme() -> Theme {
+    let source = bundled(DEFAULT).expect("the default theme is bundled");
+    parse_file(source)
+        .and_then(|definition| definition.apply(Theme::default()))
+        .expect("the default theme parses")
 }
 
 fn validate_name(name: &str) -> Result<(), ConfigError> {
@@ -53,9 +92,12 @@ fn validate_name(name: &str) -> Result<(), ConfigError> {
 fn validate_definition(
     definition: &ThemeDefinition,
 ) -> Result<(), ConfigError> {
-    if definition.name.is_some() {
+    if definition.name.is_some()
+        || definition.light.is_some()
+        || definition.dark.is_some()
+    {
         return Err(ConfigError::Invalid(
-            "named theme definitions use extends, not name",
+            "named theme definitions use extends, not name, light, or dark",
         ));
     }
     if let Some(parent) = &definition.extends {
@@ -110,7 +152,7 @@ fn resolve_named(
         }
     };
     validate_definition(&definition)?;
-    // An empty definition is huterm-dark itself, as for the `[theme]` table.
+    // An empty definition is huterm-dark itself.
     if definition == ThemeDefinition::default() {
         stack.pop();
         return Ok(Theme::huterm_dark());
@@ -133,14 +175,32 @@ fn parse_file(source: &str) -> Result<ThemeDefinition, ConfigError> {
 }
 
 /// The themes Huterm ships, besides the built-in `huterm-dark`.
-const BUNDLED: [&str; 13] = [
+const BUNDLED: [&str; 31] = [
+    "ayu-dark",
+    "ayu-light",
+    "ayu-mirage",
     "catppuccin-frappe",
     "catppuccin-latte",
     "catppuccin-macchiato",
     "catppuccin-mocha",
     "dracula",
+    "everforest-dark",
+    "everforest-light",
+    "github-dark",
+    "github-light",
+    "gruvbox-dark",
+    "gruvbox-light",
+    "kanagawa-dragon",
+    "kanagawa-lotus",
+    "kanagawa-wave",
     "nord",
     "one-dark-pro",
+    "one-light",
+    "rose-pine",
+    "rose-pine-dawn",
+    "rose-pine-moon",
+    "solarized-dark",
+    "solarized-light",
     "tango-with-monokai",
     "tokyo-night",
     "tokyo-night-day",
@@ -185,39 +245,46 @@ pub(super) fn preview(name: &str, directory: &Path) -> Option<Theme> {
     .ok()
 }
 
+/// A bundled theme's source, embedded in the binary.
 fn bundled(name: &str) -> Option<&'static str> {
-    match name {
-        "tokyo-night" => Some(include_str!("../themes/tokyo-night.toml")),
-        "tokyo-night-storm" => {
-            Some(include_str!("../themes/tokyo-night-storm.toml"))
-        }
-        "tokyo-night-moon" => {
-            Some(include_str!("../themes/tokyo-night-moon.toml"))
-        }
-        "tokyo-night-day" => {
-            Some(include_str!("../themes/tokyo-night-day.toml"))
-        }
-        "catppuccin-latte" => {
-            Some(include_str!("../themes/catppuccin-latte.toml"))
-        }
-        "catppuccin-frappe" => {
-            Some(include_str!("../themes/catppuccin-frappe.toml"))
-        }
+    Some(match name {
+        "ayu-dark" => include_str!("../themes/ayu-dark.toml"),
+        "ayu-light" => include_str!("../themes/ayu-light.toml"),
+        "ayu-mirage" => include_str!("../themes/ayu-mirage.toml"),
+        "catppuccin-frappe" => include_str!("../themes/catppuccin-frappe.toml"),
+        "catppuccin-latte" => include_str!("../themes/catppuccin-latte.toml"),
         "catppuccin-macchiato" => {
-            Some(include_str!("../themes/catppuccin-macchiato.toml"))
+            include_str!("../themes/catppuccin-macchiato.toml")
         }
-        "catppuccin-mocha" => {
-            Some(include_str!("../themes/catppuccin-mocha.toml"))
-        }
-        "dracula" => Some(include_str!("../themes/dracula.toml")),
-        "nord" => Some(include_str!("../themes/nord.toml")),
-        "one-dark-pro" => Some(include_str!("../themes/one-dark-pro.toml")),
-        "tomorrow-night" => Some(include_str!("../themes/tomorrow-night.toml")),
+        "catppuccin-mocha" => include_str!("../themes/catppuccin-mocha.toml"),
+        "dracula" => include_str!("../themes/dracula.toml"),
+        "everforest-dark" => include_str!("../themes/everforest-dark.toml"),
+        "everforest-light" => include_str!("../themes/everforest-light.toml"),
+        "github-dark" => include_str!("../themes/github-dark.toml"),
+        "github-light" => include_str!("../themes/github-light.toml"),
+        "gruvbox-dark" => include_str!("../themes/gruvbox-dark.toml"),
+        "gruvbox-light" => include_str!("../themes/gruvbox-light.toml"),
+        "kanagawa-dragon" => include_str!("../themes/kanagawa-dragon.toml"),
+        "kanagawa-lotus" => include_str!("../themes/kanagawa-lotus.toml"),
+        "kanagawa-wave" => include_str!("../themes/kanagawa-wave.toml"),
+        "nord" => include_str!("../themes/nord.toml"),
+        "one-dark-pro" => include_str!("../themes/one-dark-pro.toml"),
+        "one-light" => include_str!("../themes/one-light.toml"),
+        "rose-pine" => include_str!("../themes/rose-pine.toml"),
+        "rose-pine-dawn" => include_str!("../themes/rose-pine-dawn.toml"),
+        "rose-pine-moon" => include_str!("../themes/rose-pine-moon.toml"),
+        "solarized-dark" => include_str!("../themes/solarized-dark.toml"),
+        "solarized-light" => include_str!("../themes/solarized-light.toml"),
         "tango-with-monokai" => {
-            Some(include_str!("../themes/tango-with-monokai.toml"))
+            include_str!("../themes/tango-with-monokai.toml")
         }
-        _ => None,
-    }
+        "tokyo-night" => include_str!("../themes/tokyo-night.toml"),
+        "tokyo-night-day" => include_str!("../themes/tokyo-night-day.toml"),
+        "tokyo-night-moon" => include_str!("../themes/tokyo-night-moon.toml"),
+        "tokyo-night-storm" => include_str!("../themes/tokyo-night-storm.toml"),
+        "tomorrow-night" => include_str!("../themes/tomorrow-night.toml"),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -253,7 +320,7 @@ mod tests {
             }
             count += 1;
         }
-        assert_eq!(count, 13);
+        assert_eq!(count, BUNDLED.len());
         let default = Theme::huterm_dark();
         assert!(
             [

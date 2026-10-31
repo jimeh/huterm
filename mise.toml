@@ -396,7 +396,7 @@ assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
 assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" "$version" "CFBundleShortVersionString"
 assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :LSApplicationCategoryType' "$plist")" "public.app-category.developer-tools" "LSApplicationCategoryType"
 bun scripts/icons.ts verify-bundle "$bundle"
-for notice in catppuccin folke dracula nordtheme binaryify chriskempson; do
+for notice in catppuccin folke dracula nordtheme binaryify chriskempson projekt0n altercation ellisonleao rose-pine ayu-theme navarasu sainnhe rebelot; do
   assert_file "$bundle/Contents/Resources/themes/licenses/$notice.txt" "theme license"
 done
 assert_file "$bundle/Contents/Resources/ghostty/ghostty-MIT.txt" "Ghostty license"

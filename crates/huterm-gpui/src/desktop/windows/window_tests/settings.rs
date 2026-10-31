@@ -1072,11 +1072,11 @@ fn a_chosen_theme_shows_while_it_saves(cx: &mut TestAppContext) {
     open_settings(&mut harness, &file.path());
     with_window(&mut harness, |view, window, cx| {
         view.press("theme:dracula", window, cx);
-        assert_eq!(view.selected(), "dracula");
+        assert_eq!(view.selected(cx), "dracula");
     });
     harness.wait_for("the save", settled);
-    with_view(&mut harness, |view, _| {
-        assert_eq!(view.selected(), "dracula");
+    with_view(&mut harness, |view, cx| {
+        assert_eq!(view.selected(cx), "dracula");
     });
     assert_eq!(file.text(), "[theme]\nname = \"dracula\"\n");
 }

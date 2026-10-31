@@ -11,12 +11,10 @@ use huterm_ui::components::combobox::Combobox;
 use huterm_ui::components::input::Input;
 use huterm_ui::components::input_group::{Addon, InputGroup};
 use huterm_ui::components::number_field::Format;
-use huterm_ui::components::radio_group::RadioGroup;
 use huterm_ui::components::select::Select;
 use huterm_ui::components::slider::Slider;
 use huterm_ui::components::switch::Switch;
 use huterm_ui::components::toggle_group::ToggleGroup;
-use huterm_ui::typography::ui;
 use toml::Value;
 
 use super::super::super::overlay::Swatch;
@@ -28,8 +26,6 @@ use super::{
     SEGMENTED_MAX, SettingsView, TRI_STATES, modifier_label, offered_modifiers,
     option_label, toggled_modifiers,
 };
-use crate::config::Theme;
-use crate::renderer::rgb_color as color;
 
 /// The longest option label a segmented control shows; longer ones use a
 /// select.
@@ -78,7 +74,7 @@ impl SettingsView {
         let locked = read_only.is_some();
         match special(&setting.path) {
             Some(Special::ThemePicker) => {
-                return self.render_themes(setting, read_only, swatch, cx);
+                return self.render_themes(read_only, swatch, cx);
             }
             // Search results lead to the section's editors.
             Some(Special::GlobalShortcuts | Special::QuakeProfiles) => {
@@ -665,98 +661,6 @@ impl SettingsView {
             .child(group)
             .into_any_element()
     }
-
-    /// Cards for every theme `[theme] name` can select, as a radio group
-    /// whose cards' `SettingsGroup` context, nested inside the block's
-    /// `SettingsControl`, binds the arrows to `settings_next` and
-    /// `settings_previous`, which choose the theme they reach, and a note on
-    /// the color overrides the file sets on top. `read_only` says
-    /// why the cards cannot change, when they cannot.
-    fn render_themes(
-        &mut self,
-        setting: &'static Setting,
-        read_only: Option<SharedString>,
-        swatch: Swatch,
-        cx: &mut Context<'_, Self>,
-    ) -> AnyElement {
-        let selected = self.selected_theme();
-        let themes = self.themes.clone();
-        let mut cards =
-            RadioGroup::new("settings-themes", setting.label.clone(), swatch)
-                .card(px(116.0))
-                .key_context("SettingsGroup");
-        for (name, preview) in &themes {
-            let handle = self.action_stop(format!("theme:{name}"), cx);
-            cards = cards.option(
-                name.clone(),
-                name.clone(),
-                *name == selected,
-                &handle,
-            );
-            if let Some(preview) = preview {
-                cards = cards.content(theme_preview(preview));
-            }
-        }
-        let locked = read_only.is_some();
-        let cards = cards
-            .when_some(read_only, |cards, reason| cards.disabled(Some(reason)))
-            .on_select(Self::listen(
-                cx,
-                move |view, name: SharedString, window, cx| {
-                    let key = format!("theme:{name}");
-                    if let Some(handle) = view.actions.get(&key) {
-                        handle.clone().focus(window, cx);
-                    }
-                    view.act(&key, window, cx);
-                },
-            ));
-        let overrides: Vec<String> = self
-            .file
-            .get("theme")
-            .and_then(Value::as_table)
-            .map(|table| {
-                table.keys().filter(|key| *key != "name").cloned().collect()
-            })
-            .unwrap_or_default();
-        div()
-            .key_context("SettingsControl")
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .w_full()
-            .when(!overrides.is_empty(), |block| {
-                block.child(
-                    div()
-                        .text_size(ui(11.5))
-                        .text_color(swatch.warning_text())
-                        .when(locked, |note| note.opacity(0.5))
-                        .child(format!(
-                            "Your [theme] sets {}, which applies on top of any theme.",
-                            overrides.join(", ")
-                        )),
-                )
-            })
-            .child(cards)
-            .into_any_element()
-    }
-}
-
-/// A theme's preview: a strip of its colors over its background.
-fn theme_preview(theme: &Theme) -> gpui::Div {
-    let bar = |width: f32, rgb| {
-        div().w(px(width)).h(px(4.0)).rounded_full().bg(color(rgb))
-    };
-    div()
-        .h(px(40.0))
-        .rounded(px(4.0))
-        .p(px(6.0))
-        .flex()
-        .flex_col()
-        .gap(px(4.0))
-        .bg(color(theme.background))
-        .child(bar(50.0, theme.ansi[2]))
-        .child(bar(80.0, theme.foreground))
-        .child(bar(36.0, theme.ansi[4]))
 }
 
 /// A slider's readout: its zero label at 0, else the value with its unit,

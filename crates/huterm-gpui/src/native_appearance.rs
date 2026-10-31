@@ -4,9 +4,10 @@
 //! than the system's light or dark mode. Linux frames come from the window
 //! manager or Huterm's own drawing, so there this does nothing.
 //!
-//! Huterm never picks a theme from an appearance. If it ever does, it must
-//! read the application's appearance (`NSApp.effectiveAppearance`, GPUI's
-//! `App::window_appearance`), never a window's, which this module sets.
+//! `[theme] light` and `dark` pick the theme from the application's
+//! appearance (`native_system_appearance`), never a window's, which this
+//! module sets: a light theme for dark mode would otherwise make its window
+//! light and pick the light-mode theme.
 #![cfg_attr(target_os = "macos", allow(unsafe_code, unexpected_cfgs))]
 
 use gpui::{Context, Window};

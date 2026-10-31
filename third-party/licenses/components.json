@@ -102,6 +102,15 @@
       "files": ["third-party/terminfo/LICENSE-ncurses"]
     },
     {
+      "id": "theme-ayu",
+      "name": "Ayu",
+      "version": "d461f02",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/ayu-theme/ayu-colors",
+      "files": ["crates/huterm-gpui/themes/licenses/ayu-theme.txt"]
+    },
+    {
       "id": "theme-catppuccin",
       "name": "Catppuccin",
       "version": "f6cb5a5",
@@ -120,6 +129,42 @@
       "files": ["crates/huterm-gpui/themes/licenses/dracula.txt"]
     },
     {
+      "id": "theme-everforest",
+      "name": "Everforest",
+      "version": "85a86eb",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/sainnhe/everforest",
+      "files": ["crates/huterm-gpui/themes/licenses/sainnhe.txt"]
+    },
+    {
+      "id": "theme-github",
+      "name": "GitHub Neovim Theme",
+      "version": "c106c94",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/projekt0n/github-nvim-theme",
+      "files": ["crates/huterm-gpui/themes/licenses/projekt0n.txt"]
+    },
+    {
+      "id": "theme-gruvbox",
+      "name": "Gruvbox",
+      "version": "154eb5f",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/ellisonleao/gruvbox.nvim",
+      "files": ["crates/huterm-gpui/themes/licenses/ellisonleao.txt"]
+    },
+    {
+      "id": "theme-kanagawa",
+      "name": "Kanagawa",
+      "version": "bb85e4b",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/rebelot/kanagawa.nvim",
+      "files": ["crates/huterm-gpui/themes/licenses/rebelot.txt"]
+    },
+    {
       "id": "theme-nord",
       "name": "Nord",
       "version": "9949642",
@@ -136,6 +181,33 @@
       "license": "MIT",
       "url": "https://github.com/Binaryify/OneDark-Pro",
       "files": ["crates/huterm-gpui/themes/licenses/binaryify.txt"]
+    },
+    {
+      "id": "theme-onedark-nvim",
+      "name": "onedark.nvim",
+      "version": "df4792a",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/navarasu/onedark.nvim",
+      "files": ["crates/huterm-gpui/themes/licenses/navarasu.txt"]
+    },
+    {
+      "id": "theme-rose-pine",
+      "name": "Rosé Pine",
+      "version": "a6f7c82",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/rose-pine/alacritty",
+      "files": ["crates/huterm-gpui/themes/licenses/rose-pine.txt"]
+    },
+    {
+      "id": "theme-solarized",
+      "name": "Solarized",
+      "version": "62f656a",
+      "kind": "Color theme",
+      "license": "MIT",
+      "url": "https://github.com/altercation/solarized",
+      "files": ["crates/huterm-gpui/themes/licenses/altercation.txt"]
     },
     {
       "id": "theme-tokyo-night",

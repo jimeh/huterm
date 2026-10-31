@@ -246,6 +246,24 @@
     "theme": false
   },
   {
+    "name": "selected light and dark themes",
+    "toml": "[theme]\nname = \"nord\"\nlight = \"github-light\"\ndark = \"tokyo-night\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "selected light theme invalid name",
+    "toml": "[theme]\nlight = \"../oops\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "named definition light theme",
+    "toml": "[themes.mine]\nlight = \"github-light\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "inline inheritance",
     "toml": "[themes.mine]\nextends = \"huterm-dark\"\nforeground = \"#ABCDEF\"\n[theme]\nname = \"mine\"",
     "valid": true,
@@ -374,6 +392,12 @@
   {
     "name": "standalone name",
     "toml": "[theme]\nname = \"huterm-dark\"",
+    "valid": false,
+    "theme": true
+  },
+  {
+    "name": "standalone dark theme",
+    "toml": "[theme]\ndark = \"tokyo-night\"",
     "valid": false,
     "theme": true
   },

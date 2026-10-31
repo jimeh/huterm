@@ -317,11 +317,14 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
     config["title"] = json!("Huterm configuration");
     theme["title"] = json!("Huterm standalone theme");
     let mut selected = config["definitions"]["ThemeDefinition"].clone();
-    // Selected themes use name; named definitions and files use extends.
+    // Selected themes use name, light, and dark; named definitions and
+    // files use extends.
     selected["properties"]
         .as_object_mut()
         .map(|fields| fields.remove("extends"));
     selected["properties"]["name"] = json!({"type":"string", "pattern":"^[A-Za-z0-9_-]+$", "description":"Bundled, inline, or adjacent theme name. Existence is checked at runtime."});
+    selected["properties"]["light"] = json!({"type":"string", "pattern":"^[A-Za-z0-9_-]+$", "description":"Theme in light mode. Setting light or dark follows the system appearance; an unset one uses name."});
+    selected["properties"]["dark"] = json!({"type":"string", "pattern":"^[A-Za-z0-9_-]+$", "description":"Theme in dark mode. Setting light or dark follows the system appearance; an unset one uses name."});
     config["definitions"]["SelectedTheme"] = selected;
     config["properties"]["theme"]["allOf"] =
         json!([{"$ref":"#/definitions/SelectedTheme"}]);
@@ -344,13 +347,15 @@ fn generate<T: JsonSchema>() -> Result<Value, serde_json::Error> {
             .into_root_schema_for::<T>(),
     )
 }
-/// Restricts theme colors to hex values. The selected theme gets its `name`
-/// back in [`documents`].
+/// Restricts theme colors to hex values. The selected theme gets its `name`,
+/// `light`, and `dark` back in [`documents`].
 pub(crate) fn constrain_theme(schema: &mut Schema) {
     if let Some(fields) =
         schema.get_mut("properties").and_then(Value::as_object_mut)
     {
-        fields.remove("name");
+        for selected in ["name", "light", "dark"] {
+            fields.remove(selected);
+        }
         for (name, value) in fields {
             if name == "extends" {
                 value["pattern"] = json!("^[A-Za-z0-9_-]+$");

@@ -600,16 +600,19 @@ off; `settings_increase` and `settings_decrease` step a segmented control and
 leave a switch alone. They step a Default, On, Off control in that order and
 stop at the ends; stepping to Default removes the setting, as Reset does.
 
-The sidebar's sections, the theme cards, and the link modifier chips are
-roving groups: each is one tab stop, and its items take the `SettingsGroup`
-context. On a group, `settings_next` (Down and Right) and `settings_previous`
+The sidebar's sections, the theme cards, the Light mode and Dark mode
+cards, and the link modifier chips are roving groups: each is one tab stop,
+and its items take the `SettingsGroup` context. The light and dark theme
+cards are two groups, but the arrows move through both in the order they
+show. On a group, `settings_next` (Down and Right) and `settings_previous`
 (Up and Left) move between its items and wrap at the ends. They bind under
 `SettingsGroup`, so the arrows keep stepping every other control, and since
 that context sits inside the item's `SettingsControl`, they win over any
 `SettingsControl` binding on the same key: binding an arrow to a stepping
 command leaves the groups their arrows, and binding `settings_next` to
 another key leaves the stepping alone.
-Moving to a section shows it, and moving to a theme card chooses that theme.
+Moving to a section shows it, moving to a theme card chooses that theme,
+and moving to a mode card makes the theme cards choose that mode's theme.
 `settings_toggle` turns the focused modifier chip on or off. Tab from the
 sidebar moves into the shown section's first control, and Shift-Tab from that
 control returns to the sidebar; the footer's links come after the section.

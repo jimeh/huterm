@@ -51,7 +51,7 @@ pub(super) struct Conflict {
 /// One change waiting to be written.
 pub(super) struct Pending {
     setting: &'static Setting,
-    /// The dotted path the patch writes: the setting's, or `theme.name`.
+    /// The dotted path the patch writes.
     path: &'static str,
     patch: Patch,
     /// The value it stores; `None` removes the path.
@@ -105,6 +105,9 @@ pub(super) enum Batch {
     /// Deletes a pane layout, applied to the file as it is then, unless a
     /// keybinding or the cycle there uses it.
     DeleteLayout { name: String },
+    /// Sets or removes the theme picker's `theme.*` keys together, such as
+    /// a switch from one theme to one for each mode.
+    Theme(Vec<(&'static str, Option<String>)>),
 }
 
 impl Batch {
@@ -133,6 +136,7 @@ impl Batch {
                     None => Ok(Vec::new()),
                 }
             }
+            Self::Theme(_) => Ok(Vec::new()),
         }
     }
 
@@ -216,14 +220,20 @@ fn writes(patch: &Patch, at: &str) -> bool {
     written.iter().all(|key| keys.next() == Some(key.as_str()))
 }
 
-/// The path a setting's changes write: the theme row edits the theme's
-/// name, every other row its own path.
-pub(super) fn written_path(setting: &'static Setting) -> &'static str {
-    if special(&setting.path) == Some(Special::ThemePicker) {
-        "theme.name"
-    } else {
-        setting.path.as_str()
-    }
+/// The patches for the theme picker's `changes`: sets first, so removing
+/// the last key the table holds never drops and recreates `[theme]`.
+fn theme_patches(changes: &[(&'static str, Option<String>)]) -> Vec<Patch> {
+    let mut patches: Vec<(bool, Patch)> = changes
+        .iter()
+        .map(|(key, value)| {
+            (
+                value.is_none(),
+                patch_at(key, value.clone().map(Value::String)),
+            )
+        })
+        .collect();
+    patches.sort_by_key(|(removes, _)| *removes);
+    patches.into_iter().map(|(_, patch)| patch).collect()
 }
 
 impl SettingsView {
@@ -581,7 +591,7 @@ impl SettingsView {
             cx.notify();
             return;
         }
-        let target = written_path(setting);
+        let target = setting.path.as_str();
         let expected = match self.pending.get(key) {
             Some(pending) => pending.clone(),
             None => self.file.get(target).cloned(),
@@ -849,6 +859,10 @@ impl SettingsView {
                 self.layout_rename_outcome(from, to)
             }
             Batch::DeleteLayout { name } => self.layout_delete_outcome(name),
+            Batch::Theme(changes) => changes
+                .iter()
+                .map(|(key, value)| (*key, value.clone().map(Value::String)))
+                .collect(),
         }
     }
 
@@ -876,6 +890,7 @@ impl SettingsView {
             Batch::DeleteLayout { name } => {
                 Ok(vec![patch_at(&layouts::template_path(name), None)])
             }
+            Batch::Theme(changes) => Ok(theme_patches(changes)),
         };
         let patches = match built {
             Ok(patches) => patches,
@@ -1047,7 +1062,9 @@ impl SettingsView {
                     .windows
                     .quake_rename_started(from, to),
             ),
-            Batch::RenameLayout { .. } | Batch::DeleteLayout { .. } => None,
+            Batch::RenameLayout { .. }
+            | Batch::DeleteLayout { .. }
+            | Batch::Theme(_) => None,
         }
     }
 
@@ -1112,6 +1129,8 @@ impl SettingsView {
             Batch::DeleteLayout { name } => {
                 self.layout_delete_refused(name, message, cx);
             }
+            // The footer said why; the picker shows the file again.
+            Batch::Theme(_) => {}
         }
     }
 
@@ -1227,7 +1246,7 @@ impl SettingsView {
     ) -> bool {
         match self.pending.get(setting.path.as_str()) {
             Some(pending) => pending.as_ref() == Some(value),
-            None => self.file.get(written_path(setting)) == Some(value),
+            None => self.file.get(&setting.path) == Some(value),
         }
     }
 
@@ -1717,7 +1736,8 @@ impl SettingsView {
     }
 
     /// Whether Reset applies: the file sets the setting, and its row is not
-    /// an editor that later work adds. The theme resets its name only. A
+    /// an editor that later work adds. The theme resets the keys its
+    /// picker writes, keeping color overrides. A
     /// pane layout's template has no default: resetting it would delete
     /// the layout without asking, so only Delete removes it.
     pub(super) fn resettable(&self, setting: &Setting) -> bool {
@@ -1730,7 +1750,7 @@ impl SettingsView {
                 | Special::LayoutCycle,
             ) => false,
             _ if layouts::is_template(&setting.path) => false,
-            Some(Special::ThemePicker) => self.file.is_set("theme.name"),
+            Some(Special::ThemePicker) => self.theme_set(),
             _ => self.file.is_set(&setting.path),
         }
     }
@@ -1746,7 +1766,7 @@ impl SettingsView {
         let path = setting.path.as_str();
         self.errors.remove(path);
         if special(path) == Some(Special::ThemePicker) {
-            self.submit(setting, patch_at("theme.name", None), None, None, cx);
+            self.reset_theme(cx);
             return;
         }
         // Reset discards whatever was typed into the field.

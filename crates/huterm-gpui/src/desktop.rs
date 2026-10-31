@@ -1340,6 +1340,23 @@ impl TerminalView {
         self.wake_pending_work();
     }
 
+    /// Recolors the terminal for `theme`, as a reload does, keeping its
+    /// font and size.
+    pub(super) fn apply_theme(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.renderer.borrow_mut().reconfigure(
+            self.font_family.clone(),
+            theme.clone(),
+            self.metrics,
+        );
+        self.publish_presentation(theme);
+        self.theme = theme.clone();
+        cx.notify();
+    }
+
     fn publish_presentation(&mut self, theme: &Theme) {
         let state = terminal_presentation(theme);
         match self.viewer.update_presentation(state.clone()) {
