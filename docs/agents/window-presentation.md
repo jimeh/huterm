@@ -311,6 +311,10 @@ windows have no title row and Linux server decorations no Huterm row, so
 they show no mark there, and native window titles never carry one. Window
 tests read the row's marks from `drawn_title_marks`.
 
+While the tab bar is hidden, the row's empty space accepts a pane from a split
+tab to open a new tab. `title_row_layout` shares its bounds and control
+exclusions between rendering and pane-drop hit testing.
+
 The macOS Settings window hides AppKit's title bar the same way: a
 transparent title bar with `app_owns_titlebar_drag`, the title still
 "Settings" for accessibility and the Window menu, and the traffic lights

@@ -110,6 +110,25 @@ impl DesktopHarness {
         .expect("a drawn title bar")
     }
 
+    /// The drawn title row, granting Linux client decorations where the
+    /// test window otherwise reports server decorations.
+    fn drag_title_row(&mut self, window: AnyWindowHandle) -> Bounds<Pixels> {
+        if cfg!(not(target_os = "macos")) {
+            self.update_view(window, |view, window, cx| {
+                view.decorations_override = Some(gpui::Decorations::Client {
+                    tiling: gpui::Tiling::default(),
+                });
+                view.sync_frame(window);
+                view.sync_tab_layout(window, cx);
+                cx.notify();
+            });
+        }
+        self.cx.run_until_parked();
+        VisualTestContext::from_window(window, &self.cx)
+            .debug_bounds("terminal-title-row")
+            .expect("a drawn title row")
+    }
+
     /// The centre of tab `index`'s label in `window`'s tab bar.
     fn label(
         &mut self,
@@ -260,6 +279,205 @@ fn a_pane_dropped_on_an_edge_moves_and_on_a_centre_swaps(
         }
         assert_eq!(notices(cx, window), Vec::<String>::new());
     });
+}
+
+#[gpui::test]
+fn a_pane_dropped_on_the_title_row_opens_a_tab_when_the_bar_is_hidden(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.position = TabPosition::Titlebar;
+        config.tabs.always_show = false;
+    });
+    let tab = harness.open_tab(ECHO);
+    let (window, left, right) = harness.split_window(tab);
+    let row = harness.drag_title_row(window);
+    let at = row.center();
+    let grab = harness.grab(window, right);
+    harness.press_at(window, grab);
+    if cfg!(target_os = "macos") {
+        let lights = gpui::point(row.origin.x + px(4.0), row.center().y);
+        harness.move_to(window, lights);
+        harness.update_view(window, |view, _, _| {
+            assert_eq!(view.pane_drag.as_ref().unwrap().target, None);
+        });
+    }
+    harness.move_to(window, at);
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, _, _| {
+        assert!(!view.bar_drawn());
+        assert_eq!(view.presentation(), Presentation::Hidden);
+        assert_eq!(view.drawn_drop.borrow().as_deref(), Some("title_row"));
+        assert!(!view.title_row_press.get());
+        assert_eq!(view.title_row_moves.get(), 0);
+        assert_eq!(view.pane_drag.as_ref().unwrap().spring.tab(), None);
+    });
+    harness.release_at(window, at);
+    harness.wait_for("the pane to open a new tab", |cx| {
+        no_drag(cx, window)
+            && active(cx, window).is_some_and(|extracted| {
+                extracted != tab
+                    && panes_shown(cx, window, extracted)
+                        == Some((vec![right], right))
+            })
+    });
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.tabs.len(), 2);
+        assert_eq!(view.tabs[0].id, tab);
+        assert_eq!(view.drag_cursor(), None);
+        assert!(!view.title_row_press.get());
+        assert_eq!(view.title_row_moves.get(), 0);
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(panes_shown(cx, window, tab), Some((vec![left], left)));
+    });
+}
+
+#[gpui::test]
+fn title_row_controls_accept_no_pane_drop(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.position = TabPosition::Titlebar;
+        config.tabs.always_show = false;
+        config.window.menu_button = true;
+    });
+    let tab = harness.open_tab(ECHO);
+    let (window, _, pane) = harness.split_window(tab);
+    // Exercise both Linux button groups as well as the menu slot, even
+    // on macOS. The positive drop test uses the native macOS strip there.
+    harness.update_view(window, |view, window, cx| {
+        view.decorations_override = Some(gpui::Decorations::Client {
+            tiling: gpui::Tiling::default(),
+        });
+        view.button_layout = ButtonLayout::parse("close:minimize,maximize");
+        view.sync_frame(window);
+        view.sync_tab_layout(window, cx);
+        cx.notify();
+    });
+    harness.cx.run_until_parked();
+    let menu = VisualTestContext::from_window(window, &harness.cx)
+        .debug_bounds("window-menu-button")
+        .expect("the menu in the title row");
+    let buttons = harness.update_view(window, |view, _, _| {
+        WindowButton::ALL.map(|button| {
+            view.window_button_bounds[button.index()]
+                .get()
+                .unwrap()
+                .center()
+        })
+    });
+    let grab = harness.grab(window, pane);
+    harness.press_at(window, grab);
+    for at in std::iter::once(menu.center()).chain(buttons) {
+        harness.move_to(window, at);
+        harness.cx.run_until_parked();
+        harness.update_view(window, |view, _, _| {
+            let drag = view.pane_drag.as_ref().unwrap();
+            assert!(drag.dragging);
+            assert_eq!(drag.target, None);
+            assert_eq!(view.drawn_drop.borrow().as_deref(), Some("none"));
+            assert!(!view.title_row_press.get());
+            assert_eq!(view.title_row_moves.get(), 0);
+        });
+    }
+    // The same client row does accept the pane between the controls.
+    let row = harness.drag_title_row(window);
+    harness.move_to(window, row.center());
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(
+            view.pane_drag.as_ref().unwrap().target,
+            Some(DropTarget::TitleRow)
+        );
+        assert_eq!(view.drawn_drop.borrow().as_deref(), Some("title_row"));
+    });
+    harness.release_at(window, menu.center());
+    harness.wait_for("the release to cancel without extracting a pane", |cx| {
+        no_drag(cx, window)
+    });
+    harness.update_view(window, |view, _, _| assert_eq!(view.tabs.len(), 1));
+}
+
+#[gpui::test]
+#[cfg(target_os = "macos")]
+fn a_separate_title_row_accepts_no_pane_drop_while_the_bar_is_drawn(
+    cx: &mut TestAppContext,
+) {
+    // Linux's client row is always merged with the bar; macOS also has
+    // a separate title strip above a top bar.
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _, pane, _, _, _) = two_tabs(&mut harness);
+    let row = harness.drag_title_row(window);
+    let grab = harness.grab(window, pane);
+    harness.press_at(window, grab);
+    harness.move_to(window, row.center());
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, _, _| {
+        assert!(view.bar_drawn());
+        assert_eq!(view.pane_drag.as_ref().unwrap().target, None);
+        assert_eq!(view.drawn_drop.borrow().as_deref(), Some("none"));
+    });
+    harness.release_at(window, row.center());
+    harness.wait_for("the release to end without a new tab", |cx| {
+        no_drag(cx, window)
+    });
+    harness.update_view(window, |view, _, _| assert_eq!(view.tabs.len(), 2));
+}
+
+#[gpui::test]
+fn a_tab_reorder_keeps_the_closed_hand_from_press_until_release_or_escape(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _, pane, _, _, _) = two_tabs(&mut harness);
+    let label = harness.label(window, 1);
+    harness.press_at(window, label);
+    harness.update_view(window, |view, _, _| {
+        assert!(!view.reorder.as_ref().unwrap().dragging);
+        assert_eq!(view.drag_cursor(), Some(gpui::CursorStyle::ClosedHand));
+    });
+    let moved = label + gpui::point(px(40.0), px(0.0));
+    harness.move_to(window, moved);
+    harness.update_view(window, |view, _, _| {
+        let drag = view.reorder.as_ref().unwrap();
+        assert!(drag.dragging && !drag.nesting);
+        assert_eq!(view.drag_cursor(), Some(gpui::CursorStyle::ClosedHand));
+    });
+    harness.release_at(window, moved);
+    harness.update_view(window, |view, _, _| {
+        assert!(view.reorder.is_none());
+        assert_eq!(view.drag_cursor(), None);
+    });
+    harness.wait_for("the reorder to finish", |cx| no_drag(cx, window));
+    harness.press_at(window, label);
+    let centre = harness.frame(window, pane).center();
+    harness.move_to(window, centre);
+    harness.update_view(window, |view, _, _| {
+        assert!(view.reorder.as_ref().unwrap().nesting);
+        assert_eq!(view.drag_cursor(), Some(gpui::CursorStyle::ClosedHand));
+    });
+    harness.release_at(window, centre);
+    harness.update_view(window, |view, _, _| {
+        assert!(view.reorder.is_none());
+        assert_eq!(view.drag_cursor(), None);
+    });
+    // Escape cancels both an unmoved press and a reorder past its threshold.
+    for moving in [false, true] {
+        harness.press_at(window, label);
+        if moving {
+            harness.move_to(window, label + gpui::point(px(40.0), px(0.0)));
+        }
+        harness.update_view(window, |view, _, _| {
+            assert_eq!(view.reorder.as_ref().unwrap().dragging, moving);
+            assert_eq!(view.drag_cursor(), Some(gpui::CursorStyle::ClosedHand));
+        });
+        VisualTestContext::from_window(window, &harness.cx)
+            .simulate_keystrokes("escape");
+        harness.update_view(window, |view, _, _| {
+            assert!(view.reorder.is_none());
+            assert_eq!(view.drag_cursor(), None);
+        });
+        harness.release_at(window, label);
+    }
 }
 
 #[gpui::test]
@@ -843,6 +1061,7 @@ fn a_lone_bar_drag_has_no_targets_with_a_hidden_tab_bar(
 ) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.panes.title_bar_always_show = true;
+        config.tabs.position = TabPosition::Titlebar;
         config.tabs.always_show = false;
     });
     let tab = harness.open_tab(ECHO);
@@ -850,6 +1069,7 @@ fn a_lone_bar_drag_has_no_targets_with_a_hidden_tab_bar(
     let window = harness.attach_window();
     harness.activate(window, tab);
     harness.show_drawn(window, tab);
+    let row = harness.drag_title_row(window);
     let grab = harness.grab(window, pane);
     harness.press_at(window, grab);
     let frame = harness.frame(window, pane);
@@ -858,7 +1078,13 @@ fn a_lone_bar_drag_has_no_targets_with_a_hidden_tab_bar(
         pane_drag(cx, window).is_some_and(|(target, _)| target.is_none())
     });
     harness.update_view(window, |view, _, _| assert!(!view.bar_drawn()));
-    harness.release_at(window, frame.center());
+    harness.move_to(window, row.center());
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.pane_drag.as_ref().unwrap().target, None);
+        assert_eq!(view.drawn_drop.borrow().as_deref(), Some("none"));
+    });
+    harness.release_at(window, row.center());
     harness.wait_for("the untargeted release to end without a move", |cx| {
         no_drag(cx, window)
     });

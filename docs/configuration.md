@@ -471,7 +471,8 @@ to move the window, or double-click it for the system title-bar action.
 A title bar without tabs has a thin line above split panes, including while
 zoomed, or above a visible top pane title bar. Hover title bars do not add it.
 
-Drag a tab to reorder it within its window. The preview stays in the tab bar
+Drag a tab to reorder it within its window. The pointer shows a closed hand
+from the press until release or cancellation. The preview stays in the tab bar
 even when the pointer leaves the window, releasing commits the position, and
 Escape cancels. Drag near the end of the bar to scroll toward hidden tabs.
 Scroll the bar with a trackpad or mouse wheel. Horizontal bars show arrows
@@ -628,6 +629,11 @@ With one pane, **Zoom Pane** and **Move Pane to New Tab** are disabled with
 "Tab has one pane". Dragging a lone pane's bar onto another tab's label
 switches to that tab after a moment, and dropping it on a pane's edge there
 joins that tab as a split. The drag does not reorder tabs.
+
+While the tab bar is hidden, drop a dragged pane on empty space in the window's
+title bar to move it into a new tab. The source tab must have more than one
+pane. This works on macOS and with Huterm's Linux title bar; fullscreen and
+Quake windows have no title bar for this drop.
 
 A tab without a custom name shows its focused pane's name. A named pane that
 moves to a tab of its own gives the new tab its name, and a named tab of one

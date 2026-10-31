@@ -96,6 +96,9 @@ pub(super) enum DropTarget {
     /// The tab bar insertion slot before tab `index`, where a dropped pane
     /// opens a new tab.
     Slot(usize),
+    /// Empty space in the title row while the tab bar is hidden, where a
+    /// dropped pane opens a new tab at the end of the workspace.
+    TitleRow,
     /// An inactive tab's label middle, which spring-loads that tab.
     Spring(TabId),
 }
@@ -355,6 +358,21 @@ impl WorkspaceView {
         cx: &App,
     ) -> Option<DropTarget> {
         let drag = self.pane_drag.as_ref()?;
+        if !self.bar_drawn()
+            && self.presentation() == Presentation::Hidden
+            && self.title_row() > px(0.0)
+            && self
+                .title_row_layout(&self.chrome_layout(window))
+                .drop_region
+                .contains(&pointer)
+        {
+            return self
+                .tabs
+                .iter()
+                .find(|tab| tab.id == drag.tab)
+                .filter(|tab| tab.panes.len() > 1)
+                .map(|_| DropTarget::TitleRow);
+        }
         if self.over_tab_bar(pointer, window) {
             let active = self.active_tab(cx).and_then(|active| {
                 self.tabs.iter().position(|tab| tab.id == active)
@@ -469,6 +487,13 @@ impl WorkspaceView {
                 to: MoveDestination::NewTab {
                     workspace,
                     before: self.tabs.get(index).map(|view| view.id),
+                },
+            },
+            DropTarget::TitleRow => PaneMove::Move {
+                from,
+                to: MoveDestination::NewTab {
+                    workspace,
+                    before: None,
                 },
             },
             DropTarget::Spring(_) => return None,
@@ -813,6 +838,21 @@ impl WorkspaceView {
                 .border_color(color)
                 .into_any_element()
         };
+        // The result region a release would fill, tinted in `color`.
+        let region = |bounds: Bounds<Pixels>, color: Hsla| {
+            let bounds = drop_box(bounds);
+            div()
+                .absolute()
+                .left(bounds.origin.x)
+                .top(bounds.origin.y)
+                .w(bounds.size.width)
+                .h(bounds.size.height)
+                .rounded(px(size::CONTROL_RADIUS))
+                .bg(color.opacity(0.22))
+                .border_2()
+                .border_color(color.opacity(0.8))
+                .into_any_element()
+        };
         match target {
             Some(DropTarget::Pane {
                 frame,
@@ -821,20 +861,7 @@ impl WorkspaceView {
                 ..
             }) => {
                 let color = if refused { colors.error } else { colors.accent };
-                let region = drop_box(zone_preview(frame, zone));
-                elements.push(
-                    div()
-                        .absolute()
-                        .left(region.origin.x)
-                        .top(region.origin.y)
-                        .w(region.size.width)
-                        .h(region.size.height)
-                        .rounded(px(size::CONTROL_RADIUS))
-                        .bg(color.opacity(0.22))
-                        .border_2()
-                        .border_color(color.opacity(0.8))
-                        .into_any_element(),
-                );
+                elements.push(region(zone_preview(frame, zone), color));
                 if zone == Zone::Centre
                     && let Some(source) = source
                 {
@@ -854,6 +881,10 @@ impl WorkspaceView {
                         .into_any_element(),
                 );
             }
+            Some(DropTarget::TitleRow) => {
+                let row = self.title_row_layout(&self.chrome_layout(window));
+                elements.push(region(row.drop_region, colors.accent));
+            }
             // The armed label draws its own outline.
             Some(DropTarget::Spring(_)) | None => {}
         }
@@ -863,11 +894,13 @@ impl WorkspaceView {
 
 /// A drop target as smoke state names it: `pane:<index>:<zone>` with the
 /// target pane's index in its tab's traversal order, `slot:<index>`,
-/// `spring:<tab index>`, or `none`. A refused zone ends in `:refused`.
+/// `title_row`, `spring:<tab index>`, or `none`. A refused zone ends in
+/// `:refused`.
 fn drop_label(target: Option<DropTarget>, tabs: &[TabView]) -> String {
     match target {
         None => "none".to_owned(),
         Some(DropTarget::Slot(index)) => format!("slot:{index}"),
+        Some(DropTarget::TitleRow) => "title_row".to_owned(),
         Some(DropTarget::Spring(tab)) => format!(
             "spring:{}",
             tabs.iter()
