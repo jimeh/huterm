@@ -5248,6 +5248,7 @@ fn a_licenses_row_shows_its_component_on_a_click_not_a_hover(
 }
 
 mod buttons;
+mod chrome;
 mod dialogs;
 mod layout_undo;
 mod menus;

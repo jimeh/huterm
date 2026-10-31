@@ -3781,26 +3781,6 @@ impl Default for TerminalGeometry {
     }
 }
 
-/// The terminal scrollbar's track margins beside the window's chrome: with
-/// a right tab bar under top chrome, the track starts below the rounded
-/// corner so the patch never covers the thumb.
-fn terminal_track_margins(
-    presentation: windows::tab_visibility::Presentation,
-    position: huterm_config::TabPosition,
-    titlebar: Pixels,
-    window: WindowConfig,
-) -> TrackMargins {
-    let mut margins = TERMINAL_SCROLLBAR.margins;
-    if presentation == windows::tab_visibility::Presentation::Reserved
-        && position == huterm_config::TabPosition::Right
-        && titlebar > px(0.0)
-    {
-        let radius = f32::from(windows::terminal_corner_radius(window));
-        margins.start = margins.start.max(radius + 1.0);
-    }
-    margins
-}
-
 /// Rounds a scrollbar offset in rows back to a history offset.
 #[expect(
     clippy::cast_possible_truncation,
@@ -4342,32 +4322,6 @@ mod tests {
         event.delta = ScrollDelta::Lines(point(9.0, -2.0));
         assert!(local_scroll(&mut scroll, &event, 16.0));
         assert_eq!(scroll.desired(), 1);
-    }
-
-    #[test]
-    fn terminal_track_starts_below_the_corner_only_beside_a_right_bar() {
-        use huterm_config::TabPosition;
-        use windows::tab_visibility::Presentation;
-        let base = TERMINAL_SCROLLBAR.margins;
-        let window = WindowConfig::default();
-        let margins = |presentation, position, titlebar| {
-            terminal_track_margins(presentation, position, px(titlebar), window)
-        };
-        // Default padding 4 gives a 4-point corner, so the track starts at 5.
-        assert!(
-            (margins(Presentation::Reserved, TabPosition::Right, 32.0).start
-                - 5.0)
-                .abs()
-                < f32::EPSILON
-        );
-        for (presentation, position, titlebar) in [
-            (Presentation::Reserved, TabPosition::Left, 32.0),
-            (Presentation::Reserved, TabPosition::Top, 32.0),
-            (Presentation::Hidden, TabPosition::Right, 32.0),
-            (Presentation::Reserved, TabPosition::Right, 0.0),
-        ] {
-            assert_eq!(margins(presentation, position, titlebar), base);
-        }
     }
 
     #[test]

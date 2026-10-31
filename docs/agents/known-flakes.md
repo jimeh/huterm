@@ -347,6 +347,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   close dialog nor tab closing. The last state matched the first
   occurrence: `w0.confirming=false`, `w0.tabs=3`, `w0.active_index=2`, and
   `w0.terminal_focused=false`.
+- **Sixth occurrence:** 2026-10-31 on PR #363 (run 41214596936, job
+  124576473001, head `9cb9ad94`), aarch64 only, under `Smoke Linux
+  overlays`. The PR changes window chrome, not the close dialog or tab
+  closing. The last state matched the second occurrence:
+  `w0.confirming=true`, `w0.dialog_focus=primary`, and `w0.tabs=3`.
 - **Triage:** rerun and record the run here. A hardening is to wait for
   `w0.dialog_focus=primary` before Enter, as the neighboring steps do.
 
@@ -413,6 +418,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   2026-10-31 on PR #362 (run 41209548791, job 124561468799, head
   `5bdce63f`), which changes pane indicators and dimming only, again with
   extra tab 16 below `fixture-session` 19, active at `w0.active_index=2`.
+  It recurred the same day on PR #363 (run 41212003791, job 124568761526,
+  head `e7793fe7`), which changes window chrome and not the palette, again
+  with extra tab 16 below `fixture-session` 19.
 - **Evidence:** the count includes every core workspace's tabs: two in the
   main window and one in the quake window from step 2. The failure state
   shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux
@@ -443,7 +451,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   which does not touch the palette or its smoke, with the same state and
   the same last bytes. It recurred on x86_64 on 2026-10-31 (PR #355 at
   `88542f14`, run 41167918791, job 124439483926) with the same state,
-  failing both Verify gates; the rerun passed.
+  failing both Verify gates; the rerun passed. It recurred on aarch64 the
+  same day (PR #363 at `c87cb93a`, run 41213983677, job 124574569527),
+  which changes window chrome and not the palette, with the same state.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused

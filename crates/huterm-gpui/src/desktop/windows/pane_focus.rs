@@ -3,7 +3,7 @@
 //! strongly. All stay off while only one pane shows, as in a zoomed or
 //! single-pane tab.
 
-use gpui::{Bounds, Hsla, Pixels};
+use gpui::{Bounds, Pixels};
 use huterm_config::{MAX_INACTIVE_DIM, PaneTitleBarMode};
 use huterm_protocol::PaneId;
 
@@ -16,9 +16,6 @@ use super::pane_indicators::IndicatorRecord;
 pub(super) struct FocusMarks {
     pub(super) dimmed: Vec<(PaneId, f32)>,
     pub(super) darkened: Vec<(PaneId, f32)>,
-    /// The darkened fill the rounded corner patch beside a vertical tab
-    /// bar drew to match the pane beneath it.
-    pub(super) corner_darkened: Option<Hsla>,
     pub(super) accent: Option<(PaneId, f32)>,
     pub(super) cue: Option<Bounds<Pixels>>,
     pub(super) indicator: IndicatorRecord,

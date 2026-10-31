@@ -255,37 +255,24 @@ pub(super) fn window_radii(
     }
 }
 
-/// The terminal corner Huterm rounds itself beside a vertical tab bar.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct TerminalCorner {
-    pub(super) at: Point<Pixels>,
-    pub(super) radius: Pixels,
-}
-
 fn near(a: Point<Pixels>, b: Point<Pixels>) -> bool {
     (a.x - b.x).abs() <= px(EDGE_TOLERANCE)
         && (a.y - b.y).abs() <= px(EDGE_TOLERANCE)
 }
 
 /// Each corner's radius of `area`, the pane area inside the window's
-/// `content`: a corner on a window corner takes that corner's radius, the
-/// corner Huterm rounds beside a vertical tab bar takes its radius, and
+/// `content`: a corner on a window corner takes that corner's radius, and
 /// every other corner is square. No radius exceeds half the area's
 /// shorter side.
 pub(super) fn area_corners(
     content: Bounds<Pixels>,
     area: Bounds<Pixels>,
     window: WindowRadii,
-    terminal: Option<TerminalCorner>,
 ) -> Corners {
     let limit = (area.size.width.min(area.size.height) / 2.0).max(px(0.0));
     let radius = |corner: Point<Pixels>, window_corner, window_radius| {
         let radius = if near(corner, window_corner) {
             window_radius
-        } else if let Some(terminal) =
-            terminal.filter(|terminal| near(corner, terminal.at))
-        {
-            terminal.radius
         } else {
             px(0.0)
         };
@@ -1491,16 +1478,14 @@ impl WorkspaceView {
         )
     }
 
-    /// The marks drawn over the active tab's panes, after the dividers and
-    /// the rounded terminal corner beside a vertical tab bar: the sync or
-    /// zoom indicator, any state chips, then the focused pane's accent
-    /// line, so the cue stays readable. `area` is the pane area inside
+    /// The marks drawn over the active tab's panes, after the dividers:
+    /// the sync or zoom indicator, any state chips, then the focused pane's
+    /// accent line, so the cue stays readable. `area` is the pane area inside
     /// the window's `content`.
     pub(super) fn pane_marks(
         &self,
         area: Bounds<Pixels>,
         content: Bounds<Pixels>,
-        terminal_corner: Option<TerminalCorner>,
         colors: TabColors,
         window: &Window,
         cx: &App,
@@ -1531,8 +1516,7 @@ impl WorkspaceView {
             |rects| rects.panes.clone(),
         );
         let active = self.active_look(tab, cx);
-        let corners =
-            area_corners(content, area, self.window_radii(), terminal_corner);
+        let corners = area_corners(content, area, self.window_radii());
         let mut record = IndicatorRecord {
             look: active.map(|active| (active.state, active.look.style)),
             corners,

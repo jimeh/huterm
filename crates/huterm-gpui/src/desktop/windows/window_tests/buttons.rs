@@ -812,3 +812,107 @@ fn pane_title_bars_are_named_groups_whose_buttons_zoom_and_close(
         pane_view(cx, window, tab, second).is_none()
     });
 }
+
+#[gpui::test]
+#[cfg(target_os = "macos")]
+fn full_height_sidebars_keep_title_gestures_and_the_window_corner_menu(
+    cx: &mut TestAppContext,
+) {
+    for position in [TabPosition::Left, TabPosition::Right] {
+        let mut harness = DesktopHarness::with_config(cx, |config| {
+            config.tabs.position = position;
+            config.tabs.always_show = true;
+        });
+        let tab = harness.open_tab(ECHO);
+        let window = harness.attach_window();
+        harness.wait_text(window, tab, "READY");
+        harness.activate(window, tab);
+        let button = harness.menu_button_centre(window);
+        let recorded = harness
+            .update_view(window, |view, _, _| view.menu_button_bounds.get())
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window, &harness.cx);
+        assert_eq!(visual.debug_bounds("window-menu-button"), Some(recorded));
+        let row = visual.debug_bounds("terminal-title-row").unwrap();
+        let sidebar = visual.debug_bounds("sidebar-title-strip").unwrap();
+        let layout = harness
+            .update_view(window, |view, window, _| view.chrome_layout(window));
+        assert_eq!(row.origin.x, layout.terminal.origin.x);
+        assert_eq!(row.size.width, layout.terminal.size.width);
+        assert_eq!(sidebar.origin.y, px(0.0));
+        assert_eq!(sidebar.size.height, super::super::super::TITLEBAR_HEIGHT);
+        assert_eq!(recorded.right(), layout.content.right() - CONTROL_INSET);
+        assert!(recorded.bottom() <= row.bottom());
+        press_at(&mut harness, window, button, 1);
+        assert_eq!(harness.title_row(window), (false, 0));
+        VisualTestContext::from_window(window, &harness.cx).simulate_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position: button,
+                modifiers: Modifiers::none(),
+                click_count: 1,
+            },
+        );
+        harness.wait_for("the corner button to open its menu", |cx| {
+            window
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>()
+                        .unwrap()
+                        .read(cx)
+                        .menu
+                        .is_some()
+                })
+                .unwrap_or(false)
+        });
+        harness.press(window, "escape");
+        for at in [row.center(), sidebar.center()] {
+            press_at(&mut harness, window, at, 1);
+            assert_eq!(harness.title_row(window), (true, 0));
+            // The test platform does not implement native window moves;
+            // the HID smoke tests the drag after this accepted press.
+            VisualTestContext::from_window(window, &harness.cx).simulate_event(
+                MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: at,
+                    modifiers: Modifiers::none(),
+                    click_count: 1,
+                },
+            );
+            assert_eq!(harness.title_row(window), (false, 0));
+            press_at(&mut harness, window, at, 2);
+            assert_eq!(harness.title_row(window), (false, 0));
+            // Neither top strip has a right-press menu on macOS.
+            VisualTestContext::from_window(window, &harness.cx).simulate_event(
+                MouseDownEvent {
+                    button: MouseButton::Right,
+                    position: at,
+                    modifiers: Modifiers::none(),
+                    click_count: 1,
+                    first_mouse: false,
+                },
+            );
+            assert!(
+                !harness.update_view(window, |view, _, _| view.menu.is_some())
+            );
+        }
+        // At the sidebar's top edge, the resize handle beats the strip move.
+        let handle = layout.sidebar_resize_handle(position);
+        let at = point(handle.center().x, px(8.0));
+        press_at(&mut harness, window, at, 1);
+        assert!(
+            harness.update_view(window, |view, _, _| view.resizing_sidebar)
+        );
+        assert!(!harness.title_row(window).0);
+        drag_and_release(&mut harness, window, at);
+        harness.update_view(window, |view, _, cx| {
+            view.config.tabs.always_show = false;
+            cx.notify();
+        });
+        harness.cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window, &harness.cx);
+        let expanded = visual.debug_bounds("terminal-title-row").unwrap();
+        assert_eq!(expanded.size.width, layout.content.size.width);
+        assert_eq!(expanded.origin.x, layout.content.origin.x);
+        assert!(visual.debug_bounds("sidebar-title-strip").is_none());
+    }
+}

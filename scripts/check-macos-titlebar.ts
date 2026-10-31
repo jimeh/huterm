@@ -68,8 +68,30 @@ export function checkWindowRadii(text: string, macosMajor: number): string {
   return `${field(text, "window_radii")}@${source}`;
 }
 
-export async function checkMacTitlebar(executable: string, pointer: string, position: "titlebar" | "top"): Promise<void> {
+/**
+ * The horizontal window drag, at most `most` points either way, that keeps
+ * every window-relative `xs` the smoke later clicks at least `margin` inside
+ * `visible`. A sidebar widens the window enough that a fixed drag pushes the
+ * corner menu or the row's empty space off a small display.
+ */
+export function roomyDrag(window: Rect, visible: Rect, xs: number[], most: number, margin = 8): number {
+  const low = Math.max(...xs.map((x) => visible.x + margin - (window.x + x)));
+  const high = Math.min(...xs.map((x) => visible.x + visible.w - margin - (window.x + x)));
+  if (high >= most) return most;
+  if (-low >= most) return -most;
+  const shift = high >= -low ? Math.floor(high) : Math.ceil(low);
+  if (Math.abs(shift) < 40) throw new Error(`no room to drag window ${JSON.stringify(window)} within ${JSON.stringify(visible)}`);
+  return shift;
+}
+
+/** Empty sidebar strip space clear of native lights and the corner menu. */
+export function sidebarStripPoint(position: "left" | "right", terminal: Rect): Point {
+  return { x: position === "left" ? terminal.x - 24 : terminal.x + terminal.w + 24, y: ROW / 2 };
+}
+
+export async function checkMacTitlebar(executable: string, pointer: string, position: "titlebar" | "top" | "left" | "right"): Promise<void> {
   const merged = position === "titlebar";
+  const vertical = position === "left" || position === "right";
   const engine = "ghostty";
   const directory = await mkdtemp(join(tmpdir(), "huterm-titlebar-"));
   const shell = join(directory, "shell");
@@ -160,7 +182,10 @@ label = "title"
    * in the merged row just after the `+` slot that follows the last tab.
    */
   function emptyRowSpace(text: string): Point {
-    if (!merged) return { x: trafficLightsEnd(text) + 24, y: ROW / 2 };
+    if (!merged) {
+      const terminal = parseRect(field(text, "terminal_bounds"));
+      return { x: Math.max(trafficLightsEnd(text), vertical ? terminal.x : 0) + 24, y: ROW / 2 };
+    }
     const last = field(text, "tabs_rects").split(";").map(parseRect).pop()!;
     const button = parseRect(field(text, "menu_button"));
     const left = last.x + last.w + 32 + 8;
@@ -189,7 +214,10 @@ label = "title"
     const terminal = parseRect(field(laid, "terminal_bounds"));
     const tabsPlaced = merged
       ? tabs.every((tab) => tab.y >= 0 && tab.y + tab.h <= ROW) && tabs[0]!.x >= trafficLightsEnd(laid)
-      : tabs.every((tab) => tab.y >= ROW && tab.y + tab.h <= terminal.y);
+      : vertical
+        ? tabs.every((tab) => tab.y >= ROW && tab.y + tab.h <= frame().h)
+          && (position === "left" ? tabs.every((tab) => tab.x + tab.w <= terminal.x) : tabs.every((tab) => tab.x >= terminal.x + terminal.w))
+        : tabs.every((tab) => tab.y >= ROW && tab.y + tab.h <= terminal.y);
     if (tabs.length !== 2 || !tabsPlaced || button.y + button.h > ROW || terminal.y < ROW) {
       throw new Error(`${engine}: title row layout: tabs ${field(laid, "tabs_rects")} button ${field(laid, "menu_button")} terminal ${field(laid, "terminal_bounds")}`);
     }
@@ -241,11 +269,13 @@ label = "title"
     // takes over from `performWindowDragWithEvent:` and can drop part of a
     // synthetic drag, so require most of a horizontal one.
     const space = emptyRowSpace(await current());
-    const by = 150;
+    const strip = position === "left" || position === "right" ? sidebarStripPoint(position, terminal) : undefined;
+    const clicked = [space.x, centre(button).x, ...(strip ? [strip.x] : [])];
+    const by = roomyDrag(windowed, parseFrame(run([pointer, "visible"])), clicked, 150);
     drag(space, { x: by, y: 0 });
     const moved = await frameWhere(
-      (value) => value.w === windowed.w && value.h === windowed.h && value.x - windowed.x >= by / 2,
-      `the window moved right by at least ${by / 2} from ${JSON.stringify(windowed)}`,
+      (value) => value.w === windowed.w && value.h === windowed.h && (value.x - windowed.x) * Math.sign(by) >= Math.abs(by) / 2,
+      `the window moved by at least half of ${by} from ${JSON.stringify(windowed)}`,
     );
     await state("w0.tabs=2", "w0.active_index=1", "w0.active=true");
 
@@ -273,6 +303,36 @@ label = "title"
     await ack("ackunzoomx");
     if (!near(frame(), moved)) throw new Error(`${engine}: a second title-row double-click acted twice: frame ${JSON.stringify(frame())}`);
 
+    if (vertical) {
+      // The second draggable surface is above the sidebar rows. The right
+      // sidebar's menu button must remain above the occluding bar too.
+      const beforeStrip = frame();
+      // Back to where the window started, so it stays on the display.
+      const back = -by;
+      drag(strip!, { x: back, y: 0 });
+      const stripMoved = await frameWhere(
+        (value) => value.w === beforeStrip.w && value.h === beforeStrip.h && (value.x - beforeStrip.x) * Math.sign(back) >= Math.abs(back) / 2,
+        `the sidebar strip moved the window by at least half of ${back}`,
+      );
+      await ack("acksidebarx");
+      click(centre(parseRect(field(await current(), "menu_button"))));
+      await state("w0.menu=true", "w0.menu_target=none");
+      await input.key("escape");
+      await state("w0.menu=false", "w0.terminal_focused=true");
+      assertUnmoved(stripMoved, "the sidebar's corner menu button");
+      click(sidebarStripPoint(position, parseRect(field(await current(), "terminal_bounds"))), 2);
+      await frameWhere((value) => near(value, target), "the sidebar strip zoomed the window");
+      await state("w0.maximized=true");
+      await ack("acksidebarzoomx");
+      if (!near(frame(), target)) throw new Error("sidebar double-click acted twice");
+      click(sidebarStripPoint(position, parseRect(field(await current(), "terminal_bounds"))), 2);
+      await frameWhere((value) => near(value, stripMoved), "the sidebar strip restored the window");
+      await state("w0.maximized=false");
+      await ack("acksidebarrestorex");
+      if (!near(frame(), stripMoved)) throw new Error("sidebar restore double-click acted twice");
+      console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=${position} terminal-row-drag=moves sidebar-strip-drag=moves terminal-row-double-click=once sidebar-strip-double-click=once corner-menu=opens`);
+    }
+
     // 8. `+` in the row opens a tab.
     if (merged) {
       const row = await current();
@@ -281,7 +341,7 @@ label = "title"
       await state("w0.tabs=3", "w0.active_index=2", "w0.terminal_focused=true");
       console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=titlebar layout=row tab-click=activates tab-drag=reorders right-click=tab-menu,window-menu menu-button=opens empty-drag=moves double-click=once plus=new-tab`);
     } else {
-      console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=top layout=strip menu-button=opens empty-drag=moves double-click=once`);
+      console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=${position} layout=strip menu-button=opens empty-drag=moves double-click=once`);
     }
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");

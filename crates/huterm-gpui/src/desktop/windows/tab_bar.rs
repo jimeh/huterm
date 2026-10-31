@@ -181,17 +181,14 @@ pub(super) fn icon_element(icon: Icon, tint: Hsla) -> Svg {
 
 /// Whether the region above the terminal (the macOS titlebar or the display
 /// safe area above a notch) uses the tab bar background. Only a bar that
-/// touches that region shares its color: a bottom bar leaves it to the
-/// terminal, and a vertical column shares only a real titlebar, since under
-/// a notch the column itself runs to the screen top beside a terminal-colored
-/// strip.
+/// touches that region shares its color: bottom and vertical bars leave it
+/// to the terminal. A vertical column draws its own full-height background.
 pub(super) fn top_chrome_uses_bar(
     position: TabPosition,
-    titlebar: bool,
     presentation: Presentation,
     reveal_progress: f32,
 ) -> bool {
-    if position == TabPosition::Bottom || (position.vertical() && !titlebar) {
+    if position == TabPosition::Bottom || position.vertical() {
         return false;
     }
     match presentation {
@@ -315,6 +312,7 @@ impl WorkspaceView {
         let id = item.id;
         let shell = div()
             .id(("tab", id.get()))
+            .debug_selector(|| format!("tab-shell-{}", id.get()))
             .group("tab")
             .absolute()
             .left(bounds.origin.x)
@@ -346,11 +344,14 @@ impl WorkspaceView {
                     cx.stop_propagation();
                 }),
             )
-            .when(item.targeted, |shell| {
+            .when(item.targeted && tabs.style == TabStyle::Strip, |shell| {
                 shell.child(
                     div()
                         .absolute()
                         .inset(px(1.0))
+                        .debug_selector(|| {
+                            format!("tab-strip-target-{}", id.get())
+                        })
                         .rounded(px(6.0))
                         .border_1()
                         .border_color(colors.accent),
@@ -1020,6 +1021,7 @@ fn vertical_pill_tab(
     shell.child(
         div()
             .relative()
+            .debug_selector(|| format!("tab-pill-{}", item.id.get()))
             .flex_1()
             .min_w_0()
             // An explicit height keeps the margins inside the slot; a full
@@ -1045,14 +1047,18 @@ fn vertical_pill_tab(
             .children(parts.marks)
             .children(parts.status)
             .child(parts.title)
-            .child(parts.close),
+            .child(parts.close)
+            .when(item.targeted, |pill| {
+                pill.child(pill_target_outline(item.id, colors))
+            }),
     )
 }
 
 /// Left and right Strip placement: the active row spans the column and
 /// merges into the terminal, with the accent line on the window edge and
 /// `tab_border` lines above and below because the open edge is tall. A
-/// flush first row omits its top line; the bar's top border serves instead.
+/// flush first row omits its top line: the pane-area border continues
+/// across the sidebar above it, or the screen edge bounds it beside a notch.
 fn vertical_strip_tab(
     shell: Stateful<Div>,
     parts: TabParts,
@@ -1069,7 +1075,21 @@ fn vertical_strip_tab(
             tab.bg(colors.terminal)
                 .border_color(colors.border)
                 .border_b(px(1.0))
-                .when(!item.flush_start, |tab| tab.border_t(px(1.0)))
+                .when(!item.flush_start, |tab| {
+                    let id = item.id;
+                    tab.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(1.0))
+                            .bg(colors.border)
+                            .debug_selector(move || {
+                                format!("tab-strip-top-line-{}", id.get())
+                            }),
+                    )
+                })
                 .child(
                     div()
                         .absolute()
@@ -1143,6 +1163,7 @@ fn pill_tab(
         .child(
             div()
                 .relative()
+                .debug_selector(|| format!("tab-pill-{}", item.id.get()))
                 .flex_1()
                 .min_w_0()
                 .h(PILL_HEIGHT)
@@ -1164,8 +1185,22 @@ fn pill_tab(
                 .children(parts.marks)
                 .children(parts.status)
                 .child(parts.title)
-                .child(parts.close),
+                .child(parts.close)
+                .when(item.targeted, |pill| {
+                    pill.child(pill_target_outline(item.id, colors))
+                }),
         )
+}
+
+/// Paint last so the outline covers the pill's fill and accent.
+fn pill_target_outline(id: TabId, colors: TabColors) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(colors.accent)
+        .debug_selector(move || format!("tab-pill-target-{}", id.get()))
 }
 
 fn pill_padding_left(accent: bool) -> Pixels {

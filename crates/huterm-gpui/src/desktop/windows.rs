@@ -241,7 +241,7 @@ use pane_geometry::{
     layout_panes, with_boundary,
 };
 use pane_grab::{GrabPress, PaneGrab};
-use pane_indicators::{NativeRadii, PathCache, TerminalCorner};
+use pane_indicators::{NativeRadii, PathCache};
 use pane_menu::{PaneMenuInput, pane_menu};
 use projection::{
     Drained, Install, PendingInstalls, Projection, ReconcileTarget, Resolution,
@@ -4761,9 +4761,8 @@ impl WorkspaceView {
     }
 
     /// The active tab's panes: each pane's terminal view at its rectangle
-    /// inside `bounds`, the enabled pane title bars, and the
-    /// dividers between panes. The marks over them, `pane_marks`, draw
-    /// later, above the rounded terminal corner.
+    /// inside `bounds`, the enabled pane title bars, and the dividers
+    /// between panes. The marks over them, `pane_marks`, draw later.
     fn pane_elements(
         &self,
         bounds: Bounds<Pixels>,
@@ -4912,34 +4911,6 @@ impl WorkspaceView {
             div().absolute().inset_0().bg(gpui::black().opacity(alpha))
         });
         [dim, background].into_iter().flatten()
-    }
-
-    /// The fill of `corner`, the rounded patch beside a vertical tab bar:
-    /// `background`, darkened as `inactive_dim_background` darkened the
-    /// pane beneath it this frame. A darkened fill is recorded for tests.
-    fn corner_fill(
-        &self,
-        corner: Bounds<Pixels>,
-        background: gpui::Hsla,
-    ) -> gpui::Hsla {
-        let center = corner.center();
-        let alpha =
-            self.drawn_panes.borrow().as_ref().and_then(|(_, rects)| {
-                let pane = rects
-                    .iter()
-                    .find(|rect| rect.terminal.contains(&center))?
-                    .pane;
-                self.drawn_focus
-                    .borrow()
-                    .darkened
-                    .iter()
-                    .find(|(id, _)| *id == pane)
-                    .map(|(_, alpha)| *alpha)
-            });
-        let fill =
-            alpha.map(|alpha| background.blend(gpui::black().opacity(alpha)));
-        self.drawn_focus.borrow_mut().corner_darkened = fill;
-        fill.unwrap_or(background)
     }
 
     /// How many of `tab`'s panes `pane_elements` draws: each installed view
@@ -5944,7 +5915,7 @@ impl WorkspaceView {
 
     /// The geometry every terminal view in the window takes: the terminal
     /// bounds with the tab bar shown or hidden, never mid-reveal, and the
-    /// scrollbar track margins beside that chrome.
+    /// standard scrollbar track margins.
     fn terminal_geometry(&self, window: &Window) -> TerminalGeometry {
         let tabs = self.layout_tabs();
         let presentation = self.presentation();
@@ -5961,12 +5932,7 @@ impl WorkspaceView {
         .terminal;
         TerminalGeometry {
             bounds: Some(bounds),
-            track_margins: terminal_track_margins(
-                presentation,
-                tabs.position,
-                self.title_row(),
-                self.config.window,
-            ),
+            track_margins: TERMINAL_SCROLLBAR.margins,
         }
     }
 
@@ -11197,19 +11163,6 @@ fn select_notch_shelf(
     (shelf.size.height >= tab_bar_height(tabs)).then_some(shelf)
 }
 
-/// Largest corner radius the rounded terminal corner may use, so wide padding
-/// does not produce an oversized arc.
-const TERMINAL_CORNER_RADIUS_LIMIT: Pixels = px(12.0);
-
-/// The rounded terminal corner stays inside the window padding, so the arc
-/// never covers a cell.
-pub(super) fn terminal_corner_radius(
-    window: huterm_config::WindowConfig,
-) -> Pixels {
-    px(window.padding_x.min(window.padding_y).max(0.0).floor())
-        .min(TERMINAL_CORNER_RADIUS_LIMIT)
-}
-
 /// The strip's bounds inside the tab bar. Horizontal Pill bars start with a
 /// leading margin so the first pill's visible edge matches the vertical
 /// inset; every other placement and style fills the bar.
@@ -11341,8 +11294,8 @@ pub(super) struct ChromeLayout {
     /// The window inside its frame: the whole viewport without one.
     pub(super) content: Bounds<Pixels>,
     pub(super) frame: WindowFrame,
-    /// Bar length the strip avoids at its start: the safe-area height a
-    /// vertical column spans above its rows, or the traffic lights or
+    /// Bar length the strip avoids at its start: the title row and safe
+    /// area a vertical column spans above its rows, or the traffic lights or
     /// window buttons at the start of the title-bar row.
     strip_inset: Pixels,
     /// Bar length the strip leaves free at its end: the window buttons at
@@ -11422,21 +11375,9 @@ impl ChromeLayout {
         }
     }
 
-    /// The one-point line where the terminal meets the top chrome (the macOS
-    /// titlebar or the safe area above a notch) beside a vertical tab bar. It
-    /// joins the bar's terminal edge so the titlebar and bar read as one
-    /// surface around the terminal.
-    /// With `span_bar`, the line also runs across the tab bar, for a flush
-    /// active Strip row whose top edge continues the terminal's.
-    fn top_chrome_border(
-        &self,
-        position: TabPosition,
-        top_chrome: Pixels,
-        span_bar: bool,
-    ) -> Option<Bounds<Pixels>> {
-        if !position.vertical() || top_chrome <= px(0.0) {
-            return None;
-        }
+    /// The line above the pane area. A flush active Strip row continues it
+    /// across the sidebar at the same height.
+    fn top_chrome_border(&self, span_bar: bool) -> Bounds<Pixels> {
         let terminal = self.terminal;
         let (x, width) = if span_bar {
             (
@@ -11446,35 +11387,7 @@ impl ChromeLayout {
         } else {
             (terminal.origin.x, terminal.size.width)
         };
-        Some(Bounds::new(
-            point(x, top_chrome - px(1.0)),
-            size(width, px(1.0)),
-        ))
-    }
-
-    /// The square patch that rounds the terminal's top corner beside a
-    /// vertical tab bar. It extends one point into the top chrome and bar so
-    /// its border continues the straight lines around the terminal.
-    fn terminal_corner(
-        &self,
-        position: TabPosition,
-        top_chrome: Pixels,
-        radius: Pixels,
-    ) -> Option<Bounds<Pixels>> {
-        if !position.vertical() || top_chrome <= px(0.0) || radius <= px(0.0) {
-            return None;
-        }
-        let terminal = self.terminal;
-        let extent = radius + px(1.0);
-        let x = if position == TabPosition::Left {
-            terminal.origin.x - px(1.0)
-        } else {
-            terminal.right() - radius
-        };
-        Some(Bounds::new(
-            point(x, top_chrome - px(1.0)),
-            size(extent, extent),
-        ))
+        Bounds::new(point(x, terminal.origin.y - px(1.0)), size(width, px(1.0)))
     }
 
     fn sidebar_resize_handle(&self, position: TabPosition) -> Bounds<Pixels> {
@@ -11662,16 +11575,12 @@ impl ChromeLayout {
             } else {
                 tabs.origin.x += terminal.size.width;
             }
-            // The column runs through the display safe area to the
-            // titlebar, so its edge spans the whole screen height beside a
-            // notch; only its rows stay below the safe area.
-            let column_top =
-                titlebar.max(px(0.0)).min(viewport.height.max(px(0.0)));
-            strip_inset = top - column_top;
-            tabs.origin.y = column_top;
+            // The background and divider fill the content height; rows
+            // stay below the title row and display safe area.
+            strip_inset = top;
+            tabs.origin.y = px(0.0);
             tabs.size.height =
-                (viewport.height - column_top - safe_area.bottom.max(px(0.0)))
-                    .max(px(0.0));
+                (viewport.height - safe_area.bottom.max(px(0.0))).max(px(0.0));
         } else if let Some(shelf) = notch_shelf.filter(|shelf| {
             // A shelf too short for the bar is not used; the bar then takes
             // its normal place below the safe area at full height.
@@ -11729,6 +11638,30 @@ impl ChromeLayout {
             size(self.content.size.width, line),
         )
     }
+}
+
+/// Whether a tab-less title row needs to outline the pane area beneath it.
+/// Hover bars do not change the outline as they fade; zoom retains the
+/// shown layout's pane count even though only one rectangle draws.
+fn pane_area_top_border(
+    title_row: bool,
+    position: TabPosition,
+    bar_drawn: bool,
+    pane_count: usize,
+    bars: TitleBars,
+    area: Bounds<Pixels>,
+    drawn: &[PaneRect],
+) -> bool {
+    title_row
+        && !(bar_drawn
+            && matches!(position, TabPosition::Top | TabPosition::Titlebar))
+        && (pane_count > 1
+            || (bars.mode == PaneTitleBarMode::Visible
+                && bars.position == huterm_config::PaneTitleBarPosition::Top
+                && drawn.iter().any(|rect| {
+                    rect.title_bar
+                        .is_some_and(|bar| bar.origin.y == area.origin.y)
+                })))
 }
 
 impl Render for WorkspaceView {
@@ -12110,8 +12043,21 @@ impl Render for WorkspaceView {
         // A top bar on the notch shelf, currently shown.
         let shelf_bar = self.notch_shelf().is_some()
             && self.presentation() == Presentation::Reserved;
+        let sidebar_title_row =
+            position.vertical() && bar_drawn && titlebar > px(0.0);
+        let title_left = if position.vertical() {
+            layout.terminal.origin.x
+        } else {
+            content.origin.x
+        };
+        let title_width = if position.vertical() {
+            layout.terminal.size.width
+        } else {
+            content.size.width
+        };
         let title_menu_button = (menu_placement
-            == MenuButtonPlacement::TitleStrip)
+            == MenuButtonPlacement::TitleStrip
+            && !sidebar_title_row)
             .then(|| self.menu_button_element(colors, cx).mr(CONTROL_INSET));
         // The window buttons that start the row Huterm draws.
         let title_leading = (!frame.buttons.leading.is_empty()).then(|| {
@@ -12140,16 +12086,29 @@ impl Render for WorkspaceView {
                 ))
             });
         // The title centres between the space its ends reserve.
-        let title_padding =
-            layout.strip_inset.max(layout.strip_trailing + CONTROL_SLOT);
+        let title_padding = if position.vertical() {
+            let leading = (content.origin.x + TRAFFIC_LIGHT_INSET - title_left)
+                .max(px(0.0));
+            let trailing = if menu_placement == MenuButtonPlacement::TitleStrip
+            {
+                (title_left + title_width - (content.right() - CONTROL_SLOT))
+                    .max(px(0.0))
+            } else {
+                px(0.0)
+            };
+            leading.max(trailing)
+        } else {
+            layout.strip_inset.max(layout.strip_trailing + CONTROL_SLOT)
+        };
         if top_chrome > px(0.0) {
             root = root.child(
                 div()
                     .absolute()
                     .top(content.origin.y)
-                    .left(content.origin.x)
-                    .w(content.size.width)
+                    .left(title_left)
+                    .w(title_width)
                     .h(top_chrome)
+                    .debug_selector(|| "terminal-title-row".to_owned())
                     .when(decorated, |bar| {
                         bar.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS)
                     })
@@ -12159,7 +12118,6 @@ impl Render for WorkspaceView {
                         if shelf_bar
                             || top_chrome_uses_bar(
                                 position,
-                                titlebar > px(0.0),
                                 self.presentation(),
                                 self.reveal.progress,
                             )
@@ -12280,43 +12238,38 @@ impl Render for WorkspaceView {
                 self.last_scroll = Instant::now();
             }
         }
-        // A flush active Strip row continues the terminal's top border
-        // across the bar, so the corner stays square.
+        let pane_count = active_tab
+            .and_then(|tab| self.shown_layout(tab, cx))
+            .map_or(0, |layout| layout.pane_count());
+        let pane_top_border = pane_area_top_border(
+            titlebar > px(0.0) || frame.controls,
+            position,
+            bar_drawn,
+            pane_count,
+            self.title_bars(),
+            layout.terminal,
+            self.drawn_panes
+                .borrow()
+                .as_ref()
+                .map_or(&[], |(_, panes)| panes.as_slice()),
+        );
+        // A first vertical row level with the pane area's top is flush:
+        // it leaves its top line to the pane border, which continues across
+        // the sidebar, or, beside a notch, to the screen edge. Under a
+        // sidebar's title strip with no pane border it outlines itself.
+        let column_flush = strip.bounds.origin.y == layout.terminal.origin.y
+            && (pane_top_border || !sidebar_title_row);
         let flush_active = vertical
             && tabs.style == TabStyle::Strip
+            && column_flush
             && strip.offset == px(0.0)
             && self
                 .tabs
                 .first()
                 .is_some_and(|tab| Some(tab.id) == active_tab);
-        let corner_radius = terminal_corner_radius(self.config.window);
-        // The terminal corner rounded below beside a vertical tab bar.
-        let terminal_corner = (bar_drawn
-            && self.presentation() == Presentation::Reserved
-            && !flush_active
-            && layout
-                .terminal_corner(position, titlebar, corner_radius)
-                .is_some())
-        .then(|| TerminalCorner {
-            at: if position == TabPosition::Left {
-                layout.terminal.origin
-            } else {
-                layout.terminal.top_right()
-            },
-            radius: corner_radius,
-        });
-        // The indicator and focus cue draw above the dividers and that
-        // corner, and below every overlay: a revealed fullscreen tab bar
-        // covers the panes, so they go before it, while a reserved bar
-        // never does.
-        let mut marks = self.pane_marks(
-            layout.terminal,
-            content,
-            terminal_corner,
-            colors,
-            window,
-            cx,
-        );
+        // Indicators draw above dividers and below overlays.
+        let mut marks =
+            self.pane_marks(layout.terminal, content, colors, window, cx);
         if self.presentation() != Presentation::Reserved {
             root = root.children(std::mem::take(&mut marks));
         }
@@ -12479,7 +12432,9 @@ impl Render for WorkspaceView {
                     } else {
                         Activity::Inactive
                     },
-                    flush_start: index == 0 && strip.offset == px(0.0),
+                    flush_start: index == 0
+                        && strip.offset == px(0.0)
+                        && (!vertical || column_flush),
                     targeted: self.menu_targets_tab(tab.id)
                         || self.pane_drag.as_ref().is_some_and(|drag| {
                             drag.spring.tab() == Some(tab.id)
@@ -12658,6 +12613,39 @@ impl Render for WorkspaceView {
                         .top(origin.y),
                 );
             }
+            if sidebar_title_row {
+                chrome = chrome.child(
+                    self.title_row_gestures(
+                        div()
+                            .id("sidebar-title-strip")
+                            .debug_selector(|| "sidebar-title-strip".to_owned())
+                            .absolute()
+                            .left(layout.tabs.origin.x - clip.origin.x)
+                            .top(layout.tabs.origin.y - clip.origin.y)
+                            .w(layout.tabs.size.width)
+                            .h(titlebar)
+                            .occlude()
+                            .window_control_area(WindowControlArea::Drag),
+                    ),
+                );
+                if menu_placement == MenuButtonPlacement::TitleStrip {
+                    // The full-height bar occludes the root title row.
+                    // Paint the window-corner button above that bar.
+                    chrome = chrome.child(
+                        self.menu_button_element(colors, cx)
+                            .absolute()
+                            .left(
+                                content.right() - CONTROL_SLOT + CONTROL_INSET
+                                    - clip.origin.x,
+                            )
+                            .top(
+                                content.origin.y
+                                    + (titlebar - CONTROL_SIZE) / 2.0
+                                    - clip.origin.y,
+                            ),
+                    );
+                }
+            }
             if vertical {
                 let handle = layout.sidebar_resize_handle(position);
                 chrome = chrome.child(
@@ -12771,59 +12759,23 @@ impl Render for WorkspaceView {
                 }
             }
             root = root.child(chrome);
-            // Only a titlebar joins the column through a line and corner; a
-            // fullscreen safe area lets the column run to the screen top.
-            if self.presentation() == Presentation::Reserved
-                && let Some(edge) =
-                    layout.top_chrome_border(position, titlebar, flush_active)
-            {
-                root = root.child(
-                    div()
-                        .absolute()
-                        .left(edge.origin.x)
-                        .top(edge.origin.y)
-                        .w(edge.size.width)
-                        .h(edge.size.height)
-                        .bg(colors.border),
-                );
-                let radius = corner_radius;
-                if !flush_active
-                    && let Some(corner) =
-                        layout.terminal_corner(position, titlebar, radius)
-                {
-                    let left = position == TabPosition::Left;
-                    let outer = radius + px(1.0);
-                    // The patch draws above the panes, so it carries the
-                    // darkening of the pane beneath it.
-                    let fill = self.corner_fill(corner, background);
-                    root = root.child(
-                        div()
-                            .absolute()
-                            .left(corner.origin.x)
-                            .top(corner.origin.y)
-                            .w(corner.size.width)
-                            .h(corner.size.height)
-                            .bg(colors.bar)
-                            .child(
-                                div()
-                                    .size_full()
-                                    .bg(fill)
-                                    .border_color(colors.border)
-                                    .border_t(px(1.0))
-                                    .when(left, |patch| {
-                                        patch
-                                            .border_l(px(1.0))
-                                            .rounded_tl(outer)
-                                    })
-                                    .when(!left, |patch| {
-                                        patch
-                                            .border_r(px(1.0))
-                                            .rounded_tr(outer)
-                                    }),
-                            ),
-                    );
-                }
-            }
+        }
+        if pane_top_border {
+            let edge = layout.top_chrome_border(
+                bar_drawn
+                    && self.presentation() == Presentation::Reserved
+                    && flush_active,
+            );
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(edge.origin.x)
+                    .top(edge.origin.y)
+                    .w(edge.size.width)
+                    .h(edge.size.height)
+                    .bg(colors.border)
+                    .debug_selector(|| "pane-area-top-border".to_owned()),
+            );
         }
         root = root.children(marks);
         if let Some(drag) = &self.reorder
@@ -14059,6 +14011,7 @@ impl WorkspaceView {
             .icon_only()
             .expanded(open)
             .group("window-menu")
+            .debug_selector(|| "window-menu-button".to_owned())
             .occlude()
             .stop_presses()
             .size(CONTROL_SIZE)

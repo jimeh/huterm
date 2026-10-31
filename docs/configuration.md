@@ -463,7 +463,13 @@ and `max_width`, each from 48 to 600 points. `width = "fill"` shares the bar
 equally, shrinking tabs to 120 points before the bar scrolls. Left and right
 tabs have a fixed height in a sidebar; drag its inner edge to resize it between
 140 and 400 points, capped at half the window width. Each window keeps its own
-sidebar width.
+sidebar width. On macOS the sidebar fills the window height, with its rows
+below the title bar. The title bar spans the terminal column in the terminal
+background; traffic lights and the menu button stay at the window's corners.
+Drag empty space in either the title bar or the strip above the sidebar rows
+to move the window, or double-click it for the system title-bar action.
+A title bar without tabs has a thin line above split panes, including while
+zoomed, or above a visible top pane title bar. Hover title bars do not add it.
 
 Drag a tab to reorder it within its window. The preview stays in the tab bar
 even when the pointer leaves the window, releasing commits the position, and

@@ -2,7 +2,6 @@ use gpui::{point, size};
 
 use super::super::{
     ChromeLayout, WindowFrame, select_notch_shelf, strip_bounds,
-    terminal_corner_radius,
 };
 use super::*;
 
@@ -139,83 +138,50 @@ fn error_exit_and_bell_take_precedence_over_the_running_dot() {
 }
 
 #[test]
-fn top_chrome_border_spans_the_terminal_beside_vertical_tab_bars() {
+fn pane_top_border_bounds_follow_the_terminal_and_can_span_a_flush_row() {
     let viewport = size(px(800.0), px(600.0));
-    for position in [TabPosition::Left, TabPosition::Right] {
+    for position in [
+        TabPosition::Left,
+        TabPosition::Right,
+        TabPosition::Bottom,
+        TabPosition::Titlebar,
+    ] {
         let layout = ChromeLayout::new(viewport, px(28.0), position);
-        let border = layout
-            .top_chrome_border(position, px(28.0), false)
-            .expect("titlebar border");
-        let terminal = layout.terminal;
-        assert_eq!(border.bottom(), terminal.origin.y);
-        assert_eq!(border.origin.x, terminal.origin.x);
-        assert_eq!(border.size.width, terminal.size.width);
-        assert_eq!(border.size.height, px(1.0));
-        // Spanning the bar as well covers the whole window width.
-        let spanning = layout
-            .top_chrome_border(position, px(28.0), true)
-            .expect("spanning border");
-        assert_eq!(spanning.origin.x, px(0.0));
-        assert_eq!(spanning.size.width, viewport.width);
-        assert_eq!(spanning.origin.y, border.origin.y);
-        // The two lines meet at the terminal's top corner.
-        let side = layout.tab_border(position);
-        let corner = match position {
-            TabPosition::Left => side.right() == border.origin.x,
-            _ => side.origin.x == border.right(),
-        };
-        assert!(corner, "{position:?}: {side:?} vs {border:?}");
-        assert!(layout.top_chrome_border(position, px(0.0), false).is_none());
-    }
-    for position in [TabPosition::Top, TabPosition::Bottom] {
-        let layout = ChromeLayout::new(viewport, px(28.0), position);
-        assert!(layout.top_chrome_border(position, px(28.0), true).is_none());
+        let border = layout.top_chrome_border(false);
+        assert_eq!(border.bottom(), layout.terminal.origin.y);
+        assert_eq!(border.origin.x, layout.terminal.origin.x);
+        assert_eq!(border.size, size(layout.terminal.size.width, px(1.0)));
+        if position.vertical() {
+            let spanning = layout.top_chrome_border(true);
+            assert_eq!(spanning.origin.x, px(0.0));
+            assert_eq!(spanning.size.width, viewport.width);
+            assert_eq!(spanning.origin.y, border.origin.y);
+        }
     }
 }
 
 #[test]
-fn terminal_corner_continues_the_lines_around_the_terminal() {
-    let viewport = size(px(800.0), px(600.0));
+fn titled_sidebars_fill_content_height_and_keep_rows_below_the_title() {
     for position in [TabPosition::Left, TabPosition::Right] {
-        let layout = ChromeLayout::new(viewport, px(28.0), position);
-        let corner = layout
-            .terminal_corner(position, px(28.0), px(4.0))
-            .expect("corner patch");
-        let line = layout.top_chrome_border(position, px(28.0), false).unwrap();
-        let side = layout.tab_border(position);
-        assert_eq!(corner.size, size(px(5.0), px(5.0)));
-        assert_eq!(corner.origin.y, line.origin.y);
-        let flush = match position {
-            TabPosition::Left => corner.origin.x == side.origin.x,
-            _ => corner.right() == side.right(),
-        };
-        assert!(flush, "{position:?}: {corner:?} vs {side:?}");
-        assert!(
-            layout
-                .terminal_corner(position, px(28.0), px(0.0))
-                .is_none()
-        );
-        assert!(layout.terminal_corner(position, px(0.0), px(4.0)).is_none());
+        let layout =
+            ChromeLayout::new(size(px(800.0), px(600.0)), px(32.0), position);
+        assert_eq!(layout.tabs.origin.y, px(0.0));
+        assert_eq!(layout.tabs.size.height, px(600.0));
+        let strip = layout.strip_bounds(TabsConfig {
+            position,
+            ..TabsConfig::default()
+        });
+        assert_eq!(strip.origin.y, px(32.0));
+        assert_eq!(strip.bottom(), px(600.0));
+        assert_eq!(layout.terminal.size, size(px(620.0), px(568.0)));
+        assert_eq!(layout.terminal.origin.y, px(32.0));
+        let divider = layout.tab_border(position);
+        assert_eq!(divider.origin.y, px(0.0));
+        assert_eq!(divider.size.height, px(600.0));
+        let hidden = layout.present(Presentation::Hidden, position, 0.0);
+        assert_eq!(hidden.terminal.origin.x, px(0.0));
+        assert_eq!(hidden.terminal.size.width, px(800.0));
     }
-    let layout = ChromeLayout::new(viewport, px(28.0), TabPosition::Top);
-    assert!(
-        layout
-            .terminal_corner(TabPosition::Top, px(28.0), px(4.0))
-            .is_none()
-    );
-}
-
-#[test]
-fn terminal_corner_radius_stays_inside_the_smaller_padding() {
-    let window = |x, y| huterm_config::WindowConfig {
-        padding_x: x,
-        padding_y: y,
-        ..huterm_config::WindowConfig::default()
-    };
-    assert_eq!(terminal_corner_radius(window(4.0, 4.0)), px(4.0));
-    assert_eq!(terminal_corner_radius(window(10.0, 6.5)), px(6.0));
-    assert_eq!(terminal_corner_radius(window(0.0, 8.0)), px(0.0));
-    assert_eq!(terminal_corner_radius(window(40.0, 40.0)), px(12.0));
 }
 
 #[test]
@@ -473,60 +439,24 @@ fn vertical_columns_overlay_beside_a_safe_area_without_moving_rows() {
 
 #[test]
 fn top_chrome_follows_a_visible_or_revealing_tab_bar() {
-    for position in [TabPosition::Top, TabPosition::Left, TabPosition::Right] {
-        assert!(top_chrome_uses_bar(
-            position,
-            true,
-            Presentation::Reserved,
-            0.0
-        ));
-        assert!(!top_chrome_uses_bar(
-            position,
-            true,
-            Presentation::Hidden,
-            1.0
-        ));
-        assert!(!top_chrome_uses_bar(
-            position,
-            true,
-            Presentation::Overlay,
-            0.0
-        ));
-        assert!(top_chrome_uses_bar(
-            position,
-            true,
-            Presentation::Overlay,
-            0.01
-        ));
+    for position in [TabPosition::Top, TabPosition::Titlebar] {
+        assert!(top_chrome_uses_bar(position, Presentation::Reserved, 0.0));
+        assert!(!top_chrome_uses_bar(position, Presentation::Hidden, 1.0));
+        assert!(!top_chrome_uses_bar(position, Presentation::Overlay, 0.0));
+        assert!(top_chrome_uses_bar(position, Presentation::Overlay, 0.01));
     }
     // Without a titlebar only a top bar colors the safe-area strip.
     assert!(top_chrome_uses_bar(
         TabPosition::Top,
-        false,
         Presentation::Reserved,
         0.0
     ));
     for column in [TabPosition::Left, TabPosition::Right] {
-        assert!(!top_chrome_uses_bar(
-            column,
-            false,
-            Presentation::Reserved,
-            0.0
-        ));
+        assert!(!top_chrome_uses_bar(column, Presentation::Reserved, 0.0));
     }
     let bottom = TabPosition::Bottom;
-    assert!(!top_chrome_uses_bar(
-        bottom,
-        true,
-        Presentation::Reserved,
-        0.0
-    ));
-    assert!(!top_chrome_uses_bar(
-        bottom,
-        true,
-        Presentation::Overlay,
-        1.0
-    ));
+    assert!(!top_chrome_uses_bar(bottom, Presentation::Reserved, 0.0));
+    assert!(!top_chrome_uses_bar(bottom, Presentation::Overlay, 1.0));
 }
 
 #[test]

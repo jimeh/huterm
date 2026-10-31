@@ -1241,21 +1241,37 @@ widths never change. Fullscreen auto-hide reserves no bar space; a top bar can
 be revealed from the macOS notch-height region and appears below the notch, and
 repeated reveal activity restarts its one-second hold.
 
-Left and right placement follow `style` too: Strip rows span the column,
-merge into the terminal, put the accent line on the window edge, and outline the
-active row above and below; a first active row at the strip's start joins the
-terminal's top border instead and squares the rounded corner. Pill rows are
-rounded, inset in the column, and carry the same optional accent bar. With a
-titlebar above vertical tabs, a border also runs along the terminal's top edge,
-joining the bar's edge so the titlebar and bar form one surface around the
-terminal. The corner where they meet is rounded by the smaller window padding,
-capped at 12 points, so the arc never covers a cell. Under a notch in non-native
-fullscreen there is no titlebar: the column and its edge run to the top of the
-screen, its rows stay below the safe area, and the strip beside it keeps the
-terminal background. While a top bar is visible or revealing, the macOS titlebar
-and the non-native fullscreen safe area above a notch use the tab bar
-background; a titlebar above a left or right bar does too; otherwise, including
-for a bottom bar, they use the terminal background. `[tabs].notch = "left"`
+Left and right placement follow `style` too: Strip rows span the column, merge
+into the terminal, put the accent line on the window edge, and outline the
+active row above and below. A first active row level with the pane area's top
+leaves its top line to the pane-area top border, which then continues across the
+sidebar, or beside a notch to the screen edge; under a sidebar's title strip
+with no such border it draws its own. Pill rows are rounded, inset in the
+column, and carry the same optional accent bar. On macOS windowed left and right
+sidebars span the full content height with one divider. Rows start below the
+title row, which spans only the terminal column in the terminal background. The
+menu button stays at the window's top right, above the sidebar when it is on the
+right, and native traffic lights stay at the top left. Empty space in both the
+terminal title row and the sidebar's top strip moves the window and takes
+title-bar double-clicks; neither strip opens a menu on a right press. Keep the
+sidebar strip and menu button inside `chrome`, after the occluding bar
+background, and the full-height resize handle above the strip so it wins at the
+divider. There is no rounded interior terminal corner or scrollbar-track offset
+beside it.
+
+A title row without tabs has a one-point line above the pane area when the
+shown layout has multiple panes, including while zoomed, or a drawn visible
+pane title bar touches its top edge. That check compares the bar's top with the
+pane area's top exactly, so a bar placed with an inset never adds the line.
+Hover bars do not add it either. The line uses the terminal's actual origin,
+including a Linux client frame's inset; fullscreen, Quake, and server-decorated
+Linux windows have no such title row.
+
+Under a notch in non-native fullscreen the column and its edge run to the top
+of the screen, its rows stay below the safe area, and the strip beside it keeps
+the terminal background. While a top bar is visible or revealing, the macOS
+titlebar and the non-native fullscreen safe area above a notch use the tab bar
+background; otherwise they use the terminal background. `[tabs].notch = "left"`
 (the default) or `"right"` places a top bar in the auxiliary area beside the
 notch in non-native fullscreen, read from `NSScreen`'s auxiliary top areas,
 and `"off"` keeps the bar below the
