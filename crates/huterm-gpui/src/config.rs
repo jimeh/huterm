@@ -13,6 +13,14 @@ pub(super) use huterm_config::{
     TerminalConfig, Theme, UpdateConfig, WindowConfig, keybinding_diagnostic,
 };
 
+/// Serializes every desktop configuration writer across windows and Settings.
+/// Hold this on a background worker through load, validation, and apply;
+/// `ConfigFile`'s final recheck and rename require one writer per process.
+pub(crate) fn write_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &LOCK
+}
+
 pub(super) const LEGACY_ALACRITTY_WARNING: &str = "terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration.";
 
 pub(super) const LINUX_AUDIBLE_BELL_WARNING: &str =

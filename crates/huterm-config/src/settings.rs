@@ -1177,6 +1177,25 @@ mod tests {
     }
 
     #[test]
+    fn lone_pane_title_bar_setting_is_live_and_visible_with_bars() {
+        let model = SettingsModel::load().unwrap();
+        let setting = model.setting("panes.title_bar_always_show").unwrap();
+        assert_eq!(setting.section, SectionId::Panes);
+        assert_eq!(setting.group, "Panes");
+        assert_eq!(setting.order, 35);
+        assert_eq!(setting.apply, Apply::Live);
+        assert_eq!(setting.label, "Show the title bar with one pane");
+        assert_eq!(setting.default, Some(toml::Value::Boolean(false)));
+        assert_eq!(
+            setting.visible_when,
+            ["visible", "hover"].map(|mode| VisibleWhen {
+                setting: "panes.title_bar".to_owned(),
+                equals: mode.into(),
+            })
+        );
+    }
+
+    #[test]
     fn focus_indicators_are_sliders_that_read_off_at_zero() {
         let model = SettingsModel::load().unwrap();
         for (path, max) in [

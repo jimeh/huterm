@@ -5,7 +5,7 @@ use gpui::{Application, AssetSource, QuitMode, SharedString};
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
 
-const ASSETS: [(&str, &[u8]); 30] = [
+const ASSETS: [(&str, &[u8]); 33] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -98,6 +98,18 @@ const ASSETS: [(&str, &[u8]); 30] = [
         "icons/radio.svg",
         include_bytes!("../assets/icons/radio.svg"),
     ),
+    (
+        "icons/columns-2.svg",
+        include_bytes!("../assets/icons/columns-2.svg"),
+    ),
+    (
+        "icons/rows-2.svg",
+        include_bytes!("../assets/icons/rows-2.svg"),
+    ),
+    (
+        "icons/check.svg",
+        include_bytes!("../assets/icons/check.svg"),
+    ),
     (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
 
@@ -132,11 +144,14 @@ pub(crate) enum Icon {
     Sun,
     Moon,
     Radio,
+    Columns,
+    Rows,
+    Check,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 29] = [
+    const ALL: [Self; 32] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -166,6 +181,9 @@ impl Icon {
         Self::Sun,
         Self::Moon,
         Self::Radio,
+        Self::Columns,
+        Self::Rows,
+        Self::Check,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -199,6 +217,9 @@ impl Icon {
             Self::Sun => "icons/sun.svg",
             Self::Moon => "icons/moon.svg",
             Self::Radio => "icons/radio.svg",
+            Self::Columns => "icons/columns-2.svg",
+            Self::Rows => "icons/rows-2.svg",
+            Self::Check => "icons/check.svg",
         }
     }
 }

@@ -1561,7 +1561,7 @@ impl From<ZoomIndicatorConfig> for IndicatorLook {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct PanesConfig {
-    /// How a split tab's panes show title bars: `visible` bars take space,
+    /// How panes show title bars: `visible` bars take space,
     /// `hover` bars fade in over the terminal when the pointer rests at their
     /// edge, and `hidden` bars never show.
     #[cfg_attr(feature = "schema", schemars(extend(
@@ -1611,6 +1611,19 @@ pub struct PanesConfig {
         "x-huterm-visible-when" = {"setting": "panes.title_bar", "equals": "hover"},
     )))]
     pub title_bar_hide_delay_ms: u16,
+    /// Show the title bar even when a tab has only one pane.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "panes",
+        "x-huterm-group" = "Panes",
+        "x-huterm-label" = "Show the title bar with one pane",
+        "x-huterm-order" = 35,
+        "x-huterm-apply" = "live",
+        "x-huterm-visible-when" = [
+            {"setting": "panes.title_bar", "equals": "visible"},
+            {"setting": "panes.title_bar", "equals": "hover"}
+        ],
+    )))]
+    pub title_bar_always_show: bool,
     /// The pane edge the title bar and focus accent run along: `top` or
     /// `bottom`.
     #[cfg_attr(feature = "schema", schemars(extend(
@@ -1722,6 +1735,7 @@ impl Default for PanesConfig {
     fn default() -> Self {
         Self {
             title_bar: PaneTitleBarMode::default(),
+            title_bar_always_show: false,
             title_bar_position: PaneTitleBarPosition::default(),
             title_bar_hover_delay_ms: 75,
             title_bar_fade_ms: 75,

@@ -616,3 +616,100 @@ fn a_terminal_menu_pick_after_focus_leaves_its_pane_runs_nothing(
         }
     });
 }
+
+#[gpui::test]
+fn a_pane_menu_pick_saves_comments_and_reloads_all_windows_without_watching(
+    cx: &mut TestAppContext,
+) {
+    use super::settings::ScratchConfig;
+    let before = "# Keep my comment\n[general]\nwatch_config = false\n[panes]\ntitle_bar = \"visible\" # Keep this too\ntitle_bar_always_show = true\n";
+    let file = ScratchConfig::new("pane-menu-save", before);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.general.watch_config = false;
+        config.panes.title_bar_always_show = true;
+    });
+    let (window, tab) = harness.menu_window(ECHO);
+    let pane = harness.first_pane(tab);
+    let other = harness.attach_window();
+    harness
+        .cx
+        .update(|cx| cx.global_mut::<Desktop>().config_path = file.path());
+    let mode = |cx: &mut App, window: AnyWindowHandle| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .unwrap()
+                    .read(cx)
+                    .config
+                    .panes
+                    .title_bar
+            })
+            .ok()
+    };
+    for (expected, word) in [
+        (huterm_config::PaneTitleBarMode::Hover, "hover"),
+        (huterm_config::PaneTitleBarMode::Visible, "visible"),
+    ] {
+        harness.update_view(window, |view, window, cx| {
+            view.run_menu_pick(
+                &MenuKind::Pane { tab, pane },
+                super::super::pane_menu::AUTO_HIDE_TITLE_BARS,
+                window,
+                cx,
+            );
+        });
+        harness.wait_for("the pane menu write to reload both windows", |cx| {
+            mode(cx, window) == Some(expected)
+                && mode(cx, other) == Some(expected)
+        });
+        assert_eq!(
+            file.text(),
+            before.replace(
+                "title_bar = \"visible\"",
+                &format!("title_bar = \"{word}\"")
+            )
+        );
+    }
+}
+
+#[gpui::test]
+fn a_pane_menu_write_failure_leaves_the_file_and_mode_unchanged(
+    cx: &mut TestAppContext,
+) {
+    use super::settings::ScratchConfig;
+    let invalid = "# Do not touch\n[panes]\ntitle_bar = \"invalid\"\n";
+    let file = ScratchConfig::new("pane-menu-invalid", invalid);
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab) = harness.menu_window(ECHO);
+    let pane = harness.first_pane(tab);
+    harness
+        .cx
+        .update(|cx| cx.global_mut::<Desktop>().config_path = file.path());
+    harness.update_view(window, |view, window, cx| {
+        view.run_menu_pick(
+            &MenuKind::Pane { tab, pane },
+            super::super::pane_menu::AUTO_HIDE_TITLE_BARS,
+            window,
+            cx,
+        );
+    });
+    harness.wait_for("a title bar write failure notice", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .unwrap()
+                    .read(cx)
+                    .notices
+                    .contents()
+                    .any(|notice| notice.title == "Cannot change title bars")
+            })
+            .unwrap_or(false)
+    });
+    assert_eq!(file.text(), invalid);
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(
+            view.config.panes.title_bar,
+            huterm_config::PaneTitleBarMode::Visible
+        );
+    });
+}

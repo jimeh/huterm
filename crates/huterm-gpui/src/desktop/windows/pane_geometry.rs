@@ -25,10 +25,11 @@ use crate::config::WindowConfig;
 /// Height of a pane title bar.
 pub(super) const TITLE_BAR_HEIGHT: Pixels = px(24.0);
 
-/// Where a split tab's panes put their title bars, from `[panes]`.
+/// Where panes put their title bars, from `[panes]`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct TitleBars {
     pub(super) mode: PaneTitleBarMode,
+    pub(super) always_show: bool,
     pub(super) position: PaneTitleBarPosition,
 }
 
@@ -36,6 +37,7 @@ impl TitleBars {
     pub(super) fn new(panes: &PanesConfig) -> Self {
         Self {
             mode: panes.title_bar,
+            always_show: panes.title_bar_always_show,
             position: panes.title_bar_position,
         }
     }
@@ -49,7 +51,17 @@ impl TitleBars {
         }
     }
 
-    /// Whether a split tab's panes have a bar rectangle at all.
+    /// The height a tab of one pane gives its bar, which a new window adds
+    /// so its lone pane still gets the initial grid.
+    pub(super) fn lone_reserved(self) -> Pixels {
+        if self.always_show {
+            self.reserved()
+        } else {
+            px(0.0)
+        }
+    }
+
+    /// Whether panes have a bar rectangle at all.
     fn placed(self) -> bool {
         self.mode != PaneTitleBarMode::Hidden
     }
@@ -67,8 +79,8 @@ pub(super) struct PaneRect {
     pub(super) pane: PaneId,
     /// The pane's whole share of the tab.
     pub(super) frame: Bounds<Pixels>,
-    /// The title bar along the frame's top or bottom, in a split tab whose
-    /// bars are not hidden. A hover bar's lies over the terminal.
+    /// The title bar along the frame's top or bottom when bars are enabled.
+    /// A hover bar's lies over the terminal.
     pub(super) title_bar: Option<Bounds<Pixels>>,
     /// Where the terminal view sits: the frame beside a visible title bar,
     /// or the whole frame.
@@ -105,8 +117,8 @@ impl TabPanes {
 }
 
 /// Lays out `layout` inside `content`, with title bars placed as `bars`
-/// says. A tab of one pane fills `content` with no title bar, as an unsplit
-/// tab always has. A `zoomed` pane of a split tab fills `content` alone,
+/// says. A tab of one pane has a bar only with `always_show` enabled. A
+/// `zoomed` pane of a split tab fills `content` alone,
 /// with its title bar and no dividers. Boundaries round to physical pixels
 /// at `scale`; space too small for the dividers leaves panes empty rather
 /// than overlapping.
@@ -118,7 +130,7 @@ pub(super) fn layout_panes(
     bars: TitleBars,
 ) -> TabPanes {
     let mut panes = TabPanes::default();
-    let bars = (layout.pane_count() > 1).then_some(bars);
+    let bars = (layout.pane_count() > 1 || bars.always_show).then_some(bars);
     if let Some(pane) =
         zoomed.filter(|pane| bars.is_some() && layout.pane(*pane).is_some())
     {
@@ -328,8 +340,8 @@ fn child_spans(
         .collect()
 }
 
-/// One pane's rectangles in `frame`; `bars` is `None` in a tab of one
-/// pane, which never shows a title bar.
+/// One pane's rectangles in `frame`; `bars` is `None` when the tab's pane
+/// count and settings disable title bars.
 fn pane_rect(
     pane: PaneId,
     frame: Bounds<Pixels>,

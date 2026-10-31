@@ -495,9 +495,23 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Fourth occurrence:** 2026-10-31 (run 41171440439, job 124450056001,
   head `5d501107`). The `huterm-gpui` suite took 138.87 seconds, and the
   job passed on rerun.
-- **Triage:** compare the suite's wall time with a passing run. If it
-  recurs on a normal-speed run, log the terminal's selection and snapshot
-  generation around the dispatch; otherwise record the run here and rerun.
+- **Fifth occurrence:** 2026-10-31 on PR #364 (run 41211311456, job
+  124566827041, head `6167ff35`). The `huterm-gpui` suite took 150.27
+  seconds; the test passed six times in a row locally on the same head,
+  about 0.3 seconds a run. The PR adds checkable rows to Huterm's menu
+  renderer and the pane menu but changes neither the Edit menu nor terminal
+  selection.
+- **First local failures:** 2026-10-31, rebasing PR #364 onto `41876720`.
+  `cargo test -p huterm-gpui --features test-support window_tests::menus`
+  on a macOS arm64 dev machine failed at the same assertion once in a run
+  of focused filters and once in 20 repeated runs of that module. Origin
+  main `41876720` failed 3 of 55 module runs in a disposable worktree,
+  without capturing which test failed. The test alone passed six runs out
+  of six. So it is not only hosted-runner slowness. A local repro loop is:
+  repeat that module filter about 20 times.
+- **Triage:** it now recurs locally at normal speed, so the next step is to
+  log the terminal's selection and snapshot generation around the dispatch
+  under the module loop above. Until then, record the run here and rerun.
 
 ## huterm-gpui pane rename title on hosted macOS
 

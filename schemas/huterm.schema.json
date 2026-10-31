@@ -906,12 +906,32 @@
             }
           ],
           "default": "visible",
-          "description": "How a split tab's panes show title bars: `visible` bars take space,\n`hover` bars fade in over the terminal when the pointer rests at their\nedge, and `hidden` bars never show.",
+          "description": "How panes show title bars: `visible` bars take space,\n`hover` bars fade in over the terminal when the pointer rests at their\nedge, and `hidden` bars never show.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Panes",
           "x-huterm-label": "Pane title bars",
           "x-huterm-order": 31,
           "x-huterm-section": "panes"
+        },
+        "title_bar_always_show": {
+          "default": false,
+          "description": "Show the title bar even when a tab has only one pane.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Panes",
+          "x-huterm-label": "Show the title bar with one pane",
+          "x-huterm-order": 35,
+          "x-huterm-section": "panes",
+          "x-huterm-visible-when": [
+            {
+              "equals": "visible",
+              "setting": "panes.title_bar"
+            },
+            {
+              "equals": "hover",
+              "setting": "panes.title_bar"
+            }
+          ]
         },
         "title_bar_fade_ms": {
           "default": 75,

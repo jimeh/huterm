@@ -22,6 +22,8 @@ pub(super) struct Item {
     pub(super) disabled_hint: Option<String>,
     /// A count shown in place of the shortcut.
     pub(super) badge: Option<usize>,
+    /// A checkable row, checked when true; None is a plain row.
+    pub(super) checked: Option<bool>,
 }
 
 impl Item {
@@ -34,6 +36,7 @@ impl Item {
             enabled: true,
             disabled_hint: None,
             badge: None,
+            checked: None,
         }
     }
 
@@ -50,6 +53,13 @@ impl Item {
 
     pub(super) fn badge(mut self, count: usize) -> Self {
         self.badge = Some(count);
+        self
+    }
+
+    /// Makes this row checkable with the given state.
+    #[must_use]
+    pub(super) fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
         self
     }
 }
@@ -109,6 +119,9 @@ fn listbox_item(item: &Item, platform: Platform) -> listbox::Item {
     if let Some(count) = item.badge {
         lowered = lowered.badge(count);
     }
+    if let Some(checked) = item.checked {
+        lowered = lowered.checked(checked);
+    }
     lowered
 }
 
@@ -149,6 +162,7 @@ fn native_items(rows: &[Row]) -> Vec<NativeItem> {
         key: item.shortcut.as_deref().and_then(KeyEquivalent::parse),
         enabled: item.enabled,
         badge: item.badge,
+        checked: item.checked,
     };
     rows.iter()
         .flat_map(|row| match row {
@@ -212,6 +226,7 @@ pub(super) enum NativeItem {
         key: Option<KeyEquivalent>,
         enabled: bool,
         badge: Option<usize>,
+        checked: Option<bool>,
     },
     Separator,
     /// An item without an action whose `items` open beside it.
@@ -331,6 +346,23 @@ mod tests {
 
     fn key(binding: &str) -> Option<KeyEquivalent> {
         KeyEquivalent::parse(binding)
+    }
+
+    #[test]
+    fn checkable_rows_keep_both_states_in_huterm_and_native_menus() {
+        for checked in [false, true] {
+            let spec = MenuSpec::new(vec![Row::Item(
+                Item::new("toggle", "Toggle").checked(checked),
+            )]);
+            let model = spec.to_listbox(Platform::MacOs);
+            let listbox::Row::Item(item) = &model.rows[0] else {
+                panic!("item")
+            };
+            assert_eq!(item.checked, Some(checked));
+            assert!(
+                matches!(spec.to_native(true).items[0], NativeItem::Item { checked: Some(state), .. } if state == checked)
+            );
+        }
     }
 
     #[test]
@@ -458,6 +490,7 @@ mod tests {
             key: None,
             enabled,
             badge: None,
+            checked: None,
         };
         assert_eq!(
             native.items[1],

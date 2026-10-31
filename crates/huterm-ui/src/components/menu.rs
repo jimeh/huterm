@@ -2,9 +2,9 @@
 //! button, a right-click, or a select.
 //!
 //! Anatomy: rows of items (a label, then a shortcut, a count badge, or a
-//! disabled hint on the right), separators, button rows such as Edit's
-//! Copy, Paste, and Select All, and submenu rows, which show `›` on the
-//! right. Rows overflowing the owner's `max_height` scroll with the fading
+//! disabled hint on the right, and a leading check for checkable rows),
+//! separators, button rows such as Edit's Copy, Paste, and Select All, and
+//! submenu rows, which show `›` on the right. Rows overflowing the owner's `max_height` scroll with the fading
 //! list scrollbar. The owner places it in a
 //! [`crate::components::popover::Popover`].
 //!
@@ -36,7 +36,10 @@
 //! `ListBox` of selectable `ListBoxOption` rows, named by its label. The
 //! selected row is the active descendant; disabled rows report it, rows
 //! with shortcuts report them, a submenu row reports itself collapsed, and
-//! the back row is named "Back from" and the submenu's label.
+//! the back row is named "Back from" and the submenu's label. Checkable rows
+//! report `MenuItemCheckBox` with their toggled state. When any row is
+//! checkable, every row reserves the check column, including unchecked and
+//! plain rows.
 
 use std::ops::Range;
 use std::time::Instant;
@@ -104,6 +107,23 @@ const BADGE_PADDING: f32 = 14.0;
 /// owner's id.
 const BACK: &str = "‹back";
 
+const CHECK_WIDTH: f32 = 12.0;
+
+/// Whether this menu tree needs an aligned check column.
+fn has_checks(model: &Model) -> bool {
+    checked_rows(&model.rows)
+}
+
+fn checked_rows(rows: &[Row]) -> bool {
+    rows.iter().any(|row| match row {
+        Row::Item(item) => item.checked.is_some(),
+        Row::Submenu { item, rows } => {
+            item.checked.is_some() || checked_rows(rows)
+        }
+        Row::Separator | Row::Buttons { .. } => false,
+    })
+}
+
 /// The menu's default minimum width at the design size; command labels
 /// never need more, so placement treats it, at the window's interface
 /// scale ([`min_width`]), as the width.
@@ -132,6 +152,7 @@ pub enum Role {
 pub struct Menu {
     label: SharedString,
     role: Role,
+    check_icon: Option<SharedString>,
     model: Model,
     /// The open submenu's row id.
     submenu: Option<ItemId>,
@@ -190,6 +211,7 @@ impl Menu {
         Self {
             label: label.into(),
             role: Role::Menu,
+            check_icon: None,
             shown: model.clone(),
             model,
             submenu: None,
@@ -202,6 +224,14 @@ impl Menu {
             min_width: MIN_WIDTH,
             rem: DESIGN_REM,
         }
+    }
+
+    /// Draws checked rows with the owner's icon `asset`; without one they
+    /// show a text check.
+    #[must_use]
+    pub fn check_icon(mut self, asset: impl Into<SharedString>) -> Self {
+        self.check_icon = Some(asset.into());
+        self
     }
 
     /// The menu reporting `role` to accessibility, such as a select's
@@ -338,7 +368,12 @@ impl Menu {
                 widest = rows.iter().map(row).fold(widest.max(back), f32::max);
             }
         }
-        px((widest + (PANEL_PADDING + PANEL_BORDER) * 2.0).ceil())
+        let checks = if has_checks(model) {
+            CHECK_WIDTH + ROW_GAP
+        } else {
+            0.0
+        };
+        px((widest + checks + (PANEL_PADDING + PANEL_BORDER) * 2.0).ceil())
     }
 
     /// Whether the rows overflow the menu's height and scroll, and whether
@@ -689,9 +724,22 @@ impl Menu {
         let row_element = div()
             .id(element_id)
             .role(match self.role {
+                Role::Menu if item.checked.is_some() => {
+                    gpui::Role::MenuItemCheckBox
+                }
                 Role::Menu => gpui::Role::MenuItem,
                 Role::ListBox => gpui::Role::ListBoxOption,
             })
+            .when_some(
+                item.checked.filter(|_| self.role == Role::Menu),
+                |row, checked| {
+                    row.aria_toggled(if checked {
+                        gpui::Toggled::True
+                    } else {
+                        gpui::Toggled::False
+                    })
+                },
+            )
             .aria_label(aria_label)
             .aria_position_in_set(position)
             .when(kind == ItemKind::Submenu, |row| row.aria_expanded(false))
@@ -728,6 +776,7 @@ impl Menu {
                     }
                 }))
             })
+            .children(self.render_check(item, text))
             .when(kind == ItemKind::Back, |row| row.child(BACK_MARK))
             .child(div().truncate().child(item.label.clone()))
             .children(side);
@@ -737,6 +786,33 @@ impl Menu {
         }
         .apply(row_element)
         .into_any_element()
+    }
+
+    /// The aligned leading column, empty for plain or unchecked rows.
+    fn render_check(
+        &self,
+        item: &Item,
+        color: gpui::Hsla,
+    ) -> Option<gpui::Div> {
+        has_checks(&self.model).then(|| {
+            div()
+                .w(px(CHECK_WIDTH))
+                .flex_none()
+                .flex()
+                .items_center()
+                .when(item.checked == Some(true), |check| {
+                    if let Some(asset) = &self.check_icon {
+                        check.child(
+                            gpui::svg()
+                                .path(asset.clone())
+                                .size(px(CHECK_WIDTH))
+                                .text_color(color),
+                        )
+                    } else {
+                        check.child("✓")
+                    }
+                })
+        })
     }
 
     /// What an item row draws on its right, in `color`: a count badge, `›`
@@ -917,7 +993,12 @@ impl Menu {
             .items_center()
             .gap(px(BUTTON_GAP))
             .h(ui(BUTTON_ROW_HEIGHT))
-            .pl(px(ROW_PADDING))
+            .pl(px(ROW_PADDING
+                + if has_checks(&self.model) {
+                    CHECK_WIDTH + ROW_GAP
+                } else {
+                    0.0
+                }))
             .pr(px(BUTTON_ROW_END))
             .child(
                 div()
@@ -1421,6 +1502,40 @@ mod tests {
         );
         let moved = cx.read(|cx| menu.read(cx).selection());
         assert!(moved.is_some() && moved != first, "{moved:?}");
+    }
+
+    #[gpui::test]
+    fn checkable_menu_rows_report_both_states_and_reserve_a_check_column(
+        cx: &mut TestAppContext,
+    ) {
+        let (menu, cx) = open(cx, Role::Menu);
+        let plain =
+            Model::new(vec![Row::Item(Item::new("plain", "Same label"))]);
+        let checked = Model::new(vec![
+            Row::Item(Item::new("on", "Same label").checked(true)),
+            Row::Item(Item::new("off", "Same label").checked(false)),
+            Row::Item(Item::new("plain", "Same label")),
+        ]);
+        cx.update(|window, cx| {
+            assert_eq!(
+                Menu::content_width(&checked, window, cx)
+                    - Menu::content_width(&plain, window, cx),
+                px(super::CHECK_WIDTH + super::ROW_GAP)
+            );
+        });
+        menu.update(cx, |menu, cx| menu.set_model(checked, cx));
+        cx.run_until_parked();
+        cx.update(|window, _| {
+            let mut checks: Vec<_> = crate::testing::a11y_nodes(window)
+                .into_iter()
+                .filter(|node| node["aria"]["role"] == "MenuItemCheckBox")
+                .map(|node| {
+                    node["aria"]["toggled"].as_str().unwrap().to_owned()
+                })
+                .collect();
+            checks.sort();
+            assert_eq!(checks, ["False", "True"]);
+        });
     }
 
     #[gpui::test]

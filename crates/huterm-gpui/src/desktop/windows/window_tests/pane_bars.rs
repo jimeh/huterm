@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use huterm_config::{PaneTitleBarMode, PaneTitleBarPosition, PanesConfig};
 
+use super::super::pane_geometry::TITLE_BAR_HEIGHT;
 use super::pane_moves::pane_focused;
 use super::*;
 
@@ -627,5 +628,238 @@ fn a_dimmed_pane_takes_the_wheel_and_a_selection_through_its_dim_layer(
         pane_focused(cx, window, tab, first)
             && pane_view(cx, window, tab, first)
                 .is_some_and(|view| view.read(cx).selection.is_some())
+    });
+}
+
+#[gpui::test]
+fn a_lone_pane_bar_resizes_its_grid_and_reveals_over_the_terminal(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let pane = harness.first_pane(tab);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    let full = harness.cx.update(|cx| grid(cx, window, tab, pane)).unwrap();
+    harness.reload_panes(window, |panes| panes.title_bar_always_show = true);
+    harness.wait_for("the lone bar to reserve its height", |cx| {
+        drawn(cx, window).is_some_and(|rects| rects[0].title_bar.is_some())
+            && grid(cx, window, tab, pane)
+                .is_some_and(|grid| grid.rows < full.rows)
+    });
+    harness.update_view(window, |view, _, _| {
+        let rect = view.drawn_panes.borrow().as_ref().unwrap().1[0];
+        assert_eq!(
+            rect.frame.size.height - rect.terminal.size.height,
+            TITLE_BAR_HEIGHT
+        );
+    });
+    // The accessibility tree reflects the controls actually drawn.
+    harness.update_view(window, |_, window, _| {
+        let tree = window.debug_a11y_tree_json().unwrap();
+        assert!(tree.contains("Split Right"));
+        assert!(tree.contains("Split Down"));
+        assert!(tree.contains("Close Pane"));
+        assert!(!tree.contains("Zoom Pane"));
+    });
+    harness.reload_panes(window, |panes| {
+        panes.title_bar = PaneTitleBarMode::Hover;
+        panes.title_bar_position = PaneTitleBarPosition::Bottom;
+    });
+    harness.wait_for("the hover bar to give the grid its height back", |cx| {
+        grid(cx, window, tab, pane) == Some(full)
+            && drawn(cx, window)
+                .is_some_and(|rects| rects[0].terminal == rects[0].frame)
+    });
+    let bar = harness.bar_of(window, pane);
+    let start = Instant::now();
+    harness.point_bars(window, Some(bar.center()));
+    harness.animate_through(window, start, start + Duration::from_millis(500));
+    harness.cx.update(|cx| {
+        assert_eq!(bar_state(cx, window, pane), Some((1.0, Some(bar))));
+    });
+    harness.reload_panes(window, |panes| {
+        panes.title_bar = PaneTitleBarMode::Hidden;
+    });
+    harness.wait_for("hidden lone bars to disappear", |cx| {
+        drawn(cx, window).is_some_and(|rects| rects[0].title_bar.is_none())
+    });
+}
+
+fn split_button_on_unfocused_pane(cx: &mut TestAppContext, down: bool) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, second) = harness.split_window(tab);
+    harness.update_view(window, |view, window, cx| {
+        view.focus_pane(tab, second, window, cx);
+    });
+    let previous = harness.cx.update(|cx| drawn(cx, window)).unwrap();
+    let untouched = previous
+        .iter()
+        .find(|rect| rect.pane == second)
+        .unwrap()
+        .frame;
+    let bar = harness.bar_of(window, first);
+    let at = if down {
+        WorkspaceView::pane_split_down_center(bar, true)
+    } else {
+        WorkspaceView::pane_split_right_center(bar, true)
+    };
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_click(at, gpui::Modifiers::none());
+    harness.wait_for(
+        "the clicked pane to split and the new pane to focus",
+        |cx| {
+            panes_shown(cx, window, tab).is_some_and(|(panes, focused)| {
+                panes.len() == 3
+                    && focused != first
+                    && focused != second
+                    && pane_focused(cx, window, tab, focused)
+            })
+        },
+    );
+    harness.cx.update(|cx| {
+        let rects = drawn(cx, window).unwrap();
+        let (panes, added) = panes_shown(cx, window, tab).unwrap();
+        assert_eq!(panes, vec![first, added, second]);
+        let sibling =
+            rects.iter().find(|rect| rect.pane == second).unwrap().frame;
+        // Flattening same-axis splits adds a divider and can move the old
+        // boundary by one snapped pixel while retaining the sibling's share.
+        assert!((sibling.left() - untouched.left()).abs() <= px(1.0));
+        assert_eq!(sibling.right(), untouched.right());
+        assert_eq!(sibling.size.height, untouched.size.height);
+        let first = rects.iter().find(|rect| rect.pane == first).unwrap().frame;
+        let added = rects.iter().find(|rect| rect.pane == added).unwrap().frame;
+        if down {
+            assert_eq!(first.left(), added.left());
+            assert!(first.bottom() < added.bottom());
+        } else {
+            assert_eq!(first.top(), added.top());
+            assert!(first.right() < added.right());
+        }
+    });
+    harness.update_view(window, |view, _, _| {
+        assert!(
+            view.pane_drag.is_none(),
+            "a button press must not start a title drag"
+        );
+    });
+}
+
+#[gpui::test]
+fn split_right_button_splits_the_clicked_unfocused_pane(
+    cx: &mut TestAppContext,
+) {
+    split_button_on_unfocused_pane(cx, false);
+}
+
+#[gpui::test]
+fn split_down_button_splits_the_clicked_unfocused_pane(
+    cx: &mut TestAppContext,
+) {
+    split_button_on_unfocused_pane(cx, true);
+}
+
+#[gpui::test]
+fn a_split_button_reports_the_same_small_pane_failure_as_the_command(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, first, _) = harness.split_window(tab);
+    let (chrome, cell) = harness.update_view(window, |view, window, _| {
+        let content = view.terminal_geometry(window).bounds.unwrap();
+        (
+            window.viewport_size().height - content.size.height,
+            view.metrics.at_scale(window.scale_factor()).cell_height,
+        )
+    });
+    VisualTestContext::from_window(window, &harness.cx).simulate_resize(
+        gpui::size(px(800.0), chrome + TITLE_BAR_HEIGHT + cell * 3.0),
+    );
+    harness.wait_for("the pane to become too short to split", |cx| {
+        grid(cx, window, tab, first)
+            .is_some_and(|grid| grid.rows < MIN_PANE_ROWS * 2)
+    });
+    let error = harness
+        .invoke(window, ids::SPLIT_DOWN)
+        .unwrap_err()
+        .to_string();
+    let bar = harness.bar_of(window, first);
+    VisualTestContext::from_window(window, &harness.cx).simulate_click(
+        WorkspaceView::pane_split_down_center(bar, true),
+        gpui::Modifiers::none(),
+    );
+    harness.wait_for("the button failure notice", |cx| {
+        notices(cx, window)
+            .iter()
+            .any(|notice| notice.contains(&error))
+    });
+}
+
+#[gpui::test]
+fn move_preflight_counts_the_lone_destination_title_bar(
+    cx: &mut TestAppContext,
+) {
+    use super::super::pane_moves::PaneMove;
+    use huterm_core::{Beside, MoveDestination, PaneRef};
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.panes.title_bar_always_show = true;
+    });
+    let tab = harness.open_tab(ECHO);
+    let source = harness.open_tab(ECHO);
+    let pane = harness.first_pane(tab);
+    let moved = harness.first_pane(source);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    let workspace = harness.workspace;
+    harness.update_view(window, |view, window, cx| {
+        let layout = cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab)
+            .unwrap()
+            .layout
+            .clone();
+        let before = view.pane_grids(&layout, window).unwrap();
+        assert_eq!(
+            before[0].1,
+            view.tabs
+                .iter()
+                .find(|shown| shown.id == tab)
+                .unwrap()
+                .focused()
+                .view
+                .read(cx)
+                .requested_grid
+        );
+        let from = PaneRef {
+            workspace,
+            tab: source,
+            pane: moved,
+        };
+        let change = PaneMove::Move {
+            from,
+            to: MoveDestination::Beside(Beside {
+                target: PaneRef {
+                    workspace,
+                    tab,
+                    pane,
+                },
+                side: SplitDirection::Right,
+            }),
+        };
+        assert!(view.check_move_fits(change, window, cx).is_ok());
+        view.config.panes.title_bar_always_show = false;
+        let without = view.pane_grids(&layout, window).unwrap();
+        assert!(
+            before[0].1.rows < without[0].1.rows,
+            "the move's before-grids must include the lone destination's bar"
+        );
+        view.config.panes.title_bar_always_show = true;
     });
 }

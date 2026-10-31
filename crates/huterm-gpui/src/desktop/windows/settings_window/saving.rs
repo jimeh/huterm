@@ -735,6 +735,9 @@ impl SettingsView {
         let base = self.base.clone();
         let patches = change.patches.clone();
         let task = cx.background_spawn(async move {
+            let _write = crate::config::write_lock()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let base = match base {
                 Some(base) => base,
                 None => file.load()?,
@@ -931,6 +934,9 @@ impl SettingsView {
         let base = self.base.clone();
         let rewrites = batch.clone();
         let task = cx.background_spawn(async move {
+            let _write = crate::config::write_lock()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut patches = patches;
             let current = match file.load() {
                 Ok(current) => current,
@@ -1234,6 +1240,9 @@ impl SettingsView {
         let base = change.base.clone();
         let patch = change.patch.clone();
         let task = cx.background_spawn(async move {
+            let _write = crate::config::write_lock()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let base = match base {
                 Some(base) => base,
                 None => file.load()?,

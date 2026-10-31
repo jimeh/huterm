@@ -557,3 +557,56 @@ fn tab_border_sits_on_the_terminal_edge_for_every_placement() {
         );
     }
 }
+
+#[test]
+fn narrow_pane_bars_drop_splits_then_zoom_and_keep_close() {
+    for leading in [
+        px(0.0),
+        pane_title_leading(true, TabStatus::Idle),
+        pane_title_leading(true, TabStatus::Busy),
+    ] {
+        let base = px(51.0) + leading;
+        assert_eq!(
+            pane_title_buttons(base + px(96.0), leading, false),
+            PaneTitleButtons {
+                splits: true,
+                zoom: true
+            }
+        );
+        assert_eq!(
+            pane_title_buttons(base + px(95.0), leading, false),
+            PaneTitleButtons {
+                splits: false,
+                zoom: true
+            }
+        );
+        assert_eq!(
+            pane_title_buttons(base + px(48.0), leading, false),
+            PaneTitleButtons {
+                splits: false,
+                zoom: true
+            }
+        );
+        assert_eq!(
+            pane_title_buttons(base + px(47.0), leading, false),
+            PaneTitleButtons {
+                splits: false,
+                zoom: false
+            }
+        );
+        assert_eq!(
+            pane_title_buttons(base + px(72.0), leading, true),
+            PaneTitleButtons {
+                splits: true,
+                zoom: false
+            }
+        );
+        assert_eq!(
+            pane_title_buttons(base + px(71.0), leading, true),
+            PaneTitleButtons {
+                splits: false,
+                zoom: false
+            }
+        );
+    }
+}
