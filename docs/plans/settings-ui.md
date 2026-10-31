@@ -641,9 +641,11 @@ say so and open the file.
 - A row shows its label, a dot when the file sets it, its description, an
   apply note when it is not live ("Applies to new terminals"), and an inline
   error. Its control sits on the right with a reset button when the file
-  sets it; reset removes the key. The Theme row's Reset removes only
-  `theme.name`, keeping color overrides, and the Keybindings, Global
-  shortcuts, and Quake rows have none until their editors exist.
+  sets it; reset removes the key. The button's slot stays empty while the
+  file leaves the key unset, so setting it never changes the row's height.
+  The Theme row's Reset removes only `theme.name`, keeping color overrides,
+  and the Keybindings, Global shortcuts, and Quake rows have none until
+  their editors exist.
 - A setting whose visible-when condition does not hold is hidden. A setting
   for another platform is hidden, unless the file sets it, in which case it
   shows read-only with "macOS only. Set in config.toml and ignored here."

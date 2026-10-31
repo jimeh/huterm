@@ -20,12 +20,14 @@ use huterm_ui::components::item::Item;
 use huterm_ui::components::prose::Prose;
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::components::tabs::Tabs;
+use huterm_ui::tokens::size;
 use huterm_ui::typography::ui;
 
 use super::super::super::overlay::{Swatch, mono_font_family};
 use super::super::super::settings::status::{Action, Tone};
 use super::super::super::settings::{Special, special};
 use super::super::Desktop;
+use super::saving::has_reset;
 use super::{
     HEADER_HEIGHT, SIDEBAR_WIDTH, SettingsView, apply_note, foreign_note,
     tone_color,
@@ -547,11 +549,19 @@ impl SettingsView {
                 )
                 .icon_only()
             });
-        let reset = reset.map(|reset| {
-            div()
-                .flex_none()
-                .debug_selector(move || format!("settings-reset-{path}"))
-                .child(reset)
+        // Reset's slot, the icon-only button's size, stays while the file
+        // leaves the setting unset, so the row's height and its text's
+        // width never depend on it.
+        let reset = has_reset(setting).then(|| {
+            div().flex_none().size(size::CONTROL_HEIGHT).when_some(
+                reset,
+                |slot, reset| {
+                    slot.debug_selector(move || {
+                        format!("settings-reset-{path}")
+                    })
+                    .child(reset)
+                },
+            )
         });
         // The theme row's slot cards and grid sit under its line.
         let body = (special(path) == Some(Special::ThemePicker))

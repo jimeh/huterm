@@ -969,16 +969,17 @@ chooses another action: `"menu"` (the default), `"paste"`, `"copy_or_paste"`
 the pointer shift up or down to fit the window and scroll only when taller
 than it.
 
-Visual bells briefly flash the active terminal and mark an inactive tab until
-you view it. Bells never select a tab, activate a window, or move focus.
-Reloading `visual = false` clears existing bell marks:
+Bells never select a tab, activate a window, or move focus. On macOS a bell
+plays a sound by default; the visual bell is off. Turning on `visual` makes a
+bell briefly flash the active terminal and mark an inactive tab until you view
+it. Reloading `visual = false` clears existing bell marks:
 
 ```toml
 [terminal.bell]
 visual = true
 ```
 
-On macOS, `audio = true` also plays a sound when a bell rings in any
+On macOS, `audio` (on by default) plays a sound when a bell rings in any
 terminal, focused or not, in a visible tab or a hidden one. Huterm plays at
 most one sound every 200 ms across all terminals, so a burst of bells plays
 once. `sound` is `"system"`, the alert sound chosen in macOS's Sound settings,
@@ -987,8 +988,9 @@ or one of the sounds in `/System/Library/Sounds`: `"basso"`, `"blow"`,
 `"pop"`, `"purr"`, `"sosumi"`, `"submarine"`, or `"tink"`. `volume`, from 0
 to 1, sets how loud a named sound plays; the system alert sound always plays
 at the macOS alert volume. A named sound that fails to load plays the alert
-sound instead. Linux has no audible bell: `audio = true` loads with a
-warning, and bells stay silent.
+sound instead. Set `audio = false` to silence bells. Linux has no audible
+bell: `audio` defaults to `false` there, `audio = true` loads with a warning,
+and bells stay silent.
 
 ```toml
 [terminal.bell]

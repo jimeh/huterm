@@ -451,11 +451,19 @@ fn legacy_engine_values_select_ghostty_and_only_alacritty_warns() {
 #[test]
 fn bell_audio_settings_parse_validate_and_warn_on_linux() {
     use huterm_config::BellSound;
-    let defaults = parse("").unwrap().terminal.bell;
-    assert_eq!(
-        (defaults.audio, defaults.sound, defaults.volume),
-        (false, BellSound::System, 0.5)
-    );
+    // The visual bell is off; the audible bell is on where it can play,
+    // and neither the defaults nor the starter file warn on Linux.
+    let macos = cfg!(target_os = "macos");
+    for source in ["", DEFAULT_CONFIG] {
+        let config = parse(source).unwrap();
+        let bell = config.terminal.bell;
+        assert_eq!(
+            (bell.visual, bell.audio, bell.sound, bell.volume),
+            (false, macos, BellSound::System, 0.5),
+            "{source}"
+        );
+        assert_eq!(config.warning, None, "{source}");
+    }
     let configured =
         parse("[terminal.bell]\naudio = true\nsound = 'submarine'\nvolume = 1")
             .unwrap()

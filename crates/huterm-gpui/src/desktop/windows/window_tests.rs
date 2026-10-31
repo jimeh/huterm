@@ -657,7 +657,10 @@ const STATUS: &str = "printf READY; n=0; while read line; do n=$((n+1)); \
 
 #[gpui::test]
 fn the_refresh_applies_each_status_change_once(cx: &mut TestAppContext) {
-    let mut harness = DesktopHarness::new(cx);
+    // The view counts visual bell flashes, which are off by default.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.terminal.bell.visual = true;
+    });
     let tab = harness.open_tab(STATUS);
     let window = harness.attach_window();
     harness.activate(window, tab);

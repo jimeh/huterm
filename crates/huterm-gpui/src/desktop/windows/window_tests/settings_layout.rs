@@ -15,8 +15,9 @@ use gpui::{
 use huterm_config::settings::SectionId;
 use serde_json::Value;
 
+use super::super::settings_window::SettingsView;
 use super::settings::{
-    ScratchConfig, conflicted, settled, with_view, with_window,
+    ScratchConfig, conflicted, open_settings, settled, with_view, with_window,
 };
 use super::settings_controls::{
     a11y_click, a11y_find, a11y_node, break_file, focus, keys, ring, show,
@@ -1381,4 +1382,90 @@ fn a_search_matches_a_description_as_it_reads(cx: &mut TestAppContext) {
             .is_some(),
         "the search across a code span found no row"
     );
+}
+
+/// A row of each control type: a switch, a select, a segmented control, a
+/// slider, a stepper, modifier chips, and a text field, and Theme mode,
+/// whose theme cards sit under its line.
+const CONTROL_ROWS: [(SectionId, &str); 8] = [
+    (SectionId::Terminal, "terminal.bell.visual"),
+    (SectionId::Tabs, "tabs.label"),
+    (SectionId::Tabs, "tabs.style"),
+    (SectionId::Panes, "panes.inactive_dim"),
+    (SectionId::Appearance, "font.size"),
+    (SectionId::Terminal, "terminal.link_modifiers"),
+    (SectionId::Scrollback, "terminal.scrollback_bytes"),
+    (SectionId::Appearance, "theme"),
+];
+
+/// The height of each of [`CONTROL_ROWS`], in order, and whether it drew
+/// its Reset.
+fn control_row_heights(harness: &mut DesktopHarness) -> Vec<(Pixels, bool)> {
+    CONTROL_ROWS
+        .iter()
+        .map(|(section, path)| {
+            with_window(harness, |view, window, cx| {
+                view.show_section(*section, cx);
+                window.refresh();
+            });
+            let mut drawn = visual(harness);
+            drawn.run_until_parked();
+            let height = drawn
+                .debug_bounds(format!("settings-row-{path}").leak())
+                .unwrap_or_else(|| panic!("the {path} row drew"))
+                .size
+                .height;
+            let reset = drawn
+                .debug_bounds(format!("settings-reset-{path}").leak())
+                .is_some();
+            (height, reset)
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn a_rows_height_does_not_depend_on_whether_the_file_sets_it(
+    cx: &mut TestAppContext,
+) {
+    // Advanced settings show, for the size limit.
+    let advanced = "[settings]\nshow_advanced = true\n\n";
+    let file = ScratchConfig::new("layout-row-heights", advanced);
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // The narrowest window leaves labels and descriptions the least room.
+    visual(&harness).simulate_resize(gpui::size(px(640.0), px(1600.0)));
+    let unset = control_row_heights(&mut harness);
+    assert!(unset.iter().all(|(_, reset)| !reset), "{unset:?}");
+    // Each row set to its default, or the size limit, which has none, to a
+    // value, so only the dot, Reset, and the field's text change.
+    let link = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    std::fs::write(
+        file.path(),
+        format!(
+            "{advanced}[terminal]\nlink_modifiers = \"{link}\"\n\
+             scrollback_bytes = \"64MiB\"\n\n\
+             [terminal.bell]\nvisual = false\n\n\
+             [tabs]\nlabel = \"smart\"\nstyle = \"pill\"\n\n\
+             [panes]\ninactive_dim = 0.2\n\n\
+             [font]\nsize = 14.0\n\n\
+             [theme]\nname = \"tokyo-night\"\n"
+        ),
+    )
+    .unwrap();
+    with_view(&mut harness, SettingsView::reread);
+    harness.wait_for("Settings to read the file", settled);
+    let set = control_row_heights(&mut harness);
+    assert!(set.iter().all(|(_, reset)| *reset), "{set:?}");
+    let heights = |rows: &[(Pixels, bool)]| -> Vec<(&str, Pixels)> {
+        CONTROL_ROWS
+            .iter()
+            .zip(rows)
+            .map(|((_, path), (height, _))| (*path, *height))
+            .collect()
+    };
+    assert_eq!(heights(&set), heights(&unset), "set (left), unset (right)");
 }

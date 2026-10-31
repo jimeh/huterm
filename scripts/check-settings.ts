@@ -343,9 +343,9 @@ args = { layout = "smoke" }
     await key("enter");
     await state("settings.focus=terminal.bell.visual");
 
-    // Space toggles the switch off; the save writes only that key.
+    // Space toggles the switch on; the save writes only that key.
     await key("space");
-    await saved((text) => text.includes("visual = false"), "visual bell off in config.toml");
+    await saved((text) => text.includes("visual = true"), "visual bell on in config.toml");
     await state('settings.status="Saved"');
     // Reset removes it again.
     await key("reset");

@@ -202,16 +202,17 @@ pub enum NewTabDirectory {
 pub struct BellConfig {
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
-        "x-huterm-group" = "Bell and clipboard",
+        "x-huterm-group" = "Bell",
         "x-huterm-label" = "Visual bell",
         "x-huterm-order" = 70,
         "x-huterm-apply" = "live",
     )))]
     pub visual: bool,
-    /// Play a sound when a bell rings in any terminal, focused or not.
-    #[cfg_attr(feature = "schema", schemars(extend(
+    /// Play a sound when a bell rings in any terminal, focused or not; on by
+    /// default on macOS and off on Linux.
+    #[cfg_attr(feature = "schema", schemars(transform = schema::without_default, extend(
         "x-huterm-section" = "terminal",
-        "x-huterm-group" = "Bell and clipboard",
+        "x-huterm-group" = "Bell",
         "x-huterm-label" = "Audible bell",
         "x-huterm-order" = 71,
         "x-huterm-apply" = "live",
@@ -222,7 +223,7 @@ pub struct BellConfig {
     /// one from `/System/Library/Sounds`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
-        "x-huterm-group" = "Bell and clipboard",
+        "x-huterm-group" = "Bell",
         "x-huterm-label" = "Bell sound",
         "x-huterm-order" = 72,
         "x-huterm-apply" = "live",
@@ -234,7 +235,7 @@ pub struct BellConfig {
     /// alert volume.
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 1), extend(
         "x-huterm-section" = "terminal",
-        "x-huterm-group" = "Bell and clipboard",
+        "x-huterm-group" = "Bell",
         "x-huterm-label" = "Bell volume",
         "x-huterm-order" = 73,
         "x-huterm-apply" = "live",
@@ -249,8 +250,9 @@ pub struct BellConfig {
 impl Default for BellConfig {
     fn default() -> Self {
         Self {
-            visual: true,
-            audio: false,
+            visual: false,
+            // Linux has no audible bell, and `audio = true` warns there.
+            audio: cfg!(target_os = "macos"),
             sound: BellSound::System,
             volume: 0.5,
         }
@@ -2288,9 +2290,9 @@ pub struct RawTerminal {
     /// and Paste always work.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
-        "x-huterm-group" = "Bell and clipboard",
+        "x-huterm-group" = "Clipboard",
         "x-huterm-label" = "Clipboard writes from programs",
-        "x-huterm-order" = 80,
+        "x-huterm-order" = 65,
         "x-huterm-apply" = "live",
     )))]
     pub clipboard_write: ClipboardWritePolicy,
@@ -2996,10 +2998,10 @@ mod tabs_tests {
             defaults.terminal.new_tab_directory,
             NewTabDirectory::Inherit
         );
-        assert!(defaults.terminal.bell.visual);
+        assert!(!defaults.terminal.bell.visual);
 
         let configured: RawConfig = toml::from_str(
-            "[terminal]\nnew_tab_directory = 'default'\n[terminal.bell]\nvisual = false\n[tabs]\nlabel = 'directory'",
+            "[terminal]\nnew_tab_directory = 'default'\n[terminal.bell]\nvisual = true\n[tabs]\nlabel = 'directory'",
         )
         .expect("metadata settings");
         assert_eq!(configured.tabs.label, TabLabel::Directory);
@@ -3007,7 +3009,7 @@ mod tabs_tests {
             configured.terminal.new_tab_directory,
             NewTabDirectory::Default
         );
-        assert!(!configured.terminal.bell.visual);
+        assert!(configured.terminal.bell.visual);
     }
 
     #[test]

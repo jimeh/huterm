@@ -984,6 +984,47 @@ mod tests {
     }
 
     #[test]
+    fn terminal_groups_put_clipboard_before_bell() {
+        let model = SettingsModel::load().unwrap();
+        let groups: Vec<(&str, Vec<&str>)> = model.sections()
+            [SectionId::Terminal as usize]
+            .groups
+            .iter()
+            .map(|group| {
+                let paths = group
+                    .settings
+                    .iter()
+                    .map(|setting| setting.path.as_str())
+                    .collect();
+                (group.title.as_str(), paths)
+            })
+            .collect();
+        let titles: Vec<_> = groups.iter().map(|(title, _)| *title).collect();
+        assert_eq!(
+            titles,
+            [
+                "Shell",
+                "Keyboard",
+                "Mouse",
+                "Clipboard",
+                "Bell",
+                "Compatibility"
+            ]
+        );
+        assert_eq!(groups[3].1, ["terminal.clipboard_write"]);
+        assert_eq!(
+            groups[4].1,
+            [
+                "terminal.bell.visual",
+                "terminal.bell.audio",
+                "terminal.bell.sound",
+                "terminal.bell.volume",
+            ]
+        );
+        assert_eq!(model.setting("terminal.bell.audio").unwrap().default, None);
+    }
+
+    #[test]
     fn every_profile_field_has_a_setting_with_its_default() {
         let model = SettingsModel::load().unwrap();
         let defaults =
