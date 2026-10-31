@@ -263,7 +263,12 @@ label = "title"
 
     // 6. The menu button opens the window menu.
     click(centre(button));
-    await state("w0.menu=true", "w0.menu_target=none");
+    try {
+      await state("w0.menu=true", "w0.menu_target=none");
+    } finally {
+      // TEMP DIAG
+      console.log(`DIAG ${position} button=${JSON.stringify(button)} frame=${JSON.stringify(frame())} pointer=${field(await current(), "diag_pointer")}`);
+    }
     await input.key("escape");
     await state("w0.menu=false", "w0.terminal_focused=true");
     assertUnmoved(moved, "the row's controls");
