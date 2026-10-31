@@ -218,8 +218,8 @@ pub struct BellConfig {
         "x-huterm-platform" = "macos",
     )))]
     pub audio: bool,
-    /// The sound the audible bell plays: the macOS alert sound or a named
-    /// system sound.
+    /// The sound the audible bell plays: `system`, the macOS alert sound, or
+    /// one from `/System/Library/Sounds`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Bell and clipboard",
@@ -230,8 +230,8 @@ pub struct BellConfig {
         "x-huterm-visible-when" = {"setting": "terminal.bell.audio", "equals": true},
     )))]
     pub sound: BellSound,
-    /// How loud a named sound plays, from 0 to 1; the system alert sound
-    /// follows the macOS alert volume instead.
+    /// How loud a named sound plays, from 0 to 1; `system` follows the macOS
+    /// alert volume.
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 1), extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Bell and clipboard",
@@ -2338,6 +2338,8 @@ pub struct RawTerminal {
     )))]
     pub new_tab_directory: NewTabDirectory,
     pub bell: BellConfig,
+    /// Which Option keys send Meta: `both`, only the `left` or `right` one, or
+    /// `off`; any other Option key types macOS characters.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Keyboard",

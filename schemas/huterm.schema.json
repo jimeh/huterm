@@ -89,7 +89,7 @@
             }
           ],
           "default": "system",
-          "description": "The sound the audible bell plays: the macOS alert sound or a named\nsystem sound.",
+          "description": "The sound the audible bell plays: `system`, the macOS alert sound, or\none from `/System/Library/Sounds`.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Bell and clipboard",
           "x-huterm-label": "Bell sound",
@@ -112,7 +112,7 @@
         },
         "volume": {
           "default": 0.5,
-          "description": "How loud a named sound plays, from 0 to 1; the system alert sound\nfollows the macOS alert volume instead.",
+          "description": "How loud a named sound plays, from 0 to 1; `system` follows the macOS\nalert volume.",
           "format": "float",
           "maximum": 1,
           "minimum": 0,
@@ -8833,6 +8833,7 @@
             }
           ],
           "default": "off",
+          "description": "Which Option keys send Meta: `both`, only the `left` or `right` one, or\n`off`; any other Option key types macOS characters.",
           "x-huterm-apply": "later_events",
           "x-huterm-group": "Keyboard",
           "x-huterm-label": "Option as Meta",
