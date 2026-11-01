@@ -448,7 +448,9 @@ command = "open_context_menu"
     await key("select-3");
     await state("w0.active_index=2", "w0.terminal_focused=true");
     await invoke("close_other_tabs");
-    await state("w0.confirming=true", 'w0.dialog_title="Close 2 tabs?"');
+    // The model opens before the first frame moves focus to the primary
+    // button. Enter before that focus change has no button to press.
+    await state("w0.confirming=true", 'w0.dialog_title="Close 2 tabs?"', "w0.dialog_focus=primary");
     await key("enter");
     await state("w0.confirming=false", "w0.tabs=1", "w0.active_index=0", "w0.terminal_focused=true");
 
