@@ -67,8 +67,8 @@ font-kit links fontconfig at build time; the direct `zed-font-kit` dependency in
 and packaged dependency on fontconfig. This feature does not itself load the
 library. Never invoke font-kit's native Linux source: dlopening libfontconfig
 also loads system FreeType, which package verification rejects. Linux font
-queries use the pinned fontdb database and ttf-parser already used by GPUI,
-including fontdb's pure-Rust parsing of fontconfig aliases.
+queries for Settings use the pinned fontdb database. Glyph checks use
+font-kit's statically linked FreeType loader.
 
 Enable GPUI's `test-support` feature only through `huterm-gpui`'s own
 `test-support` feature, never as a dev-dependency. Cargo builds examples with

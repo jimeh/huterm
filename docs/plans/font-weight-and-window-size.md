@@ -173,17 +173,19 @@ initial_rows = 32     # 3 through 1000
 
 ### Revisions during review
 
-- Linux queries fonts through `fontdb`, the pure-Rust database GPUI's
-  Linux text system uses, not through font-kit's fontconfig source. The
-  Linux package smoke rejects a dynamic Fontconfig or FreeType in the
-  process, and font-kit's source loads libfontconfig. `fontdb` reads
-  fontconfig's configuration, including the `monospace` alias, in Rust,
-  and lists exactly the faces GPUI matches, which removes the
-  fontconfig-versus-fontdb mismatch accepted above. macOS keeps CoreText
-  through font-kit.
-- On Linux, the font database loads on a background worker at startup, and
-  the first window opens after it finishes, so `resolve_metrics` only
-  reads the cached `monospace` family.
+- Linux leaves the `monospace` alias as is (Jim, 2026-11-01). Two attempts
+  to resolve it to a concrete family failed review: font-kit's fontconfig
+  source loads libfontconfig, and with it a dynamic FreeType, which the
+  Linux package smoke rejects; `fontdb`'s parsed alias keeps only the last
+  fontconfig alias (FreeMono on stock Debian and Ubuntu configs). With the
+  default `monospace`, Linux draws exactly as before this change, and the
+  weight applies once `family` names an installed font. Settings disables
+  the weight select for the alias and says so. Proper Linux `monospace`
+  resolution is follow-up work.
+- Linux Settings weight enumeration uses `fontdb`, the pure-Rust database
+  GPUI's Linux text system uses, built lazily on the background executor;
+  macOS keeps CoreText through font-kit. This also removes the
+  fontconfig-versus-fontdb mismatch accepted above.
 - A new tab in a window that already shows a terminal starts at that
   window's active view grid; only a window's first terminal starts at the
   configured initial grid.

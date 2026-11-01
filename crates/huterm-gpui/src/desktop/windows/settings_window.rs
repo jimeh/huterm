@@ -3056,6 +3056,15 @@ impl SettingsView {
         self.scan_weights(cx);
     }
 
+    pub(super) fn scan_linux_weights(
+        &mut self,
+        enumerate: font_weights::Enumerator,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.weights.linux = Some(true);
+        self.set_weight_enumerator(enumerate, cx);
+    }
+
     pub(super) fn weight_state(
         &self,
     ) -> (String, u64, Vec<huterm_config::FontWeight>, Option<String>) {

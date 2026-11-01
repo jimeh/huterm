@@ -88,105 +88,6 @@ fn new_tab_spawns_at_the_active_views_requested_grid(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui::test]
-fn initial_window_waits_for_fonts_and_opens_once(cx: &mut TestAppContext) {
-    let mut harness = DesktopHarness::new(cx);
-    let (release, ready) = async_channel::bounded(1);
-    let started = Rc::new(std::cell::Cell::new(false));
-    let started_task = Rc::clone(&started);
-    let fonts = harness.cx.spawn(async move |_| {
-        started_task.set(true);
-        ready.recv().await.unwrap();
-    });
-    let prepared = Rc::new(std::cell::Cell::new(false));
-    let prepare = Rc::clone(&prepared);
-    let calls = Rc::new(std::cell::Cell::new(0));
-    let completed = Rc::clone(&calls);
-    harness.cx.update(|cx| {
-        open_initial_window_after_fonts(
-            cx,
-            fonts,
-            move |_| prepare.set(true),
-            move |cx| {
-                assert_eq!(cx.windows().len(), 1);
-                completed.set(completed.get() + 1);
-            },
-        );
-    });
-    harness.cx.run_until_parked();
-    assert!(started.get());
-    assert_eq!(harness.cx.windows(), [] as [AnyWindowHandle; 0]);
-    assert_eq!(calls.get(), 0);
-    assert!(!prepared.get());
-    release.try_send(()).unwrap();
-    harness.wait_for("initial window after fonts finish", |_| calls.get() == 1);
-    harness.cx.run_until_parked();
-    assert_eq!(harness.cx.windows().len(), 1);
-    assert_eq!(calls.get(), 1);
-    assert!(prepared.get());
-}
-
-#[gpui::test]
-fn initial_window_font_completion_keeps_an_earlier_window(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::new(cx);
-    let (release, ready) = async_channel::bounded(1);
-    let fonts = harness.cx.spawn(async move |_| {
-        ready.recv().await.unwrap();
-    });
-    let called = Rc::new(std::cell::Cell::new(false));
-    let completed = Rc::clone(&called);
-    harness.cx.update(|cx| {
-        open_initial_window_after_fonts(
-            cx,
-            fonts,
-            |_| {},
-            move |_| {
-                completed.set(true);
-            },
-        );
-    });
-    let window = harness.attach_window();
-    release.try_send(()).unwrap();
-    harness.wait_for("startup after an early New Window", |_| called.get());
-    assert_eq!(harness.cx.windows(), [window]);
-}
-
-#[gpui::test]
-fn initial_window_font_completion_respects_committed_quit(
-    cx: &mut TestAppContext,
-) {
-    let harness = DesktopHarness::new(cx);
-    let (release, ready) = async_channel::bounded(1);
-    let started = Rc::new(std::cell::Cell::new(false));
-    let finished = Rc::new(std::cell::Cell::new(false));
-    let started_task = Rc::clone(&started);
-    let finished_task = Rc::clone(&finished);
-    let fonts = harness.cx.spawn(async move |_| {
-        started_task.set(true);
-        ready.recv().await.unwrap();
-        finished_task.set(true);
-    });
-    harness.cx.update(|cx| {
-        open_initial_window_after_fonts(
-            cx,
-            fonts,
-            |_| panic!("startup routes installed after Quit committed"),
-            |_| {
-                panic!("startup ran after Quit committed");
-            },
-        );
-    });
-    harness.cx.run_until_parked();
-    assert!(started.get());
-    harness.cx.update(commit_quit);
-    release.try_send(()).unwrap();
-    harness.cx.run_until_parked();
-    assert!(finished.get());
-    assert_eq!(harness.cx.windows(), [] as [AnyWindowHandle; 0]);
-}
-
 /// The production desktop over a real Mux, with one session and workspace
 /// that windows attach to.
 struct DesktopHarness {
@@ -225,8 +126,8 @@ impl DesktopHarness {
             inputs: config::Inputs::default(),
         };
         let app_runtime = Arc::clone(&runtime);
-        let fonts = cx.update(|cx| {
-            let fonts = install_desktop(
+        cx.update(|cx| {
+            install_desktop(
                 cx,
                 app_runtime,
                 Projection::new(state, subscription),
@@ -235,11 +136,7 @@ impl DesktopHarness {
             // Test windows have no AppKit view: menus draw in Huterm's own
             // style unless a test installs a presenter.
             cx.global_mut::<Desktop>().menu_presenter = None;
-            fonts
         });
-        // Production awaits this task before opening windows, as must the
-        // synchronous test harness's attach_window path.
-        cx.foreground_executor().block_test(fonts);
         let (session, workspace) = {
             let mut mux = runtime.lock();
             let session = mux.create_session(None).unwrap();

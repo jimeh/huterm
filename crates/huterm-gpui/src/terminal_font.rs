@@ -48,10 +48,6 @@ impl From<String> for TerminalFont {
     }
 }
 
-#[cfg(target_os = "linux")]
-static MONOSPACE_FAMILY: std::sync::OnceLock<Option<String>> =
-    std::sync::OnceLock::new();
-
 /// Only background workers may initialize or wait for the system font scan.
 #[cfg(target_os = "linux")]
 fn font_database() -> &'static std::sync::Arc<fontdb::Database> {
@@ -62,37 +58,6 @@ fn font_database() -> &'static std::sync::Arc<fontdb::Database> {
         database.load_system_fonts();
         std::sync::Arc::new(database)
     })
-}
-
-/// Resolve fontdb's parsed fontconfig alias before GPUI's exact family lookup.
-/// Neither this scan nor weight enumeration may load libfontconfig in-process.
-#[cfg(target_os = "linux")]
-pub(crate) fn initialize_fonts() {
-    MONOSPACE_FAMILY.get_or_init(|| {
-        std::panic::catch_unwind(|| resolve_monospace_family(font_database()))
-            .ok()
-            .flatten()
-    });
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) fn fonts_initialized() -> bool {
-    MONOSPACE_FAMILY.get().is_some()
-}
-
-/// A nonblocking read for metrics, including new windows and config reloads.
-#[cfg(target_os = "linux")]
-pub(crate) fn monospace_family() -> Option<String> {
-    MONOSPACE_FAMILY.get().cloned().flatten()
-}
-
-#[cfg(target_os = "linux")]
-fn resolve_monospace_family(database: &fontdb::Database) -> Option<String> {
-    let family = database.family_name(&fontdb::Family::Monospace);
-    database
-        .faces()
-        .any(|face| face.families.iter().any(|name| name.0 == family))
-        .then(|| family.to_owned())
 }
 
 /// Match GPUI's Linux face-info conversion before CSS face matching.
@@ -346,32 +311,6 @@ mod tests {
         );
         assert!(
             catch_enumeration(|| WeightFaces::from_properties(&[])).is_err()
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn monospace_resolution_uses_only_a_family_in_the_database() {
-        let mut database = fontdb::Database::new();
-        database.set_monospace_family("Test Mono");
-        assert_eq!(resolve_monospace_family(&database), None);
-        database.push_face_info(database_face());
-        assert_eq!(
-            resolve_monospace_family(&database).as_deref(),
-            Some("Test Mono")
-        );
-        database.set_monospace_family("Missing Mono");
-        assert_eq!(resolve_monospace_family(&database), None);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn monospace_cache_matches_the_loaded_database() {
-        initialize_fonts();
-        assert!(fonts_initialized());
-        assert_eq!(
-            monospace_family(),
-            resolve_monospace_family(font_database())
         );
     }
 

@@ -272,10 +272,6 @@ fn resolve_metrics(
         eprintln!("Huterm font {family:?} is unavailable; using {fallback}");
         family = fallback.into();
     }
-    #[cfg(target_os = "linux")]
-    if family == "monospace" {
-        family = crate::terminal_font::monospace_family().unwrap_or(family);
-    }
     let terminal_font = TerminalFont::new(family, config.font.weight);
     let font_size = px(config.font.size);
     let metrics = GridMetrics::resolve(text_system, &terminal_font, font_size)?;

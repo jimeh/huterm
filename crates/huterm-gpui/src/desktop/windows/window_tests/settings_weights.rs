@@ -42,6 +42,10 @@ fn open(
     file: &ScratchConfig,
     enumerate: fn(&str) -> Result<WeightFaces, String>,
 ) {
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().applied_terminal_family =
+            Some("Test Mono".into());
+    });
     open_settings(harness, &file.path());
     with_view(harness, |view, cx| {
         view.set_weight_enumerator(enumerate, cx);
@@ -145,6 +149,91 @@ fn one_weight_disables_pointer_and_keyboard_opening(cx: &mut TestAppContext) {
     let state = with_view(&mut harness, |view, _| view.weight_state());
     assert_eq!(state.3, Some(format!("{} has one weight.", state.0)));
     assert_eq!(file.text(), "");
+}
+
+#[gpui::test]
+fn linux_monospace_alias_disables_weight_without_enumerating_and_allows_reset(
+    cx: &mut TestAppContext,
+) {
+    fn concrete_only(family: &str) -> Result<WeightFaces, String> {
+        assert_ne!(family, "monospace", "the alias must not enumerate weights");
+        multi(family)
+    }
+
+    let text = "[font]\nfamily = \"monospace\"\nweight = 300\n";
+    let file = ScratchConfig::new("weight-linux-alias", text);
+    let mut harness = DesktopHarness::new(cx);
+    open(&mut harness, &file, multi);
+    open_menu(&mut harness);
+    let previous = with_view(&mut harness, |view, _| view.weight_state());
+    with_view(&mut harness, |view, cx| {
+        cx.global_mut::<Desktop>().applied_terminal_family =
+            Some("monospace".into());
+        view.scan_linux_weights(concrete_only, cx);
+        assert!(!view.menu_open(), "the previous family's menu closes");
+        view.weight_completion(&previous.0, previous.1, multi(""), cx);
+    });
+    harness.cx.run_until_parked();
+    let node = a11y_node(&mut harness, "settings-select-font.weight");
+    assert_eq!(node["aria"]["disabled"], true);
+    assert_eq!(node["aria"]["value"], "Light (300)");
+    let state = with_view(&mut harness, |view, _| view.weight_state());
+    assert_eq!(state.0, "monospace");
+    assert_eq!(
+        state.2,
+        [FontWeight::parse(&toml::Value::Integer(300)).unwrap()]
+    );
+    assert_eq!(
+        state.3.as_deref(),
+        Some(
+            "monospace is a font alias, so terminals draw it at its default weight. Choose a font family to set a weight."
+        )
+    );
+    let row = a11y_node(&mut harness, "settings-row-font.weight");
+    assert!(
+        row["aria"]["description"]
+            .as_str()
+            .unwrap()
+            .ends_with(state.3.as_deref().unwrap()),
+        "the alias note appears under the weight row: {row}"
+    );
+    a11y_click(&mut harness, &node);
+    open_menu(&mut harness);
+    assert!(!with_view(&mut harness, |view, _| view.menu_open()));
+    assert_eq!(file.text(), text, "the numeric weight stays as written");
+
+    let reset = a11y_node(&mut harness, "settings-reset-font.weight");
+    a11y_click(&mut harness, &reset);
+    harness.wait_for("the alias weight to reset", |cx| {
+        settled(cx) && !file.text().contains("weight")
+    });
+    assert_eq!(file.text(), "[font]\nfamily = \"monospace\"\n");
+    // The host's macOS reload resolves monospace to Menlo. Restore the
+    // applied Linux alias before checking the reset row on either platform.
+    with_view(&mut harness, |view, cx| {
+        cx.global_mut::<Desktop>().applied_terminal_family =
+            Some("monospace".into());
+        view.scan_linux_weights(concrete_only, cx);
+    });
+    harness.cx.run_until_parked();
+    let node = a11y_node(&mut harness, "settings-select-font.weight");
+    assert_eq!(node["aria"]["disabled"], true);
+    assert_eq!(node["aria"]["value"], "Regular (400)");
+
+    with_view(&mut harness, |view, cx| {
+        cx.global_mut::<Desktop>().applied_terminal_family =
+            Some("Test Mono".into());
+        view.scan_linux_weights(multi, cx);
+    });
+    harness.cx.run_until_parked();
+    let node = a11y_node(&mut harness, "settings-select-font.weight");
+    assert_ne!(node["aria"]["disabled"], true);
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.weight_state()).3,
+        None
+    );
+    open_menu(&mut harness);
+    assert!(with_view(&mut harness, |view, _| view.menu_open()));
 }
 
 #[gpui::test]

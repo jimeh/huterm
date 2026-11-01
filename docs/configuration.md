@@ -837,7 +837,10 @@ while Huterm runs then shows in the list, and when the file names it, Huterm
 reloads so it applies and the note goes. On Linux the font list is read once
 at startup, so a newly installed font needs a restart.
 
-`monospace` is a Linux alias; on macOS, Huterm uses Menlo for it.
+On Linux, the default `monospace` is a fontconfig alias, so `weight` applies
+once `family` names an installed font. Settings disables the weight selector
+for the alias and explains that choosing a font family enables it. On macOS,
+Huterm uses Menlo for `monospace`.
 
 `weight` sets the terminal font's weight and accepts the names above or
 integers from 100 through 900 in steps of 100. Regular is 400. Bold terminal

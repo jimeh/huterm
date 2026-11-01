@@ -16,9 +16,12 @@ pub(super) struct Weights {
     pub(super) generation: u64,
     pub(super) faces: Option<WeightFaces>,
     fallback: bool,
+    monospace_alias: bool,
     failed: std::collections::HashSet<String>,
     #[cfg(test)]
     pub(super) enumerator: Option<Enumerator>,
+    #[cfg(test)]
+    pub(super) linux: Option<bool>,
 }
 
 impl SettingsView {
@@ -65,15 +68,26 @@ impl SettingsView {
     }
 
     pub(super) fn weight_disabled(&self) -> bool {
-        self.weights
-            .faces
-            .as_ref()
-            .is_some_and(|faces| faces.options.len() == 1)
+        self.weights.monospace_alias
+            || self
+                .weights
+                .faces
+                .as_ref()
+                .is_some_and(|faces| faces.options.len() == 1)
     }
 
     pub(super) fn weight_note(&self, setting: &Setting) -> Option<String> {
         if setting.path != "font.weight" {
             return None;
+        }
+        if self.weights.monospace_alias {
+            return Some(
+                concat!(
+                    "monospace is a font alias, so terminals draw it at its ",
+                    "default weight. Choose a font family to set a weight."
+                )
+                .into(),
+            );
         }
         let configured = match self.value(setting) {
             Some(value) => FontWeight::parse(&value).ok()?,
@@ -138,12 +152,18 @@ impl SettingsView {
     }
 
     pub(super) fn scan_weights(&mut self, cx: &mut Context<'_, Self>) {
+        let linux = cfg!(target_os = "linux");
+        #[cfg(test)]
+        let linux = self.weights.linux.unwrap_or(linux);
         let desktop = cx.global::<Desktop>();
         let family = desktop
             .applied_terminal_family
             .clone()
             .unwrap_or_else(|| desktop.config.font.family.clone());
-        let family_changed = self.weights.family != family;
+        let monospace_alias = is_monospace_alias(&family, linux);
+        let family_changed = self.weights.family != family
+            || self.weights.monospace_alias != monospace_alias;
+        self.weights.monospace_alias = monospace_alias;
         self.weights.family.clone_from(&family);
         if family_changed {
             self.weights.faces = None;
@@ -153,6 +173,9 @@ impl SettingsView {
         cx.notify();
         self.weights.generation += 1;
         let generation = self.weights.generation;
+        if monospace_alias {
+            return;
+        }
         #[cfg(test)]
         let enumerator = self.weights.enumerator.unwrap_or(enumerate_weights);
         #[cfg(not(test))]
@@ -186,7 +209,8 @@ impl SettingsView {
         result: Result<WeightFaces, String>,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.weights.family != family
+        if self.weights.monospace_alias
+            || self.weights.family != family
             || self.weights.generation != generation
         {
             return;
@@ -211,6 +235,10 @@ impl SettingsView {
         }
         cx.notify();
     }
+}
+
+fn is_monospace_alias(family: &str, linux: bool) -> bool {
+    linux && family == "monospace"
 }
 
 pub(super) fn weight_label(weight: FontWeight) -> String {
