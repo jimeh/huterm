@@ -63,8 +63,12 @@ branch, because Zed has not published GPUI since 0.2.2. Depend on it as
 `Application`. Its crates pin each other exactly, so upgrade them together and
 review every vendored patch against the new Zed revision. Upstream's Linux
 font-kit links fontconfig at build time; the direct `zed-font-kit` dependency in
-`huterm-gpui` restores `source-fontconfig-dlopen` so packages keep loading
-fontconfig at runtime.
+`huterm-gpui` restores `source-fontconfig-dlopen` to avoid a build-time link
+and packaged dependency on fontconfig. This feature does not itself load the
+library. Never invoke font-kit's native Linux source: dlopening libfontconfig
+also loads system FreeType, which package verification rejects. Linux font
+queries use the pinned fontdb database and ttf-parser already used by GPUI,
+including fontdb's pure-Rust parsing of fontconfig aliases.
 
 Enable GPUI's `test-support` feature only through `huterm-gpui`'s own
 `test-support` feature, never as a dev-dependency. Cargo builds examples with

@@ -321,7 +321,11 @@ rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Linux defaults to the generic
 `monospace` family; requesting macOS-only Menlo there repeatedly exercises
 GPUI's missing-font fallback path. Resolve Linux's `monospace`
-alias through fontconfig before measuring or shaping. GPUI's exact family
+alias through fontdb's parsed fontconfig aliases before measuring or shaping.
+Never load libfontconfig in-process: Linux packages reject a dynamic Fontconfig
+or FreeType library. Load the shared database and resolve the alias on the
+background executor, then await completion before opening the first window.
+Later metrics resolutions only read the cached alias. GPUI's exact family
 lookup does not resolve the alias, and its missing-family fallback stack
 drops the requested weight. Carry the resolved
 `TerminalFont`, including weight, through metrics, shaping, and reloads.
@@ -893,8 +897,10 @@ the list leaves alone.
 The terminal weight scan mirrors GPUI's candidate filter before matching full
 face properties: require an `m` glyph (with GPUI's icon-font exception), and on
 macOS check the numeric CoreText traits before calling font-kit's
-`properties()`. That accessor can panic. Catch enumeration failures on the
-background worker and reject completions for an older family or generation.
+`properties()`. That accessor can panic. Linux scans the shared fontdb database
+and checks glyphs through ttf-parser, without invoking font-kit's native source.
+Catch enumeration failures on the background worker and reject completions for
+an older family or generation.
 
 The terminal window has two `Command` lists. The palette mounts one per
 stage or identity slot, named "Commands" or for the slot, and drops it for

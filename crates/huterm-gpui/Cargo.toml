@@ -49,5 +49,8 @@ workspace = true
 nix = { workspace = true, features = ["poll"] }
 # Unifies into GPUI's font-kit so fontconfig loads at runtime, as it did before
 # GPUI dropped this feature: no build headers or packaged link dependency.
-zed-font-kit = { version = "=0.14.1-zed", default-features = false, features = ["source", "source-fontconfig-dlopen"] }
+# Huterm never calls its fontconfig source; Linux font queries use fontdb.
+zed-font-kit = { version = "=0.14.1-zed", default-features = false, features = ["source-fontconfig-dlopen"] }
+# Match GPUI's Linux database and parser, including the existing feature set.
+fontdb = { version = "=0.23.0", default-features = false, features = ["fontconfig", "memmap", "std"] }
 x11rb = { version = "=0.14.0", features = ["randr"] }

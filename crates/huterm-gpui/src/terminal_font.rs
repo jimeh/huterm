@@ -5,8 +5,10 @@ use huterm_config::FontWeight;
 use zed_font_kit::{
     matching::find_best_match,
     properties::{Properties, Weight},
-    source::SystemSource,
 };
+
+#[cfg(target_os = "macos")]
+use zed_font_kit::source::SystemSource;
 
 /// Keep weight with the resolved family at every measurement and shaping site.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,30 +48,76 @@ impl From<String> for TerminalFont {
     }
 }
 
-/// Resolve fontconfig's alias before GPUI's exact family-name lookup. Its
-/// internal missing-family fallback builds regular faces and loses weight.
-/// GPUI's Linux text system reads the fonts once at startup, so the first
-/// answer holds for the process and later windows skip fontconfig.
 #[cfg(target_os = "linux")]
-pub(crate) fn monospace_family() -> Option<String> {
-    static FAMILY: std::sync::OnceLock<Option<String>> =
+static MONOSPACE_FAMILY: std::sync::OnceLock<Option<String>> =
+    std::sync::OnceLock::new();
+
+/// Only background workers may initialize or wait for the system font scan.
+#[cfg(target_os = "linux")]
+fn font_database() -> &'static std::sync::Arc<fontdb::Database> {
+    static DATABASE: std::sync::OnceLock<std::sync::Arc<fontdb::Database>> =
         std::sync::OnceLock::new();
-    FAMILY.get_or_init(resolve_monospace_family).clone()
+    DATABASE.get_or_init(|| {
+        let mut database = fontdb::Database::new();
+        database.load_system_fonts();
+        std::sync::Arc::new(database)
+    })
+}
+
+/// Resolve fontdb's parsed fontconfig alias before GPUI's exact family lookup.
+/// Neither this scan nor weight enumeration may load libfontconfig in-process.
+#[cfg(target_os = "linux")]
+pub(crate) fn initialize_fonts() {
+    MONOSPACE_FAMILY.get_or_init(|| {
+        std::panic::catch_unwind(|| resolve_monospace_family(font_database()))
+            .ok()
+            .flatten()
+    });
 }
 
 #[cfg(target_os = "linux")]
-fn resolve_monospace_family() -> Option<String> {
-    use zed_font_kit::family_name::FamilyName;
-    std::panic::catch_unwind(|| {
-        SystemSource::new()
-            .select_best_match(&[FamilyName::Monospace], &Properties::new())
-            .ok()?
-            .load()
-            .ok()
-            .map(|face| face.family_name())
-    })
-    .ok()
-    .flatten()
+pub(crate) fn fonts_initialized() -> bool {
+    MONOSPACE_FAMILY.get().is_some()
+}
+
+/// A nonblocking read for metrics, including new windows and config reloads.
+#[cfg(target_os = "linux")]
+pub(crate) fn monospace_family() -> Option<String> {
+    MONOSPACE_FAMILY.get().cloned().flatten()
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_monospace_family(database: &fontdb::Database) -> Option<String> {
+    let family = database.family_name(&fontdb::Family::Monospace);
+    database
+        .faces()
+        .any(|face| face.families.iter().any(|name| name.0 == family))
+        .then(|| family.to_owned())
+}
+
+/// Match GPUI's Linux face-info conversion before CSS face matching.
+#[cfg(target_os = "linux")]
+fn fontdb_properties(face: &fontdb::FaceInfo) -> Properties {
+    use zed_font_kit::properties::{Stretch, Style};
+    Properties {
+        weight: Weight(f32::from(face.weight.0)),
+        style: match face.style {
+            fontdb::Style::Normal => Style::Normal,
+            fontdb::Style::Italic => Style::Italic,
+            fontdb::Style::Oblique => Style::Oblique,
+        },
+        stretch: match face.stretch {
+            fontdb::Stretch::UltraCondensed => Stretch::ULTRA_CONDENSED,
+            fontdb::Stretch::ExtraCondensed => Stretch::EXTRA_CONDENSED,
+            fontdb::Stretch::Condensed => Stretch::CONDENSED,
+            fontdb::Stretch::SemiCondensed => Stretch::SEMI_CONDENSED,
+            fontdb::Stretch::Normal => Stretch::NORMAL,
+            fontdb::Stretch::SemiExpanded => Stretch::SEMI_EXPANDED,
+            fontdb::Stretch::Expanded => Stretch::EXPANDED,
+            fontdb::Stretch::ExtraExpanded => Stretch::EXTRA_EXPANDED,
+            fontdb::Stretch::UltraExpanded => Stretch::ULTRA_EXPANDED,
+        },
+    }
 }
 
 /// Round a native face to the supported configuration grid.
@@ -137,8 +185,9 @@ impl WeightFaces {
     }
 }
 
-/// Loading fontconfig and native properties can panic. Contain both on the
-/// background worker; the caller logs once per family and offers all weights.
+/// Native properties can panic. Contain failures on the background worker;
+/// the caller logs once per family and offers all weights.
+#[cfg(target_os = "macos")]
 pub(crate) fn enumerate_weights(family: &str) -> Result<WeightFaces, String> {
     catch_enumeration(|| {
         let family = SystemSource::new()
@@ -154,6 +203,20 @@ pub(crate) fn enumerate_weights(family: &str) -> Result<WeightFaces, String> {
             }
             properties.push(face.properties());
         }
+        WeightFaces::from_properties(&properties)
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn enumerate_weights(family: &str) -> Result<WeightFaces, String> {
+    catch_enumeration(|| {
+        let database = font_database();
+        let properties = database
+            .faces()
+            .filter(|face| face.families.iter().any(|name| name.0 == family))
+            .filter(|face| candidate(database, face))
+            .map(fontdb_properties)
+            .collect::<Vec<_>>();
         WeightFaces::from_properties(&properties)
     })
 }
@@ -195,11 +258,24 @@ fn candidate(face: &zed_font_kit::font::Font) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn candidate(face: &zed_font_kit::font::Font) -> bool {
-    face.glyph_for_char('m').is_some()
-        || face.postscript_name().is_some_and(|name| {
-            matches!(name.as_str(), "SegoeFluentIcons" | "Segoe Fluent Icons")
+fn candidate(database: &fontdb::Database, face: &fontdb::FaceInfo) -> bool {
+    database
+        .with_face_data(face.id, |data, index| {
+            // font-kit's statically linked FreeType loader, so no direct
+            // ttf-parser dependency and no dynamic FreeType.
+            let Ok(font) = zed_font_kit::font::Font::from_bytes(
+                std::sync::Arc::new(data.to_vec()),
+                index,
+            ) else {
+                return false;
+            };
+            font.glyph_for_char('m').is_some()
+                || matches!(
+                    face.post_script_name.as_str(),
+                    "SegoeFluentIcons" | "Segoe Fluent Icons"
+                )
         })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -265,7 +341,8 @@ mod tests {
     #[test]
     fn enumeration_contains_panics_and_empty_candidate_failures() {
         assert!(
-            catch_enumeration(|| panic!("fontconfig unavailable")).is_err()
+            catch_enumeration(|| panic!("font enumeration unavailable"))
+                .is_err()
         );
         assert!(
             catch_enumeration(|| WeightFaces::from_properties(&[])).is_err()
@@ -274,9 +351,77 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn monospace_resolves_to_a_concrete_loadable_family() {
-        let family = monospace_family().expect("fontconfig monospace family");
-        assert_ne!(family, "monospace");
-        assert!(SystemSource::new().select_family_by_name(&family).is_ok());
+    fn monospace_resolution_uses_only_a_family_in_the_database() {
+        let mut database = fontdb::Database::new();
+        database.set_monospace_family("Test Mono");
+        assert_eq!(resolve_monospace_family(&database), None);
+        database.push_face_info(database_face());
+        assert_eq!(
+            resolve_monospace_family(&database).as_deref(),
+            Some("Test Mono")
+        );
+        database.set_monospace_family("Missing Mono");
+        assert_eq!(resolve_monospace_family(&database), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn monospace_cache_matches_the_loaded_database() {
+        initialize_fonts();
+        assert!(fonts_initialized());
+        assert_eq!(
+            monospace_family(),
+            resolve_monospace_family(font_database())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn database_face() -> fontdb::FaceInfo {
+        fontdb::FaceInfo {
+            id: fontdb::ID::dummy(),
+            source: fontdb::Source::Binary(std::sync::Arc::new(
+                Vec::<u8>::new(),
+            )),
+            index: 0,
+            families: vec![(
+                "Test Mono".into(),
+                fontdb::Language::English_UnitedStates,
+            )],
+            post_script_name: "TestMono".into(),
+            style: fontdb::Style::Normal,
+            weight: fontdb::Weight(450),
+            stretch: fontdb::Stretch::Normal,
+            monospaced: true,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fontdb_properties_preserve_weight_style_and_all_stretches() {
+        let mut face = database_face();
+        for (native, expected) in [
+            (fontdb::Style::Normal, Style::Normal),
+            (fontdb::Style::Italic, Style::Italic),
+            (fontdb::Style::Oblique, Style::Oblique),
+        ] {
+            face.style = native;
+            let properties = fontdb_properties(&face);
+            assert_eq!(properties.style, expected);
+            assert_eq!(properties.weight, Weight(450.0));
+        }
+        for (native, expected) in [
+            (fontdb::Stretch::UltraCondensed, Stretch::ULTRA_CONDENSED),
+            (fontdb::Stretch::ExtraCondensed, Stretch::EXTRA_CONDENSED),
+            (fontdb::Stretch::Condensed, Stretch::CONDENSED),
+            (fontdb::Stretch::SemiCondensed, Stretch::SEMI_CONDENSED),
+            (fontdb::Stretch::Normal, Stretch::NORMAL),
+            (fontdb::Stretch::SemiExpanded, Stretch::SEMI_EXPANDED),
+            (fontdb::Stretch::Expanded, Stretch::EXPANDED),
+            (fontdb::Stretch::ExtraExpanded, Stretch::EXTRA_EXPANDED),
+            (fontdb::Stretch::UltraExpanded, Stretch::ULTRA_EXPANDED),
+        ] {
+            face.stretch = native;
+            assert_eq!(fontdb_properties(&face).stretch, expected);
+        }
     }
 }

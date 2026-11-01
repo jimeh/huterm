@@ -171,6 +171,23 @@ initial_rows = 32     # 3 through 1000
 - Defaults equal today's constants (100 by 32). Values outside the limits
   are configuration errors that name the key.
 
+### Revisions during review
+
+- Linux queries fonts through `fontdb`, the pure-Rust database GPUI's
+  Linux text system uses, not through font-kit's fontconfig source. The
+  Linux package smoke rejects a dynamic Fontconfig or FreeType in the
+  process, and font-kit's source loads libfontconfig. `fontdb` reads
+  fontconfig's configuration, including the `monospace` alias, in Rust,
+  and lists exactly the faces GPUI matches, which removes the
+  fontconfig-versus-fontdb mismatch accepted above. macOS keeps CoreText
+  through font-kit.
+- On Linux, the font database loads on a background worker at startup, and
+  the first window opens after it finishes, so `resolve_metrics` only
+  reads the cached `monospace` family.
+- A new tab in a window that already shows a terminal starts at that
+  window's active view grid; only a window's first terminal starts at the
+  configured initial grid.
+
 ## Scope
 
 - `huterm-config`: `RawFont::weight`, `FontConfig::weight`, the weight

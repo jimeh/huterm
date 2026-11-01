@@ -1562,72 +1562,123 @@ pub(super) fn run_with_startup(
     let app_runtime = Arc::clone(&runtime);
     let application = crate::assets::application();
     application.on_reopen(|cx| {
+        // Startup owns the first window while the Linux font scan is pending.
+        #[cfg(target_os = "linux")]
+        if !crate::terminal_font::fonts_initialized() {
+            return;
+        }
         if cx.windows().is_empty() {
             open_window(cx);
         }
         cx.activate(true);
     });
     application.run(move |cx| {
-        install_desktop(cx, Arc::clone(&app_runtime), hierarchy, loaded);
-        system_appearance::watch(cx);
-        start_config_watch(cx, inputs);
+        let fonts =
+            install_desktop(cx, Arc::clone(&app_runtime), hierarchy, loaded);
+        let install_quit_cleanup = move |cx: &mut App| {
+            cx.on_app_quit(move |cx| {
+                commit_quit(cx);
+                quake_windows::shutdown(cx);
+                // AppKit terminate: does not return from Application::run. GPUI
+                // allows only 100 ms for quit futures, so this terminal hook must
+                // finish synchronous cleanup before returning its empty future.
+                if let Err(error) =
+                    app_runtime.terminate_with_windows(capture_windows(cx))
+                {
+                    eprintln!("Native quit cleanup failed: {error}");
+                }
+                cx.global_mut::<Desktop>().hierarchy.settle_waiters(true);
+                async {}
+            })
+            .detach();
+        };
         #[cfg(target_os = "linux")]
-        follow_button_layout(cx);
-        install_native_quit(cx);
-        let (shadowed, refused) = quake_windows::install(cx);
-        let report = &mut cx.global_mut::<Desktop>().config_report;
-        report.conflicts.extend(shadowed);
-        report.refuse(refused);
-        cx.on_app_quit(move |cx| {
-            commit_quit(cx);
-            quake_windows::shutdown(cx);
-            // AppKit terminate: does not return from Application::run. GPUI
-            // allows only 100 ms for quit futures, so this terminal hook must
-            // finish synchronous cleanup before returning its empty future.
-            if let Err(error) =
-                app_runtime.terminate_with_windows(capture_windows(cx))
-            {
-                eprintln!("Native quit cleanup failed: {error}");
-            }
-            cx.global_mut::<Desktop>().hierarchy.settle_waiters(true);
-            async {}
-        })
-        .detach();
-        cx.on_action(|action: &InvokeApp, cx| {
-            if let Err(error) = Desktop::invoke(cx, &action.0, None) {
-                let message =
-                    format!("Command `{}` failed: {error}", action.0.id);
-                eprintln!("Huterm {message}");
-                // Global action callbacks run while the dispatching window
-                // is borrowed, so raise the notice after it is returned.
-                cx.defer(move |cx| {
-                    show_active_window_failure(cx, &message);
-                });
-            }
-        });
-        open_window(cx);
-        cx.activate(true);
-        startup(cx);
+        install_quit_cleanup(cx);
+        // Linux must finish font discovery before registering routes that can
+        // open a window. Quit cleanup above remains available while it waits.
+        let prepare = move |cx: &mut App| {
+            system_appearance::watch(cx);
+            start_config_watch(cx, inputs);
+            #[cfg(target_os = "linux")]
+            follow_button_layout(cx);
+            install_native_quit(cx);
+            let (shadowed, refused) = quake_windows::install(cx);
+            let report = &mut cx.global_mut::<Desktop>().config_report;
+            report.conflicts.extend(shadowed);
+            report.refuse(refused);
+            #[cfg(target_os = "macos")]
+            install_quit_cleanup(cx);
+            cx.on_action(|action: &InvokeApp, cx| {
+                if let Err(error) = Desktop::invoke(cx, &action.0, None) {
+                    let message =
+                        format!("Command `{}` failed: {error}", action.0.id);
+                    eprintln!("Huterm {message}");
+                    // Global action callbacks run while the dispatching window
+                    // is borrowed, so raise the notice after it is returned.
+                    cx.defer(move |cx| {
+                        show_active_window_failure(cx, &message);
+                    });
+                }
+            });
+        };
+        #[cfg(target_os = "linux")]
+        open_initial_window_after_fonts(cx, fonts, prepare, startup);
+        #[cfg(target_os = "macos")]
+        {
+            drop(fonts);
+            prepare(cx);
+            open_window(cx);
+            cx.activate(true);
+            startup(cx);
+        }
     });
     // Backends whose event loop returns get the same idempotent cleanup.
     runtime.terminate()?;
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", all(test, feature = "test-support")))]
+fn open_initial_window_after_fonts(
+    cx: &mut App,
+    fonts: gpui::Task<()>,
+    prepare: impl FnOnce(&mut App) + 'static,
+    startup: impl FnOnce(&mut App) + 'static,
+) {
+    cx.spawn(async move |cx| {
+        fonts.await;
+        cx.update(|cx| {
+            if cx.global::<Desktop>().quit_committed || terminating(cx) {
+                return;
+            }
+            prepare(cx);
+            // A reopen may have arrived after the worker finished but before
+            // this continuation ran.
+            if cx.windows().is_empty() {
+                open_window(cx);
+            }
+            cx.activate(true);
+            startup(cx);
+        });
+    })
+    .detach();
+}
+
 /// Installs the `Desktop` global over `runtime` and its hierarchy
 /// projection, starts the projection's drain, forgets windows as they
-/// close, and routes keystrokes to the active terminal.
+/// close, and routes keystrokes to the active terminal. The returned task
+/// completes the Linux font scan before startup opens its first window.
 fn install_desktop(
     cx: &mut App,
     runtime: Arc<DesktopRuntime>,
     hierarchy: Projection,
     loaded: config::LoadedConfig,
-) {
-    // Overlap fontconfig initialization with startup before the first window
-    // needs its concrete monospace family on the GPUI thread.
+) -> gpui::Task<()> {
     #[cfg(target_os = "linux")]
-    cx.background_spawn(async { crate::terminal_font::monospace_family() })
-        .detach();
+    let fonts = cx.background_spawn(async {
+        crate::terminal_font::initialize_fonts();
+    });
+    #[cfg(target_os = "macos")]
+    let fonts = gpui::Task::ready(());
     let (keymap, config_report) = install_startup_keymap(cx, &loaded);
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     let updater = native_updater::Updater::initialize(loaded.config.updates);
@@ -1698,6 +1749,7 @@ fn install_desktop(
     .detach();
     cx.observe_keystrokes(observe_keystroke).detach();
     cx.intercept_keystrokes(hide_grab_badges).detach();
+    fonts
 }
 
 /// Notes whether `config`'s terminal family was unavailable, so `family`,

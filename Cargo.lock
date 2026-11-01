@@ -2549,6 +2549,7 @@ dependencies = [
  "async-channel",
  "core-foundation 0.10.1",
  "core-text",
+ "fontdb",
  "global-hotkey",
  "gpui-pre",
  "gpui-pre-platform",
