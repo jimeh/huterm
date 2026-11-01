@@ -3095,6 +3095,10 @@ impl SettingsView {
             .map(|id| id.to_string())
     }
 
+    pub(super) fn weight_select_disabled(&self) -> bool {
+        self.weight_disabled()
+    }
+
     pub(super) fn command(
         &mut self,
         id: huterm_protocol::CommandId,

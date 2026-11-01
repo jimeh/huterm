@@ -46,6 +46,48 @@ fn fixture(script: &str) -> TerminalCommand {
     }
 }
 
+#[gpui::test]
+fn new_tab_spawns_at_the_active_views_requested_grid(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.window.initial_columns = 1000;
+        config.window.initial_rows = 1000;
+    });
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    let requested = harness.cx.update(|cx| {
+        terminal(cx, window, tab).unwrap().read(cx).requested_grid
+    });
+    assert_ne!(requested, GridSize::clamped(1000, 1000));
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Spawned);
+    harness.update_view(window, |view, window, cx| {
+        view.new_tab(window, cx).unwrap();
+    });
+    let mut opened = None;
+    let workspace = harness.workspace;
+    harness.wait_for("the new tab to spawn before view publication", |cx| {
+        opened = cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .workspace_tabs(workspace)
+            .and_then(|tabs| tabs.iter().copied().find(|id| *id != tab));
+        opened.is_some() && runtime.worker_hooks.held(Stage::Spawned) == 1
+    });
+    let opened = opened.unwrap();
+    let spawned_grid = harness.canonical(opened).size;
+    runtime.worker_hooks.release(Stage::Spawned);
+    assert_eq!(
+        spawned_grid, requested,
+        "the spawn precedes any view resize"
+    );
+    harness.wait_for("the spawned tab to install", |cx| {
+        terminal(cx, window, opened).is_some()
+    });
+}
+
 /// The production desktop over a real Mux, with one session and workspace
 /// that windows attach to.
 struct DesktopHarness {

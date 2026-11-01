@@ -33,6 +33,10 @@ fn failed(_: &str) -> Result<WeightFaces, String> {
     Err("test enumeration failure".into())
 }
 
+fn without_regular(_: &str) -> Result<WeightFaces, String> {
+    faces(&[300.0, 700.0])
+}
+
 fn open(
     harness: &mut DesktopHarness,
     file: &ScratchConfig,
@@ -74,6 +78,18 @@ fn weight_numeric_value_highlights_by_name_and_same_pick_preserves_the_number(
         Some("light")
     );
     keys(&harness, "enter");
+    assert!(harness.cx.update(settled));
+    assert_eq!(file.text(), text);
+    with_view(&mut harness, |view, cx| {
+        view.set("font.weight", Some(toml::Value::Integer(350)), cx);
+        assert!(view.error("font.weight").is_some());
+    });
+    open_menu(&mut harness);
+    keys(&harness, "enter");
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.error("font.weight")),
+        None
+    );
     assert!(harness.cx.update(settled));
     assert_eq!(file.text(), text);
     open_menu(&mut harness);
@@ -178,10 +194,73 @@ fn invalid_file_disables_the_weight_select(cx: &mut TestAppContext) {
 fn an_invalid_weight_shows_what_the_file_says(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("weight-invalid", "[font]\nweight = 350\n");
     let mut harness = DesktopHarness::new(cx);
-    open(&mut harness, &file, multi);
+    open(&mut harness, &file, without_regular);
     let node = a11y_node(&mut harness, "settings-select-font.weight");
     assert_eq!(node["aria"]["value"], "350");
     assert_eq!(node["aria"]["disabled"], true);
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.weight_state()).3,
+        None
+    );
+}
+
+fn same_family_rescan(
+    cx: &mut TestAppContext,
+    name: &str,
+    enumerate: fn(&str) -> Result<WeightFaces, String>,
+    disabled: bool,
+) {
+    let file = ScratchConfig::new(name, "[font]\nweight = 900\n");
+    let mut harness = DesktopHarness::new(cx);
+    open(&mut harness, &file, enumerate);
+    if !disabled {
+        open_menu(&mut harness);
+    }
+    let before = with_view(&mut harness, |view, _| view.weight_state());
+    with_view(&mut harness, |view, cx| {
+        view.set_weight_enumerator(enumerate, cx);
+        let pending = view.weight_state();
+        assert_eq!(pending.0, before.0);
+        assert_eq!(pending.1, before.1 + 1);
+        assert_eq!(pending.2, before.2, "options stay while pending");
+        assert_eq!(pending.3, before.3, "note stays while pending");
+        assert_eq!(view.weight_select_disabled(), disabled);
+        assert_eq!(view.menu_open(), !disabled, "menu stays while pending");
+    });
+    let node = a11y_node(&mut harness, "settings-select-font.weight");
+    assert_eq!(node["aria"]["disabled"] == true, disabled);
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| {
+        let completed = view.weight_state();
+        assert_eq!(completed.2, before.2);
+        assert_eq!(completed.3, before.3);
+        assert_eq!(
+            view.menu_open(),
+            !disabled,
+            "unchanged options keep the menu"
+        );
+    });
+}
+
+#[gpui::test]
+fn weight_same_family_rescan_preserves_options_note_and_open_menu(
+    cx: &mut TestAppContext,
+) {
+    same_family_rescan(cx, "weight-rescan-multi", multi, false);
+}
+
+#[gpui::test]
+fn weight_same_family_rescan_preserves_one_weight_disabled_state(
+    cx: &mut TestAppContext,
+) {
+    same_family_rescan(cx, "weight-rescan-one", one, true);
+}
+
+#[gpui::test]
+fn weight_same_family_rescan_preserves_enumeration_failure_fallback(
+    cx: &mut TestAppContext,
+) {
+    same_family_rescan(cx, "weight-rescan-failed", failed, false);
 }
 
 #[gpui::test]

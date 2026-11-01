@@ -75,10 +75,14 @@ impl SettingsView {
         if setting.path != "font.weight" {
             return None;
         }
+        let configured = match self.value(setting) {
+            Some(value) => FontWeight::parse(&value).ok()?,
+            None => FontWeight::default(),
+        };
         self.weights
             .faces
             .as_ref()?
-            .note(&self.weights.family, self.weight_current(setting))
+            .note(&self.weights.family, configured)
     }
 
     pub(super) fn pick_weight(
@@ -98,7 +102,10 @@ impl SettingsView {
         }
         // Numeric spellings are semantically equal; preserve the file until
         // the user chooses a different weight.
-        if weight != self.weight_current(setting) {
+        if weight == self.weight_current(setting) {
+            self.errors.remove(setting.path.as_str());
+            cx.notify();
+        } else {
             self.write(setting, Some(value), cx);
         }
     }
@@ -136,13 +143,11 @@ impl SettingsView {
             .applied_terminal_family
             .clone()
             .unwrap_or_else(|| desktop.config.font.family.clone());
-        let setting = self.setting_at("font.weight").expect("weight setting");
-        let before = self.weight_choices(setting);
         let family_changed = self.weights.family != family;
         self.weights.family.clone_from(&family);
-        self.weights.faces = None;
-        self.weights.fallback = false;
-        if family_changed || before != self.weight_choices(setting) {
+        if family_changed {
+            self.weights.faces = None;
+            self.weights.fallback = false;
             self.close_weight_menu();
         }
         cx.notify();

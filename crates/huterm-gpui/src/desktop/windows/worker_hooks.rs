@@ -16,6 +16,8 @@ pub(super) enum Stage {
     Commit,
     /// Subscribing viewers for installs and replacements.
     Subscribe,
+    /// A new tab spawned, before its view can resize the terminal.
+    Spawned,
     /// A layout commit queue job, a resize or an arrangement, before its
     /// runtime call.
     Layout,
@@ -25,7 +27,7 @@ pub(super) enum Stage {
 }
 
 #[derive(Default)]
-pub(super) struct WorkerHooks(Mutex<[StageHooks; 6]>);
+pub(super) struct WorkerHooks(Mutex<[StageHooks; 7]>);
 
 #[derive(Default)]
 struct StageHooks {

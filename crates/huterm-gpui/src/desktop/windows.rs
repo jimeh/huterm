@@ -1623,6 +1623,11 @@ fn install_desktop(
     hierarchy: Projection,
     loaded: config::LoadedConfig,
 ) {
+    // Overlap fontconfig initialization with startup before the first window
+    // needs its concrete monospace family on the GPUI thread.
+    #[cfg(target_os = "linux")]
+    cx.background_spawn(async { crate::terminal_font::monospace_family() })
+        .detach();
     let (keymap, config_report) = install_startup_keymap(cx, &loaded);
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     let updater = native_updater::Updater::initialize(loaded.config.updates);
@@ -7378,6 +7383,9 @@ impl WorkspaceView {
             self.config.window,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
+        if let Some(view) = self.active_view(cx) {
+            command.grid_size = view.read(cx).requested_grid;
+        }
         let inherited_directory = self.active_view(cx).and_then(|view| {
             inherited_directory(
                 self.config.terminal.new_tab_directory,
@@ -7397,7 +7405,18 @@ impl WorkspaceView {
             {
                 command.working_directory = directory;
             }
-            runtime.open_tab(workspace, attachment, &command, clipboard_allowed)
+            let spawned = runtime.open_tab(
+                workspace,
+                attachment,
+                &command,
+                clipboard_allowed,
+            );
+            #[cfg(all(test, feature = "test-support"))]
+            let _ = runtime
+                .worker_hooks
+                .enter(worker_hooks::Stage::Spawned)
+                .await;
+            spawned
         });
         let cleanup_runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let app = cx.to_async();
