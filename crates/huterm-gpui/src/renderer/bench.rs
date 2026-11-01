@@ -82,7 +82,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
         let display_id = crate::benchmark_display::selected(cx)
             .expect("select benchmark display");
         let metrics =
-            GridMetrics::resolve(cx.text_system(), family(), px(FONT_SIZE))
+            GridMetrics::resolve(cx.text_system(), &family().into(), px(FONT_SIZE))
                 .expect("benchmark font");
         // Device-pixel rounding at the window's scale can widen each cell by
         // up to one logical pixel, so leave that much room for the whole grid.
@@ -457,10 +457,13 @@ struct Fixture {
 impl Fixture {
     fn new(scenario: Scenario, window: &Window, cx: &App) -> Self {
         let family = family();
-        let metrics =
-            GridMetrics::resolve(cx.text_system(), family, px(FONT_SIZE))
-                .expect("benchmark font")
-                .at_scale(window.scale_factor());
+        let metrics = GridMetrics::resolve(
+            cx.text_system(),
+            &family.into(),
+            px(FONT_SIZE),
+        )
+        .expect("benchmark font")
+        .at_scale(window.scale_factor());
         let mut renderer = TerminalRenderer::new(
             family.into(),
             scenario.theme.clone(),
@@ -495,7 +498,7 @@ impl Render for Fixture {
             let metrics =
                 state.renderer.metrics.at_scale(window.scale_factor());
             if metrics != state.renderer.metrics {
-                let family = state.renderer.font_family.clone();
+                let family = state.renderer.terminal_font.clone();
                 let theme = state.renderer.theme.clone();
                 state.renderer.reconfigure(family, theme, metrics);
             }

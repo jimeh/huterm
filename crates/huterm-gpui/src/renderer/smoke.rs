@@ -103,17 +103,30 @@ impl Fixture {
         };
         let panels = [12.0, 16.0, 20.0]
             .into_iter()
-            .map(|font_size| {
+            .enumerate()
+            .map(|(index, font_size)| {
+                // Exercise native matching and paint with Medium as well as
+                // the regular benchmark/default face.
+                let weight = if index == 1 {
+                    huterm_config::FontWeight::parse(&toml::Value::Integer(500))
+                        .expect("medium weight")
+                } else {
+                    huterm_config::FontWeight::default()
+                };
+                let terminal_font = crate::terminal_font::TerminalFont::new(
+                    family.into(),
+                    weight,
+                );
                 let metrics = GridMetrics::resolve(
                     cx.text_system(),
-                    family,
+                    &terminal_font,
                     px(font_size),
                 )
                 .expect("fixture font")
                 .at_scale(window.scale_factor());
                 Rc::new(RefCell::new(Panel {
                     renderer: TerminalRenderer::new(
-                        family.into(),
+                        terminal_font,
                         Theme::default(),
                         metrics,
                     ),
@@ -140,7 +153,7 @@ impl Render for Fixture {
             let metrics =
                 panel.renderer.metrics.at_scale(window.scale_factor());
             if metrics != panel.renderer.metrics {
-                let family = panel.renderer.font_family.clone();
+                let family = panel.renderer.terminal_font.clone();
                 let theme = panel.renderer.theme.clone();
                 panel.renderer.reconfigure(family, theme, metrics);
                 panel.checked = false;
@@ -260,7 +273,11 @@ fn check(panel: &mut Panel, window: &mut Window) {
         green: 220,
         blue: 0,
     });
-    renderer.reconfigure(renderer.font_family.clone(), theme, renderer.metrics);
+    renderer.reconfigure(
+        renderer.terminal_font.clone(),
+        theme,
+        renderer.metrics,
+    );
     renderer.prepare(Some(&panel.snapshot), window);
     assert!(
         Arc::ptr_eq(&first, cached_geometry(renderer, '▐', 1)),
@@ -268,7 +285,7 @@ fn check(panel: &mut Panel, window: &mut Window) {
     );
     let original_metrics = renderer.metrics;
     renderer.reconfigure(
-        renderer.font_family.clone(),
+        renderer.terminal_font.clone(),
         renderer.theme.clone(),
         original_metrics.at_scale(original_metrics.scale_factor + 0.5),
     );
@@ -278,7 +295,7 @@ fn check(panel: &mut Panel, window: &mut Window) {
         "display scale invalidates geometry"
     );
     renderer.reconfigure(
-        renderer.font_family.clone(),
+        renderer.terminal_font.clone(),
         renderer.theme.clone(),
         original_metrics,
     );

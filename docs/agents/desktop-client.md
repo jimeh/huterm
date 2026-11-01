@@ -318,9 +318,16 @@ in Settings and Quit would do nothing. Committing Quit closes Settings.
 
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
-and apply colors and decorations during paint. Use the generic `monospace` font
-family on Linux; requesting macOS-only Menlo repeatedly exercises GPUI's
-missing-font fallback path.
+and apply colors and decorations during paint. Use the generic `monospace`
+font family on Linux; requesting macOS-only Menlo repeatedly exercises GPUI's
+missing-font fallback path. Carry the resolved `TerminalFont`, including
+weight, through metrics, shaping, and reloads.
+
+Linux font queries for Settings use fontdb, never font-kit's SystemSource or
+libfontconfig in-process, because the Linux package rejects a dynamic
+Fontconfig or FreeType. GPUI cannot load the `monospace` alias directly and its
+fallback stack drops weight. fontdb's parsed alias keeps only the last
+fontconfig alias, so Huterm does not resolve it.
 
 Derive the terminal's grid geometry once through `GridMetrics`. GPUI
 reports raw font descent as negative on macOS and Linux, so normalize it to a
@@ -885,6 +892,18 @@ GPUI test platform lists no installed fonts, so font tests call
 `unavailable_fonts` to the state they assume. `run_list` routes the field
 verbs to the focused field's list first; the field's own behavior gets the keys
 the list leaves alone.
+
+The terminal weight scan mirrors GPUI's candidate filter before matching full
+face properties: require an `m` glyph (with GPUI's icon-font exception), and on
+macOS check the numeric CoreText traits before calling font-kit's
+`properties()`. That accessor can panic. Linux scans the shared fontdb database
+and checks glyphs through font-kit's statically linked FreeType loader,
+without invoking font-kit's native source. Build the process-wide database
+lazily on the background executor when Settings first enumerates weights.
+For the Linux `monospace` alias, disable the weight select, explain that a
+font family is needed to choose a weight, and skip enumeration.
+Catch enumeration failures on the background worker and reject completions for
+an older family or generation.
 
 The terminal window has two `Command` lists. The palette mounts one per
 stage or identity slot, named "Commands" or for the slot, and drops it for

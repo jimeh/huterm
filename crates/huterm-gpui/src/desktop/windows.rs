@@ -905,6 +905,7 @@ struct Desktop {
     /// The configured font families that were not installed when Huterm
     /// last applied the fonts, so a fallback draws instead.
     unavailable_fonts: UnavailableFonts,
+    applied_terminal_family: Option<String>,
     external_drag_window: Option<gpui::WindowId>,
     /// The window buttons the desktop asks title rows to draw.
     button_layout: ButtonLayout,
@@ -1649,6 +1650,7 @@ fn install_desktop(
         settings: None,
         quit_pending: false,
         unavailable_fonts: UnavailableFonts::default(),
+        applied_terminal_family: None,
         external_drag_window: None,
         button_layout: ButtonLayout::standard(),
         appearance_follows: 0,
@@ -1696,6 +1698,7 @@ fn install_desktop(
 /// Notes whether `config`'s terminal family was unavailable, so `family`,
 /// the one its font resolution chose, stands in for it.
 fn note_terminal_font(cx: &mut App, config: &Config, family: &str) {
+    cx.global_mut::<Desktop>().applied_terminal_family = Some(family.into());
     cx.global_mut::<Desktop>().unavailable_fonts.terminal =
         (config.font.family != family).then(|| config.font.family.clone());
 }
@@ -2303,20 +2306,43 @@ fn initial_window_size(
     } else {
         size(px(0.0), px(0.0))
     };
-    size(
-        metrics.cell_width * f32::from(INITIAL_COLUMNS)
+    let requested = size(
+        metrics.cell_width * f32::from(config.window.initial_columns)
             + px(config.window.padding_x * 2.0)
             + reserved.width
             + frame.inset.left
             + frame.inset.right,
-        metrics.cell_height * f32::from(INITIAL_ROWS)
+        metrics.cell_height * f32::from(config.window.initial_rows)
             + px(config.window.padding_y * 2.0)
             + title_row_height(false, frame)
             + reserved.height
             + TitleBars::new(&config.panes).lone_reserved()
             + frame.inset.top
             + frame.inset.bottom,
+    );
+    size(
+        requested.width.max(WINDOW_MIN_SIZE.width),
+        requested.height.max(WINDOW_MIN_SIZE.height),
     )
+}
+
+/// The smallest content size an ordinary terminal window accepts.
+const WINDOW_MIN_SIZE: gpui::Size<Pixels> = size(px(280.0), px(180.0));
+
+/// Cap the corrective content resize as `Bounds::centered` caps creation.
+fn clamp_initial_window_size(
+    requested: gpui::Size<Pixels>,
+    visible: Option<gpui::Size<Pixels>>,
+    native_titlebar: Pixels,
+) -> gpui::Size<Pixels> {
+    visible.map_or(requested, |visible| {
+        size(
+            requested.width.min(visible.width),
+            requested
+                .height
+                .min((visible.height - native_titlebar).max(px(0.0))),
+        )
+    })
 }
 
 /// The decoration facts GPUI reports for `window`, sampled together.
@@ -2367,7 +2393,7 @@ fn open_window_with_profile(
     let config = cx.global::<Desktop>().config.clone();
     let (family, metrics) = match resolve_metrics(&config, cx) {
         Ok(value) => {
-            note_terminal_font(cx, &config, &value.0);
+            note_terminal_font(cx, &config, &value.0.family);
             value
         }
         Err(error) => {
@@ -2430,7 +2456,7 @@ fn open_window_with_profile(
                 // `merged_traffic_lights`.
                 traffic_light_position: None,
             }),
-            window_min_size: Some(size(px(280.0), px(180.0))),
+            window_min_size: Some(WINDOW_MIN_SIZE),
             app_id: Some(APP_ID.into()),
             ..WindowOptions::default()
         },
@@ -2470,11 +2496,20 @@ fn open_window_with_profile(
                 button_layout,
             );
             if scaled_metrics != metrics || frame != WindowFrame::default() {
-                window.resize(initial_window_size(
-                    &config,
-                    scaled_metrics,
-                    host,
-                    frame,
+                let requested =
+                    initial_window_size(&config, scaled_metrics, host, frame);
+                let visible = window
+                    .display(cx)
+                    .map(|display| display.visible_bounds().size);
+                #[cfg(target_os = "macos")]
+                let native_titlebar =
+                    px(crate::native_titlebar::height(window).unwrap_or(0.0));
+                #[cfg(not(target_os = "macos"))]
+                let native_titlebar = px(0.0);
+                window.resize(clamp_initial_window_size(
+                    requested,
+                    visible,
+                    native_titlebar,
                 ));
             }
             // Before a Quake attach strips the window's style, so a Quake
@@ -3798,7 +3833,7 @@ struct WorkspaceView {
     /// Title text widths by title, cleared on config reload.
     title_widths: HashMap<String, Pixels>,
     config: Config,
-    family: String,
+    family: TerminalFont,
     metrics: GridMetrics,
     focus: FocusHandle,
     busy: bool,
@@ -7337,8 +7372,12 @@ impl WorkspaceView {
             self.metrics.at_scale(window.scale_factor()),
             &self.config.theme,
             self.config.terminal,
+            self.config.window,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
+        if let Some(view) = self.active_view(cx) {
+            command.grid_size = view.read(cx).requested_grid;
+        }
         let inherited_directory = self.active_view(cx).and_then(|view| {
             inherited_directory(
                 self.config.terminal.new_tab_directory,
@@ -7358,7 +7397,18 @@ impl WorkspaceView {
             {
                 command.working_directory = directory;
             }
-            runtime.open_tab(workspace, attachment, &command, clipboard_allowed)
+            let spawned = runtime.open_tab(
+                workspace,
+                attachment,
+                &command,
+                clipboard_allowed,
+            );
+            #[cfg(all(test, feature = "test-support"))]
+            let _ = runtime
+                .worker_hooks
+                .enter(worker_hooks::Stage::Spawned)
+                .await;
+            spawned
         });
         let cleanup_runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let app = cx.to_async();
@@ -7634,6 +7684,7 @@ impl WorkspaceView {
             self.metrics.at_scale(window.scale_factor()),
             &self.config.theme,
             self.config.terminal,
+            self.config.window,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
         command.grid_size = grid;
@@ -11029,7 +11080,7 @@ fn finish_reload(
                 refused,
             );
             desktop.latched.clear();
-            note_terminal_font(cx, &config, &family);
+            note_terminal_font(cx, &config, &family.family);
             apply_typography(cx);
             quake_windows::reconcile(cx, renames);
             let keymap = bind_keymap(cx, compiled);
@@ -11116,7 +11167,7 @@ impl WorkspaceView {
     /// the replacement configuration notices either way.
     fn apply_reload(
         &mut self,
-        loaded: Option<&(Config, String, GridMetrics)>,
+        loaded: Option<&(Config, TerminalFont, GridMetrics)>,
         diagnostics: &[NoticeContent],
         window: &mut Window,
         cx: &mut Context<'_, Self>,
@@ -11169,7 +11220,7 @@ impl WorkspaceView {
                         config.theme.clone(),
                         metrics,
                     );
-                    view.font_family.clone_from(family);
+                    view.terminal_font.clone_from(family);
                     view.font_size = metrics.font_size;
                     view.metrics = metrics;
                     view.window_config = config.window;

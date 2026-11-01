@@ -573,6 +573,7 @@ impl SettingsView {
             .errors
             .get(path)
             .cloned()
+            .or_else(|| self.weight_note(setting))
             .or_else(|| Self::fallback_note(setting, cx))
             .filter(|_| conflict.is_none())
             .map(SharedString::from);

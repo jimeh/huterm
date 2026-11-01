@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub mod document;
+mod font_weight;
+pub use font_weight::FontWeight;
 pub mod quake;
 
 #[cfg(feature = "schema")]
@@ -797,6 +799,22 @@ pub enum MacosOptionAsAlt {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
+    /// The grid width new ordinary windows request, from 10 to 1000 cells.
+    /// Large requests are limited to the display's available area.
+    #[cfg_attr(feature = "schema", schemars(range(min = 10, max = 1000), extend(
+        "x-huterm-section" = "windows", "x-huterm-group" = "Window",
+        "x-huterm-label" = "Initial columns", "x-huterm-order" = 31,
+        "x-huterm-apply" = "new_windows",
+    )))]
+    pub initial_columns: u16,
+    /// The grid height new ordinary windows request, from 3 to 1000 cells.
+    /// Large requests are limited to the display's available area.
+    #[cfg_attr(feature = "schema", schemars(range(min = 3, max = 1000), extend(
+        "x-huterm-section" = "windows", "x-huterm-group" = "Window",
+        "x-huterm-label" = "Initial rows", "x-huterm-order" = 32,
+        "x-huterm-apply" = "new_windows",
+    )))]
+    pub initial_rows: u16,
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
@@ -1062,6 +1080,8 @@ pub struct UpdateConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
+            initial_columns: 100,
+            initial_rows: 32,
             macos_fullscreen_mode: MacosFullscreenMode::NonNative,
             padding_x: 4.0,
             padding_y: 4.0,
@@ -2180,6 +2200,7 @@ pub const MAX_UI_FONT_SIZE: f32 = 16.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontConfig {
+    pub weight: FontWeight,
     pub family: String,
     pub size: f32,
     /// The interface's family; `None` uses the system interface font.
@@ -2818,6 +2839,14 @@ pub enum LegacyTerminalEngine {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct RawFont {
+    /// The terminal font weight. Bold text asks for a heavier weight, capped at
+    /// Black. Both draw in the nearest weight the family has.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "appearance", "x-huterm-group" = "Font",
+        "x-huterm-label" = "Font weight", "x-huterm-order" = 21,
+        "x-huterm-apply" = "live",
+    )))]
+    pub weight: FontWeight,
     /// The terminal font family. Defaults to Menlo on macOS and `monospace` on
     /// Linux.
     #[cfg_attr(feature = "schema", schemars(regex(pattern = r"\S"), transform = schema::without_default, extend(
@@ -2865,6 +2894,7 @@ impl Default for RawFont {
     fn default() -> Self {
         let font = FontConfig::default();
         Self {
+            weight: font.weight,
             family: font.family,
             size: font.size,
             ui_family: String::new(),
@@ -2912,6 +2942,7 @@ impl fmt::Display for ConfigError {
 impl Default for FontConfig {
     fn default() -> Self {
         Self {
+            weight: FontWeight::default(),
             family: if cfg!(target_os = "macos") {
                 "Menlo"
             } else {
@@ -2931,6 +2962,16 @@ impl RawConfig {
     /// # Errors
     /// Returns an error when the input violates the configuration contract.
     pub fn validate_values(&self) -> Result<(), ConfigError> {
+        if !(10..=1000).contains(&self.window.initial_columns) {
+            return Err(ConfigError::Invalid(
+                "window.initial_columns must be between 10 and 1000",
+            ));
+        }
+        if !(3..=1000).contains(&self.window.initial_rows) {
+            return Err(ConfigError::Invalid(
+                "window.initial_rows must be between 3 and 1000",
+            ));
+        }
         self.quake.validate().map_err(ConfigError::Quake)?;
         self.panes.validate().map_err(ConfigError::Panes)?;
         if let Some(PaneDrag::Modifiers(drag)) = self.panes.drag_modifier
@@ -3426,6 +3467,36 @@ mod tabs_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_window_grid_defaults_parsing_and_limits() {
+        let default: super::RawConfig = toml::from_str("").unwrap();
+        assert_eq!(
+            (default.window.initial_columns, default.window.initial_rows),
+            (100, 32)
+        );
+        for (key, min) in [("initial_columns", 10), ("initial_rows", 3)] {
+            for value in [min, 1000] {
+                let raw: super::RawConfig =
+                    toml::from_str(&format!("[window]\n{key} = {value}"))
+                        .unwrap();
+                raw.validate_values().unwrap();
+                let actual = if key == "initial_columns" {
+                    raw.window.initial_columns
+                } else {
+                    raw.window.initial_rows
+                };
+                assert_eq!(actual, value);
+            }
+            for value in [0, min - 1, 1001] {
+                let raw: super::RawConfig =
+                    toml::from_str(&format!("[window]\n{key} = {value}"))
+                        .unwrap();
+                let error = raw.validate_values().unwrap_err().to_string();
+                assert!(error.contains(&format!("window.{key}")), "{error}");
+            }
+        }
+    }
 
     #[test]
     fn palette_defaults_and_bounds() {

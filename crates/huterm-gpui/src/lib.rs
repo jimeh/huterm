@@ -49,6 +49,8 @@ mod renderer;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod scroll;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod terminal_font;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod terminfo;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod themes;

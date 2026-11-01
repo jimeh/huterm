@@ -110,6 +110,8 @@ pub enum Apply {
     NewTabsAndPanes,
     /// Terminals started afterwards use it.
     NewTerminals,
+    /// Windows opened afterwards use it.
+    NewWindows,
     /// Later events use it, such as the next exit, key, quake summon, or
     /// fullscreen toggle.
     LaterEvents,
@@ -123,6 +125,7 @@ impl Apply {
             "live" => Self::Live,
             "new_tabs_and_panes" => Self::NewTabsAndPanes,
             "new_terminals" => Self::NewTerminals,
+            "new_windows" => Self::NewWindows,
             "later_events" => Self::LaterEvents,
             "next_palette_open" => Self::NextPaletteOpen,
             _ => return None,
@@ -823,6 +826,25 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn font_weight_and_initial_grid_metadata_match_the_contract() {
+        let model = super::SettingsModel::load().unwrap();
+        let weight = model.setting("font.weight").unwrap();
+        assert_eq!(weight.order, 21);
+        assert_eq!(weight.apply, super::Apply::Live);
+        assert_eq!(weight.kind, super::SettingKind::Compound);
+        assert_eq!(weight.default, Some(toml::Value::String("regular".into())));
+        for (key, min) in
+            [("window.initial_columns", 10), ("window.initial_rows", 3)]
+        {
+            let setting = model.setting(key).unwrap();
+            assert_eq!(setting.apply, super::Apply::NewWindows);
+            assert!(
+                matches!(setting.kind, super::SettingKind::Integer { min: Some(actual), max: Some(1000), .. } if actual == min)
+            );
+        }
+    }
 
     #[test]
     fn the_sidebar_lists_windows_above_tabs() {

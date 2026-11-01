@@ -2912,3 +2912,65 @@ fn a_tabless_title_row_outlines_splits_and_visible_top_bars_only() {
         &[]
     ));
 }
+
+#[test]
+fn initial_window_grid_adds_padding_and_chrome_then_respects_minimum() {
+    let mut config = Config::default();
+    config.window.initial_columns = 120;
+    config.window.initial_rows = 40;
+    let metrics = GridMetrics::fixed(8.0, 16.0);
+    let host = TabHost {
+        platform: Platform::current(),
+        fullscreen: false,
+        quake: false,
+        client_decorations: false,
+    };
+    let native_row = if cfg!(target_os = "macos") {
+        px(32.0)
+    } else {
+        px(0.0)
+    };
+    let frame = WindowFrame::default();
+    assert_eq!(
+        initial_window_size(&config, metrics, host, frame),
+        size(px(968.0), px(648.0) + native_row)
+    );
+    config.tabs.always_show = true;
+    config.tabs.position = TabPosition::Top;
+    config.panes.title_bar = huterm_config::PaneTitleBarMode::Visible;
+    config.panes.title_bar_always_show = true;
+    let requested = initial_window_size(&config, metrics, host, frame);
+    assert_eq!(requested.width, px(968.0));
+    assert_eq!(
+        requested.height,
+        px(648.0)
+            + native_row
+            + tab_bar::tab_bar_height(config.tabs)
+            + TitleBars::new(&config.panes).lone_reserved()
+    );
+    config.window.initial_columns = 10;
+    config.window.initial_rows = 3;
+    assert_eq!(
+        initial_window_size(&config, metrics, host, frame),
+        size(px(280.0), px(180.0))
+    );
+}
+
+#[test]
+fn initial_window_clamp_leaves_room_for_the_native_titlebar() {
+    let requested = size(px(2000.0), px(1500.0));
+    let visible = size(px(1200.0), px(800.0));
+    assert_eq!(
+        clamp_initial_window_size(requested, Some(visible), px(28.0)),
+        size(px(1200.0), px(772.0))
+    );
+    assert_eq!(
+        clamp_initial_window_size(requested, None, px(28.0)),
+        requested
+    );
+    let small = size(px(500.0), px(300.0));
+    assert_eq!(
+        clamp_initial_window_size(small, Some(visible), px(0.0)),
+        small
+    );
+}

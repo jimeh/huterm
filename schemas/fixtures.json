@@ -1506,5 +1506,203 @@
     "toml": "[[global_keybinding]]\nkey = \"ctrl-shift-f12\"\ncommand = \"toggle_quake\"\ndisabled = false",
     "valid": true,
     "theme": false
+  },
+  {
+    "name": "font weight \"thin\"",
+    "toml": "[font]\nweight = \"thin\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight \"extra_light\"",
+    "toml": "[font]\nweight = \"extra_light\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight \"light\"",
+    "toml": "[font]\nweight = \"light\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight \"regular\"",
+    "toml": "[font]\nweight = \"regular\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight \"medium\"",
+    "toml": "[font]\nweight = \"medium\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight \"semibold\"",
+    "toml": "[font]\nweight = \"semibold\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight \"bold\"",
+    "toml": "[font]\nweight = \"bold\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight \"extra_bold\"",
+    "toml": "[font]\nweight = \"extra_bold\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight \"black\"",
+    "toml": "[font]\nweight = \"black\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight 100",
+    "toml": "[font]\nweight = 100",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight 200",
+    "toml": "[font]\nweight = 200",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight 300",
+    "toml": "[font]\nweight = 300",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight 400",
+    "toml": "[font]\nweight = 400",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight 500",
+    "toml": "[font]\nweight = 500",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight 600",
+    "toml": "[font]\nweight = 600",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight 700",
+    "toml": "[font]\nweight = 700",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight 800",
+    "toml": "[font]\nweight = 800",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight 900",
+    "toml": "[font]\nweight = 900",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font weight 350",
+    "toml": "[font]\nweight = 350",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "font weight 0",
+    "toml": "[font]\nweight = 0",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "font weight 1000",
+    "toml": "[font]\nweight = 1000",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "font weight 1.5",
+    "toml": "[font]\nweight = 1.5",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "font weight \"heavy\"",
+    "toml": "[font]\nweight = \"heavy\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window initial_columns 0",
+    "toml": "[window]\ninitial_columns = 0",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window initial_columns 9",
+    "toml": "[window]\ninitial_columns = 9",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window initial_columns 10",
+    "toml": "[window]\ninitial_columns = 10",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window initial_columns 1000",
+    "toml": "[window]\ninitial_columns = 1000",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window initial_columns 1001",
+    "toml": "[window]\ninitial_columns = 1001",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window initial_rows 0",
+    "toml": "[window]\ninitial_rows = 0",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window initial_rows 2",
+    "toml": "[window]\ninitial_rows = 2",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window initial_rows 3",
+    "toml": "[window]\ninitial_rows = 3",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window initial_rows 1000",
+    "toml": "[window]\ninitial_rows = 1000",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window initial_rows 1001",
+    "toml": "[window]\ninitial_rows = 1001",
+    "valid": false,
+    "theme": false
   }
 ]

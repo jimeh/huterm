@@ -41,6 +41,55 @@ fn reconfigure_invalidates_rows_but_preserves_snapshot_data() {
 }
 
 #[test]
+fn weight_only_reload_invalidates_prepared_glyphs_with_identical_metrics() {
+    let metrics = GridMetrics::from_measurements(
+        px(14.0),
+        px(8.0),
+        px(12.0),
+        px(-3.0),
+        1.0,
+    );
+    let mut renderer =
+        TerminalRenderer::new("Menlo".into(), Theme::default(), metrics);
+    let original = Arc::new(snapshot(1, 1, &["A"]));
+    renderer.snapshot = Some(Arc::clone(&original));
+    renderer.rows.push(PreparedRow::default());
+    let variant = FontVariant::default();
+    renderer.layouts.get_or_insert_with(
+        GlyphText::Scalar('A'),
+        variant,
+        || Arc::new(LineLayout::default()),
+    );
+    let weight =
+        huterm_config::FontWeight::parse(&toml::Value::Integer(500)).unwrap();
+    let terminal_font = TerminalFont::new("Menlo".into(), weight);
+    renderer.reconfigure(terminal_font.clone(), Theme::default(), metrics);
+    assert!(renderer.snapshot.is_none());
+    assert!(renderer.rows.is_empty());
+    assert!(
+        !renderer
+            .layouts
+            .get_or_insert_with(GlyphText::Scalar('A'), variant, || Arc::new(
+                LineLayout::default()
+            ))
+            .1
+    );
+    assert_eq!(original.rows[0].cells[0].text, "A");
+    assert_eq!(
+        text_run("A", variant, &terminal_font).font.weight,
+        gpui::FontWeight(500.0)
+    );
+    let bold = FontVariant {
+        bold: true,
+        ..variant
+    };
+    assert_eq!(
+        text_run("A", bold, &terminal_font).font.weight,
+        gpui::FontWeight(800.0)
+    );
+}
+
+#[test]
 fn selection_foreground_only_affects_selected_visible_cells() {
     let mut snapshot = snapshot(2, 1, &["A", "B"]);
     snapshot.viewport.bottom_offset = 10;

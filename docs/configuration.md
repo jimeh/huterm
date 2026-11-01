@@ -411,6 +411,24 @@ size_indicator = "full" # full, compact, or off
 size_indicator_linger_ms = 100 # 0 to 10000
 ```
 
+## Initial window size
+
+```toml
+[window]
+initial_columns = 100 # 10 through 1000
+initial_rows = 32     # 3 through 1000
+```
+
+These values set the terminal grid in the first window and every new ordinary
+window. Padding, tabs, title bars, and window decorations add to the grid's
+size. The display's available area limits large windows, which then have a
+smaller grid; the minimum window size still applies to small requests. On
+Linux, the window manager handles any further work-area limits. Quake windows
+keep the size their profiles specify.
+
+Changes apply to windows opened afterwards. Reloading does not resize open
+windows.
+
 ## Tab bar
 
 Tabs can sit at the top, bottom, left, or right of the window, or in the title
@@ -800,6 +818,8 @@ XWayland, where configuring one warns the same way.
 [font]
 family = "Menlo" # defaults to Menlo on macOS and monospace on Linux
 size = 14.0      # 6 through 96
+# thin, extra_light, light, regular, medium, semibold, bold, extra_bold, black
+weight = "regular"
 ui_family = ""   # empty uses the system interface font
 ui_size = 13.0   # 10 through 16
 ```
@@ -816,6 +836,28 @@ follows a reload, without holding up the window. On macOS a family installed
 while Huterm runs then shows in the list, and when the file names it, Huterm
 reloads so it applies and the note goes. On Linux the font list is read once
 at startup, so a newly installed font needs a restart.
+
+On Linux, the default `monospace` is a fontconfig alias, so `weight` applies
+once `family` names an installed font. Settings disables the weight selector
+for the alias and explains that choosing a font family enables it. On macOS,
+Huterm uses Menlo for `monospace`.
+
+`weight` sets the terminal font's weight and accepts the names above or
+integers from 100 through 900 in steps of 100. Regular is 400. Bold terminal
+text asks for at least Bold (700), or 300 more than the configured weight,
+capped at Black (900). For example, Medium (500) asks for Extra bold (800) for
+bold text. Both draw in the nearest weight the family has, so when it has no
+heavier face, bold text looks like the rest.
+These weights apply on reload; the interface keeps its own normal and
+semibold weights.
+
+Huterm uses the nearest face the family provides, without synthesizing weights.
+Settings offers the family's available weights and says which weight terminals
+use when the configured weight is missing, including for a family with one
+weight. A family with one weight has a
+disabled weight selector. If enumeration fails, all nine weights remain
+available. On macOS, a weight installed into an already loaded family may appear
+in Settings before the terminal can draw it; restart Huterm to use it.
 
 At the default `ui_size` of 13, the interface draws at its design sizes.
 Other sizes scale its text, and the controls, rows, and menus that hold text,

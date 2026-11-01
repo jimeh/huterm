@@ -86,6 +86,11 @@ pub(crate) fn shown(
 /// # Errors
 /// Returns the message shown under the row.
 pub(crate) fn check(setting: &Setting, value: &Value) -> Result<(), String> {
+    if setting.path == "font.weight" {
+        return huterm_config::FontWeight::parse(value)
+            .map(|_| ())
+            .map_err(str::to_owned);
+    }
     let unit = setting
         .unit
         .as_deref()
