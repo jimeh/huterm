@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.0](https://github.com/jimeh/huterm/compare/v0.26.0...v0.27.0) (2026-11-01)
+
+
+### Features
+
+* set the columns and rows new windows open with ([#367](https://github.com/jimeh/huterm/issues/367)) ([ab01382](https://github.com/jimeh/huterm/commit/ab013829645522b9622ad22afbc9cb67c45f054a))
+* set the terminal font's weight ([#367](https://github.com/jimeh/huterm/issues/367)) ([ab01382](https://github.com/jimeh/huterm/commit/ab013829645522b9622ad22afbc9cb67c45f054a))
+
 ## [0.26.0](https://github.com/jimeh/huterm/compare/v0.25.0...v0.26.0) (2026-10-31)
 
 
