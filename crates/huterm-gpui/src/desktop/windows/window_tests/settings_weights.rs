@@ -175,6 +175,16 @@ fn invalid_file_disables_the_weight_select(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn an_invalid_weight_shows_what_the_file_says(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("weight-invalid", "[font]\nweight = 350\n");
+    let mut harness = DesktopHarness::new(cx);
+    open(&mut harness, &file, multi);
+    let node = a11y_node(&mut harness, "settings-select-font.weight");
+    assert_eq!(node["aria"]["value"], "350");
+    assert_eq!(node["aria"]["disabled"], true);
+}
+
+#[gpui::test]
 fn weight_rescan_shows_current_while_the_latest_applied_family_is_pending(
     cx: &mut TestAppContext,
 ) {

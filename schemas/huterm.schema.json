@@ -1267,7 +1267,7 @@
             }
           ],
           "default": "regular",
-          "description": "The terminal font weight. Bold text uses a heavier weight, capped at Black.",
+          "description": "The terminal font weight. Bold text asks for a heavier weight, capped at\nBlack. Both draw in the nearest weight the family has.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Font",
           "x-huterm-label": "Font weight",
@@ -10020,7 +10020,7 @@
       "properties": {
         "initial_columns": {
           "default": 100,
-          "description": "The grid width new ordinary windows request, from 10 to 1000 cells.",
+          "description": "The grid width new ordinary windows request, from 10 to 1000 cells.\nLarge requests are limited to the display's available area.",
           "format": "uint16",
           "maximum": 1000,
           "minimum": 10,
@@ -10033,7 +10033,7 @@
         },
         "initial_rows": {
           "default": 32,
-          "description": "The grid height new ordinary windows request, from 3 to 1000 cells.",
+          "description": "The grid height new ordinary windows request, from 3 to 1000 cells.\nLarge requests are limited to the display's available area.",
           "format": "uint16",
           "maximum": 1000,
           "minimum": 3,

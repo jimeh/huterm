@@ -800,6 +800,7 @@ pub enum MacosOptionAsAlt {
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
     /// The grid width new ordinary windows request, from 10 to 1000 cells.
+    /// Large requests are limited to the display's available area.
     #[cfg_attr(feature = "schema", schemars(range(min = 10, max = 1000), extend(
         "x-huterm-section" = "windows", "x-huterm-group" = "Window",
         "x-huterm-label" = "Initial columns", "x-huterm-order" = 31,
@@ -807,6 +808,7 @@ pub struct WindowConfig {
     )))]
     pub initial_columns: u16,
     /// The grid height new ordinary windows request, from 3 to 1000 cells.
+    /// Large requests are limited to the display's available area.
     #[cfg_attr(feature = "schema", schemars(range(min = 3, max = 1000), extend(
         "x-huterm-section" = "windows", "x-huterm-group" = "Window",
         "x-huterm-label" = "Initial rows", "x-huterm-order" = 32,
@@ -2837,7 +2839,8 @@ pub enum LegacyTerminalEngine {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct RawFont {
-    /// The terminal font weight. Bold text uses a heavier weight, capped at Black.
+    /// The terminal font weight. Bold text asks for a heavier weight, capped at
+    /// Black. Both draw in the nearest weight the family has.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "appearance", "x-huterm-group" = "Font",
         "x-huterm-label" = "Font weight", "x-huterm-order" = 21,

@@ -29,6 +29,22 @@ impl SettingsView {
             .unwrap_or_default()
     }
 
+    /// What the select shows: the file's weight by name, or a value the
+    /// file holds that is not a weight as written, so an invalid file shows
+    /// what it says rather than the default.
+    pub(super) fn weight_shown(&self, setting: &Setting) -> String {
+        match self.value(setting) {
+            Some(value) => FontWeight::parse(&value).map_or_else(
+                |_| match value {
+                    Value::String(text) => text,
+                    other => other.to_string(),
+                },
+                weight_label,
+            ),
+            None => weight_label(FontWeight::default()),
+        }
+    }
+
     pub(super) fn weight_choices(&self, setting: &Setting) -> Vec<FontWeight> {
         let current = self.weight_current(setting);
         let mut options = self

@@ -113,13 +113,20 @@ impl WeightFaces {
         family: &str,
         configured: FontWeight,
     ) -> Option<String> {
-        if self.options.len() == 1 {
-            return Some(format!("{family} has one weight."));
-        }
         let index = FontWeight::ALL
             .iter()
             .position(|weight| *weight == configured)?;
         let drawn = self.matched[index];
+        if self.options.len() == 1 {
+            return Some(if drawn == configured {
+                format!("{family} has one weight.")
+            } else {
+                format!(
+                    "{family} has one weight, so terminals use {}.",
+                    drawn.label()
+                )
+            });
+        }
         (drawn != configured).then(|| {
             format!(
                 "{family} has no {} weight, so terminals use {}.",
@@ -247,6 +254,10 @@ mod tests {
         assert_eq!(faces.options, [weight(400)]);
         assert_eq!(
             faces.note("Monaco", weight(300)).as_deref(),
+            Some("Monaco has one weight, so terminals use Regular.")
+        );
+        assert_eq!(
+            faces.note("Monaco", weight(400)).as_deref(),
             Some("Monaco has one weight.")
         );
     }

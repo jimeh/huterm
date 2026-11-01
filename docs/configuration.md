@@ -839,14 +839,17 @@ at startup, so a newly installed font needs a restart.
 
 `weight` sets the terminal font's weight and accepts the names above or
 integers from 100 through 900 in steps of 100. Regular is 400. Bold terminal
-text uses at least Bold (700), or 300 more than the configured weight, capped
-at Black (900). For example, Medium (500) uses Extra bold (800) for bold text.
+text asks for at least Bold (700), or 300 more than the configured weight,
+capped at Black (900). For example, Medium (500) asks for Extra bold (800) for
+bold text. Both draw in the nearest weight the family has, so when it has no
+heavier face, bold text looks like the rest.
 These weights apply on reload; the interface keeps its own normal and
 semibold weights.
 
 Huterm uses the nearest face the family provides, without synthesizing weights.
 Settings offers the family's available weights and says which weight terminals
-use when the configured weight is missing. A family with one weight has a
+use when the configured weight is missing, including for a family with one
+weight. A family with one weight has a
 disabled weight selector. If enumeration fails, all nine weights remain
 available. On macOS, a weight installed into an already loaded family may appear
 in Settings before the terminal can draw it; restart Huterm to use it.
