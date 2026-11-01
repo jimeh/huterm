@@ -1,6 +1,8 @@
 # Terminal font weight and initial window size
 
-Status: approved
+Status: implemented in PR #367. "Revisions during review" below records
+where the shipped change departs from the decisions above, chiefly that
+Linux leaves the `monospace` alias as is.
 
 ## Outcome
 
@@ -198,12 +200,12 @@ initial_rows = 32     # 3 through 1000
   kind, and `schemas/fixtures.json` cases. Regenerate both schema files
   with `mise run schema:generate`.
 - `huterm-gpui`: the `TerminalFont` plumbing at every site listed above,
-  the Linux `monospace` resolution, `initial_window_size` and the
+  `initial_window_size` and the
   post-creation clamp, `shell_command` and `TerminalView` initial grids,
   the Settings weight row and its enumeration, and the default config
   template (it lists `[font]` and `[window]`).
-- Dependencies: `zed-font-kit` for macOS in `crates/huterm-gpui/Cargo.toml`;
-  run `mise run license` and `mise run licenses:generate`.
+- Dependencies: `zed-font-kit` for macOS and `fontdb` for Linux in
+  `crates/huterm-gpui/Cargo.toml`; run `mise run license` and `mise run licenses:generate`.
 - Docs: `docs/configuration.md` (Fonts and themes, and an initial window
   size passage near the window settings) and the desktop client guide's
   rendering or configuration rules where this change teaches something
@@ -224,10 +226,9 @@ initial_rows = 32     # 3 through 1000
 ## Failure paths and risks
 
 - Weight missing from the family: nearest face, Settings note; no error.
-- Family missing: existing fallback; the weight applies to the fallback.
-- Font-kit (fontconfig) and GPUI (fontdb) disagree about faces on Linux
-  for an unusual family: the note may be wrong. Accepted; rendering always
-  follows GPUI.
+- Family missing: existing fallback. On macOS the weight applies to Menlo;
+  on Linux the fallback is the `monospace` alias, which draws at its
+  default weight.
 - Enumeration panic or failure: caught, logged, nine plain options.
 - Out-of-order enumeration: dropped by family and generation.
 - Requested window larger than the display: clamped, smaller grid.
@@ -246,7 +247,7 @@ initial_rows = 32     # 3 through 1000
 | Window size from cells, chrome, and padding; clamp to a visible area; minimum size | unit tests on `initial_window_size` and the clamp helper |
 | Weight-only reload invalidates prepared glyphs with unchanged metrics and snapshot; PTY cell pixel size follows a metrics change without a grid change | renderer unit tests next to the cache-eviction test in `renderer/tests.rs`, and a view or tier 2 test for the PTY cell size |
 | Settings weight row: numeric value shows as its name, menu highlight, a pick writes a name, the same pick writes nothing, missing-weight note, one-weight disabled state, reset | tier 2 Settings tests in the `window_tests/settings_lists.rs` style |
-| Linux `monospace` resolution | a focused test or probe in the Linux container (`mise tasks` lists the Docker test task), with the result recorded |
+| Linux `monospace` alias in Settings | a tier 2 test that the weight select is disabled with its note and enumerates nothing |
 | Real rendering on macOS | `mise run smoke:renderer`, extended to draw a non-regular weight if cheap; then a running-app check with a scratch config: a multi-weight family at Light and at Medium, bold text visibly heavier, and the Settings row |
 | Real window size on macOS | running-app check: `initial_columns = 120`, `initial_rows = 40`; the size indicator or `stty size` in the first window and a new window reads 120x40; an oversized value opens within the screen |
 | Repository gates | `mise run verify` before handoff; CI |
