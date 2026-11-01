@@ -13,6 +13,23 @@ const CLOSE_BUTTON: usize = 0;
 /// `NSWindowZoomButton`.
 const ZOOM_BUTTON: usize = 2;
 
+/// The native title bar outside the content rectangle, in window points.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "native point sizes fit f32"
+)]
+pub(crate) fn height(window: &Window) -> anyhow::Result<f32> {
+    let native = native_window(window)?;
+    // SAFETY: The live NSWindow is read synchronously on the main thread.
+    let (frame, content): (Bounds<f64>, Bounds<f64>) = unsafe {
+        let frame: Bounds<f64> = msg_send![native, frame];
+        let content: Bounds<f64> =
+            msg_send![native, contentRectForFrameRect: frame];
+        (frame, content)
+    };
+    Ok((frame.size.height - content.size.height).max(0.0) as f32)
+}
+
 /// The close button's frame in its title-bar container, in points. Before
 /// GPUI repositions the buttons this is `AppKit`'s own placement.
 pub(crate) fn close_button_frame(

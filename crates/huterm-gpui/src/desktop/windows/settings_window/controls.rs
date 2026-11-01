@@ -102,6 +102,20 @@ impl SettingsView {
             Some(Special::Modifiers) => {
                 return self.render_modifiers(setting, read_only, swatch, cx);
             }
+            Some(Special::FontWeight) => {
+                let current = self.weight_current(setting);
+                return self.select(
+                    format!("settings-select-{}", setting.path),
+                    &setting.path,
+                    setting.label.clone(),
+                    super::font_weights::weight_label(current),
+                    Opener::Setting(setting),
+                    locked || self.weight_disabled(),
+                    px(150.0),
+                    swatch,
+                    cx,
+                );
+            }
             Some(Special::DragModifiers) => {
                 return self.render_drag_modifiers(setting, locked, swatch, cx);
             }

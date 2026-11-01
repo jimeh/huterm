@@ -11,6 +11,8 @@ pub(super) mod values;
 pub(super) enum Special {
     /// Font families installed on this system.
     FontPicker,
+    /// The terminal family's available weights.
+    FontWeight,
     /// Bundled and custom themes, with color overrides on top.
     ThemePicker,
     /// Modifier chips.
@@ -34,6 +36,7 @@ pub(super) enum Special {
 
 const OVERRIDES: &[(&str, Special)] = &[
     ("font.family", Special::FontPicker),
+    ("font.weight", Special::FontWeight),
     ("font.ui_family", Special::FontPicker),
     ("theme", Special::ThemePicker),
     ("terminal.link_modifiers", Special::Modifiers),

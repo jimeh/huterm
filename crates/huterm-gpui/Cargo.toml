@@ -37,6 +37,10 @@ notify = "=8.2.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "=0.2.7"
+# Match GPUI's Apple font source and trait guards, without new package versions.
+zed-font-kit = { version = "=0.14.1-zed", default-features = false, features = ["source"] }
+core-foundation = "=0.10.1"
+core-text = "=21.0.0"
 
 [lints]
 workspace = true

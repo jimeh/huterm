@@ -10,6 +10,21 @@ use crate::{LinkModifiers, PaneDrag, RawConfig, ScrollbackSize, ThemeFile};
 pub const CONFIG_ASSET: &str = "huterm.schema.json";
 pub const THEME_ASSET: &str = "huterm-theme.schema.json";
 
+impl JsonSchema for crate::FontWeight {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "FontWeight".into()
+    }
+    fn inline_schema() -> bool {
+        true
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({"anyOf": [
+            {"type": "string", "enum": crate::FontWeight::ALL.map(crate::FontWeight::name)},
+            {"type": "integer", "enum": crate::FontWeight::ALL.map(crate::FontWeight::number)}
+        ]})
+    }
+}
+
 impl JsonSchema for LinkModifiers {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "LinkModifiers".into()

@@ -318,9 +318,13 @@ in Settings and Quit would do nothing. Committing Quit closes Settings.
 
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
-and apply colors and decorations during paint. Use the generic `monospace` font
-family on Linux; requesting macOS-only Menlo repeatedly exercises GPUI's
-missing-font fallback path.
+and apply colors and decorations during paint. Linux defaults to the generic
+`monospace` family; requesting macOS-only Menlo there repeatedly exercises
+GPUI's missing-font fallback path. Resolve Linux's `monospace`
+alias through fontconfig before measuring or shaping. GPUI's exact family
+lookup does not resolve the alias, and its missing-family fallback stack
+drops the requested weight. Carry the resolved
+`TerminalFont`, including weight, through metrics, shaping, and reloads.
 
 Derive the terminal's grid geometry once through `GridMetrics`. GPUI
 reports raw font descent as negative on macOS and Linux, so normalize it to a
@@ -885,6 +889,12 @@ GPUI test platform lists no installed fonts, so font tests call
 `unavailable_fonts` to the state they assume. `run_list` routes the field
 verbs to the focused field's list first; the field's own behavior gets the keys
 the list leaves alone.
+
+The terminal weight scan mirrors GPUI's candidate filter before matching full
+face properties: require an `m` glyph (with GPUI's icon-font exception), and on
+macOS check the numeric CoreText traits before calling font-kit's
+`properties()`. That accessor can panic. Catch enumeration failures on the
+background worker and reject completions for an older family or generation.
 
 The terminal window has two `Command` lists. The palette mounts one per
 stage or identity slot, named "Commands" or for the slot, and drops it for

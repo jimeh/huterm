@@ -47,6 +47,7 @@ use crate::renderer::{
     GridMetrics, TerminalRenderer, rgb_color as color, rgba_color,
 };
 use crate::scroll::ScrollController;
+use crate::terminal_font::TerminalFont;
 use crate::ui::animation::AnimationSchedule;
 use crate::ui::scrollbar::{
     Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarColors,
@@ -65,6 +66,7 @@ use overlay::{badge, key_cap_on, mono_font_family, raised_panel, tokens};
 use size_indicator::SizeIndicatorVisibility;
 
 const INITIAL_COLUMNS: u16 = 100;
+#[cfg(test)]
 const INITIAL_ROWS: u16 = 32;
 /// The terminal's overlay scrollbar: history rows counted from the bottom,
 /// a paging track, hover expansion, and room below the track for the scroll
@@ -253,10 +255,10 @@ fn install_menus(cx: &mut App) {
 fn resolve_metrics(
     config: &Config,
     cx: &App,
-) -> anyhow::Result<(String, GridMetrics)> {
+) -> anyhow::Result<(TerminalFont, GridMetrics)> {
     let text_system = cx.text_system();
     let mut family = config.font.family.clone();
-    if family != "monospace"
+    if (cfg!(target_os = "macos") || family != "monospace")
         && !text_system
             .all_font_names()
             .iter()
@@ -270,9 +272,14 @@ fn resolve_metrics(
         eprintln!("Huterm font {family:?} is unavailable; using {fallback}");
         family = fallback.into();
     }
+    #[cfg(target_os = "linux")]
+    if family == "monospace" {
+        family = crate::terminal_font::monospace_family().unwrap_or(family);
+    }
+    let terminal_font = TerminalFont::new(family, config.font.weight);
     let font_size = px(config.font.size);
-    let metrics = GridMetrics::resolve(text_system, &family, font_size)?;
-    Ok((family, metrics))
+    let metrics = GridMetrics::resolve(text_system, &terminal_font, font_size)?;
+    Ok((terminal_font, metrics))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -484,7 +491,7 @@ struct TerminalView {
     requested_grid: GridSize,
     last_cell_size: Option<CellSize>,
     metrics: GridMetrics,
-    font_family: String,
+    terminal_font: TerminalFont,
     font_size: Pixels,
     window_config: WindowConfig,
     /// Where the view sits in its window; the workspace computes it from
@@ -631,7 +638,7 @@ impl TerminalView {
         viewer: TerminalViewer,
         frame_clock: Rc<refresh::FrameClock>,
         config: &Config,
-        font_family: String,
+        terminal_font: TerminalFont,
         metrics: GridMetrics,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
@@ -779,7 +786,7 @@ impl TerminalView {
             quiet_resize: false,
             snapshot: None,
             renderer: Rc::new(RefCell::new(TerminalRenderer::new(
-                font_family.clone(),
+                terminal_font.clone(),
                 theme.clone(),
                 metrics,
             ))),
@@ -793,9 +800,9 @@ impl TerminalView {
                 layout_subscription,
             ],
             scroll: ScrollController::default(),
-            requested_grid: GridSize::clamped(INITIAL_COLUMNS, INITIAL_ROWS),
+            requested_grid: initial_grid(config.window),
             metrics,
-            font_family,
+            terminal_font,
             last_cell_size: None,
             font_size: metrics.font_size,
             window_config: config.window,
@@ -1358,7 +1365,7 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         self.renderer.borrow_mut().reconfigure(
-            self.font_family.clone(),
+            self.terminal_font.clone(),
             theme.clone(),
             self.metrics,
         );
@@ -2683,7 +2690,7 @@ impl TerminalView {
         if metrics != self.metrics {
             self.metrics = metrics;
             self.renderer.borrow_mut().reconfigure(
-                self.font_family.clone(),
+                self.terminal_font.clone(),
                 self.theme.clone(),
                 metrics,
             );
@@ -3532,7 +3539,7 @@ impl Render for TerminalView {
             .h(self.viewport(window).height)
             .bg(color(self.theme.background))
             .text_size(self.font_size)
-            .font_family(self.font_family.clone())
+            .font_family(self.terminal_font.family.clone())
             .child(
                 canvas(
                     move |_, window, _| {
@@ -3852,10 +3859,15 @@ fn terminal_top(chrome_hidden: bool) -> Pixels {
     titlebar_inset(cfg!(target_os = "macos"), chrome_hidden)
 }
 
+fn initial_grid(window: WindowConfig) -> GridSize {
+    GridSize::clamped(window.initial_columns, window.initial_rows)
+}
+
 fn shell_command(
     metrics: GridMetrics,
     theme: &Theme,
     terminal: config::TerminalConfig,
+    window: WindowConfig,
 ) -> anyhow::Result<TerminalCommand> {
     let shell =
         std::env::var_os("SHELL").map_or_else(default_shell, PathBuf::from);
@@ -3878,7 +3890,7 @@ fn shell_command(
         arguments,
         working_directory,
         environment,
-        grid_size: GridSize::clamped(INITIAL_COLUMNS, INITIAL_ROWS),
+        grid_size: initial_grid(window),
         cell_size: CellSize {
             width: pixel_count(metrics.cell_width * metrics.scale_factor),
             height: pixel_count(metrics.cell_height * metrics.scale_factor),
@@ -4118,6 +4130,30 @@ fn control_byte(key: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "test-support")]
+    #[gpui::test]
+    fn unavailable_terminal_family_keeps_its_configured_weight(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut config = Config::default();
+        config.font.family = "Huterm nonexistent font".into();
+        config.font.weight =
+            huterm_config::FontWeight::parse(&toml::Value::Integer(300))
+                .unwrap();
+        cx.update(|cx| {
+            let (font, _) = resolve_metrics(&config, cx).unwrap();
+            assert_ne!(font.family, config.font.family);
+            assert_eq!(font.weight.number(), 300);
+            assert_eq!(font.bold_weight.number(), 700);
+            #[cfg(target_os = "macos")]
+            {
+                assert_eq!(font.family, "Menlo");
+                config.font.family = "monospace".into();
+                assert_eq!(resolve_metrics(&config, cx).unwrap().0, font);
+            }
+        });
+    }
 
     #[test]
     fn the_size_panel_follows_its_variant_and_compacts_then_hides_in_small_views()

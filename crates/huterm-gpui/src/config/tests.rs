@@ -17,7 +17,7 @@ fn schema_fixtures_match_application_parsing_and_keymap_compilation() {
         serde_json::from_str(include_str!("../../../../schemas/fixtures.json"))
             .unwrap();
     let fixtures = fixtures.as_array().unwrap();
-    assert_eq!(fixtures.len(), 258);
+    assert_eq!(fixtures.len(), 291);
     for fixture in fixtures {
         let source = fixture["toml"].as_str().unwrap();
         let expected = fixture["valid"].as_bool().unwrap();
@@ -891,6 +891,8 @@ fn window_padding_rejects_invalid_values_and_accepts_zero() {
     assert_eq!(
         config.window,
         WindowConfig {
+            initial_columns: 100,
+            initial_rows: 32,
             padding_x: 0.0,
             padding_y: 0.0,
             padding_balance: false,
@@ -1167,4 +1169,24 @@ fn test_directory() -> PathBuf {
         "huterm-config-test-{}-{sequence}",
         std::process::id()
     ))
+}
+
+#[test]
+fn terminal_weight_and_initial_window_grid_reach_runtime_config() {
+    let config = parse("[font]\nweight = 500\n[window]\ninitial_columns = 120\ninitial_rows = 40").unwrap();
+    assert_eq!(config.font.weight.number(), 500);
+    assert_eq!(
+        (config.window.initial_columns, config.window.initial_rows),
+        (120, 40)
+    );
+    let defaults = Config::default();
+    assert_eq!(defaults.font.weight.number(), 400);
+    assert_eq!(defaults.font.weight.bold().number(), 700);
+    assert_eq!(
+        (
+            defaults.window.initial_columns,
+            defaults.window.initial_rows
+        ),
+        (100, 32)
+    );
 }

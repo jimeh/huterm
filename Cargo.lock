@@ -2547,6 +2547,8 @@ version = "0.26.0"
 dependencies = [
  "anyhow",
  "async-channel",
+ "core-foundation 0.10.1",
+ "core-text",
  "global-hotkey",
  "gpui-pre",
  "gpui-pre-platform",

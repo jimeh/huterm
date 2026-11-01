@@ -83,12 +83,18 @@ volume = 0.5
 [font]
 family = "Menlo"
 size = 14.0
+# Terminal weight: thin, extra_light, light, regular, medium, semibold, bold,
+# extra_bold, black, or 100 through 900 in steps of 100.
+weight = "regular"
 # The interface font for tabs, Settings, menus, and dialogs. An empty family
 # uses the system font; the size runs from 10 to 16 points.
 # ui_family = ""
 # ui_size = 13.0
 
 [window]
+# Grid size for new ordinary windows, limited to the available display area.
+initial_columns = 100 # 10 through 1000
+initial_rows = 32 # 3 through 1000
 # Default fullscreen mode on macOS: "native" or "non_native". Linux ignores it.
 macos_fullscreen_mode = "non_native"
 # Padding in logical points on each side of the terminal.
@@ -628,6 +634,7 @@ fn parse_consumed(
             scrollback_compression: raw.terminal.scrollback_compression,
         },
         font: FontConfig {
+            weight: raw.font.weight,
             family: raw.font.family,
             size: raw.font.size,
             ui_family: Some(raw.font.ui_family.trim().to_owned())

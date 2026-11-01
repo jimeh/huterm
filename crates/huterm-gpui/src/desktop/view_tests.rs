@@ -794,3 +794,64 @@ fn a_held_gesture_keeps_its_owners_cursor_whatever_shift_does(
         view.mouse_up(&release(position), window, cx);
     });
 }
+
+#[gpui::test]
+fn font_metrics_update_pty_cell_pixels_without_changing_the_grid(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(
+        cx,
+        r#"stty raw -echo; printf READY;
+        dd bs=1 count=1 >/dev/null 2>&1; printf '\033[16t';
+        reply=$(dd bs=1 count=10 2>/dev/null | od -An -tx1 | tr -d ' \n');
+        printf 'CELL:%s' "$reply"; exec cat >/dev/null"#,
+    );
+    harness.wait_for("the initial laid-out grid", |view, _| {
+        screen_text(view).is_some_and(|text| text.contains("READY"))
+            && view.displayed_grid() == Some(view.requested_grid)
+            && view.last_cell_size == Some(CELL)
+    });
+    let (grid, revision, requests) = harness.read(|view, _| {
+        (
+            view.requested_grid,
+            view.snapshot.as_ref().unwrap().geometry_revision,
+            view.resize_requests,
+        )
+    });
+    harness.update(|view, window, cx| {
+        // Half a logical point changes the physical cell from 32 to 33 pixels
+        // at the test window's scale, but 14 rows still fit in its height.
+        view.metrics = GridMetrics::fixed(CELL_WIDTH, CELL_HEIGHT + 0.5)
+            .at_scale(window.scale_factor());
+        view.renderer.borrow_mut().reconfigure(
+            view.terminal_font.clone(),
+            view.theme.clone(),
+            view.metrics,
+        );
+        view.resize_to_layout(window, false);
+        cx.notify();
+    });
+    harness.wait_for("canonical cell-size publication", |view, _| {
+        view.snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.geometry_revision > revision)
+    });
+    harness.read(|view, _| {
+        assert_eq!(view.requested_grid, grid);
+        assert_eq!(
+            view.last_cell_size,
+            Some(CellSize {
+                width: 16,
+                height: 33
+            })
+        );
+        assert_eq!(view.resize_requests, requests + 1);
+        view.viewer
+            .send_input(TerminalInput::Text("Q".into()))
+            .unwrap();
+    });
+    harness.wait_for("the child's cell-size query reply", |view, _| {
+        screen_text(view)
+            .is_some_and(|text| text.contains("CELL:1b5b363b33333b313674"))
+    });
+}

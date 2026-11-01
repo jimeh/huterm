@@ -8,15 +8,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Bounds, FontStyle, FontWeight, Hsla, LineLayout, Pixels, Point,
-    StrikethroughStyle, TextRun, TextSystem, UnderlineStyle, Window, fill,
-    font, outline, point, px, rgba, size,
+    Bounds, FontStyle, Hsla, LineLayout, Pixels, Point, StrikethroughStyle,
+    TextRun, TextSystem, UnderlineStyle, Window, fill, outline, point, px,
+    rgba, size,
 };
 use huterm_protocol::{
     BufferRange, Cell, CellColor, Cursor, CursorShape, Rgb, TerminalSnapshot,
 };
 
 use crate::config::Theme;
+use crate::terminal_font::TerminalFont;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct GridMetrics {
@@ -36,10 +37,10 @@ pub(super) struct GridMetrics {
 impl GridMetrics {
     pub(super) fn resolve(
         text_system: &TextSystem,
-        font_family: &str,
+        terminal_font: &TerminalFont,
         font_size: Pixels,
     ) -> anyhow::Result<Self> {
-        let font_id = text_system.resolve_font(&font(font_family.to_owned()));
+        let font_id = text_system.resolve_font(&terminal_font.face(false));
         let cell_width = text_system.advance(font_id, font_size, 'M')?.width;
         let ascent = text_system.ascent(font_id, font_size);
         let descent = text_system.descent(font_id, font_size);
@@ -94,7 +95,7 @@ impl GridMetrics {
 
     /// Metrics with a fixed cell size, for tests whose text system reports
     /// synthetic font measurements.
-    #[cfg(all(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(super) fn fixed(cell_width: f32, cell_height: f32) -> Self {
         Self::from_measurements(
             px(12.0),
@@ -112,7 +113,7 @@ pub(super) struct TerminalRenderer {
     layouts: GlyphLayoutCache<Arc<LineLayout>>,
     graphics: builtin::GeometryCache,
     metrics: GridMetrics,
-    font_family: String,
+    terminal_font: TerminalFont,
     theme: Theme,
     selection: Option<BufferRange>,
     /// Draw a block cursor as an outline: the pane has no keyboard focus
@@ -136,29 +137,29 @@ struct PrepareOutcome {
 impl TerminalRenderer {
     pub(super) fn reconfigure(
         &mut self,
-        font_family: String,
+        terminal_font: TerminalFont,
         theme: Theme,
         metrics: GridMetrics,
     ) {
-        if self.font_family == font_family
+        if self.terminal_font == terminal_font
             && self.theme == theme
             && self.metrics == metrics
         {
             return;
         }
-        if self.font_family != font_family || self.metrics != metrics {
+        if self.terminal_font != terminal_font || self.metrics != metrics {
             self.layouts = GlyphLayoutCache::default();
             self.graphics.clear();
         }
         self.snapshot = None;
         self.rows.clear();
-        self.font_family = font_family;
+        self.terminal_font = terminal_font;
         self.theme = theme;
         self.metrics = metrics;
     }
 
     pub(super) fn new(
-        font_family: String,
+        terminal_font: TerminalFont,
         theme: Theme,
         metrics: GridMetrics,
     ) -> Self {
@@ -177,7 +178,7 @@ impl TerminalRenderer {
             layouts: GlyphLayoutCache::default(),
             graphics: builtin::GeometryCache::default(),
             metrics,
-            font_family,
+            terminal_font,
             theme,
             selection: None,
             cursor_outline: false,
@@ -345,7 +346,7 @@ impl TerminalRenderer {
                         &mut self.graphics,
                         window,
                         &mut cache_activity,
-                        (&self.font_family, self.metrics),
+                        (&self.terminal_font, self.metrics),
                         &self.theme,
                     );
                 }
@@ -530,10 +531,10 @@ fn prepare_row(
     graphics: &mut builtin::GeometryCache,
     window: &mut Window,
     cache_activity: &mut CacheActivity,
-    font: (&str, GridMetrics),
+    font: (&TerminalFont, GridMetrics),
     theme: &Theme,
 ) -> PreparedRow {
-    let (font_family, metrics) = font;
+    let (terminal_font, metrics) = font;
     let font_size = metrics.font_size;
     let mut row = PreparedRow {
         backgrounds: prepare_backgrounds(cells, theme),
@@ -583,7 +584,7 @@ fn prepare_row(
         );
         let (layout, hit) = layouts.get_or_insert_with(key, variant, || {
             let text = cell.text.as_str();
-            let runs = [text_run(text, variant, font_family)];
+            let runs = [text_run(text, variant, terminal_font)];
             window
                 .text_system()
                 .layout_line(text, font_size, &runs, None)
@@ -1006,13 +1007,12 @@ impl<T: Clone> VariantLayouts<T> {
     }
 }
 
-fn text_run(text: &str, variant: FontVariant, font_family: &str) -> TextRun {
-    let mut cell_font = font(font_family.to_owned());
-    cell_font.weight = if variant.bold {
-        FontWeight::BOLD
-    } else {
-        FontWeight::NORMAL
-    };
+fn text_run(
+    text: &str,
+    variant: FontVariant,
+    terminal_font: &TerminalFont,
+) -> TextRun {
+    let mut cell_font = terminal_font.face(variant.bold);
     cell_font.style = if variant.italic {
         FontStyle::Italic
     } else {

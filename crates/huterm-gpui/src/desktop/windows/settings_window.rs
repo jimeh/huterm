@@ -8,6 +8,8 @@
 //! the background executor one at a time; a change made during one waits
 //! behind it.
 
+mod font_weights;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -292,6 +294,7 @@ pub(super) struct SettingsView {
     families: Families,
     /// Scans started; only the latest applies.
     font_scans: u64,
+    weights: font_weights::Weights,
     /// What the scan that last asked for a reload found unavailable, so a
     /// reload that cannot apply it does not ask again.
     font_reload: Option<UnavailableFonts>,
@@ -487,6 +490,7 @@ impl SettingsView {
             font_lists: HashMap::new(),
             families: Families::default(),
             font_scans: 0,
+            weights: font_weights::Weights::default(),
             font_reload: None,
             #[cfg(test)]
             test_families: None,
@@ -1046,7 +1050,7 @@ impl SettingsView {
             {
                 return None;
             }
-            Some(Special::DragModifiers) | None => {
+            Some(Special::DragModifiers | Special::FontWeight) | None => {
                 return Some(self.stop(path, cx));
             }
         };
@@ -1457,7 +1461,11 @@ impl SettingsView {
                 self.write(setting, Some(Value::Boolean(!on)), cx);
             }
             SettingKind::Choice(_) => self.open_select(setting, window, cx),
-            _ if special(&setting.path) == Some(Special::DragModifiers) => {
+            _ if matches!(
+                special(&setting.path),
+                Some(Special::DragModifiers | Special::FontWeight)
+            ) =>
+            {
                 self.open_select(setting, window, cx);
             }
             _ => {}
@@ -1470,6 +1478,10 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if special(&setting.path) == Some(Special::FontWeight) {
+            self.open_weights(setting, window, cx);
+            return;
+        }
         if special(&setting.path) == Some(Special::DragModifiers) {
             let rows = self
                 .drag_modifier_choices()
@@ -1810,11 +1822,15 @@ impl SettingsView {
                     // default still writes.
                     Some(MenuFor::Setting(setting)) => {
                         let setting = *setting;
-                        let picked = Value::String(value.to_string());
-                        if view.holds(setting, &picked) {
-                            view.errors.remove(setting.path.as_str());
+                        if special(&setting.path) == Some(Special::FontWeight) {
+                            view.pick_weight(setting, value, cx);
                         } else {
-                            view.write(setting, Some(picked), cx);
+                            let picked = Value::String(value.to_string());
+                            if view.holds(setting, &picked) {
+                                view.errors.remove(setting.path.as_str());
+                            } else {
+                                view.write(setting, Some(picked), cx);
+                            }
                         }
                     }
                     Some(MenuFor::Argument { row, name, kind }) => {
@@ -1953,6 +1969,11 @@ impl SettingsView {
     /// The item a menu for `target` opens on: the value its control shows.
     fn menu_current(&self, target: &MenuFor) -> Option<String> {
         match target {
+            MenuFor::Setting(setting)
+                if special(&setting.path) == Some(Special::FontWeight) =>
+            {
+                Some(self.weight_current(setting).name().into())
+            }
             MenuFor::Setting(setting)
                 if special(&setting.path) == Some(Special::DragModifiers) =>
             {
@@ -2493,6 +2514,7 @@ impl SettingsView {
     /// fonts once at startup, so there only the first scan can find
     /// anything new.
     pub(super) fn scan_fonts(&mut self, cx: &mut Context<'_, Self>) {
+        self.scan_weights(cx);
         // A test's families stand in for every scan, on every platform.
         #[cfg(test)]
         if let Some(families) = self.test_families {
@@ -2552,8 +2574,10 @@ impl SettingsView {
         } else {
             "monospace"
         };
-        let terminal = Some(font.family.as_str())
-            .filter(|family| *family != "monospace" && *family != fallback);
+        let terminal = Some(font.family.as_str()).filter(|family| {
+            (cfg!(target_os = "macos") || *family != "monospace")
+                && *family != fallback
+        });
         let found = UnavailableFonts {
             terminal: missing(terminal),
             interface: missing(font.ui_family.as_deref()),
@@ -2792,6 +2816,7 @@ fn apply_note(apply: Apply) -> Option<&'static str> {
     match apply {
         Apply::Live => None,
         Apply::NewTabsAndPanes => Some("Applies to new tabs and panes"),
+        Apply::NewWindows => Some("Applies to new windows"),
         Apply::NewTerminals => Some("Applies to new terminals"),
         Apply::LaterEvents => Some("Applies from the next time it is used"),
         Apply::NextPaletteOpen => {
@@ -3022,6 +3047,54 @@ impl Render for SettingsView {
 /// What desktop tests drive and observe in the window.
 #[cfg(all(test, feature = "test-support"))]
 impl SettingsView {
+    pub(super) fn set_weight_enumerator(
+        &mut self,
+        enumerate: font_weights::Enumerator,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.weights.enumerator = Some(enumerate);
+        self.scan_weights(cx);
+    }
+
+    pub(super) fn weight_state(
+        &self,
+    ) -> (String, u64, Vec<huterm_config::FontWeight>, Option<String>) {
+        let setting = self.setting_at("font.weight").unwrap();
+        (
+            self.weights.family.clone(),
+            self.weights.generation,
+            self.weight_choices(setting),
+            self.weight_note(setting),
+        )
+    }
+
+    pub(super) fn weight_completion(
+        &mut self,
+        family: &str,
+        generation: u64,
+        faces: Result<crate::terminal_font::WeightFaces, String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.weights_scanned(family, generation, faces, cx);
+    }
+
+    pub(super) fn focus_weight(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.stop("font.weight", cx).focus(window, cx);
+    }
+
+    pub(super) fn weight_highlight(&self, cx: &App) -> Option<String> {
+        self.menu
+            .as_ref()?
+            .0
+            .read(cx)
+            .selected_id()
+            .map(|id| id.to_string())
+    }
+
     pub(super) fn command(
         &mut self,
         id: huterm_protocol::CommandId,
