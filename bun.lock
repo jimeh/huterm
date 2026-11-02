@@ -7,7 +7,7 @@
       "devDependencies": {
         "@types/bun": "1.4.4",
         "ajv": "8.20.0",
-        "lucide-static": "1.61.0",
+        "lucide-static": "1.63.0",
         "typescript": "7.0.2",
       },
     },
@@ -67,7 +67,7 @@
 
     "json-schema-traverse": ["json-schema-traverse@1.0.0", "", {}, "sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug=="],
 
-    "lucide-static": ["lucide-static@1.61.0", "", {}, "sha512-yLAiQB3MWUJEstsEDAwenSA3m7vr1tdLvgnC16Q/XMxRRma0DWwMs8M2bWlvgShrIs1m2mWMJ+0AiahqQO4GrA=="],
+    "lucide-static": ["lucide-static@1.63.0", "", {}, "sha512-rTBVdPw3vlBsjxfdqm5Tvaa0jI8TMlVAeGefHRIvzUBnEyUE866zSZN34FwpJkXiGN8ER+sy1JCB0XOBEe/QgA=="],
 
     "require-from-string": ["require-from-string@2.0.2", "", {}, "sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw=="],
 
