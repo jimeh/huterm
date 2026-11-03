@@ -1704,5 +1704,53 @@
     "toml": "[window]\ninitial_rows = 1001",
     "valid": false,
     "theme": false
+  },
+  {
+    "name": "window transparency combined",
+    "toml": "[window]\nopacity = 0.7\nbackground_opacity = 0.6\nforeground_opacity = 0.8\nbackground_blur = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window background fully transparent",
+    "toml": "[window]\nbackground_opacity = 0",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window opacity rejects 0.09",
+    "toml": "[window]\nopacity = 0.09",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window opacity rejects 1.01",
+    "toml": "[window]\nopacity = 1.01",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window background_opacity rejects -0.01",
+    "toml": "[window]\nbackground_opacity = -0.01",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window background_opacity rejects 1.01",
+    "toml": "[window]\nbackground_opacity = 1.01",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window foreground_opacity rejects 0.09",
+    "toml": "[window]\nforeground_opacity = 0.09",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window foreground_opacity rejects 1.01",
+    "toml": "[window]\nforeground_opacity = 1.01",
+    "valid": false,
+    "theme": false
   }
 ]

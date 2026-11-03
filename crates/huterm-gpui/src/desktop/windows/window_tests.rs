@@ -5317,3 +5317,5 @@ mod settings_themes;
 mod settings_weights;
 mod synced_input;
 mod system_appearance;
+
+mod transparency;

@@ -903,6 +903,8 @@ pub struct TerminalSnapshot {
     pub history_size: usize,
     /// Effective cursor color override, when terminal content defines one.
     pub cursor_color: Option<Rgb>,
+    /// Effective OSC 11 default background override, cleared by OSC 111.
+    pub default_background: Option<Rgb>,
 }
 
 impl TerminalSnapshot {

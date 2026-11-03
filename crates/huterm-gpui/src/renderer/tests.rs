@@ -349,7 +349,7 @@ fn cache_promotes_layouts_from_previous_generation() {
 }
 
 #[test]
-fn backgrounds_merge_runs_and_omit_the_theme_background() {
+fn backgrounds_merge_runs_and_only_omit_symbolic_default_background() {
     let theme = Theme::default();
     let cell = |background| Cell {
         text: " ".into(),
@@ -366,7 +366,7 @@ fn backgrounds_merge_runs_and_omit_the_theme_background() {
         cell(CellColor::DefaultBackground),
         cell(red),
         cell(red),
-        // An explicit color equal to the theme background needs no quad.
+        // Explicit colors stay solid even when equal to the theme background.
         cell(CellColor::Rgb(theme.background)),
         cell(CellColor::Indexed(4)),
     ];
@@ -377,8 +377,8 @@ fn backgrounds_merge_runs_and_omit_the_theme_background() {
         .iter()
         .map(|background| (background.start, background.columns))
         .collect();
-    assert_eq!(spans, [(1, 2), (4, 1)]);
-    assert_eq!(backgrounds[1].color, rgb_color(theme.indexed(4)));
+    assert_eq!(spans, [(1, 2), (3, 1), (4, 1)]);
+    assert_eq!(backgrounds[2].color, rgb_color(theme.indexed(4)));
 }
 
 fn key(text: &str) -> GlyphText<'_> {
@@ -724,5 +724,169 @@ fn snapshot(columns: u16, rows: u16, contents: &[&str]) -> TerminalSnapshot {
         viewport: Viewport::default(),
         history_size: 0,
         cursor_color: None,
+        default_background: None,
     }
+}
+
+#[test]
+fn opacity_changes_preserve_prepared_rows_and_glyph_caches() {
+    let mut renderer = TerminalRenderer::new(
+        "Menlo".into(),
+        Theme::default(),
+        GridMetrics::fixed(8.0, 16.0),
+    );
+    let snapshot = Arc::new(snapshot(1, 1, &["A"]));
+    renderer.snapshot = Some(snapshot.clone());
+    renderer.rows.push(PreparedRow::default());
+    let rows = renderer.rows.as_ptr();
+    renderer.layouts.get_or_insert_with(
+        GlyphText::Scalar('A'),
+        FontVariant::default(),
+        || Arc::new(LineLayout::default()),
+    );
+    assert!(renderer.set_opacity(
+        0.6,
+        0.7,
+        crate::transparency::Tint::default()
+    ));
+    assert_eq!(renderer.rows.as_ptr(), rows);
+    assert_eq!(renderer.rows.len(), 1, "opacity must retain prepared rows");
+    assert!(Arc::ptr_eq(renderer.snapshot.as_ref().unwrap(), &snapshot));
+    assert!(
+        renderer
+            .layouts
+            .get_or_insert_with(
+                GlyphText::Scalar('A'),
+                FontVariant::default(),
+                || panic!("cached glyph must survive")
+            )
+            .1
+    );
+    assert_eq!(renderer.background(None).a, 0.6);
+    assert_eq!(renderer.foreground(gpui::white()).a, 0.7);
+    let mut osc = (*snapshot).clone();
+    osc.default_background = Some(Rgb {
+        red: 1,
+        green: 2,
+        blue: 3,
+    });
+    assert_eq!(
+        renderer.background(Some(&osc)),
+        rgb_color(osc.default_background.unwrap()).opacity(0.6)
+    );
+}
+
+#[test]
+fn default_background_has_one_painter_even_before_a_snapshot() {
+    let mut renderer = TerminalRenderer::new(
+        "Menlo".into(),
+        Theme::default(),
+        GridMetrics::fixed(8.0, 16.0),
+    );
+    renderer.set_opacity(0.6, 0.7, crate::transparency::Tint::default());
+    assert_eq!(renderer.background(None).a, 0.6);
+    assert!(renderer.snapshot.is_none());
+    let cells = vec![
+        Cell {
+            text: " ".into(),
+            foreground: CellColor::DefaultForeground,
+            background: CellColor::DefaultBackground,
+            style: CellStyle::default()
+        };
+        5
+    ];
+    assert!(
+        prepare_backgrounds(&cells, &Theme::default()).is_empty(),
+        "the renderer must leave default cells to the TerminalView root"
+    );
+    assert_eq!(
+        cursor_fill(Theme::default().cursor, CursorShape::Beam).a,
+        1.0
+    );
+    assert_eq!(
+        cursor_fill(Theme::default().cursor, CursorShape::Block).a,
+        0.4
+    );
+}
+
+#[test]
+fn text_and_decorations_fade_while_selected_foreground_stays_solid() {
+    let mut renderer = TerminalRenderer::new(
+        "Menlo".into(),
+        Theme::default(),
+        GridMetrics::fixed(8.0, 16.0),
+    );
+    let snapshot = snapshot(2, 1, &["AB"]);
+    renderer.set_opacity(0.6, 0.7, crate::transparency::Tint::default());
+    renderer.set_selection(Some(BufferRange::ordered(
+        huterm_protocol::BufferPoint {
+            rows_from_live_bottom: 0,
+            column: 0,
+        },
+        huterm_protocol::BufferPoint {
+            rows_from_live_bottom: 0,
+            column: 0,
+        },
+    )));
+    assert_eq!(
+        renderer.glyph_foreground(&snapshot, 0, 0, gpui::white()).a,
+        1.0
+    );
+    assert_eq!(
+        renderer.glyph_foreground(&snapshot, 0, 1, gpui::white()).a,
+        0.7
+    );
+    assert_eq!(
+        renderer.foreground(gpui::white()).a,
+        0.7,
+        "link underline shares text alpha"
+    );
+    let cells = [Cell {
+        text: "X".into(),
+        foreground: CellColor::DefaultForeground,
+        background: CellColor::DefaultBackground,
+        style: CellStyle {
+            underline: true,
+            strikeout: true,
+            ..CellStyle::default()
+        },
+    }];
+    for decoration in prepare_decorations(&cells, &Theme::default(), |cell| {
+        cell.style.underline || cell.style.strikeout
+    }) {
+        assert_eq!(renderer.foreground(decoration.color).a, 0.7);
+    }
+}
+
+#[test]
+fn osc11_only_reclassifies_rgb_override_runs_and_reset_restores_them() {
+    let theme = Theme::default();
+    let override_color = theme.indexed(4);
+    let cell = |background| Cell {
+        text: " ".into(),
+        foreground: CellColor::DefaultForeground,
+        background,
+        style: CellStyle::default(),
+    };
+    let cells = [
+        cell(CellColor::DefaultBackground),
+        cell(CellColor::Rgb(override_color)),
+        cell(CellColor::Indexed(4)),
+        cell(CellColor::DefaultForeground),
+    ];
+    let runs = prepare_backgrounds(&cells, &theme);
+    assert_eq!(runs.len(), 3);
+    assert!(runs[0].is_default(Some(override_color)));
+    assert!(
+        !runs[1].is_default(Some(override_color)),
+        "indexed program background stays solid"
+    );
+    assert!(
+        !runs[2].is_default(Some(theme.foreground)),
+        "inverse default foreground stays solid"
+    );
+    assert!(
+        runs.iter().all(|run| !run.is_default(None)),
+        "OSC 111 clears the override"
+    );
 }

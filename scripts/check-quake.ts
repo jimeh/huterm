@@ -382,6 +382,18 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         if (show) await checkLayout(profile(await state(),name)?.fullscreen === "true", name);
         else await waitFor(async () => profile(await state(),name)?.tab_reveal === "0", "hidden quake dismisses tab overlay");
       };
+      // Overall opacity multiplies the normalized fade, including a reload
+      // during a hide. Native readback is independent of policy samples.
+      await reload('hide_on_focus_loss = false\nanimation = "fade"\nanimation_ms = 1000', '[window]\nopacity = 0.7\nbackground_opacity = 0.6');
+      await waitFor(async () => Math.abs(Number((await current())?.opacity) - 0.7) < 0.0001, "configured quake native opacity");
+      await command("default toggle_quake");
+      await waitFor(async () => { const value = await current(); const alpha = Number(value?.opacity); return value?.stage === "Animate" && alpha > 0.1 && alpha < 0.6; }, "quake normalized fade starts");
+      await reload('hide_on_focus_loss = false\nanimation = "fade"\nanimation_ms = 1000', '[window]\nopacity = 0.5\nbackground_opacity = 0.6');
+      await waitFor(async () => { const value = await current(); return value?.stage === "Idle" && value.visible === "false"; }, "quake hide after opacity reload");
+      await command("default toggle_quake");
+      await waitFor(async () => { const value = await current(); return value?.stage === "Idle" && value.visible === "true" && Math.abs(Number(value.opacity) - 0.5) < 0.0001; }, "quake show uses reloaded native opacity");
+      await reload('hide_on_focus_loss = false\nanimation_ms = 150');
+      await settled(true);
       let halfGeometry: number[] | undefined;
       let halfGrid: number[] | undefined;
       for (const [height, label] of [[0.5, "half"], [0.25, "quarter"], [0.5, "restored"]] as const) {

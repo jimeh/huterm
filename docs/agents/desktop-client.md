@@ -316,6 +316,12 @@ in Settings and Quit would do nothing. Committing Quit closes Settings.
 
 ## Rendering
 
+`TerminalView` alone fills the default background, including padding and the
+first frame before a snapshot. Keep window and renderer underlays out of the
+grid. Transparency and inactive-pane tints are paint state, never prepared-row
+or glyph-cache inputs. Compare snapshot `default_background` in presentation
+equality even when every row keeps its `Arc`; OSC 11 also colors padding.
+
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Every `assets::application().run`

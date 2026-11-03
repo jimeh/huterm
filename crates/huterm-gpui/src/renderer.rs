@@ -119,6 +119,9 @@ pub(super) struct TerminalRenderer {
     /// Draw a block cursor as an outline: the pane has no keyboard focus
     /// in a split tab. Presentation only; no prepared row depends on it.
     cursor_outline: bool,
+    background_opacity: f32,
+    foreground_opacity: f32,
+    tint: crate::transparency::Tint,
     stats: Option<RendererStats>,
     scroll_benchmark: Option<ScrollBenchmarkStats>,
     last_prepare: PrepareOutcome,
@@ -182,6 +185,9 @@ impl TerminalRenderer {
             theme,
             selection: None,
             cursor_outline: false,
+            background_opacity: 1.0,
+            foreground_opacity: 1.0,
+            tint: crate::transparency::Tint::default(),
             stats,
             scroll_benchmark,
             last_prepare: PrepareOutcome::default(),
@@ -275,6 +281,88 @@ impl TerminalRenderer {
         if let Some(stats) = &mut self.stats {
             stats.keys += 1;
             stats.pending_key = Some(sent);
+        }
+    }
+
+    /// Paint-only state. Prepared rows and glyph caches stay valid.
+    pub(super) fn set_opacity(
+        &mut self,
+        background: f32,
+        foreground: f32,
+        tint: crate::transparency::Tint,
+    ) -> bool {
+        let changed =
+            (self.background_opacity, self.foreground_opacity, self.tint)
+                != (background, foreground, tint);
+        self.background_opacity = background;
+        self.foreground_opacity = foreground;
+        self.tint = tint;
+        changed
+    }
+
+    pub(super) fn background(
+        &self,
+        snapshot: Option<&TerminalSnapshot>,
+    ) -> Hsla {
+        let color = rgb_color(
+            snapshot
+                .and_then(|snapshot| snapshot.default_background)
+                .unwrap_or(self.theme.background),
+        );
+        self.tint
+            .apply(color, color)
+            .opacity(self.background_opacity)
+    }
+
+    pub(super) fn foreground(&self, color: Hsla) -> Hsla {
+        if self.foreground_opacity >= 1.0
+            && self.tint == crate::transparency::Tint::default()
+        {
+            return color;
+        }
+        self.tint
+            .apply(
+                color,
+                rgb_color(
+                    self.snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.default_background)
+                        .unwrap_or(self.theme.background),
+                ),
+            )
+            .opacity(self.foreground_opacity)
+    }
+
+    fn glyph_foreground(
+        &self,
+        snapshot: &TerminalSnapshot,
+        row: usize,
+        column: u16,
+        original: Hsla,
+    ) -> Hsla {
+        if self.foreground_opacity >= 1.0
+            && self.tint == crate::transparency::Tint::default()
+        {
+            return selected_foreground(
+                snapshot,
+                self.selection,
+                &self.theme,
+                row,
+                column,
+            )
+            .map_or(original, rgb_color);
+        }
+        if selected_cell(snapshot, self.selection, row, column) {
+            selected_foreground(
+                snapshot,
+                self.selection,
+                &self.theme,
+                row,
+                column,
+            )
+            .map_or(original, rgb_color)
+        } else {
+            self.foreground(original)
         }
     }
 
@@ -385,11 +473,12 @@ impl TerminalRenderer {
         // draws quads, then paths, underlines, and sprites, so anything that
         // must cover glyphs, such as the cursor, is painted after the layers.
         window.paint_layer(grid, |window| {
-            // One quad covers every cell with the theme background, so rows
-            // keep quads only for cells that differ from it.
-            window.paint_quad(fill(grid, rgb_color(self.theme.background)));
+            // TerminalView alone fills the default background, including padding.
             for (row_index, row) in self.rows.iter().enumerate() {
                 for background in &row.backgrounds {
+                    if background.is_default(snapshot.default_background) {
+                        continue;
+                    }
                     window.paint_quad(fill(
                         cell_bounds(
                             bounds.origin,
@@ -423,15 +512,11 @@ impl TerminalRenderer {
                     metrics,
                     window,
                     |column, original| {
-                        selected_foreground(
-                            snapshot,
-                            self.selection,
-                            &self.theme,
-                            row_index,
-                            column,
+                        self.glyph_foreground(
+                            snapshot, row_index, column, original,
                         )
-                        .map_or(original, rgb_color)
                     },
+                    |color| self.foreground(color),
                 );
             }
         });
@@ -500,9 +585,16 @@ struct PreparedRow {
 
 #[derive(Clone)]
 struct PreparedBackground {
+    source: CellColor,
     start: u16,
     columns: u16,
     color: Hsla,
+}
+
+impl PreparedBackground {
+    fn is_default(&self, override_color: Option<Rgb>) -> bool {
+        override_color.is_some_and(|color| self.source == CellColor::Rgb(color))
+    }
 }
 
 #[derive(Clone)]
@@ -609,16 +701,15 @@ fn prepare_backgrounds(
     let mut backgrounds = Vec::new();
     let mut start = 0;
     while start < cells.len() {
-        let background = resolve_color(cells[start].background, theme);
+        let source = cells[start].background;
+        let background = resolve_color(source, theme);
         let mut end = start + 1;
-        while end < cells.len()
-            && resolve_color(cells[end].background, theme) == background
-        {
+        while end < cells.len() && cells[end].background == source {
             end += 1;
         }
-        // Paint fills the whole grid with the theme background once.
-        if background != theme.background {
+        if source != CellColor::DefaultBackground {
             backgrounds.push(PreparedBackground {
+                source,
                 start: u16::try_from(start).unwrap_or(u16::MAX),
                 columns: u16::try_from(end - start).unwrap_or(u16::MAX),
                 color: rgb_color(background),
@@ -674,6 +765,7 @@ fn paint_row(
     metrics: GridMetrics,
     window: &mut Window,
     foreground: impl Fn(u16, Hsla) -> Hsla,
+    decoration_color: impl Fn(Hsla) -> Hsla,
 ) {
     for glyph in &row.glyphs {
         let origin = cell_origin(
@@ -731,7 +823,7 @@ fn paint_row(
             point(origin.x, origin.y + metrics.underline),
             metrics.cell_width * f32::from(decoration.columns),
             &UnderlineStyle {
-                color: Some(decoration.color),
+                color: Some(decoration_color(decoration.color)),
                 thickness: px(1.0),
                 wavy: false,
             },
@@ -748,7 +840,7 @@ fn paint_row(
             point(origin.x, origin.y + metrics.strikeout),
             metrics.cell_width * f32::from(decoration.columns),
             &StrikethroughStyle {
-                color: Some(decoration.color),
+                color: Some(decoration_color(decoration.color)),
                 thickness: px(1.0),
             },
         );
@@ -1096,6 +1188,27 @@ fn resolve_color(color: CellColor, theme: &Theme) -> Rgb {
         CellColor::Indexed(index) => theme.indexed(index),
         CellColor::Rgb(color) => color,
     }
+}
+
+fn selected_cell(
+    snapshot: &TerminalSnapshot,
+    selection: Option<BufferRange>,
+    row: usize,
+    column: u16,
+) -> bool {
+    let Some(selection) = selection else {
+        return false;
+    };
+    let offset = snapshot.viewport.bottom_offset.saturating_add(
+        usize::from(snapshot.size.rows)
+            .saturating_sub(1)
+            .saturating_sub(row),
+    );
+    let cells = snapshot
+        .rows
+        .get(row)
+        .map_or(&[][..], |row| row.cells.as_slice());
+    selection_covers_column(selection, offset, column, cells)
 }
 
 fn selected_foreground(

@@ -741,6 +741,30 @@ impl TerminalView {
                 }
             }
         });
+        let mut renderer = TerminalRenderer::new(
+            terminal_font.clone(),
+            theme.clone(),
+            metrics,
+        );
+        let support = crate::transparency::support();
+        let (background, foreground) = support.paint(config.window);
+        if renderer.records_stats() {
+            eprintln!(
+                "huterm-render transparency background_alpha={background} foreground_alpha={foreground} appearance={:?}",
+                crate::transparency::appearance(
+                    crate::keymap::Platform::current(),
+                    false,
+                    support,
+                    background,
+                    config.window.background_blur
+                )
+            );
+        }
+        renderer.set_opacity(
+            background,
+            foreground,
+            crate::transparency::Tint::default(),
+        );
         let mut view = TerminalView {
             viewer,
             pending_presentation,
@@ -780,11 +804,7 @@ impl TerminalView {
             resize_indicators: 0,
             quiet_resize: false,
             snapshot: None,
-            renderer: Rc::new(RefCell::new(TerminalRenderer::new(
-                terminal_font.clone(),
-                theme.clone(),
-                metrics,
-            ))),
+            renderer: Rc::new(RefCell::new(renderer)),
             focus,
             _focus_subscriptions: vec![
                 focus_subscription,
@@ -3461,7 +3481,10 @@ impl Render for TerminalView {
         let terminal_bounds = layout.bounds;
         let hovered_link = self.links.hover().cloned();
         let link_metrics = self.metrics;
-        let underline = color(self.theme.foreground);
+        let underline = self
+            .renderer
+            .borrow()
+            .foreground(color(self.theme.foreground));
         let paint_link = hovered_link.clone();
         let mut root = div()
             .id("terminal")
@@ -3540,7 +3563,7 @@ impl Render for TerminalView {
             .relative()
             .w_full()
             .h(self.viewport(window).height)
-            .bg(color(self.theme.background))
+            .bg(self.renderer.borrow().background(self.snapshot.as_deref()))
             .text_size(self.font_size)
             .font_family(self.terminal_font.family.clone())
             .child(
@@ -3955,6 +3978,7 @@ fn same_presentation(
     shown.size == next.size
         && shown.cursor == next.cursor
         && shown.cursor_color == next.cursor_color
+        && shown.default_background == next.default_background
         && shown.modes == next.modes
         && shown.viewport == next.viewport
         && shown.history_size == next.history_size
@@ -4243,6 +4267,7 @@ mod tests {
             viewport: huterm_protocol::Viewport { bottom_offset: 0 },
             history_size: 0,
             cursor_color: None,
+            default_background: None,
         };
         // Presentation updates can change colors without a new generation,
         // and an unchanged generation must not hide new rows.
@@ -4281,6 +4306,7 @@ mod tests {
             viewport: huterm_protocol::Viewport { bottom_offset: 0 },
             history_size: 0,
             cursor_color: None,
+            default_background: None,
         };
         let mouse = TerminalInput::Mouse(MouseInput {
             position: MousePosition::default(),

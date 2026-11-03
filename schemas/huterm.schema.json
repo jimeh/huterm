@@ -10080,6 +10080,47 @@
     "WindowConfig": {
       "additionalProperties": false,
       "properties": {
+        "background_blur": {
+          "default": false,
+          "description": "Blur behind translucent backgrounds on macOS. Unsupported on Linux.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Transparency",
+          "x-huterm-label": "Background blur",
+          "x-huterm-order": 39,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "appearance"
+        },
+        "background_opacity": {
+          "default": 1.0,
+          "description": "Opacity of default terminal and in-flow chrome backgrounds, from 0 to 1.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-label": "Background opacity",
+          "x-huterm-order": 37,
+          "x-huterm-section": "appearance",
+          "x-huterm-step": 0.05
+        },
+        "foreground_opacity": {
+          "default": 1.0,
+          "description": "Opacity of terminal text and its decorations, from 0.1 to 1.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0.1,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-label": "Text opacity",
+          "x-huterm-order": 38,
+          "x-huterm-section": "appearance",
+          "x-huterm-step": 0.05
+        },
         "initial_columns": {
           "default": 100,
           "description": "The grid width new ordinary windows request, from 10 to 1000 cells.\nLarge requests are limited to the display's available area.",
@@ -10140,6 +10181,21 @@
           "x-huterm-label": "Menu button",
           "x-huterm-order": 10,
           "x-huterm-section": "windows"
+        },
+        "opacity": {
+          "default": 1.0,
+          "description": "Opacity of the whole window, including text and chrome, from 0.1 to 1.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0.1,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-label": "Opacity",
+          "x-huterm-order": 36,
+          "x-huterm-section": "appearance",
+          "x-huterm-step": 0.05
         },
         "padding_balance": {
           "default": false,

@@ -397,3 +397,57 @@ fn fullscreen_toggle_and_recovery_publish_visible() {
     model.transition = Transition::new(true, now);
     assert_eq!(published_visibility(&model), Some(true));
 }
+
+#[test]
+fn configured_alpha_reload_during_fade_keeps_policy_progress_and_deadline() {
+    let now = Instant::now();
+    let (mut model, facts) = visible(now);
+    model.profile.animation = crate::quake::Animation::Fade;
+    model.profile.animation_ms = 1000;
+    model.request(false, false, now);
+    for _ in 0..3 {
+        model.decide(facts, now, false).unwrap();
+    }
+    let sample_at = now + Duration::from_millis(100);
+    let first = model
+        .decide(facts, sample_at, true)
+        .unwrap()
+        .sample
+        .unwrap();
+    assert!(first.opacity > 0.0 && first.opacity < 1.0);
+    let deadline = model.deadline;
+    let end = model.animation_end();
+    let activation = (model.activation.seen, model.activation.requested);
+    let alpha = crate::transparency::Alpha::default();
+    let written = std::cell::Cell::new(1.0);
+    alpha.configure(0.7);
+    alpha
+        .fade(first.opacity, |value| {
+            written.set(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!((written.get() - 0.7 * first.opacity).abs() < 1e-9);
+    alpha.configure(0.5);
+    // Presentation's reload invalidates captured effects; it does not retarget.
+    model.revision = model.revision.wrapping_add(1);
+    let next = model
+        .decide(facts, sample_at, true)
+        .unwrap()
+        .sample
+        .unwrap();
+    assert_eq!(first.progress, next.progress);
+    assert_eq!(model.deadline, deadline);
+    assert_eq!(model.animation_end(), end);
+    assert_eq!(
+        (model.activation.seen, model.activation.requested),
+        activation
+    );
+    alpha
+        .fade(next.opacity, |value| {
+            written.set(value);
+            Ok(())
+        })
+        .unwrap();
+    assert!((written.get() - 0.5 * next.opacity).abs() < 1e-9);
+}

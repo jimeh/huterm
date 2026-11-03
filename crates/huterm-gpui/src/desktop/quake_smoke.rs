@@ -348,6 +348,7 @@ fn read_state(cx: &mut App) -> String {
         let _=handle.update(cx,|root,window,cx| {
             let Ok(root)=root.downcast::<WorkspaceView>() else {return;};
             let view=root.read(cx);
+            writeln!(output, "w{index}.native_alpha={}\nw{index}.background_appearance={:?}", crate::transparency::native_alpha(window, cx).unwrap_or(-1.0), view.background_appearance).unwrap();
             let profile=view.quake.as_ref().map_or("ordinary",|state|state.name.as_str());
             writeln!(output,"w{index}.window_id={:?}\nw{index}.profile={profile}\nw{index}.tabs={}\nw{index}.busy={}\nw{index}.confirming={}\nw{index}.chrome={}\nw{index}.gpui_active={}",window.window_handle().window_id(),view.tabs.len(),view.busy,view.close.confirmation.is_some(),view.chrome_hidden(),window.is_window_active()).unwrap();
             // The window model's summary beside the view's own state, so the

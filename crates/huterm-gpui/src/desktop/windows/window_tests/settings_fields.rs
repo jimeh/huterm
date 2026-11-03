@@ -914,3 +914,21 @@ fn page_keys_refuse_on_a_read_only_number_field(cx: &mut TestAppContext) {
     assert_eq!(field_text(&mut harness, path), "13");
     assert_eq!(file.text(), broken);
 }
+
+#[gpui::test]
+fn transparency_has_three_accessible_percent_sliders(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new(
+        "transparency-sliders",
+        "[window]\nbackground_opacity = 0.6\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    for path in [
+        "window.opacity",
+        "window.background_opacity",
+        "window.foreground_opacity",
+    ] {
+        let node = a11y_node(&mut harness, &format!("settings-slider-{path}"));
+        assert!(node["aria"].to_string().contains('%'), "{node}");
+    }
+}

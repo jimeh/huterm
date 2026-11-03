@@ -677,6 +677,10 @@ the `[window]` and `[tabs]` settings with their defaults:
 #:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
 
 [window]
+opacity = 1.0
+background_opacity = 1.0
+foreground_opacity = 1.0
+background_blur = false # macOS only
 padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
@@ -755,6 +759,50 @@ foreground; exit, error, and bell indicators replace it. The window title is
 `<active tab title> — Huterm`, so window switchers show the active tab. On
 macOS the title bar shows the active tab's title in place of the application
 name.
+
+## Transparency
+
+Settings exposes these live settings under Appearance > Transparency:
+
+- `opacity` (0.1 to 1) fades the whole window, including chrome, text,
+  cursor and selection, through native window alpha.
+- `background_opacity` (0 to 1) controls the default terminal background,
+  padding and in-flow chrome backgrounds. Text, icons and dividers stay solid.
+- `foreground_opacity` (0.1 to 1), labelled Text opacity, controls terminal
+  glyphs, built-in graphics, underlines, strikethrough and link underlines.
+- `background_blur` blurs behind translucent backgrounds on macOS. It has
+  no effect at background opacity 1 and is unsupported on Linux. Linux logs
+  a warning when it is enabled. Settings hides the row unless the file sets
+  it, then shows it read-only with the macOS-only note.
+
+All four settings apply on reload to every terminal window without restarting
+shells or losing scrollback. Overall opacity multiplies the other settings:
+opacity 0.7 and background opacity 0.6 give effective background alpha 0.42.
+The defaults keep the native surface opaque and leave native alpha untouched.
+Transparency and blur remain enabled in fullscreen and Quake windows.
+
+Background opacity affects the default background, including an OSC 11
+program override; OSC 111 restores the theme background. Explicit indexed or
+RGB backgrounds and inverse video stay solid, even if their color equals the
+theme background. An explicit RGB background equal to an active OSC 11
+background override is treated as default. Cursor and selection stay solid
+apart from overall opacity, as does the selection foreground.
+
+Floating chrome, including menus, dialogs, notices, the palette, hover pane
+bars and fullscreen tab reveal, stays opaque. Settings stays opaque too.
+Below background opacity 1, inactive panes use alpha-preserving color tints;
+emoji are not dimmed. Emoji remain solid at reduced text opacity because
+GPUI's emoji opacity API is private. Overlapping built-in geometry can blend
+more than once at reduced text opacity. The brief visual bell overlay can
+raise background alpha.
+
+Linux requires both an X11 compositing manager and a 32-bit TrueColor visual.
+Without either, Huterm keeps all opacity at 1, logs the missing requirement
+once per load, and shows a note under Opacity and Background opacity in
+Settings. Support is rechecked at open and reload; compositor changes between
+reloads are not tracked. A transparent Linux surface disables subpixel text
+antialiasing. GPUI's wgpu surface can silently choose an opaque alpha mode,
+which Huterm cannot detect. Wayland and Linux blur are not supported.
 
 ## Title bar tabs
 

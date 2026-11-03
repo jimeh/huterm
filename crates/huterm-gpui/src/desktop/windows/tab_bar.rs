@@ -111,6 +111,22 @@ pub(super) struct TabColors {
 }
 
 impl TabColors {
+    pub(super) fn for_floating(mut self, floating: bool) -> Self {
+        if floating {
+            self.bar.a = 1.0;
+            self.active.a = 1.0;
+            self.terminal.a = 1.0;
+        }
+        self
+    }
+
+    pub(super) fn background_opacity(mut self, alpha: f32) -> Self {
+        self.bar = self.bar.opacity(alpha);
+        self.active = self.active.opacity(alpha);
+        self.terminal = self.terminal.opacity(alpha);
+        self
+    }
+
     pub(super) fn new(theme: &Theme) -> Self {
         let ui = theme.ui();
         let hover = ui.tab_hover_background;
@@ -623,9 +639,27 @@ impl WorkspaceView {
             .pl(px(8.0))
             .pr(PANE_TITLE_PADDING_RIGHT)
             .overflow_hidden()
-            .bg(if focused { colors.active } else { colors.bar })
-            // Absolute, so it tints the background without taking a slot.
-            .children(tint.map(|tint| div().absolute().inset_0().bg(tint)))
+            .bg({
+                let background =
+                    if focused { colors.active } else { colors.bar };
+                if background.a < 1.0 {
+                    tint.map_or(background, |tint| {
+                        gpui::Hsla {
+                            a: 1.0,
+                            ..background
+                        }
+                        .blend(tint)
+                        .opacity(background.a)
+                    })
+                } else {
+                    background
+                }
+            })
+            // Opaque backgrounds retain the existing overlay path.
+            .children(
+                tint.filter(|_| colors.bar.a >= 1.0)
+                    .map(|tint| div().absolute().inset_0().bg(tint)),
+            )
             .when(bottom, gpui::Styled::border_t_1)
             .when(!bottom, gpui::Styled::border_b_1)
             .border_color(colors.border)
