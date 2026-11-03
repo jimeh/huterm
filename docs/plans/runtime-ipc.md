@@ -28,12 +28,11 @@ Agreed with the maintainer on 2026-11-03, before drafting:
 - **A hand-written codec in a new `huterm-wire` crate.** `huterm-wire`
   depends only on `huterm-protocol`, and `huterm-protocol` keeps its empty
   dependency set. The architecture gate gains rules; none is weakened.
-- **At-most-once retry.** After a broken connection, the client retries only
-  queries. Input the server refused before admitting it is resent on the
-  same connection. Every other in-flight request reports an unknown outcome,
-  and the resynchronized state shows what happened. The decision as presented
-  also retried set-to-value requests; review showed that retrying a shared
-  setter can overwrite a later change, so "Retry and reconnect" drops them.
+- **At-most-once retry.** A reconnect never repeats a request that may have
+  committed or input the server admitted. In-flight requests whose outcome
+  is unknown report it, and the resynchronized state shows what happened.
+  "Retry and reconnect" defines which requests are retried; it is narrower
+  than the set first presented, pending the maintainer's confirmation.
 - **proptest and cargo-fuzz.** Property tests run on the pinned stable
   toolchain in the normal suite. cargo-fuzz targets run on a pinned nightly
   through a Mise task and a scheduled CI job.
@@ -273,20 +272,35 @@ Terminal rows use a dedicated packed form, described under terminal
 updates, because the generic struct form would cost a length prefix per
 cell.
 
-Payloads larger than one frame (selection text, clipboard writes, pastes,
-and large terminal updates) travel as a sequence of frames under one
+Opaque payloads larger than one frame (selection text, clipboard writes,
+pastes, and host-effect responses) travel as a sequence of frames under one
 transfer, with a final-frame flag. The first frame declares the total. The
-receiver checks it against the per-kind cap and reserves it before
-buffering anything, and applies nothing until the final frame arrives. Each
-direction of a connection may have at most `MAX_OPEN_TRANSFERS` (4)
-transfers open; a sender waits rather than open a fifth. The server also
-holds at most `SERVER_REASSEMBLY_BUDGET` (4 MiB) of client transfers, which
-are pastes and effect responses. The client's buffers are bounded by the
-open-transfer limit and the per-kind caps. Exceeding a limit, or declaring a
-total over the cap, is a protocol violation. Either side may send
-`AbortTransfer`, after which the receiver frees the buffer; a transfer that
-receives no frame for `TRANSFER_IDLE_DEADLINE` (30 s) is a protocol
-violation.
+sender checks the total against the kind's cap first and refuses an
+oversized payload locally with `LimitExceeded`, as the desktop refuses an
+oversized paste today. The receiver checks the declared total against the
+same cap, treats an over-cap declaration as a protocol violation, reserves
+the total before buffering anything, and applies nothing until the final
+frame arrives.
+
+Each direction of a connection may have at most `MAX_OPEN_TRANSFERS` (4)
+transfers open. The server also holds at most `SERVER_REASSEMBLY_BUDGET`
+(4 MiB) of client transfers, which `Welcome` advertises. A sender waits
+rather than open a fifth transfer or exceed the advertised budget, so a
+well-behaved peer never meets either limit, and exceeding one is a protocol
+violation. The client's opaque buffers are bounded by the open-transfer
+limit and the per-kind caps. Either side may send `AbortTransfer`, after
+which the receiver frees the buffer. A transfer that receives no frame for
+`TRANSFER_IDLE_DEADLINE` (30 s) is a protocol violation; the server pauses
+that clock while it has itself stopped reading the connection.
+
+Terminal updates are not opaque transfers, because their size follows from
+the grid. A large update spans several frames, each carrying whole rows,
+and the client decodes and validates each frame on arrival into a pending
+row set that the update's declared grid bounds, applying the update after
+its last frame. The server clamps every geometry report to
+`MAX_WIRE_GRID_CELLS` (1,048,576 cells) before core sees it, and the decoder
+rejects an update whose grid exceeds that limit, so update memory is bounded
+by the grid limit and the cell-text limit and never by a declared total.
 
 Frames of different transfers and messages may interleave, so a large
 snapshot cannot hold up a keystroke echo in another terminal. Transfers for
@@ -316,23 +330,32 @@ The server answers with `Welcome` or `Reject`, then closes after a
   credit and in-flight request maximums.
 
 `Reject` carries a reason code (`IncompatibleMajor` with the server's
-versions, `ServerBusy`, or `Malformed`) and a diagnostic message. Any
+versions, `ServerBusy`, or `Malformed`) and a diagnostic message. The
+message kinds of `Hello` and `Reject`, and `Reject`'s reason and version
+fields, keep their position and encoding in every major version, as
+`Hello`'s leading fields do, so a client of another major version reads a
+clear version error. Any
 message before `Hello` other than `Hello` itself, or no `Hello` within
 `HANDSHAKE_DEADLINE` (5 s), closes the connection.
 
 A minor version may only add messages, enum variants, and appended fields
 that a peer on an older minor version can do without. Senders withhold
-anything newer than the negotiated minor version. A change an older peer
-cannot do without is a major version change.
+messages and variants newer than the negotiated minor version. They always
+write appended fields, and an older decoder skips them; the field must
+therefore be safe to ignore. A change an older peer cannot do without is a
+major version change.
 
 Every addition that a server can send defines its downgrade for older
 minor versions, and withholding must never break a sequence:
 
 - Minor version 0 reserves `HierarchyEvent::Skipped`, which advances the
-  sequence and changes nothing. The server sends it in place of any newer
-  event variant the peer did not negotiate, so `committed_seq` values stay
-  shared and the reducer sees no gap. It must exist in minor version 0,
-  because an older client can never learn it later.
+  sequence and changes nothing. The server sends it in place of a newer
+  event variant that changes no state the peer's minor version holds, so
+  `committed_seq` values stay shared and the reducer sees no gap. A new
+  variant that does change such state must instead be downgraded to the
+  older events that produce the same older-profile state, or it is a major
+  change. `Skipped` must exist in minor version 0, because an older client
+  can never learn it later.
 - A newer cell style, status field, or snapshot field is projected onto the
   peer's minor version, such as an extended underline style shown as a plain
   underline for [#83][issue-83].
@@ -341,9 +364,11 @@ minor versions, and withholding must never break a sequence:
   digest always agree.
 
 A test-only minor version in `huterm-wire` exercises these rules before a
-real minor version 1 exists: it appends a hierarchy field, adds an event
-variant, and adds a cell style flag, and a server at that version must
-converge with a minor-0 client without a single resync.
+real minor version 1 exists: it appends a hierarchy field, adds one event
+variant that changes no minor-0 state and one that does, and adds a cell
+style flag. A server at that version must converge with a minor-0 client
+without a single resync, sending the first variant as `Skipped` and the
+second as the older events it downgrades to.
 
 Features gate optional behavior inside a minor version: rich content
 ([#88][issue-88]) is the first reserved feature. Attachment events
@@ -446,19 +471,21 @@ Every request kind has a static retry class:
 
 | Class | Examples | After a broken connection |
 | --- | --- | --- |
-| Query | Snapshot, selection text, link lookup, list or select targets | Retried on the next connection |
-| Viewer state | Report geometry, set focus, submit presentation | Not retried: the old viewer is gone, and the client sends its current state when it subscribes a new one |
+| Runtime query | List or select targets, read hierarchy | Retried on the next connection |
+| Viewer request | Snapshot, scroll, selection text, link lookup, report geometry, set focus, submit presentation | Not retried; fails with `Disconnected`. The old viewer is gone; the client subscribes a new one, sends its current state, and the new viewer's first update replaces any lost snapshot |
 | Mutation | Spawn, split, close, move, arrange, reorder, rename, set input sync, resize split, set zoom, set scrollback, clear history, reset | Never retried; resolves `OutcomeUnknown` |
 
 Setters of shared runtime state count as mutations. Retrying one after an
 unknown outcome could overwrite another client's later change, and
 `set_scrollback` evicts history when it lowers a limit, so a retry could
 destroy rows that a later change kept. This narrows the retry set presented
-during the decision, which also listed set-to-value requests.
+during the decision, which also listed set-to-value requests; the
+maintainer has yet to confirm the narrowing.
 
 When a connection breaks, every in-flight mutation resolves `OutcomeUnknown`
-at once, whether or not the client reconnects. Queries wait for the next
-connection or fail with `Disconnected` when the client gives up. After
+and every viewer request fails with `Disconnected`, at once, whether or not
+the client reconnects. Runtime queries wait for the next connection or fail
+with `Disconnected` when the client gives up. After
 reconnecting, the client resubscribes to the hierarchy and installs the new
 snapshot. A mutation's effect, if it committed, is visible there or in a
 later event, and the level-triggered reconcile installs or removes views
@@ -499,14 +526,19 @@ that sequence sends `ResyncHierarchy`.
 - **Algorithm.** `HierarchyState::digest()` keeps its documented canonical
   encoding, which is independent of the wire codec; a golden vector pins
   it. A minor version that adds digested state adds it only to the digest
-  for peers at that version or later, so the digest takes the negotiated
-  minor version as its profile.
+  for peers at that version or later. `huterm-protocol` therefore gains a
+  `DigestProfile` type, which names the set of digested fields without
+  knowing about wire versions; `huterm-wire` maps each negotiated minor
+  version onto a profile.
 - **Where it is computed.** Core computes the digest at emission, under the
   Mux lock, from a state it builds from Mux's own structure, for each
   profile its subscribers registered. A connection's forwarder does not run
   a reducer of its own, so a reducer bug cannot produce matching digests on
   both ends. Building that state costs time proportional to the hierarchy,
-  once per 256 events.
+  under the Mux lock, for each registered profile, on every structural
+  result, every subscription snapshot, and every 256th event. Hierarchies
+  hold tens to hundreds of items, so this stays small, and slice 3a measures
+  it on a large fixture.
 
 A hung server keeps its socket open, so the client arms a one-shot deadline
 only while a request or sequence waiter is outstanding, as the hierarchy
@@ -548,7 +580,9 @@ every skipped or coalesced publication is folded into the next update.
 **Each delta names its baseline.** A viewer's updates carry an
 `UpdateSeq` that starts at 1 and advances by one per update, and a delta
 names the `UpdateSeq` it builds on. A client applies a delta only to that
-baseline; any mismatch discards the delta and sends `ResyncViewer`. The
+baseline. On a mismatch it discards the delta, sends one `ResyncViewer`, and
+discards every further delta until the complete snapshot that answers it
+arrives. The
 viewer's pump is the only producer of its updates and finishes one update's
 transfer before it starts the next, so one viewer's updates never interleave
 with each other, although they interleave with other traffic. A missing,
@@ -576,11 +610,10 @@ a sequence of runs, each a style index, a cell count, and the cells' texts.
 longer grapheme cluster at a character boundary when it extracts a row, on
 every path. The encoder therefore never meets a cell it cannot send, and
 in-process and IPC rows stay identical. The decoder rejects longer cell
-text. The decoder
-checks that every row has exactly `size.columns` cells, that there are
-exactly `size.rows` rows, that every `Keep` index exists in its baseline, and
-that every style index exists. An update that fails any check is a protocol
-violation.
+text, and checks that every row has exactly `size.columns` cells, that there
+are exactly `size.rows` rows, that every `Keep` index exists in its
+baseline, and that every style index exists. An update that fails any
+check is a protocol violation.
 
 **Digests.** Every complete snapshot, and every 64th delta
 (`UPDATE_DIGEST_INTERVAL`), carries a 64-bit FNV-1a digest of the canonical
@@ -591,23 +624,27 @@ fields of the negotiated minor version.
 
 **Credit paces updates.** The client grants each viewer credit, at most
 `MAX_VIEWER_CREDIT` (2) outstanding updates. Each update says whether it
-spent a credit, and the client returns a credit only after it applies a
-credited update. The first update of a subscription and the update that
-answers a scroll spend none. The server's pump for a viewer waits on the
-viewer's wake; when the viewer is notified and has credit, it requests a
-snapshot, encodes the update, and spends a credit. A client grants no
-credit to a
-hidden tab, so its viewer stays notified, the runtime does not wake it again,
-and a hidden terminal costs the wire nothing until it is shown. This is the
-in-process rearm rule carried across the wire.
+spent a credit. The client returns a credit when it has disposed of a
+credited update, whether it applied it or discarded it as stale, so a
+discarded delta never leaks credit. The first update of a subscription, the
+update that answers a scroll, and the complete snapshot that answers
+`ResyncViewer` spend none, so recovery never waits for credit. The server's
+pump for a viewer waits on the viewer's wake; when the viewer is notified
+and has credit, it requests a snapshot, encodes the update, and spends a
+credit. A client grants no credit to a hidden tab, so its viewer stays
+notified, the runtime does not wake it again, and a hidden terminal costs
+the wire no row data until it is shown. This is the in-process rearm rule
+carried across the wire.
 
 **Status is state.** When a viewer's status revision changes, the server
 puts the whole `TerminalStatus` in the viewer's single pending status slot,
-replacing any unsent one, and sends it ahead of that viewer's next update.
-Status does not spend credit. The client derives exits, new bells, and missed
-failures from its own baseline. The derivation in `TerminalViewer::poll`
-moves into a `StatusBaseline` type in `huterm-protocol` so both clients share
-one implementation.
+replacing any unsent one, and sends it at once, ahead of any update not yet
+written. Status does not spend credit and never waits for an update, so a
+hidden tab still reports its exit, bells, and title to tab indicators. The
+client derives exits, new bells, and missed failures from its own
+baseline. The derivation in `TerminalViewer::poll` moves into a
+`StatusBaseline` type in `huterm-protocol` so both clients share one
+implementation.
 
 **Scrolling.** A scroll request is answered through the viewer's pump: the
 pump applies `request_scrolled_snapshot`, sends the resulting update without
@@ -690,15 +727,18 @@ A disconnect never closes a terminal, workspace, or session.
 | `HIERARCHY_LANE_BUDGET` per connection | 1 MiB | Lag, then `HierarchyResync` |
 | `OUTBOUND_BUDGET` per connection | 8 MiB | Producers wait; inbound reading pauses |
 | `WRITER_STALL_DEADLINE` | 30 s | Disconnect |
-| `MAX_OPEN_TRANSFERS` per direction per connection | 4 | Protocol violation |
-| `SERVER_REASSEMBLY_BUDGET` per connection | 4 MiB | Protocol violation |
-| `TRANSFER_IDLE_DEADLINE` | 30 s | Protocol violation |
-| `CLIPBOARD_TRANSFER_CAP`, `SELECTION_TRANSFER_CAP` | 64 MiB each | `LimitExceeded` |
-| `PASTE_TRANSFER_CAP` | `VIEWER_INPUT_BUDGET` | `LimitExceeded` |
+| `MAX_OPEN_TRANSFERS` per direction per connection | 4 | Sender waits; receiving more is a protocol violation |
+| `SERVER_REASSEMBLY_BUDGET` per connection, advertised in `Welcome` | 4 MiB | Sender waits; receiving more is a protocol violation |
+| `TRANSFER_IDLE_DEADLINE` | 30 s, paused while the server is not reading | Protocol violation |
+| `CLIPBOARD_TRANSFER_CAP`, `SELECTION_TRANSFER_CAP` | 64 MiB each | Sender refuses with `LimitExceeded`; receiving one is a protocol violation |
+| `PASTE_TRANSFER_CAP` | `VIEWER_INPUT_BUDGET` | Sender refuses with `LimitExceeded`; receiving one is a protocol violation |
+| `EFFECT_RESPONSE_CAP` | 64 KiB | Sender refuses with `LimitExceeded`; receiving one is a protocol violation |
+| `MAX_WIRE_GRID_CELLS` | 1,048,576 cells | Geometry clamped by the server; a larger update is a protocol violation |
 | `MAX_CELL_TEXT_BYTES` | 1 KiB | Truncated in core; longer is a protocol violation |
 | `MAX_CLOSE_TICKETS` per connection | 16 | `LimitExceeded` |
 | `MAX_HISTORY_SLOTS` per connection | 64 | Least recently used slot evicted; `StaleUndo` |
-| `HOST_EFFECT_DELIVERY_DEADLINE` | 2 s | Effect dropped |
+| `HOST_EFFECT_DELIVERY_DEADLINE` | 2 s to the first frame | Effect dropped |
+| `RECIPIENT_EFFECT_LIMIT` per remote recipient | 2 of a terminal's 8 effects | Later effects for that recipient denied |
 | `MAX_PENDING_EFFECT_RESPONSES` per connection | 8 | Fallback answer, as for a missing client |
 | `HIERARCHY_DIGEST_INTERVAL`, `UPDATE_DIGEST_INTERVAL` | 256 events, 64 deltas | Not a limit |
 
@@ -752,26 +792,32 @@ payload, response }`. Large payloads use a chunked transfer.
   lives on the recipient, revoking it cancels queued and popped deliveries,
   and the desktop rechecks `is_current` immediately before the OS call
   (`host_effects.rs`, `HostEffectRecipient::set_allowed` and `is_current`).
-  Over IPC the client owns the permission. `SetHostEffectPermission {
-  viewer, allowed }` updates the server-side recipient, and the client
-  numbers its own permission changes per viewer. Each effect carries the
-  generation it was admitted under, and the client executes it only if that
-  viewer is still live and its permission generation is unchanged. An
+  Over IPC the client owns the permission and numbers its changes per
+  viewer. `SetHostEffectPermission { viewer, generation, allowed }` is an
+  ordered message, not a request, so it is never refused with `Busy`; the
+  server applies it to the recipient and stamps each effect it admits with
+  the generation it last received. The client executes an effect only if
+  that viewer is still live and the effect's generation equals its current
+  one. An
   effect already sent when the user revokes permission is discarded on the
   client, and a revoke followed by a re-grant cannot revive it.
 - **No replay.** Effect IDs belong to one connection. A disconnect revokes
   the connection's recipients, which clears their queues, and nothing is
   ever re-sent on a later connection. A client ignores effect frames it
   cannot match to its current connection.
-- **Delivery deadline.** An effect not written to the socket within
-  `HOST_EFFECT_DELIVERY_DEADLINE` (2 s) after admission is dropped, and a
-  partly sent payload is aborted with `AbortTransfer`. A stalled remote
-  recipient therefore cannot hold the terminal's budget of 8 effects and
-  deny every other recipient, which the viewers plan flagged.
+- **Delivery deadline.** An effect whose first frame has not been written
+  to the socket within `HOST_EFFECT_DELIVERY_DEADLINE` (2 s) after admission
+  is dropped. Once its first frame is written, the writer-stall rule governs
+  the rest, so a legitimate 64 MiB write on a busy connection completes. A
+  stalled remote recipient therefore cannot hold the terminal's budget of 8
+  effects and deny every other recipient, which the viewers plan flagged.
 - **Budgets.** Each connection gets its own process-level budget, as each
-  `DesktopHostEffectClient` does today (32 effects and 128 MiB), and each
-  remote recipient gets its own share inside the terminal's budget, so one
-  connection cannot exhaust another's.
+  `DesktopHostEffectClient` does today (32 effects and 128 MiB). Within a
+  terminal's budget, each remote recipient may hold at most
+  `RECIPIENT_EFFECT_LIMIT` (2) of the 8 queued effects, so one connection
+  cannot exhaust another's count. Bytes stay shared up to the terminal's
+  64 MiB, the Kitty protocol's minimum write size; the delivery deadline
+  keeps a stalled recipient from holding them.
 - **Response correlation.** An effect that needs an answer carries a
   response deadline. The server keeps a bounded pending entry per effect and
   answers the terminal with the effect's documented fallback on timeout,
@@ -844,9 +890,12 @@ plan does not add one ahead of a production caller.
 
 ## Delivery
 
-Six pull requests for #44, each mergeable on its own. Slice 1 migrates core
-and the desktop to the new identity types, and slices 1 and 2 otherwise add
-contract code that nothing calls until slice 3a.
+Six pull requests for #44, each mergeable on its own. Slices 1 and 2 add
+contract code that nothing calls until slice 3a, plus changes to existing
+paths: slice 1 migrates core and the desktop to the new identity types, and
+slice 2 moves status derivation into `huterm-protocol` and caps cell text at
+row extraction. Slice 3b changes what an embedded window close does with
+admitted input.
 
 ### Slice 1: identity and the wire foundation
 
@@ -875,9 +924,13 @@ fail with a typed error and no panic; negotiation picks the smaller minor
 version and the feature intersection and rejects a different major version,
 reading only `Hello`'s frozen leading fields to do so; a minor-0 decoder
 reads a record from the test-only minor version, skipping its appended field;
-a fifth open transfer, a transfer over its cap, and an idle transfer are
-rejected; an ID from another `RuntimeId` refuses to encode; the wasm check
-passes; the gate fails when a dependency is added to `huterm-wire`.
+a fifth open transfer, a transfer over its cap, a transfer past the
+advertised reassembly budget, and an idle transfer are rejected by the
+receiver, while a conforming sender waits or refuses locally with
+`LimitExceeded`; `AbortTransfer` frees the receiver's reservation; a client
+of another major version reads `Reject { IncompatibleMajor }`; an ID from
+another `RuntimeId` refuses to encode; the wasm check passes; the gate fails
+when a dependency is added to `huterm-wire`.
 
 ### Slice 2: terminal updates and status
 
@@ -904,7 +957,8 @@ Acceptance:
   client's cursor, modes, or viewport.
 - Two snapshots with equal content but distinct row `Arc`s produce the same
   client state.
-- A `Keep` index outside the baseline is rejected.
+- A `Keep` index outside the baseline is rejected, and so is an update
+  whose grid exceeds `MAX_WIRE_GRID_CELLS`, before its rows are buffered.
 - A grapheme longer than `MAX_CELL_TEXT_BYTES` reaches in-process and wire
   rows truncated identically.
 - A test-only minor version cell style flag reaches a minor-0 client
@@ -934,7 +988,8 @@ Acceptance:
   sequence waiters.
 - A mutation in flight at disconnect, including a rename and a
   `set_scrollback`, resolves `OutcomeUnknown` at once and is never resent;
-  a query in flight is retried on the next connection.
+  a runtime query in flight is retried on the next connection, and a
+  viewer request in flight fails with `Disconnected`.
 - A request still on a worker at disconnect releases what it created for
   the connection when it completes.
 - Arranging in more than `MAX_HISTORY_SLOTS` slots evicts the least recently
@@ -965,7 +1020,16 @@ Acceptance:
 - Input admitted before a disconnect reaches the PTY, and input after it
   never does; explicit detach of a live viewer still discards its queued
   input.
-- A hidden viewer without credit causes no updates during output.
+- A hidden viewer without credit causes no updates during output, and
+  still delivers its terminal's exit and bells through status.
+- A pump whose credit was spent on deltas the client discarded as stale
+  still delivers the complete snapshot that answers `ResyncViewer`, and the
+  viewer then resumes normal updates.
+- An embedded window close keeps input the window's viewer sent before
+  closing, which reaches the PTY; the viewers smoke and the close smokes
+  stay green.
+- A geometry report above `MAX_WIRE_GRID_CELLS` is clamped before core
+  resizes.
 - A scroll the server refuses does not let later typing undo a scroll the
   user made after it.
 - A scroll during a multi-frame update arrives after that update, and the
@@ -984,7 +1048,14 @@ Acceptance:
 - An effect pending at disconnect is not delivered on reconnect or to
   another client.
 - An effect sent before the client revokes clipboard permission is not
-  executed, including after a re-grant that arrives before it is handled.
+  executed, including after a re-grant that arrives before it is handled,
+  and later effects are executed normally after any number of permission
+  changes.
+- A 64 MiB clipboard write whose first frame is written in time completes
+  on a busy connection; one that waits past the deadline for its first
+  frame is dropped.
+- A remote recipient at `RECIPIENT_EFFECT_LIMIT` does not deny effects to
+  another recipient of the same terminal.
 - A recipient that stops reading cannot block later effects for other
   recipients.
 - A timed-out response produces the fallback without stalling terminal
@@ -1040,8 +1111,11 @@ closed at the deadline.
 Property tests use `proptest` as a dev-dependency, synchronize on observable
 progress, and bound their case counts so the normal suite stays fast. The
 nightly fuzz job is evidence, not a gate; a crash becomes a regression test
-in the normal suite. Native desktop behavior does not change in this plan,
-so no smoke changes are needed until [#45][issue-45].
+in the normal suite. Two slices change existing native paths: slice 2's
+cell-text cap, covered by a core engine test with an over-long grapheme, and
+slice 3b's window-close change, covered by a core test and the existing
+viewers and close smokes. Neither changes what the smokes observe, so no
+smoke changes are needed until [#45][issue-45].
 
 ## Risks
 
