@@ -293,13 +293,17 @@ which the receiver frees the buffer. A transfer that receives no frame for
 `TRANSFER_IDLE_DEADLINE` (30 s) is a protocol violation; the server pauses
 that clock while it has itself stopped reading the connection.
 
-Terminal updates are not opaque transfers, because their size follows from
-the grid. A large update spans several frames, each carrying whole rows,
-and the client decodes and validates each frame on arrival into a pending
-row set that the update's declared grid bounds, applying the update after
-its last frame. The server clamps every geometry report to
+Terminal updates are not opaque transfers and declare no total, because
+their size follows from the grid. An update's encoding is one byte stream,
+split into frames at any byte, with a final-frame flag; frame boundaries
+carry no meaning, so any update the limits permit fits any negotiated
+`max_frame`, including a single row larger than a frame. The client decodes
+the stream incrementally as frames arrive, validating each item against the
+grid the update's header declared, and buffers only decoded rows plus at
+most one incomplete item, which the cell-text limit bounds. It applies the
+update after the final frame. The server clamps every geometry report to
 `MAX_WIRE_GRID_CELLS` (1,048,576 cells) before core sees it, and the decoder
-rejects an update whose grid exceeds that limit, so update memory is bounded
+rejects a header whose grid exceeds that limit, so update memory is bounded
 by the grid limit and the cell-text limit and never by a declared total.
 
 Frames of different transfers and messages may interleave, so a large
@@ -334,9 +338,8 @@ versions, `ServerBusy`, or `Malformed`) and a diagnostic message. The
 message kinds of `Hello` and `Reject`, and `Reject`'s reason and version
 fields, keep their position and encoding in every major version, as
 `Hello`'s leading fields do, so a client of another major version reads a
-clear version error. Any
-message before `Hello` other than `Hello` itself, or no `Hello` within
-`HANDSHAKE_DEADLINE` (5 s), closes the connection.
+clear version error. Any message before `Hello` other than `Hello` itself,
+or no `Hello` within `HANDSHAKE_DEADLINE` (5 s), closes the connection.
 
 A minor version may only add messages, enum variants, and appended fields
 that a peer on an older minor version can do without. Senders withhold
@@ -348,14 +351,20 @@ major version change.
 Every addition that a server can send defines its downgrade for older
 minor versions, and withholding must never break a sequence:
 
-- Minor version 0 reserves `HierarchyEvent::Skipped`, which advances the
-  sequence and changes nothing. The server sends it in place of a newer
-  event variant that changes no state the peer's minor version holds, so
-  `committed_seq` values stay shared and the reducer sees no gap. A new
-  variant that does change such state must instead be downgraded to the
-  older events that produce the same older-profile state, or it is a major
-  change. `Skipped` must exist in minor version 0, because an older client
-  can never learn it later.
+- An older client receives exactly one envelope for each server sequence
+  number, so `committed_seq` values stay shared and the reducer sees no gap.
+  A newer event variant reaches it as exactly one of these:
+  - `HierarchyEvent::Skipped`, reserved in minor version 0, which advances
+    the sequence and changes nothing, when the variant changes no state the
+    peer's minor version holds. It must exist in minor version 0, because an
+    older client can never learn it later.
+  - The single older event that produces the same older-profile state, when
+    one exists.
+  - Otherwise, a `HierarchyResync` carrying a snapshot projected onto the
+    peer's minor version at that sequence, which the client installs through
+    the existing resync path. This costs a snapshot per such event, so a
+    variant that would take this path often should define a one-event
+    downgrade instead.
 - A newer cell style, status field, or snapshot field is projected onto the
   peer's minor version, such as an extended underline style shown as a plain
   underline for [#83][issue-83].
@@ -364,11 +373,12 @@ minor versions, and withholding must never break a sequence:
   digest always agree.
 
 A test-only minor version in `huterm-wire` exercises these rules before a
-real minor version 1 exists: it appends a hierarchy field, adds one event
-variant that changes no minor-0 state and one that does, and adds a cell
-style flag. A server at that version must converge with a minor-0 client
-without a single resync, sending the first variant as `Skipped` and the
-second as the older events it downgrades to.
+real minor version 1 exists: it appends a hierarchy field, adds three
+event variants, one for each downgrade path above, and adds a cell style
+flag. A server at that version must converge with a minor-0 client, sending
+the variants as `Skipped`, as their one older event, and as a projected
+`HierarchyResync`, with no digest mismatch and no client-initiated
+resync.
 
 Features gate optional behavior inside a minor version: rich content
 ([#88][issue-88]) is the first reserved feature. Attachment events
@@ -485,12 +495,12 @@ maintainer has yet to confirm the narrowing.
 When a connection breaks, every in-flight mutation resolves `OutcomeUnknown`
 and every viewer request fails with `Disconnected`, at once, whether or not
 the client reconnects. Runtime queries wait for the next connection or fail
-with `Disconnected` when the client gives up. After
-reconnecting, the client resubscribes to the hierarchy and installs the new
-snapshot. A mutation's effect, if it committed, is visible there or in a
-later event, and the level-triggered reconcile installs or removes views
-from state. A tab whose spawn result was lost therefore appears as a tab the
-window did not spawn, which reconcile already handles.
+with `Disconnected` when the client gives up. After reconnecting, the client
+resubscribes to the hierarchy and installs the new snapshot. A mutation's
+effect, if it committed, is visible there or in a later event, and the
+level-triggered reconcile installs or removes views from state. A tab whose
+spawn result was lost therefore appears as a tab the window did not spawn,
+which reconcile already handles.
 
 Input is not request-and-result. Input admitted by the server is never
 resent, so a keystroke typed during a disconnect can be lost but never
@@ -582,12 +592,12 @@ every skipped or coalesced publication is folded into the next update.
 names the `UpdateSeq` it builds on. A client applies a delta only to that
 baseline. On a mismatch it discards the delta, sends one `ResyncViewer`, and
 discards every further delta until the complete snapshot that answers it
-arrives. The
-viewer's pump is the only producer of its updates and finishes one update's
-transfer before it starts the next, so one viewer's updates never interleave
-with each other, although they interleave with other traffic. A missing,
-reordered, or misapplied delta is therefore detected at once, not at the
-next digest.
+arrives. `ResyncViewer` wakes the viewer's pump even when the viewer has no
+pending notification. The viewer's pump is the only producer of its updates
+and finishes one update's transfer before it starts the next, so one
+viewer's updates never interleave with each other, although they interleave
+with other traffic. A missing, reordered, or misapplied delta is therefore
+detected at once, not at the next digest.
 
 **Complete snapshots.** An update has no baseline, and every row is in full,
 when the viewer is new or reconnected, when the geometry revision changed
@@ -738,6 +748,7 @@ A disconnect never closes a terminal, workspace, or session.
 | `MAX_CLOSE_TICKETS` per connection | 16 | `LimitExceeded` |
 | `MAX_HISTORY_SLOTS` per connection | 64 | Least recently used slot evicted; `StaleUndo` |
 | `HOST_EFFECT_DELIVERY_DEADLINE` | 2 s to the first frame | Effect dropped |
+| `HOST_EFFECT_MIN_THROUGHPUT` | Completion within the deadline plus 1 s per 8 MiB | Transfer aborted, effect dropped |
 | `RECIPIENT_EFFECT_LIMIT` per remote recipient | 2 of a terminal's 8 effects | Later effects for that recipient denied |
 | `MAX_PENDING_EFFECT_RESPONSES` per connection | 8 | Fallback answer, as for a missing client |
 | `HIERARCHY_DIGEST_INTERVAL`, `UPDATE_DIGEST_INTERVAL` | 256 events, 64 deltas | Not a limit |
@@ -798,30 +809,36 @@ payload, response }`. Large payloads use a chunked transfer.
   server applies it to the recipient and stamps each effect it admits with
   the generation it last received. The client executes an effect only if
   that viewer is still live and the effect's generation equals its current
-  one. An
-  effect already sent when the user revokes permission is discarded on the
-  client, and a revoke followed by a re-grant cannot revive it.
+  one. An effect already sent when the user revokes permission is discarded
+  on the client, and a revoke followed by a re-grant cannot revive it.
 - **No replay.** Effect IDs belong to one connection. A disconnect revokes
   the connection's recipients, which clears their queues, and nothing is
   ever re-sent on a later connection. A client ignores effect frames it
   cannot match to its current connection.
-- **Delivery deadline.** An effect whose first frame has not been written
+- **Delivery deadlines.** An effect whose first frame has not been written
   to the socket within `HOST_EFFECT_DELIVERY_DEADLINE` (2 s) after admission
-  is dropped. Once its first frame is written, the writer-stall rule governs
-  the rest, so a legitimate 64 MiB write on a busy connection completes. A
-  stalled remote recipient therefore cannot hold the terminal's budget of 8
-  effects and deny every other recipient, which the viewers plan flagged.
+  is dropped. An effect whose last frame has not been written within that
+  deadline plus one second per `HOST_EFFECT_MIN_THROUGHPUT` (8 MiB) of
+  payload, 10 s for a 64 MiB write, is aborted with `AbortTransfer` and
+  dropped, releasing its reservations. A legitimate maximum-size write on a
+  busy connection therefore completes, and a stalled remote recipient holds
+  the terminal's effect and byte budgets for at most that long, rather than
+  denying every other recipient indefinitely, which the viewers plan
+  flagged.
 - **Budgets.** Each connection gets its own process-level budget, as each
   `DesktopHostEffectClient` does today (32 effects and 128 MiB). Within a
   terminal's budget, each remote recipient may hold at most
   `RECIPIENT_EFFECT_LIMIT` (2) of the 8 queued effects, so one connection
   cannot exhaust another's count. Bytes stay shared up to the terminal's
-  64 MiB, the Kitty protocol's minimum write size; the delivery deadline
-  keeps a stalled recipient from holding them.
+  64 MiB, the Kitty protocol's minimum write size, so a recipient that stops
+  reading in the middle of a maximum-size write can deny other recipients'
+  writes to that terminal until the completion deadline, at most 10 s.
 - **Response correlation.** An effect that needs an answer carries a
   response deadline. The server keeps a bounded pending entry per effect and
   answers the terminal with the effect's documented fallback on timeout,
-  disconnect, or a refusal. A late or unknown `HostEffectResult` is ignored.
+  disconnect, or a refusal. A client that cannot send its answer within
+  `EFFECT_RESPONSE_CAP` sends an explicit refusal. A late or unknown
+  `HostEffectResult` is ignored.
   OSC 52 writes need no response; their fallback for a missing or
   incapable client is to drop the write, as in process.
 - Terminal processing never waits on any of this.
@@ -961,6 +978,10 @@ Acceptance:
   whose grid exceeds `MAX_WIRE_GRID_CELLS`, before its rows are buffered.
 - A grapheme longer than `MAX_CELL_TEXT_BYTES` reaches in-process and wire
   rows truncated identically.
+- A single row larger than the smallest `max_frame` (128 columns of
+  near-limit graphemes at 64 KiB frames) encodes, splits across frames, and
+  decodes to the same row, and splitting any update at every byte offset
+  decodes identically.
 - A test-only minor version cell style flag reaches a minor-0 client
   projected, with matching digests and no resync.
 
@@ -981,9 +1002,10 @@ Acceptance:
   over IPC.
 - A forced core lag resynchronizes a slow client without losing a committed
   change.
-- A server at the test-only minor version emits its new event to a minor-0
-  client as `Skipped`, and the client applies the whole stream without a
-  gap or a digest mismatch.
+- A server at the test-only minor version emits its three new event
+  variants to a minor-0 client as `Skipped`, as one older event, and as a
+  projected `HierarchyResync`, and the client applies the whole stream
+  without a gap, a digest mismatch, or a resync of its own.
 - A reconnect to a new incarnation makes old IDs foreign and cancels
   sequence waiters.
 - A mutation in flight at disconnect, including a rename and a
@@ -1053,7 +1075,9 @@ Acceptance:
   changes.
 - A 64 MiB clipboard write whose first frame is written in time completes
   on a busy connection; one that waits past the deadline for its first
-  frame is dropped.
+  frame is dropped; one whose recipient stops reading mid-transfer is
+  aborted at the completion deadline, after which another recipient's write
+  to the same terminal is admitted.
 - A remote recipient at `RECIPIENT_EFFECT_LIMIT` does not deny effects to
   another recipient of the same terminal.
 - A recipient that stops reading cannot block later effects for other
@@ -1102,7 +1126,7 @@ closed at the deadline.
 | Incompatible versions, malformed and oversized messages, stale incarnations | Slice 1 decoder and negotiation tests, slice 3a incarnation test, fuzz targets |
 | Bounded memory per connection | Slice 1 transfer limit tests; slice 3a flood, slow-reader, stall, and undo-slot tests on the injected clock |
 | Partial writes and slow or disconnected consumers | Slice 5 byte-split tests; slice 3a and 3b stall and disconnect tests |
-| Retry behavior | Slice 3a in-flight query, mutation, and shared-setter tests; slice 3b refused-input resend test |
+| Retry behavior | Slice 3a tests for in-flight runtime queries, viewer requests, mutations, and shared setters; slice 3b refused-input resend test |
 | PTY parsing and other viewers continue when a client stalls | Slice 3b stalled-client test that asserts another viewer's updates and PTY output progress |
 | `wasm32-unknown-unknown` | CI check of `huterm-protocol`, `huterm-wire` with its vectors, and the sans-IO `huterm-client`; the vectors decode in native tests |
 | Architecture boundaries | New `mise run architecture` rules, each shown to fail once against a deliberate violation |
