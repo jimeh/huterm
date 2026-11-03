@@ -51,8 +51,10 @@ the same branch runs the generator:
   [the notices README](../../third-party/licenses/README.md).
 
 `gpui-pre` crates are ignored by Dependabot and upgrade through the vendor
-workflow below. A bump that changes lint behavior, such as `syn`, may also
-need code changes before Clippy passes.
+workflow below. So are the font crates `huterm-gpui` pins to GPUI's versions:
+`zed-font-kit`, `core-foundation`, `core-text`, and `fontdb`. A GPUI upgrade
+moves those pins to the versions it resolves. A bump that changes lint
+behavior, such as `syn`, may also need code changes before Clippy passes.
 
 ## GPUI and nix
 
