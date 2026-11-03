@@ -1666,10 +1666,6 @@ fn install_desktop(
         updater,
     });
     system_appearance::follow(cx);
-    // Settings can open before a terminal window. Its first scan must compare
-    // with the startup resolution, including an unavailable platform default.
-    let resolved = resolve_terminal_family(&cx.global::<Desktop>().config, cx);
-    note_terminal_font(cx, resolved);
     apply_typography(cx);
     start_hierarchy_drain(cx);
     cx.on_window_closed(|cx, window| {

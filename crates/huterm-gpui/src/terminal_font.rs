@@ -41,6 +41,7 @@ fn register_faces(
             .collect(),
     )?;
     // Linux's add_fonts returns Ok even if fontdb rejected every byte.
+    #[cfg(target_os = "linux")]
     anyhow::ensure!(
         text_system
             .all_font_names()

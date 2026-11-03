@@ -894,6 +894,58 @@ fn a_family_installed_while_settings_is_open_reapplies_the_fonts(
 }
 
 #[gpui::test]
+fn settings_before_a_terminal_window_resolves_its_family_without_a_reload(
+    cx: &mut TestAppContext,
+) {
+    let text = "[font]\nfamily = \"Missing Mono\"\n";
+    let file = ScratchConfig::new("lists-font-before-window", text);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.font.family = "Missing Mono".into();
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(cx.windows().len(), 0);
+        let desktop = cx.global::<Desktop>();
+        assert_eq!(desktop.applied_terminal_family, None);
+        assert_eq!(desktop.unavailable_fonts.terminal, None);
+    });
+    open_settings(&mut harness, &file.path());
+    // The test platform has no installed fonts. Settings resolves its note
+    // without reloading the file over the configuration already in use.
+    let expected =
+        crate::terminal_font::ResolvedFamily::resolve("Missing Mono", |_| {
+            false
+        });
+    harness.wait_for("Settings to resolve the terminal fallback", |cx| {
+        settled(cx)
+            && cx.global::<Desktop>().unavailable_fonts.terminal
+                == expected.clone().fallback()
+    });
+    with_window(&mut harness, |view, window, cx| {
+        view.show_section(SectionId::Appearance, cx);
+        window.refresh();
+    });
+    visual(&harness).run_until_parked();
+    let row = a11y_node(&mut harness, "settings-row-font.family");
+    assert!(
+        row["aria"]["description"]
+            .as_str()
+            .unwrap()
+            .ends_with(&expected.note()),
+        "{row}"
+    );
+    let reads = with_view(&mut harness, |view, _| view.reads_started());
+    assert_eq!(reads, 1);
+    with_view(&mut harness, |view, cx| view.set_families(&[], cx));
+    harness.cx.run_until_parked();
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.reads_started()),
+        reads
+    );
+    assert_eq!(harness.cx.update(|cx| cx.windows().len()), 1);
+    assert_eq!(file.text(), text);
+}
+
+#[gpui::test]
 fn a_reload_notes_which_configured_fonts_fell_back(cx: &mut TestAppContext) {
     // The test platform lists no fonts, so both families fall back.
     let file = ScratchConfig::new(

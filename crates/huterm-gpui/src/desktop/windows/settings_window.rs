@@ -90,6 +90,12 @@ pub(super) fn open(cx: &mut App) {
         cx.activate(true);
         return;
     }
+    // Settings may open before any terminal has resolved its family.
+    if cx.global::<Desktop>().applied_terminal_family.is_none() {
+        let resolved =
+            super::resolve_terminal_family(&cx.global::<Desktop>().config, cx);
+        super::note_terminal_font(cx, resolved);
+    }
     let display_id = cx.active_window().and_then(|window| {
         window
             .update(cx, |_, window, cx| window.display(cx))

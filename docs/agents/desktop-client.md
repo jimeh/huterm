@@ -320,12 +320,13 @@ GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Every `assets::application().run`
 callback registers `terminal_font::register_bundled_fonts` before any font
-lookup or window creation. Check the family in `all_font_names` after adding
-fonts: Linux's `add_fonts` can return success for rejected bytes. Embedded
-DejaVu Sans Mono is Linux's terminal and interface monospace default; macOS
-keeps Menlo. Resolve `monospace` and missing families to that platform default,
-record the reason, and name a fallback in warnings and Settings only when it
-is available. Carry the resolved `TerminalFont`, including weight, through
+lookup or window creation. On Linux, check the family in `all_font_names`
+after adding fonts: `add_fonts` can return success for rejected bytes. On
+macOS, `add_fonts` reports invalid bytes; avoid the full CoreText family scan.
+Embedded DejaVu Sans Mono is Linux's terminal and interface monospace default;
+macOS keeps Menlo. Resolve `monospace` and missing families to that platform
+default, record the reason, and name a fallback in warnings and Settings only
+when it is available. Carry the resolved `TerminalFont`, including weight, through
 metrics, shaping, and reloads.
 
 Linux font queries for Settings use fontdb, never font-kit's SystemSource or
@@ -891,8 +892,10 @@ runs, since GPUI's cosmic-text database never rescans. The "not installed"
 note reads `Desktop::unavailable_fonts`, what the last font resolution fell
 back from, not the scan, so it describes the running fonts. A scan that
 disagrees with that record asks for one manual reload per distinct result;
-without that guard a reload that still cannot apply the font would loop. The
-GPUI test platform lists no installed fonts, so font tests call
+without that guard a reload that still cannot apply the font would loop. If
+Settings opens before any terminal resolves its family, it resolves the
+family once on opening so its note and scan agree without a reload. The GPUI
+test platform lists no installed fonts, so font tests call
 `set_families`, which makes every later scan find those families, and set
 `unavailable_fonts` to the state they assume. `run_list` routes the field
 verbs to the focused field's list first; the field's own behavior gets the keys
