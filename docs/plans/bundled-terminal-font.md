@@ -1,6 +1,7 @@
 # Bundled terminal font
 
-Status: in progress. Tracks #370.
+Status: implemented in PR #383. "Revisions during implementation" below
+records where the shipped change departs from this plan.
 
 ## Outcome
 
@@ -139,6 +140,22 @@ Read from GPUI 0.3.10, not reproduced:
 | Rendering on macOS unchanged; Linux draws an even grid without system DejaVu | `smoke:renderer` on macOS. A Docker Xvfb screenshot of the default configuration in a throwaway container with `fonts-dejavu-core` removed |
 | Settings notes in the running app | UX review on a macOS scratch bundle |
 | Whole repository | `mise run check`, `mise run test`, then `mise run verify` |
+
+## Revisions during implementation
+
+- The registration postcondition runs on Linux only. macOS's `add_fonts`
+  already reports bytes CoreText rejects, and listing every family through
+  CoreText takes about 40 ms on the UI thread. On Linux the list is an
+  in-memory fontdb walk.
+- Settings opened before any terminal window resolves the terminal family
+  when it opens. Resolving it at startup would add a second family scan
+  before the first window.
+- When the default family itself fails to load, the warning and the Settings
+  note say it failed to load rather than naming a fallback.
+- No Linux screenshot without system DejaVu was captured: under Xvfb in the
+  development container, GPUI's 32-bit window read back blank. The Linux
+  registration tests against a cosmic-text system with no system fonts cover
+  the bundled faces resolving.
 
 ## Open questions
 

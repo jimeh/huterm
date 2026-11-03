@@ -101,9 +101,16 @@ impl ResolvedFamily {
         (self.reason != FamilyReason::Installed).then_some(self)
     }
 
+    /// The configured family is the platform default, which did not load.
+    fn default_unavailable(&self) -> bool {
+        !self.available && self.configured == self.family
+    }
+
     pub(crate) fn warning(&self) -> Option<String> {
         (self.reason == FamilyReason::Missing).then(|| {
-            if self.available {
+            if self.default_unavailable() {
+                format!("Huterm font {:?} failed to load", self.configured)
+            } else if self.available {
                 format!("Huterm font {:?} is unavailable; using {}", self.configured, self.family)
             } else {
                 format!("Huterm font {:?} is unavailable; the platform default font is unavailable too", self.configured)
@@ -117,7 +124,9 @@ impl ResolvedFamily {
             FamilyReason::Missing => "is not installed",
             FamilyReason::Installed => return String::new(),
         };
-        if self.available {
+        if self.default_unavailable() {
+            format!("{} failed to load.", self.configured)
+        } else if self.available {
             format!(
                 "{} {reason}, so terminals use {}.",
                 self.configured, self.family
@@ -177,12 +186,17 @@ fn font_database() -> &'static std::sync::Arc<fontdb::Database> {
     DATABASE.get_or_init(|| {
         let mut database = fontdb::Database::new();
         database.load_system_fonts();
-        // Match GPUI: installed faces precede equally suitable bundled faces.
-        for bytes in BUNDLED_FACES {
-            database.load_font_data(bytes.to_vec());
-        }
+        append_bundled_faces(&mut database);
         std::sync::Arc::new(database)
     })
+}
+
+/// Match GPUI: installed faces precede equally suitable bundled faces.
+#[cfg(target_os = "linux")]
+fn append_bundled_faces(database: &mut fontdb::Database) {
+    for bytes in BUNDLED_FACES {
+        database.load_font_data(bytes.to_vec());
+    }
 }
 
 /// Match GPUI's Linux face-info conversion before CSS face matching.
@@ -314,16 +328,21 @@ pub(crate) fn enumerate_weights(family: &str) -> Result<WeightFaces, String> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn enumerate_weights(family: &str) -> Result<WeightFaces, String> {
-    catch_enumeration(|| {
-        let database = font_database();
-        let properties = database
-            .faces()
-            .filter(|face| face.families.iter().any(|name| name.0 == family))
-            .filter(|face| candidate(database, face))
-            .map(fontdb_properties)
-            .collect::<Vec<_>>();
-        WeightFaces::from_properties(&properties)
-    })
+    catch_enumeration(|| database_weights(font_database(), family))
+}
+
+#[cfg(target_os = "linux")]
+fn database_weights(
+    database: &fontdb::Database,
+    family: &str,
+) -> Result<WeightFaces, String> {
+    let properties = database
+        .faces()
+        .filter(|face| face.families.iter().any(|name| name.0 == family))
+        .filter(|face| candidate(database, face))
+        .map(fontdb_properties)
+        .collect::<Vec<_>>();
+    WeightFaces::from_properties(&properties)
 }
 
 fn catch_enumeration(
@@ -460,7 +479,7 @@ mod tests {
 
     #[test]
     fn an_unregistered_default_is_not_named_as_the_drawn_font() {
-        for configured in ["Missing Mono", "monospace", BUNDLED_FAMILY] {
+        for configured in ["Missing Mono", "monospace"] {
             let resolved = ResolvedFamily::resolve(configured, |_| false);
             assert!(!resolved.available);
             assert!(!resolved.note().contains("terminals use"));
@@ -473,6 +492,25 @@ mod tests {
                 !resolved.warning().unwrap_or_default().contains("; using")
             );
         }
+        let default = default_family();
+        let resolved = ResolvedFamily::resolve(&default, |_| false);
+        assert_eq!(resolved.note(), format!("{default} failed to load."));
+        assert_eq!(
+            resolved.warning(),
+            Some(format!("Huterm font {default:?} failed to load"))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bundled_faces_alone_offer_regular_and_bold_on_linux() {
+        let mut database = fontdb::Database::new();
+        append_bundled_faces(&mut database);
+        let faces = database_weights(&database, BUNDLED_FAMILY).unwrap();
+        assert_eq!(
+            faces.options.iter().map(|w| w.number()).collect::<Vec<_>>(),
+            [400, 700]
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -517,8 +555,8 @@ mod tests {
                 BUNDLED_FAMILY,
             ),
         );
-        assert!(platform.all_font_names().is_empty());
-        let mut cx = gpui::TestAppContext::build_with_text_system(
+        assert_eq!(platform.all_font_names(), Vec::<String>::new());
+        let cx = gpui::TestAppContext::build_with_text_system(
             gpui::TestDispatcher::new(0),
             None,
             platform.clone(),
