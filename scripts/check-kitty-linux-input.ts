@@ -68,8 +68,9 @@ stty raw -echo
 printf READY
 ${quote(process.execPath)} ${quote(recorder)}
 # script retains a real PTY while recording kitten's decoded output. It runs
-# its command through $SHELL, which is this fixture, so give it a plain shell.
-SHELL=/bin/sh script -q -e -c ${quote(`${quote(kitten)} show-key -m kitty`)} ${quote(decoded)}
+# its command through $SHELL, which is this fixture, so give it a plain shell,
+# and flushes (-f) so the barriers below can read kitten's output as it arrives.
+SHELL=/bin/sh script -q -f -e -c ${quote(`${quote(kitten)} show-key -m kitty`)} ${quote(decoded)}
 printf FINISHED > ${quote(join(directory, "finished"))}
 `, { mode: 0o700 });
     const config = join(directory, "config.toml");
@@ -128,8 +129,9 @@ printf FINISHED > ${quote(join(directory, "finished"))}
     }, "Russian layout and physical US alternate decoded");
     run(["setxkbmap", "-layout", "us"]);
     await waitFor(async () => {
+      // A stale ru map would print CSI 1092 :  : 97 ; 5 u, so match the key itself.
       keys("ctrl+a");
-      return (await readFile(decoded, "utf8").catch(() => "")).includes("97 ; 5 u");
+      return (await readFile(decoded, "utf8").catch(() => "")).includes("CSI 97 ; 5 u");
     }, "US layout restored and decoded");
     keys("ctrl+shift+semicolon", "Escape", "F1", "ctrl+d");
     await waitFor(() => Bun.file(join(directory, "finished")).exists(), "kitten exited through Ctrl+D");

@@ -1,6 +1,6 @@
 # Kitty keyboard protocol
 
-Status: approved. Delivers [#85][issue-85], parent [#78][issue-78].
+Status: implemented in PR #384. Delivers [#85][issue-85], parent [#78][issue-78].
 
 Terminal applications that enable the Kitty keyboard protocol get unambiguous
 keys for the flags Huterm implements: disambiguate escape codes (`0b1`) and
@@ -205,7 +205,7 @@ The implementer chooses the exact type shapes, within these limits:
   - Shift with a digit or punctuation;
   - Ctrl with a letter;
   - Ctrl+Shift with a letter;
-  - Ctrl+Shift with punctuation, expecting `CSI 59;6u` and, under flag 4,
+  - Ctrl+Shift with punctuation, expecting `CSI 59;6u` and, under flags 1|4,
     `CSI 59:58;6u`;
   - Ctrl+Space;
   - a non-ASCII layout key where it can be produced.
@@ -232,7 +232,7 @@ The implementer chooses the exact type shapes, within these limits:
   - modified arrows;
   - F1 to F12, Insert;
   - Ctrl+digit and Ctrl+punctuation;
-  - shifted alternates under flag 4.
+  - shifted alternates under flags 1|4.
 
   Plain text, Enter, Tab, and Backspace stay legacy.
 - `printf '\e[>31u\e[?u'` reads back `\e[?5u`, and Huterm then encodes only
@@ -307,7 +307,7 @@ fix that.
 | Bindings and key-set types match the headers | `mise run ghostty:bindings:check`; `key_tests.rs` probes for the new key sets |
 | Legacy bytes unchanged | A new compact legacy matrix in `input/tests.rs`: every existing `TerminalKey` x {none, Shift, Ctrl, Alt} x application-cursor on and off, plus Character Ctrl and Meta cases, asserted against today's bytes. Write it first and run it green on the unchanged encoder |
 | New legacy F1-F12 and Insert bytes | Exact-byte tests |
-| Kitty bytes | Exact-byte `huterm-core` tests at effective flags 1 and 5, plus the full legacy matrix at flags 0, 4, 6, and 12 and raw flags that mask to 0, such as 2 and 8. Pinned expectations include: Escape `CSI 27u`; Shift+Tab `CSI 9;2u`; Shift+Enter `CSI 13;2u`; Ctrl+Backspace `CSI 127;5u`; unmodified Enter, Tab, and Backspace legacy; F1-F4 `CSI P`, `CSI Q`, `CSI 13~`, `CSI S`; Ctrl+Left `CSI 1;5D`; Ctrl+a `CSI 97;5u`; Ctrl+Shift+a `CSI 97;6u` and, under flag 4, `CSI 97:65;6u`; Ctrl+Shift+; `CSI 59;6u` and `CSI 59:58;6u`; Meta+a `CSI 97;3u`; Ctrl+1 `CSI 49;5u`; a base-layout alternate under flag 4; Shift+a plain `A` |
+| Kitty bytes | Exact-byte `huterm-core` tests at effective flags 1 and 5, plus the full legacy matrix at flags 0, 4, 6, and 12 and raw flags that mask to 0, such as 2 and 8. Pinned expectations include: Escape `CSI 27u`; Shift+Tab `CSI 9;2u`; Shift+Enter `CSI 13;2u`; Ctrl+Backspace `CSI 127;5u`; unmodified Enter, Tab, and Backspace legacy; F1-F4 `CSI P`, `CSI Q`, `CSI 13~`, `CSI S`; Ctrl+Left `CSI 1;5D`; Ctrl+a `CSI 97;5u`; Ctrl+Shift+a `CSI 97;6u` and, under flags 1 and 4, `CSI 97:65;6u`; Ctrl+Shift+; `CSI 59;6u` and `CSI 59:58;6u`; Meta+a `CSI 97;3u`; Ctrl+1 `CSI 49;5u`; a base-layout alternate under flags 1 and 4; Shift+a plain `A` |
 | Text, Paste, and Option-composed text untouched in Kitty mode | `huterm-core` tests |
 | Reply masking: `CSI ? 31 u` to `5`, `2` to `0`; graphics replies still dropped | Replaces `kitty_keyboard_and_graphics_replies_never_reach_the_pty`. One output chunk holds several queries interleaved with pushes and pops, and the test asserts each captured reply, not only the final state |
 | Flags read at dequeue, ordered with output | A runtime test that admits a structured key, changes flags through parsed output before that key is dequeued, and asserts the bytes match the new flags. Synchronize on observable progress, such as a parsed reply, not on sleeps |
