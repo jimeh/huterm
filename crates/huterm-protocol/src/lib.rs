@@ -527,10 +527,10 @@ impl KittyKeyboardFlags {
     pub const fn bits(self) -> u8 {
         self.0
     }
-    /// Whether Kitty encoding is active.
+    /// Whether disambiguation enables Kitty encoding and Kitty-only routing.
     #[must_use]
-    pub const fn is_active(self) -> bool {
-        self.0 != 0
+    pub const fn disambiguates(self) -> bool {
+        self.0 & 1 != 0
     }
 }
 

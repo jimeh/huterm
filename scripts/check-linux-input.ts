@@ -2,6 +2,7 @@
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { inputSmokeState, waitForInputSmoke } from "./input-smoke-state";
 import { checkKittyLinuxInput } from "./check-kitty-linux-input";
 
 function run(args: string[]): string {
@@ -27,10 +28,6 @@ function signal(pid: number, signal: NodeJS.Signals): void {
   catch { /* The process already exited. */ }
 }
 
-async function waitFor(check: () => Promise<boolean>, label: string): Promise<void> {
-  if (!await waitWithin(check, 10_000)) throw new Error(`timed out waiting for ${label}`);
-}
-
 /** Polls `check` until it holds or `milliseconds` pass; false on timeout. */
 async function waitWithin(check: () => Promise<boolean>, milliseconds: number): Promise<boolean> {
   const deadline = performance.now() + milliseconds;
@@ -46,6 +43,7 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 async function checkInput(executable: string): Promise<void> {
   const engine = "ghostty";
   const directory = await mkdtemp(join(tmpdir(), "huterm-x11-input-"));
+  const waitFor = (check: () => Promise<boolean>, label: string) => waitForInputSmoke(check, label, directory, 10_000);
   const ready = join(directory, "ready");
   const probed = join(directory, "probed");
   const complete = join(directory, "complete");
@@ -136,7 +134,7 @@ command = "quit"
   async function backgroundIs(color: string, label: string) {
     let last = "";
     if (!await waitWithin(async () => (last = await readFile(background, "utf8").catch(() => "")) === color, 10_000)) {
-      throw new Error(`timed out waiting for ${label}: background ${last || "unreported"}, expected ${color}`);
+      throw new Error(`timed out waiting for ${label}: background ${last || "unreported"}, expected ${color}\n${await inputSmokeState(directory)}`);
     }
   }
   await configure();
@@ -171,7 +169,7 @@ command = "quit"
       run(["xdotool", "key", "--clearmodifiers", "z"]);
       probedInput = await waitWithin(() => Bun.file(probed).exists(), 250);
     }
-    if (!probedInput) throw new Error(`${engine}: the terminal never accepted input`);
+    if (!probedInput) throw new Error(`${engine}: the terminal never accepted input\n${await inputSmokeState(directory)}`);
     run(["xdotool", "key", "--clearmodifiers", "g"]);
     // XTest updates the server's XKB modifier state; --window would instead
     // send XSendEvent events and bypass the conversion this smoke must prove.

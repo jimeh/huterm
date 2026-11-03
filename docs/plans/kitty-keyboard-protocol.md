@@ -14,7 +14,7 @@ These were settled with Jim on 2026-11-03.
   as escape codes (`8`), and report associated text (`16`) are deferred to a
   follow-up issue. Flag 2 needs key-up tracking. Flag 8 needs printable keys to
   bypass AppKit text input, which puts IME and dead keys at risk.
-- **Legacy encoding:** when the effective Kitty flags are zero, every key
+- **Legacy encoding:** when disambiguation (bit 1) is absent, every key
   Huterm encodes today keeps its current bytes exactly. Unmodified F1 to F12
   and Insert gain their standard xterm legacy bytes, because the protocol needs
   those keys for Kitty mode and they need a legacy form. Modified legacy named
@@ -133,16 +133,17 @@ The implementer chooses the exact type shapes, within these limits:
   Ghostty's current flags `& (1 | 4)`.
 - `encode_input` runs at dequeue time in `handle_input`, as it does now. For
   `Key` and `Character`, it chooses an encoding from the live effective flags:
-  - **Flags zero:** today's legacy bytes. Add F1 to F4 as `SS3 P`..`SS3 S`, F5
+  - **Disambiguation absent (flags 0 or 4):** today's legacy bytes. Add F1 to
+    F4 as `SS3 P`..`SS3 S`, F5
     to F12 as `CSI 15~`, `17~`, `18~`, `19~`, `20~`, `21~`, `23~`, `24~`, and
     Insert as `CSI 2~`. Modified F-keys and Insert keep today's
     ESC-prefix-for-Alt rule, and Ctrl and Shift do not change their bytes. A
     kitty-only chord uses its legacy fallback.
-  - **Flags non-zero:**
+  - **Disambiguation present (flags 1 or 5):**
     - A Character chord with neither Ctrl nor Meta, such as Shift+letter or a
       Linux printable key, sends its text unchanged and bypasses the encoder.
       This is what Kitty sends for unmodified and Shift-only text under flags
-      1 and 4. Without the bypass, Ghostty would see Shift as an unconsumed
+      1 and 5. Without the bypass, Ghostty would see Shift as an unconsumed
       binding modifier and emit `CSI 97;2u` for Shift+a.
     - Every other `Key` or `Character` goes through the encoder:
       1. Sync the encoder from the terminal.
@@ -188,9 +189,9 @@ The implementer chooses the exact type shapes, within these limits:
     Shift state; and `guess_ascii(keycode, false)` for the US character.
   - Huterm reads the identity from the interceptor event that reaches
     `handle_keystroke`.
-  - Chord replay: GPUI replays pending prefix strokes as bare `Keystroke`s.
-    Store each stroke's identity in `PendingShortcuts` when it is first
-    intercepted, and reuse it when that stroke replays.
+  - Chord replay: GPUI replays unmatched pending prefix strokes through
+    key-down listeners and text insertion, bypassing keystroke observers.
+    Keep the existing suppression; no replay identity storage is needed.
   - Fallback: when no identity is available, derive it from `Keystroke`
     (letters keep Shift; other keys use the reported character). Test it,
     and document that it is less precise.
@@ -258,8 +259,6 @@ The implementer chooses the exact type shapes, within these limits:
   restarted terminal starts with a fresh engine.
 - **Focus changes:** focus reporting is unchanged. The Kitty protocol defines
   no focus-related key behavior that flags 1 and 4 need.
-- **Replayed chord without stored identity:** falls back to the
-  `Keystroke`-derived identity. This is bounded and documented.
 - **Native identity unavailable:** an unpatched path, a synthetic event, or a
   test event falls back the same way.
 - **Stale routing hint:** a Ctrl chord claimed under a stale Kitty-active hint
@@ -303,19 +302,19 @@ fix that.
 | Concern | Evidence |
 | --- | --- |
 | Ghostty flags getter, push, pop, set (all three modes), query, RIS, per-screen stack, 8-entry bound, malformed forms | `huterm-ghostty` contract tests |
-| Encoder output under effective flags 1, 4, and 5 for representative events | `huterm-ghostty` contract tests. Flag 4 alone is its own case, because Ghostty selects the Kitty encoder for any non-zero flags |
+| Encoder output under effective flags 1 and 5 for representative events | `huterm-ghostty` contract tests. Flag 4 is only an enhancement to sequences enabled by other flags; core keeps legacy encoding without bit 1. The native flag-4 test documents Ghostty behavior that core never selects |
 | Encoder ownership: short-buffer retry on `OUT_OF_SPACE`, consecutive events with different text and no stale fields, drop frees handles | `huterm-ghostty` tests, with the test allocator where it applies |
 | Bindings and key-set types match the headers | `mise run ghostty:bindings:check`; `key_tests.rs` probes for the new key sets |
 | Legacy bytes unchanged | A new compact legacy matrix in `input/tests.rs`: every existing `TerminalKey` x {none, Shift, Ctrl, Alt} x application-cursor on and off, plus Character Ctrl and Meta cases, asserted against today's bytes. Write it first and run it green on the unchanged encoder |
 | New legacy F1-F12 and Insert bytes | Exact-byte tests |
-| Kitty bytes | Exact-byte `huterm-core` tests at effective flags 1, 4, and 5, and with raw flags that mask to 0, such as 2 and 8. Pinned expectations include: Escape `CSI 27u`; Shift+Tab `CSI 9;2u`; Shift+Enter `CSI 13;2u`; Ctrl+Backspace `CSI 127;5u`; unmodified Enter, Tab, and Backspace legacy; F1-F4 `CSI P`, `CSI Q`, `CSI 13~`, `CSI S`; Ctrl+Left `CSI 1;5D`; Ctrl+a `CSI 97;5u`; Ctrl+Shift+a `CSI 97;6u` and, under flag 4, `CSI 97:65;6u`; Ctrl+Shift+; `CSI 59;6u` and `CSI 59:58;6u`; Meta+a `CSI 97;3u`; Ctrl+1 `CSI 49;5u`; a base-layout alternate under flag 4; Shift+a plain `A` |
+| Kitty bytes | Exact-byte `huterm-core` tests at effective flags 1 and 5, plus the full legacy matrix at flags 0, 4, 6, and 12 and raw flags that mask to 0, such as 2 and 8. Pinned expectations include: Escape `CSI 27u`; Shift+Tab `CSI 9;2u`; Shift+Enter `CSI 13;2u`; Ctrl+Backspace `CSI 127;5u`; unmodified Enter, Tab, and Backspace legacy; F1-F4 `CSI P`, `CSI Q`, `CSI 13~`, `CSI S`; Ctrl+Left `CSI 1;5D`; Ctrl+a `CSI 97;5u`; Ctrl+Shift+a `CSI 97;6u` and, under flag 4, `CSI 97:65;6u`; Ctrl+Shift+; `CSI 59;6u` and `CSI 59:58;6u`; Meta+a `CSI 97;3u`; Ctrl+1 `CSI 49;5u`; a base-layout alternate under flag 4; Shift+a plain `A` |
 | Text, Paste, and Option-composed text untouched in Kitty mode | `huterm-core` tests |
 | Reply masking: `CSI ? 31 u` to `5`, `2` to `0`; graphics replies still dropped | Replaces `kitty_keyboard_and_graphics_replies_never_reach_the_pty`. One output chunk holds several queries interleaved with pushes and pops, and the test asserts each captured reply, not only the final state |
 | Flags read at dequeue, ordered with output | A runtime test that admits a structured key, changes flags through parsed output before that key is dequeued, and asserts the bytes match the new flags. Synchronize on observable progress, such as a parsed reply, not on sleeps |
 | Alternate-screen enter and exit flag isolation | Engine test |
 | Child exit writes no key bytes | Existing input-closed tests; add a `Key` or `Character` case if none covers it |
 | GPUI translation: F-keys, Insert, Shift kept, identity from the native field and from the fallback, Kitty-only Ctrl chords claimed only under the hint | `keyboard` unit tests |
-| Chord replay keeps its identity and stays suppressed before text | `PendingShortcuts` unit tests; the existing macOS smoke replay assertions stay green |
+| Chord replay stays suppressed before text; replayed prefixes never reach the PTY | Existing `PendingShortcuts` unit tests and macOS smoke replay assertions |
 | Synced input: Kitty source to legacy target and the reverse, for ordinary Ctrl and Meta chords and for a Kitty-only Ctrl chord (the documented limitation) | Extend `window_tests/synced_input.rs` |
 | Queue accounting counts new strings | GPUI `input_queue` and core `input_bytes` tests |
 | Shortcuts, pending replay, Option policy, composition, and IME unchanged | Existing `keyboard` tests; `smoke:macos-input` and `smoke:linux-input` stay green |
@@ -334,12 +333,28 @@ fix that.
   - Shift is kept;
   - the F-key and Insert mapping;
   - the native key-identity field;
-  - replay identity storage and its fallback.
+  - replay suppression and the synthetic-event identity fallback.
 - `third-party/vendor` README and `sources.json`, and
   `docs/agents/dependencies.md` where it lists vendored GPUI patches: record
   the new patches, why each exists, and when to drop it.
 - `README.md` or `docs/configuration.md`: list supported Kitty flags only if
   either already lists terminal protocol support. Check before writing.
+
+## Implementation deviations
+
+GPUI's `Window::replay_pending_input` sends unmatched prefixes directly to
+key-down listeners and input insertion, without interceptors or unconsumed
+keystroke observers. Replayed bindings notify observers with an action, which
+Huterm consumes. On macOS the existing key-down listener suppresses unmatched
+replays before text insertion; Linux registers no terminal text input handler.
+Replayed prefixes therefore never reach the PTY on either platform. The initial
+replay identity storage was removed; the existing macOS suppression and action
+bookkeeping remain.
+
+The Linux Kitty fixture unbinds Ctrl+Shift+A, which otherwise invokes Select
+All. X11 reloads its XKB map after map notifications, but coalesces those
+notifications after queued keys. Layout changes in the smoke use decoded
+Kitty output as the completion barrier before changing the layout again.
 
 ## Open questions
 

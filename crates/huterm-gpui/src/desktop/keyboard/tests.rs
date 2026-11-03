@@ -607,26 +607,6 @@ fn function_keys_insert_and_named_key_shift_are_retained() {
 }
 
 #[test]
-fn pending_replay_retains_each_native_identity_and_stays_suppressed() {
-    let held = prefix(&["alt-k", "ctrl-:"]);
-    let identities = [
-        gpui::native_key_identity("k", "K", false, Some('k')),
-        gpui::native_key_identity(";", ":", true, Some(';')),
-    ];
-    let mut pending = PendingShortcuts::default();
-    pending.intercept(&held[0], Some(identities[0]));
-    pending.update(Some(&held[..1]), Vec::new());
-    pending.intercept(&held[1], Some(identities[1]));
-    pending.update(Some(&held), Vec::new());
-    pending.update(None, Vec::new());
-    for (stroke, identity) in held.iter().zip(identities) {
-        assert_eq!(pending.replay_identity(stroke), Some(identity));
-        assert!(pending.consume_replay(stroke));
-    }
-    assert!(!pending.consume_replay(&held[1]));
-}
-
-#[test]
 fn native_text_is_preserved_when_a_layout_has_no_single_key_identity() {
     let native = gpui::native_key_identity("", "", false, None);
     let stroke = stroke("dead_acute", Some("é"), false, false, false);
@@ -638,4 +618,29 @@ fn native_text_is_preserved_when_a_layout_has_no_single_key_identity() {
             key: None
         })
     );
+}
+
+#[test]
+fn alternate_keys_alone_do_not_claim_kitty_only_control_chords() {
+    use huterm_protocol::KittyKeyboardFlags;
+    let stroke = stroke("1", None, false, false, true);
+    let native = gpui::native_key_identity("1", "!", false, Some('1'));
+    for flags in [0, 1, 4, 5, 6, 12, 31] {
+        let hint = KittyKeyboardFlags::from_bits(flags);
+        assert_eq!(hint.bits(), flags & 5);
+        for platform in [Platform::MacOs, Platform::Linux] {
+            assert_eq!(
+                super::translate(
+                    &stroke,
+                    platform,
+                    false,
+                    Some(native),
+                    hint.disambiguates()
+                )
+                .is_some(),
+                flags & 1 != 0,
+                "flags={flags} {platform:?}"
+            );
+        }
+    }
 }

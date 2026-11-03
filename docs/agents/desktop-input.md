@@ -79,8 +79,9 @@ has newer preedit. Bindings and menu installation share one operation;
 
 ### Kitty keyboard routing and identity
 
-Use the displayed snapshot's masked Kitty flags only to decide whether to
-claim a Ctrl chord legacy cannot encode, such as Ctrl+1 or Ctrl+;. Carry its
+Use disambiguation (bit 1) in the displayed snapshot's masked Kitty flags to
+decide whether to claim a Ctrl chord legacy cannot encode, such as Ctrl+1 or
+Ctrl+;. Flag 4 alone does not claim these chords. Carry its
 layout text as a legacy fallback if flags turn off before dequeue. Core always
 chooses bytes against live flags. Synced panes encode independently; a legacy
 source cannot supply a Kitty-only chord to a Kitty target because it never
@@ -92,9 +93,11 @@ equality drives bindings. The native patches derive active-layout unshifted
 and shifted characters, held Shift, and the physical US character before GPUI
 normalizes punctuation or removes Control text. Capture it in the interceptor
 and use it in Huterm's post-matcher observer, preserving shortcut ordering.
-`PendingShortcuts` retains each prefix identity through resolution and replay;
-replayed prefixes stay suppressed before native text insertion. Never replace
-the mismatching current event's identity with that of an old replay.
+GPUI sends unmatched replayed prefixes directly to key-down listeners and text
+insertion, bypassing keystroke observers. macOS suppresses them before native
+text insertion through `PendingShortcuts`; replayed actions are consumed by the
+observer. Linux registers no terminal text input handler. Replayed prefixes
+therefore never reach the PTY, so no replay identity is stored.
 
 Synthetic or unpatched events fall back to `Keystroke`: letters keep Shift,
 and punctuation uses the reported character. That fallback cannot recover an

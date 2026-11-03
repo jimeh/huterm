@@ -1359,6 +1359,8 @@ fn kitty_encoder_flags_short_buffer_retry_and_event_reuse() {
         };
         for (flags, expected) in [
             (1, "\x1b[97;6u"),
+            // Native Ghostty selects Kitty for any nonzero flags. Core never
+            // passes flag 4 without disambiguation (1).
             (4, "\x1b[97:65;6u"),
             (5, "\x1b[97:65;6u"),
         ] {
@@ -1379,6 +1381,19 @@ fn kitty_encoder_flags_short_buffer_retry_and_event_reuse() {
                 encoder.encode(next).unwrap(),
                 b"\r",
                 "no stale text/modifiers/unshifted codepoint"
+            );
+            assert_eq!(
+                encoder
+                    .encode(KeyEvent {
+                        key: Key::Unidentified,
+                        control: true,
+                        text: "b",
+                        unshifted: None,
+                        ..next
+                    })
+                    .unwrap(),
+                b"b",
+                "a printable key must not inherit the previous unshifted codepoint"
             );
             assert_eq!(
                 encoder

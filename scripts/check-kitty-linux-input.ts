@@ -4,6 +4,7 @@ import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import source from "./kitten-source.json";
+import { inputSmokeState, waitForInputSmoke } from "./input-smoke-state";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const run = (args: string[]) => {
@@ -11,20 +12,17 @@ const run = (args: string[]) => {
   if (result.exitCode !== 0) throw new Error(`${args.join(" ")}: ${result.stderr.toString()}`);
   return result.stdout.toString().trim();
 };
-async function waitFor(check: () => Promise<boolean>, label: string) {
-  const deadline = performance.now() + 15_000;
-  while (!await check()) {
-    if (performance.now() > deadline) throw new Error(`timed out: ${label}`);
-    await Bun.sleep(20);
-  }
-}
-
 export async function checkKittyLinuxInput(executable: string): Promise<void> {
   console.log(run(["df", "-h", "."]));
   const directory = await mkdtemp(join(tmpdir(), "huterm-kitty-input-"));
+  const waitFor = (check: () => Promise<boolean>, label: string) => waitForInputSmoke(check, label, directory, 15_000);
   let app: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
   let diagnostics: Promise<string[]> | undefined;
   try {
+    console.log(run(["script", "--version"]));
+    // Compile both layouts before launching GPUI. Fail here if ru data is absent.
+    run(["setxkbmap", "-layout", "ru"]);
+    run(["setxkbmap", "-layout", "us"]);
     const pin = source.architectures[process.arch as keyof typeof source.architectures];
     if (!pin) throw new Error(`no pinned kitten for ${process.arch}`);
     if (Date.now() - Date.parse(source.publishedAt) < 72 * 60 * 60 * 1000) throw new Error("kitten release is inside cooldown");
@@ -74,7 +72,8 @@ script -q -e -c ${quote(`${quote(kitten)} show-key -m kitty`)} ${quote(decoded)}
 printf FINISHED > ${quote(join(directory, "finished"))}
 `, { mode: 0o700 });
     const config = join(directory, "config.toml");
-    await writeFile(config, '[terminal]\nclose_on_exit = false\n[[keybinding]]\nkey = "ctrl-shift-q"\ncommand = "quit"\n');
+    // Ctrl+Shift+A is normally Select All on Linux; this fixture measures PTY input.
+    await writeFile(config, '[terminal]\nclose_on_exit = false\n[[keybinding]]\nkey = "ctrl-shift-a"\ncommand = "unbind"\n[[keybinding]]\nkey = "ctrl-shift-q"\ncommand = "quit"\n');
     app = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_PALETTE_SMOKE: directory, HUTERM_CONFIG_FILE: config, SHELL: shell }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     diagnostics = Promise.all([new Response(app.stdout).text(), new Response(app.stderr).text()]);
     const stateFile = join(directory, "state");
@@ -97,7 +96,7 @@ printf FINISHED > ${quote(join(directory, "finished"))}
         if (!probed) await Bun.sleep(20);
       }
     }
-    if (!probed) throw new Error("recorder never accepted native input");
+    if (!probed) throw new Error(`recorder never accepted native input\n${await inputSmokeState(directory)}`);
     keys("g", "z");
     await waitFor(async () => (await readFile(bytes).catch(() => Buffer.alloc(0))).toString() === "z", "recorder completion barrier");
     async function mode(command: string, flags: number) {
@@ -109,7 +108,7 @@ printf FINISHED > ${quote(join(directory, "finished"))}
     await mode("1:push", 5);
     keys("Escape", "ctrl+a", "ctrl+shift+a", "ctrl+shift+semicolon", "shift+Return", "ctrl+1", "F1", "ctrl+space", "shift+a", "shift+1", "x");
     const kittyBytes = "z\x1b[27u\x1b[97;5u\x1b[97:65;6u\x1b[59:58;6u\x1b[13;2u\x1b[49;5u\x1b[P\x1b[32;5uA!x";
-    await waitFor(async () => (await readFile(bytes)).length >= Buffer.byteLength(kittyBytes), "Kitty sentinel");
+    await waitFor(async () => (await readFile(bytes).catch(() => Buffer.alloc(0))).length >= Buffer.byteLength(kittyBytes), "Kitty sentinel");
     await mode("2:pop", 0);
     keys("Escape", "ctrl+a", "F1", "x", "ctrl+d");
     await state(5); // kitten's own protocol negotiation has now reached the displayed snapshot.
@@ -119,9 +118,19 @@ printf FINISHED > ${quote(join(directory, "finished"))}
     // A non-ASCII layout key is produced by XKB itself, then restored before
     // checking kitten. This also exercises the physical US alternate.
     run(["setxkbmap", "-layout", "ru"]);
-    keys("ctrl+shift+Cyrillic_ef");
+    // GPUI reloads XKB maps, but coalesces map notifications after key events.
+    // Probe until decoded output proves the new map is in use before restoring it.
+    await waitFor(async () => {
+      keys("ctrl+shift+Cyrillic_ef");
+      return (await readFile(decoded, "utf8").catch(() => "")).includes("Alternate key: ")
+        && (await readFile(decoded, "utf8").catch(() => "")).includes("1092 : 1060 : 97");
+    }, "Russian layout and physical US alternate decoded");
     run(["setxkbmap", "-layout", "us"]);
-    keys("ctrl+a", "ctrl+shift+semicolon", "Escape", "F1", "ctrl+d");
+    await waitFor(async () => {
+      keys("ctrl+a");
+      return (await readFile(decoded, "utf8").catch(() => "")).includes("97 ; 5 u");
+    }, "US layout restored and decoded");
+    keys("ctrl+shift+semicolon", "Escape", "F1", "ctrl+d");
     await waitFor(() => Bun.file(join(directory, "finished")).exists(), "kitten exited through Ctrl+D");
     const output = (await readFile(decoded, "utf8")).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     for (const wanted of ["ctrl+a", "shift+ctrl+;", "Shifted key: :", "escape", "f1", "Alternate key: a"]) {

@@ -286,7 +286,7 @@ jobs:
         run: |
           sudo apt-get install --no-install-recommends \
             mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils \
-            x11-utils openbox xcompmgr xclip ncurses-bin python3 tmux
+            x11-utils openbox xcompmgr xclip ncurses-bin python3 tmux bsdutils xkb-data
 
       - name: Install macOS smoke dependencies
         if: runner.os == 'macOS'

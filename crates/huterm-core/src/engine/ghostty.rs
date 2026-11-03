@@ -224,12 +224,11 @@ fn supported_reply(bytes: Vec<u8>) -> Option<Vec<u8>> {
     if bytes.starts_with(b"\x1b_G") {
         return None;
     }
-    if let Some(flags) = bytes
-        .strip_prefix(b"\x1b[?")
-        .and_then(|bytes| bytes.strip_suffix(b"u"))
-        .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .and_then(|text| text.parse::<u8>().ok())
-    {
+    if bytes.starts_with(b"\x1b[?") && bytes.ends_with(b"u") {
+        let flags = std::str::from_utf8(&bytes[3..bytes.len() - 1])
+            .ok()?
+            .parse::<u8>()
+            .ok()?;
         return Some(format!("\x1b[?{}u", flags & 5).into_bytes());
     }
     Some(bytes)
@@ -542,7 +541,7 @@ impl TerminalEngine {
     ) -> Result<Vec<u8>, RuntimeError> {
         use huterm_protocol::TerminalInput;
         let flags = self.terminal.kitty_keyboard_flags()? & 5;
-        if flags != 0
+        if flags & 1 != 0
             && matches!(
                 input,
                 TerminalInput::Key { .. }
@@ -1461,7 +1460,7 @@ mod tests {
             CharacterKey, Modifiers, TerminalInput, TerminalKey,
         };
         let mut engine = engine();
-        for flags in [1, 4, 5, 31] {
+        for flags in [1, 5, 31] {
             engine
                 .process(format!("\x1b[={flags}u").as_bytes())
                 .unwrap();
@@ -1635,6 +1634,179 @@ mod tests {
                 "a stale Kitty-only routing hint uses the legacy fallback"
             );
         }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one matrix covers legacy routing across flags, keys, modifiers, and cursor modes"
+    )]
+    fn flags_without_disambiguation_use_the_full_legacy_matrix() {
+        use huterm_protocol::{
+            CharacterKey, Modifiers, TerminalInput, TerminalKey::*,
+        };
+        let mut engine = engine();
+        for flags in [0, 4, 6, 12] {
+            engine
+                .process(format!("\x1b[={flags}u").as_bytes())
+                .unwrap();
+            assert_eq!(
+                engine.modes().unwrap().kitty_keyboard.bits(),
+                flags & 5
+            );
+            for application_cursor in [false, true] {
+                engine
+                    .process(if application_cursor {
+                        b"\x1b[?1h"
+                    } else {
+                        b"\x1b[?1l"
+                    })
+                    .unwrap();
+                for (key, normal, application) in [
+                    (Escape, "\x1b", "\x1b"),
+                    (Enter, "\r", "\r"),
+                    (Tab, "\t", "\t"),
+                    (Backspace, "\x7f", "\x7f"),
+                    (Up, "\x1b[A", "\x1bOA"),
+                    (Down, "\x1b[B", "\x1bOB"),
+                    (Right, "\x1b[C", "\x1bOC"),
+                    (Left, "\x1b[D", "\x1bOD"),
+                    (Home, "\x1b[H", "\x1bOH"),
+                    (End, "\x1b[F", "\x1bOF"),
+                    (PageUp, "\x1b[5~", "\x1b[5~"),
+                    (PageDown, "\x1b[6~", "\x1b[6~"),
+                    (Delete, "\x1b[3~", "\x1b[3~"),
+                    (Insert, "\x1b[2~", "\x1b[2~"),
+                    (F1, "\x1bOP", "\x1bOP"),
+                    (F2, "\x1bOQ", "\x1bOQ"),
+                    (F3, "\x1bOR", "\x1bOR"),
+                    (F4, "\x1bOS", "\x1bOS"),
+                    (F5, "\x1b[15~", "\x1b[15~"),
+                    (F6, "\x1b[17~", "\x1b[17~"),
+                    (F7, "\x1b[18~", "\x1b[18~"),
+                    (F8, "\x1b[19~", "\x1b[19~"),
+                    (F9, "\x1b[20~", "\x1b[20~"),
+                    (F10, "\x1b[21~", "\x1b[21~"),
+                    (F11, "\x1b[23~", "\x1b[23~"),
+                    (F12, "\x1b[24~", "\x1b[24~"),
+                ] {
+                    for modifiers in [
+                        Modifiers::default(),
+                        Modifiers {
+                            shift: true,
+                            ..Default::default()
+                        },
+                        Modifiers {
+                            control: true,
+                            ..Default::default()
+                        },
+                        Modifiers {
+                            alt: true,
+                            ..Default::default()
+                        },
+                    ] {
+                        let plain = if key == Tab && modifiers.shift {
+                            "\x1b[Z"
+                        } else if application_cursor {
+                            application
+                        } else {
+                            normal
+                        };
+                        let expected = if modifiers.alt && key != Escape {
+                            format!("\x1b{plain}")
+                        } else {
+                            plain.into()
+                        };
+                        assert_eq!(
+                            engine
+                                .encode_input(&TerminalInput::Key {
+                                    key,
+                                    modifiers
+                                })
+                                .unwrap(),
+                            expected.as_bytes(),
+                            "flags={flags} {key:?} {modifiers:?} app={application_cursor}"
+                        );
+                    }
+                }
+                for (unshifted, layout, text, control, alt, shift, expected) in [
+                    ('a', "a", "\x01", true, false, false, "\x01"),
+                    ('a', "A", "\x01", true, false, true, "\x01"),
+                    (';', ":", ":", true, false, true, ":"),
+                    ('a', "a", "a", false, true, false, "\x1ba"),
+                    ('1', "1", "1", true, false, false, "1"),
+                    ('ф', "ф", "\x01", true, false, false, "\x01"),
+                    ('a', "A", "A", false, false, true, "A"),
+                    (' ', " ", "\0", true, false, false, "\0"),
+                ] {
+                    let input = TerminalInput::Character {
+                        text: text.into(),
+                        meta: alt,
+                        key: Some(Box::new(CharacterKey {
+                            unshifted,
+                            text: layout.into(),
+                            base_layout: Some('a'),
+                            modifiers: Modifiers {
+                                control,
+                                alt,
+                                shift,
+                            },
+                        })),
+                    };
+                    assert_eq!(
+                        engine.encode_input(&input).unwrap(),
+                        expected.as_bytes(),
+                        "flags={flags} {input:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn kitty_disambiguation_arrows_ignore_application_cursor_mode() {
+        use huterm_protocol::{Modifiers, TerminalInput, TerminalKey::*};
+        let mut engine = engine();
+        engine.process(b"\x1b[>1u\x1b[?1h").unwrap();
+        assert!(engine.modes().unwrap().application_cursor);
+        // Kitty specifies CSI arrows even with DECCKM set. Ghostty agrees.
+        for (key, bytes) in [
+            (Up, b"\x1b[A"),
+            (Down, b"\x1b[B"),
+            (Right, b"\x1b[C"),
+            (Left, b"\x1b[D"),
+        ] {
+            assert_eq!(
+                engine
+                    .encode_input(&TerminalInput::Key {
+                        key,
+                        modifiers: Modifiers::default()
+                    })
+                    .unwrap(),
+                bytes
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_keyboard_replies_fail_closed() {
+        for reply in [
+            b"\x1b[?u".as_slice(),
+            b"\x1b[?256u",
+            b"\x1b[?1;4u",
+            b"\x1b[?nopeu",
+            b"\x1b[?\xffu",
+        ] {
+            assert!(supported_reply(reply.to_vec()).is_none(), "{reply:?}");
+        }
+        assert_eq!(
+            supported_reply(b"\x1b[?4u".to_vec()),
+            Some(b"\x1b[?4u".to_vec())
+        );
+        assert_eq!(
+            supported_reply(b"\x1b[0n".to_vec()),
+            Some(b"\x1b[0n".to_vec())
+        );
     }
 
     #[test]

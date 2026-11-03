@@ -2099,8 +2099,9 @@ fn hide_grab_badges(
 }
 
 /// Hands the focused terminal the native key identity GPUI drops when it
-/// normalizes a keystroke, for Kitty keyboard encoding. An interceptor, so
-/// pending shortcut prefixes keep theirs for replay.
+/// normalizes a keystroke, for Kitty keyboard encoding. An interceptor,
+/// because only interceptor events carry the identity; `observe_keystroke`
+/// picks it up when the same keystroke reaches the terminal.
 fn capture_key_identity(
     event: &gpui::KeystrokeEvent,
     window: &mut Window,
@@ -2118,9 +2119,6 @@ fn capture_key_identity(
     tab.update(cx, |tab, _| {
         tab.native_key_identity =
             Some((event.keystroke.clone(), event.key_identity));
-        #[cfg(target_os = "macos")]
-        tab.pending_shortcuts
-            .intercept(&event.keystroke, event.key_identity);
     });
 }
 

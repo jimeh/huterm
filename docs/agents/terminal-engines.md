@@ -222,15 +222,19 @@ Ghostty owns the active screen's eight-entry keyboard flag stack, including
 push, pop, set, RIS, and alternate-screen isolation. Core reads its live flags
 at input dequeue and masks them to `1 | 4`. Snapshot flags are only a client
 routing hint. `supported_reply` rewrites each native `CSI ? flags u` callback
-with that mask in callback order; graphics replies remain dropped.
+with that mask in callback order; malformed keyboard and graphics replies are
+dropped.
 
 The engine owns one `huterm-ghostty::KeyEncoder` beside its terminal. Every
 encoded press syncs from the terminal, reapplies the masked flags and Meta
 policy, and supplies every event field with consumed modifiers empty. The
 wrapper owns both native handles, retries `OUT_OF_SPACE`, and clears borrowed
 UTF-8 before returning. Character input with neither Ctrl nor Meta bypasses
-the encoder; `Text` and `Paste` always retain their existing paths. Flags zero
-use Huterm's legacy encoder, including its new xterm F1-F12 and Insert bytes.
+the encoder; `Text` and `Paste` always retain their existing paths. Disambiguation
+(bit 1) selects Kitty encoding. Without it, including flag 4 alone, core uses
+Huterm's legacy encoder, including its xterm F1-F12 and Insert bytes. Flag 4
+only adds alternates to escape sequences enabled by disambiguation; query
+replies still report it.
 Release, repeat, report-all, associated text, modifier events, and
 `modifyOtherKeys` remain unsupported.
 

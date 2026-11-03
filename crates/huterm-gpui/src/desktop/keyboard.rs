@@ -9,8 +9,6 @@ use huterm_protocol::{TerminalInput, TerminalKey};
 #[derive(Default)]
 pub(super) struct PendingShortcuts {
     strokes: std::collections::VecDeque<Keystroke>,
-    identities: std::collections::VecDeque<Option<KeyIdentity>>,
-    intercepted: Option<(Keystroke, Option<KeyIdentity>)>,
     action_observed: bool,
     resolution_captured: bool,
     bindings: Vec<gpui::KeyBinding>,
@@ -18,27 +16,8 @@ pub(super) struct PendingShortcuts {
 
 #[cfg(any(target_os = "macos", test))]
 impl PendingShortcuts {
-    pub(super) fn intercept(
-        &mut self,
-        stroke: &Keystroke,
-        identity: Option<KeyIdentity>,
-    ) {
-        self.intercepted = Some((stroke.clone(), identity));
-    }
-
-    pub(super) fn replay_identity(
-        &self,
-        stroke: &Keystroke,
-    ) -> Option<KeyIdentity> {
-        (self.strokes.front() == Some(stroke))
-            .then(|| self.identities.front().copied().flatten())
-            .flatten()
-    }
-
     pub(super) fn clear(&mut self) {
         self.strokes.clear();
-        self.identities.clear();
-        self.intercepted = None;
         self.action_observed = false;
         self.bindings.clear();
         self.resolution_captured = false;
@@ -50,19 +29,6 @@ impl PendingShortcuts {
         bindings: Vec<gpui::KeyBinding>,
     ) {
         if let Some(pending) = pending {
-            let mut identities = std::collections::VecDeque::new();
-            for (index, stroke) in pending.iter().enumerate() {
-                let identity = if self.strokes.get(index) == Some(stroke) {
-                    self.identities.get(index).copied().flatten()
-                } else {
-                    self.intercepted
-                        .as_ref()
-                        .filter(|(key, _)| key == stroke)
-                        .and_then(|(_, identity)| *identity)
-                };
-                identities.push_back(identity);
-            }
-            self.identities = identities;
             self.strokes = pending.iter().cloned().collect();
             self.bindings = bindings;
             self.action_observed = false;
@@ -111,7 +77,6 @@ impl PendingShortcuts {
             .max();
         if let Some(consumed) = consumed {
             self.strokes.drain(..consumed);
-            self.identities.drain(..consumed);
         } else {
             self.clear();
         }
@@ -121,7 +86,6 @@ impl PendingShortcuts {
     pub(super) fn consume_replay(&mut self, stroke: &Keystroke) -> bool {
         if self.strokes.front() == Some(stroke) {
             self.strokes.pop_front();
-            self.identities.pop_front();
             true
         } else {
             self.clear();

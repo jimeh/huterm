@@ -827,12 +827,12 @@ fn synced_character_chords_encode_for_each_panes_kitty_flags(
     harness.toggle_sync(window, tab, true);
     harness.focus(window, tab, kitty);
     harness.press(window, "ctrl-a");
-    harness.press(window, "alt-r");
+    harness.press(window, "alt-r->r");
     harness.press(window, "ctrl-1");
     harness.press(window, "ctrl-g");
     harness.focus(window, tab, legacy);
     harness.press(window, "ctrl-a");
-    harness.press(window, "alt-r");
+    harness.press(window, "alt-r->r");
     // A legacy source does not claim this Kitty-only chord. Its native text
     // path remains platform-owned; the synthetic stroke has no key_char.
     harness.press(window, "ctrl-1");

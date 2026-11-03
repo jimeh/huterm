@@ -1336,9 +1336,11 @@ impl NativeKeyEvent {
     }
     pub(crate) fn set(&mut self, input: crate::KeyEvent<'_>) {
         let event = self.ptr.as_ptr();
-        let mods = u16::from(input.shift)
-            | (u16::from(input.control) << 1)
-            | (u16::from(input.alt) << 2);
+        let mods = (u32::from(input.shift) * ffi::GHOSTTY_MODS_SHIFT)
+            | (u32::from(input.control) * ffi::GHOSTTY_MODS_CTRL)
+            | (u32::from(input.alt) * ffi::GHOSTTY_MODS_ALT);
+        let mods = u16::try_from(mods)
+            .expect("Ghostty modifier constants fit in ghostty_mods_t");
         // SAFETY: key/event.h sets action on a live event.
         unsafe {
             ffi::ghostty_key_event_set_action(
@@ -1716,7 +1718,7 @@ pub(crate) mod key_probe {
         Error::from_code(code)
     }
 
-    /// Sets a mouse encoder option from `value` followed by `guard` bytes.
+    /// Sets a key encoder option from `value` followed by `guard` bytes.
     pub(crate) fn set_key<K: ffi::KeyEncoderOption>(
         encoder: &mut super::NativeKeyEncoder,
         value: &K::Value,
@@ -1735,6 +1737,7 @@ pub(crate) mod key_probe {
         };
     }
 
+    /// Sets a mouse encoder option from `value` followed by `guard` bytes.
     pub(crate) fn set_mouse<K: MouseEncoderOption>(
         encoder: &mut NativeMouseEncoder,
         value: &K::Value,

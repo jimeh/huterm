@@ -1510,7 +1510,7 @@ impl TerminalView {
             option_meta,
             identity,
             self.snapshot.as_ref().is_some_and(|snapshot| {
-                snapshot.modes.kitty_keyboard.is_active()
+                snapshot.modes.kitty_keyboard.disambiguates()
             }),
         );
         #[cfg(target_os = "macos")]
@@ -3632,9 +3632,6 @@ impl Render for TerminalView {
                     |view, event: &gpui::KeyDownEvent, _, cx| {
                         // GPUI sends unmatched chord replays here before dispatch_input,
                         // which otherwise looks identical to a native text commit.
-                        let _identity = view
-                            .pending_shortcuts
-                            .replay_identity(&event.keystroke);
                         if view
                             .pending_shortcuts
                             .consume_replay(&event.keystroke)
