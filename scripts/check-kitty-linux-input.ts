@@ -67,8 +67,9 @@ mode.close();
 stty raw -echo
 printf READY
 ${quote(process.execPath)} ${quote(recorder)}
-# script retains a real PTY while recording kitten's decoded output.
-script -q -e -c ${quote(`${quote(kitten)} show-key -m kitty`)} ${quote(decoded)}
+# script retains a real PTY while recording kitten's decoded output. It runs
+# its command through $SHELL, which is this fixture, so give it a plain shell.
+SHELL=/bin/sh script -q -e -c ${quote(`${quote(kitten)} show-key -m kitty`)} ${quote(decoded)}
 printf FINISHED > ${quote(join(directory, "finished"))}
 `, { mode: 0o700 });
     const config = join(directory, "config.toml");
