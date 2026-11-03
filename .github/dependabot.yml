@@ -16,6 +16,11 @@ updates:
       - dependency-name: "gpui-pre*"
       # Must match GPUI's font-kit requirement so the dlopen feature unifies.
       - dependency-name: zed-font-kit
+      # Pinned to the versions GPUI uses (see crates/huterm-gpui/Cargo.toml);
+      # they move with a gpui-pre upgrade.
+      - dependency-name: core-foundation
+      - dependency-name: core-text
+      - dependency-name: fontdb
 
   - package-ecosystem: github-actions
     # "/" covers only workflows and a root action.yml, not local composite actions.
