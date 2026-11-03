@@ -928,11 +928,10 @@ struct Desktop {
 }
 impl Global for Desktop {}
 
-/// The configured font families a fallback stands in for, as the last
-/// font resolution found them: the terminal's, and the interface's.
+/// Font fallbacks as Huterm last applied them, including terminal aliases.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct UnavailableFonts {
-    pub(super) terminal: Option<String>,
+    pub(super) terminal: Option<ResolvedFamily>,
     pub(super) interface: Option<String>,
 }
 
@@ -1568,6 +1567,7 @@ pub(super) fn run_with_startup(
         cx.activate(true);
     });
     application.run(move |cx| {
+        crate::terminal_font::register_bundled_fonts(cx);
         install_desktop(cx, Arc::clone(&app_runtime), hierarchy, loaded);
         system_appearance::watch(cx);
         start_config_watch(cx, inputs);
@@ -1666,6 +1666,10 @@ fn install_desktop(
         updater,
     });
     system_appearance::follow(cx);
+    // Settings can open before a terminal window. Its first scan must compare
+    // with the startup resolution, including an unavailable platform default.
+    let resolved = resolve_terminal_family(&cx.global::<Desktop>().config, cx);
+    note_terminal_font(cx, resolved);
     apply_typography(cx);
     start_hierarchy_drain(cx);
     cx.on_window_closed(|cx, window| {
@@ -1695,12 +1699,11 @@ fn install_desktop(
     cx.intercept_keystrokes(hide_grab_badges).detach();
 }
 
-/// Notes whether `config`'s terminal family was unavailable, so `family`,
-/// the one its font resolution chose, stands in for it.
-fn note_terminal_font(cx: &mut App, config: &Config, family: &str) {
-    cx.global_mut::<Desktop>().applied_terminal_family = Some(family.into());
-    cx.global_mut::<Desktop>().unavailable_fonts.terminal =
-        (config.font.family != family).then(|| config.font.family.clone());
+/// Records the applied family and why it replaced the configured family.
+fn note_terminal_font(cx: &mut App, resolved: ResolvedFamily) {
+    let desktop = cx.global_mut::<Desktop>();
+    desktop.applied_terminal_family = Some(resolved.family.clone());
+    desktop.unavailable_fonts.terminal = resolved.fallback();
 }
 
 /// Sets the interface's typography from the configuration's `[font]`
@@ -2393,8 +2396,8 @@ fn open_window_with_profile(
     let config = cx.global::<Desktop>().config.clone();
     let (family, metrics) = match resolve_metrics(&config, cx) {
         Ok(value) => {
-            note_terminal_font(cx, &config, &value.0.family);
-            value
+            note_terminal_font(cx, value.2);
+            (value.0, value.1)
         }
         Err(error) => {
             report_deferred_failure(
@@ -11052,17 +11055,17 @@ fn finish_reload(
         return;
     }
     let result = result.and_then(|config| {
-        let (family, metrics) =
+        let (family, metrics, resolved) =
             resolve_metrics(&config, cx).map_err(|error| error.to_string())?;
         let compiled =
             keymap::compile(Platform::current(), &config.keybindings)
                 .map_err(|error| format!("{}: {error}", path_for_status(cx)))?;
         let shortcuts = quake_windows::compile_shortcuts(&config, &compiled)?;
-        Ok((config, family, metrics, compiled, shortcuts))
+        Ok((config, family, metrics, resolved, compiled, shortcuts))
     });
     let dark = system_appearance::system_dark(cx);
-    let result =
-        result.map(|(mut config, family, metrics, compiled, shortcuts)| {
+    let result = result.map(
+        |(mut config, family, metrics, resolved, compiled, shortcuts)| {
             config.follow_appearance(dark);
             // A shortcut the platform refuses, such as one another application
             // holds, warns without blocking the rest of the configuration.
@@ -11080,14 +11083,15 @@ fn finish_reload(
                 refused,
             );
             desktop.latched.clear();
-            note_terminal_font(cx, &config, &family.family);
+            note_terminal_font(cx, resolved);
             apply_typography(cx);
             quake_windows::reconcile(cx, renames);
             let keymap = bind_keymap(cx, compiled);
             cx.global_mut::<Desktop>().keymap = keymap;
             maybe_exit(cx);
             (config, family, metrics)
-        });
+        },
+    );
     report_config_reload_error(&result);
     if let Err(error) = &result {
         cx.global_mut::<Desktop>().config_report.reload_failure =

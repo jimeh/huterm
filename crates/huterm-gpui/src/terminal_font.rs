@@ -10,6 +10,126 @@ use zed_font_kit::{
 #[cfg(target_os = "macos")]
 use zed_font_kit::source::SystemSource;
 
+pub(crate) const BUNDLED_FAMILY: &str = "DejaVu Sans Mono";
+
+// The registered-face list is the extension point for additional bundled fonts.
+const BUNDLED_FACES: &[&[u8]] = &[
+    include_bytes!("../assets/fonts/dejavu/DejaVuSansMono.ttf"),
+    include_bytes!("../assets/fonts/dejavu/DejaVuSansMono-Bold.ttf"),
+    include_bytes!("../assets/fonts/dejavu/DejaVuSansMono-Oblique.ttf"),
+    include_bytes!("../assets/fonts/dejavu/DejaVuSansMono-BoldOblique.ttf"),
+];
+
+/// Run before the first font lookup in every native application entrypoint.
+pub(crate) fn register_bundled_fonts(cx: &gpui::App) {
+    if let Err(error) = register_faces(cx.text_system(), BUNDLED_FACES) {
+        static LOG_FAILURE: std::sync::Once = std::sync::Once::new();
+        LOG_FAILURE.call_once(|| {
+            eprintln!("Huterm bundled font {BUNDLED_FAMILY:?} failed to load: {error:#}");
+        });
+    }
+}
+
+fn register_faces(
+    text_system: &gpui::TextSystem,
+    faces: &[&'static [u8]],
+) -> anyhow::Result<()> {
+    text_system.add_fonts(
+        faces
+            .iter()
+            .map(|bytes| std::borrow::Cow::Borrowed(*bytes))
+            .collect(),
+    )?;
+    // Linux's add_fonts returns Ok even if fontdb rejected every byte.
+    anyhow::ensure!(
+        text_system
+            .all_font_names()
+            .iter()
+            .any(|name| name == BUNDLED_FAMILY),
+        "registered family is absent from the text system"
+    );
+    Ok(())
+}
+
+pub(crate) fn default_family() -> String {
+    huterm_config::FontConfig::default().family
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FamilyReason {
+    Installed,
+    MonospaceAlias,
+    Missing,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedFamily {
+    pub(crate) configured: String,
+    pub(crate) family: String,
+    pub(crate) reason: FamilyReason,
+    pub(crate) available: bool,
+}
+
+impl ResolvedFamily {
+    pub(crate) fn resolve(
+        configured: &str,
+        installed: impl Fn(&str) -> bool,
+    ) -> Self {
+        let reason = if configured == "monospace" {
+            FamilyReason::MonospaceAlias
+        } else if installed(configured) {
+            FamilyReason::Installed
+        } else {
+            FamilyReason::Missing
+        };
+        let family = if reason == FamilyReason::Installed {
+            configured.into()
+        } else {
+            default_family()
+        };
+        let available = installed(&family);
+        Self {
+            configured: configured.into(),
+            family,
+            reason,
+            available,
+        }
+    }
+
+    pub(crate) fn fallback(self) -> Option<Self> {
+        (self.reason != FamilyReason::Installed).then_some(self)
+    }
+
+    pub(crate) fn warning(&self) -> Option<String> {
+        (self.reason == FamilyReason::Missing).then(|| {
+            if self.available {
+                format!("Huterm font {:?} is unavailable; using {}", self.configured, self.family)
+            } else {
+                format!("Huterm font {:?} is unavailable; the platform default font is unavailable too", self.configured)
+            }
+        })
+    }
+
+    pub(crate) fn note(&self) -> String {
+        let reason = match self.reason {
+            FamilyReason::MonospaceAlias => "is a font alias",
+            FamilyReason::Missing => "is not installed",
+            FamilyReason::Installed => return String::new(),
+        };
+        if self.available {
+            format!(
+                "{} {reason}, so terminals use {}.",
+                self.configured, self.family
+            )
+        } else {
+            format!(
+                "{} {reason}. The platform default font is unavailable too.",
+                self.configured
+            )
+        }
+    }
+}
+
 /// Keep weight with the resolved family at every measurement and shaping site.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TerminalFont {
@@ -56,6 +176,10 @@ fn font_database() -> &'static std::sync::Arc<fontdb::Database> {
     DATABASE.get_or_init(|| {
         let mut database = fontdb::Database::new();
         database.load_system_fonts();
+        // Match GPUI: installed faces precede equally suitable bundled faces.
+        for bytes in BUNDLED_FACES {
+            database.load_font_data(bytes.to_vec());
+        }
         std::sync::Arc::new(database)
     })
 }
@@ -155,6 +279,21 @@ impl WeightFaces {
 #[cfg(target_os = "macos")]
 pub(crate) fn enumerate_weights(family: &str) -> Result<WeightFaces, String> {
     catch_enumeration(|| {
+        if family == BUNDLED_FAMILY {
+            // GPUI's memory source takes precedence over the native source.
+            let mut properties = Vec::new();
+            for bytes in BUNDLED_FACES {
+                let face = zed_font_kit::font::Font::from_bytes(
+                    std::sync::Arc::new(bytes.to_vec()),
+                    0,
+                )
+                .map_err(|error| error.to_string())?;
+                if candidate(&face) {
+                    properties.push(face.properties());
+                }
+            }
+            return WeightFaces::from_properties(&properties);
+        }
         let family = SystemSource::new()
             .select_family_by_name(family)
             .map_err(|error| error.to_string())?;
@@ -247,6 +386,192 @@ fn candidate(database: &fontdb::Database, face: &fontdb::FaceInfo) -> bool {
 mod tests {
     use super::*;
     use zed_font_kit::properties::{Stretch, Style};
+
+    #[test]
+    fn bundled_family_offers_regular_and_bold() {
+        let faces = enumerate_weights("DejaVu Sans Mono").unwrap();
+        assert_eq!(
+            faces.options.iter().map(|w| w.number()).collect::<Vec<_>>(),
+            [400, 700]
+        );
+    }
+
+    #[test]
+    fn bundled_faces_have_the_expected_family_weight_and_style() {
+        for (bytes, weight, oblique) in [
+            (BUNDLED_FACES[0], 400.0, false),
+            (BUNDLED_FACES[1], 700.0, false),
+            (BUNDLED_FACES[2], 400.0, true),
+            (BUNDLED_FACES[3], 700.0, true),
+        ] {
+            let font = zed_font_kit::font::Font::from_bytes(
+                std::sync::Arc::new(bytes.to_vec()),
+                0,
+            )
+            .unwrap();
+            assert_eq!(font.family_name(), BUNDLED_FAMILY);
+            assert!(font.is_monospace());
+            assert_eq!(font.properties().weight, Weight(weight));
+            assert_eq!(font.properties().style != Style::Normal, oblique);
+        }
+    }
+
+    #[test]
+    fn family_resolution_preserves_installed_names_and_resolves_alias_and_missing()
+     {
+        let default = default_family();
+        assert_eq!(default, crate::config::Config::default().font.family);
+        assert_eq!(
+            default.as_str(),
+            huterm_ui::typography::Typography::platform_mono().as_ref()
+        );
+        let installed =
+            |family: &str| family == default || family == "Test Mono";
+        let resolved = ResolvedFamily::resolve("Test Mono", installed);
+        assert_eq!(resolved.reason, FamilyReason::Installed);
+        assert_eq!(resolved.family, "Test Mono");
+        assert_eq!(resolved.warning(), None);
+        assert_eq!(resolved.fallback(), None);
+        let alias = ResolvedFamily::resolve("monospace", installed);
+        assert_eq!(alias.reason, FamilyReason::MonospaceAlias);
+        assert_eq!(alias.family, default);
+        assert_eq!(alias.warning(), None);
+        assert_eq!(
+            alias.note(),
+            format!("monospace is a font alias, so terminals use {default}.")
+        );
+        let missing = ResolvedFamily::resolve("Missing Mono", installed);
+        assert_eq!(missing.reason, FamilyReason::Missing);
+        assert_eq!(missing.family, default);
+        assert_eq!(
+            missing.warning(),
+            Some(format!(
+                "Huterm font \"Missing Mono\" is unavailable; using {default}"
+            ))
+        );
+        assert_eq!(
+            missing.note(),
+            format!(
+                "Missing Mono is not installed, so terminals use {default}."
+            )
+        );
+    }
+
+    #[test]
+    fn an_unregistered_default_is_not_named_as_the_drawn_font() {
+        for configured in ["Missing Mono", "monospace", BUNDLED_FAMILY] {
+            let resolved = ResolvedFamily::resolve(configured, |_| false);
+            assert!(!resolved.available);
+            assert!(!resolved.note().contains("terminals use"));
+            assert!(
+                resolved
+                    .note()
+                    .contains("platform default font is unavailable")
+            );
+            assert!(
+                !resolved.warning().unwrap_or_default().contains("; using")
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_registration_resolves_all_four_bundled_faces() {
+        use gpui::PlatformTextSystem as _;
+        let platform = std::sync::Arc::new(gpui_apple::AppleTextSystem::new());
+        let system = gpui::TextSystem::new(platform.clone());
+        register_faces(&system, BUNDLED_FACES).unwrap();
+        let mut ids = Vec::new();
+        for request in [
+            font(BUNDLED_FAMILY),
+            font(BUNDLED_FAMILY).bold(),
+            font(BUNDLED_FAMILY).italic(),
+            font(BUNDLED_FAMILY).bold().italic(),
+        ] {
+            let id = platform.font_id(&request).unwrap();
+            assert_eq!(system.resolve_font(&request), id);
+            assert!(platform.glyph_for_char(id, 'm').is_some());
+            assert!(
+                system.em_advance(id, gpui::px(14.0)).unwrap() > gpui::px(0.0)
+            );
+            assert!(!ids.contains(&id), "every style must select its own face");
+            ids.push(id);
+        }
+        assert_eq!(
+            system
+                .all_font_names()
+                .iter()
+                .filter(|name| name.as_str() == BUNDLED_FAMILY)
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "test-support"))]
+    #[test]
+    fn native_registration_resolves_all_four_faces_without_system_fonts() {
+        use gpui::PlatformTextSystem as _;
+        let platform = std::sync::Arc::new(
+            gpui_wgpu::CosmicTextSystem::new_without_system_fonts(
+                BUNDLED_FAMILY,
+            ),
+        );
+        assert!(platform.all_font_names().is_empty());
+        let mut cx = gpui::TestAppContext::build_with_text_system(
+            gpui::TestDispatcher::new(0),
+            None,
+            platform.clone(),
+        );
+        cx.update(|cx| {
+            register_bundled_fonts(cx);
+            let mut ids = Vec::new();
+            for (request, weight, style) in [
+                (font(BUNDLED_FAMILY), 400.0, gpui::FontStyle::Normal),
+                (font(BUNDLED_FAMILY).bold(), 700.0, gpui::FontStyle::Normal),
+                (
+                    font(BUNDLED_FAMILY).italic(),
+                    400.0,
+                    gpui::FontStyle::Italic,
+                ),
+                (
+                    font(BUNDLED_FAMILY).bold().italic(),
+                    700.0,
+                    gpui::FontStyle::Italic,
+                ),
+            ] {
+                let id = platform.font_id(&request).unwrap();
+                assert_eq!(cx.text_system().resolve_font(&request), id);
+                assert_eq!(
+                    platform.font_weight_and_style(id).unwrap(),
+                    (gpui::FontWeight(weight), style)
+                );
+                assert!(
+                    cx.text_system().em_advance(id, gpui::px(14.0)).unwrap()
+                        > gpui::px(0.0)
+                );
+                assert!(!ids.contains(&id));
+                ids.push(id);
+            }
+            assert_eq!(cx.text_system().all_font_names(), [BUNDLED_FAMILY]);
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejected_font_bytes_fail_the_registration_postcondition() {
+        let platform = std::sync::Arc::new(
+            gpui_wgpu::CosmicTextSystem::new_without_system_fonts(
+                BUNDLED_FAMILY,
+            ),
+        );
+        let system = gpui::TextSystem::new(platform);
+        // The backend accepts the call, so only the family postcondition catches it.
+        system
+            .add_fonts(vec![std::borrow::Cow::Borrowed(b"invalid font")])
+            .unwrap();
+        let error = register_faces(&system, &[b"invalid font"]).unwrap_err();
+        assert!(error.to_string().contains("registered family is absent"));
+    }
 
     fn face(weight: f32, stretch: Stretch, style: Style) -> Properties {
         Properties {

@@ -2567,19 +2567,13 @@ impl SettingsView {
                 .filter(|family| !self.families.contains(family))
                 .map(str::to_owned)
         };
-        // As the desktop decides: `monospace` is a fontconfig alias, not an
-        // installed family, and the fallback cannot fall back.
-        let fallback = if cfg!(target_os = "macos") {
-            "Menlo"
-        } else {
-            "monospace"
-        };
-        let terminal = Some(font.family.as_str()).filter(|family| {
-            (cfg!(target_os = "macos") || *family != "monospace")
-                && *family != fallback
-        });
+        let terminal = crate::terminal_font::ResolvedFamily::resolve(
+            &font.family,
+            |family| self.families.contains(family),
+        )
+        .fallback();
         let found = UnavailableFonts {
-            terminal: missing(terminal),
+            terminal,
             interface: missing(font.ui_family.as_deref()),
         };
         if found == desktop.unavailable_fonts {
@@ -2593,28 +2587,20 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Why a font family row's applied family draws in another: the family
-    /// was not installed when Huterm last applied the fonts, so it fell
-    /// back, which the save alone does not show.
+    /// Why the applied font differs from the file: an alias or an unavailable
+    /// family, as the last resolution found it, rather than the latest scan.
     pub(super) fn fallback_note(setting: &Setting, cx: &App) -> Option<String> {
         let unavailable = &cx.global::<Desktop>().unavailable_fonts;
-        let (family, fallback) = match setting.path.as_str() {
-            "font.family" => (
-                unavailable.terminal.as_deref(),
-                if cfg!(target_os = "macos") {
-                    "terminals use Menlo"
-                } else {
-                    "terminals use the monospace font"
-                },
-            ),
-            "font.ui_family" => (
-                unavailable.interface.as_deref(),
-                "the interface uses the system font",
-            ),
-            _ => return None,
-        };
-        family
-            .map(|family| format!("{family} is not installed, so {fallback}."))
+        match setting.path.as_str() {
+            "font.family" => unavailable
+                .terminal
+                .as_ref()
+                .map(crate::terminal_font::ResolvedFamily::note),
+            "font.ui_family" => unavailable.interface.as_ref().map(|family| {
+                format!("{family} is not installed, so the interface uses the system font.")
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -3054,15 +3040,6 @@ impl SettingsView {
     ) {
         self.weights.enumerator = Some(enumerate);
         self.scan_weights(cx);
-    }
-
-    pub(super) fn scan_linux_weights(
-        &mut self,
-        enumerate: font_weights::Enumerator,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.weights.linux = Some(true);
-        self.set_weight_enumerator(enumerate, cx);
     }
 
     pub(super) fn weight_state(

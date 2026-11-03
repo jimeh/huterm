@@ -1188,7 +1188,7 @@
       "additionalProperties": false,
       "properties": {
         "family": {
-          "description": "The terminal font family. Defaults to Menlo on macOS and `monospace` on\nLinux.",
+          "description": "The terminal font family. Defaults to Menlo on macOS and `DejaVu Sans Mono` on\nLinux.",
           "pattern": "\\S",
           "type": "string",
           "x-huterm-apply": "live",

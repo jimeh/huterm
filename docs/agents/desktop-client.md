@@ -318,10 +318,15 @@ in Settings and Quit would do nothing. Committing Quit closes Settings.
 
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
-and apply colors and decorations during paint. Use the generic `monospace`
-font family on Linux; requesting macOS-only Menlo repeatedly exercises GPUI's
-missing-font fallback path. Carry the resolved `TerminalFont`, including
-weight, through metrics, shaping, and reloads.
+and apply colors and decorations during paint. Every `assets::application().run`
+callback registers `terminal_font::register_bundled_fonts` before any font
+lookup or window creation. Check the family in `all_font_names` after adding
+fonts: Linux's `add_fonts` can return success for rejected bytes. Embedded
+DejaVu Sans Mono is Linux's terminal and interface monospace default; macOS
+keeps Menlo. Resolve `monospace` and missing families to that platform default,
+record the reason, and name a fallback in warnings and Settings only when it
+is available. Carry the resolved `TerminalFont`, including weight, through
+metrics, shaping, and reloads.
 
 Linux font queries for Settings use fontdb, never font-kit's SystemSource or
 libfontconfig in-process, because the Linux package rejects a dynamic
@@ -900,8 +905,10 @@ macOS check the numeric CoreText traits before calling font-kit's
 and checks glyphs through font-kit's statically linked FreeType loader,
 without invoking font-kit's native source. Build the process-wide database
 lazily on the background executor when Settings first enumerates weights.
-For the Linux `monospace` alias, disable the weight select, explain that a
-font family is needed to choose a weight, and skip enumeration.
+Append bundled faces after the Linux system scan, matching GPUI's database.
+On macOS enumerate the bundled faces for DejaVu Sans Mono, since GPUI prefers
+them to installed copies. The `monospace` alias enumerates the resolved
+platform family and keeps its weight selector enabled.
 Catch enumeration failures on the background worker and reject completions for
 an older family or generation.
 

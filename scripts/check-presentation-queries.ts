@@ -70,6 +70,7 @@ async function main(executableArgument: string): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "huterm-presentation-query-"));
   const config = join(directory, "config.toml");
   const shell = join(directory, "shell");
+  // Keep Linux monospace as coverage of the alias resolving to the platform default.
   const family = process.platform === "darwin" ? "Menlo" : "monospace";
   const configText = (font: number, foreground: string, background: string, padding = 4) => `[window]\npadding_x = ${padding}.0\npadding_y = ${padding}.0\n[terminal]\nclose_on_exit = false\nterm = "xterm-256color"\n[font]\nfamily = "${family}"\nsize = ${font}.0\n[theme]\nforeground = "#${foreground}"\nbackground = "#${background}"\n`;
   await writeFile(config, configText(14, "123456", "abcdef"));

@@ -24,6 +24,7 @@ pub(crate) fn run() {
     // leaves no output at all.
     println!("RENDERER_SMOKE launching");
     crate::assets::application().run(move |cx| {
+        crate::terminal_font::register_bundled_fonts(cx);
         println!("RENDERER_SMOKE application started");
         cx.open_window(
             WindowOptions {
@@ -99,7 +100,7 @@ impl Fixture {
         let family = if cfg!(target_os = "macos") {
             "Menlo"
         } else {
-            "monospace"
+            "DejaVu Sans Mono"
         };
         let panels = [12.0, 16.0, 20.0]
             .into_iter()
