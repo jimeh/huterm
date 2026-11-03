@@ -1254,6 +1254,144 @@ impl Drop for NativeMouseEvent {
     }
 }
 
+/// Owned key encoder; native options use generated header value types.
+#[derive(Debug)]
+pub(crate) struct NativeKeyEncoder {
+    ptr: NonNull<ffi::GhosttyKeyEncoderImpl>,
+}
+impl NativeKeyEncoder {
+    pub(crate) fn new(allocator: AllocatorRef) -> Result<Self> {
+        let mut raw = ptr::null_mut();
+        // SAFETY: key/encoder.h accepts a live allocator or NULL and writes the new handle.
+        let code = unsafe {
+            ffi::ghostty_key_encoder_new(allocator_ptr(allocator), &raw mut raw)
+        };
+        Error::from_code(code)?;
+        NonNull::new(raw)
+            .map(|ptr| Self { ptr })
+            .ok_or(Error::InvalidValue)
+    }
+    pub(crate) fn set<K: ffi::KeyEncoderOption>(&mut self, value: &K::Value) {
+        // SAFETY: key/encoder.h reads the generated option's exact Value type through this pointer.
+        unsafe {
+            ffi::ghostty_key_encoder_setopt(
+                self.ptr.as_ptr(),
+                K::KEY,
+                ptr::from_ref(value).cast(),
+            );
+        };
+    }
+    pub(crate) fn sync(&mut self, terminal: TerminalRef<'_>) {
+        // SAFETY: key/encoder.h reads encoding state from a live terminal into a live encoder.
+        unsafe {
+            ffi::ghostty_key_encoder_setopt_from_terminal(
+                self.ptr.as_ptr(),
+                terminal.raw(),
+            );
+        };
+    }
+    pub(crate) fn encode(
+        &mut self,
+        event: &NativeKeyEvent,
+        buffer: &mut [u8],
+    ) -> Result<Fill> {
+        let mut len = 0;
+        // SAFETY: key/encoder.h writes at most buffer.len() bytes and the required/written length.
+        // The event's borrowed UTF-8 is kept alive by KeyEncoder::encode_with_capacity.
+        let code = unsafe {
+            ffi::ghostty_key_encoder_encode(
+                self.ptr.as_ptr(),
+                event.ptr.as_ptr(),
+                buffer_ptr(buffer).cast(),
+                buffer.len(),
+                &raw mut len,
+            )
+        };
+        fill(code, len)
+    }
+}
+impl Drop for NativeKeyEncoder {
+    fn drop(&mut self) {
+        // SAFETY: key/encoder.h frees this owned handle from ghostty_key_encoder_new.
+        unsafe { ffi::ghostty_key_encoder_free(self.ptr.as_ptr()) };
+    }
+}
+
+/// Owned event. UTF-8 is cleared before the safe wrapper returns to its caller.
+#[derive(Debug)]
+pub(crate) struct NativeKeyEvent {
+    ptr: NonNull<ffi::GhosttyKeyEventImpl>,
+}
+impl NativeKeyEvent {
+    pub(crate) fn new(allocator: AllocatorRef) -> Result<Self> {
+        let mut raw = ptr::null_mut();
+        // SAFETY: key/event.h accepts a live allocator or NULL and writes the new handle.
+        let code = unsafe {
+            ffi::ghostty_key_event_new(allocator_ptr(allocator), &raw mut raw)
+        };
+        Error::from_code(code)?;
+        NonNull::new(raw)
+            .map(|ptr| Self { ptr })
+            .ok_or(Error::InvalidValue)
+    }
+    pub(crate) fn set(&mut self, input: crate::KeyEvent<'_>) {
+        let event = self.ptr.as_ptr();
+        let mods = u16::from(input.shift)
+            | (u16::from(input.control) << 1)
+            | (u16::from(input.alt) << 2);
+        // SAFETY: key/event.h sets action on a live event.
+        unsafe {
+            ffi::ghostty_key_event_set_action(
+                event,
+                ffi::GHOSTTY_KEY_ACTION_PRESS,
+            );
+        };
+        // SAFETY: key/event.h sets key on a live event.
+        unsafe {
+            ffi::ghostty_key_event_set_key(event, input.key.native());
+        };
+        // SAFETY: key/event.h sets mods on a live event.
+        unsafe {
+            ffi::ghostty_key_event_set_mods(event, mods);
+        };
+        // SAFETY: key/event.h sets consumed_mods on a live event.
+        unsafe {
+            ffi::ghostty_key_event_set_consumed_mods(event, 0);
+        };
+        // SAFETY: key/event.h sets composing on a live event.
+        unsafe {
+            ffi::ghostty_key_event_set_composing(event, false);
+        };
+        // SAFETY: key/event.h sets utf8 on a live event; text remains borrowed through encode.
+        unsafe {
+            ffi::ghostty_key_event_set_utf8(
+                event,
+                input.text.as_ptr().cast(),
+                input.text.len(),
+            );
+        };
+        // SAFETY: key/event.h sets unshifted_codepoint on a live event.
+        unsafe {
+            ffi::ghostty_key_event_set_unshifted_codepoint(
+                event,
+                input.unshifted.map_or(0, u32::from),
+            );
+        };
+    }
+    pub(crate) fn clear_text(&mut self) {
+        // SAFETY: key/event.h accepts NULL and zero length to clear borrowed UTF-8.
+        unsafe {
+            ffi::ghostty_key_event_set_utf8(self.ptr.as_ptr(), ptr::null(), 0);
+        };
+    }
+}
+impl Drop for NativeKeyEvent {
+    fn drop(&mut self) {
+        // SAFETY: key/event.h frees this owned handle from ghostty_key_event_new.
+        unsafe { ffi::ghostty_key_event_free(self.ptr.as_ptr()) };
+    }
+}
+
 /// Measures how many bytes getters write and setters read, for the key
 /// contract tests.
 #[cfg(test)]
@@ -1579,6 +1717,24 @@ pub(crate) mod key_probe {
     }
 
     /// Sets a mouse encoder option from `value` followed by `guard` bytes.
+    pub(crate) fn set_key<K: ffi::KeyEncoderOption>(
+        encoder: &mut super::NativeKeyEncoder,
+        value: &K::Value,
+        guard: u8,
+    ) {
+        let size = size_of::<K::Value>();
+        let mut input = Storage::new(size + GUARD, guard);
+        input.place(value, size);
+        // SAFETY: key/encoder.h reads K::Value from input, which holds it plus a guard.
+        unsafe {
+            ffi::ghostty_key_encoder_setopt(
+                encoder.ptr.as_ptr(),
+                K::KEY,
+                input.as_mut_ptr().cast_const(),
+            );
+        };
+    }
+
     pub(crate) fn set_mouse<K: MouseEncoderOption>(
         encoder: &mut NativeMouseEncoder,
         value: &K::Value,

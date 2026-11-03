@@ -10,7 +10,7 @@ pub(crate) fn encode_input(
     size: GridSize,
 ) -> Vec<u8> {
     match input {
-        TerminalInput::Character { text, meta } => {
+        TerminalInput::Character { text, meta, .. } => {
             let mut bytes = Vec::with_capacity(text.len() + usize::from(*meta));
             if *meta && !text.is_empty() {
                 bytes.push(0x1b);
@@ -144,6 +144,20 @@ fn encode_key(
         TerminalKey::PageUp => b"\x1b[5~".as_slice(),
         TerminalKey::PageDown => b"\x1b[6~".as_slice(),
         TerminalKey::Delete => b"\x1b[3~".as_slice(),
+        TerminalKey::Insert => b"\x1b[2~".as_slice(),
+        TerminalKey::F1 => b"\x1bOP".as_slice(),
+        TerminalKey::F2 => b"\x1bOQ".as_slice(),
+        TerminalKey::F3 => b"\x1bOR".as_slice(),
+        TerminalKey::F4 => b"\x1bOS".as_slice(),
+        TerminalKey::F5 => b"\x1b[15~".as_slice(),
+        TerminalKey::F6 => b"\x1b[17~".as_slice(),
+        TerminalKey::F7 => b"\x1b[18~".as_slice(),
+        TerminalKey::F8 => b"\x1b[19~".as_slice(),
+        TerminalKey::F9 => b"\x1b[20~".as_slice(),
+        TerminalKey::F10 => b"\x1b[21~".as_slice(),
+        TerminalKey::F11 => b"\x1b[23~".as_slice(),
+        TerminalKey::F12 => b"\x1b[24~".as_slice(),
+
         _ => return Vec::new(),
     };
 
@@ -154,6 +168,129 @@ fn encode_key(
         encoded
     } else {
         plain.to_vec()
+    }
+}
+
+/// Kitty is selected only by the owner engine's live, masked flag stack.
+pub(crate) fn encode_kitty_input(
+    input: &TerminalInput,
+    encoder: &mut huterm_ghostty::KeyEncoder,
+) -> huterm_ghostty::Result<Vec<u8>> {
+    use huterm_ghostty::{Key, KeyEvent};
+    let (key, modifiers, text, unshifted) = match input {
+        TerminalInput::Character {
+            text,
+            key: Some(identity),
+            ..
+        } => {
+            let modifiers = identity.modifiers;
+            if !modifiers.control && !modifiers.alt {
+                return Ok(text.as_bytes().to_vec());
+            }
+            (
+                physical_key(identity.base_layout),
+                modifiers,
+                identity.text.as_str(),
+                Some(identity.unshifted),
+            )
+        }
+        TerminalInput::Key { key, modifiers } => {
+            let key = match key {
+                TerminalKey::Enter => Key::Enter,
+                TerminalKey::Tab => Key::Tab,
+                TerminalKey::Backspace => Key::Backspace,
+                TerminalKey::Escape => Key::Escape,
+                TerminalKey::Up => Key::ArrowUp,
+                TerminalKey::Down => Key::ArrowDown,
+                TerminalKey::Left => Key::ArrowLeft,
+                TerminalKey::Right => Key::ArrowRight,
+                TerminalKey::Home => Key::Home,
+                TerminalKey::End => Key::End,
+                TerminalKey::PageUp => Key::PageUp,
+                TerminalKey::PageDown => Key::PageDown,
+                TerminalKey::Delete => Key::Delete,
+                TerminalKey::Insert => Key::Insert,
+                TerminalKey::F1 => Key::F1,
+                TerminalKey::F2 => Key::F2,
+                TerminalKey::F3 => Key::F3,
+                TerminalKey::F4 => Key::F4,
+                TerminalKey::F5 => Key::F5,
+                TerminalKey::F6 => Key::F6,
+                TerminalKey::F7 => Key::F7,
+                TerminalKey::F8 => Key::F8,
+                TerminalKey::F9 => Key::F9,
+                TerminalKey::F10 => Key::F10,
+                TerminalKey::F11 => Key::F11,
+                TerminalKey::F12 => Key::F12,
+                _ => Key::Unidentified,
+            };
+            (key, *modifiers, "", None)
+        }
+        _ => return Ok(Vec::new()),
+    };
+    encoder.encode(KeyEvent {
+        key,
+        control: modifiers.control,
+        alt: modifiers.alt,
+        shift: modifiers.shift,
+        text,
+        unshifted,
+    })
+}
+
+/// Maps plain US physical-key characters without exposing engine types to clients.
+fn physical_key(character: Option<char>) -> huterm_ghostty::Key {
+    use huterm_ghostty::Key;
+    match character {
+        Some('a') => Key::A,
+        Some('b') => Key::B,
+        Some('c') => Key::C,
+        Some('d') => Key::D,
+        Some('e') => Key::E,
+        Some('f') => Key::F,
+        Some('g') => Key::G,
+        Some('h') => Key::H,
+        Some('i') => Key::I,
+        Some('j') => Key::J,
+        Some('k') => Key::K,
+        Some('l') => Key::L,
+        Some('m') => Key::M,
+        Some('n') => Key::N,
+        Some('o') => Key::O,
+        Some('p') => Key::P,
+        Some('q') => Key::Q,
+        Some('r') => Key::R,
+        Some('s') => Key::S,
+        Some('t') => Key::T,
+        Some('u') => Key::U,
+        Some('v') => Key::V,
+        Some('w') => Key::W,
+        Some('x') => Key::X,
+        Some('y') => Key::Y,
+        Some('z') => Key::Z,
+        Some('0') => Key::Digit0,
+        Some('1') => Key::Digit1,
+        Some('2') => Key::Digit2,
+        Some('3') => Key::Digit3,
+        Some('4') => Key::Digit4,
+        Some('5') => Key::Digit5,
+        Some('6') => Key::Digit6,
+        Some('7') => Key::Digit7,
+        Some('8') => Key::Digit8,
+        Some('9') => Key::Digit9,
+        Some('`') => Key::Backquote,
+        Some('\\') => Key::Backslash,
+        Some('[') => Key::BracketLeft,
+        Some(']') => Key::BracketRight,
+        Some(',') => Key::Comma,
+        Some('=') => Key::Equal,
+        Some('-') => Key::Minus,
+        Some('.') => Key::Period,
+        Some('\'') => Key::Quote,
+        Some(';') => Key::Semicolon,
+        Some('/') => Key::Slash,
+        Some(' ') => Key::Space,
+        _ => Key::Unidentified,
     }
 }
 

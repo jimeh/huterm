@@ -29,6 +29,20 @@ use std::process::{Command, ExitCode, Stdio};
 /// Functions Huterm calls. Their parameter and return types are pulled in
 /// transitively.
 const FUNCTIONS: &[&str] = &[
+    "ghostty_key_encoder_new",
+    "ghostty_key_encoder_free",
+    "ghostty_key_encoder_setopt",
+    "ghostty_key_encoder_setopt_from_terminal",
+    "ghostty_key_encoder_encode",
+    "ghostty_key_event_new",
+    "ghostty_key_event_free",
+    "ghostty_key_event_set_action",
+    "ghostty_key_event_set_key",
+    "ghostty_key_event_set_mods",
+    "ghostty_key_event_set_consumed_mods",
+    "ghostty_key_event_set_composing",
+    "ghostty_key_event_set_utf8",
+    "ghostty_key_event_set_unshifted_codepoint",
     "ghostty_alloc",
     "ghostty_free",
     "ghostty_type_json",
@@ -80,6 +94,8 @@ const FUNCTIONS: &[&str] = &[
 /// Types that no allowlisted function signature mentions: callback
 /// signatures, callback payloads, and values passed through `void*`.
 const TYPES: &[&str] = &[
+    "GhosttyKittyKeyFlags",
+    "GhosttyOptionAsAlt",
     "GhosttyAllocator",
     "GhosttyAllocatorVtable",
     "GhosttyBuffer",
@@ -123,6 +139,8 @@ const TYPES: &[&str] = &[
 
 /// Preprocessor constants used for device-attribute answers.
 const VARS: &[&str] = &[
+    "GHOSTTY_MODS_.*",
+    "GHOSTTY_KITTY_KEY_.*",
     "GHOSTTY_DA_CONFORMANCE_VT220",
     "GHOSTTY_DA_FEATURE_ANSI_COLOR",
     "GHOSTTY_DA_DEVICE_TYPE_VT220",
@@ -155,6 +173,8 @@ enum Style {
     /// A parenthesized type, optionally `value:`-prefixed, that ends the
     /// comment's first sentence: `Viewport width in cells (uint16_t).`
     Sentence,
+    /// First line ends with `(value: T)` without a sentence terminator.
+    OptionLine,
 }
 
 /// The keys Huterm uses from one key enum.
@@ -169,6 +189,19 @@ struct KeySet {
 }
 
 const KEY_SETS: &[KeySet] = &[
+    KeySet {
+        header: "key/encoder.h",
+        r#enum: "GhosttyKeyEncoderOption",
+        prefix: "GHOSTTY_KEY_ENCODER_OPT_",
+        module: "key_encoder_option",
+        style: Style::OptionLine,
+        family: Family::Set {
+            value: "KeyEncoderOption",
+            callback: None,
+            pointer: None,
+        },
+        keys: &["KITTY_FLAGS", "MACOS_OPTION_AS_ALT"],
+    },
     KeySet {
         header: "terminal.h",
         r#enum: "GhosttyTerminalData",
@@ -197,6 +230,7 @@ const KEY_SETS: &[KeySet] = &[
             "COLOR_BACKGROUND_DEFAULT",
             "COLOR_CURSOR_DEFAULT",
             "COLOR_PALETTE_DEFAULT",
+            "KITTY_KEYBOARD_FLAGS",
             "KITTY_IMAGE_STORAGE_LIMIT",
             "SCROLLBACK_MAX_BYTES",
             "SCROLLBACK_MAX_LINES",
@@ -582,6 +616,21 @@ fn annotation(style: Style, lines: &[String]) -> Result<Annotated, Error> {
     match style {
         Style::Labeled => labeled_annotation(lines),
         Style::Sentence => sentence_annotation(lines),
+        Style::OptionLine => {
+            let line = lines
+                .iter()
+                .find(|line| !line.is_empty())
+                .ok_or("empty option comment")?;
+            let inner = line
+                .strip_suffix(')')
+                .and_then(|line| line.rsplit_once("(value: "))
+                .map(|(_, inner)| {
+                    inner.strip_suffix(" bitmask").unwrap_or(inner)
+                })
+                .filter(|inner| is_c_type(inner))
+                .ok_or("option line lacks a final value type")?;
+            Ok(Annotated::Pointee(inner.to_owned()))
+        }
     }
 }
 
@@ -1229,6 +1278,33 @@ mod tests {
             "Output type: bool *",
         ] {
             assert!(annotate(Style::Sentence, comment).is_err(), "{comment}");
+        }
+    }
+
+    #[test]
+    fn option_line_annotations_require_the_first_lines_final_value_type() {
+        for (comment, expected) in [
+            (
+                "Kitty keyboard protocol flags (value: GhosttyKittyKeyFlags bitmask)",
+                "GhosttyKittyKeyFlags",
+            ),
+            (
+                "macOS option-as-alt setting (value: GhosttyOptionAsAlt)",
+                "GhosttyOptionAsAlt",
+            ),
+        ] {
+            assert_eq!(
+                annotate(Style::OptionLine, comment),
+                Ok(Annotated::Pointee(expected.into()))
+            );
+        }
+        for comment in [
+            "Kitty flags",
+            "Kitty (value: uint8_t) afterward",
+            "Flags\n(value: uint8_t)",
+            "Flags (value: unknown)",
+        ] {
+            assert!(annotate(Style::OptionLine, comment).is_err());
         }
     }
 

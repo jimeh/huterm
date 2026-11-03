@@ -450,6 +450,7 @@ struct TerminalView {
     option_composition: crate::native_quit::OptionComposition,
     #[cfg(target_os = "macos")]
     pending_shortcuts: keyboard::PendingShortcuts,
+    native_key_identity: Option<(Keystroke, Option<gpui::KeyIdentity>)>,
     #[cfg(target_os = "macos")]
     native_window: gpui::AnyWindowHandle,
     mouse: MouseState,
@@ -761,6 +762,7 @@ impl TerminalView {
             native_window: window.window_handle(),
             #[cfg(target_os = "macos")]
             pending_shortcuts: keyboard::PendingShortcuts::default(),
+            native_key_identity: None,
             mouse: MouseState::default(),
             external_drag: false,
             links: links::Links::default(),
@@ -1458,6 +1460,7 @@ impl TerminalView {
     fn handle_keystroke(
         &mut self,
         keystroke: &Keystroke,
+        identity: Option<gpui::KeyIdentity>,
         reserved: &ReservedKeys,
         window: &Window,
         cx: &mut Context<'_, Self>,
@@ -1501,8 +1504,15 @@ impl TerminalView {
             side,
             keystroke.modifiers.alt,
         );
-        let input =
-            keyboard::translate(keystroke, Platform::current(), option_meta);
+        let input = keyboard::translate(
+            keystroke,
+            Platform::current(),
+            option_meta,
+            identity,
+            self.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.modes.kitty_keyboard.is_active()
+            }),
+        );
         #[cfg(target_os = "macos")]
         let input = {
             if input.is_some() || option_meta {
@@ -3622,6 +3632,9 @@ impl Render for TerminalView {
                     |view, event: &gpui::KeyDownEvent, _, cx| {
                         // GPUI sends unmatched chord replays here before dispatch_input,
                         // which otherwise looks identical to a native text commit.
+                        let _identity = view
+                            .pending_shortcuts
+                            .replay_identity(&event.keystroke);
                         if view
                             .pending_shortcuts
                             .consume_replay(&event.keystroke)

@@ -2,6 +2,7 @@
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { checkKittyLinuxInput } from "./check-kitty-linux-input";
 
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe", timeout: 5_000 });
@@ -56,6 +57,15 @@ async function checkInput(executable: string): Promise<void> {
   const stop = join(directory, "stop");
   const finished = join(directory, "finished");
   const expected = Buffer.from("\x1br\x1bR\x1b3\x1b<\x1b\x12\x1b\x1b[D\x1bcx");
+  const recorder = join(directory, "recorder.ts");
+  await writeFile(recorder, `import {openSync,writeSync} from "node:fs";
+const fd = openSync(${JSON.stringify(bytes)}, "w");
+for await (const chunk of Bun.stdin.stream()) {
+ const end = chunk.indexOf(4);
+ writeSync(fd, end < 0 ? chunk : chunk.subarray(0, end));
+ if (end >= 0) break;
+}
+`);
   await writeFile(shell, `#!/bin/sh
 stty raw -echo
 printf READY > ${quote(ready)}
@@ -65,7 +75,7 @@ printf READY > ${quote(ready)}
 dd bs=1 count=1 of=/dev/null 2>/dev/null
 printf PROBED > ${quote(probed)}
 while :; do c=$(dd bs=1 count=1 2>/dev/null); [ "$c" = g ] && break; done
-timeout --foreground 15s dd bs=1 count=${expected.length} of=${quote(bytes)} 2>/dev/null
+timeout --foreground 15s ${quote(process.execPath)} ${quote(recorder)}
 printf COMPLETE > ${quote(complete)}
 ${quote(process.execPath)} ${quote(reporter)}
 printf FINISHED > ${quote(finished)}
@@ -167,7 +177,7 @@ command = "quit"
     // send XSendEvent events and bypass the conversion this smoke must prove.
     run(["xdotool", "key", "--clearmodifiers", "--delay", "40",
       "alt+r", "alt+shift+r", "alt+3", "alt+shift+comma", "ctrl+alt+r",
-      "alt+Left", "alt+b", "alt+c", "x"]);
+      "alt+Left", "alt+b", "alt+c", "x", "ctrl+d"]);
     await waitFor(() => Bun.file(complete).exists(), "received input bytes");
     const actual = await readFile(bytes);
     if (!actual.equals(expected)) {
@@ -221,5 +231,6 @@ if (import.meta.main) {
     const executable = resolve(Bun.argv[2] ?? "target/debug/huterm");
     run(["setxkbmap", "-layout", "us"]);
     await checkInput(executable);
+    if (Bun.argv[3]) await checkKittyLinuxInput(resolve(Bun.argv[3]));
   }
 }

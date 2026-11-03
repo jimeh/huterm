@@ -144,6 +144,12 @@ pub(crate) trait MouseEncoderOption {
     type Value;
 }
 
+/// A `ghostty_key_encoder_setopt` option, passed by pointer.
+pub(crate) trait KeyEncoderOption {
+    const KEY: GhosttyKeyEncoderOption;
+    type Value;
+}
+
 /// A key for `ghostty_build_info`.
 pub(crate) trait BuildInfo {
     const KEY: GhosttyBuildInfo;

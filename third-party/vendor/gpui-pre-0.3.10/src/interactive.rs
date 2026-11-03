@@ -20,9 +20,24 @@ pub trait MouseEvent: InputEvent {}
 /// A gesture event from the platform.
 pub trait GestureEvent: InputEvent {}
 
+/// Native layout identity before shortcut normalization. Keystroke equality is unchanged.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KeyIdentity {
+    /// Unshifted printable character on the active layout.
+    pub unshifted: Option<char>,
+    /// Shifted printable character on the active layout.
+    pub shifted: Option<char>,
+    /// Shift as physically held, including on punctuation.
+    pub shift: bool,
+    /// Physical key's ANSI US-layout character.
+    pub base_layout: Option<char>,
+}
+
 /// The key down event equivalent for the platform.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeyDownEvent {
+    /// Native identity, absent for synthetic events and chord replay.
+    pub key_identity: Option<KeyIdentity>,
     /// The keystroke that was generated.
     pub keystroke: Keystroke,
 

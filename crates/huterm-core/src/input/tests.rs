@@ -40,7 +40,8 @@ fn character_meta_adds_exactly_one_prefix_without_changing_text_or_paste() {
             encode_input(
                 &TerminalInput::Character {
                     text: text.into(),
-                    meta
+                    meta,
+                    key: None
                 },
                 TerminalModes::default()
             ),
@@ -60,7 +61,8 @@ fn character_meta_adds_exactly_one_prefix_without_changing_text_or_paste() {
         encode_input(
             &TerminalInput::Character {
                 text: "r".into(),
-                meta: true
+                meta: true,
+                key: None
             },
             TerminalModes {
                 bracketed_paste: true,
@@ -288,4 +290,132 @@ fn paste_should_use_bracketed_mode_and_strip_nested_escape() {
     );
 
     assert_eq!(encoded, b"\x1b[200~hello[201~world\x1b[201~");
+}
+
+#[test]
+fn legacy_byte_matrix_is_stable() {
+    use TerminalKey::*;
+    for application_cursor in [false, true] {
+        for (key, normal, application) in [
+            (Enter, "\r", "\r"),
+            (Tab, "\t", "\t"),
+            (Backspace, "\x7f", "\x7f"),
+            (Escape, "\x1b", "\x1b"),
+            (Up, "\x1b[A", "\x1bOA"),
+            (Down, "\x1b[B", "\x1bOB"),
+            (Right, "\x1b[C", "\x1bOC"),
+            (Left, "\x1b[D", "\x1bOD"),
+            (Home, "\x1b[H", "\x1bOH"),
+            (End, "\x1b[F", "\x1bOF"),
+            (PageUp, "\x1b[5~", "\x1b[5~"),
+            (PageDown, "\x1b[6~", "\x1b[6~"),
+            (Delete, "\x1b[3~", "\x1b[3~"),
+        ] {
+            for modifiers in [
+                Modifiers::default(),
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+                Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                Modifiers {
+                    alt: true,
+                    ..Default::default()
+                },
+            ] {
+                let plain = if key == Tab && modifiers.shift {
+                    "\x1b[Z"
+                } else if application_cursor {
+                    application
+                } else {
+                    normal
+                };
+                let expected = if modifiers.alt && key != Escape {
+                    format!("\x1b{plain}")
+                } else {
+                    plain.to_owned()
+                };
+                assert_eq!(
+                    encode_input(
+                        &TerminalInput::Key { key, modifiers },
+                        TerminalModes {
+                            application_cursor,
+                            ..Default::default()
+                        }
+                    ),
+                    expected.as_bytes(),
+                    "{key:?} {modifiers:?} app={application_cursor}"
+                );
+            }
+        }
+    }
+    for (text, meta, expected) in [
+        ("\x01", false, "\x01"),
+        ("\0", false, "\0"),
+        ("\x1f", true, "\x1b\x1f"),
+        ("a", true, "\x1ba"),
+        ("A", true, "\x1bA"),
+        ("λ", true, "\x1bλ"),
+    ] {
+        assert_eq!(
+            encode_input(
+                &TerminalInput::Character {
+                    text: text.into(),
+                    meta,
+                    key: None
+                },
+                TerminalModes::default()
+            ),
+            expected.as_bytes()
+        );
+    }
+}
+
+#[test]
+fn legacy_function_keys_and_insert_have_xterm_bytes() {
+    use TerminalKey::*;
+    for (key, expected) in [
+        (F1, "\x1bOP"),
+        (F2, "\x1bOQ"),
+        (F3, "\x1bOR"),
+        (F4, "\x1bOS"),
+        (F5, "\x1b[15~"),
+        (F6, "\x1b[17~"),
+        (F7, "\x1b[18~"),
+        (F8, "\x1b[19~"),
+        (F9, "\x1b[20~"),
+        (F10, "\x1b[21~"),
+        (F11, "\x1b[23~"),
+        (F12, "\x1b[24~"),
+        (Insert, "\x1b[2~"),
+    ] {
+        for modifiers in [
+            Modifiers::default(),
+            Modifiers {
+                control: true,
+                shift: true,
+                ..Default::default()
+            },
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        ] {
+            let wanted = if modifiers.alt {
+                format!("\x1b{expected}")
+            } else {
+                expected.into()
+            };
+            assert_eq!(
+                encode_input(
+                    &TerminalInput::Key { key, modifiers },
+                    TerminalModes::default()
+                ),
+                wanted.as_bytes()
+            );
+        }
+    }
 }

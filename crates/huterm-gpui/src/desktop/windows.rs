@@ -1693,6 +1693,7 @@ fn install_desktop(
     .detach();
     cx.observe_keystrokes(observe_keystroke).detach();
     cx.intercept_keystrokes(hide_grab_badges).detach();
+    cx.intercept_keystrokes(capture_key_identity).detach();
 }
 
 /// Notes whether `config`'s terminal family was unavailable, so `family`,
@@ -2097,6 +2098,32 @@ fn hide_grab_badges(
     }
 }
 
+/// Hands the focused terminal the native key identity GPUI drops when it
+/// normalizes a keystroke, for Kitty keyboard encoding. An interceptor, so
+/// pending shortcut prefixes keep theirs for replay.
+fn capture_key_identity(
+    event: &gpui::KeystrokeEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if pane_grab::modifier_only(&event.keystroke) {
+        return;
+    }
+    let Some(root) = window.root::<WorkspaceView>().flatten() else {
+        return;
+    };
+    let Some(tab) = root.read(cx).active_view(cx) else {
+        return;
+    };
+    tab.update(cx, |tab, _| {
+        tab.native_key_identity =
+            Some((event.keystroke.clone(), event.key_identity));
+        #[cfg(target_os = "macos")]
+        tab.pending_shortcuts
+            .intercept(&event.keystroke, event.key_identity);
+    });
+}
+
 fn observe_keystroke(
     event: &gpui::KeystrokeEvent,
     window: &mut Window,
@@ -2128,6 +2155,10 @@ fn observe_keystroke(
                     }
                     if tab.handle_keystroke(
                         &event.keystroke,
+                        tab.native_key_identity
+                            .as_ref()
+                            .filter(|(stroke, _)| stroke == &event.keystroke)
+                            .and_then(|(_, identity)| *identity),
                         &reserved,
                         window,
                         cx,

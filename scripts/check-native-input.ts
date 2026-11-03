@@ -70,9 +70,12 @@ command = "copy"
   await configure("off", true, true);
   const recorder = join(directory, "recorder.ts");
   await writeFile(recorder, `import {openSync, writeSync} from "node:fs";
+import {modeControl} from ${JSON.stringify(resolve("scripts/kitty-input-recorder.ts"))};
+const mode = modeControl(${JSON.stringify(directory)});
 const fd = openSync(${JSON.stringify(bytes)}, "a");
 const deadline = setTimeout(() => process.exit(2), 45000);
-for await (const chunk of Bun.stdin.stream()) {
+for await (const raw of Bun.stdin.stream()) {
+  const chunk = mode.filter(raw);
   const end = chunk.indexOf(4);
   let input = end < 0 ? chunk : chunk.subarray(0, end);
   // Ctrl-T asks for SGR button reporting and is not recorded.
@@ -83,6 +86,7 @@ for await (const chunk of Bun.stdin.stream()) {
   writeSync(fd, input);
   if (end >= 0) break;
 }
+mode.close();
 clearTimeout(deadline);
 `);
   await writeFile(shell, `#!/bin/sh
@@ -162,6 +166,30 @@ exec ${quote(process.execPath)} ${quote(recorder)}
   try {
     await waitFor(() => Bun.file(ready).exists(), "raw PTY readiness");
     await state("ready=true");
+    async function kittyMode(command: string, flags: number) {
+      await writeFile(join(directory, "kitty-mode.tmp"), command);
+      await rename(join(directory, "kitty-mode.tmp"), join(directory, "kitty-mode"));
+      await waitFor(async () => (await readFile(join(directory, "kitty-ack"), "utf8").catch(() => "")) === `${command}:${flags}`, "parsed Kitty query reply");
+      await state(`kitty=${flags}`);
+    }
+    await kittyMode("1:push", 5);
+    await key(53, 0, "\x1b");
+    await key(0, control, "\x01", "a");
+    await key(0, control | (1 << 17), "\x01", "A");
+    await key(41, control | (1 << 17), ":", ":");
+    await key(36, 1 << 17, "\r");
+    await key(18, control, "1");
+    await key(122, arrow, "\uf704");
+    await key(49, control, " ", " ");
+    await key(0, 1 << 17, "A");
+    await key(18, 1 << 17, "!");
+    await check("kitty-native-identity", "\x1b[27u\x1b[97;5u\x1b[97:65;6u\x1b[59:58;6u\x1b[13;2u\x1b[49;5u\x1b[P\x1b[32;5uA!");
+    await kittyMode("2:pop", 0);
+    await key(53, 0, "\x1b");
+    await key(0, control, "\x01", "a");
+    await key(122, arrow, "\uf704");
+    await check("kitty-pop-restores-legacy", "\x1b\x01\x1bOP");
+
     await key(15, option, "®", "r");
     await key(8, option, "ç", "c");
     await key(3, option, "ƒ", "f");

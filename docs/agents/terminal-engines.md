@@ -204,8 +204,9 @@ Ghostty's public mode bits do not fully describe active mouse tracking and
 format. The adapter uses a retained native probe with synthetic geometry, then
 Huterm encodes real input at dequeue time. Probe bytes never reach the PTY.
 Disabling an inactive 1005 or 1006 format resets to legacy encoding. Primary
-device attributes report VT220 with ANSI color; Kitty keyboard and graphics
-capabilities remain unadvertised. SGR-pixel mouse mode 1016 remains unsupported;
+device attributes report VT220 with ANSI color. Kitty keyboard supports only
+disambiguation (1) and alternate keys (4); graphics remains disabled. SGR-pixel
+mouse mode 1016 remains unsupported;
 implementing it requires protocol and coordinate decisions outside this engine
 removal.
 
@@ -214,6 +215,24 @@ adapter, but only the desktop host can authorize and deliver clipboard writes.
 Kitty writes follow the same policy and answer the program with a status.
 Reloading clipboard policy applies to existing terminals. Hidden and background
 views cannot bypass that authority.
+
+### Kitty keyboard encoding
+
+Ghostty owns the active screen's eight-entry keyboard flag stack, including
+push, pop, set, RIS, and alternate-screen isolation. Core reads its live flags
+at input dequeue and masks them to `1 | 4`. Snapshot flags are only a client
+routing hint. `supported_reply` rewrites each native `CSI ? flags u` callback
+with that mask in callback order; graphics replies remain dropped.
+
+The engine owns one `huterm-ghostty::KeyEncoder` beside its terminal. Every
+encoded press syncs from the terminal, reapplies the masked flags and Meta
+policy, and supplies every event field with consumed modifiers empty. The
+wrapper owns both native handles, retries `OUT_OF_SPACE`, and clears borrowed
+UTF-8 before returning. Character input with neither Ctrl nor Meta bypasses
+the encoder; `Text` and `Paste` always retain their existing paths. Flags zero
+use Huterm's legacy encoder, including its new xterm F1-F12 and Insert bytes.
+Release, repeat, report-all, associated text, modifier events, and
+`modifyOtherKeys` remain unsupported.
 
 ## Measurement and smoke coverage
 

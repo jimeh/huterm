@@ -138,6 +138,7 @@ fn recorder(
 
 fn key_down(cx: &mut VisualTestContext, key: &'static str, is_held: bool) {
     cx.simulate_event(KeyDownEvent {
+        key_identity: None,
         keystroke: Keystroke::parse(key).expect("a valid keystroke"),
         is_held,
         prefer_character_input: false,

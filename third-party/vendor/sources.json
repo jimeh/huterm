@@ -37,6 +37,11 @@
           "name": "keybinding-load-with-os",
           "file": "patches/gpui-pre/keybinding-load-with-os.patch",
           "description": "Restore a KeyBinding loader that takes an explicit keyboard mapper and host OS instead of an App, so keymaps compile and match outside a running application."
+        },
+        {
+          "name": "native-key-identity",
+          "file": "patches/gpui-pre/native-key-identity.patch",
+          "description": "Preserve native layout, raw Shift, and US physical key identity for terminal keyboard encoding without changing Keystroke binding equality."
         }
       ]
     },
@@ -66,6 +71,11 @@
           "name": "x11-key-repeat",
           "file": "patches/gpui-pre-linux/x11-key-repeat.patch",
           "description": "Enable XKB detectable auto-repeat and mark an X11 key press whose key is still down as held, as macOS and Wayland already do. Keep the real releases that GPUI's event reducer would drop: with the flag granted, a release before a fast press of its key, and in any mode, a release that another release follows."
+        },
+        {
+          "name": "native-key-identity",
+          "file": "patches/gpui-pre-linux/native-key-identity.patch",
+          "description": "Preserve native layout, raw Shift, and US physical key identity for terminal keyboard encoding without changing Keystroke binding equality."
         }
       ]
     },
@@ -90,6 +100,11 @@
           "name": "macos-offscreen-frame",
           "file": "patches/gpui-pre-macos/macos-offscreen-frame.patch",
           "description": "Expose per-window opt-in to unconstrained offscreen frames while preserving normal AppKit constraints by default."
+        },
+        {
+          "name": "native-key-identity",
+          "file": "patches/gpui-pre-macos/native-key-identity.patch",
+          "description": "Preserve native layout, raw Shift, and US physical key identity for terminal keyboard encoding without changing Keystroke binding equality."
         }
       ]
     },

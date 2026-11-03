@@ -2585,6 +2585,7 @@ impl Window {
                     keystroke: keystroke.clone(),
                     input_preference,
                     is_held: false,
+                    key_identity: None,
                     action: action.map(|action| action.boxed_clone()),
                     context_stack: context_stack.clone(),
                 },
@@ -2599,6 +2600,7 @@ impl Window {
         keystroke: &Keystroke,
         input_preference: InputPreference,
         is_held: bool,
+        key_identity: Option<crate::KeyIdentity>,
         context_stack: Vec<KeyContext>,
         cx: &mut App,
     ) {
@@ -2610,6 +2612,7 @@ impl Window {
                         keystroke: keystroke.clone(),
                         input_preference,
                         is_held,
+                        key_identity,
                         action: None,
                         context_stack: context_stack.clone(),
                     },
@@ -5597,6 +5600,7 @@ impl Window {
         let keystroke = keystroke.with_simulated_ime();
         let result = self.dispatch_event(
             PlatformInput::KeyDown(KeyDownEvent {
+                key_identity: None,
                 keystroke: keystroke.clone(),
                 is_held: false,
                 prefer_character_input: false,
@@ -6137,6 +6141,7 @@ impl Window {
             &keystroke,
             input_preference,
             is_held,
+            event.downcast_ref::<KeyDownEvent>().and_then(|event| event.key_identity),
             self.context_stack(),
             cx,
         );
@@ -6487,6 +6492,7 @@ impl Window {
 
         'replay: for replay in replays {
             let event = KeyDownEvent {
+                key_identity: None,
                 keystroke: replay.keystroke.clone(),
                 is_held: false,
                 prefer_character_input: true,
@@ -9002,6 +9008,7 @@ mod tests {
             window.draw(cx).clear(cx);
             window.dispatch_event(
                 PlatformInput::KeyDown(KeyDownEvent {
+                    key_identity: None,
                     keystroke: Keystroke::parse("down").expect("valid keystroke"),
                     is_held: false,
                     prefer_character_input: false,

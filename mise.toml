@@ -761,7 +761,8 @@ if [ "$(uname -s)" != Linux ]; then
   exit 0
 fi
 bash scripts/build-exec.sh cargo build --workspace --locked
-xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-linux-input.ts target/debug/huterm
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example palette_smoke
+xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-linux-input.ts target/debug/huterm target/debug/examples/palette_smoke
 '''
 
 [tasks."smoke:linux-fullscreen"]
@@ -1106,7 +1107,7 @@ case "$(uname -s)" in
 
     if run_smoke_step linux-input; then
       xvfb-run -a -e "$evidence_dir/linux-input-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
-        bun scripts/check-linux-input.ts target/debug/huterm
+        bun scripts/check-linux-input.ts target/debug/huterm target/debug/examples/palette_smoke
     fi
     if run_smoke_step linux-clipboard; then
       xvfb-run -a -e "$evidence_dir/clipboard-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \

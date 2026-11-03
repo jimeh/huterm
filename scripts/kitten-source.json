@@ -1,0 +1,14 @@
+{
+  "version": "0.42.2",
+  "publishedAt": "2025-07-16T01:59:48Z",
+  "architectures": {
+    "x64": {
+      "url": "https://github.com/kovidgoyal/kitty/releases/download/v0.42.2/kitten-linux-amd64",
+      "sha256": "044db03eb069c7655ab857543fb954162aeb69f920d11fc4fa4fe49c37ef3083"
+    },
+    "arm64": {
+      "url": "https://github.com/kovidgoyal/kitty/releases/download/v0.42.2/kitten-linux-arm64",
+      "sha256": "6df2f4cbae843847bd509189e388c3865cd3397669ba046d87a86bfad25d466c"
+    }
+  }
+}

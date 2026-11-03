@@ -1,3 +1,5 @@
+#[path = "key_identity.rs"]
+mod key_identity;
 use std::{
     cell::RefCell,
     env,
@@ -1412,6 +1414,16 @@ fn guess_ascii(keycode: Keycode, shift: bool) -> Option<char> {
     };
 
     Some(c)
+}
+
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(super) fn key_identity_from_xkb(state: &State, modifiers: gpui::Modifiers, keycode: Keycode) -> gpui::KeyIdentity {
+    let keymap = state.get_keymap();
+    let layout = state.key_get_layout(keycode);
+    let text = |level| keymap.key_get_syms_by_level(keycode, layout, level).first()
+        .map(|sym| xkb::keysym_to_utf32(*sym)).and_then(char::from_u32)
+        .map(|ch| ch.to_string()).unwrap_or_default();
+    gpui::native_key_identity(&text(0), &text(1), modifiers.shift, key_identity::us_key(keycode.raw()))
 }
 
 #[cfg(any(feature = "wayland", feature = "x11"))]

@@ -77,6 +77,30 @@ GPUI's update borrow, and skip deferred cancellation when the active view alread
 has newer preedit. Bindings and menu installation share one operation;
 `smoke:macos-menus` reads actual NSMenuItem shortcuts.
 
+### Kitty keyboard routing and identity
+
+Use the displayed snapshot's masked Kitty flags only to decide whether to
+claim a Ctrl chord legacy cannot encode, such as Ctrl+1 or Ctrl+;. Carry its
+layout text as a legacy fallback if flags turn off before dequeue. Core always
+chooses bytes against live flags. Synced panes encode independently; a legacy
+source cannot supply a Kitty-only chord to a Kitty target because it never
+claims that chord. Cmd/Super remains client-owned.
+
+Keep raw Shift for named keys and Character identity. Map F1-F12 and Insert to
+protocol keys. GPUI's optional `KeyIdentity` is separate from `Keystroke`, whose
+equality drives bindings. The native patches derive active-layout unshifted
+and shifted characters, held Shift, and the physical US character before GPUI
+normalizes punctuation or removes Control text. Capture it in the interceptor
+and use it in Huterm's post-matcher observer, preserving shortcut ordering.
+`PendingShortcuts` retains each prefix identity through resolution and replay;
+replayed prefixes stay suppressed before native text insertion. Never replace
+the mismatching current event's identity with that of an old replay.
+
+Synthetic or unpatched events fall back to `Keystroke`: letters keep Shift,
+and punctuation uses the reported character. That fallback cannot recover an
+unshifted punctuation key or a non-ASCII physical alternate precisely. Option
+composition and IME commits stay `Text`; they never enter the key encoder.
+
 ## Text fields
 
 Text fields take their keys under `TextField`; the keymap rules, the field

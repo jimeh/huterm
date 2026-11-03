@@ -3605,6 +3605,8 @@ pub enum InputPreference {
 /// A keystroke event, and potentially the associated action
 #[derive(Debug)]
 pub struct KeystrokeEvent {
+    /// Native key identity supplied to interceptors, absent for observers.
+    pub key_identity: Option<crate::KeyIdentity>,
     /// The keystroke that occurred
     pub keystroke: Keystroke,
 

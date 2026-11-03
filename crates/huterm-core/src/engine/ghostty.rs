@@ -218,17 +218,28 @@ struct Colors {
     palette: ghostty::Palette,
 }
 
-/// Replies Huterm must not send: Kitty graphics responses and Kitty
-/// keyboard flags, whose protocols it does not implement.
-fn unsupported_reply(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"\x1b_G")
-        || (bytes.starts_with(b"\x1b[?") && bytes.ends_with(b"u"))
+/// Graphics stays disabled. Mask each native keyboard reply in callback order,
+/// since a single output chunk can query several different stack values.
+fn supported_reply(bytes: Vec<u8>) -> Option<Vec<u8>> {
+    if bytes.starts_with(b"\x1b_G") {
+        return None;
+    }
+    if let Some(flags) = bytes
+        .strip_prefix(b"\x1b[?")
+        .and_then(|bytes| bytes.strip_suffix(b"u"))
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|text| text.parse::<u8>().ok())
+    {
+        return Some(format!("\x1b[?{}u", flags & 5).into_bytes());
+    }
+    Some(bytes)
 }
 
 #[derive(Debug)]
 pub(super) struct TerminalEngine {
     terminal: ghostty::Terminal<EngineHost>,
     render: RenderState,
+    keyboard: ghostty::KeyEncoder,
     mouse: RefCell<MouseProbe>,
     id: TerminalId,
     size: GridSize,
@@ -286,6 +297,7 @@ impl TerminalEngine {
         Ok(Self {
             terminal,
             render: RenderState::new()?,
+            keyboard: ghostty::KeyEncoder::new()?,
             mouse: RefCell::new(MouseProbe::new()?),
             id,
             size,
@@ -490,7 +502,7 @@ impl TerminalEngine {
         for effect in self.effects.drain(..) {
             match effect {
                 ghostty::Effect::PtyWrite(bytes) => {
-                    if !unsupported_reply(&bytes) {
+                    if let Some(bytes) = supported_reply(bytes) {
                         effects.push(EngineEffect::PtyWrite(bytes));
                     }
                 }
@@ -524,6 +536,29 @@ impl TerminalEngine {
         Ok(effects)
     }
 
+    pub(super) fn encode_input(
+        &mut self,
+        input: &huterm_protocol::TerminalInput,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        use huterm_protocol::TerminalInput;
+        let flags = self.terminal.kitty_keyboard_flags()? & 5;
+        if flags != 0
+            && matches!(
+                input,
+                TerminalInput::Key { .. }
+                    | TerminalInput::Character { key: Some(_), .. }
+            )
+        {
+            self.keyboard.sync(&self.terminal)?;
+            self.keyboard.set_kitty_flags(flags);
+            return Ok(crate::input::encode_kitty_input(
+                input,
+                &mut self.keyboard,
+            )?);
+        }
+        Ok(crate::input::encode_input(input, self.modes()?, self.size))
+    }
+
     pub(super) fn modes(&self) -> Result<TerminalModes, RuntimeError> {
         if let Some((generation, modes)) = self.modes.get()
             && generation == self.generation
@@ -533,6 +568,9 @@ impl TerminalEngine {
         let (tracking, encoding) =
             self.mouse.borrow_mut().probe(&self.terminal)?;
         let modes = TerminalModes {
+            kitty_keyboard: huterm_protocol::KittyKeyboardFlags::from_bits(
+                self.terminal.kitty_keyboard_flags()?,
+            ),
             application_cursor: self.terminal.mode(Mode::CURSOR_KEYS)?,
             alternate_screen: self.terminal.screen()? == Screen::Alternate,
             bracketed_paste: self.terminal.mode(Mode::BRACKETED_PASTE)?,
@@ -1288,20 +1326,29 @@ mod tests {
     }
 
     #[test]
-    fn kitty_keyboard_and_graphics_replies_never_reach_the_pty() {
+    fn kitty_keyboard_replies_are_masked_and_graphics_stays_disabled() {
         let mut engine = engine();
         let replies = pty_writes(
             engine
                 .process(
-                    b"\x1b[?u\x1b[>1u\x1b[?u\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[5n",
+                    b"\x1b[?u\x1b[>31u\x1b[?u\x1b[>2u\x1b[?u\x1b[<u\x1b[?u\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[5n",
                 )
                 .unwrap(),
         );
         // The status report proves replies still flow.
-        assert_eq!(replies, [b"\x1b[0n".to_vec()]);
+        assert_eq!(
+            replies,
+            [
+                b"\x1b[?0u".to_vec(),
+                b"\x1b[?5u".to_vec(),
+                b"\x1b[?0u".to_vec(),
+                b"\x1b[?5u".to_vec(),
+                b"\x1b[0n".to_vec()
+            ]
+        );
         // Graphics replies are already disabled natively; the filter is a
         // second line of defense.
-        assert!(unsupported_reply(b"\x1b_Gi=31;OK\x1b\\"));
+        assert!(supported_reply(b"\x1b_Gi=31;OK\x1b\\".to_vec()).is_none());
     }
 
     #[test]
@@ -1402,5 +1449,209 @@ mod tests {
             }
         }
         assert!(changes > 100, "only {changes} color changes observed");
+    }
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exact-byte matrix pins the native encoder under each supported flag set"
+    )]
+    fn kitty_exact_bytes_follow_effective_flags_and_keep_legacy_text() {
+        use TerminalKey::*;
+        use huterm_protocol::{
+            CharacterKey, Modifiers, TerminalInput, TerminalKey,
+        };
+        let mut engine = engine();
+        for flags in [1, 4, 5, 31] {
+            engine
+                .process(format!("\x1b[={flags}u").as_bytes())
+                .unwrap();
+            let alternates = flags & 4 != 0;
+            for (key, modifiers, expected) in [
+                (Escape, Modifiers::default(), "\x1b[27u"),
+                (Tab, Modifiers::default(), "\t"),
+                (Enter, Modifiers::default(), "\r"),
+                (Backspace, Modifiers::default(), "\x7f"),
+                (
+                    Tab,
+                    Modifiers {
+                        shift: true,
+                        ..Default::default()
+                    },
+                    "\x1b[9;2u",
+                ),
+                (
+                    Enter,
+                    Modifiers {
+                        shift: true,
+                        ..Default::default()
+                    },
+                    "\x1b[13;2u",
+                ),
+                (
+                    Backspace,
+                    Modifiers {
+                        control: true,
+                        ..Default::default()
+                    },
+                    "\x1b[127;5u",
+                ),
+                (
+                    Left,
+                    Modifiers {
+                        control: true,
+                        ..Default::default()
+                    },
+                    "\x1b[1;5D",
+                ),
+                (F1, Modifiers::default(), "\x1b[P"),
+                (F2, Modifiers::default(), "\x1b[Q"),
+                (F3, Modifiers::default(), "\x1b[13~"),
+                (F4, Modifiers::default(), "\x1b[S"),
+                (Insert, Modifiers::default(), "\x1b[2~"),
+            ] {
+                assert_eq!(
+                    engine
+                        .encode_input(&TerminalInput::Key { key, modifiers })
+                        .unwrap(),
+                    expected.as_bytes(),
+                    "flags={flags} {key:?}"
+                );
+            }
+            for (unshifted, text, base, control, alt, shift, expected) in [
+                ('a', "a", 'a', true, false, false, "\x1b[97;5u"),
+                (
+                    'a',
+                    "A",
+                    'a',
+                    true,
+                    false,
+                    true,
+                    if alternates {
+                        "\x1b[97:65;6u"
+                    } else {
+                        "\x1b[97;6u"
+                    },
+                ),
+                (
+                    ';',
+                    ":",
+                    ';',
+                    true,
+                    false,
+                    true,
+                    if alternates {
+                        "\x1b[59:58;6u"
+                    } else {
+                        "\x1b[59;6u"
+                    },
+                ),
+                ('a', "a", 'a', false, true, false, "\x1b[97;3u"),
+                ('1', "1", '1', true, false, false, "\x1b[49;5u"),
+                (
+                    'ф',
+                    "ф",
+                    'a',
+                    true,
+                    false,
+                    false,
+                    if alternates {
+                        "\x1b[1092::97;5u"
+                    } else {
+                        "\x1b[1092;5u"
+                    },
+                ),
+                ('a', "A", 'a', false, false, true, "A"),
+                (' ', " ", ' ', true, false, false, "\x1b[32;5u"),
+            ] {
+                let input = TerminalInput::Character {
+                    text: text.into(),
+                    meta: alt,
+                    key: Some(Box::new(CharacterKey {
+                        unshifted,
+                        text: text.into(),
+                        base_layout: Some(base),
+                        modifiers: Modifiers {
+                            control,
+                            alt,
+                            shift,
+                        },
+                    })),
+                };
+                assert_eq!(
+                    engine.encode_input(&input).unwrap(),
+                    expected.as_bytes(),
+                    "flags={flags} {input:?}"
+                );
+            }
+            for input in [
+                TerminalInput::Text("é😀".into()),
+                TerminalInput::Paste("é😀".into()),
+            ] {
+                assert_eq!(
+                    engine.encode_input(&input).unwrap(),
+                    "é😀".as_bytes()
+                );
+            }
+            engine.process(b"\x1b[?2004h").unwrap();
+            assert_eq!(
+                engine
+                    .encode_input(&TerminalInput::Paste("a\x1b[201~b".into()))
+                    .unwrap(),
+                b"\x1b[200~a[201~b\x1b[201~"
+            );
+            engine.process(b"\x1b[?2004l").unwrap();
+        }
+        for flags in [0, 2, 8, 16, 26] {
+            engine
+                .process(format!("\x1b[={flags}u").as_bytes())
+                .unwrap();
+            assert_eq!(engine.modes().unwrap().kitty_keyboard.bits(), 0);
+            assert_eq!(
+                engine
+                    .encode_input(&TerminalInput::Key {
+                        key: Escape,
+                        modifiers: Modifiers::default()
+                    })
+                    .unwrap(),
+                b"\x1b"
+            );
+            let input = TerminalInput::Character {
+                text: ":".into(),
+                meta: true,
+                key: Some(Box::new(CharacterKey {
+                    unshifted: ';',
+                    text: ":".into(),
+                    base_layout: Some(';'),
+                    modifiers: Modifiers {
+                        control: true,
+                        alt: true,
+                        shift: true,
+                    },
+                })),
+            };
+            assert_eq!(
+                engine.encode_input(&input).unwrap(),
+                b"\x1b:",
+                "a stale Kitty-only routing hint uses the legacy fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn kitty_alternate_screen_restores_each_screens_stack() {
+        let mut engine = engine();
+        for (sequence, flags) in [
+            ("\x1b[>5u", 5),
+            ("\x1b[?1049h", 0),
+            ("\x1b[>1u", 1),
+            ("\x1b[?1049l", 5),
+        ] {
+            engine.process(sequence.as_bytes()).unwrap();
+            assert_eq!(engine.modes().unwrap().kitty_keyboard.bits(), flags);
+            assert_eq!(
+                pty_writes(engine.process(b"\x1b[?u").unwrap()),
+                [format!("\x1b[?{flags}u").into_bytes()]
+            );
+        }
     }
 }

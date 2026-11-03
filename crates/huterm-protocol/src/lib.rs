@@ -378,6 +378,32 @@ pub enum TerminalKey {
     PageDown,
     /// Delete.
     Delete,
+    /// Insert.
+    Insert,
+    /// Function key 1.
+    F1,
+    /// Function key 2.
+    F2,
+    /// Function key 3.
+    F3,
+    /// Function key 4.
+    F4,
+    /// Function key 5.
+    F5,
+    /// Function key 6.
+    F6,
+    /// Function key 7.
+    F7,
+    /// Function key 8.
+    F8,
+    /// Function key 9.
+    F9,
+    /// Function key 10.
+    F10,
+    /// Function key 11.
+    F11,
+    /// Function key 12.
+    F12,
 }
 
 /// Keyboard modifiers attached to terminal input.
@@ -474,6 +500,40 @@ pub struct MouseInput {
     pub modifiers: Modifiers,
 }
 
+/// Layout identity retained before platform shortcut normalization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CharacterKey {
+    /// Unshifted character on the active layout.
+    pub unshifted: char,
+    /// Layout text with Shift, before Control or Meta transformations.
+    pub text: String,
+    /// Physical key's US-layout character, when known.
+    pub base_layout: Option<char>,
+    /// Modifiers, including raw Shift and the client's Meta policy.
+    pub modifiers: Modifiers,
+}
+
+/// Effective Kitty keyboard flags. Clients use this only as a routing hint.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KittyKeyboardFlags(u8);
+impl KittyKeyboardFlags {
+    /// Retains only disambiguation (1) and alternate keys (4).
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits & 5)
+    }
+    /// Supported flags currently active.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+    /// Whether Kitty encoding is active.
+    #[must_use]
+    pub const fn is_active(self) -> bool {
+        self.0 != 0
+    }
+}
+
 /// Structured terminal input from a client.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -486,6 +546,8 @@ pub enum TerminalInput {
         text: String,
         /// Prefix the character with ESC for terminal Meta input.
         meta: bool,
+        /// Native key identity for dequeue-time Kitty encoding.
+        key: Option<Box<CharacterKey>>,
     },
     /// A terminal key and its modifiers.
     Key {
@@ -735,6 +797,8 @@ fn buffer_point_precedes(first: BufferPoint, second: BufferPoint) -> bool {
     reason = "terminal modes are independent protocol flags"
 )]
 pub struct TerminalModes {
+    /// Supported Kitty keyboard flags, for client routing only.
+    pub kitty_keyboard: KittyKeyboardFlags,
     /// Application cursor-key mode.
     pub application_cursor: bool,
     /// Alternate screen is active.

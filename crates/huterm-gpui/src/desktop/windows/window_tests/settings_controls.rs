@@ -46,6 +46,7 @@ pub(super) fn keys(harness: &DesktopHarness, keys: &str) {
 pub(super) fn key_down(harness: &DesktopHarness, key: &str, is_held: bool) {
     let mut visual = visual(harness);
     visual.simulate_event(KeyDownEvent {
+        key_identity: None,
         keystroke: gpui::Keystroke::parse_with_os(
             key,
             crate::keymap::Platform::current().os(),

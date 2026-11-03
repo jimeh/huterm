@@ -87,7 +87,7 @@ use super::{
 use crate::linux::{
     DOUBLE_CLICK_INTERVAL, LinuxCommon, LinuxKeyboardLayout, PIPE_READ_TIMEOUT, SCROLL_LINES,
     capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state, is_within_click_distance,
-    keystroke_from_xkb, keystroke_underlying_dead_key, modifiers_from_xkb, new_xkb_context,
+    key_identity_from_xkb, keystroke_from_xkb, keystroke_underlying_dead_key, modifiers_from_xkb, new_xkb_context,
     open_uri_internal, read_fd_with_timeout, reveal_path_internal,
     wayland::{
         clipboard::{Clipboard, DataOffer, FILE_LIST_MIME_TYPE, TEXT_MIME_TYPES},
@@ -2164,6 +2164,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
 
                 match key_state {
                     wl_keyboard::KeyState::Pressed if !keysym.is_modifier_key() => {
+                        let key_identity = key_identity_from_xkb(keymap_state, state.modifiers, keycode);
                         let mut keystroke =
                             keystroke_from_xkb(keymap_state, state.modifiers, keycode);
                         if let Some(mut compose) = state.compose_state.take() {
@@ -2207,6 +2208,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
                             state.compose_state = Some(compose);
                         }
                         let input = PlatformInput::KeyDown(KeyDownEvent {
+                            key_identity: Some(key_identity),
                             keystroke: keystroke.clone(),
                             is_held: false,
                             prefer_character_input: false,
@@ -2222,6 +2224,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
                             .loop_handle
                             .insert_source(Timer::from_duration(state.repeat.delay), {
                                 let input = PlatformInput::KeyDown(KeyDownEvent {
+                                    key_identity: Some(key_identity),
                                     keystroke,
                                     is_held: true,
                                     prefer_character_input: false,
@@ -2307,6 +2310,7 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
                     // We should only send ASCII characters to Zed, otherwise a user could remap a letter like `か` or `相`.
                     if commit_text.len() == 1 {
                         window.handle_input(PlatformInput::KeyDown(KeyDownEvent {
+                            key_identity: None,
                             keystroke: Keystroke {
                                 modifiers: Modifiers::default(),
                                 key: commit_text.clone(),

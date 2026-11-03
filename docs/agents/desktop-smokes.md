@@ -329,3 +329,14 @@ keep reporting enabled through the entire native drag assertion.
 Bound the native XDND fixture by idle time, resetting its deadline after
 selection-handshake progress and serviced actions. A valid drag can exceed ten
 seconds overall while each individual phase stays within its timeout.
+
+The input smokes negotiate Kitty flags through a recorder-written push, a
+parsed `CSI ? u` reply, and displayed-snapshot flags before injecting keys.
+They compare complete recorder output through a sentinel, then pop and check
+legacy bytes. Linux also launches `kitten show-key -m kitty` under a real PTY
+and checks decoded keys. `scripts/kitten-source.json` pins kitty 0.42.2
+(published 2025-07-16) and SHA-256 values for static Linux x86_64 and arm64
+binaries. Hash verification precedes execution. This GPL-3.0 test-only tool is
+never linked or shipped with Huterm; its license is outside the product
+dependency policy. Package validation retains its standalone legacy input
+check; CI's input smoke additionally uses `palette_smoke` for published flags.

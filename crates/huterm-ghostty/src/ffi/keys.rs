@@ -5,6 +5,35 @@
 
 use super::bindings as ffi;
 
+/// Keys of `GhosttyKeyEncoderOption` from `key/encoder.h`.
+pub(crate) mod key_encoder_option {
+    use super::ffi;
+
+    /// Every key below, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) const KEYS: &[&str] = &["KITTY_FLAGS", "MACOS_OPTION_AS_ALT"];
+
+    /// `GHOSTTY_KEY_ENCODER_OPT_KITTY_FLAGS`.
+    #[derive(Debug)]
+    pub(crate) enum KittyFlags {}
+
+    impl super::super::KeyEncoderOption for KittyFlags {
+        const KEY: ffi::GhosttyKeyEncoderOption =
+            ffi::GHOSTTY_KEY_ENCODER_OPT_KITTY_FLAGS;
+        type Value = ffi::GhosttyKittyKeyFlags;
+    }
+
+    /// `GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT`.
+    #[derive(Debug)]
+    pub(crate) enum MacosOptionAsAlt {}
+
+    impl super::super::KeyEncoderOption for MacosOptionAsAlt {
+        const KEY: ffi::GhosttyKeyEncoderOption =
+            ffi::GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT;
+        type Value = ffi::GhosttyOptionAsAlt;
+    }
+}
+
 /// Keys of `GhosttyTerminalData` from `terminal.h`.
 pub(crate) mod terminal_data {
     use super::ffi;
@@ -29,6 +58,7 @@ pub(crate) mod terminal_data {
         "COLOR_BACKGROUND_DEFAULT",
         "COLOR_CURSOR_DEFAULT",
         "COLOR_PALETTE_DEFAULT",
+        "KITTY_KEYBOARD_FLAGS",
         "KITTY_IMAGE_STORAGE_LIMIT",
         "SCROLLBACK_MAX_BYTES",
         "SCROLLBACK_MAX_LINES",
@@ -202,6 +232,16 @@ pub(crate) mod terminal_data {
         const KEY: ffi::GhosttyTerminalData =
             ffi::GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT;
         type Out = [ffi::GhosttyColorRgb; 256];
+    }
+
+    /// `GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS`.
+    #[derive(Debug)]
+    pub(crate) enum KittyKeyboardFlags {}
+
+    impl super::super::TerminalData for KittyKeyboardFlags {
+        const KEY: ffi::GhosttyTerminalData =
+            ffi::GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS;
+        type Out = ffi::GhosttyKittyKeyFlags;
     }
 
     /// `GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_STORAGE_LIMIT`.
