@@ -957,6 +957,7 @@ fn lifecycle_command() -> TerminalCommand {
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        shell_integration: huterm_protocol::ShellIntegration::OFF,
         scrollback_compression: false,
     }
 }
@@ -1286,6 +1287,7 @@ fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        shell_integration: huterm_protocol::ShellIntegration::OFF,
         scrollback_compression: false,
     };
     assert!(runtime.open_tab(None, None, &command, true).result.is_err());
@@ -1351,6 +1353,7 @@ fn native_termination_drains_existing_terminals_and_rejects_queued_spawns() {
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        shell_integration: huterm_protocol::ShellIntegration::OFF,
         scrollback_compression: false,
     };
     let (_, _, _, _, viewer) =
@@ -2763,14 +2766,40 @@ fn new_tab_directory_inheritance_accepts_only_local_usable_directories() {
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir(&root).unwrap();
-    let local = TerminalMetadata::new(
-        Some(TerminalDirectory::new(
-            Some("localhost".into()),
-            root.to_string_lossy().into_owned(),
-            true,
-        )),
-        None,
-    );
+    let mut command = lifecycle_command();
+    command.environment.push((
+        "HUTERM_TEST_DIRECTORY".into(),
+        root.to_string_lossy().into_owned(),
+    ));
+    command.arguments = vec!["-c".into(),
+        "printf '\\033]7;kitty-shell-cwd://localhost%s\\007' \"$HUTERM_TEST_DIRECTORY\"; read value".into()];
+    let runtime = huterm_core::TerminalRuntime::spawn(
+        huterm_protocol::TerminalId::new(1),
+        &command,
+    )
+    .unwrap();
+    let viewer = runtime
+        .subscribe(huterm_core::ViewerOptions::new(
+            huterm_protocol::ViewerCapabilities::ALL,
+        ))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let local = loop {
+        if let Some(status) = viewer.poll().status
+            && status.metadata.directory().is_some_and(|directory| {
+                directory.path() == root.to_string_lossy()
+                    && directory.is_local()
+            })
+        {
+            break status.metadata.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "literal OSC 7 did not reach terminal metadata"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    runtime.shutdown().unwrap();
     let captured =
         inherited_directory(NewTabDirectory::Inherit, &local).unwrap();
     assert_eq!(captured, root);

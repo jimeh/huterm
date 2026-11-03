@@ -80,6 +80,21 @@ impl PtyProcess {
     }
 }
 
+#[cfg(test)]
+impl PtyProcess {
+    /// Raw bytes at the real production PTY boundary, before emulator parsing.
+    pub(crate) fn raw_tap(
+        &mut self,
+    ) -> (Box<dyn Read + Send>, Box<dyn Write + Send>, ReadinessWaiter) {
+        let master = self.master.as_ref().unwrap();
+        (
+            self.reader.take().unwrap(),
+            self.writer.take().unwrap(),
+            ReadinessWaiter::new(master.as_ref(), Readiness::Read).unwrap(),
+        )
+    }
+}
+
 impl Drop for PtyProcess {
     fn drop(&mut self) {
         let Some(child) = self.child.as_mut() else {
@@ -275,6 +290,53 @@ static OPENPTY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub(crate) fn spawn(
     command: &TerminalCommand,
 ) -> Result<PtyProcess, RuntimeError> {
+    let executable = std::env::current_exe().ok();
+    let environment = |name: &str| {
+        command
+            .environment
+            .iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into())
+            .or_else(|| std::env::var_os(name))
+    };
+    let host = crate::shell_integration::Host {
+        resources: executable.as_deref().and_then(|file| {
+            crate::shell_integration::resources(file, cfg!(target_os = "macos"))
+        }),
+        bin: executable
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_owned),
+        macos: cfg!(target_os = "macos"),
+        environment: &environment,
+        resolve: &crate::shell_integration::resolve,
+        is_file: &std::path::Path::is_file,
+    };
+    spawn_with_plan(command, crate::shell_integration::plan(command, &host))
+}
+
+pub(crate) fn spawn_with_plan(
+    command: &TerminalCommand,
+    plan: crate::shell_integration::LaunchPlan,
+) -> Result<PtyProcess, RuntimeError> {
+    spawn_planned(command, plan, true)
+}
+
+/// Native shell fixtures must not expose the test runner's secrets to shells.
+#[cfg(test)]
+pub(crate) fn spawn_with_plan_isolated(
+    command: &TerminalCommand,
+    plan: crate::shell_integration::LaunchPlan,
+) -> Result<PtyProcess, RuntimeError> {
+    spawn_planned(command, plan, false)
+}
+
+fn spawn_planned(
+    command: &TerminalCommand,
+    plan: crate::shell_integration::LaunchPlan,
+    inherit_environment: bool,
+) -> Result<PtyProcess, RuntimeError> {
     let pair = {
         let _serial = OPENPTY
             .lock()
@@ -285,14 +347,26 @@ pub(crate) fn spawn(
     };
     set_nonblocking(pair.master.as_ref())?;
 
-    let mut builder = CommandBuilder::new(&command.program);
-    builder.args(&command.arguments);
+    let mut builder = CommandBuilder::new(&plan.program);
+    if !inherit_environment {
+        builder.env_clear();
+    }
+    builder.args(&plan.arguments);
     builder.cwd(&command.working_directory);
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
     builder.env("TERM_PROGRAM", "Huterm");
     for (key, value) in &command.environment {
         builder.env(key, value);
+    }
+    for name in plan.remove {
+        builder.env_remove(name);
+    }
+    for (name, value) in plan.set {
+        builder.env(name, value);
+    }
+    if let Some(warning) = plan.warning {
+        eprintln!("{warning}");
     }
     // Children start with the limit Huterm had before raising its own.
     #[cfg(unix)]

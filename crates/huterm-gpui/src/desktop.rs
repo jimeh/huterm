@@ -3870,6 +3870,7 @@ fn shell_command(
     metrics: GridMetrics,
     theme: &Theme,
     terminal: config::TerminalConfig,
+    shell_integration: &huterm_config::ShellIntegrationConfig,
     window: WindowConfig,
 ) -> anyhow::Result<TerminalCommand> {
     let shell =
@@ -3900,6 +3901,7 @@ fn shell_command(
         },
         presentation: terminal_presentation(theme),
         scrollback: terminal.scrollback,
+        shell_integration: shell_integration.to_protocol(),
         scrollback_compression: terminal.scrollback_compression,
     })
 }

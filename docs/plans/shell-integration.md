@@ -186,6 +186,15 @@ scripts to another shell.
 - Injection: prepend the nushell XDG root, which holds
   `nushell/vendor/autoload/huterm.nu`, and add `--execute 'use huterm *'`.
 - Startup order: native nushell order.
+- OSC 133 remains native. When `shell_integration.osc7` is true at module
+  load, replace native OSC 7 with Huterm's literal reports at each prompt and
+  on PWD changes. When false, emit no OSC 7. Skip hosts or paths with controls.
+
+Revision, 2026-11-03: nushell 0.116.1 sends unencoded `file://` paths, so `#`,
+`?`, and `%` can leave core's directory metadata stale. Disable its enabled
+native OSC 7 and use `kitty-shell-cwd://` hooks instead. Keep core's `file://`
+parser and nushell's native OSC 133 unchanged. The bootstrap suppresses the
+first native report before the body loads to preserve one OSC 7 stream.
 
 #### elvish
 
@@ -228,12 +237,12 @@ Each automatic path splits into a small bootstrap and a body.
   libghostty-vt parses.
 - **Exactly once:** a per-shell-process guard makes automatic loading plus a
   manual `source`, or a second `source`, a no-op.
-- **fish 4.9.3** natively emits at least OSC 133 `A`/`B` and OSC 7 (observed).
+- **fish 4.9.3** natively emits the full OSC 133 and OSC 7 stream (observed).
   **nushell 0.116.1** enables `shell_integration.osc133` and `osc7` by default
-  (observed). Huterm's fish and nushell scripts add only markers the pinned
-  shell does not emit itself, so the native test proves exactly one marker
-  stream. A user who turns nushell's native markers off gets none; the docs
-  say so.
+  (observed). Huterm leaves native OSC 133 alone and replaces enabled nushell
+  OSC 7 as described in the revision above. The native tests prove exactly
+  one stream. Disabling nushell's markers before module load opts out of
+  those reports.
 - **elvish** emits `A`, `C`, `D;status`, and OSC 7. It has no `B`: its prompt
   renders asynchronously and escapes its output. This is a documented
   limitation.

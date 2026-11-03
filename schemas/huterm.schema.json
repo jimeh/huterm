@@ -9354,6 +9354,68 @@
       },
       "type": "object"
     },
+    "ShellFeature": {
+      "description": "A known opt-in shell capability.",
+      "oneOf": [
+        {
+          "const": "path",
+          "description": "Append Huterm's executable directory to PATH once.",
+          "type": "string"
+        }
+      ]
+    },
+    "ShellIntegrationConfig": {
+      "additionalProperties": false,
+      "description": "Automatic shell integration for terminals started after this setting changes.",
+      "properties": {
+        "features": {
+          "default": [],
+          "description": "Optional capabilities. `path` appends Huterm's executable directory to PATH.",
+          "items": {
+            "$ref": "#/definitions/ShellFeature"
+          },
+          "type": "array",
+          "uniqueItems": true,
+          "x-huterm-apply": "new_terminals",
+          "x-huterm-group": "Shell integration",
+          "x-huterm-label": "Shell integration features",
+          "x-huterm-order": 81,
+          "x-huterm-section": "terminal"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ShellIntegrationMode"
+            }
+          ],
+          "default": "detect",
+          "description": "Load Huterm's prompt and directory integration in supported shells.",
+          "x-huterm-apply": "new_terminals",
+          "x-huterm-group": "Shell integration",
+          "x-huterm-label": "Shell integration",
+          "x-huterm-order": 80,
+          "x-huterm-section": "terminal"
+        }
+      },
+      "type": "object"
+    },
+    "ShellIntegrationMode": {
+      "description": "Whether to load shell integration automatically.",
+      "oneOf": [
+        {
+          "const": "detect",
+          "description": "Detect supported shells and load integration.",
+          "type": "string",
+          "x-huterm-label": "Detect"
+        },
+        {
+          "const": "off",
+          "description": "Disable automatic loading.",
+          "type": "string",
+          "x-huterm-label": "Off"
+        }
+      ]
+    },
     "SizeIndicator": {
       "description": "How the window shows its grid size while it resizes.",
       "oneOf": [
@@ -10379,6 +10441,13 @@
       "allOf": [
         {
           "$ref": "#/definitions/SettingsConfig"
+        }
+      ]
+    },
+    "shell_integration": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ShellIntegrationConfig"
         }
       ]
     },

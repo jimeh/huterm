@@ -30,6 +30,32 @@ output, which changes the status. A test that asserts no status change must
 first wait for that directory, and must not fork per line, or it passes only
 while it outruns the probe.
 
+## Shell integration
+
+`huterm-core::shell_integration` owns executable-relative resource discovery and
+launch planning; clients pass dependency-neutral settings on `TerminalCommand`.
+Keep effective child environment lookup and executable resolution aligned with
+portable-pty. Core clears its owned launch variables before applying each plan,
+including with integration off, and always exports resolved resource/bin identity.
+Only core/engine normalizes OSC 7. The `kitty-shell-cwd://` parser preserves the
+literal path without URL parsing or percent decoding, rejects C0/DEL/C1 controls,
+and applies the same host-locality decision as `file://`.
+
+Apple's `/bin/bash` 3.2 ignores POSIX `ENV`; its bootstrap uses `--rcfile` and
+emulates login files. Do not replace this with the modern Bash route. Preserve
+unset versus empty environment values, startup order, and the admission token's
+consumption. Each XDG shell gets a separate resource root. Fish 4.9.3 provides its
+full marker stream natively. Nushell 0.116.1 provides native OSC 133; Huterm
+replaces enabled native OSC 7 with literal reports because its unencoded
+`file://` paths lose directories containing URL delimiters. Preserve its opt-out.
+
+Huterm's shell scripts must be independently written from shell documentation.
+Never consult or copy Kitty or Ghostty bash/zsh scripts, which are GPLv3, or any
+other terminal's shell scripts. Only unmodified MIT bash-preexec is vendored.
+Provenance and hashes live in `assets/shell-integration/README.md` and
+`third-party/bash-preexec/README.md`. Native PTY tests cover the launch boundary;
+`HUTERM_REQUIRE_SHELLS=1` makes shell availability mandatory in CI Checks only.
+
 ## PTY I/O and descriptor limits
 
 - On Unix, configure the PTY master as nonblocking before cloning reader and

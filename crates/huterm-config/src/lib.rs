@@ -8,6 +8,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+mod shell_integration;
+pub use shell_integration::{
+    ShellFeature, ShellIntegrationConfig, ShellIntegrationMode,
+};
+
 pub mod document;
 mod font_weight;
 pub use font_weight::FontWeight;
@@ -2506,6 +2511,8 @@ pub struct RawConfig {
     pub settings: SettingsConfig,
     #[serde(default)]
     pub terminal: RawTerminal,
+    #[serde(default)]
+    pub shell_integration: ShellIntegrationConfig,
     #[serde(default)]
     pub font: RawFont,
     #[serde(default)]

@@ -152,6 +152,115 @@ exited panes for their history. An exited pane allows selection, copy,
 scrolling, links, and resizing, but sends no input. Reloading this setting
 affects only later exits.
 
+## Shell integration
+
+Huterm loads prompt and working-directory integration in the bash, zsh, fish,
+and nushell process it starts. It reports OSC 7 directories and OSC 133 prompt,
+input, execution, and completion markers, including the command's exit status.
+These directory reports also feed **Copy Directory Path** and the existing
+`terminal.new_tab_directory = "inherit"` behavior.
+
+```toml
+[shell_integration]
+mode = "detect" # detect or off; default: detect
+features = []   # opt in with ["path"]
+```
+
+`mode` is available in Settings under Terminal. Edit `features` in the file.
+Unknown features are errors, and duplicate names collapse. Reload changes only
+terminals started afterwards. The `path` feature appends `HUTERM_BIN_DIR` to
+`PATH` after startup files have run, only if that directory is missing. It does
+not add a command-line interface.
+
+| Shell | Loading and startup order |
+| --- | --- |
+| zsh | A temporary `ZDOTDIR` stub restores the original value, reads the user's `.zshenv`, and installs hooks. Native `.zprofile`, `.zshrc`, and `.zlogin` ordering follows. |
+| bash | POSIX `ENV` bootstrap leaves POSIX mode and restores the environment. Login shells read `/etc/profile` and the first readable `.bash_profile`, `.bash_login`, or `.profile`; other shells read `.bashrc` or the requested `--rcfile`. `--norc` and `--noprofile` are honored. |
+| Apple's `/bin/bash` 3.2 | Uses `--rcfile` and emulates the login startup sequence because Apple bash ignores `ENV` in POSIX mode. |
+| fish | A vendor `conf.d` bootstrap runs before `config.fish`. Fish 4.9.3 provides the full marker stream natively. |
+| nushell | A vendor autoload module and `--execute 'use huterm *'` preserve native startup order. Nushell 0.116.1 supplies OSC 133; Huterm replaces enabled native OSC 7 with literal directory reports. |
+| elvish | Huterm adds a module directory. Add the guarded `use` below to `rc.elv`; Elvish has no automatic loading hook. |
+
+For elvish, add this to `rc.elv`:
+
+```elvish
+if (has-env HUTERM_RESOURCES_DIR) {
+    try { use huterm-integration } catch { }
+}
+```
+
+Only the initial shell is admitted automatically. A nested shell, `exec`, `su`,
+or `sudo` starts without Huterm's injection. Subshells such as `( ... )` or
+`$( ... )` inherit functions but run no prompt hooks. For integration in nested
+shells, source the body explicitly from a startup file. Repeated sourcing in
+one process does not install duplicate hooks.
+
+Huterm exports `HUTERM_RESOURCES_DIR` and `HUTERM_BIN_DIR` even with `mode =
+"off"` and for unsupported shells. If resources cannot be found, the resources
+variable is absent. Use a guard when sourcing manually:
+
+```bash
+# ~/.bashrc
+if [ -n "${HUTERM_RESOURCES_DIR:-}" ]; then
+    source "$HUTERM_RESOURCES_DIR/shell-integration/bash/huterm.bash"
+fi
+```
+
+```zsh
+# ~/.zshrc
+if [[ -n ${HUTERM_RESOURCES_DIR-} ]]; then
+    source "$HUTERM_RESOURCES_DIR/shell-integration/zsh/huterm.zsh"
+fi
+```
+
+```fish
+# config.fish
+if set -q HUTERM_RESOURCES_DIR
+    source "$HUTERM_RESOURCES_DIR/shell-integration/fish/huterm.fish"
+end
+```
+
+Nushell's `source` needs a parse-time constant. Put this in `config.nu`:
+
+```nu
+const huterm_body = '/path/to/resources/shell-integration/nushell/huterm.nu'
+source $huterm_body
+```
+
+Replace `/path/to/resources` with the value of `HUTERM_RESOURCES_DIR`. Use that
+literal only in a Huterm-specific config, or when the same path is installed
+wherever that config runs. A runtime `if` cannot protect an unavailable source
+file, and `$env` is not a parse-time constant. Nushell's native OSC 133 remains
+controlled by `$env.config.shell_integration.osc133`. If
+`$env.config.shell_integration.osc7` is true when Huterm's module loads, Huterm
+turns it off and reports `kitty-shell-cwd://<host><path>` at each prompt and on
+PWD changes. This preserves spaces, `#`, `?`, and `%` that nushell 0.116.1 puts
+unencoded in `file://` reports. Reports are skipped when the host or path
+contains a control character. If `osc7` is false at load, Huterm emits no OSC 7.
+
+Limitations:
+
+- Apple bash's emulated login has `shopt login_shell` off, `logout` refuses,
+  and `.bash_logout` does not run.
+- Elvish emits A, C, D, and OSC 7, with no B marker because its asynchronous
+  prompt renderer filters control sequences. Its guarded `use` keeps a broken
+  module from stopping the rest of `rc.elv`.
+- An `/etc/zshenv` that changes `ZDOTDIR` before the stub can bypass loading.
+  Startup files that replace `XDG_DATA_DIRS` before fish or nushell discover
+  vendor files can also bypass it.
+- Bash and zsh skip their OSC 133 stream for a prompt containing another
+  framework's markers, including escaped spellings. A framework that prints
+  markers from hooks cannot be detected. OSC 7 and `path` remain active.
+- A missing bootstrap starts the original command and prints one core warning.
+  Body parse/load errors print one `huterm: shell integration failed to load:
+  <path>` line and preserve startup. Arbitrary corruption of a bootstrap before
+  its restoration code can prevent Bash's emulated startup or Zsh's restored
+  startup directory; package verification detects altered asset bytes.
+
+Huterm's own directory reports use `kitty-shell-cwd://host/literal path`.
+Spaces, `#`, `?`, and `%` stay literal. Reports containing control characters
+are skipped rather than changed. Native fish and nushell may use `file://`.
+
 ## Panes
 
 A tab splits into panes, each with its own shell; the split, focus, resize,
