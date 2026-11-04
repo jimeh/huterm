@@ -479,7 +479,7 @@ unset _huterm_bash_words
 if [[ $_huterm_bash_ps0 == 0 || -n $_huterm_bash_prior_debug ]]; then
     _huterm_bash_trap='_huterm_bash_debug "$?" "$_"; '
     if [[ -n $_huterm_bash_prior_debug ]]; then
-        _huterm_bash_trap+='if [[ $_huterm_bash_chain == 1 ]]; then _huterm_bash_restore "$_huterm_bash_debug_status" "$_huterm_bash_debug_argument"; '
+        _huterm_bash_trap+='if [[ $_huterm_bash_chain == 1 ]]; then _huterm_bash_restore "$_huterm_bash_debug_status" "$_huterm_bash_debug_argument" && : "$_"; '
         _huterm_bash_trap+=$_huterm_bash_prior_debug
         _huterm_bash_trap+=$'\nelse : "$_huterm_bash_debug_argument"; fi'
     else

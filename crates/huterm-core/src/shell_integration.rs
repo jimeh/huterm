@@ -152,6 +152,11 @@ fn noninteractive(shell: &str, arguments: &[String]) -> bool {
         let (option, attached) = arg
             .split_once('=')
             .map_or((arg.as_str(), false), |(key, _)| (key, true));
+        // Injection needs an rcfile, and Debian-family bash still reads its
+        // system bashrc for an rcfile start, so `--norc` cannot be honored.
+        if shell == "bash" && option == "--norc" {
+            return true;
+        }
         if exits_before_prompt(shell, option) {
             return true;
         }
@@ -283,7 +288,6 @@ fn bash_plan(
     let mut iter = command.arguments.iter();
     while let Some(argument) = iter.next() {
         match argument.as_str() {
-            "--norc" => flags.push('r'),
             "--noprofile" => flags.push('p'),
             "--rcfile" | "--init-file" => {
                 if let Some(file) = iter.next() {

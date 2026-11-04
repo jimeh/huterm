@@ -564,3 +564,19 @@ resolution rule in "Shell detection".
   prompt's marks, D included, so #352 must ignore a D without a new C. Nested
   shells inheriting exported prompt state see `PIPESTATUS` reduced to `$?`
   after a failing command.
+
+### Finishing fix, 2026-11-04
+
+Jim approved a small finishing fix after the final dual review.
+
+- **`--norc`.** Debian-family bash reads its system bashrc for any rcfile
+  start, so an injected `--norc` cannot match a plain start. Bash started with
+  `--norc` now runs without integration. The double system-bashrc read of an
+  emulated login shell on those distributions is documented; Huterm starts
+  non-login bash on Linux.
+- **ERR traps and errexit.** Huterm's two status restores, at the end of the
+  bootstrap and in the wrapper around a user `DEBUG` trap, now run inside an
+  `&&` list, so a restored nonzero status no longer fires an ERR trap or exits
+  a `set -e` shell.
+- **Tests.** The empty-rcfile test waits for Huterm's input marker, since
+  Ubuntu's system bashrc replaces the fixture's prompt even in a plain start.

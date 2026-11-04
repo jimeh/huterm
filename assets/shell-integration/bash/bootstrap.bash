@@ -23,7 +23,7 @@ if [[ $_huterm_bash_login == 1 ]]; then
             source "$HOME/.profile"
         fi
     fi
-elif [[ $_huterm_bash_flags != *r* && -r $_huterm_bash_rcfile ]]; then
+elif [[ -r $_huterm_bash_rcfile ]]; then
     source "$_huterm_bash_rcfile"
 fi
 # A user's DEBUG trap sees only these two statements: the first saves the
@@ -58,4 +58,7 @@ _huterm_bash_finish() {
     unset _huterm_bash_saved_debug _huterm_bash_startup_status _huterm_bash_trap _huterm_bash_last
     return "$1"
 }
-_huterm_bash_finish "$_huterm_bash_startup_status" "$_huterm_bash_last"
+# In an && list a nonzero startup status does not count as a failed command,
+# so an ERR trap or errexit does not fire on Huterm's restore. `: "$_"` keeps
+# the restored last argument when the status is 0.
+_huterm_bash_finish "$_huterm_bash_startup_status" "$_huterm_bash_last" && : "$_"

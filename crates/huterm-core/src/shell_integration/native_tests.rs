@@ -120,6 +120,11 @@ impl Shell {
     fn prompt(&mut self) {
         self.until(|bytes| String::from_utf8_lossy(bytes).contains("READY>"));
     }
+    /// Waits for Huterm's input mark, for prompts a system startup file
+    /// replaced, such as Debian's `/etc/bash.bashrc` setting `PS1`.
+    fn marked_prompt(&mut self) {
+        self.until(|bytes| markers(bytes).iter().any(|mark| mark == "B"));
+    }
     fn cycle(&mut self, command: &str) -> Vec<u8> {
         self.transcript.clear();
         self.send(&format!("{command}\n"));
@@ -948,6 +953,14 @@ fn native_bash_startup_options_and_zdotdir() {
             }
             let mut shell = Shell::spawn(&command);
             shell.prompt();
+            if option == "--norc" {
+                // Injection needs an rcfile, so --norc starts bash plain.
+                assert!(
+                    !String::from_utf8_lossy(&shell.transcript)
+                        .contains("]133;"),
+                    "{name} --norc was injected"
+                );
+            }
             if matches!(option, "--rcfile" | "--init-file") {
                 assert_eq!(
                     fs::read_to_string(home.0.join("order")).unwrap(),
@@ -1406,12 +1419,52 @@ fn native_bash_explicit_empty_rcfile_reads_no_startup_file() {
         command.program = binary;
         command.arguments = vec!["--rcfile".into(), String::new()];
         let mut shell = Shell::spawn(&command);
-        shell.prompt();
+        // Debian-family bash still reads its system bashrc, which replaces the
+        // fixture's PS1 even in a plain start.
+        shell.marked_prompt();
+        shell.line("PS1='READY> '");
         assert!(
             !home.0.join("order").exists(),
             "{name}: empty rcfile fell back to .bashrc"
         );
         assert_stream(&mut shell, name, "true", "0");
+    }
+}
+
+#[test]
+fn native_bash_err_traps_ignore_huterm_status_restores() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        // The second case adds a DEBUG trap, which Huterm's own trap wraps.
+        for debug in ["", "trap ':' DEBUG\n"] {
+            let (home, mut command) = fixture(name, false);
+            command.program.clone_from(&binary);
+            // A startup file that ends with a failed && list leaves a nonzero
+            // status without firing ERR in a plain start.
+            home.write(
+                ".bashrc",
+                &format!(
+                    "PS1='READY> '\ntrap 'echo ERR_FIRED' ERR\n{debug}[ -f \"$HOME/missing\" ] && . \"$HOME/missing\"\n"
+                ),
+            );
+            let mut shell = Shell::spawn(&command);
+            shell.prompt();
+            let count = |bytes: &[u8]| {
+                String::from_utf8_lossy(bytes).matches("ERR_FIRED").count()
+            };
+            assert_eq!(
+                count(&shell.transcript),
+                0,
+                "{name} {debug:?}: startup {:?}",
+                String::from_utf8_lossy(&shell.transcript)
+            );
+            let failed = shell.cycle("false");
+            assert_eq!(count(&failed), 1, "{name} {debug:?}: false");
+            let after = shell.cycle("echo after");
+            assert_eq!(count(&after), 0, "{name} {debug:?}: after");
+        }
     }
 }
 

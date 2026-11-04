@@ -175,7 +175,7 @@ not add a command-line interface.
 | Shell | Loading and startup order |
 | --- | --- |
 | zsh | A static `ZDOTDIR` stub in Huterm resources restores the original value, reads the user's `.zshenv`, and installs hooks. Native `.zprofile`, `.zshrc`, and `.zlogin` ordering follows. |
-| bash | Every bash, Apple's `/bin/bash` 3.2 included, starts as `bash --rcfile <bootstrap> -i` with the other options it was given. For a login shell (`-l`, `--login`, or `l` in combined flags such as `-il`), the bootstrap emulates the login sequence: `/etc/profile`, then the first readable `.bash_profile`, `.bash_login`, or `.profile`. Other shells read `.bashrc` or the requested `--rcfile` as bash does. `--norc` and `--noprofile` are honored, and bash keeps its own `ENV`, `HISTFILE`, and option defaults. |
+| bash | Every bash, Apple's `/bin/bash` 3.2 included, starts as `bash --rcfile <bootstrap> -i` with the other options it was given. For a login shell (`-l`, `--login`, or `l` in combined flags such as `-il`), the bootstrap emulates the login sequence: `/etc/profile`, then the first readable `.bash_profile`, `.bash_login`, or `.profile`. Other shells read `.bashrc` or the requested `--rcfile` as bash does. `--noprofile` is honored. `--norc` starts bash without integration, because an rcfile start cannot skip a distribution's system bashrc. Bash keeps its own `ENV`, `HISTFILE`, and option defaults. |
 | fish | A vendor `conf.d` bootstrap runs after user `conf.d` snippets and before `config.fish`. Fish 4.9.3 provides the full marker stream natively. |
 | nushell | A vendor autoload module and `--execute 'use huterm *'` preserve native startup order. Nushell 0.116.1 supplies OSC 133; Huterm replaces enabled native OSC 7 with literal directory reports. |
 | elvish | Huterm adds a module directory. Add the guarded `use` below to `rc.elv`; Elvish has no automatic loading hook. |
@@ -325,14 +325,25 @@ Limitations:
   `PROMPT_COMMAND` entry.
 - When readline redraws the whole prompt, as for Ctrl-L or a terminal resize,
   bash resends the prompt's markers, including the completion marker, so a
-  completion marker can repeat without a new execution marker.
+  completion marker can repeat without a new execution marker. In zsh, a
+  `zle reset-prompt`, as async git prompts and transient prompts use, resends
+  the prompt and input markers.
+- Debian-family bash (Debian, Ubuntu, Arch) reads its system bashrc, such as
+  `/etc/bash.bashrc`, for every interactive start that has an rcfile. An
+  emulated login shell therefore reads it twice: once from bash and once from
+  `/etc/profile`. Huterm starts non-login bash on Linux, which matches a plain
+  start.
 - Re-sourcing a bash startup file that replaces `PROMPT_COMMAND` removes
   Huterm's hook from that shell: the re-sourcing command gets an execution
   marker without a completion marker, and later prompts and commands get none.
   With `promptvars` off, the static `PS0` marker keeps marking execution
   without completion. A re-sourced file that keeps Huterm's entries, for
   example by adding to `PROMPT_COMMAND`, keeps integration, and Huterm
-  decorates the file's new `PS1`. In zsh, re-sourcing a `.zshrc` that assigns
+  decorates the file's new `PS1`. On bash 3.2, or with `promptvars` off, a
+  re-sourced file that prepends to `PROMPT_COMMAND`, as in
+  `PROMPT_COMMAND="history -a; $PROMPT_COMMAND"`, gives the next command's
+  completion marker the prepended command's status for one cycle. In zsh,
+  re-sourcing a `.zshrc` that assigns
   `precmd_functions` loses one prompt cycle: the re-sourcing command has no
   completion marker and the next prompt has no prompt markers. The next
   command restores Huterm's hooks.

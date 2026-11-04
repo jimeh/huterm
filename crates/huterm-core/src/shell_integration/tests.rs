@@ -160,7 +160,7 @@ fn planner_bash_uses_rcfile_bootstrap_and_emulates_login() {
             true,
         ),
         (
-            vec!["-il", "--norc", "--noprofile", "--init-file", "/custom rc"],
+            vec!["-il", "--noprofile", "--init-file", "/custom rc"],
             vec!["-i", "-i"],
             true,
         ),
@@ -194,11 +194,11 @@ fn planner_bash_uses_rcfile_bootstrap_and_emulates_login() {
         );
     }
     let mut command = command("bash");
-    command.arguments = ["--norc", "--noprofile", "--rcfile", "/custom rc"]
+    command.arguments = ["--noprofile", "--rcfile", "/custom rc"]
         .map(str::to_owned)
         .into();
     let plan = planned(&command, &[], true);
-    assert_eq!(value(&plan, "HUTERM_BASH_INJECT"), Some(OsStr::new("rp")));
+    assert_eq!(value(&plan, "HUTERM_BASH_INJECT"), Some(OsStr::new("p")));
     assert_eq!(
         value(&plan, "HUTERM_BASH_RCFILE"),
         Some(OsStr::new("/custom rc"))
@@ -254,6 +254,9 @@ fn planner_distinguishes_options_from_command_and_script_invocations() {
         ("bash", vec!["--rcfile", "custom", "-i"], false),
         ("bash", vec!["--rcfile", "", "-i"], false),
         ("bash", vec!["-O", "extglob", "-i"], false),
+        // An rcfile start cannot honor --norc on Debian-family bash.
+        ("bash", vec!["--norc"], true),
+        ("bash", vec!["--norc", "-i"], true),
         ("bash", vec!["-ic", "true"], true),
         ("zsh", vec!["-ilc", "true"], true),
         ("zsh", vec!["--", "script.zsh"], true),
