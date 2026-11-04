@@ -4,7 +4,7 @@
 
 use std::process::ExitCode;
 
-use huterm_ipc_sim::sim::{run, scenarios};
+use huterm_ipc_sim::sim::{Report, run, scenarios};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -20,7 +20,7 @@ fn main() -> ExitCode {
         };
         return match run(&scenario, seed) {
             Ok(report) => {
-                println!("{report:?}");
+                println!("{report:#?}");
                 ExitCode::SUCCESS
             }
             Err(error) => {
@@ -32,22 +32,11 @@ fn main() -> ExitCode {
     let seeds: u64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(200);
     let mut failed = false;
     for scenario in scenarios() {
-        let mut totals = huterm_ipc_sim::sim::Report::default();
+        let mut totals = Report::default();
         let mut failures = 0;
         for seed in 0..seeds {
             match run(&scenario, seed) {
-                Ok(report) => {
-                    totals.cuts += report.cuts;
-                    totals.restarts += report.restarts;
-                    totals.server_closes += report.server_closes;
-                    totals.client_closes += report.client_closes;
-                    totals.executed += report.executed;
-                    totals.unknown += report.unknown;
-                    totals.effects += report.effects;
-                    totals.dropped += report.dropped;
-                    totals.inputs += report.inputs;
-                    totals.stalls += report.stalls;
-                }
+                Ok(report) => totals.add(&report),
                 Err(error) => {
                     failures += 1;
                     if failures <= 20 {
@@ -57,19 +46,29 @@ fn main() -> ExitCode {
             }
         }
         failed |= failures > 0;
+        let counters = &totals.counters;
         println!(
-            "{:<14} seeds {seeds:>5}  failed {failures:>4}  cuts {:>5}  restarts {:>4}  server closes {:>5}  client closes {:>5}  mutations {:>6}  unknown {:>4}  effects {:>5}  dropped {:>4}  inputs {:>6}  stalls {:>3}",
+            "{:<15} seeds {seeds:>5} failed {failures:>3} | checked views {} stopped {} statuses {} | mutations {} unknown {} effects {} dropped {} inputs {} | cuts {} restarts {} stalls {} detections {} | downgrades {}/{}/{} lag {} busy {} stopped-subs {} deadline-drops {}",
             scenario.name,
-            totals.cuts,
-            totals.restarts,
-            totals.server_closes,
-            totals.client_closes,
+            totals.views_checked,
+            totals.stopped_checked,
+            totals.statuses_checked,
             totals.executed,
             totals.unknown,
             totals.effects,
             totals.dropped,
             totals.inputs,
+            totals.cuts,
+            totals.restarts,
             totals.stalls,
+            totals.detections,
+            counters.downgrade_skipped,
+            counters.downgrade_single,
+            counters.downgrade_resync,
+            counters.lag_resyncs,
+            counters.busy,
+            counters.stopped_subscribes,
+            counters.deadline_drops,
         );
     }
     if failed {

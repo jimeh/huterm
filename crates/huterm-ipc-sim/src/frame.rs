@@ -5,6 +5,8 @@
 //! message's kind cap as bytes arrive and never trusts a declared size.
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::rc::Rc;
 
 use crate::wire::{DecodeError, Reader, Writer, varint_len};
 
@@ -34,14 +36,68 @@ impl From<DecodeError> for Violation {
     }
 }
 
+/// Where a message's bytes come from. A lazy source encodes on demand, so
+/// the sender holds the message, not its encoding, and builds one frame's
+/// bytes at a time.
+#[derive(Clone)]
+pub enum Source {
+    /// Bytes already encoded.
+    Eager(Vec<u8>),
+    /// An encoder and the encoding's length, from a sizing pass.
+    Lazy(Rc<dyn Fn() -> Vec<u8>>, usize),
+}
+
+impl fmt::Debug for Source {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Eager(bytes) => write!(formatter, "Eager({})", bytes.len()),
+            Self::Lazy(_, len) => write!(formatter, "Lazy({len})"),
+        }
+    }
+}
+
+impl Source {
+    fn len(&self) -> usize {
+        match self {
+            Self::Eager(bytes) => bytes.len(),
+            Self::Lazy(_, len) => *len,
+        }
+    }
+
+    fn slice(&self, start: usize, end: usize) -> Vec<u8> {
+        match self {
+            Self::Eager(bytes) => bytes[start..end].to_vec(),
+            Self::Lazy(encode, _) => encode()[start..end].to_vec(),
+        }
+    }
+}
+
+/// One built frame and what it carries.
+#[derive(Debug)]
+pub struct Frame {
+    /// The frame's bytes, length prefix included.
+    pub bytes: Vec<u8>,
+    /// The message's serial number.
+    pub serial: u64,
+    /// Whether this is the message's first frame.
+    pub first: bool,
+    /// Whether this is the message's final or abort frame.
+    pub last: bool,
+    /// Whether the message is a priority message.
+    pub priority: bool,
+    /// The message's ordering lane.
+    pub lane: u64,
+}
+
 #[derive(Debug)]
 struct OutStream {
-    data: Vec<u8>,
+    data: Source,
     pos: usize,
     priority: bool,
     abort: bool,
     lane: u64,
     serial: u64,
+    built: bool,
 }
 
 /// Splits outgoing messages into frames, one frame at a time.
@@ -53,6 +109,7 @@ struct OutStream {
 pub struct FrameSender {
     max_frame: usize,
     lanes: bool,
+    hold: bool,
     streams: Vec<Option<OutStream>>,
     cursor: usize,
     serial: u64,
@@ -67,9 +124,44 @@ impl FrameSender {
         Self {
             max_frame,
             lanes,
+            hold: false,
             streams: (0..max_open).map(|_| None).collect(),
             cursor: 0,
             serial: 0,
+        }
+    }
+
+    /// Keeps a stream busy after its last frame is built, until the writer
+    /// calls [`Self::release`] once that frame is written. A writer that
+    /// reorders frames, as one that sends urgent frames first does, must
+    /// not let a new message take a stream whose previous message still
+    /// has a queued frame.
+    #[must_use]
+    pub fn holding_until_written(mut self) -> Self {
+        self.hold = true;
+        self
+    }
+
+    /// Whether a priority message, or its abort, still has a frame to
+    /// build.
+    #[must_use]
+    pub fn has_urgent(&self) -> bool {
+        self.streams
+            .iter()
+            .flatten()
+            .any(|out| out.priority && !out.built)
+    }
+
+    /// Frees the stream of the message with `serial`, whose last frame was
+    /// written.
+    pub fn release(&mut self, serial: u64) {
+        for slot in &mut self.streams {
+            if slot
+                .as_ref()
+                .is_some_and(|out| out.serial == serial && out.built)
+            {
+                *slot = None;
+            }
         }
     }
 
@@ -94,7 +186,11 @@ impl FrameSender {
     pub fn can_start(&self, lane: u64) -> bool {
         self.has_free_stream()
             && (!self.lanes
-                || !self.streams.iter().flatten().any(|out| out.lane == lane))
+                || !self
+                    .streams
+                    .iter()
+                    .flatten()
+                    .any(|out| out.lane == lane && !out.built))
     }
 
     /// Starts sending `message` on `lane`, or returns `None` so the caller
@@ -104,6 +200,16 @@ impl FrameSender {
         &mut self,
         lane: u64,
         message: Vec<u8>,
+        priority: bool,
+    ) -> Option<(usize, u64)> {
+        self.start_source(lane, Source::Eager(message), priority)
+    }
+
+    /// Starts a message from any source; see [`Self::start`].
+    pub fn start_source(
+        &mut self,
+        lane: u64,
+        message: Source,
         priority: bool,
     ) -> Option<(usize, u64)> {
         if !self.can_start(lane) {
@@ -119,6 +225,7 @@ impl FrameSender {
             abort: false,
             lane,
             serial,
+            built: false,
         });
         Some((id, serial))
     }
@@ -131,7 +238,7 @@ impl FrameSender {
                 .streams
                 .iter()
                 .flatten()
-                .any(|out| out.serial == serial)
+                .any(|out| out.serial == serial && !out.built)
     }
 
     /// Abandons the message with `serial`, if it is still unfinished. A
@@ -140,11 +247,10 @@ impl FrameSender {
     /// receiver learns from an abort frame, or from nothing when no frame
     /// was sent yet. Returns whether the message was still unfinished.
     pub fn abort(&mut self, serial: u64) -> bool {
-        let Some(id) = self
-            .streams
-            .iter()
-            .position(|s| s.as_ref().is_some_and(|out| out.serial == serial))
-        else {
+        let Some(id) = self.streams.iter().position(|s| {
+            s.as_ref()
+                .is_some_and(|out| out.serial == serial && !out.built)
+        }) else {
             return false;
         };
         let out = self.streams[id].as_mut().unwrap_or_else(|| unreachable!());
@@ -152,9 +258,23 @@ impl FrameSender {
             self.streams[id] = None;
         } else {
             out.abort = true;
-            out.data = Vec::new();
+            out.data = Source::Eager(Vec::new());
         }
         true
+    }
+
+    /// Encoded bytes the sender holds for unfinished messages. Lazy
+    /// sources hold none.
+    #[must_use]
+    pub fn retained(&self) -> usize {
+        self.streams
+            .iter()
+            .flatten()
+            .map(|out| match &out.data {
+                Source::Eager(bytes) => bytes.len() - out.pos.min(bytes.len()),
+                Source::Lazy(..) => 0,
+            })
+            .sum()
     }
 
     /// Whether `stream` still has a message in flight.
@@ -165,39 +285,79 @@ impl FrameSender {
 
     /// Builds the next frame, priority streams first, otherwise round robin.
     pub fn next_frame(&mut self) -> Option<Vec<u8>> {
+        self.build_next().map(|frame| frame.bytes)
+    }
+
+    /// Builds the next frame with what it carries.
+    pub fn build_next(&mut self) -> Option<Frame> {
+        self.next_where(true)
+    }
+
+    /// Builds the next frame, skipping priority messages unless
+    /// `priority` allows them, so a writer can build ordinary frames while
+    /// an urgent frame waits to be written.
+    pub fn next_where(&mut self, priority: bool) -> Option<Frame> {
         let count = self.streams.len();
-        let pick = (0..count)
+        let urgent = (0..count)
             .map(|offset| (self.cursor + offset) % count)
             .find(|&id| {
-                self.streams[id].as_ref().is_some_and(|out| out.priority)
-            })
-            .or_else(|| {
-                (0..count)
-                    .map(|offset| (self.cursor + offset) % count)
-                    .find(|&id| self.streams[id].is_some())
-            })?;
+                self.streams[id]
+                    .as_ref()
+                    .is_some_and(|out| out.priority && !out.built)
+            });
+        let pick = urgent.filter(|_| priority).or_else(|| {
+            (0..count)
+                .map(|offset| (self.cursor + offset) % count)
+                .find(|&id| {
+                    self.streams[id].as_ref().is_some_and(|out| {
+                        !out.built && (priority || !out.priority)
+                    })
+                })
+        })?;
         self.cursor = (pick + 1) % count;
         let out = self.streams[pick].as_mut()?;
         let header = 1 + varint_len(pick as u64);
         let mut body = Writer::default();
+        let (serial, priority, lane, first) =
+            (out.serial, out.priority, out.lane, out.pos == 0);
         if out.abort {
-            self.streams[pick] = None;
-            return Some(frame(ABORT, pick, &[], &mut body));
+            if self.hold {
+                out.built = true;
+            } else {
+                self.streams[pick] = None;
+            }
+            let bytes = frame(ABORT, pick, &[], &mut body);
+            return Some(Frame {
+                bytes,
+                serial,
+                first: false,
+                last: true,
+                priority,
+                lane,
+            });
         }
         let room = self.max_frame.saturating_sub(header).max(1);
         let end = (out.pos + room).min(out.data.len());
         let last = end == out.data.len();
-        let bytes = frame(
-            if last { FINAL } else { 0 },
-            pick,
-            &out.data[out.pos..end],
-            &mut body,
-        );
+        let payload = out.data.slice(out.pos, end);
+        let bytes =
+            frame(if last { FINAL } else { 0 }, pick, &payload, &mut body);
         out.pos = end;
         if last {
-            self.streams[pick] = None;
+            if self.hold {
+                out.built = true;
+            } else {
+                self.streams[pick] = None;
+            }
         }
-        Some(bytes)
+        Some(Frame {
+            bytes,
+            serial,
+            first,
+            last,
+            priority,
+            lane,
+        })
     }
 }
 

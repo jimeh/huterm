@@ -27,6 +27,8 @@ pub struct Pipe {
     chunks: VecDeque<(u64, Vec<u8>)>,
     bytes: usize,
     last_due: u64,
+    /// Whether the broker ever damaged a byte on this pipe.
+    pub corrupted: bool,
 }
 
 impl Pipe {
@@ -108,6 +110,7 @@ impl Link {
             }
         }
         if !out.is_empty() && rng.chance(profile.corrupt_per_mille) {
+            pipe.corrupted = true;
             let at = rng.index(out.len());
             if rng.chance(500) {
                 out.remove(at);

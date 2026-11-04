@@ -9,9 +9,9 @@ use crate::broker::{Link, LinkProfile};
 use crate::client::{Client, Outcome};
 use crate::message::{ClientKind, Request, RetryClass};
 use crate::model::{MINOR_0, MINOR_1};
-use crate::profile::Profile;
+use crate::profile::{Design, Profile};
 use crate::rng::Rng;
-use crate::server::{Record, Server};
+use crate::server::{Counters, Record, Server};
 
 /// A run's shape: versions, link behavior, and how hostile the world is.
 #[derive(Clone, Debug)]
@@ -24,8 +24,8 @@ pub struct Scenario {
     pub clients: Vec<(u16, ClientKind)>,
     /// Link behavior.
     pub link: LinkProfile,
-    /// Chance per thousand fault draws, one every ten ticks, per client, of
-    /// a cut.
+    /// Chance per thousand fault draws, one every ten milliseconds, per
+    /// client, of a cut.
     pub cut_per_mille: u64,
     /// Chance per thousand fault draws, per client, of a reader stall.
     pub stall_per_mille: u64,
@@ -37,11 +37,14 @@ pub struct Scenario {
     pub activity_per_mille: u64,
     /// Whether clients toggle clipboard permission.
     pub toggle_permission: bool,
+    /// Whether nothing interferes with delivery, so every effect and input
+    /// for a live terminal must arrive and no connection may end.
+    pub healthy: bool,
     /// The limits both ends use.
     pub profile: Profile,
-    /// Ticks of activity before quiescence.
+    /// Milliseconds of activity before quiescence.
     pub duration: u64,
-    /// Ticks allowed to reach quiescence.
+    /// Milliseconds allowed to reach quiescence.
     pub quiesce: u64,
 }
 
@@ -51,6 +54,16 @@ fn local_link() -> LinkProfile {
         jitter: 1,
         chunk: 64,
         buffer: 256,
+        corrupt_per_mille: 0,
+    }
+}
+
+fn remote_link() -> LinkProfile {
+    LinkProfile {
+        latency: 80,
+        jitter: 120,
+        chunk: 5,
+        buffer: 512,
         corrupt_per_mille: 0,
     }
 }
@@ -74,9 +87,14 @@ pub fn scenarios() -> Vec<Scenario> {
         action_per_mille: 60,
         activity_per_mille: 300,
         toggle_permission: false,
+        healthy: true,
         profile: Profile::default(),
         duration: 3_000,
         quiesce: 20_000,
+    };
+    let faulty = Scenario {
+        healthy: false,
+        ..base.clone()
     };
     vec![
         base.clone(),
@@ -90,29 +108,43 @@ pub fn scenarios() -> Vec<Scenario> {
                 buffer: 96,
                 ..local_link()
             },
-            ..base.clone()
+            ..faulty.clone()
         },
         Scenario {
             name: "remote",
-            link: LinkProfile {
-                latency: 80,
-                jitter: 120,
-                chunk: 5,
-                buffer: 512,
-                corrupt_per_mille: 0,
-            },
+            link: remote_link(),
             cut_per_mille: 4,
             stall_per_mille: 4,
             restart_per_mille: 1,
             toggle_permission: true,
             duration: 12_000,
+            ..faulty.clone()
+        },
+        // Slow but fault free: every effect must still arrive, which needs
+        // effect frames to go first at the writer.
+        Scenario {
+            name: "remote-healthy",
+            link: remote_link(),
+            duration: 8_000,
+            ..base.clone()
+        },
+        // Payloads larger than the outbound budget: memory stays bounded
+        // only if messages are encoded one frame at a time.
+        Scenario {
+            name: "large-payloads",
+            profile: Profile {
+                clipboard_payload: 2_048,
+                selection_payload: 2_048,
+                terminal_effect_bytes: 4_096,
+                ..Profile::default()
+            },
             ..base.clone()
         },
         Scenario {
             name: "newer-client",
             clients: vec![desktop(MINOR_1), desktop(MINOR_0), desktop(MINOR_1)],
             cut_per_mille: 10,
-            ..base.clone()
+            ..faulty.clone()
         },
         Scenario {
             name: "newer-server",
@@ -123,7 +155,7 @@ pub fn scenarios() -> Vec<Scenario> {
                 (MINOR_0, ClientKind::Text),
             ],
             cut_per_mille: 10,
-            ..base.clone()
+            ..faulty.clone()
         },
         Scenario {
             name: "corruption",
@@ -139,7 +171,7 @@ pub fn scenarios() -> Vec<Scenario> {
                 hierarchy_digest_every: 1,
                 ..Profile::default()
             },
-            ..base
+            ..faulty
         },
     ]
 }
@@ -147,7 +179,7 @@ pub fn scenarios() -> Vec<Scenario> {
 /// Totals from one run.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
-    /// Ticks run, including quiescence.
+    /// Milliseconds run, including quiescence.
     pub ticks: u64,
     /// Connections cut by the broker.
     pub cuts: u64,
@@ -169,6 +201,50 @@ pub struct Report {
     pub inputs: usize,
     /// Connections the server closed for stalling.
     pub stalls: usize,
+    /// Live views compared with the server at the end.
+    pub views_checked: usize,
+    /// Stopped terminals' final views compared at the end.
+    pub stopped_checked: usize,
+    /// Status baselines compared at the end.
+    pub statuses_checked: usize,
+    /// Faults, violations, and resyncs that detected damage, under
+    /// corruption.
+    pub detections: usize,
+    /// Rare-path counters, summed over incarnations.
+    pub counters: Counters,
+}
+
+impl Report {
+    /// Adds another run's totals.
+    pub fn add(&mut self, other: &Report) {
+        self.ticks += other.ticks;
+        self.cuts += other.cuts;
+        self.server_closes += other.server_closes;
+        self.client_closes += other.client_closes;
+        self.restarts += other.restarts;
+        self.executed += other.executed;
+        self.unknown += other.unknown;
+        self.effects += other.effects;
+        self.dropped += other.dropped;
+        self.inputs += other.inputs;
+        self.stalls += other.stalls;
+        self.views_checked += other.views_checked;
+        self.stopped_checked += other.stopped_checked;
+        self.statuses_checked += other.statuses_checked;
+        self.detections += other.detections;
+        add_counters(&mut self.counters, &other.counters);
+    }
+}
+
+fn add_counters(total: &mut Counters, other: &Counters) {
+    total.downgrade_skipped += other.downgrade_skipped;
+    total.downgrade_single += other.downgrade_single;
+    total.downgrade_resync += other.downgrade_resync;
+    total.lag_resyncs += other.lag_resyncs;
+    total.busy += other.busy;
+    total.stopped_subscribes += other.stopped_subscribes;
+    total.stopped_closes += other.stopped_closes;
+    total.deadline_drops += other.deadline_drops;
 }
 
 struct World {
@@ -239,15 +315,13 @@ impl World {
             self.cut(client);
         }
         self.incarnation += 1;
-        let old = std::mem::replace(
-            &mut self.server,
-            Server::new(
-                self.incarnation,
-                77,
-                self.scenario.server_minor,
-                Rc::clone(&self.profile),
-            ),
+        let fresh = Server::new(
+            self.incarnation,
+            77,
+            self.scenario.server_minor,
+            Rc::clone(&self.profile),
         );
+        let old = std::mem::replace(&mut self.server, fresh);
         self.records.push((self.incarnation - 1, old.record));
         self.report.restarts += 1;
     }
@@ -350,7 +424,7 @@ impl World {
         if !active {
             link_profile.corrupt_per_mille = 0;
         }
-        // Faults are drawn every tenth tick, so rates are per ten seconds.
+        // Faults are drawn every tenth tick.
         let faults = active && now.is_multiple_of(10);
         if active {
             for client in 0..self.clients.len() {
@@ -386,15 +460,21 @@ impl World {
             }
         }
         for client in 0..self.clients.len() {
+            // A client gives up on a handshake that never completes.
+            if self.clients[client]
+                .handshake_overdue(now, self.profile.handshake_ms * 4)
+            {
+                self.report.client_closes += 1;
+                self.cut(client);
+            }
             if self.clients[client].link().is_none()
                 && now >= self.reconnect_at[client]
             {
                 self.next_link += 1;
                 let id = self.next_link;
                 self.links.insert(id, Link::default());
-                self.server.accept(id, now);
-                self.server.set_client(id, self.clients[client].id);
-                self.clients[client].connect(id);
+                self.server.accept(id, self.clients[client].id, now);
+                self.clients[client].connect(id, now);
             }
         }
         for client in 0..self.clients.len() {
@@ -437,10 +517,8 @@ impl World {
                 && let Err(error) = self.clients[client].receive(&bytes, now)
             {
                 if link_profile.corrupt_per_mille == 0 && error != "rejected" {
-                    return Err(format!(
-                        "client {} fault at {now}: {error}",
-                        self.clients[client].id
-                    ));
+                    let id = self.clients[client].id;
+                    return Err(format!("client {id} fault at {now}: {error}"));
                 }
                 self.report.client_closes += 1;
                 self.cut(client);
@@ -483,13 +561,21 @@ impl World {
                 );
             }
         }
+        // Encoded bytes stay within the budget plus one frame per open
+        // stream, and nothing is held encoded outside the queue.
+        let frame = self.profile.max_frame + 4;
         if self.server.record.max_over_budget
-            > (self.profile.max_frame + 4) * self.profile.max_open_streams
+            > frame * self.profile.max_open_streams
         {
+            let over = self.server.record.max_over_budget;
             return Err(format!(
-                "outbound queue exceeded its budget by {}",
-                self.server.record.max_over_budget
+                "outbound queue exceeded its budget by {over}"
             ));
+        }
+        if self.server.record.max_retained > 0 {
+            return Err(
+                "the server held an encoded message outside its queue".into()
+            );
         }
         if self.server.record.max_reassembly > self.profile.server_reassembly()
         {
@@ -540,7 +626,10 @@ impl World {
                 ));
             }
             if self.server.busy(*id) {
-                out.push(format!("server conn {id} busy"));
+                out.push(format!(
+                    "server conn {id} busy: {}",
+                    self.server.debug_viewers(*id)
+                ));
             }
         }
         if self.server.pending_work() {
@@ -556,16 +645,26 @@ impl World {
         for client in &mut self.clients {
             client.visible = None;
         }
-        // Corruption can break undigested flow-control state, so recovery is
-        // a fresh connection, as a client that saw a fault would make.
-        if self.scenario.link.corrupt_per_mille > 0 {
-            for client in 0..self.clients.len() {
-                self.cut(client);
-            }
-        }
         for link in self.links.values_mut() {
             link.stalled_until = 0;
             link.trickle_until = 0;
+        }
+        // Undigested state on a link that carried damaged bytes, such as an
+        // input acknowledgement, may be wrong; the client reconnects, as one
+        // that saw a fault would. Clean links keep their connections, so
+        // their final state shows whether digests caught the damage.
+        let damaged: Vec<usize> = (0..self.clients.len())
+            .filter(|&client| {
+                self.clients[client]
+                    .link()
+                    .and_then(|id| self.links.get(&id))
+                    .is_some_and(|link| {
+                        link.up.corrupted || link.down.corrupted
+                    })
+            })
+            .collect();
+        for client in damaged {
+            self.cut(client);
         }
         let deadline = self.now + self.scenario.quiesce;
         let mut calm = 0;
@@ -589,7 +688,7 @@ impl World {
     fn check(&mut self) -> Result<(), String> {
         let incarnation = self.incarnation;
         let corrupt = self.scenario.link.corrupt_per_mille > 0;
-        let clean = self.scenario.name == "clean";
+        let healthy = self.scenario.healthy;
         for client in &self.clients {
             let minor = client.negotiated().ok_or("client not connected")?;
             let id = client.id;
@@ -600,9 +699,9 @@ impl World {
                     client.hierarchy
                 ));
             }
+            let mut statuses = Vec::new();
             for tab in client.viewed_tabs() {
-                let Some((view, status, stopped)) =
-                    self.server.terminal(tab, minor)
+                let Some((view, _, stopped)) = self.server.terminal(tab, minor)
                 else {
                     continue;
                 };
@@ -612,37 +711,61 @@ impl World {
                 if client.view(tab) != Some(&view) {
                     let mine = client
                         .view(tab)
-                        .map(|v| (v.revision, v.geometry, v.columns, v.cursor));
-                    let theirs = (
-                        view.revision,
-                        view.geometry,
-                        view.columns,
-                        view.cursor,
-                    );
-                    let link = client.link().unwrap_or(0);
+                        .map(|v| (v.revision, v.geometry, v.columns));
                     return Err(format!(
-                        "client {id} tab {tab} view diverged: client {mine:?} server {theirs:?}; client {} ; server {}",
+                        "client {id} tab {tab} view diverged: client {mine:?} server {:?}; {}",
+                        (view.revision, view.geometry, view.columns),
                         client.debug_viewer(tab),
-                        self.server.debug_viewers(link)
                     ));
                 }
+                self.report.views_checked += 1;
+                statuses.push(tab);
+            }
+            // A stopped terminal's final status and view stay the client's.
+            for (&(stopped_in, tab), view) in &client.stopped {
+                if stopped_in != incarnation {
+                    continue;
+                }
+                let Some((final_view, _, true)) =
+                    self.server.terminal(tab, minor)
+                else {
+                    continue;
+                };
+                // A view damaged before its terminal stopped cannot be
+                // repaired once the viewer closed; corruption can do that.
+                if !corrupt && view.as_ref() != Some(&final_view) {
+                    return Err(format!(
+                        "client {id} tab {tab} lost its stopped terminal's view"
+                    ));
+                }
+                self.report.stopped_checked += 1;
+                statuses.push(tab);
+            }
+            for tab in statuses {
+                let Some((_, status, _)) = self.server.terminal(tab, minor)
+                else {
+                    continue;
+                };
                 let seen = client
                     .seen
                     .get(&(incarnation, tab))
                     .cloned()
                     .unwrap_or_default();
                 // Status carries no digest, so corruption can alter it.
+                // Counts are deltas since the client's first read.
+                let last = status.failures.last().map_or(0, |f| f.0);
+                let exited = status.exited.is_some() && !seen.first_exited;
                 if !corrupt
                     && (seen.revision != status.revision
                         || seen.first_bells + seen.bells != status.bells
-                        || seen.exits != u32::from(status.exited.is_some())
-                        || seen.failures
-                            != status.failures.last().map_or(0, |f| f.0))
+                        || seen.exits != u32::from(exited)
+                        || seen.failures != last - seen.first_failure)
                 {
                     return Err(format!(
                         "client {id} tab {tab} status {seen:?} vs {status:?}"
                     ));
                 }
+                self.report.statuses_checked += 1;
             }
             if !corrupt && !client.faults.is_empty() {
                 return Err(format!("client {id} faults {:?}", client.faults));
@@ -656,6 +779,9 @@ impl World {
                     client.hierarchy_resyncs, client.viewer_resyncs
                 ));
             }
+            self.report.detections += client.faults.len()
+                + client.hierarchy_resyncs as usize
+                + client.viewer_resyncs as usize;
         }
         let mut records = std::mem::take(&mut self.records);
         records.push((incarnation, std::mem::take(&mut self.server.record)));
@@ -663,52 +789,64 @@ impl World {
         // can still decode. The design relies on the transport for byte
         // integrity; under corruption only digested state is checked.
         let mut executed = BTreeSet::new();
+        let mut intents: BTreeMap<(u64, u64), u32> = BTreeMap::new();
         for (_, record) in &records {
-            for key in &record.executed {
-                if !executed.insert(*key) && !corrupt {
-                    return Err(format!("mutation {key:?} executed twice"));
-                }
-            }
-            if !corrupt {
-                let bad: Vec<_> = record
-                    .violations
+            for &(client, id) in &record.executed {
+                executed.insert((client, id));
+                let intent = self
+                    .clients
                     .iter()
-                    .filter(|(_, why)| why != "writer stalled" && why != "Idle")
-                    .collect();
-                if !bad.is_empty() {
-                    return Err(format!("protocol violations {bad:?}"));
-                }
+                    .find(|c| c.id == client)
+                    .and_then(|c| c.intents.get(&id))
+                    .copied()
+                    .unwrap_or(id);
+                *intents.entry((client, intent)).or_default() += 1;
             }
-            if clean && !record.violations.is_empty() {
+            let violations: Vec<_> = record
+                .violations
+                .iter()
+                .filter(|(_, why)| why != "writer stalled")
+                .collect();
+            if !corrupt && !violations.is_empty() {
+                return Err(format!("protocol violations {violations:?}"));
+            }
+            if healthy && !record.violations.is_empty() {
                 return Err(format!(
-                    "violations in a clean run: {:?}",
+                    "connections ended in a healthy run: {:?}",
                     record.violations
                 ));
             }
             self.report.dropped += record.dropped;
+            self.report.inputs += record.pty.len();
             self.report.stalls += record
                 .violations
                 .iter()
                 .filter(|(_, why)| why == "writer stalled")
                 .count();
-            self.report.inputs += record.pty.len();
+            self.report.detections += record.violations.len();
+            add_counters(&mut self.report.counters, &record.counters);
         }
         self.report.executed = executed.len();
+        if !corrupt
+            && let Some(((client, intent), count)) =
+                intents.iter().find(|(_, count)| **count > 1)
+        {
+            return Err(format!(
+                "client {client} intent {intent} ran {count} times"
+            ));
+        }
         for client in self.clients.iter().filter(|_| !corrupt) {
             for (id, request, outcome) in &client.outcomes {
                 let ran = executed.contains(&(client.id, *id));
+                let mutation = request.class() == RetryClass::Mutation;
                 match outcome {
-                    Outcome::Ok
-                        if request.class() == RetryClass::Mutation && !ran =>
-                    {
+                    Outcome::Ok | Outcome::Committed if mutation && !ran => {
                         return Err(format!(
-                            "client {} request {id} succeeded but never ran",
+                            "client {} request {id} committed but never ran",
                             client.id
                         ));
                     }
-                    Outcome::Err(_)
-                        if request.class() == RetryClass::Mutation && ran =>
-                    {
+                    Outcome::Err(_) if mutation && ran => {
                         return Err(format!(
                             "client {} request {id} failed but ran",
                             client.id
@@ -741,13 +879,13 @@ impl World {
             }
         }
         self.report.effects = ran.len();
-        if clean {
+        let live = |tab: u64| {
+            self.server
+                .terminal(tab, MINOR_0)
+                .is_some_and(|(_, _, stopped)| !stopped)
+        };
+        if healthy {
             // Effects for a closed or stopped terminal are legitimately lost.
-            let live = |tab: u64| {
-                self.server
-                    .terminal(tab, MINOR_0)
-                    .is_some_and(|(_, _, stopped)| !stopped)
-            };
             let expected = admitted
                 .keys()
                 .filter(|(i, t, _)| *i == incarnation && live(*t))
@@ -758,7 +896,7 @@ impl World {
                 .count();
             if done != expected {
                 return Err(format!(
-                    "clean run lost effects: {done} of {expected} ran"
+                    "healthy run lost effects: {done} of {expected} ran"
                 ));
             }
         }
@@ -774,13 +912,8 @@ impl World {
                     ));
                 }
             }
-            if clean {
+            if healthy {
                 // Input for a closed or stopped terminal is legitimately lost.
-                let live = |tab: u64| {
-                    self.server
-                        .terminal(tab, MINOR_0)
-                        .is_some_and(|(_, _, stopped)| !stopped)
-                };
                 let typed = self
                     .clients
                     .iter()
@@ -790,7 +923,7 @@ impl World {
                 let reached = record.pty.iter().filter(|p| live(p.0)).count();
                 if typed != reached {
                     return Err(format!(
-                        "clean run lost input: {reached} of {typed}"
+                        "healthy run lost input: {reached} of {typed}"
                     ));
                 }
             }
@@ -806,7 +939,7 @@ impl World {
 pub fn run_with(
     scenario: &Scenario,
     seed: u64,
-    design: crate::profile::Design,
+    design: Design,
 ) -> Result<Report, String> {
     let mut scenario = scenario.clone();
     scenario.profile.design = design;

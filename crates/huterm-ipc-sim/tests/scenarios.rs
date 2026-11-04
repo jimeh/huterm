@@ -1,8 +1,8 @@
-//! Every scenario holds its invariants, and each design rule is load
-//! bearing: switching one off makes some seed fail.
+//! Every scenario holds its invariants and does real work, and each design
+//! rule is load bearing: switching one off makes some seed fail.
 
 use huterm_ipc_sim::profile::Design;
-use huterm_ipc_sim::sim::{Scenario, run, run_with, scenarios};
+use huterm_ipc_sim::sim::{Report, Scenario, run, run_with, scenarios};
 
 /// Seeds per scenario in the normal suite. `HUTERM_SIM_SEEDS` raises it;
 /// the `huterm-ipc-sim` program runs hundreds.
@@ -21,17 +21,61 @@ fn scenario(name: &str) -> Scenario {
 }
 
 #[test]
-fn every_scenario_holds_its_invariants() {
-    let mut ran = 0;
+fn every_scenario_holds_its_invariants_and_checks_real_work() {
+    let mut totals = std::collections::BTreeMap::new();
     for scenario in scenarios() {
+        let mut total = Report::default();
         for seed in 0..seeds() {
-            if let Err(error) = run(&scenario, seed) {
-                panic!("{error}");
+            match run(&scenario, seed) {
+                Ok(report) => total.add(&report),
+                Err(error) => panic!("{error}"),
             }
-            ran += 1;
         }
+        // A passing run means nothing for a check that never ran.
+        let name = scenario.name;
+        assert!(total.views_checked > 0, "{name} compared no views");
+        assert!(total.statuses_checked > 0, "{name} compared no statuses");
+        assert!(total.executed > 0 && total.inputs > 0, "{name} did no work");
+        if !scenario.healthy {
+            assert!(
+                total.cuts > 0 || total.detections > 0,
+                "{name} injected no faults"
+            );
+        }
+        totals.insert(name, total);
     }
-    assert_eq!(ran, scenarios().len() as u64 * seeds());
+    let get = |name: &str| {
+        totals
+            .get(name)
+            .unwrap_or_else(|| panic!("no totals for {name}"))
+    };
+    assert!(
+        get("clean").stopped_checked > 0,
+        "no stopped terminal was checked"
+    );
+    assert!(
+        get("local-faults").unknown > 0,
+        "no mutation outcome was unknown"
+    );
+    assert!(
+        get("local-faults").counters.lag_resyncs > 0,
+        "no subscription lagged"
+    );
+    assert!(
+        get("remote").restarts > 0 && get("remote").stalls > 0,
+        "remote faults missing"
+    );
+    let skew = &get("newer-server").counters;
+    assert!(
+        skew.downgrade_skipped > 0
+            && skew.downgrade_single > 0
+            && skew.downgrade_resync > 0,
+        "not every downgrade path ran: {skew:?}"
+    );
+    assert!(
+        get("corruption").detections > 0,
+        "corruption was never detected"
+    );
 }
 
 /// Returns the first failure with `design` in `scenario`, or `None`.
@@ -64,14 +108,33 @@ fn without_carried_status_baselines_a_reconnect_misses_status() {
 }
 
 #[test]
-fn without_versioned_digests_older_peers_resync() {
+fn without_versioned_digests_older_peers_mismatch() {
     let design = Design {
         versioned_digests: false,
         ..Design::default()
     };
+    assert_eq!(
+        first_failure("clean", design),
+        None,
+        "same-version peers are unaffected"
+    );
+    // A snapshot that mismatches is a contract fault; a delta resyncs.
     let failure = first_failure("newer-server", design);
+    let mismatch = |f: &str| f.contains("digest") || f.contains("resync");
+    assert!(failure.as_deref().is_some_and(mismatch), "got {failure:?}");
+}
+
+#[test]
+fn retrying_mutations_after_a_reconnect_runs_some_twice() {
+    let design = Design {
+        retry_mutations: true,
+        ..Design::default()
+    };
+    let failure = first_failure("local-faults", design);
     assert!(
-        failure.as_deref().is_some_and(|f| f.contains("resync")),
+        failure
+            .as_deref()
+            .is_some_and(|f| f.contains("ran 2 times")),
         "got {failure:?}"
     );
 }

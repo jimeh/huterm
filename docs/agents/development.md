@@ -821,4 +821,4 @@ product code (see
 normal suite runs every scenario over 12 seeds; before changing the IPC
 design, change the simulation first and run `mise run sim:ipc -- 2000`.
 `mise run sim:ipc -- <scenario> <seed>` replays one failing seed exactly.
-It stays dependency free, and no crate may depend on it.
+It has no normal or build dependencies, and no crate may depend on it.

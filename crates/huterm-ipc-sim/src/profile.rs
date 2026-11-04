@@ -16,6 +16,9 @@ pub struct Design {
     pub credit_on_discard: bool,
     /// Digests cover only the negotiated minor version's fields.
     pub versioned_digests: bool,
+    /// A client retries mutations after a reconnect. The design forbids
+    /// it; the switch shows the at-most-once invariant catches it.
+    pub retry_mutations: bool,
 }
 
 impl Default for Design {
@@ -25,6 +28,7 @@ impl Default for Design {
             carry_status_baseline: true,
             credit_on_discard: true,
             versioned_digests: true,
+            retry_mutations: false,
         }
     }
 }

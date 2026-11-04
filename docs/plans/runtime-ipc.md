@@ -249,27 +249,31 @@ any byte, so frame size never limits what can be encoded: a large paste, a
 a frame all use the same mechanism, so there is one framing rule rather
 than one per payload kind:
 
-- **Streams.** The sender picks a stream ID for each message from IDs it
-  has no message in flight on; the first frame on a free ID starts a new
-  message. Frames of different streams interleave, so a large snapshot
-  cannot hold up a keystroke echo in another terminal. Each direction may
-  have at most `MAX_OPEN_STREAMS` (4) unfinished messages; a sender waits
-  rather than open a fifth, and receiving a fifth is a protocol violation.
+- **Streams.** The sender picks a stream ID for each message from IDs it has
+  no message in flight on; the first frame on a free ID starts a new message.
+  A stream ID is free again only once its message's last frame has been
+  written, not merely built, because the writer sends effect frames ahead of
+  queued ones (see host effects). Frames of different streams interleave, so a
+  large snapshot cannot hold up a keystroke echo in another terminal. Each
+  direction may have at most `MAX_OPEN_STREAMS` (4) unfinished messages; a
+  sender waits rather than open a fifth, and receiving a fifth is a protocol
+  violation.
 - **Ordering lanes.** Interleaving means messages on different streams can
-  complete in any order, even single-frame messages, because the sender
-  takes frames from its streams in turn. Every message therefore belongs to
-  an ordering lane, and a lane holds at most one unfinished message, so a
-  lane's messages complete in the order they started. The server's lanes
-  are control (handshake replies and results), large results such as
-  selection text, the hierarchy, host effects, and one lane per viewer for
-  its updates, status, and input acknowledgements. The client's lanes are
-  control (handshake and requests) and one per viewer for its input,
-  credit, permission, focus, and resync requests. Lanes interleave freely.
-  A viewer's lane opens only after the result that created the viewer has
-  been queued in full, so the client always knows a viewer before its
-  first update. The simulation proof found both failures this prevents:
-  input arriving out of order, and a subscription's first update
-  overtaking its result and being dropped.
+  complete in any order, even single-frame messages, because the sender takes
+  frames from its streams in turn. Every message therefore belongs to an
+  ordering lane, and a lane holds at most one unfinished message, so a lane's
+  messages complete in the order they started. The server's lanes are control
+  (handshake replies and results), large results such as selection text, the
+  hierarchy, host effects, and one lane per viewer for its updates, status,
+  input acknowledgements, and its `ViewerStopped` or `ViewerRevoked`, which
+  therefore follows the viewer's final status and update. The client's lanes
+  are control (handshake and requests) and one per viewer for its input,
+  credit, permission, focus, scroll, and resync requests, so a scroll stays in
+  order with the typing around it. Lanes interleave freely. A viewer's lane
+  opens only after the result that created the viewer has been queued in full,
+  so the client always knows a viewer before its first update. The simulation
+  proof found both failures this prevents: input arriving out of order, and a
+  subscription's first update overtaking its result and being dropped.
 - **Caps, not trusted lengths.** The first bytes of a message are its kind,
   and every kind has a byte cap (`MessageCaps` in `huterm-wire`). A message's
   record still starts with its length, but the receiver checks that length
@@ -293,10 +297,13 @@ than one per payload kind:
   cap.
 - **Caps follow the negotiated minor version.** `MessageCaps` is a
   function of the negotiated minor version, and `Welcome` advertises the
-  caps that bind the client. A minor version that appends fields to a kind
-  a peer on an older minor version receives must fit those fields within
-  the older version's cap, or project them away for that peer, so a newer
-  sender never pushes an older receiver over its cap.
+  caps that bind the client. Senders always write their appended fields,
+  and an older receiver skips them, so a minor version may append fields to
+  a kind an older peer receives only if the kind's worst case, appended
+  fields included, still fits the older version's cap. A newer sender
+  therefore never pushes an older receiver over its cap. Projection applies
+  to values and variants, such as a style or an event, never to appended
+  fields.
 - **Server memory.** The server holds at most `SERVER_REASSEMBLY_BUDGET`
   of unfinished client messages: `MAX_OPEN_STREAMS` times the largest client
   message cap, which is a paste at its limit, so a little over 4 MiB.
@@ -309,9 +316,10 @@ than one per payload kind:
   at a time, each a copy of at most `max_frame` bytes, so abandoning a
   message releases its source, such as a host effect's reservation,
   immediately; only the frame already in the writer remains, and the
-  writer-stall rule bounds how long that frame can take. An abort names its
-  message, never its stream: once a message's frames are all queued, its
-  stream ID is reused, and the simulation proof showed that an abort by
+  writer-stall rule bounds how long that frame can take. The sender decides
+  to abort by message identity, and sends an abort frame only while that
+  message still owns its stream: once a message's frames are all queued, its
+  stream ID is reused, and the simulation proof showed that aborting by
   stream ID kills whatever message took the stream over. Aborting a
   message whose frames are all queued does nothing, and that message still
   arrives. A stream that receives no frame for
@@ -536,7 +544,7 @@ Every request kind has a static retry class:
 | Class | Examples | After a broken connection |
 | --- | --- | --- |
 | Runtime query | List or select targets, read hierarchy | Retried on the next connection |
-| Viewer request | Snapshot, scroll, selection text, link lookup, report geometry, set focus, submit presentation | Not retried; fails with `Disconnected`. The old viewer is gone; the client subscribes a new one, sends its current state, and the new viewer's first update replaces any lost snapshot |
+| Viewer request | Snapshot, scroll, selection text, link lookup, report geometry, submit presentation; focus, permission, and credit are ordered viewer messages that are likewise never retried | Not retried; fails with `Disconnected`. The old viewer is gone; the client subscribes a new one, sends its current state, and the new viewer's first update replaces any lost snapshot |
 | Mutation | Spawn, split, close, move, arrange, reorder, rename, set input sync, resize split, set zoom, set scrollback, clear history, reset | Never retried; resolves `OutcomeUnknown` |
 
 Setters of shared runtime state count as mutations. Retrying one after an
@@ -776,10 +784,13 @@ request that takes the number the client assigned, and the server passes
 the client's stamps through unchanged. The return-to-live rule then needs no
 terminal-wide counter, as the viewers plan intended.
 
-**Revocation and stop.** The server sends `ViewerRevoked` or
-`ViewerStopped` once and stops the pump. A revoked viewer's requests answer
-`Revoked`. A stopped terminal's final status and last update remain the
-client's to show.
+**Revocation and stop.** When a terminal stops, the viewer's pump sends its
+final status and, if the viewer is notified, a final update that spends no
+credit, then `ViewerStopped`, all on the viewer's lane, and stops. A
+revoked viewer gets `ViewerRevoked` on its lane the same way, after
+anything already queued there. A revoked viewer's requests answer
+`Revoked`. The client keeps a stopped terminal's final status and last view
+to show.
 
 ### Input
 
@@ -1089,10 +1100,13 @@ What this plan provides for them:
 - Correctness that never assumes low latency: ordering, gaps, and recovery
   are sequence and event driven, and latency only affects the transport
   profile's tuning.
-- Five seams that would cost a major version later: update
+- Five seams that are cheap now and costly to impose later: update
   acknowledgements on credit returns, a suspend grace period on disconnect,
   peer identity on every connection, limits and deadlines in a transport
-  profile, and a stable server ID.
+  profile, and a stable server ID. The wire seams could arrive as minor
+  versions too, but every client and server would then carry both paths,
+  and the grace period and peer identity shape server internals that are
+  cheaper to build that way from the start.
 
 What waits for remote clients to be the focus:
 
@@ -1105,6 +1119,8 @@ What waits for remote clients to be the focus:
 - Transport integrity. The protocol relies on the transport to deliver
   bytes intact, as SSH, TLS, and QUIC do; a transport without integrity
   would need a frame checksum (see "Simulation proof").
+- Liveness for half-open links, such as a keepalive message, which can
+  arrive as a minor version.
 - Resuming suspended connections, delta resume from acknowledged baselines,
   compression as a negotiated frame flag, local echo prediction in the
   client, and cycle checks across remote hops ([#47][issue-47]).
@@ -1138,10 +1154,11 @@ plan does not add one ahead of a production caller.
 `crates/huterm-ipc-sim` is a deterministic simulation of this design, kept
 in the repository as its proof and as the place to try later design changes
 before implementing them. It is not Huterm's implementation; slices start
-fresh in `huterm-wire`, `huterm-client`, and `huterm-server`. It depends on
-no crate, and nothing depends on it, which `mise run architecture` checks.
-`mise run sim:ipc -- 2000` runs every scenario over 2000 seeds, and
-`mise run sim:ipc -- remote 17` replays one seed.
+fresh in `huterm-wire`, `huterm-client`, and `huterm-server`. It has no
+normal or build dependencies, and nothing depends on it, which
+`mise run architecture` checks. `mise run sim:ipc -- 2000` runs every
+scenario over 2000 seeds, and `mise run sim:ipc -- remote 17` replays one
+seed.
 
 One single-threaded program holds a server, three clients, and a broker on
 a virtual clock driven by a seeded generator, so every run replays exactly.
@@ -1150,16 +1167,22 @@ latency, jitter, random fragmentation, a bounded socket buffer, stalled and
 trickling readers, connection cuts, and daemon restarts. Limits are scaled
 down, with 48-byte frames and 4-by-6 grids, so multi-frame messages, caps,
 and budgets are exercised constantly. It models the hierarchy and its
-reducer, versioned digests and downgrades, terminals with shared rows and
-revisioned status, host effects with their lane, generations, deadlines,
-and shares, ordering lanes, credit, the input window, retry classes,
-read-your-writes waiters, and status baselines carried across reconnects.
+reducer, versioned digests and the three downgrade paths, appended fields
+written at the sender's own version, terminals with shared rows and
+revisioned status, stopped terminals' final status and view, host effects
+with their lane, reservations, generations, deadlines, and shares, ordering
+lanes, credit, lazy one-frame-at-a-time encoding, a writer that sends
+effect frames first, the input window, retry classes, read-your-writes
+waiters, and status baselines from a viewer's first read, carried across
+reconnects.
 
 | Scenario | What it adds |
 | --- | --- |
 | `clean` | No faults; every effect and input must arrive |
 | `local-faults` | Cuts, stalls, trickle reads, 7-byte chunks, permission toggles |
 | `remote` | 80 to 200 ms latency, 5-byte chunks, cuts, stalls, daemon restarts |
+| `remote-healthy` | Remote latency with no faults; every effect must still arrive |
+| `large-payloads` | Clipboard and selection payloads larger than the outbound budget |
 | `newer-client` | Test-only minor 1 clients against a minor-0 server |
 | `newer-server` | A minor-1 server against minor-0 and text clients |
 | `corruption` | Flipped and dropped bytes; only digested state is checked |
@@ -1167,42 +1190,59 @@ read-your-writes waiters, and status baselines carried across reconnects.
 After the faults stop, each run waits for quiescence and checks:
 
 - every client's hierarchy equals the server's, projected to its version;
-- every viewer's rows and metadata equal the terminal's current snapshot;
-- each client's status counts (bells, exit, failures) match the terminal's,
-  including what happened while it was disconnected;
-- no mutation runs twice, a successful result always ran, and a failed one
-  never did;
-- every effect runs at most once, on the connection core chose, and, with
-  no faults, every effect and input for a live terminal arrives;
+- every viewer's rows and metadata equal the terminal's current snapshot,
+  and a stopped terminal's final view stays the client's;
+- each client's status counts (bells, exit, failures) since its first read
+  match the terminal's, including what happened while it was disconnected;
+- no intent runs twice, so no mutation is ever retried into a second run;
+  a successful or committed result always ran, and a failed one never did;
+- every effect runs at most once, on the connection core chose, and, on a
+  healthy link however slow, every effect and input for a live terminal
+  arrives;
 - input reaches the PTY once and in order per viewer;
 - without corruption, no client ever asks for a resync, and no connection
   ends for anything but a stall;
 - on every tick, the outbound queue stays within its budget plus one frame
-  per open stream, and reassembly within its budget.
+  per open stream, the server holds no encoded message outside it, and
+  reassembly stays within its budget.
+
+Each run also counts what it checked and which rare paths ran, and the tests
+require each scenario to have compared real views and statuses and to have
+exercised its faults, lag resyncs, and all three downgrade paths.
 
 Each design rule the reviews argued over is load bearing: a test switches it
 off and shows the simulation catches its absence. Without ordering lanes,
 messages overtake each other; without carried status baselines, a
-reconnect misses status; without versioned digests, older peers resync;
-without credit on discard, a discarded delta leaks its credit, which a
-client unit test shows directly.
+reconnect misses status; without versioned digests, older peers mismatch
+while same-version peers still pass; retrying mutations after a reconnect
+runs some twice. Without credit on discard, a discarded delta leaks its
+credit, which a client unit test shows directly, because with ordering
+lanes no scenario discards a delta without corruption.
 
-The simulation changed the design in four places, all reflected above:
+The simulation changed the design in five places, all reflected above:
 
 - **Ordering lanes.** Messages on different streams complete in any
   order, so input arrived out of order and a subscription's first update
-  could overtake its result and be dropped.
+  could overtake its result and be dropped. A viewer's stop and revocation
+  travel on its lane for the same reason, after its final status.
 - **An input window.** Refuse-and-resume needed an unbounded resend buffer,
   because a client cannot know which inputs the server will refuse.
 - **Abort by message.** An effect deadline that aborted by stream ID killed
   the viewer update that had reused the stream, silently freezing a view.
+- **Streams free only once written.** With effect frames sent first at the
+  writer, a stream ID reused as soon as its message's last frame was built
+  let a new effect's frames overtake the old message's final frame on the
+  same stream, and the receiver failed to decode. A stream is free again
+  only once its last frame has been written.
 - **Transport integrity is assumed.** Under corruption, digests catch
   damaged hierarchy and rows, but request IDs, effect identities, and
   status carry no integrity check, and a corrupted value can still decode.
   Unix sockets, SSH, TLS, and QUIC all provide integrity; a transport
   without it would need a frame checksum. Periodic digests also find a
   corrupted delta only at the next digest, which is acceptable only
-  because the transport does not corrupt.
+  because the transport does not corrupt. The corruption scenario
+  reconnects only the clients whose links carried damaged bytes, so it
+  also shows that recovery restores convergence.
 
 It does not model scrolling, mouse and focus arbitration, close tickets,
 undo tokens, effects that need a response, pane layouts, the real codec's

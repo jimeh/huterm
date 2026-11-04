@@ -2,20 +2,21 @@
 //!
 //! Core state (hierarchy, terminals, host-effect queues) is a plain model.
 //! Each connection holds viewers with baselines and credit, a hierarchy
-//! subscription, input staging, and an effect lane, and sends through a
-//! bounded outbound queue.
+//! subscription, input staging, and an effect lane. Messages are encoded
+//! lazily, one frame at a time, into a bounded outbound queue whose writer
+//! sends effect frames first at each frame boundary.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
-use crate::frame::{FrameReceiver, FrameSender};
+use crate::frame::{Frame, FrameReceiver, FrameSender, Source};
 use crate::message::{
     Body, ClientKind, ClientMsg, ErrorCode, MAJOR, Request, RetryClass, RowOp,
     ServerMsg, Update, client_cap, decode_client, encode_server,
 };
 use crate::model::{
     Cell, Downgrade, Event, FAILURE_CAPACITY, Hierarchy, MINOR_1, Snapshot,
-    Status, TabInfo,
+    Status, TabInfo, View,
 };
 use crate::profile::Profile;
 use crate::rng::Rng;
@@ -29,7 +30,7 @@ const LANE_HIERARCHY: u64 = 2;
 /// Host effects.
 const LANE_EFFECTS: u64 = 3;
 
-/// Each viewer's updates, status, and input acknowledgements.
+/// Each viewer's updates, status, input acknowledgements, and closing.
 fn viewer_lane(viewer: u64) -> u64 {
     1_000 + viewer
 }
@@ -41,7 +42,7 @@ pub struct PendingEffect {
     pub origin: u64,
     /// Terminal.
     pub terminal: u64,
-    /// Selected connection and viewer.
+    /// Selected connection.
     pub conn: usize,
     /// Selected viewer.
     pub viewer: u64,
@@ -95,6 +96,7 @@ struct Op {
 struct RemoteViewer {
     tab: u64,
     opened_by: Option<u64>,
+    revoked: bool,
     credit: u64,
     baseline: Option<Rc<Snapshot>>,
     update_seq: u64,
@@ -115,8 +117,29 @@ struct Lane {
     effect: PendingEffect,
     serial: u64,
     head_at: u64,
-    first_mark: Option<u64>,
-    last_mark: Option<u64>,
+    first_written: bool,
+    done: bool,
+}
+
+#[derive(Debug)]
+struct OutFrame {
+    bytes: Vec<u8>,
+    serial: u64,
+    first: bool,
+    last: bool,
+    lane: u64,
+}
+
+impl From<Frame> for OutFrame {
+    fn from(frame: Frame) -> Self {
+        Self {
+            bytes: frame.bytes,
+            serial: frame.serial,
+            first: frame.first,
+            last: frame.last,
+            lane: frame.lane,
+        }
+    }
 }
 
 /// One client connection.
@@ -131,12 +154,13 @@ pub struct Conn {
     kind: ClientKind,
     open: bool,
     closed: bool,
+    rejected: bool,
     since: u64,
     rx: FrameReceiver,
     tx: FrameSender,
-    out: VecDeque<u8>,
-    enqueued: u64,
-    taken: u64,
+    queue: VecDeque<OutFrame>,
+    urgent: VecDeque<OutFrame>,
+    current: Option<(OutFrame, usize)>,
     results: VecDeque<ServerMsg>,
     inflight: usize,
     large_inflight: bool,
@@ -149,6 +173,71 @@ pub struct Conn {
     reading_paused: bool,
 }
 
+impl Conn {
+    /// Bytes built and not yet written, including a partly written frame.
+    fn queued(&self) -> usize {
+        self.queue
+            .iter()
+            .chain(&self.urgent)
+            .map(|f| f.bytes.len())
+            .sum::<usize>()
+            + self
+                .current
+                .as_ref()
+                .map_or(0, |(f, pos)| f.bytes.len() - pos)
+    }
+
+    fn lane_queued(&self, lane: u64) -> usize {
+        self.queue
+            .iter()
+            .filter(|f| f.lane == lane)
+            .map(|f| f.bytes.len())
+            .sum::<usize>()
+            + self
+                .current
+                .as_ref()
+                .filter(|(f, _)| f.lane == lane)
+                .map_or(0, |(f, pos)| f.bytes.len() - pos)
+    }
+
+    /// Starts `message` on `lane`, encoded lazily: a sizing pass gives its
+    /// length, and frames are encoded one at a time.
+    fn send(
+        &mut self,
+        lane: u64,
+        message: ServerMsg,
+        own: u16,
+        priority: bool,
+    ) -> Option<u64> {
+        let len = encode_server(&message, own).len();
+        let encode = Rc::new(move || encode_server(&message, own));
+        self.tx
+            .start_source(lane, Source::Lazy(encode, len), priority)
+            .map(|(_, serial)| serial)
+    }
+}
+
+/// How often rare paths ran, so tests can show a scenario exercised them.
+#[derive(Clone, Debug, Default)]
+pub struct Counters {
+    /// Newer events sent to older peers as `Skipped`.
+    pub downgrade_skipped: u64,
+    /// Newer events sent as their one older event.
+    pub downgrade_single: u64,
+    /// Newer events sent as a projected resync.
+    pub downgrade_resync: u64,
+    /// Resyncs after a subscription lagged.
+    pub lag_resyncs: u64,
+    /// Requests answered `Busy`.
+    pub busy: u64,
+    /// Subscriptions to a stopped terminal, answered with its final status.
+    pub stopped_subscribes: u64,
+    /// Viewers closed after their terminal stopped.
+    pub stopped_closes: u64,
+    /// Effects dropped by a delivery deadline.
+    pub deadline_drops: u64,
+}
+
 /// Facts the invariants check after a run.
 #[derive(Debug, Default)]
 pub struct Record {
@@ -158,16 +247,18 @@ pub struct Record {
     pub pty: Vec<(u64, u64, u64, u64, usize)>,
     /// Effects admitted: (terminal, origin, conn, viewer).
     pub admitted: Vec<(u64, u64, usize, u64)>,
-    /// Effects delivered in full: (terminal, origin).
-    pub delivered: Vec<(u64, u64)>,
     /// Effects dropped by a deadline or revocation.
     pub dropped: u64,
     /// Connections closed for a protocol violation or a stall.
     pub violations: Vec<(usize, String)>,
     /// Largest outbound queue seen beyond the budget, in bytes.
     pub max_over_budget: usize,
+    /// Largest encoded message bytes a sender held outside the queue.
+    pub max_retained: usize,
     /// Largest reassembly buffer seen.
     pub max_reassembly: usize,
+    /// Rare-path counters.
+    pub counters: Counters,
 }
 
 /// One server incarnation.
@@ -185,8 +276,7 @@ pub struct Server {
     next_tab: u64,
     log: VecDeque<LogEntry>,
     terminals: BTreeMap<u64, Terminal>,
-    /// Connections by link ID.
-    pub conns: BTreeMap<usize, Conn>,
+    conns: BTreeMap<usize, Conn>,
     ops: Vec<Op>,
     next_viewer: u64,
     activity: u64,
@@ -220,31 +310,36 @@ impl Server {
         }
     }
 
-    /// Accepts a connection on link `id`.
-    pub fn accept(&mut self, id: usize, now: u64) {
+    /// Accepts a connection on link `id` for `client`.
+    pub fn accept(&mut self, id: usize, client: u64, now: u64) {
         let profile = &self.profile;
+        let lanes = profile.design.ordering_lanes;
         self.conns.insert(
             id,
             Conn {
-                client: 0,
+                client,
                 minor: 0,
                 kind: ClientKind::Text,
                 open: false,
                 closed: false,
+                rejected: false,
                 since: now,
                 rx: FrameReceiver::new(
                     profile.max_frame,
                     profile.max_open_streams,
                     Some(profile.server_reassembly()),
                 ),
+                // The writer sends effect frames first, so a stream stays
+                // busy until its message's last frame is written.
                 tx: FrameSender::new(
                     profile.max_frame,
                     profile.max_open_streams,
-                    profile.design.ordering_lanes,
-                ),
-                out: VecDeque::new(),
-                enqueued: 0,
-                taken: 0,
+                    lanes,
+                )
+                .holding_until_written(),
+                queue: VecDeque::new(),
+                urgent: VecDeque::new(),
+                current: None,
                 results: VecDeque::new(),
                 inflight: 0,
                 large_inflight: false,
@@ -278,7 +373,9 @@ impl Server {
         conn.viewers.clear();
         conn.lane = None;
         conn.hier = None;
-        conn.out.clear();
+        conn.queue.clear();
+        conn.urgent.clear();
+        conn.current = None;
         for terminal in self.terminals.values_mut() {
             terminal.recipients.retain(|recipient| recipient.conn != id);
             let before = terminal.effects.len();
@@ -344,23 +441,25 @@ impl Server {
                 self.violation(id, "message before Hello".into());
                 return;
             };
+            conn.open = true;
             if major != MAJOR {
+                conn.rejected = true;
                 conn.results.push_back(ServerMsg::Reject {
                     server_major: MAJOR,
                     server_minor,
                 });
-                conn.open = true;
-                conn.minor = 0;
                 return;
             }
             conn.minor = minor.min(server_minor);
             conn.kind = kind;
-            conn.open = true;
             conn.results.push_back(ServerMsg::Welcome {
                 minor: conn.minor,
                 incarnation: self.incarnation,
                 server_id: self.server_id,
             });
+            return;
+        }
+        if conn.rejected {
             return;
         }
         match message {
@@ -370,7 +469,9 @@ impl Server {
             ClientMsg::Request {
                 id: request_id,
                 request,
-            } => self.request(id, request_id, request, now),
+            } => {
+                self.request(id, request_id, request, now);
+            }
             ClientMsg::Input { viewer, seq, data } => {
                 let Some(remote) = conn.viewers.get_mut(&viewer) else {
                     return;
@@ -421,26 +522,25 @@ impl Server {
                 generation,
                 allowed,
             } => {
-                if let Some(remote) = conn.viewers.get(&viewer) {
-                    let tab = remote.tab;
-                    if let Some(terminal) = self.terminals.get_mut(&tab) {
-                        for recipient in &mut terminal.recipients {
-                            if recipient.conn == id
-                                && recipient.viewer == viewer
-                            {
-                                recipient.generation = generation;
-                                recipient.allowed = allowed;
-                            }
-                        }
-                        if !allowed {
-                            let before = terminal.effects.len();
-                            terminal.effects.retain(|effect| {
-                                !(effect.conn == id && effect.viewer == viewer)
-                            });
-                            self.record.dropped +=
-                                (before - terminal.effects.len()) as u64;
-                        }
+                let Some(remote) = conn.viewers.get(&viewer) else {
+                    return;
+                };
+                let Some(terminal) = self.terminals.get_mut(&remote.tab) else {
+                    return;
+                };
+                for recipient in &mut terminal.recipients {
+                    if recipient.conn == id && recipient.viewer == viewer {
+                        recipient.generation = generation;
+                        recipient.allowed = allowed;
                     }
+                }
+                if !allowed {
+                    let before = terminal.effects.len();
+                    terminal.effects.retain(|effect| {
+                        !(effect.conn == id && effect.viewer == viewer)
+                    });
+                    self.record.dropped +=
+                        (before - terminal.effects.len()) as u64;
                 }
             }
             ClientMsg::Focus { viewer } => {
@@ -476,6 +576,7 @@ impl Server {
         if conn.inflight >= profile.max_in_flight
             || (large && conn.large_inflight)
         {
+            self.record.counters.busy += 1;
             conn.results.push_back(ServerMsg::Result {
                 id: request_id,
                 outcome: Err((ErrorCode::Busy, None)),
@@ -500,8 +601,8 @@ impl Server {
                 let outcome = if request == Request::ListTabs {
                     Ok(Body::Tabs(self.hierarchy.project(minor).tabs))
                 } else {
-                    // The snapshot travels on the hierarchy lane, ahead
-                    // of the events that follow it.
+                    // The snapshot travels on the hierarchy lane, ahead of
+                    // the events that follow it.
                     conn.hier = Some(self.hierarchy.seq);
                     conn.hier_resync = true;
                     Ok(Body::Done {
@@ -531,9 +632,12 @@ impl Server {
             Request::SubscribeTerminal { tab, effects } => {
                 match self.terminals.get_mut(&tab) {
                     None => Err((ErrorCode::StaleTarget, None)),
-                    Some(terminal) if terminal.stopped => Ok(Body::Stopped {
-                        status: terminal.status.clone(),
-                    }),
+                    Some(terminal) if terminal.stopped => {
+                        self.record.counters.stopped_subscribes += 1;
+                        Ok(Body::Stopped {
+                            status: terminal.status.clone(),
+                        })
+                    }
                     Some(_) if conn.viewers.len() >= profile.max_viewers => {
                         Err((ErrorCode::LimitExceeded, None))
                     }
@@ -545,6 +649,7 @@ impl Server {
                             RemoteViewer {
                                 tab,
                                 opened_by: None,
+                                revoked: false,
                                 credit: 0,
                                 baseline: None,
                                 update_seq: 0,
@@ -612,13 +717,18 @@ impl Server {
     fn emit(&mut self, event: Event) {
         self.hierarchy.seq += 1;
         let seq = self.hierarchy.seq;
+        // Core computes digests at emission, from its own structure, for
+        // each profile. Without versioned digests every peer gets the
+        // server's own profile.
         let versioned = self.profile.design.versioned_digests;
+        let own = self.minor;
         let digests = seq
             .is_multiple_of(self.profile.hierarchy_digest_every)
             .then(|| {
+                let profile = |minor: u16| if versioned { minor } else { own };
                 [
-                    self.hierarchy.digest(if versioned { 0 } else { MINOR_1 }),
-                    self.hierarchy.digest(MINOR_1),
+                    self.hierarchy.digest(profile(0)),
+                    self.hierarchy.digest(profile(MINOR_1)),
                 ]
             });
         self.log.push_back(LogEntry {
@@ -637,6 +747,9 @@ impl Server {
         let name_ok = |name: &str| {
             !name.trim().is_empty() && name.len() <= profile.max_name_bytes
         };
+        let exists = |hierarchy: &Hierarchy, tab: u64| {
+            hierarchy.tabs.iter().any(|t| t.id == tab)
+        };
         let event = match op.request {
             Request::Open { name } => {
                 if !name_ok(&name) {
@@ -648,30 +761,31 @@ impl Server {
                 self.next_tab += 1;
                 let tab = self.next_tab;
                 self.terminals.insert(tab, new_terminal(&profile));
+                let index = self.hierarchy.tabs.len();
                 Event::Opened {
                     tab: TabInfo {
                         id: tab,
                         name,
                         pinned: false,
                     },
-                    index: self.hierarchy.tabs.len(),
+                    index,
                 }
             }
             Request::Rename { tab, name } => {
                 if !name_ok(&name) {
                     return Err(ErrorCode::Invalid);
                 }
-                if !self.hierarchy.tabs.iter().any(|info| info.id == tab) {
+                if !exists(&self.hierarchy, tab) {
                     return Err(ErrorCode::StaleTarget);
                 }
-                if self.minor >= MINOR_1 && name.len() % 2 == 0 {
+                if self.minor >= MINOR_1 && name.len().is_multiple_of(2) {
                     Event::Retitled { tab, name }
                 } else {
                     Event::Renamed { tab, name }
                 }
             }
             Request::Move { tab, index } => {
-                if !self.hierarchy.tabs.iter().any(|info| info.id == tab)
+                if !exists(&self.hierarchy, tab)
                     || index >= self.hierarchy.tabs.len()
                 {
                     return Err(ErrorCode::StaleTarget);
@@ -682,25 +796,18 @@ impl Server {
                 if self.terminals.remove(&tab).is_none() {
                     return Err(ErrorCode::StaleTarget);
                 }
+                // Viewers close on their own lanes, after anything queued.
                 for conn in self.conns.values_mut() {
-                    let closed: Vec<u64> = conn
-                        .viewers
-                        .iter()
-                        .filter(|(_, v)| v.tab == tab)
-                        .map(|(id, _)| *id)
-                        .collect();
-                    for viewer in closed {
-                        conn.viewers.remove(&viewer);
-                        if !conn.closed {
-                            conn.results
-                                .push_back(ServerMsg::ViewerClosed { viewer });
-                        }
+                    for remote in
+                        conn.viewers.values_mut().filter(|v| v.tab == tab)
+                    {
+                        remote.revoked = true;
                     }
                 }
                 Event::Closed { tab }
             }
             Request::Pin { tab, pinned } => {
-                if !self.hierarchy.tabs.iter().any(|info| info.id == tab) {
+                if !exists(&self.hierarchy, tab) {
                     return Err(ErrorCode::StaleTarget);
                 }
                 Event::Pinned { tab, pinned }
@@ -783,7 +890,7 @@ impl Server {
             while let Some(&(conn_id, viewer, seq, len)) =
                 terminal.core_input.front()
             {
-                if budget == 0 {
+                if budget == 0 || terminal.stopped {
                     break;
                 }
                 budget = budget.saturating_sub(len);
@@ -791,11 +898,11 @@ impl Server {
                 let client =
                     self.conns.get(&conn_id).map_or(0, |conn| conn.client);
                 self.record.pty.push((tab, client, viewer, seq, len));
+                let rows = terminal.snapshot.rows.len();
                 terminal.snapshot = Rc::new(Snapshot {
                     revision: terminal.snapshot.revision + 1,
                     cursor: (
-                        (terminal.snapshot.cursor.0 + 1)
-                            % terminal.snapshot.rows.len(),
+                        (terminal.snapshot.cursor.0 + 1) % rows,
                         terminal.snapshot.cursor.1,
                     ),
                     ..(*terminal.snapshot).clone()
@@ -807,6 +914,7 @@ impl Server {
 
     fn pump(&mut self, id: usize, now: u64) {
         let profile = Rc::clone(&self.profile);
+        let own = self.minor;
         self.forward_hierarchy(id);
         self.pump_viewers(id);
         self.pump_effects(id, now);
@@ -821,7 +929,7 @@ impl Server {
             return;
         }
         // Results, in order on their lane; large ones on their own lane.
-        while conn.out.len() < profile.outbound_budget {
+        while conn.queued() < profile.outbound_budget {
             let Some(message) = conn.results.front() else {
                 break;
             };
@@ -848,55 +956,41 @@ impl Server {
                 } => Some(*viewer),
                 _ => None,
             };
-            let reject = matches!(message, ServerMsg::Reject { .. });
-            let started =
-                conn.tx
-                    .start(lane, encode_server(&message, conn.minor), false);
-            if let (Some(viewer), Some((_, serial))) = (opened, started)
+            let serial = conn.send(lane, message, own, false);
+            if let (Some(viewer), Some(serial)) = (opened, serial)
                 && let Some(remote) = conn.viewers.get_mut(&viewer)
             {
                 remote.opened_by = Some(serial);
             }
-            if reject {
-                conn.closed = true;
-            }
         }
-        // Frames: effect frames first, and one effect frame may exceed the
-        // budget; other frames wait for room.
+        // Build frames. The effect's next frame is built as soon as the
+        // urgent queue is empty; ordinary frames only while under budget.
         loop {
-            let priority = conn
-                .lane
-                .as_ref()
-                .is_some_and(|lane| !conn.tx.finished(lane.serial));
-            let limit = if priority {
-                profile.outbound_budget + profile.max_frame + 4
-            } else {
-                profile.outbound_budget
-            };
-            if conn.out.len() >= limit {
-                break;
-            }
-            let effect_open = conn
-                .lane
-                .as_ref()
-                .is_some_and(|lane| !conn.tx.finished(lane.serial));
-            let Some(frame) = conn.tx.next_frame() else {
-                break;
-            };
-            conn.enqueued += frame.len() as u64;
-            // Priority frames go first, so while the effect is unfinished the
-            // next frame built is the effect's.
-            if effect_open && let Some(lane) = conn.lane.as_mut() {
-                lane.first_mark.get_or_insert(conn.enqueued);
-                if conn.tx.finished(lane.serial) {
-                    lane.last_mark = Some(conn.enqueued);
+            // Includes an aborted effect's abort frame, after its lane cleared.
+            if conn.tx.has_urgent()
+                && conn.urgent.is_empty()
+                && let Some(frame) = conn.tx.next_where(true)
+            {
+                if frame.priority {
+                    conn.urgent.push_back(frame.into());
+                } else {
+                    conn.queue.push_back(frame.into());
                 }
+                continue;
             }
-            conn.out.extend(frame);
+            if conn.queued() >= profile.outbound_budget {
+                break;
+            }
+            let Some(frame) = conn.tx.next_where(false) else {
+                break;
+            };
+            conn.queue.push_back(frame.into());
         }
-        let over = conn.out.len().saturating_sub(profile.outbound_budget);
+        self.record.max_retained =
+            self.record.max_retained.max(conn.tx.retained());
+        let over = conn.queued().saturating_sub(profile.outbound_budget);
         self.record.max_over_budget = self.record.max_over_budget.max(over);
-        conn.reading_paused = conn.out.len() > profile.outbound_budget;
+        conn.reading_paused = conn.queued() > profile.outbound_budget;
         if conn.reading_paused {
             conn.rx.touch(now);
         } else if let Err(violation) = conn.rx.check_idle(now, profile.idle_ms)
@@ -907,6 +1001,8 @@ impl Server {
 
     fn forward_hierarchy(&mut self, id: usize) {
         let profile = Rc::clone(&self.profile);
+        let own = self.minor;
+        let versioned = profile.design.versioned_digests;
         let Some(conn) = self.conns.get_mut(&id) else {
             return;
         };
@@ -914,65 +1010,79 @@ impl Server {
             return;
         }
         let Some(cursor) = conn.hier else { return };
-        let lagged =
-            self.log.front().is_some_and(|entry| entry.seq > cursor + 1);
+        let digest_minor = if versioned { conn.minor } else { own };
+        // Core's subscription queue holds `hierarchy_queue` events; a
+        // backlog beyond that has lagged and resyncs.
+        let lagged = self.hierarchy.seq.saturating_sub(cursor)
+            > profile.hierarchy_queue as u64;
+        let room = |conn: &Conn| {
+            conn.lane_queued(LANE_HIERARCHY) < profile.hierarchy_lane
+        };
         if (conn.hier_resync || lagged)
             && conn.tx.can_start(LANE_HIERARCHY)
-            && conn.out.len() < profile.hierarchy_lane
+            && room(conn)
         {
+            if lagged && !conn.hier_resync {
+                self.record.counters.lag_resyncs += 1;
+            }
             let state = self.hierarchy.project(conn.minor);
-            let digest = self.hierarchy.digest(conn.minor);
-            conn.tx.start(
+            let digest = self.hierarchy.digest(digest_minor);
+            conn.send(
                 LANE_HIERARCHY,
-                encode_server(
-                    &ServerMsg::HierarchyResync { state, digest },
-                    conn.minor,
-                ),
+                ServerMsg::HierarchyResync { state, digest },
+                own,
                 false,
             );
             conn.hier = Some(self.hierarchy.seq);
             conn.hier_resync = false;
             return;
         }
-        if conn.hier_resync {
+        if conn.hier_resync || lagged {
             return;
         }
         let mut cursor = cursor;
-        while conn.tx.can_start(LANE_HIERARCHY)
-            && conn.out.len() < profile.hierarchy_lane
-        {
+        while conn.tx.can_start(LANE_HIERARCHY) && room(conn) {
             let Some(entry) =
                 self.log.iter().find(|entry| entry.seq == cursor + 1)
             else {
                 break;
             };
-            let digest = entry
-                .digests
-                .map(|digests| digests[usize::from(conn.minor >= MINOR_1)]);
+            let digest =
+                entry.digests.map(|d| d[usize::from(conn.minor >= MINOR_1)]);
+            let newer = entry.event.minor() > conn.minor;
             let message = match entry.event.downgrade(conn.minor) {
-                Downgrade::Send(event) => ServerMsg::Event {
-                    seq: entry.seq,
-                    event,
-                    digest,
-                },
+                Downgrade::Send(event) => {
+                    if newer && event == Event::Skipped {
+                        self.record.counters.downgrade_skipped += 1;
+                    } else if newer {
+                        self.record.counters.downgrade_single += 1;
+                    }
+                    ServerMsg::Event {
+                        seq: entry.seq,
+                        event,
+                        digest,
+                    }
+                }
                 Downgrade::Resync => {
+                    self.record.counters.downgrade_resync += 1;
                     let state = entry.after.project(conn.minor);
-                    let digest = state.digest(conn.minor);
+                    let digest = entry.after.digest(digest_minor);
                     ServerMsg::HierarchyResync { state, digest }
                 }
             };
-            conn.tx.start(
-                LANE_HIERARCHY,
-                encode_server(&message, conn.minor),
-                false,
-            );
+            conn.send(LANE_HIERARCHY, message, own, false);
             cursor = entry.seq;
         }
         conn.hier = Some(cursor);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one viewer's whole lane, in order"
+    )]
     fn pump_viewers(&mut self, id: usize) {
         let profile = Rc::clone(&self.profile);
+        let own = self.minor;
         let Some(conn) = self.conns.get_mut(&id) else {
             return;
         };
@@ -980,12 +1090,14 @@ impl Server {
             return;
         }
         let minor = conn.minor;
+        let digest_minor = if profile.design.versioned_digests {
+            minor
+        } else {
+            own
+        };
         let ids: Vec<u64> = conn.viewers.keys().copied().collect();
         for viewer in ids {
-            let Some(remote) = conn.viewers.get_mut(&viewer) else {
-                continue;
-            };
-            let Some(terminal) = self.terminals.get(&remote.tab) else {
+            let Some(remote) = conn.viewers.get(&viewer) else {
                 continue;
             };
             // The viewer's lane opens once the result that created it is
@@ -998,38 +1110,78 @@ impl Server {
                 continue;
             }
             let lane = viewer_lane(viewer);
+            let Some(terminal) =
+                self.terminals.get(&remote.tab).filter(|_| !remote.revoked)
+            else {
+                // A closed tab revokes the viewer; it closes on its lane.
+                if conn.tx.can_start(lane) {
+                    let closed = ServerMsg::ViewerClosed {
+                        viewer,
+                        stopped: false,
+                    };
+                    conn.send(lane, closed, own, false);
+                    conn.viewers.remove(&viewer);
+                }
+                continue;
+            };
+            let remote = conn
+                .viewers
+                .get_mut(&viewer)
+                .unwrap_or_else(|| unreachable!());
             if remote.admitted > remote.acked && conn.tx.can_start(lane) {
                 remote.acked = remote.admitted;
                 let seq = remote.acked;
-                conn.tx.start(
+                conn.send(
                     lane,
-                    encode_server(&ServerMsg::InputAck { viewer, seq }, minor),
+                    ServerMsg::InputAck { viewer, seq },
+                    own,
                     false,
                 );
             }
-            if remote.sent_status != Some(terminal.status.revision)
-                && conn.tx.can_start(lane)
-                && conn.out.len() < profile.outbound_budget
-            {
+            let room = conn.tx.can_start(lane)
+                && conn.queued() < profile.outbound_budget;
+            let remote = conn
+                .viewers
+                .get_mut(&viewer)
+                .unwrap_or_else(|| unreachable!());
+            if remote.sent_status != Some(terminal.status.revision) && room {
                 remote.sent_status = Some(terminal.status.revision);
                 let status = terminal.status.clone();
-                conn.tx.start(
+                conn.send(
                     lane,
-                    encode_server(&ServerMsg::Status { viewer, status }, minor),
+                    ServerMsg::Status { viewer, status },
+                    own,
                     false,
                 );
             }
-            if terminal.stopped {
+            let room = conn.tx.can_start(lane)
+                && conn.queued() < profile.outbound_budget;
+            let free = conn.tx.can_start(lane);
+            let remote = conn
+                .viewers
+                .get_mut(&viewer)
+                .unwrap_or_else(|| unreachable!());
+            let stopped = terminal.stopped;
+            // A stopped terminal sends its final status and update, then
+            // closes the viewer on the same lane.
+            let wants_update = remote.notified
+                && (remote.credit > 0 || remote.full_uncredited || stopped);
+            if stopped
+                && !wants_update
+                && remote.sent_status == Some(terminal.status.revision)
+            {
+                if free {
+                    let closed = ServerMsg::ViewerClosed {
+                        viewer,
+                        stopped: true,
+                    };
+                    conn.send(lane, closed, own, false);
+                    conn.viewers.remove(&viewer);
+                    self.record.counters.stopped_closes += 1;
+                }
                 continue;
             }
-            if !remote.notified
-                || !(remote.credit > 0 || remote.full_uncredited)
-            {
-                continue;
-            }
-            if !conn.tx.can_start(lane)
-                || conn.out.len() >= profile.outbound_budget
-            {
+            if !wants_update || !room {
                 continue;
             }
             let current = Rc::clone(&terminal.snapshot);
@@ -1038,35 +1190,32 @@ impl Server {
                     .baseline
                     .as_ref()
                     .is_none_or(|base| base.geometry != current.geometry);
-            let credited = !remote.full_uncredited;
+            let credited =
+                !remote.full_uncredited && !stopped && remote.credit > 0;
             remote.full_uncredited = false;
             if credited {
                 remote.credit -= 1;
             }
             remote.deltas = if full { 0 } else { remote.deltas + 1 };
-            let with_digest =
-                full || remote.deltas % profile.update_digest_every == 0;
-            let update = build_update(
-                viewer,
-                remote,
-                &current,
+            let with_digest = full
+                || remote.deltas.is_multiple_of(profile.update_digest_every);
+            let options = UpdateOptions {
                 full,
                 credited,
                 with_digest,
                 minor,
-            );
+                digest_minor,
+            };
+            let update = build_update(viewer, remote, &current, options);
             remote.baseline = Some(current);
             remote.notified = false;
-            conn.tx.start(
-                lane,
-                encode_server(&ServerMsg::Update(update), minor),
-                false,
-            );
+            conn.send(lane, ServerMsg::Update(update), own, false);
         }
     }
 
     fn pump_effects(&mut self, id: usize, now: u64) {
         let profile = Rc::clone(&self.profile);
+        let own = self.minor;
         let Some(conn) = self.conns.get_mut(&id) else {
             return;
         };
@@ -1075,37 +1224,34 @@ impl Server {
         }
         if let Some(lane) = &conn.lane {
             let total = lane.effect.payload.len() as u64;
-            let first_ok =
-                lane.first_mark.is_some_and(|mark| conn.taken >= mark);
-            let built = conn.tx.finished(lane.serial);
-            let done =
-                built && conn.taken >= lane.last_mark.unwrap_or(u64::MAX);
             let complete_by = lane.head_at
                 + profile.effect_first_ms
                 + total / profile.effect_bytes_per_ms.max(1);
-            if done {
-                self.record
-                    .delivered
-                    .push((lane.effect.terminal, lane.effect.origin));
+            if lane.done {
                 conn.lane = None;
-            } else if (!first_ok
+            } else if (!lane.first_written
                 && now > lane.head_at + profile.effect_first_ms)
                 || now > complete_by
             {
-                // Frames already queued still arrive; only unsent ones stop.
+                // Unsent frames stop; frames already queued still arrive.
+                // Either way the reservation is released now.
                 conn.tx.abort(lane.serial);
                 self.record.dropped += 1;
+                self.record.counters.deadline_drops += 1;
                 conn.lane = None;
             } else {
                 return;
             }
+        }
+        if !conn.tx.can_start(LANE_EFFECTS) {
+            return;
         }
         // Take the oldest queued effect for this connection.
         let next = self
             .terminals
             .iter()
             .flat_map(|(tab, terminal)| {
-                terminal.effects.iter().map(move |effect| (*tab, effect))
+                terminal.effects.iter().map(move |e| (*tab, e))
             })
             .filter(|(_, effect)| effect.conn == id)
             .min_by_key(|(_, effect)| (effect.admitted, effect.origin))
@@ -1114,10 +1260,7 @@ impl Server {
         let Some(terminal) = self.terminals.get_mut(&tab) else {
             return;
         };
-        let Some(at) = terminal
-            .effects
-            .iter()
-            .position(|effect| effect.origin == origin)
+        let Some(at) = terminal.effects.iter().position(|e| e.origin == origin)
         else {
             return;
         };
@@ -1135,10 +1278,6 @@ impl Server {
             self.record.dropped += 1;
             return;
         }
-        if !conn.tx.can_start(LANE_EFFECTS) {
-            terminal.effects.insert(at, effect);
-            return;
-        }
         let message = ServerMsg::Effect {
             effect: origin,
             viewer: effect.viewer,
@@ -1147,37 +1286,69 @@ impl Server {
             origin,
             payload: effect.payload.clone(),
         };
-        let serial = conn
-            .tx
-            .start(LANE_EFFECTS, encode_server(&message, conn.minor), true)
-            .map_or(0, |(_, serial)| serial);
+        let serial = conn.send(LANE_EFFECTS, message, own, true).unwrap_or(0);
         conn.lane = Some(Lane {
             effect,
             serial,
             head_at: now,
-            first_mark: None,
-            last_mark: None,
+            first_written: false,
+            done: false,
         });
     }
 
-    /// Bytes the link may take from connection `id`'s outbound queue.
+    /// Bytes the link may take from connection `id`. At each frame
+    /// boundary the writer takes an effect frame first.
     pub fn take(&mut self, id: usize, room: usize, now: u64) -> Vec<u8> {
         let profile = Rc::clone(&self.profile);
         let Some(conn) = self.conns.get_mut(&id) else {
             return Vec::new();
         };
-        let count = room.min(conn.out.len());
-        let bytes: Vec<u8> = conn.out.drain(..count).collect();
-        conn.taken += count as u64;
-        if conn.closed {
-            return bytes;
+        let mut out = Vec::new();
+        while out.len() < room {
+            if conn.current.is_none() {
+                let next =
+                    conn.urgent.pop_front().or_else(|| conn.queue.pop_front());
+                let Some(frame) = next else { break };
+                conn.current = Some((frame, 0));
+            }
+            let (frame, pos) =
+                conn.current.as_mut().unwrap_or_else(|| unreachable!());
+            let count = (room - out.len()).min(frame.bytes.len() - *pos);
+            out.extend_from_slice(&frame.bytes[*pos..*pos + count]);
+            *pos += count;
+            if *pos == frame.bytes.len() {
+                let (frame, _) =
+                    conn.current.take().unwrap_or_else(|| unreachable!());
+                if frame.last {
+                    conn.tx.release(frame.serial);
+                }
+                if let Some(lane) = conn.lane.as_mut()
+                    && lane.serial == frame.serial
+                {
+                    lane.first_written |= frame.first;
+                    lane.done |= frame.last;
+                }
+            }
         }
-        conn.no_progress_since = if conn.out.is_empty() || count > 0 {
+        if conn.closed {
+            return out;
+        }
+        let queued = conn.queued();
+        if conn.rejected
+            && queued == 0
+            && conn.tx.open() == 0
+            && conn.results.is_empty()
+        {
+            // The rejection went out; the connection ends.
+            self.disconnect(id);
+            return out;
+        }
+        conn.no_progress_since = if queued == 0 || !out.is_empty() {
             None
         } else {
             conn.no_progress_since.or(Some(now))
         };
-        conn.over_budget_since = if conn.out.len() > profile.outbound_budget {
+        conn.over_budget_since = if queued > profile.outbound_budget {
             conn.over_budget_since.or(Some(now))
         } else {
             None
@@ -1190,7 +1361,7 @@ impl Server {
         if stalled(conn.no_progress_since) || stalled(conn.over_budget_since) {
             self.violation(id, "writer stalled".into());
         }
-        bytes
+        out
     }
 
     /// Whether a connection has queued bytes or pending work.
@@ -1198,21 +1369,56 @@ impl Server {
     pub fn busy(&self, id: usize) -> bool {
         self.conns.get(&id).is_some_and(|conn| {
             !conn.closed
-                && (!conn.out.is_empty()
+                && (conn.queued() > 0
                     || conn.tx.open() > 0
                     || !conn.results.is_empty()
-                    || conn.lane.is_some())
+                    || conn.lane.is_some()
+                    || conn.viewers.values().any(|v| v.revoked))
         })
     }
 
-    /// Whether any operation or input is still pending.
+    /// Whether any operation, input, effect, or closing viewer is pending.
     #[must_use]
     pub fn pending_work(&self) -> bool {
         !self.ops.is_empty()
-            || self
-                .terminals
-                .values()
-                .any(|t| !t.core_input.is_empty() || !t.effects.is_empty())
+            || self.terminals.values().any(|t| {
+                (!t.core_input.is_empty() && !t.stopped)
+                    || !t.effects.is_empty()
+            })
+            || self.conns.values().any(|c| {
+                !c.closed
+                    && c.viewers.values().any(|v| {
+                        self.terminals.get(&v.tab).is_some_and(|t| t.stopped)
+                    })
+            })
+    }
+
+    /// A connection's viewers, for failure messages.
+    #[must_use]
+    pub fn debug_viewers(&self, id: usize) -> String {
+        let Some(conn) = self.conns.get(&id) else {
+            return "no connection".into();
+        };
+        let viewers: Vec<String> = conn
+            .viewers
+            .iter()
+            .map(|(v, r)| {
+                format!(
+                    "v{v} tab {} credit {} notified {} seq {} opened {:?}",
+                    r.tab, r.credit, r.notified, r.update_seq, r.opened_by
+                )
+            })
+            .collect();
+        format!(
+            "queued {} streams {} results {} lane {:?} viewers [{}]",
+            conn.queued(),
+            conn.tx.open(),
+            conn.results.len(),
+            conn.lane
+                .as_ref()
+                .map(|l| (l.serial, l.first_written, l.done)),
+            viewers.join(", ")
+        )
     }
 
     /// The tab IDs that have terminals.
@@ -1221,68 +1427,20 @@ impl Server {
         self.terminals.keys().copied().collect()
     }
 
-    /// The current view of a tab's terminal at `minor`, with its status.
+    /// A tab's terminal as a peer on `minor` sees it, with its status and
+    /// whether it stopped.
     #[must_use]
     pub fn terminal(
         &self,
         tab: u64,
         minor: u16,
-    ) -> Option<(crate::model::View, &Status, bool)> {
+    ) -> Option<(View, &Status, bool)> {
         self.terminals
             .get(&tab)
             .map(|t| (t.snapshot.view(minor), &t.status, t.stopped))
     }
 
-    /// The connection's client ID and negotiated minor version.
-    #[must_use]
-    pub fn conn_info(&self, id: usize) -> Option<(u64, u16, bool)> {
-        self.conns
-            .get(&id)
-            .map(|conn| (conn.client, conn.minor, conn.open && !conn.closed))
-    }
-
-    /// Debug state of a connection's viewers.
-    #[must_use]
-    pub fn debug_viewers(&self, id: usize) -> String {
-        let Some(conn) = self.conns.get(&id) else {
-            return "no conn".into();
-        };
-        let viewers: Vec<String> = conn
-            .viewers
-            .iter()
-            .map(|(v, r)| {
-                format!(
-                    "v{v} tab {} credit {} notified {} full {} seq {} opened {:?} finished {}",
-                    r.tab,
-                    r.credit,
-                    r.notified,
-                    r.full_uncredited,
-                    r.update_seq,
-                    r.opened_by,
-                    r.opened_by.is_some_and(|s| conn.tx.finished(s))
-                )
-            })
-            .collect();
-        format!(
-            "open {} closed {} out {} streams {} results {} viewers [{}]",
-            conn.open,
-            conn.closed,
-            conn.out.len(),
-            conn.tx.open(),
-            conn.results.len(),
-            viewers.join(", ")
-        )
-    }
-
-    /// Records which client a connection serves.
-    pub fn set_client(&mut self, id: usize, client: u64) {
-        if let Some(conn) = self.conns.get_mut(&id) {
-            conn.client = client;
-        }
-    }
-
     /// Changes one terminal at random, as PTY output would.
-    #[expect(clippy::too_many_lines, reason = "one arm per kind of output")]
     pub fn terminal_activity(&mut self, rng: &mut Rng, now: u64) {
         let tabs = self.tabs();
         if tabs.is_empty() {
@@ -1335,10 +1493,11 @@ impl Server {
             }
             85..=87 => {
                 terminal.next_failure += 1;
-                terminal.status.failures.push((
-                    terminal.next_failure,
-                    random_text(rng, profile.max_status_text),
-                ));
+                let message = random_text(rng, profile.max_status_text);
+                terminal
+                    .status
+                    .failures
+                    .push((terminal.next_failure, message));
                 if terminal.status.failures.len() > FAILURE_CAPACITY {
                     terminal.status.failures.remove(0);
                 }
@@ -1350,6 +1509,8 @@ impl Server {
                 status_changed = true;
             }
             89 if rng.chance(150) => {
+                // A fatal stop: the terminal keeps its final state, and its
+                // viewers close on their lanes after their final messages.
                 terminal.stopped = true;
                 terminal.next_failure += 1;
                 terminal
@@ -1359,23 +1520,11 @@ impl Server {
                 if terminal.status.failures.len() > FAILURE_CAPACITY {
                     terminal.status.failures.remove(0);
                 }
-                status_changed = true;
+                terminal.status.revision += 1;
+                self.record.dropped += terminal.effects.len() as u64;
                 terminal.effects.clear();
-                for conn in self.conns.values_mut() {
-                    let gone: Vec<u64> = conn
-                        .viewers
-                        .iter()
-                        .filter(|(_, v)| v.tab == tab)
-                        .map(|(id, _)| *id)
-                        .collect();
-                    for viewer in gone {
-                        conn.viewers.remove(&viewer);
-                        if !conn.closed {
-                            conn.results
-                                .push_back(ServerMsg::ViewerClosed { viewer });
-                        }
-                    }
-                }
+                terminal.recipients.clear();
+                return;
             }
             _ => {
                 self.admit_effect(tab, rng, now);
@@ -1393,6 +1542,15 @@ impl Server {
 
     fn admit_effect(&mut self, tab: u64, rng: &mut Rng, now: u64) {
         let profile = Rc::clone(&self.profile);
+        // An effect holds its reservation from admission until it is
+        // delivered or dropped, including while in a connection's lane.
+        let in_lanes: Vec<(usize, usize)> = self
+            .conns
+            .iter()
+            .filter_map(|(id, conn)| conn.lane.as_ref().map(|lane| (*id, lane)))
+            .filter(|(_, lane)| lane.effect.terminal == tab)
+            .map(|(id, lane)| (id, lane.effect.payload.len()))
+            .collect();
         let Some(terminal) = self.terminals.get_mut(&tab) else {
             return;
         };
@@ -1416,8 +1574,13 @@ impl Server {
         } else {
             1 + rng.index(profile.clipboard_payload)
         };
-        let bytes: usize =
-            terminal.effects.iter().map(|e| e.payload.len()).sum();
+        let count = terminal.effects.len() + in_lanes.len();
+        let bytes: usize = terminal
+            .effects
+            .iter()
+            .map(|e| e.payload.len())
+            .sum::<usize>()
+            + in_lanes.iter().map(|(_, len)| len).sum::<usize>();
         let connections = {
             let mut ids: Vec<usize> =
                 terminal.recipients.iter().map(|r| r.conn).collect();
@@ -1429,8 +1592,9 @@ impl Server {
             .effects
             .iter()
             .filter(|e| e.conn == chosen.conn)
-            .count();
-        if terminal.effects.len() >= profile.terminal_effects
+            .count()
+            + in_lanes.iter().filter(|(id, _)| *id == chosen.conn).count();
+        if count >= profile.terminal_effects
             || bytes + size > profile.terminal_effect_bytes
             || mine >= profile.effect_share(connections)
         {
@@ -1512,23 +1676,33 @@ fn random_text(rng: &mut Rng, max: usize) -> String {
         .collect()
 }
 
-fn build_update(
-    viewer: u64,
-    remote: &mut RemoteViewer,
-    current: &Rc<Snapshot>,
+#[derive(Clone, Copy, Debug)]
+struct UpdateOptions {
     full: bool,
     credited: bool,
     with_digest: bool,
     minor: u16,
+    digest_minor: u16,
+}
+
+fn build_update(
+    viewer: u64,
+    remote: &mut RemoteViewer,
+    current: &Rc<Snapshot>,
+    options: UpdateOptions,
 ) -> Update {
-    let base = if full { None } else { Some(remote.update_seq) };
+    let base = if options.full {
+        None
+    } else {
+        Some(remote.update_seq)
+    };
     remote.update_seq += 1;
     let mut styles: Vec<u8> = Vec::new();
     let rows = current
         .rows
         .iter()
         .map(|row| {
-            if !full
+            if !options.full
                 && let Some(baseline) = &remote.baseline
                 && let Some(index) =
                     baseline.rows.iter().position(|old| Rc::ptr_eq(old, row))
@@ -1536,7 +1710,7 @@ fn build_update(
                 return RowOp::Keep(index);
             }
             let mut runs: Vec<(usize, Vec<char>)> = Vec::new();
-            for cell in row.iter().map(|cell| cell.project(minor)) {
+            for cell in row.iter().map(|cell| cell.project(options.minor)) {
                 let style = styles
                     .iter()
                     .position(|s| *s == cell.style)
@@ -1558,7 +1732,7 @@ fn build_update(
         viewer,
         seq: remote.update_seq,
         base,
-        credited,
+        credited: options.credited,
         revision: current.revision,
         geometry: current.geometry,
         columns: current.columns,
@@ -1566,6 +1740,8 @@ fn build_update(
         modes: current.modes,
         styles,
         rows,
-        digest: with_digest.then(|| current.view(minor).digest()),
+        digest: options
+            .with_digest
+            .then(|| current.view(options.digest_minor).digest()),
     }
 }

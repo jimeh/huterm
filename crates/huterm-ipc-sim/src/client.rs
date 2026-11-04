@@ -23,19 +23,27 @@ pub enum Outcome {
     Unknown,
     /// A viewer request whose viewer is gone.
     Disconnected,
+    /// A structural change the server committed, cancelled before the
+    /// projection reached it because the connection broke.
+    Committed,
 }
 
 #[derive(Debug)]
 struct Pending {
     request: Request,
     tab: Option<u64>,
+    intent: u64,
 }
 
 /// What a client saw of one terminal in one incarnation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Seen {
-    /// Bells at the first observation.
+    /// Bells at the first observation, the baseline.
     pub first_bells: u64,
+    /// Whether the terminal had exited at the first observation.
+    pub first_exited: bool,
+    /// The last failure sequence at the first observation.
+    pub first_failure: u64,
     /// New bells reported since.
     pub bells: u64,
     /// Exits reported.
@@ -99,11 +107,16 @@ pub struct Client {
     baselines: BTreeMap<(u64, u64), StatusBaseline>,
     /// Status facts per (incarnation, tab).
     pub seen: BTreeMap<(u64, u64), Seen>,
-    retry: Vec<Request>,
+    retry: Vec<(Request, u64)>,
     /// How each request ended: (request id, request, outcome).
     pub outcomes: Vec<(u64, Request, Outcome)>,
-    /// Requests sent per (incarnation, id): mutations must never repeat.
-    pub sent: Vec<(u64, u64, RetryClass)>,
+    /// The intent each request ID carries out. A retry gets a new ID for
+    /// the same intent, so an intent that runs twice ran a retry.
+    pub intents: BTreeMap<u64, u64>,
+    next_intent: u64,
+    connected_at: u64,
+    /// Final views of terminals that stopped, per (incarnation, tab).
+    pub stopped: BTreeMap<(u64, u64), Option<View>>,
     /// Effects executed: (incarnation, link, terminal, origin).
     pub executed: Vec<(u64, usize, u64, u64)>,
     /// Contract faults the client detected.
@@ -143,8 +156,11 @@ impl Client {
             baselines: BTreeMap::new(),
             seen: BTreeMap::new(),
             retry: Vec::new(),
+            intents: BTreeMap::new(),
+            next_intent: 0,
+            connected_at: 0,
+            stopped: BTreeMap::new(),
             outcomes: Vec::new(),
-            sent: Vec::new(),
             executed: Vec::new(),
             faults: Vec::new(),
             hierarchy_resyncs: 0,
@@ -173,8 +189,18 @@ impl Client {
             .and_then(|conn| conn.open.map(|(_, minor)| minor))
     }
 
-    /// Starts a connection on `link`.
-    pub fn connect(&mut self, link: usize) {
+    /// Whether the handshake has taken longer than `limit` since `now`'s
+    /// connection started, so the client gives up and reconnects.
+    #[must_use]
+    pub fn handshake_overdue(&self, now: u64, limit: u64) -> bool {
+        self.conn.is_some()
+            && !self.is_open()
+            && now.saturating_sub(self.connected_at) > limit
+    }
+
+    /// Starts a connection on `link` at `now`.
+    pub fn connect(&mut self, link: usize, now: u64) {
+        self.connected_at = now;
         let profile = &self.profile;
         let mut conn = Connection {
             link,
@@ -209,6 +235,12 @@ impl Client {
         for (id, pending) in conn.inflight {
             match pending.request.class() {
                 RetryClass::Mutation => {
+                    if self.profile.design.retry_mutations {
+                        // A design that retries mutations, for the test
+                        // that shows the invariant catches it.
+                        self.retry
+                            .push((pending.request.clone(), pending.intent));
+                    }
                     self.outcomes.push((id, pending.request, Outcome::Unknown));
                 }
                 RetryClass::Viewer => self.outcomes.push((
@@ -216,18 +248,22 @@ impl Client {
                     pending.request,
                     Outcome::Disconnected,
                 )),
-                RetryClass::RuntimeQuery => self.retry.push(pending.request),
+                RetryClass::RuntimeQuery => {
+                    self.retry.push((pending.request, pending.intent));
+                }
             }
         }
+        // A committed change the projection never reached is not `Ok`.
         for (_, id, request) in self.waiters.drain(..) {
-            self.outcomes.push((id, request, Outcome::Ok));
+            self.outcomes.push((id, request, Outcome::Committed));
         }
         self.viewers.clear();
         self.hierarchy_resyncing = false;
     }
 
     fn send(&mut self, message: &ClientMsg) {
-        let minor = self.negotiated().unwrap_or(self.minor);
+        // Senders write their own version's fields; older peers skip them.
+        let minor = self.minor;
         // A viewer's messages share its lane, so its input stays in order;
         // everything else uses the control lane.
         let lane = match message {
@@ -246,6 +282,12 @@ impl Client {
 
     /// Sends a request, unless the negotiated version lacks it.
     pub fn request(&mut self, request: Request) {
+        self.next_intent += 1;
+        let intent = self.next_intent;
+        self.request_for(request, intent);
+    }
+
+    fn request_for(&mut self, request: Request, intent: u64) {
         let Some(minor) = self.negotiated() else {
             return;
         };
@@ -264,11 +306,11 @@ impl Client {
                 Pending {
                     request: request.clone(),
                     tab,
+                    intent,
                 },
             );
         }
-        self.sent
-            .push((self.incarnation.unwrap_or(0), id, request.class()));
+        self.intents.insert(id, intent);
         self.send(&ClientMsg::Request { id, request });
     }
 
@@ -401,9 +443,9 @@ impl Client {
                 }
                 self.incarnation = Some(incarnation);
                 self.request(Request::SubscribeHierarchy);
-                for request in std::mem::take(&mut self.retry) {
+                for (request, intent) in std::mem::take(&mut self.retry) {
                     if request != Request::SubscribeHierarchy {
-                        self.request(request);
+                        self.request_for(request, intent);
                     }
                 }
                 for tab in std::mem::take(&mut self.shown) {
@@ -442,9 +484,16 @@ impl Client {
                     self.observe(tab, &status);
                 }
             }
-            ServerMsg::ViewerClosed { viewer } => {
-                if let Some(tab) = self.tab_of(viewer) {
-                    self.viewers.remove(&tab);
+            ServerMsg::ViewerClosed { viewer, stopped } => {
+                if let Some(tab) = self.tab_of(viewer)
+                    && let Some(state) = self.viewers.remove(&tab)
+                    && stopped
+                {
+                    // A stopped terminal's final view stays the client's
+                    // to show; it is not subscribed again.
+                    let incarnation = self.incarnation.unwrap_or(0);
+                    self.stopped.insert((incarnation, tab), state.view);
+                    self.shown.remove(&tab);
                 }
             }
             ServerMsg::InputAck { viewer, seq } => {
@@ -573,13 +622,19 @@ impl Client {
                         resyncs: 0,
                     },
                 );
-                if !self.profile.design.carry_status_baseline {
-                    // Without carry-over, a new viewer takes its first read
-                    // as its baseline and reports nothing that came before.
-                    let incarnation = self.incarnation.unwrap_or(0);
+                let key = (self.incarnation.unwrap_or(0), tab);
+                if !self.profile.design.carry_status_baseline
+                    && self.baselines.contains_key(&key)
+                {
+                    // Without carry-over, a viewer after a reconnect takes
+                    // its first read as a fresh baseline and misses what
+                    // happened while the client was away.
                     let mut baseline = StatusBaseline::default();
                     baseline.observe(&status);
-                    self.baselines.insert((incarnation, tab), baseline);
+                    self.baselines.insert(key, baseline);
+                    if let Some(seen) = self.seen.get_mut(&key) {
+                        seen.revision = status.revision;
+                    }
                 }
                 self.observe(tab, &status);
                 if effects {
@@ -607,12 +662,18 @@ impl Client {
 
     fn observe(&mut self, tab: u64, status: &crate::model::Status) {
         let incarnation = self.incarnation.unwrap_or(0);
+        let first = !self.baselines.contains_key(&(incarnation, tab));
         let baseline = self.baselines.entry((incarnation, tab)).or_default();
-        let first = !self.seen.contains_key(&(incarnation, tab));
         let derived = baseline.observe(status);
         let seen = self.seen.entry((incarnation, tab)).or_default();
         if first {
-            seen.first_bells = status.bells - derived.bells;
+            // A viewer's first read is its baseline: it reports nothing
+            // that happened before it.
+            seen.first_bells = status.bells;
+            seen.first_exited = status.exited.is_some();
+            seen.first_failure = status.failures.last().map_or(0, |f| f.0);
+            seen.revision = status.revision;
+            return;
         }
         seen.bells += derived.bells;
         seen.exits += u32::from(derived.exit.is_some());
@@ -788,12 +849,6 @@ impl Client {
             .values()
             .any(|v| !v.local_queue.is_empty() || !v.unacked.is_empty())
     }
-
-    /// Resyncs a viewer requested, for loop detection.
-    #[must_use]
-    pub fn resyncs(&self) -> u32 {
-        self.viewers.values().map(|v| v.resyncs).sum()
-    }
 }
 
 #[cfg(test)]
@@ -848,7 +903,7 @@ mod tests {
             ..Profile::default()
         });
         let mut client = Client::new(1, 0, ClientKind::Text, profile);
-        client.connect(1);
+        client.connect(1, 0);
         client
             .handle(ServerMsg::Welcome {
                 minor: 0,

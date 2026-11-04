@@ -223,8 +223,9 @@ pub enum ServerMsg {
     Update(Update),
     /// A viewer's current status.
     Status { viewer: u64, status: Status },
-    /// A viewer ended: revoked by structure, or stopped with its terminal.
-    ViewerClosed { viewer: u64 },
+    /// A viewer ended, on its lane after its final messages: stopped with
+    /// its terminal, or revoked because its tab closed.
+    ViewerClosed { viewer: u64, stopped: bool },
     /// Input up to and including `seq` reached core.
     InputAck { viewer: u64, seq: u64 },
     /// A host effect for one viewer's client.
@@ -890,7 +891,10 @@ pub fn encode_server(message: &ServerMsg, minor: u16) -> Vec<u8> {
             record.u(*viewer);
             put_status(record, status);
         }
-        ServerMsg::ViewerClosed { viewer } => record.u(*viewer),
+        ServerMsg::ViewerClosed { viewer, stopped } => {
+            record.u(*viewer);
+            record.bool(*stopped);
+        }
         ServerMsg::InputAck { viewer, seq } => {
             record.u(*viewer);
             record.u(*seq);
@@ -1008,6 +1012,7 @@ pub fn decode_server(
             },
             kind::VIEWER_CLOSED => ServerMsg::ViewerClosed {
                 viewer: record.u()?,
+                stopped: record.bool()?,
             },
             kind::INPUT_ACK => ServerMsg::InputAck {
                 viewer: record.u()?,
