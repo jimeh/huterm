@@ -330,9 +330,9 @@ Limitations:
   the prompt and input markers.
 - Debian-family bash (Debian, Ubuntu, Arch) reads its system bashrc, such as
   `/etc/bash.bashrc`, for every interactive start that has an rcfile. An
-  emulated login shell therefore reads it twice: once from bash and once from
-  `/etc/profile`. Huterm starts non-login bash on Linux, which matches a plain
-  start.
+  emulated login shell therefore runs it once more than a plain login start:
+  twice when `/etc/profile` also reads it, and once with `--noprofile`.
+  Huterm starts non-login bash on Linux, which matches a plain start.
 - Re-sourcing a bash startup file that replaces `PROMPT_COMMAND` removes
   Huterm's hook from that shell: the re-sourcing command gets an execution
   marker without a completion marker, and later prompts and commands get none.

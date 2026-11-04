@@ -952,14 +952,18 @@ fn native_bash_startup_options_and_zdotdir() {
                 );
             }
             let mut shell = Shell::spawn(&command);
-            shell.prompt();
             if option == "--norc" {
+                shell.prompt();
                 // Injection needs an rcfile, so --norc starts bash plain.
                 assert!(
                     !String::from_utf8_lossy(&shell.transcript)
                         .contains("]133;"),
                     "{name} --norc was injected"
                 );
+            } else {
+                // Debian-family bash reads its system bashrc, which may set
+                // PS1, before the bootstrap emulates a login start.
+                shell.marked_prompt();
             }
             if matches!(option, "--rcfile" | "--init-file") {
                 assert_eq!(
