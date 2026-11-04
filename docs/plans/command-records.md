@@ -118,6 +118,10 @@ code. Core handles each event in output order:
   reader reports end of output (`PtyEof` or a reader failure), a `Running`
   record becomes `Abandoned`. While a descendant still holds the PTY open, the
   record stays `Running`, because output, including a D, can still arrive.
+  Teardown also abandons a running record, because it parses no more output:
+  a reader failure can stop the runtime before it observes an exit that
+  already happened. A runtime that panics publishes nothing more, so its last
+  record can stay `Running`.
 - **Nested shells** use the flat model above. An outer `bash` or `ssh` record
   ends `Abandoned` at the inner shell's first prompt, and the outer D is then
   ignored. Huterm's five shells all send D before A, so a normal prompt never

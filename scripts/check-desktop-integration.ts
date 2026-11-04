@@ -426,8 +426,9 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       starts = await startedDirectories();
       return current.tabs === "2" && starts.length === 3;
     }, "inherited-directory tab");
+    // The remote fallback tab already started there, so count both starts.
     assert(
-      starts.includes(inheritedDirectoryCanonical),
+      starts.filter((cwd) => cwd === inheritedDirectoryCanonical).length === 2,
       `new tab did not inherit local cwd: ${JSON.stringify(starts)}`,
     );
     if (macos) await commandFile("native\t2\t262144\t\u0004\t\u0004");
