@@ -353,14 +353,16 @@ impl TerminalRenderer {
             .map_or(original, rgb_color);
         }
         if selected_cell(snapshot, self.selection, row, column) {
-            selected_foreground(
-                snapshot,
-                self.selection,
-                &self.theme,
-                row,
-                column,
+            self.solid_color(
+                selected_foreground(
+                    snapshot,
+                    self.selection,
+                    &self.theme,
+                    row,
+                    column,
+                )
+                .map_or(original, rgb_color),
             )
-            .map_or(original, rgb_color)
         } else {
             self.foreground(original)
         }
@@ -473,24 +475,21 @@ impl TerminalRenderer {
         // draws quads, then paths, underlines, and sprites, so anything that
         // must cover glyphs, such as the cursor, is painted after the layers.
         window.paint_layer(grid, |window| {
-            // TerminalView alone fills the default background, including padding.
-            if snapshot.default_background.is_some() {
-                self.paint_backgrounds::<true>(bounds.origin, window, snapshot);
-            } else {
-                self.paint_backgrounds::<false>(
+            // Only an unfocused translucent pane tints its solid runs and
+            // selection, so other paints do no per-run tint work.
+            if self.background_opacity < 1.0
+                && self.tint != crate::transparency::Tint::default()
+            {
+                self.paint_background_layer::<true>(
                     bounds.origin,
                     window,
                     snapshot,
                 );
-            }
-            if let Some(selection) = self.selection {
-                paint_selection(
-                    snapshot,
-                    selection,
+            } else {
+                self.paint_background_layer::<false>(
                     bounds.origin,
-                    metrics,
-                    &self.theme,
                     window,
+                    snapshot,
                 );
             }
         });
@@ -516,18 +515,65 @@ impl TerminalRenderer {
             if self.cursor_outline && cursor.shape == CursorShape::Block {
                 window.paint_quad(outline(
                     bounds,
-                    rgb_color(color),
+                    self.solid_color(rgb_color(color)),
                     gpui::BorderStyle::Solid,
                 ));
             } else {
-                window
-                    .paint_quad(fill(bounds, cursor_fill(color, cursor.shape)));
+                window.paint_quad(fill(
+                    bounds,
+                    self.solid_color(cursor_fill(color, cursor.shape)),
+                ));
             }
         }
         self.record_paint(started);
     }
 
-    fn paint_backgrounds<const DEFAULT_OVERRIDE: bool>(
+    fn tint_color(&self, color: Hsla) -> Hsla {
+        self.tint.apply(
+            color,
+            rgb_color(
+                self.snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.default_background)
+                    .unwrap_or(self.theme.background),
+            ),
+        )
+    }
+
+    fn solid_color(&self, color: Hsla) -> Hsla {
+        if self.background_opacity < 1.0 {
+            self.tint_color(color)
+        } else {
+            color
+        }
+    }
+
+    fn paint_background_layer<const TINT: bool>(
+        &self,
+        origin: Point<Pixels>,
+        window: &mut Window,
+        snapshot: &TerminalSnapshot,
+    ) {
+        // TerminalView alone fills the default background, including padding.
+        if snapshot.default_background.is_some() {
+            self.paint_backgrounds::<true, TINT>(origin, window, snapshot);
+        } else {
+            self.paint_backgrounds::<false, TINT>(origin, window, snapshot);
+        }
+        if let Some(selection) = self.selection {
+            let color = rgb_color(self.theme.selection);
+            paint_selection(
+                snapshot,
+                selection,
+                origin,
+                self.metrics,
+                if TINT { self.tint_color(color) } else { color },
+                window,
+            );
+        }
+    }
+
+    fn paint_backgrounds<const DEFAULT_OVERRIDE: bool, const TINT: bool>(
         &self,
         origin: Point<Pixels>,
         window: &mut Window,
@@ -548,7 +594,11 @@ impl TerminalRenderer {
                         background.columns,
                         self.metrics,
                     ),
-                    background.color,
+                    if TINT {
+                        self.tint_color(background.color)
+                    } else {
+                        background.color
+                    },
                 ));
             }
         }
@@ -1291,7 +1341,7 @@ fn paint_selection(
     selection: BufferRange,
     origin: Point<Pixels>,
     metrics: GridMetrics,
-    theme: &Theme,
+    color: Hsla,
     window: &mut Window,
 ) {
     let rows = usize::from(snapshot.size.rows);
@@ -1326,7 +1376,7 @@ fn paint_selection(
                     end.saturating_sub(start),
                     metrics,
                 ),
-                rgb_color(theme.selection),
+                color,
             ));
         }
     }

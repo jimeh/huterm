@@ -393,6 +393,9 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await command("default toggle_quake");
       await waitFor(async () => { const value = await current(); return value?.stage === "Idle" && value.visible === "true" && Math.abs(Number(value.opacity) - 0.5) < 0.0001; }, "quake show uses reloaded native opacity");
       await reload('hide_on_focus_loss = false\nanimation_ms = 150');
+      // The reload publishes before its native alpha write lands on a later
+      // foreground turn, so wait for the restored readback first.
+      await waitFor(async () => (await current())?.opacity === "1", "quake native opacity restored after reload");
       await settled(true);
       let halfGeometry: number[] | undefined;
       let halfGrid: number[] | undefined;

@@ -890,3 +890,122 @@ fn osc11_only_reclassifies_rgb_override_runs_and_reset_restores_them() {
         "OSC 111 clears the override"
     );
 }
+
+#[cfg(feature = "test-support")]
+struct PaintFixture(TerminalRenderer);
+
+#[cfg(feature = "test-support")]
+impl gpui::Render for PaintFixture {
+    fn render(
+        &mut self,
+        _: &mut Window,
+        cx: &mut gpui::Context<'_, Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{Styled, canvas};
+        let entity = cx.entity();
+        canvas(
+            |_, _, _| (),
+            move |bounds, (), window, cx| {
+                entity.update(cx, |fixture, _| fixture.0.paint(bounds, window));
+            },
+        )
+        .size_full()
+    }
+}
+
+#[cfg(feature = "test-support")]
+fn paint_fixture(
+    cx: &mut gpui::TestAppContext,
+    tint: crate::transparency::Tint,
+) -> (Vec<gpui::Quad>, Vec<gpui::Underline>, Theme) {
+    let theme = Theme::default();
+    let mut renderer = TerminalRenderer::new(
+        "Menlo".into(),
+        theme.clone(),
+        GridMetrics::fixed(8.0, 16.0),
+    );
+    let mut snapshot = snapshot(3, 1, &[" ", " ", " "]);
+    snapshot.cursor = Some(Cursor {
+        row: 0,
+        column: 2,
+        shape: CursorShape::Beam,
+    });
+    renderer.rows.push(PreparedRow {
+        backgrounds: vec![PreparedBackground {
+            source: CellColor::Indexed(1),
+            start: 0,
+            columns: 1,
+            color: rgb_color(theme.indexed(1)),
+        }],
+        underlines: vec![PreparedDecoration {
+            start: 0,
+            columns: 1,
+            color: rgb_color(theme.foreground),
+        }],
+        ..PreparedRow::default()
+    });
+    renderer.snapshot = Some(Arc::new(snapshot));
+    renderer.set_selection(Some(BufferRange::ordered(
+        huterm_protocol::BufferPoint {
+            rows_from_live_bottom: 0,
+            column: 1,
+        },
+        huterm_protocol::BufferPoint {
+            rows_from_live_bottom: 0,
+            column: 1,
+        },
+    )));
+    renderer.set_opacity(0.6, 0.7, tint);
+    let handle: gpui::AnyWindowHandle = cx
+        .open_window(size(px(100.0), px(40.0)), |_, _| PaintFixture(renderer))
+        .into();
+    handle
+        .update(cx, |_, window, cx| {
+            let _ = window.draw(cx);
+            (window.painted_quads(), window.painted_underlines(), theme)
+        })
+        .unwrap()
+}
+
+#[cfg(feature = "test-support")]
+#[gpui::test]
+fn translucent_paint_tints_solid_background_selection_and_cursor(
+    cx: &mut gpui::TestAppContext,
+) {
+    let tint = crate::transparency::Tint {
+        dim: 0.25,
+        darken: 0.3,
+    };
+    let (quads, _, theme) = paint_fixture(cx, tint);
+    for (label, original) in [
+        ("program background", theme.indexed(1)),
+        ("selection", theme.selection),
+        ("cursor", theme.cursor),
+    ] {
+        let original = rgb_color(original);
+        let expected = tint.apply(original, rgb_color(theme.background));
+        assert_ne!(expected, original);
+        assert!(
+            quads
+                .iter()
+                .any(|quad| quad.background.as_solid() == Some(expected)),
+            "{label} must be tinted with its original alpha: expected {expected:?}, got {quads:?}"
+        );
+        assert_eq!(expected.a, original.a);
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[gpui::test]
+fn paint_dispatches_translucent_text_and_decoration_path(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (_, underlines, theme) =
+        paint_fixture(cx, crate::transparency::Tint::default());
+    assert!(
+        underlines
+            .iter()
+            .any(|line| line.color == rgb_color(theme.foreground).opacity(0.7)),
+        "paint must apply text alpha through the translucent branch: {underlines:?}"
+    );
+}

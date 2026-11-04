@@ -932,3 +932,27 @@ fn transparency_has_three_accessible_percent_sliders(cx: &mut TestAppContext) {
         assert!(node["aria"].to_string().contains('%'), "{node}");
     }
 }
+
+#[gpui::test]
+fn all_opacity_settings_explain_linux_fallback(cx: &mut TestAppContext) {
+    let harness = DesktopHarness::new(cx);
+    harness.cx.update(|cx| {
+        for support in [
+            crate::transparency::Support::NoCompositor,
+            crate::transparency::Support::NoArgbVisual,
+        ] {
+            cx.global_mut::<Desktop>().transparency_support = support;
+            for path in [
+                "window.opacity",
+                "window.background_opacity",
+                "window.foreground_opacity",
+            ] {
+                assert_eq!(
+                    settings_window::SettingsView::transparency_note(path, cx),
+                    support.note(),
+                    "{path}"
+                );
+            }
+        }
+    });
+}

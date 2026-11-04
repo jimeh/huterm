@@ -806,10 +806,10 @@ file turns it on, and Settings shows the row only when the file sets it.
 
 On Linux, transparency needs an X11 compositing manager and a 32-bit color
 visual. Without either, windows stay opaque, Huterm logs which one is missing,
-and Settings says so under Opacity and Background opacity. Huterm checks again
-when a window opens and when the file reloads. A transparent window on Linux
-draws text without subpixel antialiasing, and some graphics drivers can keep a
-window opaque in a way Huterm cannot detect.
+and Settings says so under Opacity, Background opacity and Text opacity. Huterm
+checks again when a window opens and when the file reloads. A transparent
+window on Linux draws text without subpixel antialiasing, and some graphics
+drivers can keep a window opaque in a way Huterm cannot detect.
 
 ## Title bar tabs
 

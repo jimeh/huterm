@@ -179,11 +179,6 @@ pub(super) struct Presentation {
     smoke_observations: bool,
 }
 impl Presentation {
-    pub(super) fn opacity_reloaded(&mut self, supported: bool) {
-        self.model.opacity_reloaded(supported);
-        self.wake();
-    }
-
     pub(super) fn wake(&self) {
         self.work.signal(WakeSource::View);
     }
@@ -654,9 +649,7 @@ pub(super) fn attach(
     let now = Instant::now();
     let fade_supported = platform
         .supports_fade()
-        .map_err(|error| error.to_string())?
-        && crate::transparency::support()
-            == crate::transparency::Support::Available;
+        .map_err(|error| error.to_string())?;
     if !fade_supported && profile.effects().0 {
         eprintln!(
             "Quake: no X11 compositor; opacity animation is unavailable, position animation remains enabled"

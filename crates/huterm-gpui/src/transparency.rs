@@ -120,11 +120,13 @@ impl Default for Factors {
     }
 }
 impl Factors {
+    /// Without transparency support only the configured factor drops out:
+    /// a Quake fade needs a compositor, not an ARGB visual.
     fn effective(self) -> f64 {
         if self.supported {
             self.configured * self.fade
         } else {
-            1.0
+            self.fade
         }
     }
 }
@@ -301,6 +303,23 @@ mod tests {
             })
             .unwrap();
         assert_eq!(written.get(), 1.0);
+    }
+
+    #[test]
+    fn unsupported_transparency_keeps_the_quake_fade() {
+        let owner = Alpha::default();
+        let written = Cell::new(1.0);
+        owner.set_supported(false);
+        owner.configure(0.7);
+        for fade in [0.4, 1.0] {
+            owner
+                .fade(fade, |value| {
+                    written.set(value);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(written.get(), fade, "configured opacity stays at 1");
+        }
     }
 
     #[test]

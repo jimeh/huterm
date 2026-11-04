@@ -4994,11 +4994,7 @@ impl WorkspaceView {
     }
 
     fn tab_colors(&self) -> TabColors {
-        let alpha = if self.presentation() == Presentation::Overlay {
-            1.0
-        } else {
-            self.transparency_support.paint(self.config.window).0
-        };
+        let alpha = self.transparency_support.paint(self.config.window).0;
         TabColors::new(&self.config.theme).background_opacity(alpha)
     }
 
@@ -11342,12 +11338,6 @@ impl WorkspaceView {
                     1.0
                 },
             );
-            if let Some(quake) = &mut self.quake {
-                quake.opacity_reloaded(
-                    self.transparency_support
-                        == crate::transparency::Support::Available,
-                );
-            }
             self.native_alpha.sync(window, cx);
             self.pane_bars
                 .set_timing(PaneBarTiming::from_config(&config.panes));
@@ -12009,16 +11999,55 @@ fn client_frame_panel(
     background: gpui::Hsla,
     swatch: Swatch,
 ) -> gpui::Div {
-    div()
+    let panel = div()
         .absolute()
         .left(content.origin.x)
         .top(content.origin.y)
         .w(content.size.width)
         .h(content.size.height)
         .rounded_tl(FRAME_RADIUS)
-        .rounded_tr(FRAME_RADIUS)
-        .when(background.a >= 1.0, |panel| panel.bg(background))
-        .shadow(swatch.frame_shadow())
+        .rounded_tr(FRAME_RADIUS);
+    if background.a >= 1.0 {
+        return panel.bg(background).shadow(swatch.frame_shadow());
+    }
+    // GPUI fills a drop shadow's whole blurred rectangle, interior included,
+    // so without the panel's fill over it the shadow would darken the
+    // translucent content. Paint it only in the ring around the panel.
+    panel.child(
+        canvas(
+            |_, _, _| (),
+            move |bounds, (), window, _| {
+                let corners = gpui::Corners {
+                    top_left: FRAME_RADIUS,
+                    top_right: FRAME_RADIUS,
+                    ..Default::default()
+                };
+                for mask in frame_shadow_masks(bounds) {
+                    window.with_content_mask(
+                        Some(gpui::ContentMask { bounds: mask }),
+                        |window| {
+                            window.paint_drop_shadows(
+                                bounds,
+                                corners,
+                                &swatch.frame_shadow(),
+                            );
+                        },
+                    );
+                }
+            },
+        )
+        .absolute()
+        .inset_0(),
+    )
+}
+
+/// The inset ring around a client frame panel at `content`, where a
+/// translucent panel's drop shadow may paint.
+fn frame_shadow_masks(content: Bounds<Pixels>) -> Vec<Bounds<Pixels>> {
+    crate::transparency::background_regions(
+        content.dilate(client_frame::CLIENT_INSET),
+        Some(content),
+    )
 }
 
 impl Render for WorkspaceView {
@@ -12643,6 +12672,10 @@ impl Render for WorkspaceView {
             root = root.children(std::mem::take(&mut marks));
         }
         if bar_drawn {
+            // Only the fullscreen reveal floats over the terminal; pinned
+            // pane title bars keep the configured background alpha.
+            let colors = colors
+                .for_floating(self.presentation() == Presentation::Overlay);
             let clip = if self.presentation() == Presentation::Overlay {
                 layout.terminal
             } else {
@@ -12693,7 +12726,7 @@ impl Render for WorkspaceView {
                                 .map(|index| {
                                     let offset =
                                         strip.start(index) - strip.offset;
-                                    if vertical {
+                                    let tab = if vertical {
                                         Bounds::new(
                                             strip.bounds.origin
                                                 + point(px(0.0), offset),
@@ -12711,7 +12744,10 @@ impl Render for WorkspaceView {
                                                 layout.tabs.size.height,
                                             ),
                                         )
-                                    }
+                                    };
+                                    // `tab-strip` clips the tab, so the bar
+                                    // still fills the part scrolled beyond it.
+                                    tab.intersect(&strip.bounds)
                                 }),
                             colors.bar,
                             gpui::Corners {

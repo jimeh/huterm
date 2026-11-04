@@ -428,8 +428,8 @@ fn configured_alpha_reload_during_fade_keeps_policy_progress_and_deadline() {
         })
         .unwrap();
     assert!((written.get() - 0.7 * first.opacity).abs() < 1e-9);
+    // A reload changes only the configured factor; the policy is untouched.
     alpha.configure(0.5);
-    model.opacity_reloaded(true);
     let next = model
         .decide(facts, sample_at, true)
         .unwrap()
@@ -449,38 +449,4 @@ fn configured_alpha_reload_during_fade_keeps_policy_progress_and_deadline() {
         })
         .unwrap();
     assert!((written.get() - 0.5 * next.opacity).abs() < 1e-9);
-}
-
-#[test]
-fn opacity_reload_preserves_pending_show_and_hide_effects() {
-    for showing in [true, false] {
-        let now = Instant::now();
-        let (mut model, mut facts) = visible(now);
-        facts.visible = !showing;
-        model.profile.animation = crate::quake::Animation::None;
-        model.request(showing, false, now);
-        model.decide(facts, now, false).unwrap();
-        model.decide(facts, now, false).unwrap();
-        let pending = model.decide(facts, now, true).unwrap();
-        assert!(pending.actions.contains(&if showing {
-            Action::Show
-        } else {
-            Action::Hide(false)
-        }));
-        let generation = model.revision;
-        let stage = model.stage;
-        let deadline = model.deadline;
-        for supported in [false, true] {
-            model.opacity_reloaded(supported);
-            assert_eq!(model.fade_supported, supported);
-            assert_eq!(model.revision, generation, "pending effect must run");
-            assert_eq!(model.stage, stage);
-            assert_eq!(model.deadline, deadline);
-        }
-        // Deliver the still-current effect, then observe its native endpoint.
-        facts.visible = showing;
-        facts.active = showing;
-        assert!(model.decide(facts, now, false).unwrap().settled);
-        assert_eq!(model.stage, Stage::Idle);
-    }
 }

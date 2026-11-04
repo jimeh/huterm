@@ -873,3 +873,31 @@ fn snapshot_publishes_osc11_default_background_and_clears_on_osc111() {
         CellColor::DefaultBackground
     );
 }
+
+#[test]
+fn equal_osc11_reset_restores_symbolic_default_background() {
+    let mut engine = engine();
+    engine.snapshot().unwrap();
+    // The override equals the theme background, so the resolved colors never
+    // change and only the engine's damage rebuilds the retained rows.
+    engine.process(b"\x1b]11;#445566\x1b\\").unwrap();
+    let overridden = engine.snapshot().unwrap();
+    assert_eq!(
+        overridden.default_background,
+        Some(presentation().background)
+    );
+    assert_eq!(
+        overridden.rows[0].cells[0].background,
+        CellColor::Rgb(presentation().background)
+    );
+    engine.process(b"\x1b]111\x1b\\").unwrap();
+    let reset = engine.snapshot().unwrap();
+    assert_eq!(reset.default_background, None);
+    for row in &reset.rows {
+        assert_eq!(
+            row.cells[0].background,
+            CellColor::DefaultBackground,
+            "OSC 111 must restore symbolic default backgrounds even when RGB is unchanged"
+        );
+    }
+}

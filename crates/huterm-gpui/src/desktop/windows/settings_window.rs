@@ -2596,9 +2596,14 @@ impl SettingsView {
         path: &str,
         cx: &App,
     ) -> Option<&'static str> {
-        matches!(path, "window.opacity" | "window.background_opacity")
-            .then(|| cx.global::<Desktop>().transparency_support.note())
-            .flatten()
+        matches!(
+            path,
+            "window.opacity"
+                | "window.background_opacity"
+                | "window.foreground_opacity"
+        )
+        .then(|| cx.global::<Desktop>().transparency_support.note())
+        .flatten()
     }
 
     /// Why the applied font differs from the file: an alias or an unavailable
