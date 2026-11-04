@@ -128,6 +128,7 @@ struct OutFrame {
     first: bool,
     last: bool,
     lane: u64,
+    priority: bool,
 }
 
 impl From<Frame> for OutFrame {
@@ -138,6 +139,7 @@ impl From<Frame> for OutFrame {
             first: frame.first,
             last: frame.last,
             lane: frame.lane,
+            priority: frame.priority,
         }
     }
 }
@@ -967,8 +969,15 @@ impl Server {
         // urgent queue is empty; ordinary frames only while under budget.
         loop {
             // Includes an aborted effect's abort frame, after its lane cleared.
+            // The effect lane holds one frame slot: a frame queued or being
+            // written. Its next frame waits until that one is written.
+            let writing_urgent = conn
+                .current
+                .as_ref()
+                .is_some_and(|(frame, _)| frame.priority);
             if conn.tx.has_urgent()
                 && conn.urgent.is_empty()
+                && !writing_urgent
                 && let Some(frame) = conn.tx.next_where(true)
             {
                 if frame.priority {

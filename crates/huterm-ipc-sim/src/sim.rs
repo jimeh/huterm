@@ -659,12 +659,11 @@ impl World {
                 );
             }
         }
-        // Encoded bytes stay within the budget plus one frame per open
-        // stream, and nothing is held encoded outside the queue.
+        // Encoded bytes stay within the budget plus one ordinary frame and
+        // the effect lane's one frame, and nothing is held encoded outside
+        // the queue.
         let frame = self.profile.max_frame + 4;
-        if self.server.record.max_over_budget
-            > frame * self.profile.max_open_streams
-        {
+        if self.server.record.max_over_budget > 2 * frame {
             let over = self.server.record.max_over_budget;
             return Err(format!(
                 "outbound queue exceeded its budget by {over}"

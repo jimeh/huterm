@@ -902,8 +902,9 @@ encodes anything, and then encodes one frame at a time, each reserved the
 same way. A deterministic sizing pass computes the record length that opens
 the message without building it. A pump keeps its snapshot, an `Arc` core
 already holds, rather than an encoded copy, so a connection's encoded
-output never exceeds `OUTBOUND_BUDGET` plus one frame per open stream,
-however many viewers it has.
+output never exceeds `OUTBOUND_BUDGET` plus one ordinary frame, the last
+one built before the queue reached its budget, and the effect lane's one
+frame, however many viewers it has.
 
 The server disconnects a client when either condition lasts for
 `WRITER_STALL_DEADLINE`: bytes are pending and the socket accepts none, or
@@ -1203,9 +1204,9 @@ After the faults stop, each run waits for quiescence and checks:
 - input reaches the PTY once and in order per viewer;
 - without corruption, no client ever asks for a resync, and no connection
   ends for anything but a stall;
-- on every tick, the outbound queue stays within its budget plus one frame
-  per open stream, the server holds no encoded message outside it, and
-  reassembly stays within its budget.
+- on every tick, the outbound queue stays within its budget plus one
+  ordinary frame and one effect frame, the server holds no encoded message
+  outside it, and reassembly stays within its budget.
 
 Each run also counts what it checked and which rare paths ran, and the tests
 require each scenario to have compared real views and statuses and to have
@@ -1453,8 +1454,8 @@ Acceptance:
   `Stopped` with its final status; one that reconnects to a new incarnation
   starts fresh baselines.
 - With 256 viewers on large grids under heavy output, a connection's
-  encoded output stays within `OUTBOUND_BUDGET` plus one frame per open
-  stream.
+  encoded output stays within `OUTBOUND_BUDGET` plus one ordinary frame and
+  one effect frame.
 - A scroll the server refuses does not let later typing undo a scroll the
   user made after it.
 - A scroll during a multi-frame update arrives after that update, and the
