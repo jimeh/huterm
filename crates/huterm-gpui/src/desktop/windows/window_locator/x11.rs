@@ -140,13 +140,21 @@ impl Platform {
             .reply()?
             .value32()
             .map_or_else(Vec::new, |ids| ids.map(u64::from).collect());
-        for (id, native) in ordered(windows, &stack) {
-            let native = native as u32;
-            let attributes =
-                connection.get_window_attributes(native)?.reply()?;
-            if attributes.map_state != MapState::VIEWABLE {
-                continue;
+        // Withdrawn Quake windows are absent from EWMH stacking. Check
+        // completeness only after excluding every unmapped native window.
+        let mut viewable = Vec::new();
+        for (_, native) in windows {
+            if connection
+                .get_window_attributes(*native as u32)?
+                .reply()?
+                .map_state
+                == MapState::VIEWABLE
+            {
+                viewable.push(*native);
             }
+        }
+        for (id, native) in ordered(windows, &stack, &viewable) {
+            let native = native as u32;
             let geometry = connection.get_geometry(native)?.reply()?;
             let local = connection
                 .translate_coordinates(

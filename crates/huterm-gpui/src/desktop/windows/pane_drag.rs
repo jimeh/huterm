@@ -226,6 +226,7 @@ impl WorkspaceView {
         if !self.can_drag_panes(cx) || self.arrangements > 0 {
             return;
         }
+        self.end_cross_drag(true, cx);
         self.scroll_target = None;
         self.pane_drag = Some(PaneDrag {
             tab,
@@ -544,7 +545,7 @@ impl WorkspaceView {
     ) {
         self.update_pane_drag(pointer, window, cx);
         if self.finish_cross_drag(window, cx) {
-            if let Some(drag) = self.pane_drag.take()
+            if let Some(drag) = self.take_pane_drag(cx)
                 && !self.busy
             {
                 self.end_pane_drag(&drag, window, cx);
@@ -552,7 +553,7 @@ impl WorkspaceView {
             cx.notify();
             return;
         }
-        let Some(drag) = self.pane_drag.take() else {
+        let Some(drag) = self.take_pane_drag(cx) else {
             return;
         };
         cx.notify();
@@ -580,6 +581,18 @@ impl WorkspaceView {
         }
     }
 
+    fn take_pane_drag(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<PaneDrag> {
+        self.end_cross_drag(true, cx);
+        let drag = self.pane_drag.take();
+        if drag.is_some() {
+            cx.notify();
+        }
+        drag
+    }
+
     /// Cancels a pane drag, switching back to the tab it started in when it
     /// spring-loaded another.
     pub(super) fn cancel_pane_drag(
@@ -587,8 +600,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        self.end_cross_drag(true, cx);
-        if let Some(drag) = self.pane_drag.take() {
+        if let Some(drag) = self.take_pane_drag(cx) {
             self.end_pane_drag(&drag, window, cx);
         }
     }
@@ -628,13 +640,17 @@ impl WorkspaceView {
 
     /// Drops a pane drag that a tab switch it did not make interrupted;
     /// nothing switches back.
-    pub(super) fn interrupt_pane_drag(&mut self, selected: TabId) {
+    pub(super) fn interrupt_pane_drag(
+        &mut self,
+        selected: TabId,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self
             .pane_drag
             .as_ref()
             .is_some_and(|drag| drag.expected_active() != selected)
         {
-            self.pane_drag = None;
+            self.take_pane_drag(cx);
         }
     }
 

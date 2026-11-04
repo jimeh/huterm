@@ -434,6 +434,10 @@ impl PendingInstalls {
         }
     }
 
+    pub(super) fn failed(&self, tab: TabId) -> bool {
+        self.failed.contains(&tab)
+    }
+
     /// Allows failed installs again once a batch touched `workspace`.
     fn touched(&mut self, touched: &Touched, workspace: Option<WorkspaceId>) {
         if workspace

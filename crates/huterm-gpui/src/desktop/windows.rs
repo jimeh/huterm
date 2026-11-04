@@ -1926,6 +1926,10 @@ fn reconcile(cx: &mut App, touched: &Touched) {
         // and the grids its panes request, and an input sync toggle changes
         // its tab's marks without changing a title.
         if change.changed
+            || view
+                .transfer
+                .as_ref()
+                .is_some_and(|pending| pending.installing)
             || view.tabs.iter().any(|tab| {
                 touched.contains_layout(tab.id) || touched.contains_tab(tab.id)
             })
@@ -2496,7 +2500,7 @@ fn open_window_with_profile(
                 config.window.background_blur,
             ),
             display_id,
-            // AppKit activation maps a hidden host after its views install.
+            // AppKit activation maps a hidden host after installation settles.
             // X11 activation only sends EWMH focus, so that host shows now.
             show: profile.is_none()
                 && !(cfg!(target_os = "macos") && transfer_size.is_some()),
@@ -2796,6 +2800,7 @@ fn open_window_with_profile(
                     if view.layout_pending {
                         view.sync_tab_layout(window, cx);
                     }
+                    view.finish_transfer_install(window, cx);
                     view.resume_close(window, cx);
                     view.refresh_palette(cx);
                     view.refresh_menu(window, cx);
@@ -3285,6 +3290,13 @@ impl WorkspaceView {
             self.focused_notice = None;
             self.restore_tab_focus(window, cx);
             self.reconcile_notices(window, cx);
+        }
+        if command.id == view_install::RETRY_INSTALL {
+            if !terminating(cx) {
+                self.reconcile(&Touched::everything(), false, cx);
+                cx.notify();
+            }
+            return Ok(CommandOutcome::Completed);
         }
         self.invoke_interactive(&command, window, cx)
     }
@@ -7263,6 +7275,7 @@ impl WorkspaceView {
         if !self.can_reorder(source, window, cx) {
             return;
         }
+        self.end_cross_drag(true, cx);
         self.scroll_target = None;
         self.reorder = Some(TabReorder {
             source,
@@ -7383,13 +7396,24 @@ impl WorkspaceView {
         }
     }
 
+    fn take_reorder(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<TabReorder> {
+        self.end_cross_drag(true, cx);
+        let drag = self.reorder.take();
+        if drag.is_some() {
+            cx.notify();
+        }
+        drag
+    }
+
     fn cancel_reorder(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        self.end_cross_drag(true, cx);
-        if let Some(drag) = self.reorder.take() {
+        if let Some(drag) = self.take_reorder(cx) {
             self.tab_scroll = drag.original_scroll;
             self.restore_tab_focus(window, cx);
             cx.notify();
@@ -7404,7 +7428,7 @@ impl WorkspaceView {
     ) {
         self.update_reorder(pointer, window, cx);
         if self.finish_cross_drag(window, cx) {
-            if let Some(drag) = self.reorder.take()
+            if let Some(drag) = self.take_reorder(cx)
                 && !self.busy
             {
                 self.tab_scroll = drag.original_scroll;
@@ -7412,7 +7436,7 @@ impl WorkspaceView {
             cx.notify();
             return;
         }
-        let Some(drag) = self.reorder.take() else {
+        let Some(drag) = self.take_reorder(cx) else {
             return;
         };
         cx.notify();
@@ -10327,7 +10351,7 @@ impl WorkspaceView {
             return;
         }
         // Only a pane drag's own spring load switches tabs under it.
-        self.interrupt_pane_drag(id);
+        self.interrupt_pane_drag(id, cx);
         if self
             .divider_drag
             .as_ref()
@@ -10501,7 +10525,7 @@ impl WorkspaceView {
         self.clear_incoming(true, window, cx);
         self.cancel_divider_drag(cx);
         self.resizing_sidebar = false;
-        let Some(target) = self.current_close_target(target) else {
+        let Some(target) = self.current_close_target(target, cx) else {
             self.release_exit_close_if_idle(cx);
             return;
         };
@@ -10782,9 +10806,13 @@ impl WorkspaceView {
     }
 
     /// Restricts tab targets to current tabs, in window order, and points a
-    /// pane target at the tab now showing its pane; `None` when nothing
-    /// remains to close.
-    fn current_close_target(&self, target: CloseTarget) -> Option<CloseTarget> {
+    /// pane target at its tab in this workspace's projection, including a
+    /// moved pane whose viewer failed to install; `None` when nothing remains.
+    fn current_close_target(
+        &self,
+        target: CloseTarget,
+        cx: &App,
+    ) -> Option<CloseTarget> {
         match target {
             CloseTarget::Tab(id) => self
                 .tabs
@@ -10792,7 +10820,7 @@ impl WorkspaceView {
                 .any(|tab| tab.id == id)
                 .then_some(CloseTarget::Tab(id)),
             CloseTarget::Pane { pane, .. } => self
-                .tab_showing(pane)
+                .projected_pane_tab(pane, cx)
                 .map(|tab| CloseTarget::Pane { tab, pane }),
             CloseTarget::Tabs(ids) => tabs_target(
                 self.tabs
@@ -10863,9 +10891,11 @@ impl WorkspaceView {
 
     /// Whether the window no longer shows any tab or pane `target` names;
     /// window-wide targets always apply.
-    fn shows_none_of(&self, target: &CloseTarget) -> bool {
+    fn shows_none_of(&self, target: &CloseTarget, cx: &App) -> bool {
         match target {
-            CloseTarget::Pane { pane, .. } => self.tab_showing(*pane).is_none(),
+            CloseTarget::Pane { pane, .. } => {
+                self.projected_pane_tab(*pane, cx).is_none()
+            }
             target => target.tabs().is_some_and(|tabs| {
                 !tabs
                     .iter()
@@ -10883,7 +10913,7 @@ impl WorkspaceView {
             .close
             .confirmation
             .as_ref()
-            .is_some_and(|target| self.shows_none_of(target))
+            .is_some_and(|target| self.shows_none_of(target, cx))
         {
             // Every tab or pane it asks about left the window, so its commit
             // could only go stale. Queued closes stay queued and run below.

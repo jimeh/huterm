@@ -259,16 +259,6 @@ impl WorkspaceView {
             && id != self.window
         {
             cx.defer(move |cx| {
-                let current =
-                    cx.global::<Desktop>().cross.drag.as_ref().is_some_and(
-                        |drag| {
-                            drag.generation == snapshot.generation
-                                && drag.sample == snapshot.sample
-                        },
-                    );
-                if !current {
-                    return;
-                }
                 if let Some(handle) = handle(cx, id) {
                     let _ = handle.update(cx, |root, window, cx| {
                         if let Ok(view) = root.downcast::<WorkspaceView>() {
@@ -345,13 +335,27 @@ impl WorkspaceView {
             })
     }
 
-    fn receive_incoming(
+    pub(super) fn receive_incoming(
         &mut self,
         drag: Drag,
         pointer: gpui::Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // Validate at delivery, including callbacks queued before cancellation
+        // or a newer sample from this same source window.
+        let current =
+            cx.global::<Desktop>()
+                .cross
+                .drag
+                .as_ref()
+                .is_some_and(|current| {
+                    current.generation == drag.generation
+                        && current.sample == drag.sample
+                });
+        if !current {
+            return;
+        }
         if !self.cross_eligible(cx) {
             self.clear_incoming(true, window, cx);
             return;
@@ -878,6 +882,23 @@ impl WorkspaceView {
         }
     }
 
+    pub(super) fn projected_pane_tab(
+        &self,
+        pane: PaneId,
+        cx: &App,
+    ) -> Option<TabId> {
+        let state = cx.global::<Desktop>().hierarchy.state();
+        state
+            .pane_tab(pane)
+            .filter(|tab| state.tab_workspace(*tab) == self.workspace_id(cx))
+    }
+
+    pub(super) fn transfer_contains(&self, pane: PaneId) -> bool {
+        self.transfer
+            .as_ref()
+            .is_some_and(|pending| pending.panes.contains(&pane))
+    }
+
     pub(super) fn finish_transfer_install(
         &mut self,
         window: &mut Window,
@@ -886,13 +907,26 @@ impl WorkspaceView {
         let Some(pending) = &self.transfer else {
             return;
         };
-        if !pending.installing
-            || !pending.panes.iter().all(|pane| {
-                self.tabs.iter().any(|tab| {
-                    tab.pane(*pane)
-                        .is_some_and(|pane| !pane.view.read(cx).revoked)
-                })
+        if !pending.installing {
+            return;
+        }
+        let in_workspace = |pane| self.projected_pane_tab(pane, cx);
+        let installed = |pane| {
+            self.tabs.iter().any(|tab| {
+                tab.pane(pane)
+                    .is_some_and(|pane| !pane.view.read(cx).revoked)
             })
+        };
+        let failed = pending.panes.iter().any(|pane| {
+            !installed(*pane)
+                && in_workspace(*pane)
+                    .is_some_and(|tab| self.installs.failed(tab))
+        });
+        if !failed
+            && !pending
+                .panes
+                .iter()
+                .all(|pane| in_workspace(*pane).is_none() || installed(*pane))
         {
             return;
         }
@@ -903,10 +937,14 @@ impl WorkspaceView {
         if let Some(tab) = self.tab_showing(focus) {
             self.select(tab, window, cx);
             self.focus_pane(tab, focus, window, cx);
+        }
+        if !terminating(cx) {
+            // Activation also shows a hidden macOS tear-off host, even when
+            // it has no installed view to focus after a subscription failure.
             window.activate_window();
         }
         for pane in closes {
-            if let Some(tab) = self.tab_showing(pane) {
+            if let Some(tab) = self.projected_pane_tab(pane, cx) {
                 self.close.queue(CloseTarget::Pane { tab, pane });
             }
         }

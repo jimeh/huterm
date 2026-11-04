@@ -172,11 +172,16 @@ fn cross_window_cancel_rejects_late_preview_callbacks(cx: &mut TestAppContext) {
     let (mut h, source, tab, destination, workspace, _, _locator) =
         DesktopHarness::cross_fixture(cx);
     h.cross_begin(source, tab);
-    h.update_view(source, |view, window, cx| {
-        view.update_reorder(point(px(-50.0), px(-50.0)), window, cx);
-        view.cancel_reorder(window, cx);
-    });
+    let late =
+        h.cx.update(|cx| cx.global::<Desktop>().cross.drag.clone().unwrap());
+    h.update_view(source, super::super::WorkspaceView::cancel_reorder);
     h.cx.run_until_parked();
+    assert!(h.update_view(destination, |view, _, _| view.incoming.is_none()));
+    // Deliver the captured callback only after the deferred clear has run.
+    let pointer = h.cross_slot(destination);
+    h.update_view(destination, |view, window, cx| {
+        view.receive_incoming(late, pointer, window, cx);
+    });
     assert!(h.update_view(destination, |view, _, _| view.incoming.is_none()));
     assert!(h.update_view(source, |view, _, _| view.reorder.is_none()
         && !view.busy));
@@ -233,7 +238,7 @@ fn cross_window_reservations_precede_workers_and_close_requests(
         0,
         "closes must wait while the transfer worker is held"
     );
-    h.runtime.worker_hooks.release(Stage::Transfer);
+    h.finish_queued_cross_closes(source, destination);
 }
 
 #[gpui::test]
@@ -606,6 +611,13 @@ fn cross_window_command_and_failed_tear_off_share_the_transfer_path(
     let source = h.attach_window();
     h.activate(source, tab);
     let pane = h.cross_pane(tab);
+    let sessions: Vec<_> = h
+        .runtime
+        .lock()
+        .sessions()
+        .iter()
+        .map(|session| session.id)
+        .collect();
     h.runtime.worker_hooks.fail(Stage::Transfer);
     h.invoke(source, ids::MOVE_TAB_TO_NEW_WINDOW).unwrap();
     h.wait_for("failed command closes its empty destination", |cx| {
@@ -617,6 +629,21 @@ fn cross_window_command_and_failed_tear_off_share_the_transfer_path(
                 .unwrap()
     });
     assert!(contains(&h.runtime.lock(), h.workspace, tab));
+    assert_eq!(
+        h.runtime
+            .lock()
+            .sessions()
+            .iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>(),
+        sessions,
+        "failed destination session must be deleted"
+    );
+    assert!(h.cx.update(|cx| {
+        notices(cx, source)
+            .iter()
+            .any(|notice| notice.contains("Cannot move terminal"))
+    }));
     h.invoke(source, ids::MOVE_TAB_TO_NEW_WINDOW).unwrap();
     let mut destination = None;
     h.wait_for("command opens the destination", |cx| {
@@ -740,7 +767,7 @@ fn cross_window_overflow_autoscrolls_under_a_stationary_pointer(
 }
 
 #[gpui::test]
-fn cross_window_install_failure_keeps_the_transfer_reserved_until_retry(
+fn cross_window_install_failure_settles_without_an_outside_mutation(
     cx: &mut TestAppContext,
 ) {
     let (mut h, source, tab, destination, workspace, _, _locator) =
@@ -754,14 +781,27 @@ fn cross_window_install_failure_keeps_the_transfer_reserved_until_retry(
             notice.contains("injected viewer subscription failure")
         })
     });
-    assert!(h.update_view(destination, |view, _, _| view.busy
-        && view.transfer.is_some()));
+    assert!(
+        h.update_view(destination, |view, _, _| !view.busy
+            && view.transfer.is_none()),
+        "failed install must settle the reservation"
+    );
     assert!(contains(&h.runtime.lock(), workspace, tab));
-    h.runtime
-        .lock()
-        .open_tab(workspace, &fixture(ECHO))
-        .unwrap();
-    h.cross_idle(destination, pane);
+    h.update_view(destination, |view, window, cx| {
+        let id = view.notices.newest().unwrap();
+        let notice = &view.notices.get(id).unwrap().content;
+        assert_eq!(notice.title, "Cannot show moved tab");
+        assert_eq!(notice.actions[0].label, "Try Again");
+        view.run_notice_action(id, None, window, cx).unwrap();
+    });
+    h.wait_for("retry installs moved pane", |cx| {
+        pane_view(cx, destination, tab, pane).is_some()
+    });
+    h.update_view(destination, |view, window, cx| {
+        view.select_tab(tab, true, window, cx);
+    });
+    h.type_line(destination, "retry-alive");
+    h.wait_text(destination, tab, "got:retry-alive");
 }
 
 #[gpui::test]
@@ -1107,7 +1147,7 @@ fn cross_window_destination_close_then_source_close_wait_for_the_transfer(
     }
     h.cx.run_until_parked();
     assert_eq!(runtime.worker_hooks.entered(Stage::Assess), 0);
-    h.runtime.worker_hooks.release(Stage::Transfer);
+    h.finish_queued_cross_closes(source, destination);
 }
 
 #[gpui::test]
@@ -1373,4 +1413,480 @@ fn cross_window_overflowed_tear_off_pill_ends_before_the_add_control(
             }
         });
     }
+}
+
+#[gpui::test]
+fn cross_window_navigation_interrupt_ends_the_pane_gesture(
+    cx: &mut TestAppContext,
+) {
+    let (mut h, source, tab, destination, workspace, origin, locator) =
+        DesktopHarness::cross_fixture(cx);
+    let sprung = h
+        .runtime
+        .lock()
+        .open_tab(workspace, &fixture(ECHO))
+        .unwrap()
+        .tab
+        .id;
+    h.wait_for("second destination tab", |cx| {
+        terminal(cx, destination, sprung).is_some()
+    });
+    let label = h.update_view(destination, |view, window, _| {
+        view.tab_strip(window).label(1).center()
+    });
+    locator
+        .0
+        .set(Located::Window(destination.window_id(), label));
+    let pane = h.cross_pane(tab);
+    h.cross_begin_pane(source, tab, pane);
+    h.update_view(destination, |view, window, cx| {
+        view.advance_incoming_spring(
+            Instant::now() + SPRING_LOAD_DELAY,
+            window,
+            cx,
+        );
+    });
+    assert_eq!(
+        h.update_view(destination, |view, _, cx| view.active_tab(cx)),
+        Some(sprung)
+    );
+    h.invoke(source, ids::NEXT_TAB).unwrap();
+    h.cx.run_until_parked();
+    assert!(h.update_view(source, |view, _, _| view.pane_drag.is_none()));
+    assert!(
+        h.cx.update(|cx| cx.global::<Desktop>().cross.drag.is_none()),
+        "navigation must end the shared gesture"
+    );
+    assert!(h.update_view(destination, |view, _, _| view.incoming.is_none()));
+    assert_eq!(
+        h.update_view(destination, |view, _, cx| view.active_tab(cx)),
+        Some(origin)
+    );
+    h.update_view(source, |view, window, cx| {
+        view.select_tab(tab, true, window, cx);
+    });
+    h.update_view(destination, |view, window, cx| {
+        view.select_tab(sprung, false, window, cx);
+    });
+    let label = h.update_view(destination, |view, window, _| {
+        view.tab_strip(window).label(0).center()
+    });
+    locator
+        .0
+        .set(Located::Window(destination.window_id(), label));
+    h.cross_begin_pane(source, tab, pane);
+    h.update_view(destination, |view, window, cx| {
+        view.advance_incoming_spring(
+            Instant::now() + SPRING_LOAD_DELAY,
+            window,
+            cx,
+        );
+    });
+    assert_eq!(
+        h.update_view(destination, |view, _, cx| view.active_tab(cx)),
+        Some(origin)
+    );
+    h.update_view(source, super::super::WorkspaceView::cancel_pane_drag);
+    h.cx.run_until_parked();
+    assert_eq!(
+        h.update_view(destination, |view, _, cx| view.active_tab(cx)),
+        Some(sprung),
+        "the next gesture must spring back to its own origin"
+    );
+}
+
+impl DesktopHarness {
+    fn finish_queued_cross_closes(
+        &mut self,
+        source: AnyWindowHandle,
+        destination: AnyWindowHandle,
+    ) {
+        self.runtime.worker_hooks.hold(Stage::Subscribe);
+        self.runtime.worker_hooks.release(Stage::Transfer);
+        let runtime = self.runtime.clone();
+        self.wait_for(
+            "source close runs while destination waits for install",
+            |cx| {
+                !cx.windows().contains(&source)
+                    && runtime.worker_hooks.held(Stage::Subscribe) == 1
+            },
+        );
+        assert_eq!(
+            runtime.worker_hooks.entered(Stage::Assess),
+            1,
+            "destination close must wait for its viewer install"
+        );
+        assert!(self.update_view(destination, |view, _, _| view.busy
+            && view.transfer.is_some()));
+        runtime.worker_hooks.release(Stage::Subscribe);
+        self.wait_closed(destination);
+        assert_eq!(runtime.worker_hooks.entered(Stage::Assess), 2);
+        assert_eq!(self.close_failures(), 0);
+    }
+
+    fn retry_moved_install(&mut self, destination: AnyWindowHandle) {
+        self.update_view(destination, |view, window, cx| {
+            let id = view.notices.newest().unwrap();
+            let notice = &view.notices.get(id).unwrap().content;
+            assert_eq!(notice.title, "Cannot show moved tab");
+            assert_eq!(notice.actions[0].label, "Try Again");
+            view.run_notice_action(id, None, window, cx).unwrap();
+        });
+    }
+}
+
+fn failed_created_install(cx: &mut TestAppContext, command: bool) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
+    let tab = h.open_tab(ECHO);
+    let _ = h.open_tab(ECHO);
+    let source = h.attach_window();
+    h.activate(source, tab);
+    let pane = h.cross_pane(tab);
+    let _locator = h.cross_locator();
+    h.runtime.worker_hooks.fail(Stage::Subscribe);
+    if command {
+        h.invoke(source, ids::MOVE_TAB_TO_NEW_WINDOW).unwrap();
+    } else {
+        h.cross_begin(source, tab);
+        h.cross_release(source);
+    }
+    let mut destination = None;
+    h.wait_for("created destination reports failed install", |cx| {
+        destination = cx.windows().into_iter().find(|handle| *handle != source);
+        destination.is_some_and(|handle| {
+            notices(cx, handle)
+                .iter()
+                .any(|notice| notice.contains("Cannot show moved tab"))
+        })
+    });
+    let destination = destination.unwrap();
+    h.wait_for("failed destination visible and active", |cx| {
+        destination
+            .update(cx, |_, window, _| {
+                window.is_window_active() && window.is_visible()
+            })
+            .unwrap()
+    });
+    assert!(h.update_view(destination, |view, _, cx| !view.busy
+        && view.transfer.is_none()
+        && view.tabs.is_empty()
+        && !view.has_nothing_to_install(cx)));
+    let workspace = h.cx.update(|cx| {
+        cx.global::<Desktop>()
+            .windows
+            .record(destination.window_id())
+            .unwrap()
+            .workspace
+            .unwrap()
+    });
+    assert!(contains(&h.runtime.lock(), workspace, tab));
+    // Complete the automatic emptied-close pipeline if it was owed. It must
+    // refuse against projected/runtime membership and leave the host open.
+    h.cx.run_until_parked();
+    assert!(h.cx.update(|cx| cx.windows().contains(&destination)));
+    h.retry_moved_install(destination);
+    h.cross_idle(destination, pane);
+    h.type_line(destination, "created-retry-alive");
+    h.wait_text(destination, tab, "got:created-retry-alive");
+}
+
+#[gpui::test]
+fn cross_window_failed_tear_off_install_keeps_the_host_and_terminal(
+    cx: &mut TestAppContext,
+) {
+    failed_created_install(cx, false);
+}
+
+#[gpui::test]
+fn cross_window_failed_command_install_keeps_the_host_and_terminal(
+    cx: &mut TestAppContext,
+) {
+    failed_created_install(cx, true);
+}
+
+#[gpui::test]
+fn cross_window_failed_install_resumes_a_queued_destination_close(
+    cx: &mut TestAppContext,
+) {
+    let (mut h, source, tab, destination, _, _, _) =
+        DesktopHarness::cross_fixture(cx);
+    h.cross_begin(source, tab);
+    h.runtime.worker_hooks.hold(Stage::Subscribe);
+    h.runtime.worker_hooks.fail(Stage::Subscribe);
+    h.cross_release(source);
+    let runtime = h.runtime.clone();
+    h.wait_for("destination subscription starts", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) == 1
+    });
+    h.update_view(destination, |view, window, cx| {
+        view.request_close(CloseTarget::Window, window, cx);
+    });
+    assert_eq!(runtime.worker_hooks.entered(Stage::Assess), 0);
+    runtime.worker_hooks.hold(Stage::Assess);
+    h.runtime.worker_hooks.release(Stage::Subscribe);
+    h.wait_for("failed install resumes queued close", |_| {
+        runtime.worker_hooks.held(Stage::Assess) == 1
+    });
+    assert!(h.update_view(destination, |view, _, _| view.transfer.is_none()));
+    assert!(h.cx.update(|cx| {
+        notices(cx, destination)
+            .iter()
+            .any(|notice| notice.contains("Cannot show moved tab"))
+    }));
+    runtime.worker_hooks.release(Stage::Assess);
+    h.wait_closed(destination);
+    assert_eq!(runtime.worker_hooks.entered(Stage::Assess), 1);
+    assert_eq!(h.close_failures(), 0);
+}
+
+fn pending_pane_leaves_workspace(cx: &mut TestAppContext, close: bool) {
+    let (mut h, source, tab, destination, workspace, _, _) =
+        DesktopHarness::cross_fixture(cx);
+    let pane = h.cross_pane(tab);
+    h.cross_begin(source, tab);
+    h.runtime.worker_hooks.hold(Stage::Subscribe);
+    h.cross_release(source);
+    let runtime = h.runtime.clone();
+    h.wait_for("destination subscription starts", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) == 1
+    });
+    if close {
+        h.runtime.lock().close_pane(workspace, tab, pane).unwrap();
+    } else {
+        h.runtime
+            .lock()
+            .move_tab(workspace, tab, h.workspace, None)
+            .unwrap();
+    }
+    h.wait_for("removed moved pane releases reservation", |cx| {
+        destination
+            .update(cx, |root, _, cx| {
+                let view = root.downcast::<WorkspaceView>().unwrap();
+                !view.read(cx).busy && view.read(cx).transfer.is_none()
+            })
+            .unwrap()
+    });
+    assert!(runtime.worker_hooks.held(Stage::Subscribe) >= 1);
+    runtime.worker_hooks.release(Stage::Subscribe);
+    h.wait_for("stale subscription finishes", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) == 0
+    });
+    h.cx.run_until_parked();
+    assert!(h.cx.update(|cx| notices(cx, destination).is_empty()));
+    if !close {
+        h.wait_for("pane moved back installs in source", |cx| {
+            pane_view(cx, source, tab, pane).is_some()
+        });
+        h.update_view(source, |view, window, cx| {
+            view.select_tab(tab, true, window, cx);
+        });
+        h.activate(source, tab);
+        h.type_line(source, "moved-back-alive");
+        h.wait_text(source, tab, "got:moved-back-alive");
+    }
+}
+
+#[gpui::test]
+fn cross_window_removed_pending_pane_settles_before_subscription_returns(
+    cx: &mut TestAppContext,
+) {
+    pending_pane_leaves_workspace(cx, true);
+}
+
+#[gpui::test]
+fn cross_window_relocated_pending_pane_settles_before_subscription_returns(
+    cx: &mut TestAppContext,
+) {
+    pending_pane_leaves_workspace(cx, false);
+}
+
+#[gpui::test]
+fn cross_window_successful_pane_edge_drop_clears_zoom_without_history(
+    cx: &mut TestAppContext,
+) {
+    let (mut h, source, tab, destination, workspace, anchor, locator) =
+        DesktopHarness::cross_fixture(cx);
+    let pane = h.cross_pane(tab);
+    let target = h.cross_pane(anchor);
+    let second = h
+        .runtime
+        .lock()
+        .split_pane(
+            workspace,
+            anchor,
+            target,
+            SplitDirection::Right,
+            &fixture(ECHO),
+        )
+        .unwrap()
+        .pane
+        .id;
+    h.wait_for("destination split installs", |cx| {
+        pane_view(cx, destination, anchor, second).is_some()
+    });
+    h.update_view(destination, |view, _, cx| {
+        view.tabs
+            .iter_mut()
+            .find(|view| view.id == anchor)
+            .unwrap()
+            .zoomed = Some(target);
+        cx.notify();
+    });
+    h.cx.run_until_parked();
+    let history = h.cx.update(|cx| {
+        cx.global::<Desktop>()
+            .windows
+            .record(destination.window_id())
+            .unwrap()
+            .layout_history
+            .clone()
+    });
+    let frame = h.update_view(destination, |view, _, _| {
+        view.drawn_frame(target).unwrap()
+    });
+    locator.0.set(Located::Window(
+        destination.window_id(),
+        point(frame.right() - px(3.0), frame.center().y),
+    ));
+    h.cross_begin_pane(source, tab, pane);
+    h.cross_release_pane(source);
+    h.cross_idle(destination, pane);
+    assert_eq!(
+        h.update_view(destination, |view, _, _| view
+            .tabs
+            .iter()
+            .find(|view| view.id == anchor)
+            .unwrap()
+            .zoomed),
+        None
+    );
+    assert_eq!(
+        h.cx.update(|cx| cx
+            .global::<Desktop>()
+            .windows
+            .record(destination.window_id())
+            .unwrap()
+            .layout_history
+            .clone()),
+        history
+    );
+}
+
+#[gpui::test]
+fn cross_window_new_gesture_from_same_source_rejects_an_old_generation(
+    cx: &mut TestAppContext,
+) {
+    let (mut h, source, tab, destination, _, _, locator) =
+        DesktopHarness::cross_fixture(cx);
+    h.cross_begin(source, tab);
+    let late =
+        h.cx.update(|cx| cx.global::<Desktop>().cross.drag.clone().unwrap());
+    h.update_view(source, super::super::WorkspaceView::cancel_reorder);
+    h.cx.run_until_parked();
+    locator.0.set(Located::Blocked);
+    h.cross_begin(source, tab);
+    let pointer = h.cross_slot(destination);
+    h.update_view(destination, |view, window, cx| {
+        view.receive_incoming(late, pointer, window, cx);
+    });
+    assert!(
+        h.update_view(destination, |view, _, _| view.incoming.is_none()),
+        "an old gesture from the same source must not restore its preview"
+    );
+    h.update_view(source, super::super::WorkspaceView::cancel_reorder);
+}
+
+#[gpui::test]
+fn cross_window_failed_install_resumes_the_sources_queued_pane_close(
+    cx: &mut TestAppContext,
+) {
+    let (mut h, source, tab, destination, _, _, _) =
+        DesktopHarness::cross_fixture(cx);
+    let pane = h.cross_pane(tab);
+    h.cross_begin(source, tab);
+    h.runtime.worker_hooks.hold(Stage::Transfer);
+    h.runtime.worker_hooks.fail(Stage::Subscribe);
+    h.cross_release(source);
+    let runtime = h.runtime.clone();
+    h.wait_for("transfer starts before pane close", |_| {
+        runtime.worker_hooks.held(Stage::Transfer) == 1
+    });
+    h.update_view(source, |view, window, cx| {
+        view.request_close(CloseTarget::Pane { tab, pane }, window, cx);
+    });
+    runtime.worker_hooks.release(Stage::Transfer);
+    h.wait_for("pane close follows failed install", |cx| {
+        cx.global::<Desktop>()
+            .hierarchy
+            .state()
+            .pane_tab(pane)
+            .is_none()
+    });
+    assert!(h.update_view(destination, |view, _, _| view.transfer.is_none()));
+    assert_eq!(runtime.worker_hooks.entered(Stage::Assess), 1);
+    assert_eq!(h.close_failures(), 0);
+}
+
+#[gpui::test]
+fn cross_window_stale_install_notices_exclude_unrelated_panes_and_termination(
+    cx: &mut TestAppContext,
+) {
+    let (mut h, source, tab, destination, _, anchor, _) =
+        DesktopHarness::cross_fixture(cx);
+    h.cross_begin(source, tab);
+    h.runtime.worker_hooks.hold(Stage::Subscribe);
+    h.cross_release(source);
+    let runtime = h.runtime.clone();
+    h.wait_for("moved pane installation starts", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) == 1
+    });
+    h.revoke(destination);
+    h.wait_for("unrelated revoked tab replacement starts", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) == 2
+    });
+    h.update_view(destination, |view, window, cx| {
+        assert!(view.transfer.is_some());
+        let unrelated = view.pane_targets(anchor, cx);
+        assert_eq!(unrelated.len(), 1);
+        let seq = cx.global::<Desktop>().hierarchy.state().seq();
+        view.apply_tab_viewers(
+            anchor,
+            unrelated
+                .iter()
+                .map(|target| (target, Err(RuntimeError::Stopped.into())))
+                .collect(),
+            true,
+            seq,
+            window,
+            cx,
+        );
+        assert!(
+            view.notices.is_empty(),
+            "a pending transfer must not make an unrelated stale install noisy"
+        );
+        let moved = view.pane_targets(tab, cx);
+        assert_eq!(moved.len(), 1);
+        // Exercise the reporting boundary even with an applying result. The
+        // normal subscription completion also rejects all results in teardown.
+        runtime.terminating.store(true, Ordering::Release);
+        view.apply_tab_viewers(
+            tab,
+            moved
+                .iter()
+                .map(|target| (target, Err(RuntimeError::Stopped.into())))
+                .collect(),
+            true,
+            seq,
+            window,
+            cx,
+        );
+        runtime.terminating.store(false, Ordering::Release);
+        assert!(
+            view.notices.is_empty(),
+            "teardown must not post a moved-pane install notice"
+        );
+    });
+    runtime.worker_hooks.release(Stage::Subscribe);
 }

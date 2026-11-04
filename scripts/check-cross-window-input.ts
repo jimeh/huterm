@@ -128,6 +128,7 @@ clearInterval(stop); clearTimeout(timer);
     await until("pane installed in destination", state => smokeField(state, "w0.tabs") === "1" && smokeField(state, "w1.panes") === "2" && smokeField(state, "w0.busy") === "false" && smokeField(state, "w1.busy") === "false" && smokeField(state, "w1.active") === "true" && smokeField(state, "w1.pane_focus") === "0");
     if (terminals(await state()) !== ids) throw new Error("pane move changed terminal IDs");
     await activate(0); current = await state();
+    const cancelTabs = [smokeField(current, "w0.tabs"), smokeField(current, "w1.tabs")];
     await mouse(0, "down", rectCenter(smokeField(current, "w0.tabs_rects")));
     const cancelAt = crossWindowPoint(rootOrigin(current, 0), rootOrigin(current, 1), slot, macos);
     await mouse(0, "move", cancelAt);
@@ -135,7 +136,11 @@ clearInterval(stop); clearTimeout(timer);
     if (macos) await send("53\t0\t\\u001b\t\\u001b".replaceAll("\\u001b", "\u001b")); else run(["xdotool", "key", "Escape"]);
     await mouse(0, "up", cancelAt);
     await until("Escape cleared destination cue", state => smokeField(state, "w1.drop") === "none");
-    if (terminals(await state()) !== ids) throw new Error("cancel changed terminal IDs");
+    const cancelled = await state();
+    if (terminals(cancelled) !== ids) throw new Error("cancel changed terminal IDs");
+    for (const index of [0, 1]) {
+      if (smokeField(cancelled, `w${index}.tabs`) !== cancelTabs[index]) throw new Error(`cancel changed window ${index} tab count`);
+    }
     await invoke("new_tab"); await until("tear-off source ready", state => smokeField(state, "w0.tabs") === "2" && smokeField(state, "w0.busy") === "false");
     current = await state(); ids = terminals(current);
     await mouse(0, "down", rectCenter(smokeField(current, "w0.tabs_rects"), 1));

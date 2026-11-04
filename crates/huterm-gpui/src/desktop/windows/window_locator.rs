@@ -50,13 +50,19 @@ pub(super) fn identity(window: &Window) -> Option<u64> {
     platform::identity(window).ok()
 }
 
-/// A complete native stack wins; a missing, empty, or partial stack uses
+/// A native stack complete over viewable windows wins; otherwise use
 /// the model's most-recently-active-first order in its entirety.
 #[cfg(any(test, not(target_os = "macos")))]
 fn ordered(
     windows: &[(gpui::WindowId, u64)],
     stack: &[u64],
+    viewable: &[u64],
 ) -> Vec<(gpui::WindowId, u64)> {
+    let windows: Vec<_> = windows
+        .iter()
+        .copied()
+        .filter(|(_, native)| viewable.contains(native))
+        .collect();
     if windows.iter().all(|(_, native)| stack.contains(native)) {
         stack
             .iter()
@@ -65,7 +71,7 @@ fn ordered(
             .copied()
             .collect()
     } else {
-        windows.to_vec()
+        windows
     }
 }
 
@@ -116,8 +122,19 @@ mod tests {
         let first = cx.add_empty_window().window_handle().window_id();
         let second = cx.add_empty_window().window_handle().window_id();
         let windows = [(second, 22), (first, 11)];
-        assert_eq!(ordered(&windows, &[]), windows);
-        assert_eq!(ordered(&windows, &[11]), windows);
-        assert_eq!(ordered(&windows, &[22, 11]), [(first, 11), (second, 22)]);
+        assert_eq!(ordered(&windows, &[], &[11, 22]), windows);
+        assert_eq!(ordered(&windows, &[11], &[11, 22]), windows);
+        assert_eq!(
+            ordered(&windows, &[22, 11], &[11, 22]),
+            [(first, 11), (second, 22)]
+        );
+        let hidden = cx.add_empty_window().window_handle().window_id();
+        let with_hidden = [(hidden, 33), (second, 22), (first, 11)];
+        assert_eq!(
+            ordered(&with_hidden, &[22, 11], &[11, 22]),
+            [(first, 11), (second, 22)]
+        );
+        assert_eq!(ordered(&with_hidden, &[11], &[11, 22]), windows);
+        assert_eq!(ordered(&with_hidden, &[], &[]), []);
     }
 }

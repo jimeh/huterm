@@ -166,10 +166,13 @@ reservation, selects the tab now holding them (for a nest, the surviving
 target tab, since the moved tab is removed), focuses the moved pane or, for a
 moved tab, the pane the source focused, activates its window, and resumes any
 deferred close only when those panes' views have installed. An install that
-fails after a successful move keeps the transfer pending, posts a notice in
-the destination, and lets reconcile retry as it does for any uninstalled tab;
-it never closes terminals. A failed move releases both reservations, leaves
-everything in place, keeps zoom and history unchanged, and posts a notice in
+fails after a successful move releases the reservation, shows and activates the
+destination, resumes queued closes, and posts "Cannot show moved tab" there with
+"Try Again" to reconcile every missing view in this window. Panes no longer
+projected in the destination workspace also release the reservation. Projected
+tabs keep an empty-view destination open; install failure never closes terminals.
+A failed move releases both reservations, leaves everything in place, keeps zoom
+and history unchanged, and posts a notice in
 the source window, which keeps focus.
 
 Cross-window moves are not recorded in either window's layout history;
@@ -224,7 +227,7 @@ quitting, terminating, or with a close confirmation open.
 | Motion callback arrives after a newer sample or after the drag ended | The generation and sample tag make it a no-op. |
 | Release away from the last motion's target | The release point is resolved again before commit. |
 | Source empties before the destination installs | The source's emptied close stops nothing; the destination's pending transfer completes on install. |
-| Install fails after a successful move | Pending transfer stays, notice in the destination, reconcile retries; nothing closes. |
+| Install fails after a successful move | Release the reservation, show and activate the destination, resume queued closes, and post "Cannot show moved tab" with "Try Again" to reconcile its missing views. Projected tabs keep the window open; install failure stops no terminal. Panes that leave its projected workspace no longer hold the reservation. |
 | Stale anchor or target pane | Core rejects before changing membership; notice in the source. |
 | Source tab or pane closed or moved mid-drag | Existing validity checks end the drag. |
 | Window creation fails during tear-off | No move happened; the new session is deleted; notice. |

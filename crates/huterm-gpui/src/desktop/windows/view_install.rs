@@ -11,6 +11,10 @@
 
 use super::*;
 
+// Private notice action, handled by the window rather than the command catalog.
+pub(super) const RETRY_INSTALL: huterm_protocol::CommandId =
+    huterm_protocol::CommandId::new("retry_view_install");
+
 /// Whether an install failed only because its target went away, such as a
 /// tab closed or moved to another session after reconcile started it.
 fn stale_install(error: &MuxError) -> bool {
@@ -20,6 +24,14 @@ fn stale_install(error: &MuxError) -> bool {
             | MuxError::TerminalNotInAttachment { .. }
             | MuxError::Runtime(RuntimeError::Stopped | RuntimeError::Revoked)
     )
+}
+
+fn report_install_failure(
+    error: &MuxError,
+    moved: bool,
+    terminating: bool,
+) -> bool {
+    !terminating && (!stale_install(error) || moved)
 }
 
 /// The open window with `id`.
@@ -67,7 +79,7 @@ impl WorkspaceView {
 
     /// The viewers `tab` needs now: one for each projected pane without a
     /// view, and one for each pane view whose viewer was revoked.
-    fn pane_targets(&self, tab: TabId, cx: &App) -> Vec<PaneTarget> {
+    pub(super) fn pane_targets(&self, tab: TabId, cx: &App) -> Vec<PaneTarget> {
         let fresh =
             ViewerStart::fresh(terminal_presentation(&self.config.theme));
         let state = cx.global::<Desktop>().hierarchy.state();
@@ -252,7 +264,7 @@ impl WorkspaceView {
     /// Applies one tab's subscribed viewers, as `finish_subscribe`
     /// describes. Reports whether it pushed a pane view, and whether a
     /// failed replacement removed the tab's last pane view.
-    fn apply_tab_viewers(
+    pub(super) fn apply_tab_viewers(
         &mut self,
         tab: TabId,
         entries: Vec<(&PaneTarget, Result<TerminalViewer, MuxError>)>,
@@ -296,14 +308,25 @@ impl WorkspaceView {
                         if target.replace {
                             gone_panes.push(target.pane);
                         }
-                        if !stale_install(&error) || self.transfer.is_some() {
-                            self.notify(
+                        let moved = self.transfer_contains(target.pane);
+                        if report_install_failure(
+                            &error,
+                            moved,
+                            terminating(cx),
+                        ) {
+                            let notice = if moved {
+                                NoticeContent::command_failure(
+                                    "Cannot show moved tab",
+                                    format!("Cannot show moved tab: {error}"),
+                                )
+                                .action("Try Again", bare(RETRY_INSTALL))
+                            } else {
                                 NoticeContent::command_failure(
                                     "Cannot show tab",
                                     format!("Cannot show tab: {error}"),
-                                ),
-                                cx,
-                            );
+                                )
+                            };
+                            self.notify(notice, cx);
                         }
                     }
                 }

@@ -368,24 +368,35 @@ through NSWindow and asks the window server for the topmost window, so other
 applications occlude Huterm. X11 retains one main-thread private connection and
 its interned EWMH stacking atom, retiring the connection after a failed request.
 It uses TranslateCoordinates and the EWMH client stack, falling back to
-activation order when that stack is missing, empty, or incomplete. Other
+activation order when that stack is missing, empty, or incomplete over viewable
+windows. Exclude unmapped windows before checking completeness, so a hidden
+Quake window cannot discard the native stacking order. Other
 applications do not occlude targets on X11. GPUI runs through XWayland in
 Wayland sessions, where this is best effort.
 
-Preview callbacks carry a gesture generation and sample number and run deferred.
+Preview callbacks carry a gesture generation and sample number and validate both
+at delivery. Every new gesture starts a fresh generation, including from the
+same source. All local drag endings, including tab-navigation interruption, end
+the shared record, clear the destination cue with spring-back, and notify.
 Destination spring loading selects without moving keyboard focus and springs
 back on cancellation. Its own animation schedule owns stationary autoscroll and
 spring deadlines. Hidden, minimized, busy, closing, confirming, and transitioning
 Quake windows take no drop. Pane centres never accept a cross-window swap.
 
 Resolve again at release. Reserve both windows before dispatching a worker, and
-keep the destination busy until every moved pane has an installed viewer. Only
+keep the destination busy until every moved pane still projected in its workspace
+has an installed viewer, or one of those installs fails. A pane closed or moved
+elsewhere by another client no longer holds that reservation. Only
 a successful move clears local zoom; cross-window moves add no layout-history
 entry. Pane close requests queued in the source follow their pane IDs and
 resume after destination installation. A failed move restores the destination
-preview selection and scroll without taking focus. A failed install retains
-the reservation and notice until ordinary
-reconcile retries it. An emptied source closes without stopping its terminals.
+preview selection and scroll without taking focus. A failed moved-pane install
+releases the reservation, activates and shows the destination (including a hidden
+tear-off host), resumes queued closes, and posts "Cannot show moved tab" with
+"Try Again" to reconcile every missing view in that window. Only pending moved
+panes get a notice for a stale subscription; teardown posts none. Projected tabs
+keep an empty-view destination open, and install failure never stops terminals.
+An emptied source closes without stopping its terminals.
 Tear-off creates a shell-less regular destination first and rolls back only its
 empty session on failure. A lone tab never tears off; Move Tab to New Window is
 unavailable in its palette, tab menu, and command invocation with the same reason.
