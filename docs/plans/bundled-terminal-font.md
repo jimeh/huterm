@@ -152,10 +152,11 @@ Read from GPUI 0.3.10, not reproduced:
   before the first window.
 - When the default family itself fails to load, the warning and the Settings
   note say it failed to load rather than naming a fallback.
-- No Linux screenshot without system DejaVu was captured: under Xvfb in the
-  development container, GPUI's 32-bit window read back blank. The Linux
-  registration tests against a cosmic-text system with no system fonts cover
-  the bundled faces resolving.
+- The Linux visual check without system DejaVu ran in the GNOME Tart VM, not
+  Docker: under Xvfb in the development container, GPUI's 32-bit window read
+  back blank. In the VM, a fontconfig file that omits DejaVu Sans Mono showed
+  the default configuration and `family = "monospace"` drawing the bundled
+  copy on an even grid.
 
 ## Open questions
 
