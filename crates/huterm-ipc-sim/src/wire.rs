@@ -40,6 +40,19 @@ enum Keep {
     Window(usize, usize),
 }
 
+#[cfg(test)]
+thread_local! {
+    static PEAK_STORED: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// The most bytes any writer on this thread stored since the last call,
+/// and resets it, so tests can bound encoding memory.
+#[cfg(test)]
+pub(crate) fn take_peak_stored() -> usize {
+    PEAK_STORED.replace(0)
+}
+
 /// Appends encoded values to a buffer. A counting writer stores nothing and
 /// a windowed writer stores one byte range, so a message can be sized and
 /// framed without ever holding its whole encoding.
@@ -89,6 +102,8 @@ impl Writer {
         };
         if keep {
             self.buf.push(byte);
+            #[cfg(test)]
+            PEAK_STORED.with(|peak| peak.set(peak.get().max(self.buf.len())));
         }
         self.written += 1;
     }

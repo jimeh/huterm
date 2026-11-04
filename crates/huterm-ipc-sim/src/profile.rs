@@ -21,6 +21,9 @@ pub struct Design {
     pub retry_mutations: bool,
     /// Clients compare digests. Without it, damage goes unnoticed.
     pub check_digests: bool,
+    /// A stopped terminal's final update is a complete snapshot. Without
+    /// it, a client recovering from a damaged delta keeps a wrong view.
+    pub complete_final_snapshot: bool,
 }
 
 impl Default for Design {
@@ -32,6 +35,7 @@ impl Default for Design {
             versioned_digests: true,
             retry_mutations: false,
             check_digests: true,
+            complete_final_snapshot: true,
         }
     }
 }

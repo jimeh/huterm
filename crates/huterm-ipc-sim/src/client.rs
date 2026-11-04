@@ -206,15 +206,12 @@ impl Client {
         self.damage = Some((per_mille, crate::rng::Rng::new(seed)));
     }
 
+    /// Draws whether to damage the next delta or event. The caller counts
+    /// the damage only if it changed something.
     fn damage(&mut self) -> bool {
-        match self.damage.as_mut() {
-            Some((per_mille, rng)) => {
-                let hit = rng.chance(*per_mille);
-                self.damage_injected += u32::from(hit);
-                hit
-            }
-            None => false,
-        }
+        self.damage
+            .as_mut()
+            .is_some_and(|(per_mille, rng)| rng.chance(*per_mille))
     }
 
     /// Whether the handshake has taken longer than `limit` since `now`'s
@@ -496,6 +493,7 @@ impl Client {
                     | Event::Retitled { name, .. } = &mut event
                     {
                         name.push('!');
+                        self.damage_injected += 1;
                     }
                 }
                 let Some(state) = self.hierarchy.as_mut() else {
@@ -733,6 +731,7 @@ impl Client {
             // Damage that still decodes: the digest must catch it.
             let mut copy = update.clone();
             copy.modes ^= 1;
+            self.damage_injected += 1;
             damaged = copy;
             &damaged
         } else {

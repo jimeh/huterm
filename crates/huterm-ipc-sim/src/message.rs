@@ -1155,6 +1155,7 @@ mod tests {
 #[cfg(test)]
 mod window_tests {
     use super::*;
+    use crate::wire::take_peak_stored;
 
     #[test]
     fn frames_are_encoded_without_building_the_whole_message() {
@@ -1181,6 +1182,41 @@ mod window_tests {
                 let end = (start + 13).min(full.len());
                 let window = server_window(message, MINOR_1, start, end);
                 assert_eq!(window, full[start..end], "window {start}..{end}");
+            }
+        }
+    }
+    #[test]
+    fn sizing_stores_nothing_and_a_window_stores_only_its_frame() {
+        const WINDOW: usize = 40;
+        let payload = 2_048;
+        let messages = [
+            ServerMsg::Result {
+                id: 3,
+                outcome: Ok(Body::Selection("s".repeat(payload))),
+            },
+            ServerMsg::Effect {
+                effect: 1,
+                viewer: 2,
+                generation: 3,
+                terminal: 4,
+                origin: 5,
+                payload: "c".repeat(payload),
+            },
+        ];
+        for message in &messages {
+            take_peak_stored();
+            let len = server_len(message, MINOR_1);
+            assert_eq!(take_peak_stored(), 0, "sizing stored bytes");
+            assert!(len > payload, "the payload was not encoded");
+            for start in (0..len).step_by(WINDOW) {
+                let end = (start + WINDOW).min(len);
+                let window = server_window(message, MINOR_1, start, end);
+                let peak = take_peak_stored();
+                assert!(
+                    peak <= end - start,
+                    "window {start}..{end} stored {peak} bytes"
+                );
+                assert_eq!(window.len(), end - start);
             }
         }
     }

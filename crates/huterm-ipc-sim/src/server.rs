@@ -204,6 +204,33 @@ impl Conn {
                 .map_or(0, |(f, pos)| f.bytes.len() - pos)
     }
 
+    /// Fills the effect lane's one frame slot. The slot holds an effect
+    /// frame, or an aborted effect's abort frame, queued or being written;
+    /// once it is free, the effect's next frame is built and goes ahead of
+    /// queued ordinary frames. Returns whether a frame was built.
+    fn refill_effect(&mut self) -> bool {
+        let writing_urgent = self
+            .current
+            .as_ref()
+            .is_some_and(|(frame, _)| frame.priority);
+        if self.closed
+            || writing_urgent
+            || !self.urgent.is_empty()
+            || !self.tx.has_urgent()
+        {
+            return false;
+        }
+        let Some(frame) = self.tx.next_where(true) else {
+            return false;
+        };
+        if frame.priority {
+            self.urgent.push_back(frame.into());
+        } else {
+            self.queue.push_back(frame.into());
+        }
+        true
+    }
+
     /// Starts `message` on `lane`, encoded lazily: a sizing pass gives its
     /// length, and frames are encoded one at a time.
     fn send(
@@ -970,26 +997,10 @@ impl Server {
                 remote.opened_by = Some(serial);
             }
         }
-        // Build frames. The effect's next frame is built as soon as the
-        // urgent queue is empty; ordinary frames only while under budget.
+        // Build frames. The effect's next frame is built as soon as its slot
+        // is free; ordinary frames only while under budget.
         loop {
-            // Includes an aborted effect's abort frame, after its lane cleared.
-            // The effect lane holds one frame slot: a frame queued or being
-            // written. Its next frame waits until that one is written.
-            let writing_urgent = conn
-                .current
-                .as_ref()
-                .is_some_and(|(frame, _)| frame.priority);
-            if conn.tx.has_urgent()
-                && conn.urgent.is_empty()
-                && !writing_urgent
-                && let Some(frame) = conn.tx.next_where(true)
-            {
-                if frame.priority {
-                    conn.urgent.push_back(frame.into());
-                } else {
-                    conn.queue.push_back(frame.into());
-                }
+            if conn.refill_effect() {
                 continue;
             }
             if conn.queued() >= profile.outbound_budget {
@@ -1204,7 +1215,7 @@ impl Server {
             }
             let current = Rc::clone(&terminal.snapshot);
             remote.final_sent |= final_due;
-            let full = final_due
+            let full = (final_due && profile.design.complete_final_snapshot)
                 || remote.full_uncredited
                 || remote
                     .baseline
@@ -1341,12 +1352,16 @@ impl Server {
             if *pos == frame.bytes.len() {
                 let (frame, _) =
                     conn.current.take().unwrap_or_else(|| unreachable!());
-
                 if let Some(lane) = conn.lane.as_mut()
                     && lane.serial == frame.serial
                 {
                     lane.first_written |= frame.first;
                     lane.done |= frame.last;
+                }
+                // A written effect frame frees the slot, so the effect's
+                // next frame goes ahead within this same room.
+                if frame.priority {
+                    conn.refill_effect();
                 }
             }
         }
@@ -1354,6 +1369,8 @@ impl Server {
             return out;
         }
         let queued = conn.queued();
+        let over = queued.saturating_sub(profile.outbound_budget);
+        self.record.max_over_budget = self.record.max_over_budget.max(over);
         if conn.rejected
             && queued == 0
             && conn.tx.open() == 0

@@ -989,9 +989,13 @@ large write is delivered without another wake.
 **Effect frames go first.** The lane has a stream of its own, so an effect
 never waits for a stream. The writer sends the lane's next frame ahead of
 queued update and result frames, and the lane reserves its own one-frame
-slot rather than waiting on `OUTBOUND_BUDGET`. A busy connection therefore
-delays an effect's first frame by at most the frame already in the
-writer.
+slot rather than waiting on `OUTBOUND_BUDGET`. The slot refills as soon as
+its frame is written, so the effect's next frame goes ahead of anything
+queued, and a streaming effect gets the whole link. A busy connection
+therefore delays an effect's first frame by at most the frame already in
+the writer. The one exception is bounded: after a deadline aborts an effect,
+its abort frame takes the slot, and the next effect starts once that frame
+is written.
 
 The lane pops a delivery, rechecks `is_current`, assigns a
 connection-scoped `EffectId`, and sends `HostEffect { effect, viewer,
@@ -1025,10 +1029,12 @@ payloads span frames like any message.
   reservations, and its message is aborted after the frame already in the
   writer. A healthy client, on a link that sustains the profile's minimum
   throughput, therefore receives every effect, including one queued behind a
-  maximum-size write. The throughput is a transport-profile value: it must
-  stay below what the link carries, or maximum-size effects miss their
+  maximum-size write. The throughput is a transport-profile value: the link
+  must carry it plus the frame headers, or maximum-size effects miss their
   completion deadline and are dropped, so a profile for slow remote links
-  lowers it. Meanwhile a stalled remote recipient holds
+  lowers it. Because the slot refills at once, no further margin is needed;
+  the first-frame allowance covers the frame in the writer and the bytes
+  already in flight. Meanwhile a stalled remote recipient holds
   the terminal's effect and byte budgets for a bounded time, rather than
   denying every other recipient indefinitely, which the viewers plan
   flagged.
@@ -1231,8 +1237,11 @@ terminals, whose final status is checked too, effect deadlines, all three
 downgrade paths, and, in `state-corruption`, digests catching injected
 damage. The server encodes each frame through a writer that keeps only that
 frame's bytes, after a counting pass that sizes the message, so no whole
-encoded message ever exists, and a unit test checks every window against
-the full encoding.
+encoded message ever exists. A unit test checks every window against the
+full encoding, and another checks that sizing stores no bytes and a window
+stores only its frame. The simulation re-walks the message for each frame,
+which is quadratic in its frame count; the real encoder should resume where
+the previous frame ended.
 
 The fixed scenarios each test one combination of limits. The `swarm`
 scenario is a configuration fuzzer: every seed draws its frame size, stream
@@ -1254,7 +1263,8 @@ messages overtake each other; without carried status baselines, a
 reconnect misses status; without versioned digests, older peers mismatch
 while same-version peers still pass; retrying mutations after a reconnect
 runs some twice; without digest checks, damage in `state-corruption`
-diverges. Without credit on discard, a discarded delta leaks its
+diverges; without a complete final snapshot, a stopped view recovering
+from damage stays wrong. Without credit on discard, a discarded delta leaks its
 credit, which a client unit test shows directly, because with ordering
 lanes no scenario discards a delta without corruption.
 

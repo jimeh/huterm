@@ -188,3 +188,28 @@ fn without_digest_checks_decodable_damage_goes_unnoticed() {
     let diverged = |f: &str| f.contains("diverged") || f.contains("hierarchy");
     assert!(failure.as_deref().is_some_and(diverged), "got {failure:?}");
 }
+
+#[test]
+fn without_a_complete_final_snapshot_a_stopped_view_stays_damaged() {
+    let scenario = scenario("state-corruption");
+    let design = Design {
+        complete_final_snapshot: false,
+        ..Design::default()
+    };
+    // The failure needs a damaged delta just before its terminal stops, so
+    // it is rare; search until the first seed that shows it.
+    let found = (0..400).find_map(|seed| {
+        run_with(&scenario, seed, design)
+            .err()
+            .map(|failure| (seed, failure))
+    });
+    let Some((seed, failure)) = found else {
+        panic!("no seed failed without a complete final snapshot");
+    };
+    assert!(
+        failure.contains("lost its stopped terminal's view"),
+        "seed {seed}: {failure}"
+    );
+    let passed = run_with(&scenario, seed, Design::default());
+    assert!(passed.is_ok(), "seed {seed} failed anyway: {passed:?}");
+}

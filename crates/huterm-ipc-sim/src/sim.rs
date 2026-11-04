@@ -307,18 +307,17 @@ pub fn swarm(seed: u64) -> Scenario {
 /// A byte holds buffer space from the tick it is written until it arrives,
 /// up to `latency + jitter` later, so the link sustains `buffer / cycle`
 /// bytes per millisecond. Effect bytes travel in frames with a four-byte
-/// length and a flags-and-stream header. The margin of 4 leaves the effect
-/// a quarter of the link, halving twice: the writer alternates effect
-/// frames with ordinary ones at frame boundaries, and it builds one effect
-/// frame per tick, while room returns in bursts after latency and jitter,
-/// and ordinary frames take the rest of each burst. A margin of 2 still
-/// lost effects in healthy swarm draws.
+/// length and a flags-and-stream header. No further margin is needed: the
+/// writer refills the effect's frame slot as soon as a frame is written,
+/// so once an effect starts its frames take the whole link, and its
+/// first-frame allowance of two round trips covers the ordinary frame
+/// being written and the bytes already in flight. Healthy swarm draws
+/// stopped losing effects at half this buffer, so the floor keeps twice
+/// the measured need.
 fn effect_buffer_floor(link: &LinkProfile, profile: &Profile) -> usize {
-    const MARGIN: u64 = 4;
     let frame = profile.max_frame as u64;
     let cycle = link.latency + link.jitter + 1;
-    let wire = MARGIN * profile.effect_bytes_per_ms * cycle * (frame + 4)
-        / (frame - 2);
+    let wire = profile.effect_bytes_per_ms * cycle * (frame + 4) / (frame - 2);
     usize::try_from(wire).unwrap_or(usize::MAX)
 }
 
