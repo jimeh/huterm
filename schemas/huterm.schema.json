@@ -10082,7 +10082,7 @@
       "properties": {
         "background_blur": {
           "default": false,
-          "description": "Blur behind translucent backgrounds on macOS. Unsupported on Linux.",
+          "description": "Blurs what shows through a translucent background, on macOS only. It\nhas no effect while the background is opaque.",
           "type": "boolean",
           "x-huterm-apply": "live",
           "x-huterm-group": "Transparency",
@@ -10093,7 +10093,7 @@
         },
         "background_opacity": {
           "default": 1.0,
-          "description": "Opacity of default terminal and in-flow chrome backgrounds, from 0 to 1.",
+          "description": "How opaque the terminal's default background, the tab bar and pane\ntitle bars are, from 0 to 1. Text, and colors that programs set, stay\nsolid.",
           "format": "float",
           "maximum": 1,
           "minimum": 0,
@@ -10108,7 +10108,7 @@
         },
         "foreground_opacity": {
           "default": 1.0,
-          "description": "Opacity of terminal text and its decorations, from 0.1 to 1.",
+          "description": "How opaque terminal text and its underlines are, from 0.1 to 1.",
           "format": "float",
           "maximum": 1,
           "minimum": 0.1,
@@ -10184,7 +10184,7 @@
         },
         "opacity": {
           "default": 1.0,
-          "description": "Opacity of the whole window, including text and chrome, from 0.1 to 1.",
+          "description": "How opaque the whole window is, text and chrome included, from 0.1\nto 1. Background and text opacity multiply with it.",
           "format": "float",
           "maximum": 1,
           "minimum": 0.1,

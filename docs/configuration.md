@@ -22,9 +22,10 @@ so comments, ordering, and formatting stay as you wrote them. A dot marks each
 setting the file sets, and its Reset button, a counterclockwise arrow, removes
 it and returns the setting to its default. A setting that does not apply at
 once says when it does, such as "Applies to new terminals". Search finds
-settings in every section. Settings marked Advanced appear in every section
-once you turn on Show advanced settings at the foot of any section, or the
-switch in General; either writes `show_advanced`, and hiding them removes it.
+settings in every section by name, description, or group heading. Settings
+marked Advanced appear in every section once you turn on Show advanced
+settings at the foot of any section, or the switch in General; either writes
+`show_advanced`, and hiding them removes it.
 The sidebar's sections scroll when the window is too short to list them all,
 and moving between them with the keyboard keeps the selected one in view.
 
@@ -762,47 +763,53 @@ name.
 
 ## Transparency
 
-Settings exposes these live settings under Appearance > Transparency:
+Windows can let the desktop show through. These are the `[window]` settings
+with their defaults; in Settings they are under Appearance > Transparency:
 
-- `opacity` (0.1 to 1) fades the whole window, including chrome, text,
-  cursor and selection, through native window alpha.
-- `background_opacity` (0 to 1) controls the default terminal background,
-  padding and in-flow chrome backgrounds. Text, icons and dividers stay solid.
-- `foreground_opacity` (0.1 to 1), labelled Text opacity, controls terminal
-  glyphs, built-in graphics, underlines, strikethrough and link underlines.
-- `background_blur` blurs behind translucent backgrounds on macOS. It has
-  no effect at background opacity 1 and is unsupported on Linux. Linux logs
-  a warning when it is enabled. Settings hides the row unless the file sets
-  it, then shows it read-only with the macOS-only note.
+```toml
+[window]
+opacity = 1.0            # 0.1 to 1: fades the whole window evenly
+background_opacity = 1.0 # 0 to 1: the terminal background and chrome bars
+foreground_opacity = 1.0 # 0.1 to 1: terminal text, labelled Text opacity
+background_blur = false  # macOS only
+```
 
-All four settings apply on reload to every terminal window without restarting
-shells or losing scrollback. Overall opacity multiplies the other settings:
-opacity 0.7 and background opacity 0.6 give effective background alpha 0.42.
-The defaults keep the native surface opaque and leave native alpha untouched.
-Transparency and blur remain enabled in fullscreen and Quake windows.
+`opacity` fades everything in the window together, chrome, text, cursor and
+selection included. `background_opacity` sets how much of the terminal's
+default background shows, together with the padding, the tab bar, the title
+row, the tab sidebar and pane title bars; their text, icons and dividers stay
+solid. `foreground_opacity` fades terminal text, box-drawing and powerline
+characters, underlines, strikethrough and link underlines. `opacity`
+multiplies the other two: opacity 0.7 with background opacity 0.6 leaves the
+background at 0.42. All four apply to open windows, Quake windows included, as
+soon as the file reloads, without restarting shells or losing scrollback. They
+stay in effect in fullscreen.
 
-Background opacity affects the default background, including an OSC 11
-program override; OSC 111 restores the theme background. Explicit indexed or
-RGB backgrounds and inverse video stay solid, even if their color equals the
-theme background. An explicit RGB background equal to an active OSC 11
-background override is treated as default. Cursor and selection stay solid
-apart from overall opacity, as does the selection foreground.
+Only the default background turns transparent, including a default background
+that a program changed with OSC 11. Background colors that programs set, such
+as an editor's status line, and inverse video stay solid, even when their color
+matches the theme background. The cursor, the selection and selected text also
+stay solid apart from `opacity`. Menus, dialogs, notices, the command palette,
+pane title bars revealed on hover, the tab bar revealed in fullscreen, and the
+Settings window stay opaque so they remain readable over the terminal.
 
-Floating chrome, including menus, dialogs, notices, the palette, hover pane
-bars and fullscreen tab reveal, stays opaque. Settings stays opaque too.
-Below background opacity 1, inactive panes use alpha-preserving color tints;
-emoji are not dimmed. Emoji remain solid at reduced text opacity because
-GPUI's emoji opacity API is private. Overlapping built-in geometry can blend
-more than once at reduced text opacity. The brief visual bell overlay can
-raise background alpha.
+A few things look slightly different below full opacity. Unfocused panes dim
+their colors rather than drawing a shade over them, so emoji in them are not
+dimmed, and emoji keep full strength at reduced text opacity. Where box-drawing
+characters overlap, reduced text opacity can show the overlap. The visual bell's
+flash briefly looks more solid.
 
-Linux requires both an X11 compositing manager and a 32-bit TrueColor visual.
-Without either, Huterm keeps all opacity at 1, logs the missing requirement
-once per load, and shows a note under Opacity and Background opacity in
-Settings. Support is rechecked at open and reload; compositor changes between
-reloads are not tracked. A transparent Linux surface disables subpixel text
-antialiasing. GPUI's wgpu surface can silently choose an opaque alpha mode,
-which Huterm cannot detect. Wayland and Linux blur are not supported.
+`background_blur` blurs what shows through a translucent background, using the
+system's blur, whose strength is fixed. It has no effect while
+`background_opacity` is 1. Linux has no blur: Huterm logs a warning when the
+file turns it on, and Settings shows the row only when the file sets it.
+
+On Linux, transparency needs an X11 compositing manager and a 32-bit color
+visual. Without either, windows stay opaque, Huterm logs which one is missing,
+and Settings says so under Opacity and Background opacity. Huterm checks again
+when a window opens and when the file reloads. A transparent window on Linux
+draws text without subpixel antialiasing, and some graphics drivers can keep a
+window opaque in a way Huterm cannot detect.
 
 ## Title bar tabs
 

@@ -1113,6 +1113,8 @@ impl SettingsView {
         query.is_empty()
             || setting.label.to_lowercase().contains(query)
             || setting.path.to_lowercase().contains(query)
+            // A group's heading, such as Transparency, finds its rows.
+            || setting.group.to_lowercase().contains(query)
             // Descriptions match as they read, without code-span backticks.
             || setting.description.as_deref().is_some_and(|text| {
                 prose::plain(text).to_lowercase().contains(query)
@@ -3801,5 +3803,21 @@ mod transparency_tests {
         );
         assert!(foreign_note_on(blur, Platform::Macos).is_none());
         assert!(available_on(blur, Platform::Macos, false));
+    }
+
+    #[test]
+    fn searching_a_group_heading_finds_its_rows() {
+        let model = huterm_config::settings::SettingsModel::load().unwrap();
+        for path in [
+            "window.opacity",
+            "window.background_opacity",
+            "window.foreground_opacity",
+            "window.background_blur",
+        ] {
+            let setting = model.setting(path).unwrap();
+            assert!(SettingsView::matches(setting, "transparency"), "{path}");
+        }
+        let padding = model.setting("window.padding_x").unwrap();
+        assert!(!SettingsView::matches(padding, "transparency"));
     }
 }

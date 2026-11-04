@@ -804,7 +804,8 @@ pub enum MacosOptionAsAlt {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
-    /// Opacity of the whole window, including text and chrome, from 0.1 to 1.
+    /// How opaque the whole window is, text and chrome included, from 0.1
+    /// to 1. Background and text opacity multiply with it.
     #[cfg_attr(feature = "schema", schemars(range(min = 0.1, max = 1), extend(
         "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
         "x-huterm-label" = "Opacity", "x-huterm-order" = 36,
@@ -812,7 +813,9 @@ pub struct WindowConfig {
         "x-huterm-step" = 0.05,
     ))) ]
     pub opacity: f32,
-    /// Opacity of default terminal and in-flow chrome backgrounds, from 0 to 1.
+    /// How opaque the terminal's default background, the tab bar and pane
+    /// title bars are, from 0 to 1. Text, and colors that programs set, stay
+    /// solid.
     #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 1), extend(
         "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
         "x-huterm-label" = "Background opacity", "x-huterm-order" = 37,
@@ -820,7 +823,7 @@ pub struct WindowConfig {
         "x-huterm-step" = 0.05,
     ))) ]
     pub background_opacity: f32,
-    /// Opacity of terminal text and its decorations, from 0.1 to 1.
+    /// How opaque terminal text and its underlines are, from 0.1 to 1.
     #[cfg_attr(feature = "schema", schemars(range(min = 0.1, max = 1), extend(
         "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
         "x-huterm-label" = "Text opacity", "x-huterm-order" = 38,
@@ -828,7 +831,8 @@ pub struct WindowConfig {
         "x-huterm-step" = 0.05,
     ))) ]
     pub foreground_opacity: f32,
-    /// Blur behind translucent backgrounds on macOS. Unsupported on Linux.
+    /// Blurs what shows through a translucent background, on macOS only. It
+    /// has no effect while the background is opaque.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
         "x-huterm-label" = "Background blur", "x-huterm-order" = 39,
