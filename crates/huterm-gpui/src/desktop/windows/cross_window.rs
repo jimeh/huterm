@@ -1163,24 +1163,80 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// The free bar after the labels and add control belongs to the pill.
+    /// Overflow falls back over the strip's end, before the add control.
+    pub(super) fn tear_off_pill_bounds(
+        &self,
+        strip: &TabStrip,
+        layout: &ChromeLayout,
+    ) -> Bounds<Pixels> {
+        let mut area = layout.strip_bounds(self.layout_tabs());
+        if !strip.vertical
+            && self.bar_menu_placement() == MenuButtonPlacement::BarEnd
+        {
+            area.size.width = (area.size.width - CONTROL_SLOT).max(px(0.0));
+        }
+        let gap = px(6.0);
+        let width = px(128.0).min((area.size.width - gap * 2.0).max(px(0.0)));
+        let height = px(24.0).min(area.size.height);
+        let origin = if strip.vertical {
+            let after = strip.bounds.bottom() + CONTROL_SLOT + gap;
+            point(
+                area.left() + gap,
+                if after + height <= area.bottom() {
+                    after
+                } else {
+                    (strip.bounds.bottom() - height).max(area.top())
+                },
+            )
+        } else {
+            let after = strip.bounds.right() + CONTROL_SLOT + gap;
+            point(
+                if after + width <= area.right() {
+                    after
+                } else {
+                    (strip.bounds.right() - width).max(area.left())
+                },
+                area.top() + (area.size.height - height) / 2.0,
+            )
+        };
+        Bounds::new(origin, size(width, height))
+    }
+
+    pub(super) fn check_tab_tear_off_available(
+        &self,
+        cx: &App,
+    ) -> Result<(), CommandError> {
+        self.check_new_tab_available(cx)?;
+        self.check_runtime_available(cx)?;
+        tab_tear_off_availability(self.tabs.len())
+    }
+
     pub(super) fn move_tab_to_new_window(
         &mut self,
         invocation: &CommandInvocation,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        self.check_new_tab_available(cx)?;
-        self.check_runtime_available(cx)?;
+        self.check_tab_tear_off_available(cx)?;
         let tab = self.target_tab(invocation, cx)?;
-        // Same lone-tab rule as a tear-off gesture.
-        if self.tabs.len() < 2 {
-            return Ok(CommandOutcome::Completed);
-        }
         let payload = self
             .payload(tab, None, cx)
             .ok_or(CommandError::StaleTarget)?;
         self.tear_off(payload, window, cx);
         Ok(CommandOutcome::Accepted)
+    }
+}
+
+pub(super) fn tab_tear_off_availability(
+    count: usize,
+) -> Result<(), CommandError> {
+    if count < 2 {
+        Err(CommandError::Unavailable(
+            "The tab is already alone in its window.".to_owned(),
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -1200,10 +1256,7 @@ pub(super) fn smoke_state(cx: &mut App) -> String {
             let ids = view.tabs.iter().map(|tab| tab.id.get().to_string()).collect::<Vec<_>>().join(",");
             let terminals = view.tabs.iter().flat_map(|tab| tab.panes.iter().map(|pane| pane.terminal.get().to_string())).collect::<Vec<_>>().join(",");
             let native = window_locator::identity(window).unwrap_or(0);
-            #[cfg(target_os = "macos")]
             let origin = window_locator::screen_point(window, point(px(0.0), px(0.0))).unwrap_or_default();
-            #[cfg(not(target_os = "macos"))]
-            let origin = gpui::point(0.0, 0.0);
             let _ = writeln!(output, "w{index}.native={native} w{index}.active={} w{index}.origin={},{} w{index}.size={},{} w{index}.tabs={} w{index}.tab_ids={ids} w{index}.terminals={terminals} w{index}.busy={} w{index}.tabs_rects={} {}",
                 window.is_window_active(), origin.x, origin.y, f32::from(window.viewport_size().width), f32::from(window.viewport_size().height), view.tabs.len(), view.busy,
                 view.tab_smoke_rects(window), view.pane_smoke_state(&format!("w{index}."), window, cx));

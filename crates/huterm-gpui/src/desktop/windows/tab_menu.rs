@@ -98,10 +98,15 @@ pub(super) fn tab_menu(
             },
         )));
     }
-    rows.push(MenuRow::Item(MenuItem::new(
-        ids::MOVE_TAB_TO_NEW_WINDOW.as_str(),
-        "Move Tab to New Window",
-    )));
+    let move_tab = item(ids::MOVE_TAB_TO_NEW_WINDOW);
+    let move_tab =
+        match super::cross_window::tab_tear_off_availability(input.count) {
+            Err(huterm_protocol::CommandError::Unavailable(reason)) => {
+                move_tab.disabled(Some(reason))
+            }
+            _ => move_tab,
+        };
+    rows.push(MenuRow::Item(move_tab));
     rows.push(MenuRow::Item(MenuItem::new(
         ids::MOVE_TAB_TO_PANE.as_str(),
         "Move Tab into Pane…",
@@ -223,7 +228,7 @@ mod tests {
         );
         assert_eq!(
             enabled(&input(0, 1)),
-            [true, true, true, false, false, true, true],
+            [true, true, true, false, false, false, true],
             "a single tab has no others and nothing after it, and can still \
              move into a pane of another workspace"
         );
@@ -231,6 +236,10 @@ mod tests {
         let closers = items(&single);
         assert_eq!(closers[3].disabled_hint, None);
         assert_eq!(closers[4].disabled_hint, None);
+        assert_eq!(
+            closers[5].disabled_hint.as_deref(),
+            Some("The tab is already alone in its window.")
+        );
     }
 
     #[test]

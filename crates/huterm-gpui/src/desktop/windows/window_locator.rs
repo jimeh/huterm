@@ -69,7 +69,6 @@ fn ordered(
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn screen_point(
     source: &Window,
     pointer: gpui::Point<Pixels>,

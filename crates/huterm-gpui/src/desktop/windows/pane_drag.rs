@@ -41,6 +41,27 @@ fn drop_box(region: Bounds<Pixels>) -> Bounds<Pixels> {
     )
 }
 
+/// Place the measured drag chip relative to the event pointer.
+fn drag_chip_origin(
+    pointer: gpui::Point<Pixels>,
+    chip: gpui::Size<Pixels>,
+    viewport: gpui::Size<Pixels>,
+) -> gpui::Point<Pixels> {
+    let axis = |pointer: Pixels, extent: Pixels, limit: Pixels| {
+        let preferred = pointer + px(12.0);
+        let origin = if preferred < px(0.0) || preferred + extent > limit {
+            pointer - px(12.0) - extent
+        } else {
+            preferred
+        };
+        origin.clamp(px(0.0), (limit - extent).max(px(0.0)))
+    };
+    point(
+        axis(pointer.x, chip.width, viewport.width),
+        axis(pointer.y, chip.height, viewport.height),
+    )
+}
+
 /// The tab a pane drag rests on, and since when. Every instant comes from
 /// the caller, so tests drive the deadline without sleeping.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -835,24 +856,48 @@ impl WorkspaceView {
         };
         *self.drawn_drop.borrow_mut() = Some(drop_label(target, &self.tabs));
         elements.extend(self.target_elements(target, source, colors, window));
+        // Measure the actual chip before choosing its side of the pointer.
+        // All local pane, nesting-tab, and incoming drags share this path.
         elements.push(
-            div()
-                .absolute()
-                .left(pointer.x + px(12.0))
-                .top(pointer.y + px(12.0))
-                .max_w(px(240.0))
-                .overflow_hidden()
-                .px(px(8.0))
-                .py(px(2.0))
-                .rounded(px(6.0))
-                .bg(colors.active)
-                .border_1()
-                .border_color(colors.border)
-                .text_color(colors.foreground)
-                .opacity(0.9)
-                .whitespace_nowrap()
-                .child(title)
-                .into_any_element(),
+            gpui::canvas(
+                move |_, window, cx| {
+                    let viewport = window.viewport_size();
+                    let mut chip = div()
+                        .debug_selector(|| "drag-title-chip".to_owned())
+                        .max_w(px(240.0).min(viewport.width))
+                        .max_h(viewport.height)
+                        .overflow_hidden()
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(6.0))
+                        .bg(colors.active)
+                        .border_1()
+                        .border_color(colors.border)
+                        .text_color(colors.foreground)
+                        .opacity(0.9)
+                        .whitespace_nowrap()
+                        .child(title)
+                        .into_any_element();
+                    let measured = chip.layout_as_root(
+                        size(
+                            gpui::AvailableSpace::MaxContent,
+                            gpui::AvailableSpace::MaxContent,
+                        ),
+                        window,
+                        cx,
+                    );
+                    chip.prepaint_at(
+                        drag_chip_origin(pointer, measured, viewport),
+                        window,
+                        cx,
+                    );
+                    chip
+                },
+                |_, mut chip, window, cx| chip.paint(window, cx),
+            )
+            .absolute()
+            .inset_0()
+            .into_any_element(),
         );
         elements
     }
@@ -980,6 +1025,43 @@ pub(super) fn drop_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drag_chip_flips_at_every_edge_and_corner_then_clamps() {
+        let chip = size(px(80.0), px(24.0));
+        let viewport = size(px(300.0), px(200.0));
+        for (pointer, expected) in [
+            ((150.0, 100.0), (162.0, 112.0)),
+            ((0.0, 100.0), (12.0, 112.0)),
+            ((300.0, 100.0), (208.0, 112.0)),
+            ((150.0, 0.0), (162.0, 12.0)),
+            ((150.0, 200.0), (162.0, 164.0)),
+            ((0.0, 0.0), (12.0, 12.0)),
+            ((300.0, 0.0), (208.0, 12.0)),
+            ((0.0, 200.0), (12.0, 164.0)),
+            ((300.0, 200.0), (208.0, 164.0)),
+            ((-100.0, -100.0), (0.0, 0.0)),
+            ((500.0, 400.0), (220.0, 176.0)),
+        ] {
+            assert_eq!(
+                drag_chip_origin(
+                    point(px(pointer.0), px(pointer.1)),
+                    chip,
+                    viewport
+                ),
+                point(px(expected.0), px(expected.1)),
+                "pointer {pointer:?}",
+            );
+        }
+        assert_eq!(
+            drag_chip_origin(
+                point(px(1.0), px(1.0)),
+                chip,
+                size(px(40.0), px(10.0))
+            ),
+            point(px(0.0), px(0.0))
+        );
+    }
 
     #[test]
     fn a_spring_load_arms_rearms_and_comes_due_at_its_deadline() {

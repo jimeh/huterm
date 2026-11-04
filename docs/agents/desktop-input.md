@@ -365,10 +365,12 @@ active tab, defers the cancel, so a drag also ends while the pointer rests.
 previews. Resolve each event's source-local point through `window_locator`;
 never use the cached mouse position or GPUI's X11 window origin. AppKit converts
 through NSWindow and asks the window server for the topmost window, so other
-applications occlude Huterm. X11 uses TranslateCoordinates and the EWMH client
-stack, falling back to activation order when that stack is missing, empty, or
-incomplete. Other applications do not occlude targets on X11. GPUI runs through
-XWayland in Wayland sessions, where this is best effort.
+applications occlude Huterm. X11 retains one main-thread private connection and
+its interned EWMH stacking atom, retiring the connection after a failed request.
+It uses TranslateCoordinates and the EWMH client stack, falling back to
+activation order when that stack is missing, empty, or incomplete. Other
+applications do not occlude targets on X11. GPUI runs through XWayland in
+Wayland sessions, where this is best effort.
 
 Preview callbacks carry a gesture generation and sample number and run deferred.
 Destination spring loading selects without moving keyboard focus and springs
@@ -385,9 +387,18 @@ preview selection and scroll without taking focus. A failed install retains
 the reservation and notice until ordinary
 reconcile retries it. An emptied source closes without stopping its terminals.
 Tear-off creates a shell-less regular destination first and rolls back only its
-empty session on failure. A lone tab never tears off. Native input fixtures use
-window-addressed events, including negative source-local coordinates, and
-publish per-window identities and cross-window drop labels.
+empty session on failure. A lone tab never tears off; Move Tab to New Window is
+unavailable in its palette, tab menu, and command invocation with the same reason.
+The tear-off pill follows the labels and add button in the bar's free trailing
+space, or covers the strip's trailing end with an opaque fill when it overflows.
+Keep the source slot's dashed state border at full contrast while dimming its
+contents. Every drag title chip measures its size, flips across each overflowing
+pointer axis, and clamps inside the window.
+
+Native input fixtures use window-addressed AppKit events, including negative
+source-local coordinates, and XTest root coordinates on X11. Publish per-window
+identities and cross-window drop labels. X11 smoke coordinates use the client's
+TranslateCoordinates root origin, since window-manager frame geometry can differ.
 
 ## Modifier pane drags
 

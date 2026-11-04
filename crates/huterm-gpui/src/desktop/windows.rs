@@ -2703,6 +2703,7 @@ fn open_window_with_profile(
                 drawn_dividers: RefCell::new(Vec::new()),
                 drawn_panes: RefCell::new(None),
                 drawn_drop: RefCell::new(None),
+                drawn_tear_off: RefCell::new(None),
                 drawn_focus: RefCell::new(FocusMarks::default()),
                 #[cfg(test)]
                 drawn_title_marks: RefCell::new(None),
@@ -3913,6 +3914,8 @@ struct WorkspaceView {
     drawn_panes: RefCell<Option<(TabId, Vec<PaneRect>)>>,
     /// The drop target the last frame drew, for smoke state.
     drawn_drop: RefCell<Option<String>>,
+    /// The tear-off pill bounds drawn in the last frame.
+    drawn_tear_off: RefCell<Option<Bounds<Pixels>>>,
     /// The pane titles the last frame's grab badges showed, for smoke state.
     drawn_badges: RefCell<Vec<String>>,
     /// The focus marks the last frame drew, for smoke state.
@@ -8692,8 +8695,7 @@ impl WorkspaceView {
             CommandScope::Application => app_command_availability(cx, command),
             CommandScope::Window => match command {
                 ids::MOVE_TAB_TO_NEW_WINDOW => {
-                    self.check_new_tab_available(cx)?;
-                    self.check_runtime_available(cx)?;
+                    self.check_tab_tear_off_available(cx)?;
                     self.active_tab_id(cx).map(|_| ())
                 }
                 ids::NEW_TAB => self.check_new_tab_available(cx),
@@ -13131,6 +13133,7 @@ impl Render for WorkspaceView {
             );
             chrome = chrome.child(bar).child(
                 Button::new("new-tab", "New Tab", swatch)
+                    .debug_selector(|| "new-tab".to_owned())
                     .colors(colors.control())
                     .icon(
                         icon_element(Icon::Plus, colors.inactive)
@@ -13415,14 +13418,26 @@ impl Render for WorkspaceView {
                     .bg(colors.active)
                     .border_1()
                     .border_color(colors.border)
-                    .when(drag.outside, gpui::Styled::border_dashed)
+                    .when(drag.outside, |preview| {
+                        preview
+                            .border_2()
+                            .border_dashed()
+                            .border_color(swatch.state_line())
+                            .bg(colors.active.opacity(0.45))
+                    })
                     .text_color(colors.foreground)
-                    .opacity(if drag.nesting || drag.outside {
+                    .opacity(if drag.outside {
+                        1.0
+                    } else if drag.nesting {
                         0.45
                     } else {
                         0.9
                     })
-                    .child(title),
+                    .child(
+                        div()
+                            .when(drag.outside, |title| title.opacity(0.45))
+                            .child(title),
+                    ),
             );
             if !drag.nesting && !drag.outside {
                 root = root.child(
@@ -13436,23 +13451,22 @@ impl Render for WorkspaceView {
                 );
             }
         }
+        *self.drawn_tear_off.borrow_mut() = None;
         if self.tear_off_cue(cx) {
-            let bounds = strip.bounds;
+            let bounds = self.tear_off_pill_bounds(&strip, &layout);
+            *self.drawn_tear_off.borrow_mut() = Some(bounds);
             root = root.child(
                 div()
                     .absolute()
-                    .left(if vertical {
-                        bounds.left() + px(6.0)
-                    } else {
-                        bounds.right() - px(128.0)
-                    })
-                    .top(if vertical {
-                        bounds.bottom() - px(28.0)
-                    } else {
-                        bounds.top() + px(4.0)
-                    })
-                    .px(px(8.0))
-                    .py(px(2.0))
+                    .left(bounds.left())
+                    .top(bounds.top())
+                    .w(bounds.size.width)
+                    .h(bounds.size.height)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .rounded(px(6.0))
                     .bg(colors.active)
                     .border_1()

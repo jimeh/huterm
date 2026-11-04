@@ -56,16 +56,21 @@ export async function checkCrossWindowInput(executable: string): Promise<void> {
     else run(["xdotool", "key", "--clearmodifiers", id === "new_window" ? "F1" : "F2"]);
   }
   function rootOrigin(current: string, index: number): Point {
-    if (macos) return point(smokeField(current, `w${index}.origin`));
-    const geometry = run(["xdotool", "getwindowgeometry", "--shell", smokeField(current, `w${index}.native`)]);
-    return { x: Number(/^X=(.*)$/m.exec(geometry)?.[1]), y: Number(/^Y=(.*)$/m.exec(geometry)?.[1]) };
+    return point(smokeField(current, `w${index}.origin`));
   }
   async function mouse(index: number, kind: "down" | "move" | "up", at: Point): Promise<void> {
     const current = await state();
     if (macos) await send(`mouse-window\t${smokeField(current, `w${index}.native`)}\t${kind === "down" ? 1 : kind === "move" ? 6 : 2}\t${at.x}\t${at.y}`);
     else {
       const origin = rootOrigin(current, index);
-      run(["xdotool", "mousemove", "--sync", String(Math.round(origin.x + at.x)), String(Math.round(origin.y + at.y))]);
+      const x = Math.round(origin.x + at.x), y = Math.round(origin.y + at.y);
+      // --sync waits for a motion event even when the release repeats the
+      // held point. Observe the root position instead, including that case.
+      run(["xdotool", "mousemove", String(x), String(y)]);
+      await wait(async () => {
+        const location = run(["xdotool", "getmouselocation", "--shell"]);
+        return Number(/^X=(.*)$/m.exec(location)?.[1]) === x && Number(/^Y=(.*)$/m.exec(location)?.[1]) === y;
+      }, `X11 pointer at ${x},${y}`);
       if (kind !== "move") run(["xdotool", kind === "down" ? "mousedown" : "mouseup", "1"]);
     }
   }

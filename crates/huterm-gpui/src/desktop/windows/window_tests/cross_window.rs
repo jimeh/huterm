@@ -1145,3 +1145,192 @@ fn cross_window_release_refreshes_membership_after_a_source_pane_closes(
             == 1
     }));
 }
+
+#[gpui::test]
+fn cross_window_tear_off_pill_uses_free_space_after_tabs_and_add_button(
+    cx: &mut TestAppContext,
+) {
+    for position in [
+        TabPosition::Top,
+        TabPosition::Bottom,
+        TabPosition::Left,
+        TabPosition::Right,
+        TabPosition::Titlebar,
+    ] {
+        let mut h = DesktopHarness::with_config(cx, |config| {
+            config.tabs.always_show = true;
+            config.tabs.position = position;
+            config.tabs.width = TabWidth::Fit;
+        });
+        let tab = h.open_tab(ECHO);
+        let _ = h.open_tab(ECHO);
+        let source = h.attach_window();
+        h.activate(source, tab);
+        let _locator = h.cross_locator();
+        h.cross_begin(source, tab);
+        let plus = VisualTestContext::from_window(source, &h.cx)
+            .debug_bounds("new-tab")
+            .expect("new-tab was drawn");
+        h.update_view(source, |view, window, _| {
+            let pill = view
+                .drawn_tear_off
+                .borrow()
+                .expect("tear-off pill was drawn");
+            let strip = view.tab_strip(window);
+            for index in 0..view.tabs.len() {
+                assert!(
+                    !pill.intersects(&strip.label(index)),
+                    "{position:?}: pill {pill:?} overlaps tab {index}"
+                );
+            }
+            assert!(
+                !pill.intersects(&plus),
+                "{position:?}: pill {pill:?} overlaps + {plus:?}"
+            );
+        });
+    }
+}
+
+#[gpui::test]
+fn cross_window_lone_tab_command_is_unavailable_in_palette_and_invocation(
+    cx: &mut TestAppContext,
+) {
+    let mut h = DesktopHarness::new(cx);
+    let tab = h.open_tab(ECHO);
+    let source = h.attach_window();
+    h.activate(source, tab);
+    let unavailable = |result: Result<(), CommandError>| {
+        assert!(
+            matches!(result, Err(CommandError::Unavailable(reason)) if reason == "The tab is already alone in its window.")
+        );
+    };
+    let availability = |h: &mut DesktopHarness| {
+        h.update_view(source, |view, window, cx| {
+            let target = PaletteTarget {
+                session: None,
+                workspace: view.workspace_id(cx),
+                tab: view.active_tab(cx),
+                terminal: None,
+                terminal_view: None,
+                contexts: window.context_stack(),
+            };
+            view.command_availability(ids::MOVE_TAB_TO_NEW_WINDOW, &target, cx)
+        })
+    };
+    unavailable(availability(&mut h));
+    unavailable(h.invoke(source, ids::MOVE_TAB_TO_NEW_WINDOW).map(|_| ()));
+    h.update_view(source, |view, window, cx| {
+        unavailable(
+            view.move_tab_to_new_window(
+                &CommandInvocation::new(ids::MOVE_TAB_TO_NEW_WINDOW, vec![]),
+                window,
+                cx,
+            )
+            .map(|_| ()),
+        );
+    });
+    assert_eq!(h.cx.update(|cx| cx.windows().len()), 1);
+    let _ = h.open_tab(ECHO);
+    h.wait_for("command becomes available after adding a tab", |cx| {
+        source
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .unwrap()
+                    .read(cx)
+                    .tabs
+                    .len()
+                    == 2
+            })
+            .unwrap()
+    });
+    assert!(availability(&mut h).is_ok());
+}
+
+#[gpui::test]
+fn cross_window_incoming_title_chip_stays_inside_a_bottom_bar_window(
+    cx: &mut TestAppContext,
+) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+        config.tabs.position = TabPosition::Bottom;
+    });
+    let tab = h.open_tab(ECHO);
+    let source = h.attach_window();
+    let (destination, _, _) = h.private_window();
+    let locator = h.cross_locator();
+    h.activate(source, tab);
+    let pointer = h.update_view(destination, |_, window, _| {
+        point(
+            window.viewport_size().width - px(1.0),
+            window.viewport_size().height - px(1.0),
+        )
+    });
+    locator
+        .0
+        .set(Located::Window(destination.window_id(), pointer));
+    h.cross_begin(source, tab);
+    let chip = VisualTestContext::from_window(destination, &h.cx)
+        .debug_bounds("drag-title-chip")
+        .expect("incoming chip was drawn");
+    h.update_view(destination, |_, window, _| {
+        assert!(chip.left() >= px(0.0) && chip.top() >= px(0.0));
+        assert!(
+            chip.right() <= window.viewport_size().width
+                && chip.bottom() <= window.viewport_size().height,
+            "chip {chip:?} clips at the window edge"
+        );
+        assert_eq!(chip.right(), pointer.x - px(12.0));
+        assert_eq!(chip.bottom(), pointer.y - px(12.0));
+    });
+}
+
+#[gpui::test]
+fn cross_window_overflowed_tear_off_pill_ends_before_the_add_control(
+    cx: &mut TestAppContext,
+) {
+    for position in [
+        TabPosition::Top,
+        TabPosition::Bottom,
+        TabPosition::Left,
+        TabPosition::Right,
+        TabPosition::Titlebar,
+    ] {
+        let mut h = DesktopHarness::with_config(cx, |config| {
+            config.tabs.always_show = true;
+            config.tabs.position = position;
+            config.tabs.width = TabWidth::Fill;
+        });
+        let tab = h.open_tab(ECHO);
+        for _ in 0..5 {
+            let _ = h.open_tab(ECHO);
+        }
+        let source = h.attach_window();
+        h.cx.simulate_window_resize(source, size(px(400.0), px(170.0)));
+        h.activate(source, tab);
+        let _locator = h.cross_locator();
+        h.cross_begin(source, tab);
+        let plus = VisualTestContext::from_window(source, &h.cx)
+            .debug_bounds("new-tab")
+            .expect("add control was drawn");
+        h.update_view(source, |view, window, _| {
+            let strip = view.tab_strip(window);
+            assert!(
+                strip.max_offset() > px(0.0),
+                "fixture strip must overflow"
+            );
+            let pill = view
+                .drawn_tear_off
+                .borrow()
+                .expect("tear-off pill was drawn");
+            assert!(
+                !pill.intersects(&plus),
+                "{position:?}: pill overlaps add control"
+            );
+            if strip.vertical {
+                assert_eq!(pill.bottom(), strip.bounds.bottom());
+            } else {
+                assert_eq!(pill.right(), strip.bounds.right());
+            }
+        });
+    }
+}
