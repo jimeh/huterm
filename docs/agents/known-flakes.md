@@ -460,7 +460,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   PR #383 (run 41731482596, job 126249669677, head `9d5e1247`), which
   bundles a terminal font and does not touch the palette or its smoke, again
   with extra tab 16 below `fixture-session` 19, active at
-  `w0.active_index=2`; the next head passed.
+  `w0.active_index=2`; the next head passed. It recurred on 2026-11-04 on
+  docs-only PR #397 (run 41792849682, job 126450000000, head `8d7b1431`),
+  again with extra tab 16 below `fixture-session` 19, active at
+  `w0.active_index=2`.
 - **Evidence:** the count includes every core workspace's tabs: two in the
   main window and one in the quake window from step 2. The failure state
   shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux
