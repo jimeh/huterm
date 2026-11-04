@@ -1,6 +1,6 @@
 == tui [b] macos-aarch64: PASS
    ok   tui drew its first frame: "seen"
-   ok   shrink nudge redraws: {"detect_ms":0.025125,"handover":"ok","last_frame":"REDRAW 3 24x80\r\n","redrew":true}
+   ok   shrink nudge redraws: {"detect_ms":0.032833,"handover":"ok","last_frame":"REDRAW 3 24x80\r\n","redrew":true}
    ok   final frame has the restored size: "REDRAW 3 24x80\r\n"
-   ok   vim redraws after nudge: {"bytes_after":3865,"handover":"ok","redrew":true}
-   ok   htop redraws after nudge: {"bytes_after":3587,"handover":"ok","redrew":true}
+   ok   vim redraws after nudge and not without: {"handover":["ok","ok"],"program":"vim","redrew":true,"redrew_without_nudge":false}
+   ok   htop redraws after nudge and stays quiet without: {"bytes_after_nudge":3566,"bytes_without_nudge":0,"handover":["ok","ok"]}

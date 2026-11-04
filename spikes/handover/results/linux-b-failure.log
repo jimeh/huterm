@@ -1,9 +1,13 @@
 == failure [b] linux-aarch64: PASS
-   ok   reject: rolled back: {"cutover_ms":2.051438,"outcome":"rolled_back","reason":"target refused: rejected: unsupported handover format 1 (this build reads [2])","where":"source server kept every terminal; it never released them"}
+   ok   reject: rolled back: {"cutover_ms":2.499399,"outcome":"rolled_back","reason":"target refused: rejected: unsupported handover format 1 (this build reads [2])","where":"source server kept every terminal; it never released them"}
    ok   reject: all terminals usable: 3
-   ok   missing binary: terminals usable: {"outcome":"rolled_back","reason":"spawn /tmp/hs394-b-f87a76fe/missing-binary: No such file or directory (os error 2)","survivors":3}
+   ok   second reject: rolled back: {"cutover_ms":2.009811,"outcome":"rolled_back","reason":"target refused: rejected: unsupported handover format 1 (this build reads [2])","where":"source server kept every terminal; it never released them"}
+   ok   second reject: all terminals usable: 3
+   ok   unparseable manifest: rolled back: {"cutover_ms":3.611493,"outcome":"rolled_back","reason":"peer closed the handover socket","where":"source server kept every terminal; it never released them"}
+   ok   unparseable manifest: all terminals usable: 3
+   ok   missing binary: terminals usable: {"outcome":"rolled_back","reason":"spawn /tmp/hs394-b-01f88411/missing-binary: No such file or directory (os error 2)","survivors":3}
    ok   shim killed: shell keeps running: {"alive":true,"usable":true}
    ok   shim killed: exit reported as unknown: "unknown"
-   ok   later handover: {"cutover_ms":3.447118,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
-   ok   crash on import (B): rolled back: {"cutover_ms":3.91904,"outcome":"rolled_back","reason":"peer closed the handover socket","where":"source server kept every terminal; it never released them"}
-   ok   crash on import (B): terminals usable: 3
+   ok   later handover: {"cutover_ms":3.394283,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
+   ok   crash on import (B): rolled back: {"cutover_ms":3.027363,"outcome":"rolled_back","reason":"peer closed the handover socket","where":"source server kept every terminal; it never released them"}
+   ok   crash on import (B): all terminals usable: 3

@@ -130,6 +130,7 @@ impl Env {
             .args(["server", "--approach", approach, "--run-dir"])
             .arg(&run_dir)
             .args(["--build-id", "v1"])
+            .args(["--driver-pid", &std::process::id().to_string()])
             .args(server_args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -611,48 +612,71 @@ fn tui(env: &mut Env, c: &mut Checks, m: &mut Value) {
     env.write(id, "q");
     let _ = env.roundtrip(id, "TUIQUIT");
 
-    // Real programs, when installed.
-    for (prog, cmd, quit, sentinel) in [
-        (
-            "vim",
-            "vim -u NONE -N -n VIMFILE\n",
-            "\x1b:q!\r",
-            Some("VIMSENTINEL"),
-        ),
-        ("htop", "htop\n", "q", None),
-    ] {
-        if !Command::new("sh")
-            .args(["-c", &format!("command -v {prog}")])
-            .output()
-            .is_ok_and(|o| o.status.success())
-        {
-            m[prog] = json!("not installed");
-            continue;
-        }
-        let file = env.run_dir.join("vim.txt");
-        std::fs::write(&file, "VIMSENTINEL line one\n").unwrap();
+    // Real programs, when installed. Each gets a negative control: a
+    // handover with no nudge must not produce the redraw.
+    let vim = ["vim", "vim.tiny"].into_iter().find(|p| has_program(p));
+    let file = env.run_dir.join("vim.txt");
+    std::fs::write(&file, "VIMSENTINEL line one\n").unwrap();
+    if let Some(vim) = vim {
         let from = env.capture(id).len();
-        env.write(id, &cmd.replace("VIMFILE", &file.display().to_string()));
-        std::thread::sleep(Duration::from_millis(800));
-        let _ = env.expect(id, sentinel.unwrap_or("\x1b["), from, T5);
+        env.write(id, &format!("{vim} -u NONE -N -n {}\n", file.display()));
+        let _ = env.expect(id, "VIMSENTINEL", from, T5);
+        std::thread::sleep(Duration::from_millis(500));
+        let from = env.capture(id).len();
+        let none =
+            env.handover(&["--build-id", "v2"], json!({"nudge": "none"}));
+        let control = env
+            .expect(id, "VIMSENTINEL", from, Duration::from_millis(1500))
+            .is_ok();
         let from = env.capture(id).len();
         let rec =
             env.handover(&["--build-id", "v2"], json!({"nudge": "shrink"}));
-        let ok = match sentinel {
-            Some(s) => {
-                env.expect(id, s, from, Duration::from_millis(2000)).is_ok()
-            }
-            None => {
-                std::thread::sleep(Duration::from_millis(1500));
-                env.capture(id).len() - from > 200
-            }
-        };
-        let bytes = env.capture(id).len() - from;
-        m[prog] = json!({"handover": rec["outcome"], "redrew": ok, "bytes_after": bytes});
-        c.add(&format!("{prog} redraws after nudge"), ok, m[prog].clone());
-        env.write(id, quit);
+        let ok = env
+            .expect(id, "VIMSENTINEL", from, Duration::from_millis(2000))
+            .is_ok();
+        m["vim"] = json!({"program": vim, "handover": [none["outcome"].clone(), rec["outcome"].clone()], "redrew_without_nudge": control, "redrew": ok});
+        c.add(
+            "vim redraws after nudge and not without",
+            ok && !control,
+            m["vim"].clone(),
+        );
+        env.write(id, "\x1b:q!\r");
         let _ = env.roundtrip(id, "QUIT");
+    } else {
+        m["vim"] = json!("not installed");
     }
+    if has_program("htop") {
+        // A 60-second refresh delay keeps htop quiet unless it redraws.
+        env.write(id, "htop -d 600\n");
+        std::thread::sleep(Duration::from_millis(1500));
+        let from = env.capture(id).len();
+        let none =
+            env.handover(&["--build-id", "v2"], json!({"nudge": "none"}));
+        std::thread::sleep(Duration::from_millis(1500));
+        let quiet = env.capture(id).len() - from;
+        let from = env.capture(id).len();
+        let rec =
+            env.handover(&["--build-id", "v2"], json!({"nudge": "shrink"}));
+        std::thread::sleep(Duration::from_millis(1500));
+        let redraw = env.capture(id).len() - from;
+        m["htop"] = json!({"handover": [none["outcome"].clone(), rec["outcome"].clone()], "bytes_without_nudge": quiet, "bytes_after_nudge": redraw});
+        c.add(
+            "htop redraws after nudge and stays quiet without",
+            redraw > 1000 && quiet < 200,
+            m["htop"].clone(),
+        );
+        env.write(id, "q");
+        let _ = env.roundtrip(id, "QUIT");
+    } else {
+        m["htop"] = json!("not installed");
+    }
+}
+
+fn has_program(p: &str) -> bool {
+    Command::new("sh")
+        .args(["-c", &format!("command -v {p}")])
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 fn heavy(env: &mut Env, c: &mut Checks, m: &mut Value) {
@@ -844,6 +868,18 @@ fn close(env: &mut Env, c: &mut Checks, m: &mut Value) {
     let rec = env.handover(&["--build-id", "v2"], json!({}));
     c.outcome("handover", &rec, "ok");
     let (n, npid) = env.bash();
+    let st = env.status();
+    let flags: Vec<Value> = st["terminals"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| t["master_cloexec"].clone())
+        .collect();
+    c.add(
+        "new server keeps masters and listener close-on-exec",
+        flags.iter().all(|f| *f == true) && st["listener_cloexec"] == true,
+        json!({"masters": flags, "listener": st["listener_cloexec"]}),
+    );
 
     let (ok, d) = leaked_fds(bpid);
     c.add("pre-handover shell holds no stray descriptors", ok, d);
@@ -942,6 +978,24 @@ fn failure(env: &mut Env, c: &mut Checks, m: &mut Value) {
     c.outcome("reject: rolled back", &rec, "rolled_back");
     c.add("reject: all terminals usable", ok == 3, ok);
 
+    // A second rejection: in A the server now runs from its rollback copy.
+    let rec = env
+        .handover(&["--build-id", "v2", "--supported-formats", "2"], json!({}));
+    let ok = survive(env, "FONEB");
+    steps.push(json!({"step": "second rejection in a row", "record": rec, "survivors": ok}));
+    c.outcome("second reject: rolled back", &rec, "rolled_back");
+    c.add("second reject: all terminals usable", ok == 3, ok);
+
+    // A schema the new build cannot parse at all.
+    let rec = env.handover(
+        &["--build-id", "v2", "--require-manifest-field", "schema_v2"],
+        json!({}),
+    );
+    let ok = survive(env, "FPARSE");
+    steps.push(json!({"step": "new build cannot parse the manifest", "record": rec, "survivors": ok}));
+    c.outcome("unparseable manifest: rolled back", &rec, "rolled_back");
+    c.add("unparseable manifest: all terminals usable", ok == 3, ok);
+
     if env.approach == "a" {
         let rec = env.handover(
             &["--build-id", "v2", "--supported-formats", "2"],
@@ -1012,7 +1066,8 @@ fn failure(env: &mut Env, c: &mut Checks, m: &mut Value) {
         );
     } else {
         c.outcome("crash on import (B): rolled back", &rec, "rolled_back");
-        c.add("crash on import (B): terminals usable", ok >= 2, ok);
+        // Terminal 3 lost its shim but stays open and usable.
+        c.add("crash on import (B): all terminals usable", ok == 3, ok);
     }
     m["steps"] = json!(steps);
     m["server_pid_start"] = json!(server_pid);
@@ -1207,10 +1262,19 @@ fn rss(count: usize, huterm: Option<String>, shim: Option<String>) -> Value {
         let size = std::fs::metadata(&h).map(|m| m.len()).unwrap_or(0);
         out["huterm_main_binary_idle"] = json!({"exe": h, "exe_bytes": size, "rss_kib": stats(r), "footprint_kib": stats(f), "private_kib": stats(p)});
     }
-    // Reference: an idle interactive bash.
+    // Reference: idle interactive bash shells.
     let mut env = Env::start("a", &[]);
-    let (_, pid) = env.bash();
-    out["reference_bash"] = json!({"rss_kib": sys::rss_kib(pid as i32), "footprint_kib": sys::footprint_kib(pid as i32), "private_kib": sys::private_kib(pid as i32)});
+    let pids: Vec<i32> = (0..4).map(|_| env.bash().1 as i32).collect();
+    std::thread::sleep(Duration::from_millis(500));
+    let pick = |f: fn(i32) -> Option<u64>| {
+        stats(
+            pids.iter()
+                .filter_map(|p| f(*p))
+                .map(|v| v as f64)
+                .collect(),
+        )
+    };
+    out["reference_bash"] = json!({"count": pids.len(), "rss_kib": pick(sys::rss_kib), "footprint_kib": pick(sys::footprint_kib), "private_kib": pick(sys::private_kib)});
     env.cleanup();
     out
 }

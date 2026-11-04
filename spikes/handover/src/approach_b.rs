@@ -287,6 +287,12 @@ pub fn handover(srv: &Arc<Server>, req: &Value) {
         .args(["--import-socket"])
         .arg(&sock)
         .args(["--token", &token])
+        .args(
+            srv.opts
+                .driver_pid
+                .map(|p| vec!["--driver-pid".to_string(), p.to_string()])
+                .unwrap_or_default(),
+        )
         .stdin(std::process::Stdio::null())
         .process_group(0);
     if let Some(log) = log {
@@ -325,6 +331,7 @@ pub fn handover(srv: &Arc<Server>, req: &Value) {
         Err(e) => return abort(srv, Some(&mut child), None, &timing, &e),
     };
 
+    timing.pause_start_ns = sys::now_ns();
     let workers = server::take_workers(&mut lock(&srv.state), true);
     server::stop_all(workers);
     let mut st = lock(&srv.state);
@@ -355,11 +362,19 @@ pub fn handover(srv: &Arc<Server>, req: &Value) {
         stream
             .set_read_timeout(Some(Duration::from_millis(2000)))
             .ok();
+        // The target acks before it reads anything, so a socket that closes
+        // without the ack means it died unowned and the source can resume.
+        // A timeout is ambiguous; assume the target owns everything.
         match read_line(&mut rd) {
-            Ok(l) if l == "owned" => {}
-            other => eprintln!("no ownership ack after commit: {other:?}"),
+            Ok(l) if l == "owned" => Ok(()),
+            Err(e) if e.starts_with("peer closed") => {
+                Err(format!("target died after commit, before owning: {e}"))
+            }
+            other => {
+                eprintln!("no ownership ack after commit: {other:?}");
+                Ok(())
+            }
         }
-        Ok(())
     })();
     match result {
         Ok(()) => {
@@ -535,7 +550,10 @@ pub fn import(opts: Options) -> ! {
     let mut rd = BufReader::new(stream.try_clone().unwrap());
     writeln!(w, "{token}").unwrap();
     let line = read_line(&mut rd).expect("manifest");
-    let mut m: Manifest = serde_json::from_str(&line).expect("parse manifest");
+    // A manifest this build cannot parse panics here, as an unhandled schema
+    // change would; the source sees the socket close and keeps everything.
+    let mut m: Manifest = manifest::parse(&line, opts.require_field.as_deref())
+        .expect("parse manifest");
     if let Err(reason) = manifest::validate(&m, &opts.supported_formats, "b") {
         let _ = writeln!(w, "rejected: {reason}");
         std::process::exit(1);
@@ -610,7 +628,7 @@ pub fn import(opts: Options) -> ! {
         "resumed_ns": resumed,
         "nudged_ns": nudged,
         "cutover_ms": server::ns_to_ms(resumed - m.handover.begin_ns),
-        "blackout_ms": server::ns_to_ms(resumed - m.handover.paused_ns),
+        "blackout_ms": server::ns_to_ms(resumed - m.handover.pause_start_ns),
         "terminals": m.terminals.len(),
     });
     server::push_history(&mut st, rec);

@@ -1,8 +1,9 @@
 == close [b] macos-aarch64: PASS
-   ok   handover: {"cutover_ms":2.635,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
-   ok   pre-handover shell holds no stray descriptors: {"fds":["0=/dev/ttys013","1=/dev/ttys013","2=/dev/ttys013","255=/dev/ttys013"],"leaked":[]}
-   ok   post-handover shell inherits no masters: {"fds":["0=/dev/ttys020","1=/dev/ttys020","2=/dev/ttys020","255=/dev/ttys020"],"leaked":[]}
-   ok   source server exited: 69167
+   ok   handover: {"cutover_ms":3.121,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
+   ok   new server keeps masters and listener close-on-exec: {"listener":true,"masters":[true,true,true]}
+   ok   pre-handover shell holds no stray descriptors: {"fds":["0=/dev/ttys003","1=/dev/ttys003","2=/dev/ttys003","255=/dev/ttys003"],"leaked":[]}
+   ok   post-handover shell inherits no masters: {"fds":["0=/dev/ttys007","1=/dev/ttys007","2=/dev/ttys007","255=/dev/ttys007"],"leaked":[]}
+   ok   source server exited: 87038
    ok   close hangs up the trap script: {"exit":{"code":129,"raw":33024},"gone":true}
    ok   trap saw SIGHUP: true
    ok   trap exit status 129: {"code":129,"raw":33024}

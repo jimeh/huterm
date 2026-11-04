@@ -1,16 +1,16 @@
 == jobcontrol [b] macos-aarch64: PASS
    ok   background job started: "seen"
-   ok   handover: {"cutover_ms":3.143,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
-   ok   shell still session leader: {"pid":68179,"sid":68179}
+   ok   handover: {"cutover_ms":2.397,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
+   ok   shell still session leader: {"pid":86177,"sid":86177}
    ok   shell alive: true
    ok   jobs after handover: "seen"
    ok   background job still running: "jobs; echo J-$((2+3))\r\n[1]+  Running                 sleep 300 &\r\nJ-5"
-   ok   fg gives the job the terminal: 68201
+   ok   fg gives the job the terminal: 86202
    ok   ctrl-z stops the job: "seen"
-   ok   shell regains the terminal: 68179
+   ok   shell regains the terminal: 86177
    ok   bg resumes the job: "seen"
    ok   job running again: "bg %1; jobs; echo BGAGAIN-$((3+4))\r\n[1]+ sleep 300 &\r\n[1]+  Running                 sleep 300 &\r\nBGAGAIN-7"
    ok   fg again: ""
-   ok   ctrl-c interrupts the foreground job: 68179
+   ok   ctrl-c interrupts the foreground job: 86177
    ok   prompt after ctrl-c: "seen"
    ok   no jobs left: "jobs; echo J3-$((5+5))\r\nJ3-10"

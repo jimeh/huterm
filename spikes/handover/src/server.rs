@@ -47,6 +47,15 @@ pub struct Options {
     pub handoff_ns: Option<u64>,
     pub import_socket: Option<PathBuf>,
     pub token: Option<String>,
+    /// A: where to roll back to and as which build, carried in argv so a
+    /// manifest the new build cannot parse still rolls back.
+    pub rollback_exe: Option<String>,
+    pub source_build: Option<String>,
+    /// Test hook: fail to parse any manifest lacking this field, as a
+    /// changed schema would.
+    pub require_field: Option<String>,
+    /// Exit, closing every terminal, once this process is gone.
+    pub driver_pid: Option<i32>,
 }
 
 impl Options {
@@ -63,6 +72,10 @@ impl Options {
             handoff_ns: None,
             import_socket: None,
             token: None,
+            rollback_exe: None,
+            source_build: None,
+            require_field: None,
+            driver_pid: None,
         };
         let mut it = args.iter();
         while let Some(a) = it.next() {
@@ -90,6 +103,10 @@ impl Options {
                 "--handoff-ns" => o.handoff_ns = val().parse().ok(),
                 "--import-socket" => o.import_socket = Some(val().into()),
                 "--token" => o.token = Some(val()),
+                "--rollback-exe" => o.rollback_exe = Some(val()),
+                "--source-build" => o.source_build = Some(val()),
+                "--require-manifest-field" => o.require_field = Some(val()),
+                "--driver-pid" => o.driver_pid = val().parse().ok(),
                 other => eprintln!("server: ignoring argument {other}"),
             }
         }
@@ -363,6 +380,18 @@ pub fn fresh_state(opts: &Options) -> State {
 
 /// Runs the control socket until shutdown. Never returns.
 pub fn serve(srv: Arc<Server>) -> ! {
+    if let Some(pid) = srv.opts.driver_pid {
+        let srv = Arc::clone(&srv);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+                if !sys::alive(pid) {
+                    eprintln!("driver {pid} is gone; shutting down");
+                    shutdown(&srv);
+                }
+            }
+        });
+    }
     let fd = lock(&srv.state).listener_fd;
     let _ = std::fs::write(
         srv.opts.run_dir.join("server.pid"),
@@ -485,6 +514,7 @@ fn status(srv: &Arc<Server>) -> Value {
                 "sid": sys::getsid(t.st.pid),
                 "alive": sys::alive(t.st.pid),
                 "stall_ns": t.stall_ns,
+                "master_cloexec": if t.st.closed { Value::Null } else { json!(sys::is_cloexec(t.st.master_fd).unwrap_or(false)) },
                 "capture": t.st.capture,
             })
         })
@@ -495,6 +525,7 @@ fn status(srv: &Arc<Server>) -> Value {
         "approach": srv.opts.approach.name(),
         "pid": std::process::id(),
         "generation": st.generation,
+        "listener_cloexec": sys::is_cloexec(st.listener_fd).unwrap_or(false),
         "history": st.history,
         "terminals": terms,
     })

@@ -1,6 +1,6 @@
 == heavy [b] linux-aarch64: PASS
-   ok   handover mid-stream: {"cutover_ms":1.258096,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
-   ok   handover mid-stream: {"cutover_ms":2.006313,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
+   ok   handover mid-stream: {"cutover_ms":1.643933,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
+   ok   handover mid-stream: {"cutover_ms":1.782392,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
    ok   generator exited 0: {"code":0,"raw":0}
    ok   reader saw end of output: true
    ok   exact byte count: {"got":52428800,"want":52428800}

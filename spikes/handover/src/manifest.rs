@@ -51,6 +51,9 @@ pub enum Exit {
 pub struct Timing {
     pub begin_ns: u64,
     pub precheck_ns: Option<u64>,
+    /// When the first reader was told to stop: the start of the blackout.
+    pub pause_start_ns: u64,
+    /// When every reader had stopped.
     pub paused_ns: u64,
     pub manifest_ns: u64,
     pub handoff_ns: u64,
@@ -75,4 +78,21 @@ pub fn validate(
         return Err(format!("manifest is for approach {}", manifest.approach));
     }
     Ok(())
+}
+
+/// Parses a manifest the way a build with a different schema would: with
+/// `require_field`, a manifest without that field fails like a missing
+/// required field.
+pub fn parse(
+    body: &str,
+    require_field: Option<&str>,
+) -> Result<Manifest, String> {
+    if let Some(field) = require_field {
+        let v: serde_json::Value =
+            serde_json::from_str(body).map_err(|e| e.to_string())?;
+        if v.get(field).is_none() {
+            return Err(format!("missing field `{field}`"));
+        }
+    }
+    serde_json::from_str(body).map_err(|e| e.to_string())
 }

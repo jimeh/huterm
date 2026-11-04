@@ -136,7 +136,15 @@ pub fn prepare_rollback(opts: &Options) -> (Option<String>, f64) {
     let src = PathBuf::from("/proc/self/exe");
     #[cfg(not(target_os = "linux"))]
     let src = exe;
-    match std::fs::copy(&src, &dest) {
+    // Copy then rename: a rolled-back image runs from `dest` itself, and
+    // copying onto it would truncate the running executable (macOS) or fail
+    // with ETXTBSY (Linux).
+    let tmp = dir.join(format!(
+        ".handover-spike-{}.{}",
+        opts.build_id,
+        std::process::id()
+    ));
+    match std::fs::copy(&src, &tmp).and_then(|_| std::fs::rename(&tmp, &dest)) {
         Ok(_) => (
             Some(dest.display().to_string()),
             server::ns_to_ms(sys::now_ns() - start),
@@ -177,6 +185,7 @@ pub fn handover(srv: &Arc<Server>, req: &Value) {
         }
     }
 
+    timing.pause_start_ns = sys::now_ns();
     let readers = server::take_workers(&mut lock(&srv.state), false);
     server::stop_all(readers);
     // From here the lock stays held until execve, so no waiter can reap.
@@ -212,6 +221,13 @@ pub fn handover(srv: &Arc<Server>, req: &Value) {
     ];
     argv.extend(["--run-dir".into(), srv.opts.run_dir.display().to_string()]);
     argv.extend(extra.iter().cloned());
+    if let Some(rb) = &st.rollback_exe {
+        argv.extend(["--rollback-exe".into(), rb.clone()]);
+    }
+    argv.extend(["--source-build".into(), srv.opts.build_id.clone()]);
+    if let Some(p) = srv.opts.driver_pid {
+        argv.extend(["--driver-pid".into(), p.to_string()]);
+    }
     argv.extend(["--resume-fd".into(), state_fd.to_string()]);
     argv.extend(["--handoff-ns".into(), sys::now_ns().to_string()]);
     let err = exec(&exe, &argv);
@@ -313,8 +329,7 @@ pub fn check_handover(args: &[String]) -> i32 {
     let opts = Options::parse(args);
     let mut body = String::new();
     let _ = std::io::stdin().read_to_string(&mut body);
-    match serde_json::from_str::<Manifest>(&body)
-        .map_err(|e| e.to_string())
+    match manifest::parse(&body, opts.require_field.as_deref())
         .and_then(|m| manifest::validate(&m, &opts.supported_formats, "a"))
     {
         Ok(()) => 0,
@@ -332,12 +347,18 @@ pub fn resume(opts: Options) -> ! {
     let mut f = unsafe { std::fs::File::from_raw_fd(fd) };
     let _ = f.rewind();
     let mut body = String::new();
-    f.read_to_string(&mut body).expect("read state");
-    let m: Manifest = serde_json::from_str(&body).expect("parse state");
+    let _ = f.read_to_string(&mut body);
+    let parsed = manifest::parse(&body, opts.require_field.as_deref());
+    let verdict = parsed
+        .as_ref()
+        .map_err(|e| format!("parse state: {e}"))
+        .and_then(|m| manifest::validate(m, &opts.supported_formats, "a"));
 
-    if let Err(reason) = manifest::validate(&m, &opts.supported_formats, "a") {
+    if let Err(reason) = verdict {
         // Leave every descriptor inheritable and exec the source build back.
-        let Some(rollback) = m
+        // The rollback target comes from argv, not the manifest, so this
+        // works even when the manifest did not parse.
+        let Some(rollback) = opts
             .rollback_exe
             .clone()
             .filter(|_| opts.rollback_reason.is_none())
@@ -351,12 +372,15 @@ pub fn resume(opts: Options) -> ! {
             "--approach".into(),
             "a".into(),
         ];
+        argv.extend(["--run-dir".into(), opts.run_dir.display().to_string()]);
         argv.extend([
-            "--run-dir".into(),
-            m.run_dir.clone(),
             "--build-id".into(),
-            m.source_build.clone(),
+            opts.source_build.clone().unwrap_or_default(),
         ]);
+        argv.extend(["--rollback-exe".into(), rollback.clone()]);
+        if let Some(p) = opts.driver_pid {
+            argv.extend(["--driver-pid".into(), p.to_string()]);
+        }
         argv.extend([
             "--resume-fd".into(),
             fd.to_string(),
@@ -372,6 +396,7 @@ pub fn resume(opts: Options) -> ! {
         eprintln!("rollback exec failed: {err}");
         std::process::abort();
     }
+    let m = parsed.expect("validated above");
     if opts.crash_on_import {
         std::process::abort();
     }
@@ -425,7 +450,7 @@ pub fn resume(opts: Options) -> ! {
     rec["nudged_ns"] = json!(nudged);
     rec["cutover_ms"] = json!(server::ns_to_ms(resumed - m.handover.begin_ns));
     rec["blackout_ms"] =
-        json!(server::ns_to_ms(resumed - m.handover.paused_ns));
+        json!(server::ns_to_ms(resumed - m.handover.pause_start_ns));
     rec["terminals"] = json!(m.terminals.len());
     server::push_history(&mut st, rec);
     drop(st);
