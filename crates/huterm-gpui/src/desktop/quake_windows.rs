@@ -180,9 +180,7 @@ pub(super) struct Presentation {
 }
 impl Presentation {
     pub(super) fn opacity_reloaded(&mut self, supported: bool) {
-        self.model.fade_supported = supported;
-        self.model.revision = self.model.revision.wrapping_add(1);
-        self.generation.set(self.model.revision);
+        self.model.opacity_reloaded(supported);
         self.wake();
     }
 

@@ -746,7 +746,7 @@ impl TerminalView {
             theme.clone(),
             metrics,
         );
-        let support = crate::transparency::support();
+        let support = windows::transparency_support(cx);
         let (background, foreground) = support.paint(config.window);
         if renderer.records_stats() {
             eprintln!(

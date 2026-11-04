@@ -929,6 +929,13 @@ struct Desktop {
 }
 impl Global for Desktop {}
 
+pub(super) fn transparency_support(cx: &App) -> crate::transparency::Support {
+    cx.try_global::<Desktop>()
+        .map_or(crate::transparency::Support::Available, |desktop| {
+            desktop.transparency_support
+        })
+}
+
 /// Font fallbacks as Huterm last applied them, including terminal aliases.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct UnavailableFonts {
@@ -11991,6 +11998,29 @@ fn pane_area_top_border(
                 })))
 }
 
+fn workspace_root(decorated: bool, background: gpui::Hsla) -> gpui::Div {
+    div().when(!decorated && background.a >= 1.0, |root| {
+        root.bg(background)
+    })
+}
+
+fn client_frame_panel(
+    content: Bounds<Pixels>,
+    background: gpui::Hsla,
+    swatch: Swatch,
+) -> gpui::Div {
+    div()
+        .absolute()
+        .left(content.origin.x)
+        .top(content.origin.y)
+        .w(content.size.width)
+        .h(content.size.height)
+        .rounded_tl(FRAME_RADIUS)
+        .rounded_tr(FRAME_RADIUS)
+        .when(background.a >= 1.0, |panel| panel.bg(background))
+        .shadow(swatch.frame_shadow())
+}
+
 impl Render for WorkspaceView {
     #[expect(
         clippy::too_many_lines,
@@ -12031,8 +12061,8 @@ impl Render for WorkspaceView {
         let layout = self.chrome_layout(window);
         let frame = layout.frame;
         let content = layout.content;
-        // The frame owns the shadow; panes and in-flow chrome own disjoint
-        // background fills, so translucent paint never stacks under the grid.
+        // Opaque windows retain their root/frame underlay. Below alpha 1,
+        // panes and in-flow chrome own disjoint background fills.
         let decorated = frame.decorated();
         let foreground = color(self.config.theme.foreground);
         let (background_alpha, _) =
@@ -12054,7 +12084,7 @@ impl Render for WorkspaceView {
         // A dialog change that skipped `sync_dialog` still opens or closes
         // the slot before its guard reads it.
         self.sync_dialog(window, cx);
-        let mut root = div()
+        let mut root = workspace_root(decorated, background)
             .size_full()
             .relative()
             .text_color(foreground)
@@ -12130,17 +12160,7 @@ impl Render for WorkspaceView {
             ))
             .child(huterm_ui::focus::tracker());
         if decorated {
-            root = root.child(
-                div()
-                    .absolute()
-                    .left(content.origin.x)
-                    .top(content.origin.y)
-                    .w(content.size.width)
-                    .h(content.size.height)
-                    .rounded_tl(FRAME_RADIUS)
-                    .rounded_tr(FRAME_RADIUS)
-                    .shadow(swatch.frame_shadow()),
-            );
+            root = root.child(client_frame_panel(content, background, swatch));
         }
         let move_view = cx.entity().downgrade();
         let release_view = move_view.clone();

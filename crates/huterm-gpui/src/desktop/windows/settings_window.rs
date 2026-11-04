@@ -2589,6 +2589,7 @@ impl SettingsView {
         cx.notify();
     }
 
+    /// Why the platform cannot apply the requested window transparency.
     pub(super) fn transparency_note(
         path: &str,
         cx: &App,

@@ -1,6 +1,41 @@
 //! Live transparency reload across retained terminal views.
 use super::*;
 
+#[test]
+fn workspace_root_and_client_frame_fill_only_opaque_backgrounds() {
+    let theme = Config::default().theme;
+    let bounds =
+        Bounds::new(point(px(0.0), px(0.0)), size(px(800.0), px(600.0)));
+    for (alpha, opaque) in
+        [(1.0, true), (0.999, false), (0.6, false), (0.0, false)]
+    {
+        let background = color(theme.background).opacity(alpha);
+        for decorated in [false, true] {
+            let mut root = workspace_root(decorated, background);
+            let mut panel =
+                client_frame_panel(bounds, background, tokens(&theme));
+            assert_eq!(
+                root.style().background.is_some(),
+                !decorated && opaque,
+                "workspace root fill at alpha {alpha}, decorated={decorated}"
+            );
+            assert_eq!(
+                panel.style().background.is_some(),
+                opaque,
+                "client frame panel fill at alpha {alpha}"
+            );
+            for element in [&mut root, &mut panel] {
+                if let Some(fill) = &element.style().background {
+                    assert_eq!(
+                        fill.color().unwrap().as_solid().unwrap(),
+                        background
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[gpui::test]
 fn reload_changes_surface_and_paint_both_directions_without_replacing_terminals(
     cx: &mut TestAppContext,

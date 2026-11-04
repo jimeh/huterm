@@ -85,11 +85,14 @@ before terminal handlers and reconcile after gesture ownership changes.
 ## Native window handles
 
 `transparency::Alpha` owns native alpha for ordinary and Quake windows:
-configured opacity times normalized fade. Reload invalidates captured Quake
-effects without restarting progress or deadlines. Recovery and cleanup restore
-the configured factor. Background appearance follows the shared pure policy at
-open, reload and decoration changes; refresh after applying it because GPUI's
-native setters do not redraw.
+configured opacity times normalized fade. Native writes must preserve and
+reconcile factors changed by reentrant callbacks. Opacity reload keeps the
+Quake effect generation: effects read the live configured factor, and cancelling
+them can discard an already-issued Show or Hide. Progress and deadlines stay
+unchanged. Recovery and cleanup restore the configured factor. Background
+appearance follows the shared pure policy at open, reload and decoration
+changes; refresh after applying it because GPUI's native setters do not redraw.
+Pane creation reads cached transparency support instead of probing X11.
 
 GPUI's inherent `Window::window_handle` returns its own handle; qualify
 `HasWindowHandle::window_handle(window)` when obtaining the raw AppKit handle.

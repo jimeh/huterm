@@ -145,7 +145,7 @@ impl Alpha {
     pub(crate) fn fade(
         &self,
         fade: f64,
-        write: impl FnOnce(f64) -> anyhow::Result<()>,
+        write: impl FnMut(f64) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
         self.0.set(Factors {
             fade,
@@ -155,16 +155,22 @@ impl Alpha {
     }
     fn apply(
         &self,
-        write: impl FnOnce(f64) -> anyhow::Result<()>,
+        mut write: impl FnMut(f64) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        let mut factors = self.0.get();
-        let effective = factors.effective();
-        if effective.to_bits() != factors.applied.to_bits() {
+        loop {
+            let factors = self.0.get();
+            let effective = factors.effective();
+            if effective.to_bits() == factors.applied.to_bits() {
+                return Ok(());
+            }
             write(effective)?;
-            factors.applied = effective;
-            self.0.set(factors);
+            // Native setters can reenter GPUI. Keep any reload or fade
+            // received during the write, then reconcile it before returning.
+            self.0.set(Factors {
+                applied: effective,
+                ..self.0.get()
+            });
         }
-        Ok(())
     }
     pub(crate) fn sync<V: 'static>(
         &self,
@@ -302,6 +308,68 @@ mod tests {
         Alpha::default()
             .apply(|_| panic!("default alpha must be untouched"))
             .unwrap();
+    }
+
+    #[test]
+    fn native_alpha_restores_default_after_reload_reenters_a_write() {
+        let owner = Alpha::default();
+        let written = Cell::new(1.0);
+        owner.configure(0.5);
+        owner
+            .apply(|value| {
+                written.set(value);
+                // Native setters can reenter GPUI while this write is running.
+                owner.configure(1.0);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(written.get(), 1.0, "reload must restore native alpha");
+    }
+
+    #[test]
+    fn queued_native_alpha_sync_uses_latest_reload_and_fade_in_either_order() {
+        for sync_first in [false, true] {
+            let owner = Alpha::default();
+            let written = Cell::new(1.0);
+            owner.configure(0.5);
+            owner
+                .apply(|value| {
+                    written.set(value);
+                    Ok(())
+                })
+                .unwrap();
+            owner.configure(0.7);
+            // A sync queued by this reload must read live factors when run.
+            let sync = || {
+                owner.apply(|value| {
+                    written.set(value);
+                    Ok(())
+                })
+            };
+            owner.configure(1.0);
+            let fade = || {
+                owner.fade(0.4, |value| {
+                    written.set(value);
+                    Ok(())
+                })
+            };
+            if sync_first {
+                sync().unwrap();
+                fade().unwrap();
+            } else {
+                fade().unwrap();
+                sync().unwrap();
+            }
+            assert_eq!(written.get(), 0.4);
+            owner
+                .fade(1.0, |value| {
+                    written.set(value);
+                    Ok(())
+                })
+                .unwrap();
+            sync().unwrap();
+            assert_eq!(written.get(), 1.0);
+        }
     }
 
     #[test]

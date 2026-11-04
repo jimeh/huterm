@@ -157,6 +157,13 @@ pub(in crate::desktop) struct Model {
     pub native_paused: bool,
 }
 impl Model {
+    pub fn opacity_reloaded(&mut self, supported: bool) {
+        // Effects carry normalized fade values and read the configured alpha
+        // when they run. Cancelling their revision could discard a Show/Hide
+        // whose policy stage has already advanced.
+        self.fade_supported = supported;
+    }
+
     pub fn duration(&self) -> Duration {
         if self.regular
             || self.profile.animation == crate::quake::Animation::None
