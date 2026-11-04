@@ -479,6 +479,7 @@ impl gpui::Render for HiddenProbe {
 }
 fn run_hidden_probe(directory: PathBuf) {
     crate::assets::application().run(move |cx| {
+        crate::terminal_font::register_bundled_fonts(cx);
         // Nothing here may panic: GPUI's launch callback cannot unwind, so a
         // panic aborts and leaves a crash dialog behind. Report failures
         // through the `failed` file and request a clean quit instead.

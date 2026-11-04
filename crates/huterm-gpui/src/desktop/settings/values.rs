@@ -334,7 +334,7 @@ mod tests {
         let family = if cfg!(target_os = "macos") {
             "Menlo"
         } else {
-            "monospace"
+            "DejaVu Sans Mono"
         };
         assert_eq!(
             shown(setting("font.family"), &file, &defaults),

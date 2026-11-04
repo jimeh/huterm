@@ -816,7 +816,7 @@ fn a_family_that_is_not_installed_says_what_draws_instead(
 fn a_family_installed_while_settings_is_open_reapplies_the_fonts(
     cx: &mut TestAppContext,
 ) {
-    const INSTALLED: &[&str] = &["Menlo", "Missing Sans"];
+    const INSTALLED: &[&str] = &["Menlo", "DejaVu Sans Mono", "Missing Sans"];
     let file = ScratchConfig::new(
         "lists-font-installed",
         "[font]\nui_family = \"Missing Sans\"\n",
@@ -837,7 +837,9 @@ fn a_family_installed_while_settings_is_open_reapplies_the_fonts(
     };
     // A scan that agrees with what Huterm applied reloads nothing.
     let before = reads(&mut harness);
-    with_view(&mut harness, |view, cx| view.set_families(&["Menlo"], cx));
+    with_view(&mut harness, |view, cx| {
+        view.set_families(&["Menlo", "DejaVu Sans Mono"], cx);
+    });
     harness.cx.run_until_parked();
     assert_eq!(reads(&mut harness), before, "an agreeing scan reloaded");
     // The family installs while Settings is open, and the window comes
@@ -879,13 +881,68 @@ fn a_family_installed_while_settings_is_open_reapplies_the_fonts(
         };
     });
     with_view(&mut harness, |view, cx| {
-        view.set_families(&["Menlo", "Missing Sans", "Other Sans"], cx);
+        view.set_families(
+            &["Menlo", "DejaVu Sans Mono", "Missing Sans", "Other Sans"],
+            cx,
+        );
     });
     harness.cx.run_until_parked();
     assert!(
         reads(&mut harness) > before,
         "a later installation did not reload"
     );
+}
+
+#[gpui::test]
+fn settings_before_a_terminal_window_resolves_its_family_without_a_reload(
+    cx: &mut TestAppContext,
+) {
+    let text = "[font]\nfamily = \"Missing Mono\"\n";
+    let file = ScratchConfig::new("lists-font-before-window", text);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.font.family = "Missing Mono".into();
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(cx.windows().len(), 0);
+        let desktop = cx.global::<Desktop>();
+        assert_eq!(desktop.applied_terminal_family, None);
+        assert_eq!(desktop.unavailable_fonts.terminal, None);
+    });
+    open_settings(&mut harness, &file.path());
+    // The test platform has no installed fonts. Settings resolves its note
+    // without reloading the file over the configuration already in use.
+    let expected =
+        crate::terminal_font::ResolvedFamily::resolve("Missing Mono", |_| {
+            false
+        });
+    harness.wait_for("Settings to resolve the terminal fallback", |cx| {
+        settled(cx)
+            && cx.global::<Desktop>().unavailable_fonts.terminal
+                == expected.clone().fallback()
+    });
+    with_window(&mut harness, |view, window, cx| {
+        view.show_section(SectionId::Appearance, cx);
+        window.refresh();
+    });
+    visual(&harness).run_until_parked();
+    let row = a11y_node(&mut harness, "settings-row-font.family");
+    assert!(
+        row["aria"]["description"]
+            .as_str()
+            .unwrap()
+            .ends_with(&expected.note()),
+        "{row}"
+    );
+    let reads = with_view(&mut harness, |view, _| view.reads_started());
+    assert_eq!(reads, 1);
+    with_view(&mut harness, |view, cx| view.set_families(&[], cx));
+    harness.cx.run_until_parked();
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.reads_started()),
+        reads
+    );
+    assert_eq!(harness.cx.update(|cx| cx.windows().len()), 1);
+    assert_eq!(file.text(), text);
 }
 
 #[gpui::test]
@@ -902,10 +959,42 @@ fn a_reload_notes_which_configured_fonts_fell_back(cx: &mut TestAppContext) {
         Desktop::invoke(cx, &reload, None).unwrap();
     });
     let noted = UnavailableFonts {
-        terminal: Some("Nope Mono".into()),
+        terminal: crate::terminal_font::ResolvedFamily::resolve(
+            "Nope Mono",
+            |_| false,
+        )
+        .fallback(),
         interface: Some("Nope Sans".into()),
     };
     harness.wait_for("the reload", |cx| {
         cx.global::<Desktop>().unavailable_fonts == noted
     });
+}
+
+#[gpui::test]
+fn terminal_family_notes_distinguish_missing_alias_and_unregistered_default(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("lists-terminal-notes", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    for (configured, available, expected) in [
+        ("Missing Mono", true, format!("Missing Mono is not installed, so terminals use {}.", crate::terminal_font::default_family())),
+        ("monospace", true, format!("monospace is a font alias, so terminals use {}.", crate::terminal_font::default_family())),
+        ("Missing Mono", false, "Missing Mono is not installed. The platform default font is unavailable too.".into()),
+        ("monospace", false, "monospace is a font alias. The platform default font is unavailable too.".into()),
+    ] {
+        harness.cx.update(|cx| {
+            let desktop = cx.global_mut::<Desktop>();
+            desktop.config.font.family = configured.into();
+            desktop.unavailable_fonts.terminal = crate::terminal_font::ResolvedFamily::resolve(configured, |family| available && family == crate::terminal_font::default_family()).fallback();
+        });
+        with_window(&mut harness, |view, window, cx| {
+            view.show_section(SectionId::Appearance, cx);
+            window.refresh();
+        });
+        visual(&harness).run_until_parked();
+        let row = a11y_node(&mut harness, "settings-row-font.family");
+        assert!(row["aria"]["description"].as_str().unwrap().ends_with(&expected), "{row}");
+    }
 }

@@ -79,6 +79,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
         );
     };
     crate::assets::application().run(move |cx| {
+        crate::terminal_font::register_bundled_fonts(cx);
         let display_id = crate::benchmark_display::selected(cx)
             .expect("select benchmark display");
         let metrics =
@@ -433,7 +434,7 @@ fn family() -> &'static str {
     if cfg!(target_os = "macos") {
         "Menlo"
     } else {
-        "monospace"
+        "DejaVu Sans Mono"
     }
 }
 

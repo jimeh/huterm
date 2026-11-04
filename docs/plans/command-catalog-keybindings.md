@@ -2,7 +2,7 @@
 
 Status: implemented; the deviations that landed are recorded in place below.
 Remaining native verification is the manual QA in the implementation sequence.
-Terminology is defined in [CONTEXT.md](../../CONTEXT.md).
+Terminology is defined in [GLOSSARY.md](../../GLOSSARY.md).
 
 Issues: [#23: Create the command catalog and migrate existing actions][issue-23]
 and [#25: Configure command keybindings, arguments, and when conditions][issue-25].
@@ -256,7 +256,7 @@ status line shows the first fatal diagnostic.
    pattern to run the compiled keymap through GPUI's `Keymap` with macOS and
    Linux modifiers, including `alt-r` and a terminal-scoped binding that does
    not fire under a `confirming` context.
-5. Update the README configuration section, `CONTEXT.md` (Command, Scope,
+5. Update the README configuration section, `GLOSSARY.md` (Command, Scope,
    Binding), and `AGENTS.md` with the reservation and predicate-validation
    rules. Run `mise run test`, then `mise run verify` before handoff.
 6. Manual QA on macOS and Linux: unbind `shift-pageup` and confirm the shell

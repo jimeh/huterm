@@ -34,7 +34,8 @@ toolchain, or notice change.
   checks each `packaged:` name against `assets/linux/package-policy.json`. A
   `$name` version reads the pinned version from its source manifest.
 
-`provenance.json` here and in `third-party/ghostty/` record each fetched
+`provenance.json` here, in `third-party/ghostty/`, and in
+`third-party/dejavu/` record each fetched
 file's origin and SHA-256; generation verifies them.
 
 Entries record the targets that ship them. The app shows only the entries for

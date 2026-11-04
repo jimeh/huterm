@@ -403,6 +403,8 @@ assert_file "$bundle/Contents/Resources/ghostty/ghostty-MIT.txt" "Ghostty licens
 assert_file "$bundle/Contents/Resources/terminal-graphics/LICENSE-Ghostty" "terminal graphics license"
 assert_file "$bundle/Contents/Resources/lucide/README.md" "Lucide provenance"
 assert_file "$bundle/Contents/Resources/lucide/LICENSE" "Lucide license"
+assert_file "$bundle/Contents/Resources/dejavu/README.md" "DejaVu provenance"
+assert_file "$bundle/Contents/Resources/dejavu/LICENSE" "DejaVu license"
 assert_file "$bundle/Contents/Resources/licenses.json" "open source license notices"
 if ! cmp -s "$bundle/Contents/Resources/licenses.json" third-party/licenses/licenses.json; then
   echo "package verification failed: licenses.json differs from third-party/licenses/licenses.json" >&2

@@ -2847,8 +2847,12 @@ pub struct RawFont {
         "x-huterm-apply" = "live",
     )))]
     pub weight: FontWeight,
-    /// The terminal font family. Defaults to Menlo on macOS and `monospace` on
+    /// The terminal font family. Defaults to Menlo on macOS and DejaVu Sans Mono on
     /// Linux.
+    #[expect(
+        clippy::doc_markdown,
+        reason = "font names are plain text in Settings"
+    )]
     #[cfg_attr(feature = "schema", schemars(regex(pattern = r"\S"), transform = schema::without_default, extend(
         "x-huterm-section" = "appearance",
         "x-huterm-group" = "Font",
@@ -2946,7 +2950,7 @@ impl Default for FontConfig {
             family: if cfg!(target_os = "macos") {
                 "Menlo"
             } else {
-                "monospace"
+                "DejaVu Sans Mono"
             }
             .into(),
             size: 14.0,

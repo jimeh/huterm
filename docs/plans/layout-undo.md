@@ -458,7 +458,7 @@ resizes, and undo restores the weights from before the balance.
 
 ## Documentation
 
-- `CONTEXT.md`: **Layout history** (a window's bounded record of the
+- `GLOSSARY.md`: **Layout history** (a window's bounded record of the
   layout rearrangements it made, which undo and redo restore).
 - `docs/agents/core-runtime.md`: the restore guard and its reuse of a
   removed tab's ID.
