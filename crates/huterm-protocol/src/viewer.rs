@@ -1,9 +1,15 @@
 //! Viewer capabilities, input stamps, and revisioned terminal status.
 
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
 use crate::{ExitStatus, TerminalMetadata};
 
 /// Failure messages a terminal status retains, newest last.
 pub const TERMINAL_FAILURE_CAPACITY: usize = 8;
+
+/// Command records a terminal status retains, newest last.
+pub const COMMAND_RECORD_CAPACITY: usize = 256;
 
 /// What one viewer may do to its terminal. The runtime checks each flag on
 /// every request, so a client that lacks a flag cannot act around it.
@@ -78,6 +84,44 @@ pub struct TerminalFailure {
     pub message: String,
 }
 
+/// One command the shell reported through OSC 133 markers. A record
+/// changes at most once, when it leaves [`CommandState::Running`]; only
+/// its state, `finished_at`, and `duration` change then.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandRecord {
+    /// Position among all records this terminal created, starting at 1 and
+    /// never reused.
+    pub sequence: u64,
+    /// The command line, only when the shell sent one: untrusted text,
+    /// bounded and stripped of control characters, never interpreted.
+    pub text: Option<String>,
+    /// Whether the command runs, finished, or ended without reporting.
+    pub state: CommandState,
+    /// When the runtime handled the command's start.
+    pub started_at: SystemTime,
+    /// When the record left [`CommandState::Running`].
+    pub finished_at: Option<SystemTime>,
+    /// Monotonic time from the start until the record left
+    /// [`CommandState::Running`].
+    pub duration: Option<Duration>,
+}
+
+/// How a [`CommandRecord`]'s command stands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandState {
+    /// The command started and has not ended.
+    Running,
+    /// The shell reported the command's end, with its exit code if it sent
+    /// one.
+    Finished {
+        /// The reported exit code.
+        exit_code: Option<i32>,
+    },
+    /// The command ended without a report: a new prompt or command started,
+    /// or the terminal's output ended.
+    Abandoned,
+}
+
 /// The current non-cell state of a terminal. Viewers read the latest value
 /// when woken instead of receiving a queue of events, so a viewer that wakes
 /// late, or starts late, sees the same state as one that saw every change.
@@ -98,6 +142,10 @@ pub struct TerminalStatus {
     /// The most recent failures, oldest first, at most
     /// [`TERMINAL_FAILURE_CAPACITY`].
     pub failures: Vec<TerminalFailure>,
+    /// The most recent command records, oldest first, at most
+    /// [`COMMAND_RECORD_CAPACITY`]. A record whose rows have left history
+    /// leaves the list, except the newest.
+    pub commands: Arc<[CommandRecord]>,
 }
 
 impl Default for TerminalStatus {
@@ -110,6 +158,7 @@ impl Default for TerminalStatus {
             lifecycle: TerminalLifecycle::Running,
             bells: 0,
             failures: Vec::new(),
+            commands: Arc::new([]),
         }
     }
 }
@@ -136,6 +185,32 @@ impl TerminalStatus {
         });
         (&self.failures[start..], missed)
     }
+
+    /// The record numbered `sequence`, while the list holds it.
+    #[must_use]
+    pub fn command(&self, sequence: u64) -> Option<&CommandRecord> {
+        let index = self
+            .commands
+            .binary_search_by_key(&sequence, |record| record.sequence)
+            .ok()?;
+        self.commands.get(index)
+    }
+
+    /// Records created after `seen`, and how many of those the list no
+    /// longer holds. A viewer that saw a record running looks it up with
+    /// [`Self::command`] to observe its end.
+    #[must_use]
+    pub fn commands_after(&self, seen: u64) -> (&[CommandRecord], u64) {
+        let start = self
+            .commands
+            .partition_point(|record| record.sequence <= seen);
+        let new = &self.commands[start..];
+        let latest = new.last().map_or(seen, |last| last.sequence);
+        let missed = latest
+            .saturating_sub(seen)
+            .saturating_sub(u64::try_from(new.len()).unwrap_or(u64::MAX));
+        (new, missed)
+    }
 }
 
 #[cfg(test)]
@@ -153,6 +228,46 @@ mod tests {
                 .collect(),
             ..TerminalStatus::default()
         }
+    }
+
+    fn commands(sequences: &[u64]) -> TerminalStatus {
+        TerminalStatus {
+            commands: sequences
+                .iter()
+                .map(|&sequence| CommandRecord {
+                    sequence,
+                    text: None,
+                    state: CommandState::Running,
+                    started_at: SystemTime::UNIX_EPOCH,
+                    finished_at: None,
+                    duration: None,
+                })
+                .collect(),
+            ..TerminalStatus::default()
+        }
+    }
+
+    #[test]
+    fn commands_after_reports_new_records_and_the_ones_the_list_dropped() {
+        let sequences = |records: &[CommandRecord]| {
+            records.iter().map(|r| r.sequence).collect::<Vec<_>>()
+        };
+        // Eviction removed 2, 3, and 6; the cap dropped everything before 1.
+        let status = commands(&[4, 5, 7, 8]);
+        let (new, missed) = status.commands_after(0);
+        assert_eq!(sequences(new), [4, 5, 7, 8]);
+        assert_eq!(missed, 4, "1, 2, 3, and 6 left the list");
+        let (new, missed) = status.commands_after(5);
+        assert_eq!(sequences(new), [7, 8]);
+        assert_eq!(missed, 1, "6 left the list");
+        assert_eq!(status.commands_after(8), (&[][..], 0));
+        assert_eq!(TerminalStatus::default().commands_after(3), (&[][..], 0));
+
+        assert_eq!(status.command(7).map(|r| r.sequence), Some(7));
+        assert_eq!(status.command(4).map(|r| r.sequence), Some(4));
+        assert!(status.command(6).is_none());
+        assert!(status.command(3).is_none());
+        assert!(status.command(9).is_none());
     }
 
     #[test]

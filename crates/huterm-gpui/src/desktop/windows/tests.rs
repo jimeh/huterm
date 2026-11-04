@@ -2800,16 +2800,20 @@ fn new_tab_directory_inheritance_accepts_only_local_usable_directories() {
         std::thread::sleep(Duration::from_millis(5));
     };
     runtime.shutdown().unwrap();
-    let captured =
-        inherited_directory(NewTabDirectory::Inherit, &local).unwrap();
-    assert_eq!(captured, root);
+    let captured = inherited_directories(NewTabDirectory::Inherit, &local);
+    // The root shell sent the report, so it is the shell directory too.
+    assert_eq!(captured, std::slice::from_ref(&root));
+    let captured = captured[0].clone();
     assert!(usable_launch_directory(&captured));
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o600))
         .unwrap();
     assert!(!usable_launch_directory(&captured));
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
         .unwrap();
-    assert_eq!(inherited_directory(NewTabDirectory::Default, &local), None);
+    assert_eq!(
+        inherited_directories(NewTabDirectory::Default, &local),
+        Vec::<PathBuf>::new()
+    );
 
     let remote = TerminalMetadata::new(
         Some(TerminalDirectory::new(
@@ -2819,9 +2823,62 @@ fn new_tab_directory_inheritance_accepts_only_local_usable_directories() {
         )),
         None,
     );
-    assert_eq!(inherited_directory(NewTabDirectory::Inherit, &remote), None);
+    assert_eq!(
+        inherited_directories(NewTabDirectory::Inherit, &remote),
+        Vec::<PathBuf>::new()
+    );
     std::fs::remove_dir(&root).unwrap();
     assert!(!usable_launch_directory(&captured));
+}
+
+#[test]
+fn inheritance_falls_back_to_the_shell_directory() {
+    use huterm_config::NewTabDirectory;
+    use huterm_protocol::{TerminalDirectory, TerminalMetadata};
+
+    let local = |path: &Path| {
+        TerminalDirectory::new(None, path.to_string_lossy().into_owned(), true)
+    };
+    let scratch = std::env::temp_dir()
+        .join(format!("huterm-inherit-fallback-{}", std::process::id()));
+    let shell = scratch.join("shell");
+    std::fs::create_dir_all(&shell).unwrap();
+    let missing = scratch.join("missing");
+    // Under ssh the effective directory is remote, so the shell's applies.
+    let under_ssh = TerminalMetadata::new(
+        Some(TerminalDirectory::new(
+            Some("remote.example".into()),
+            "/srv".into(),
+            false,
+        )),
+        Some("ssh".into()),
+    )
+    .with_shell_directory(Some(local(&shell)));
+    let candidates =
+        inherited_directories(NewTabDirectory::Inherit, &under_ssh);
+    assert_eq!(candidates, std::slice::from_ref(&shell));
+    assert_eq!(launch_directory(candidates), Some(shell.clone()));
+    // A local directory that cannot start a process falls back too.
+    let gone = TerminalMetadata::new(Some(local(&missing)), None)
+        .with_shell_directory(Some(local(&shell)));
+    let candidates = inherited_directories(NewTabDirectory::Inherit, &gone);
+    assert_eq!(candidates, [missing.clone(), shell.clone()]);
+    assert_eq!(launch_directory(candidates), Some(shell.clone()));
+    // With neither usable, the normal launch directory applies.
+    let neither = TerminalMetadata::new(Some(local(&missing)), None)
+        .with_shell_directory(Some(local(&scratch.join("also-missing"))));
+    assert_eq!(
+        launch_directory(inherited_directories(
+            NewTabDirectory::Inherit,
+            &neither
+        )),
+        None
+    );
+    assert_eq!(
+        inherited_directories(NewTabDirectory::Default, &under_ssh),
+        Vec::<PathBuf>::new()
+    );
+    std::fs::remove_dir_all(&scratch).unwrap();
 }
 
 #[test]

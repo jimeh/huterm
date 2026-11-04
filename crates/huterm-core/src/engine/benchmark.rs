@@ -415,16 +415,34 @@ fn engine_benchmark_resize_history() {
         .unwrap();
         engine.set_history_rows(rows).unwrap();
         // 149-column lines fill two rows at both widths, so every reflow
-        // rewraps them without changing the row count.
+        // rewraps them without changing the row count. Shell-marked
+        // commands fill the record list, so reflow also moves its full set
+        // of tracked references; the newest 256 span about two thirds of
+        // the retained history. Each prompt is a short row of its own, as
+        // a shell draws it: Ghostty scans every reference for each cell of
+        // a row that holds one, so anchors on full rows cost more.
         let lines = saturating_lines(rows).div_ceil(2);
+        let command_lines = (rows as usize / 2 / 384).max(1);
         let mut batch = String::new();
         for line in 0..lines {
+            if line % command_lines == 0 {
+                batch.push_str(
+                    "\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07make\x1b]133;C\x07\r\n",
+                );
+            }
             let _ = write!(batch, "{line:08} {}\r\n", "x".repeat(140));
             if line % 10_000 == 9_999 || line + 1 == lines {
                 engine.process(batch.as_bytes()).unwrap();
+                engine.command_update();
                 batch.clear();
             }
         }
+        let records = engine.commands().len();
+        assert_eq!(
+            records,
+            huterm_protocol::COMMAND_RECORD_CAPACITY,
+            "resize-history needs a full record list"
+        );
         let before = engine.snapshot().unwrap().history_size;
         let mut resizing = Vec::new();
         let mut snapshots = Vec::new();
@@ -434,8 +452,10 @@ fn engine_benchmark_resize_history() {
                 if iteration % 2 == 0 { 100 } else { 120 },
                 40,
             );
+            // The runtime checks every record's reference after a resize.
             let started = Instant::now();
             engine.resize(size, cell).unwrap();
+            black_box(engine.command_update());
             resizing.push(started.elapsed().as_micros());
             let started = Instant::now();
             let snapshot = engine.snapshot().unwrap();
@@ -450,7 +470,7 @@ fn engine_benchmark_resize_history() {
         // Sizes above the configurable maximum are measured, not gated.
         let gated = rows <= ScrollbackLimit::MAX.rows();
         println!(
-            "engine=ghostty fixture=resize-history iterations=20 columns=100/120 rows=40 limit_rows={rows} history_rows_before={before} history_rows_after={after} gated={gated} resize_us_p50={} resize_us_max={} snapshot_us_p50={} snapshot_us_max={} peak_rss_kib={peak_rss}",
+            "engine=ghostty fixture=resize-history iterations=20 columns=100/120 rows=40 limit_rows={rows} history_rows_before={before} history_rows_after={after} records={records} gated={gated} resize_us_p50={} resize_us_max={} snapshot_us_p50={} snapshot_us_max={} peak_rss_kib={peak_rss}",
             resizing[10], resizing[19], snapshots[10], snapshots[19]
         );
         // The budgets hold only for saturated history that reflow keeps.

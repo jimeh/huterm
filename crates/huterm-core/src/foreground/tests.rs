@@ -135,6 +135,35 @@ fn a_jobs_report_expires_with_the_job_and_clearing_falls_back() {
 }
 
 #[test]
+fn only_the_root_shells_local_reports_set_the_shell_directory() {
+    let (shell, ssh) = (Some(10), Some(30));
+    let mut reports = Reports::for_shell(shell);
+    reports.report_directory(Some(directory("/home/me", true)), shell);
+    assert_eq!(reports.shell_directory(), Some(directory("/home/me", true)));
+    // A remote shell under ssh reports from ssh's group.
+    reports.report_directory(Some(directory("/srv/remote", false)), ssh);
+    reports.report_directory(Some(directory("/srv/local", true)), ssh);
+    assert_eq!(reports.shell_directory(), Some(directory("/home/me", true)));
+    // The root shell's own remote report does not replace its local one.
+    reports.report_directory(Some(directory("/elsewhere", false)), shell);
+    assert_eq!(reports.shell_directory(), Some(directory("/home/me", true)));
+    reports.report_directory(Some(directory("/home/me/src", true)), shell);
+    assert_eq!(
+        reports.shell_directory(),
+        Some(directory("/home/me/src", true))
+    );
+    // An empty OSC 7 from the root shell clears it; one from a job does not.
+    reports.report_directory(None, ssh);
+    assert!(reports.shell_directory().is_some());
+    reports.report_directory(None, shell);
+    assert_eq!(reports.shell_directory(), None);
+    // An unknown foreground group is never the shell's.
+    let mut unknown = Reports::for_shell(None);
+    unknown.report_directory(Some(directory("/home/me", true)), None);
+    assert_eq!(unknown.shell_directory(), None);
+}
+
+#[test]
 fn titles_apply_only_while_their_setter_holds_the_foreground() {
     let start = Instant::now();
     let (shell, job) = (Some(10), Some(20));

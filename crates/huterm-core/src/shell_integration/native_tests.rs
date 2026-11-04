@@ -34,10 +34,13 @@ struct Shell {
     writer: Box<dyn Write + Send>,
     waiter: crate::pty::ReadinessWaiter,
     // Drop taps before the process, so its cleanup closes the last PTY handles.
-    _process: crate::pty::PtyProcess,
+    process: crate::pty::PtyProcess,
     transcript: Vec<u8>,
     engine: crate::engine::TerminalEngine,
     directory: Option<huterm_protocol::TerminalDirectory>,
+    /// Directory reports attributed to the foreground group, as the runtime
+    /// attributes them.
+    reports: crate::foreground::Reports,
 }
 impl Shell {
     fn spawn(command: &TerminalCommand) -> Self {
@@ -53,13 +56,17 @@ impl Shell {
         mut process: crate::pty::PtyProcess,
     ) -> Self {
         let (reader, writer, waiter) = process.raw_tap();
+        let root = process.groups().1;
         Self {
             reader,
             writer,
             waiter,
-            _process: process,
+            process,
             transcript: Vec::new(),
             directory: None,
+            reports: crate::foreground::Reports::for_shell(
+                root.and_then(|root| i32::try_from(root).ok()),
+            ),
             engine: crate::engine::TerminalEngine::new(
                 huterm_protocol::TerminalId::new(1),
                 command.grid_size,
@@ -96,7 +103,13 @@ impl Shell {
                             }
                             crate::engine::EngineEffect::Directory(
                                 directory,
-                            ) => self.directory = directory,
+                            ) => {
+                                self.reports.report_directory(
+                                    directory.clone(),
+                                    self.process.groups().0,
+                                );
+                                self.directory = directory;
+                            }
                             _ => {}
                         }
                     }
@@ -2692,3 +2705,5 @@ PROMPT_COMMAND=$'fixture_theme\n__bp_install "$_"'
         assert_stream(&mut shell, name, "false", "1");
     }
 }
+
+mod records;

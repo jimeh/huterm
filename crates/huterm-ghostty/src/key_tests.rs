@@ -138,6 +138,8 @@ fn terminal_data_keys_write_exactly_their_output_type() {
     get!(
         Cols: 0,
         Rows: 0,
+        CursorX: 0,
+        CursorY: 0,
         ActiveScreen: 0,
         Scrollbar: ffi::GhosttyTerminalScrollbar::default(),
         MouseTracking: false,
@@ -396,6 +398,7 @@ fn terminal_option_keys_read_exactly_their_value_type() {
         "DeviceAttributes",
         "PwdChanged",
         "ClipboardWrite",
+        "SemanticPrompt",
     ]);
 
     // Values read back exactly despite 0xFF bytes after them.

@@ -8,11 +8,14 @@ use crate::ffi::{
     self,
     keys::{terminal_data as data, terminal_option as option},
 };
-use crate::native::{AllocatorRef, NativeBytes, NativeTerminal};
+use crate::native::{
+    AllocatorRef, NativeBytes, NativeTerminal, NativeTrackedRef,
+};
 use crate::types::{
-    Cell as GridCell, Compression, DeviceAttributes, Effect, Fill, MemoryUsage,
-    Mode, Palette, Point, PointSpace, Rgb, Row, Screen, ScreenMemory, Scroll,
-    Scrollbar, palette_from_ffi, palette_to_ffi,
+    Boundaries, Cell as GridCell, Compression, DeviceAttributes, Effect, Fill,
+    MemoryUsage, Mode, Palette, Point, PointSpace, Rgb, Row, Screen,
+    ScreenMemory, Scroll, Scrollbar, WriteStop, palette_from_ffi,
+    palette_to_ffi,
 };
 
 /// Construction options for a [`Terminal`].
@@ -159,6 +162,85 @@ impl<H> Terminal<H> {
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
         self.native_mut()?.vt_write(bytes);
         self.after_callbacks()
+    }
+
+    /// Parses PTY output up to and including the first byte that reaches
+    /// one of `boundaries`, which must not be empty. Effects of the
+    /// consumed bytes queue as with [`Terminal::write`]; pass the rest in
+    /// the next call. Every byte is consumed in order, so the terminal
+    /// ends as a single write would leave it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Poisoned`] if a host callback panicked, now or earlier, or
+    /// [`Error::InvalidValue`] for empty `boundaries`.
+    pub fn write_until(
+        &mut self,
+        bytes: &[u8],
+        boundaries: Boundaries,
+    ) -> Result<WriteStop> {
+        let (consumed, reached) =
+            self.native_mut()?.vt_write_until(bytes, boundaries.0)?;
+        self.after_callbacks()?;
+        Ok(WriteStop {
+            consumed,
+            reached: Boundaries(reached),
+        })
+    }
+
+    /// Creates a tracked reference to `point` on the active screen. It
+    /// follows its cell through scrolling, pruning, and reflow, and loses
+    /// its value when the cell is discarded, as by RIS or erasing history.
+    /// Every live reference adds work to each row Ghostty reflows.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidValue`] for a point outside its coordinate space, or
+    /// [`Error::OutOfMemory`].
+    pub fn track(&mut self, point: Point) -> Result<TrackedRef> {
+        let native = self.native_mut()?;
+        Ok(TrackedRef {
+            terminal: native.address(),
+            native: native.track(point)?,
+        })
+    }
+
+    /// Whether `reference`, created by this terminal, still has a value.
+    #[must_use]
+    pub fn has_value(&self, reference: &TrackedRef) -> bool {
+        reference.terminal == self.bound.native().address()
+            && reference.native.has_value()
+    }
+
+    /// The position of `reference`, created by this terminal, in `space`,
+    /// or `None` when it has no value or cannot be represented there. A
+    /// reference stays on the screen it was created on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidValue`] for a reference from another terminal.
+    pub fn tracked_point(
+        &self,
+        reference: &TrackedRef,
+        space: PointSpace,
+    ) -> Result<Option<Point>> {
+        if reference.terminal != self.native()?.address() {
+            return Err(Error::InvalidValue);
+        }
+        reference.native.point(space)
+    }
+
+    /// The cursor's column and row within the active area.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the terminal is poisoned.
+    pub fn cursor_position(&self) -> Result<(u16, u16)> {
+        let terminal = self.native()?.as_ref();
+        Ok((
+            terminal.value::<data::CursorX>()?,
+            terminal.value::<data::CursorY>()?,
+        ))
     }
 
     /// Moves queued effects, in callback order, to the end of `out`.
@@ -677,6 +759,17 @@ fn optional<T>(value: Result<T>) -> Result<Option<T>> {
         Err(Error::NoValue) => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+/// An owned reference that follows a cell as its terminal changes. It may
+/// outlive its terminal, which leaves it without a value. Read it only
+/// through the terminal that created it, whose borrow proves no write is
+/// moving it.
+#[derive(Debug)]
+pub struct TrackedRef {
+    native: NativeTrackedRef,
+    /// The creating terminal's handle address.
+    terminal: usize,
 }
 
 /// A resolved cell, valid while its terminal is borrowed.

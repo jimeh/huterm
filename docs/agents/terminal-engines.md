@@ -158,10 +158,18 @@ wrap flag: the next row's continuation flag can disagree with it after line
 insertion or deletion.
 
 `GridRef` and `RowRef` are untracked references that borrow the terminal, so
-no write or resize can run while one is held. Ghostty's garbage flag, which
-1.4.0 also sets on tracked pins whose history rows were erased, never applies
-to them. Keep them untracked; a tracked reference that outlives a write would
-need garbage handling.
+no write or resize can run while one is held, and Ghostty's garbage flag never
+applies to them. Keep link lookup on them. Command-record anchors are the one
+tracked use: `TrackedRef` owns a `ghostty_terminal_grid_ref_track` handle,
+frees it on drop, even after its terminal, and is read only through
+`Terminal::has_value` and `Terminal::tracked_point`, whose borrow of the
+creating terminal proves no write is moving it. A tracked pin follows
+scrolling, pruning, and reflow. RIS, ED 3 (Huterm's clear scrollback), and page
+pruning mark it garbage, which reads as no value. In-place erasure and
+deletion, such as ED 2 away from a prompt, DL, and scroll regions, remap it to
+the replacing row instead. With `scrollback = 0`, Ghostty scrolls by deleting
+the top row in place, so anchors move onto the rows that replace theirs and
+records leave only through the count cap. `tracked_ref_tests.rs` pins these.
 
 Reflow, not link lookup, bounds `ScrollbackLimit::MAX` at 100,000 rows. A width
 change rewraps all history on the runtime thread at about 65 ns per row in the
@@ -172,6 +180,14 @@ runners. Saturated plain history at 120 columns takes about 1 KB per row.
 maximum, so a Ghostty pin bump or native patch that slows reflow or grows
 history memory fails CI. Link lookup stays under 0.5 ms p95 at a million rows.
 Raising the maximum again needs cheaper reflow first.
+
+Every tracked reference adds reflow work: Ghostty scans every pin for each row
+it reflows, and again for each cell of a row that holds one. The fixture
+therefore fills history with OSC 133 commands on short prompt rows, so the gate
+includes a full list of 256 records and the runtime's eviction pass. Locally
+that took the median from 6.3 ms to 14.1 ms at 100,000 rows, and from 0.6 to
+1.6 ms at 10,000; anchors on full 120-column rows took 16.5 ms. A cheaper
+reflow with many references needs a native patch.
 
 Core seeds foreground, background, cursor, palette, grid, and physical cell size
 before spawning the child. It answers native OSC 4,
@@ -462,6 +478,18 @@ checks every key's type against the bytes the library writes or reads. Tests
 read native-written memory only at declared fields and the tag-selected union
 member, taken from the manifest: foreign writes may leave padding
 uninitialized.
+
+PTY output goes through `Terminal::write_until` with `Boundaries::OSC_END`.
+Ghostty dispatches an OSC on its BEL or on the ESC that begins ST, before the
+backslash, so the semantic prompt effect is already queued when that stop
+returns; a contract test pins both terminators. The engine then handles it
+against the current cursor and screen, before writing the rest of the chunk,
+and leaves the other effects queued in order. String-boundary stops cost
+nothing on Ghostty's bulk text paths; asking for `GROUND` would. The semantic
+prompt callback copies the command line Ghostty decoded from `cmdline` or
+`cmdline_url`, and reports a D with a malformed status without an exit code.
+Ghostty captures 2,048 bytes of an OSC 133 after its `133;` and rejects a
+longer sequence whole, so such a C makes no record.
 
 Scrollback compression is exposed as plain values only: `compress_step` runs
 one incremental step, `compression_activity` returns Ghostty's opaque token,

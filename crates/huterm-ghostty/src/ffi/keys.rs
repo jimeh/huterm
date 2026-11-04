@@ -43,6 +43,8 @@ pub(crate) mod terminal_data {
     pub(crate) const KEYS: &[&str] = &[
         "COLS",
         "ROWS",
+        "CURSOR_X",
+        "CURSOR_Y",
         "ACTIVE_SCREEN",
         "SCROLLBAR",
         "MOUSE_TRACKING",
@@ -83,6 +85,26 @@ pub(crate) mod terminal_data {
 
     impl super::super::TerminalData for Rows {
         const KEY: ffi::GhosttyTerminalData = ffi::GHOSTTY_TERMINAL_DATA_ROWS;
+        type Out = u16;
+    }
+
+    /// `GHOSTTY_TERMINAL_DATA_CURSOR_X`.
+    #[derive(Debug)]
+    pub(crate) enum CursorX {}
+
+    impl super::super::TerminalData for CursorX {
+        const KEY: ffi::GhosttyTerminalData =
+            ffi::GHOSTTY_TERMINAL_DATA_CURSOR_X;
+        type Out = u16;
+    }
+
+    /// `GHOSTTY_TERMINAL_DATA_CURSOR_Y`.
+    #[derive(Debug)]
+    pub(crate) enum CursorY {}
+
+    impl super::super::TerminalData for CursorY {
+        const KEY: ffi::GhosttyTerminalData =
+            ffi::GHOSTTY_TERMINAL_DATA_CURSOR_Y;
         type Out = u16;
     }
 
@@ -341,6 +363,7 @@ pub(crate) mod terminal_option {
         "SCROLLBACK_MAX_BYTES",
         "SCROLLBACK_MAX_LINES",
         "CLIPBOARD_WRITE_MAX_BYTES",
+        "SEMANTIC_PROMPT",
     ];
 
     /// `GHOSTTY_TERMINAL_OPT_USERDATA`.
@@ -538,6 +561,16 @@ pub(crate) mod terminal_option {
         const KEY: ffi::GhosttyTerminalOption =
             ffi::GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES;
         type Value = usize;
+    }
+
+    /// `GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT`.
+    #[derive(Debug)]
+    pub(crate) enum SemanticPrompt {}
+
+    impl super::super::TerminalCallback for SemanticPrompt {
+        const KEY: ffi::GhosttyTerminalOption =
+            ffi::GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT;
+        type Callback = ffi::GhosttyTerminalSemanticPromptFn;
     }
 }
 
@@ -887,6 +920,12 @@ impl super::SizedStruct for ffi::GhosttyTerminalSelectionFormatOptions {
     }
 }
 
+impl super::SizedStruct for ffi::GhosttyTerminalWriteStop {
+    fn size_mut(&mut self) -> &mut usize {
+        &mut self.size
+    }
+}
+
 impl super::SizedStruct for ffi::GhosttyTerminalMemoryUsage {
     fn size_mut(&mut self) -> &mut usize {
         &mut self.size
@@ -900,6 +939,12 @@ impl super::SizedStruct for ffi::GhosttyClipboardWriteReply {
 }
 
 impl super::SizedStruct for ffi::GhosttyClipboardWrite {
+    fn size_mut(&mut self) -> &mut usize {
+        &mut self.size
+    }
+}
+
+impl super::SizedStruct for ffi::GhosttyTerminalSemanticPrompt {
     fn size_mut(&mut self) -> &mut usize {
         &mut self.size
     }

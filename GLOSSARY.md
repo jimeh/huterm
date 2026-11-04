@@ -105,6 +105,11 @@ Attaching to a surviving runtime and its existing terminal processes.
 A catalog definition with a stable ID, a scope, and named typed arguments. The
 catalog is the single source for menus, shortcuts, and programmatic callers.
 
+**Command record**:
+One shell command a terminal's runtime recorded from OSC 133 markers: its
+sequence number, state (running, finished with an exit code, or abandoned),
+times, and the command line when the shell sent one. Not a catalog command.
+
 **Command scope**:
 Who executes a command: Runtime (the core, against canonical structure),
 Application (the client without a window), Window (one client window), or

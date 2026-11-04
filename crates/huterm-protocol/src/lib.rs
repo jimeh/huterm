@@ -32,7 +32,8 @@ pub use pane_layout::{
     SplitChild, SplitDirection, SplitNode,
 };
 pub use viewer::{
-    InputStamp, TERMINAL_FAILURE_CAPACITY, TerminalFailure, TerminalLifecycle,
+    COMMAND_RECORD_CAPACITY, CommandRecord, CommandState, InputStamp,
+    TERMINAL_FAILURE_CAPACITY, TerminalFailure, TerminalLifecycle,
     TerminalStatus, ViewerCapabilities,
 };
 
@@ -965,6 +966,7 @@ pub struct TerminalMetadata {
     directory: Option<TerminalDirectory>,
     foreground_process: Option<String>,
     foreground_title: Option<String>,
+    shell_directory: Option<TerminalDirectory>,
 }
 
 impl TerminalMetadata {
@@ -978,7 +980,18 @@ impl TerminalMetadata {
             directory,
             foreground_process,
             foreground_title: None,
+            shell_directory: None,
         }
+    }
+
+    /// Adds the root shell's last local directory report.
+    #[must_use]
+    pub fn with_shell_directory(
+        mut self,
+        directory: Option<TerminalDirectory>,
+    ) -> Self {
+        self.shell_directory = directory;
+        self
     }
 
     /// Adds the title set by the process group that holds the foreground.
@@ -1006,6 +1019,14 @@ impl TerminalMetadata {
     #[must_use]
     pub fn foreground_title(&self) -> Option<&str> {
         self.foreground_title.as_deref()
+    }
+
+    /// Returns the root shell's last local OSC 7 report. Reports from other
+    /// process groups, such as a remote shell under `ssh`, never change it,
+    /// so it can stand in when [`Self::directory`] is remote.
+    #[must_use]
+    pub fn shell_directory(&self) -> Option<&TerminalDirectory> {
+        self.shell_directory.as_ref()
     }
 }
 

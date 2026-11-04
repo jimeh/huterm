@@ -323,6 +323,120 @@ pub enum Effect {
     /// The working directory changed to these raw bytes, as the program
     /// sent them (an OSC 7 URI or a bare path).
     PwdChanged(Vec<u8>),
+    /// The shell reported a step of a command through OSC 133.
+    SemanticPrompt(SemanticPrompt),
+}
+
+/// A shell integration event (OSC 133), copied out of the callback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SemanticPrompt {
+    /// Which step of the command this reports.
+    pub kind: SemanticPromptKind,
+    /// Which prompt starts; always [`PromptKind::Primary`] for other kinds.
+    pub prompt: PromptKind,
+    /// The exit code a command end reported, if any.
+    pub exit_code: Option<i32>,
+    /// The decoded command line an output start carried; empty when the
+    /// shell sent none or Ghostty could not decode it. Untrusted bytes.
+    pub command: Vec<u8>,
+}
+
+/// The step of a command a [`SemanticPrompt`] reports.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum SemanticPromptKind {
+    /// A prompt starts (A).
+    PromptStart,
+    /// The prompt is drawn and input starts (B).
+    InputStart,
+    /// The command was submitted and its output starts (C).
+    OutputStart,
+    /// The command finished (D).
+    CommandEnd,
+    /// A kind this binding does not know.
+    Unknown(i32),
+}
+
+impl SemanticPromptKind {
+    pub(crate) const fn from_ffi(kind: ffi::GhosttySemanticPromptKind) -> Self {
+        match kind {
+            ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_START => Self::PromptStart,
+            ffi::GHOSTTY_SEMANTIC_PROMPT_INPUT_START => Self::InputStart,
+            ffi::GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START => Self::OutputStart,
+            ffi::GHOSTTY_SEMANTIC_PROMPT_COMMAND_END => Self::CommandEnd,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+/// Which prompt a [`SemanticPromptKind::PromptStart`] starts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PromptKind {
+    /// The main prompt before each command, and the default.
+    Primary,
+    /// A prompt at the right edge, such as zsh's `RPROMPT`.
+    Right,
+    /// A prompt on an extra line of a multiline command.
+    Continuation,
+    /// Another prompt for an extra line of input, such as bash's `PS2`.
+    Secondary,
+    /// A kind this binding does not know.
+    Unknown(i32),
+}
+
+impl PromptKind {
+    pub(crate) const fn from_ffi(
+        kind: ffi::GhosttySemanticPromptPromptKind,
+    ) -> Self {
+        match kind {
+            ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_PRIMARY => Self::Primary,
+            ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_RIGHT => Self::Right,
+            ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_CONTINUATION => {
+                Self::Continuation
+            }
+            ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_SECONDARY => Self::Secondary,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+/// Points in the output stream where [`crate::Terminal::write_until`] can
+/// stop, combined with `|`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Boundaries(pub(crate) u32);
+
+impl Boundaries {
+    /// No boundary; only a stop that reached none reports it.
+    pub const NONE: Self = Self(0);
+    /// The byte that ended an OSC string: BEL, or the ESC that begins ST.
+    /// Ghostty dispatches the OSC on that byte.
+    pub const OSC_END: Self =
+        Self(ffi::GHOSTTY_TERMINAL_BOUNDARY_OSC_END as u32);
+
+    /// Whether every flag in `other` is set.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl std::ops::BitOr for Boundaries {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+/// Where [`crate::Terminal::write_until`] stopped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WriteStop {
+    /// Bytes consumed, including the one that reached a boundary.
+    pub consumed: usize,
+    /// The requested boundaries that byte reached; [`Boundaries::NONE`]
+    /// when every byte was consumed without reaching one.
+    pub reached: Boundaries,
 }
 
 /// The render state's global damage.

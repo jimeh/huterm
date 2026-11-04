@@ -3,6 +3,7 @@
 
 pub type GhosttyResult = ::core::ffi::c_int;
 pub type GhosttyTerminal = *mut GhosttyTerminalImpl;
+pub type GhosttyTrackedGridRef = *mut GhosttyTrackedGridRefImpl;
 pub type GhosttyRenderState = *mut GhosttyRenderStateImpl;
 pub type GhosttyRenderStateRowIterator = *mut GhosttyRenderStateRowIteratorImpl;
 pub type GhosttyRenderStateRowCells = *mut GhosttyRenderStateRowCellsImpl;
@@ -24,6 +25,10 @@ pub type GhosttyTerminalCompressionMode = ::core::ffi::c_int;
 pub type GhosttyTerminalCompressionResult = ::core::ffi::c_int;
 pub type GhosttyTerminalScrollViewportTag = ::core::ffi::c_int;
 pub type GhosttyTerminalScreen = ::core::ffi::c_int;
+pub type GhosttyTerminalBoundary = ::core::ffi::c_int;
+pub type GhosttyTerminalStringKind = ::core::ffi::c_int;
+pub type GhosttyTerminalStringIntroducer = ::core::ffi::c_int;
+pub type GhosttyTerminalStringEnd = ::core::ffi::c_int;
 pub type GhosttyTerminalBellFn = ::core::option::Option<
     unsafe extern "C" fn(
         terminal: GhosttyTerminal,
@@ -43,6 +48,15 @@ pub type GhosttyTerminalClipboardWriteFn = ::core::option::Option<
         terminal: GhosttyTerminal,
         userdata: *mut ::core::ffi::c_void,
         write: *const GhosttyClipboardWrite,
+    ),
+>;
+pub type GhosttySemanticPromptKind = ::core::ffi::c_int;
+pub type GhosttySemanticPromptPromptKind = ::core::ffi::c_int;
+pub type GhosttyTerminalSemanticPromptFn = ::core::option::Option<
+    unsafe extern "C" fn(
+        terminal: GhosttyTerminal,
+        userdata: *mut ::core::ffi::c_void,
+        event: *const GhosttyTerminalSemanticPrompt,
     ),
 >;
 pub type GhosttyTerminalColorSchemeFn = ::core::option::Option<
@@ -118,6 +132,11 @@ pub type GhosttyMouseEncoderOption = ::core::ffi::c_int;
 #[repr(C)]
 #[derive(Debug)]
 pub struct GhosttyTerminalImpl {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug)]
+pub struct GhosttyTrackedGridRefImpl {
     _unused: [u8; 0],
 }
 #[repr(C)]
@@ -303,6 +322,17 @@ pub struct GhosttyTerminalScrollViewport {
     pub value: GhosttyTerminalScrollViewportValue,
 }
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct GhosttyTerminalWriteStop {
+    pub size: usize,
+    pub consumed: usize,
+    pub reached: u32,
+    pub kind: GhosttyTerminalStringKind,
+    pub introducer: GhosttyTerminalStringIntroducer,
+    pub end: GhosttyTerminalStringEnd,
+    pub byte: u8,
+}
+#[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct GhosttyTerminalScrollbar {
     pub total: u64,
@@ -352,6 +382,17 @@ pub struct GhosttyClipboardWrite {
     pub can_remember: bool,
     pub ctx: *const ::core::ffi::c_void,
     pub reply: GhosttyClipboardWriteReplyFn,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct GhosttyTerminalSemanticPrompt {
+    pub size: usize,
+    pub kind: GhosttySemanticPromptKind,
+    pub prompt_kind: GhosttySemanticPromptPromptKind,
+    pub has_exit_code: bool,
+    pub exit_code: i32,
+    pub command: GhosttyString,
+    pub error: GhosttyString,
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -543,6 +584,33 @@ pub const GHOSTTY_SCROLL_VIEWPORT_MAX_VALUE: GhosttyTerminalScrollViewportTag =
 pub const GHOSTTY_TERMINAL_SCREEN_PRIMARY: GhosttyTerminalScreen = 0;
 pub const GHOSTTY_TERMINAL_SCREEN_ALTERNATE: GhosttyTerminalScreen = 1;
 pub const GHOSTTY_TERMINAL_SCREEN_MAX_VALUE: GhosttyTerminalScreen = 2147483647;
+pub const GHOSTTY_TERMINAL_BOUNDARY_GROUND: GhosttyTerminalBoundary = 1;
+pub const GHOSTTY_TERMINAL_BOUNDARY_APC_START: GhosttyTerminalBoundary = 2;
+pub const GHOSTTY_TERMINAL_BOUNDARY_APC_END: GhosttyTerminalBoundary = 4;
+pub const GHOSTTY_TERMINAL_BOUNDARY_DCS_START: GhosttyTerminalBoundary = 8;
+pub const GHOSTTY_TERMINAL_BOUNDARY_DCS_END: GhosttyTerminalBoundary = 16;
+pub const GHOSTTY_TERMINAL_BOUNDARY_OSC_START: GhosttyTerminalBoundary = 32;
+pub const GHOSTTY_TERMINAL_BOUNDARY_OSC_END: GhosttyTerminalBoundary = 64;
+pub const GHOSTTY_TERMINAL_BOUNDARY_MAX_VALUE: GhosttyTerminalBoundary =
+    2147483647;
+pub const GHOSTTY_TERMINAL_STRING_KIND_APC: GhosttyTerminalStringKind = 0;
+pub const GHOSTTY_TERMINAL_STRING_KIND_DCS: GhosttyTerminalStringKind = 1;
+pub const GHOSTTY_TERMINAL_STRING_KIND_OSC: GhosttyTerminalStringKind = 2;
+pub const GHOSTTY_TERMINAL_STRING_KIND_MAX_VALUE: GhosttyTerminalStringKind =
+    2147483647;
+pub const GHOSTTY_TERMINAL_STRING_INTRODUCER_ESC:
+    GhosttyTerminalStringIntroducer = 0;
+pub const GHOSTTY_TERMINAL_STRING_INTRODUCER_C1:
+    GhosttyTerminalStringIntroducer = 1;
+pub const GHOSTTY_TERMINAL_STRING_INTRODUCER_MAX_VALUE:
+    GhosttyTerminalStringIntroducer = 2147483647;
+pub const GHOSTTY_TERMINAL_STRING_END_ST_ESC: GhosttyTerminalStringEnd = 0;
+pub const GHOSTTY_TERMINAL_STRING_END_ST_C1: GhosttyTerminalStringEnd = 1;
+pub const GHOSTTY_TERMINAL_STRING_END_CANCELLED: GhosttyTerminalStringEnd = 2;
+pub const GHOSTTY_TERMINAL_STRING_END_ABORTED: GhosttyTerminalStringEnd = 3;
+pub const GHOSTTY_TERMINAL_STRING_END_BEL: GhosttyTerminalStringEnd = 4;
+pub const GHOSTTY_TERMINAL_STRING_END_MAX_VALUE: GhosttyTerminalStringEnd =
+    2147483647;
 pub const GHOSTTY_CLIPBOARD_LOCATION_STANDARD: GhosttyClipboardLocation = 0;
 pub const GHOSTTY_CLIPBOARD_LOCATION_SELECTION: GhosttyClipboardLocation = 1;
 pub const GHOSTTY_CLIPBOARD_LOCATION_PRIMARY: GhosttyClipboardLocation = 2;
@@ -561,6 +629,23 @@ pub const GHOSTTY_CLIPBOARD_WRITE_RESULT_IO_ERROR: GhosttyClipboardWriteResult =
     5;
 pub const GHOSTTY_CLIPBOARD_WRITE_RESULT_MAX_VALUE:
     GhosttyClipboardWriteResult = 2147483647;
+pub const GHOSTTY_SEMANTIC_PROMPT_INVALID: GhosttySemanticPromptKind = 0;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_START: GhosttySemanticPromptKind = 1;
+pub const GHOSTTY_SEMANTIC_PROMPT_INPUT_START: GhosttySemanticPromptKind = 2;
+pub const GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START: GhosttySemanticPromptKind = 3;
+pub const GHOSTTY_SEMANTIC_PROMPT_COMMAND_END: GhosttySemanticPromptKind = 4;
+pub const GHOSTTY_SEMANTIC_PROMPT_MAX_VALUE: GhosttySemanticPromptKind =
+    2147483647;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_PRIMARY:
+    GhosttySemanticPromptPromptKind = 0;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_RIGHT:
+    GhosttySemanticPromptPromptKind = 1;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_CONTINUATION:
+    GhosttySemanticPromptPromptKind = 2;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_SECONDARY:
+    GhosttySemanticPromptPromptKind = 3;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_MAX_VALUE:
+    GhosttySemanticPromptPromptKind = 2147483647;
 pub const GHOSTTY_TERMINAL_OPT_USERDATA: GhosttyTerminalOption = 0;
 pub const GHOSTTY_TERMINAL_OPT_WRITE_PTY: GhosttyTerminalOption = 1;
 pub const GHOSTTY_TERMINAL_OPT_BELL: GhosttyTerminalOption = 2;
@@ -1162,6 +1247,15 @@ impl Default for GhosttyTerminalScrollViewport {
         }
     }
 }
+impl Default for GhosttyTerminalWriteStop {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
 impl Default for GhosttyClipboardContent {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
@@ -1181,6 +1275,15 @@ impl Default for GhosttyClipboardWriteReply {
     }
 }
 impl Default for GhosttyClipboardWrite {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+impl Default for GhosttyTerminalSemanticPrompt {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
         unsafe {
@@ -1284,6 +1387,13 @@ unsafe extern "C" {
         data: *const u8,
         len: usize,
     );
+    pub fn ghostty_terminal_vt_write_until(
+        terminal: GhosttyTerminal,
+        data: *const u8,
+        len: usize,
+        boundaries: u32,
+        out: *mut GhosttyTerminalWriteStop,
+    ) -> GhosttyResult;
     pub fn ghostty_terminal_scroll_viewport(
         terminal: GhosttyTerminal,
         behavior: GhosttyTerminalScrollViewport,
@@ -1306,6 +1416,11 @@ unsafe extern "C" {
         terminal: GhosttyTerminal,
         point: GhosttyPoint,
         out_ref: *mut GhosttyGridRef,
+    ) -> GhosttyResult;
+    pub fn ghostty_terminal_grid_ref_track(
+        terminal: GhosttyTerminal,
+        point: GhosttyPoint,
+        out_ref: *mut GhosttyTrackedGridRef,
     ) -> GhosttyResult;
     pub fn ghostty_render_state_new(
         allocator: *const GhosttyAllocator,
@@ -1354,6 +1469,15 @@ unsafe extern "C" {
     pub fn ghostty_render_state_row_cells_free(
         cells: GhosttyRenderStateRowCells,
     );
+    pub fn ghostty_tracked_grid_ref_free(ref_: GhosttyTrackedGridRef);
+    pub fn ghostty_tracked_grid_ref_has_value(
+        ref_: GhosttyTrackedGridRef,
+    ) -> bool;
+    pub fn ghostty_tracked_grid_ref_point(
+        ref_: GhosttyTrackedGridRef,
+        tag: GhosttyPointTag,
+        out_point: *mut GhosttyPointCoordinate,
+    ) -> GhosttyResult;
     pub fn ghostty_key_event_new(
         allocator: *const GhosttyAllocator,
         event: *mut GhosttyKeyEvent,

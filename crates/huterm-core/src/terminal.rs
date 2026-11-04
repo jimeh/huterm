@@ -878,6 +878,9 @@ struct Owner<'a> {
     publication: Publication,
     registry: &'a Registry,
     child_exited: bool,
+    /// Set once the reader reported end of output or failed, after the
+    /// output it read before that was parsed.
+    output_ended: bool,
     /// When to compress idle history; see [`crate::compression`].
     compression: CompressionSchedule,
     #[cfg(test)]
@@ -979,6 +982,7 @@ impl Owner<'_> {
             ) {
                 return false;
             }
+            self.publish_commands();
             self.publish();
         }
         if let Some(presentation) = effects.presentation {
@@ -1018,6 +1022,31 @@ impl Owner<'_> {
     fn publish(&mut self) {
         self.publication
             .publish(self.registry, None, self.engine.generation());
+    }
+
+    /// Stages the command records for the next status flush if the last
+    /// engine operation changed them.
+    fn publish_commands(&mut self) {
+        if let Some(commands) = self.engine.command_update() {
+            self.status.commands(commands);
+        }
+    }
+
+    /// Records that the reader stopped, once the output it read before is
+    /// parsed, and settles a running command if the root has exited too.
+    fn end_output(&mut self) {
+        self.output_ended = true;
+        self.settle_ended_command();
+    }
+
+    /// The runtime observes the root's exit before it parses output already
+    /// read, so exit alone leaves a running command running: its D can
+    /// still arrive. Once the reader has also stopped, nothing more can.
+    fn settle_ended_command(&mut self) {
+        if self.child_exited && self.output_ended {
+            self.engine.abandon_running_command();
+            self.publish_commands();
+        }
     }
 
     fn input_closed(&self) -> bool {
@@ -1093,6 +1122,7 @@ impl Owner<'_> {
                 code: Some(exit.exit_code()),
                 success: exit.success(),
             });
+            self.settle_ended_command();
         }
         Ok(())
     }
@@ -1191,32 +1221,38 @@ fn process_output(
         Some((probes, now)),
         "PTY writer stopped before a terminal reply was written",
     );
+    owner.publish_commands();
     owner.publish();
     healthy && end_untracked_gesture(owner, arbiter)
 }
 
-/// Parses output the reader queued before it failed, so that output reaches
-/// history before the runtime stops. The reader sends each batch before its
-/// failure and stops after it, so the queue holds at most `OUTPUT_CAPACITY`
-/// messages; the bound keeps teardown prompt even if another sender floods.
+/// Parses output the reader queued before it failed or reached end of file,
+/// so that output reaches history before the runtime acts on the end. The
+/// reader sends each batch before its end and stops after it, so the queue
+/// holds at most `OUTPUT_CAPACITY` messages; the bound keeps teardown prompt
+/// even if another sender floods. Returns false when the runtime must close.
 fn process_queued_output(
     owner: &mut Owner<'_>,
     arbiter: &mut Arbiter,
     probes: &mut ProbeSchedule,
     output: &Receiver<Vec<u8>>,
     closing: &AtomicBool,
-) {
+) -> bool {
     for _ in 0..OUTPUT_CAPACITY {
         if closing.load(Ordering::Acquire) {
-            return;
+            return true;
         }
         let Ok(bytes) = output.try_recv() else {
-            return;
+            return true;
         };
         if !process_output(owner, arbiter, probes, &bytes) {
-            return;
+            return false;
         }
+        // Each chunk's status reaches viewers before the next chunk can
+        // evict a command record that chunk settled.
+        owner.status.flush(owner.registry);
     }
+    true
 }
 
 #[expect(
@@ -1359,10 +1395,11 @@ fn run_terminal(
         input_closed,
         pending_writes: VecDeque::new(),
         status,
-        metadata: PublishedMetadata::default(),
+        metadata: PublishedMetadata::for_root(child.process_id()),
         publication: Publication::default(),
         registry,
         child_exited: false,
+        output_ended: false,
         compression: CompressionSchedule::new(scrollback_compression),
         #[cfg(test)]
         compression_probe: None,
@@ -1499,13 +1536,14 @@ fn run_terminal(
                         // and a writer that failed too must not cut the
                         // parsing short.
                         owner.close_input();
-                        process_queued_output(
+                        let _ = process_queued_output(
                             &mut owner,
                             &mut arbiter,
                             &mut probes,
                             &output,
                             &closing,
                         );
+                        owner.end_output();
                         owner.status.failure(message);
                         closing.store(true, Ordering::Release);
                     }
@@ -1514,6 +1552,19 @@ fn run_terminal(
                         {
                             pty_eof = true;
                         }
+                        // Controls run ahead of output, so the reader's last
+                        // batches, which can hold a command's D, may still
+                        // be queued.
+                        if !process_queued_output(
+                            &mut owner,
+                            &mut arbiter,
+                            &mut probes,
+                            &output,
+                            &closing,
+                        ) {
+                            closing.store(true, Ordering::Release);
+                        }
+                        owner.end_output();
                     }
                     RuntimeControl::JobContext(reply) => {
                         let _ = reply.send(crate::jobs::JobContext {
@@ -1824,6 +1875,7 @@ fn handle_edit(
         BufferEdit::Scrollback(limit) => {
             return match owner.engine.set_scrollback(limit) {
                 Ok(evicted) => {
+                    owner.publish_commands();
                     // Every reload resends the limit; only one that evicted
                     // rows wakes the viewers.
                     if evicted {
@@ -1845,6 +1897,7 @@ fn handle_edit(
                 None,
                 "PTY writer stopped during a buffer edit",
             );
+            owner.publish_commands();
             owner.publish();
             healthy && end_untracked_gesture(owner, arbiter)
         }
@@ -2266,8 +2319,18 @@ struct PublishedMetadata {
 }
 
 impl PublishedMetadata {
-    /// Publishes the effective directory and `process` unless both are
-    /// unchanged.
+    /// Metadata for a terminal whose root process is `root`.
+    fn for_root(root: Option<u32>) -> Self {
+        Self {
+            reports: Reports::for_shell(
+                root.and_then(|root| i32::try_from(root).ok()),
+            ),
+            ..Self::default()
+        }
+    }
+
+    /// Publishes the effective directory, the shell directory, and
+    /// `process` unless all are unchanged.
     fn publish(
         &mut self,
         process: Option<String>,
@@ -2275,7 +2338,8 @@ impl PublishedMetadata {
     ) {
         let replacement =
             TerminalMetadata::new(self.reports.directory(), process)
-                .with_foreground_title(self.reports.title());
+                .with_foreground_title(self.reports.title())
+                .with_shell_directory(self.reports.shell_directory());
         if self.current == replacement {
             return;
         }
@@ -2348,6 +2412,9 @@ fn input_bytes(input: &TerminalInput) -> usize {
 fn join_worker(worker: JoinHandle<()>) {
     let _ = worker.join();
 }
+
+#[cfg(test)]
+mod record_tests;
 
 #[cfg(test)]
 mod tests;
