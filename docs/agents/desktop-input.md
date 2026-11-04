@@ -390,7 +390,9 @@ Tear-off creates a shell-less regular destination first and rolls back only its
 empty session on failure. A lone tab never tears off; Move Tab to New Window is
 unavailable in its palette, tab menu, and command invocation with the same reason.
 The tear-off pill follows the labels and add button in the bar's free trailing
-space, or covers the strip's trailing end with an opaque fill when it overflows.
+space. A horizontal bar too short for its label, such as a narrow title strip,
+gets the icon-only pill there. Only when neither fits does it cover the strip's
+trailing end with an opaque fill.
 Keep the source slot's dashed state border at full contrast while dimming its
 contents. Every drag title chip measures its size, flips across each overflowing
 pointer axis, and clamps inside the window.

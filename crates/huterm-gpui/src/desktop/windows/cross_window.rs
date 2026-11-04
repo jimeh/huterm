@@ -1164,7 +1164,9 @@ impl WorkspaceView {
     }
 
     /// The free bar after the labels and add control belongs to the pill.
-    /// Overflow falls back over the strip's end, before the add control.
+    /// A horizontal bar too short for the labelled pill takes the compact
+    /// one there; only when neither fits does it fall back over the strip's
+    /// end, before the add control.
     pub(super) fn tear_off_pill_bounds(
         &self,
         strip: &TabStrip,
@@ -1177,7 +1179,8 @@ impl WorkspaceView {
             area.size.width = (area.size.width - CONTROL_SLOT).max(px(0.0));
         }
         let gap = px(6.0);
-        let width = px(128.0).min((area.size.width - gap * 2.0).max(px(0.0)));
+        let width =
+            TEAR_OFF_PILL.min((area.size.width - gap * 2.0).max(px(0.0)));
         let height = px(24.0).min(area.size.height);
         let origin = if strip.vertical {
             let after = strip.bounds.bottom() + CONTROL_SLOT + gap;
@@ -1191,14 +1194,17 @@ impl WorkspaceView {
             )
         } else {
             let after = strip.bounds.right() + CONTROL_SLOT + gap;
-            point(
-                if after + width <= area.right() {
-                    after
-                } else {
-                    (strip.bounds.right() - width).max(area.left())
-                },
-                area.top() + (area.size.height - height) / 2.0,
-            )
+            let top = area.top() + (area.size.height - height) / 2.0;
+            if after + width <= area.right() {
+                point(after, top)
+            } else if after + TEAR_OFF_COMPACT <= area.right() {
+                return Bounds::new(
+                    point(after, top),
+                    size(TEAR_OFF_COMPACT, height),
+                );
+            } else {
+                point((strip.bounds.right() - width).max(area.left()), top)
+            }
         };
         Bounds::new(origin, size(width, height))
     }
@@ -1225,6 +1231,21 @@ impl WorkspaceView {
             .ok_or(CommandError::StaleTarget)?;
         self.tear_off(payload, window, cx);
         Ok(CommandOutcome::Accepted)
+    }
+}
+
+/// The labelled tear-off pill's width, and the icon-only pill a short bar
+/// uses instead of covering its tabs.
+pub(super) const TEAR_OFF_PILL: Pixels = px(128.0);
+pub(super) const TEAR_OFF_COMPACT: Pixels = px(28.0);
+
+/// The tear-off pill's text: the arrow alone once the pill is narrower than
+/// its label needs.
+pub(super) fn tear_off_label(bounds: Bounds<Pixels>) -> &'static str {
+    if bounds.size.width < TEAR_OFF_PILL {
+        "↗"
+    } else {
+        "↗ New window"
     }
 }
 

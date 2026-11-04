@@ -1192,6 +1192,46 @@ fn cross_window_tear_off_pill_uses_free_space_after_tabs_and_add_button(
 }
 
 #[gpui::test]
+fn a_narrow_titlebar_tear_off_pill_turns_compact_instead_of_covering_tabs(
+    cx: &mut TestAppContext,
+) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+        config.tabs.position = TabPosition::Titlebar;
+    });
+    let tab = h.open_tab(ECHO);
+    let _ = h.open_tab(ECHO);
+    let source = h.attach_window();
+    h.cx.simulate_window_resize(source, size(px(456.0), px(353.0)));
+    h.activate(source, tab);
+    let _locator = h.cross_locator();
+    h.cross_begin(source, tab);
+    let plus = VisualTestContext::from_window(source, &h.cx)
+        .debug_bounds("new-tab")
+        .expect("new-tab was drawn");
+    h.update_view(source, |view, window, _| {
+        let pill = view
+            .drawn_tear_off
+            .borrow()
+            .expect("tear-off pill was drawn");
+        let strip = view.tab_strip(window);
+        assert_eq!(
+            strip.max_offset(),
+            px(0.0),
+            "fixture strip must not overflow"
+        );
+        for index in 0..view.tabs.len() {
+            assert!(
+                !pill.intersects(&strip.label(index)),
+                "pill {pill:?} overlaps tab {index}"
+            );
+        }
+        assert!(!pill.intersects(&plus), "pill {pill:?} overlaps + {plus:?}");
+        assert_eq!(super::super::cross_window::tear_off_label(pill), "↗");
+    });
+}
+
+#[gpui::test]
 fn cross_window_lone_tab_command_is_unavailable_in_palette_and_invocation(
     cx: &mut TestAppContext,
 ) {

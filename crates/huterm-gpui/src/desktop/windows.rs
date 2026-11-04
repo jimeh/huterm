@@ -13472,7 +13472,7 @@ impl Render for WorkspaceView {
                     .border_1()
                     .border_color(colors.accent)
                     .text_color(colors.foreground)
-                    .child("↗ New window"),
+                    .child(cross_window::tear_off_label(bounds)),
             );
         }
         root = root.children(self.drag_overlay(colors, window, cx));
