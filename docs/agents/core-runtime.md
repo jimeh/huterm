@@ -53,8 +53,18 @@ Huterm's shell scripts must be independently written from shell documentation.
 Never consult or copy Kitty or Ghostty bash/zsh scripts, which are GPLv3, or any
 other terminal's shell scripts. The scripts are all Huterm-authored; their shell
 manual references live in `assets/shell-integration/README.md`. Bash's PS0 and DEBUG
-hooks do not read history or change `HISTCONTROL`. Capture command status
-before prompt construction and decorate only after user prompt hooks finish.
+hooks do not read history or change `HISTCONTROL`. Bash 4.4+ uses only PS0
+prompt escapes and the prompt command number, without a Huterm DEBUG trap.
+The 3.2 fallback preserves `$_` and chains user traps per simple command,
+including status and extdebug results. Jim accepted its unavoidable loss of
+full `PIPESTATUS` on 2026-11-04. Standalone 3.2 subshell compounds remain without
+C/D markers because their parent receives no DEBUG event. Existing
+bash-preexec owns execution callbacks and its trap; final prompt decoration
+follows retained prompt-command themes and re-arms through its own function.
+Zsh uses a first precmd hook and a scheduled final decorator (`zsh/sched`),
+not ZLE widgets or reset-prompt. Changing the precmd array during iteration
+only affects the next prompt, so it cannot establish first-prompt ordering.
+Capture command status before construction and decorate after user hooks.
 Native PTY tests cover the launch boundary. `HUTERM_REQUIRE_SHELLS=1` makes
 shell availability mandatory in CI Checks: Apple Bash 3.2 is required on macOS,
 where Bash 5 is optional; Linux requires Bash 5, including its POSIX ENV login

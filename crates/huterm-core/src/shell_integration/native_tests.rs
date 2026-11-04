@@ -1140,13 +1140,35 @@ fn native_prompt_rebuilding_hooks_run_before_markers() {
                     "theme() {{ local code=$?; if [[ ${{_fixture_framework_running-0}} == 1 ]]; then printf '\\e]133;D;%s\\a' \"$code\"; fi; _fixture_framework_running=0; {}={prompt}; }}\n",
                     if name == "zsh" { "PROMPT" } else { "PS1" }
                 );
+                let theme = if name == "zsh" {
+                    theme
+                } else {
+                    theme.replace("; }", "; _fixture_framework_armed=1; }")
+                };
                 if name == "zsh" {
                     format!(
                         "{theme}framework_preexec() {{ printf '\\e]133;C\\a'; _fixture_framework_running=1; }}\npreexec_functions+=(framework_preexec)\nprecmd_functions+=(theme)\n"
                     )
                 } else {
                     format!(
-                        "{theme}PROMPT_COMMAND=theme\ntrap \"printf '\\e]133;C\\a'; _fixture_framework_running=1\" DEBUG\n"
+                        "{theme}{}",
+                        r#"PROMPT_COMMAND=theme
+_fixture_framework_armed=1
+fixture_framework_debug() {
+    local entry
+    for entry in "${PROMPT_COMMAND[@]}"; do
+        case $'\n'"$entry"$'\n' in
+            *$'\n'"$BASH_COMMAND"$'\n'*) return 0 ;;
+        esac
+    done
+    if [[ $_fixture_framework_armed == 1 ]]; then
+        _fixture_framework_armed=0
+        printf '\e]133;C\a'
+        _fixture_framework_running=1
+    fi
+}
+trap 'fixture_framework_debug "$_"' DEBUG
+"#
                     )
                 }
             } else if name == "zsh" {
@@ -1383,5 +1405,394 @@ fn native_bash_prompt_command_arrays_preserve_shell_version_behavior() {
         shell.prompt();
         assert_stream(&mut shell, name, "true", "0");
         assert_stream(&mut shell, name, "false", "1");
+    }
+}
+
+#[test]
+fn native_zsh_prompt_survives_replaced_and_later_line_init_widgets() {
+    let Some(binary) = executable("zsh") else {
+        return;
+    };
+    for later_hook in [false, true] {
+        let (home, mut command) = fixture("zsh", false);
+        command.program.clone_from(&binary);
+        home.write(".zshrc", &format!(
+            "PROMPT='READY> '\nfixture_line_init() {{ print -rn -- WIDGET; }}\nzle -N zle-line-init fixture_line_init\n{}",
+            if later_hook { "autoload -Uz add-zle-hook-widget\nfixture_later() { print -rn -- LATER; }\nadd-zle-hook-widget line-init fixture_later\n" } else { "" }
+        ));
+        let mut shell = Shell::spawn(&command);
+        shell.prompt();
+        shell.until(|bytes| {
+            String::from_utf8_lossy(bytes).contains(if later_hook {
+                "LATER"
+            } else {
+                "WIDGET"
+            })
+        });
+        assert_eq!(
+            markers(&shell.transcript),
+            ["A", "B"],
+            "later_hook={later_hook}: {:?}",
+            String::from_utf8_lossy(&shell.transcript)
+        );
+        assert_stream(&mut shell, "zsh", "false", "1");
+    }
+}
+
+#[test]
+fn native_zsh_prompt_substitution_expands_once_like_plain_start() {
+    let Some(binary) = executable("zsh") else {
+        return;
+    };
+    let mut counts = Vec::new();
+    for integrated in [false, true] {
+        let (home, mut command) = fixture("zsh", false);
+        command.program.clone_from(&binary);
+        if !integrated {
+            command.shell_integration = huterm_protocol::ShellIntegration::OFF;
+        }
+        home.write(".zshrc", "setopt prompt_subst\nfixture_prompt() { print tick >> \"$HOME/expansions\"; print -rn -- 'READY> '; }\nPROMPT='$(fixture_prompt)'\nfixture_expanded() { print -rn -- FIXTURE_EXPANDED; }\nautoload -Uz add-zle-hook-widget\nadd-zle-hook-widget line-init fixture_expanded\n");
+        let mut shell = Shell::spawn(&command);
+        shell.prompt();
+        shell.until(|bytes| {
+            String::from_utf8_lossy(bytes).contains("FIXTURE_EXPANDED")
+        });
+        for _ in 0..2 {
+            shell.plain("true");
+            shell.until(|bytes| {
+                String::from_utf8_lossy(bytes).contains("FIXTURE_EXPANDED")
+            });
+        }
+        counts.push(
+            fs::read_to_string(home.0.join("expansions"))
+                .unwrap()
+                .lines()
+                .count(),
+        );
+    }
+    assert_eq!(counts, [3, 3]);
+}
+
+#[test]
+fn native_zsh_missing_body_reports_exactly_one_line() {
+    let Some(binary) = executable("zsh") else {
+        return;
+    };
+    let assets = Directory::new();
+    let original =
+        resources(&std::env::current_exe().unwrap(), cfg!(target_os = "macos"))
+            .unwrap();
+    copy_tree(
+        &original.join("shell-integration"),
+        &assets.0.join("shell-integration"),
+    );
+    let body = assets.0.join("shell-integration/zsh/huterm.zsh");
+    fs::remove_file(&body).unwrap();
+    let (_home, mut command) = fixture("zsh", false);
+    command.program = binary;
+    let process = crate::pty::spawn_with_plan_isolated(
+        &command,
+        launch_plan(&command, Some(assets.0.clone())),
+    )
+    .unwrap();
+    let mut shell = Shell::from_process(&command, process);
+    shell.prompt();
+    let text = String::from_utf8_lossy(&shell.transcript);
+    let errors: Vec<_> = text
+        .lines()
+        .filter(|line| line.contains("huterm.zsh"))
+        .collect();
+    assert_eq!(
+        errors,
+        [format!(
+            "huterm: shell integration failed to load: {}",
+            body.display()
+        )]
+    );
+    shell.plain("true");
+    assert!(
+        !String::from_utf8_lossy(&shell.transcript).contains("failed to load")
+    );
+}
+
+#[test]
+fn native_bash_preserves_last_argument_status_and_pipeline() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        let mut states = Vec::new();
+        for integrated in [false, true] {
+            let (home, mut command) = fixture(name, false);
+            command.program.clone_from(&binary);
+            if !integrated {
+                command.shell_integration =
+                    huterm_protocol::ShellIntegration::OFF;
+            }
+            let mut shell = Shell::spawn(&command);
+            shell.prompt();
+            shell.plain("mkdir -p d && cd $_; printf '%s\\n' \"${PWD##*/}\" > \"$HOME/directory\"");
+            shell.plain(
+                "echo foo bar; printf '%s\\n' \"$_\" > \"$HOME/argument\"",
+            );
+            // Separate input cycles also exercise Bash's saved prompt state.
+            shell.transcript.clear();
+            shell.send("false | true\n");
+            shell.prompt();
+            shell.plain("printf '%s:%s\\n' \"$?\" \"${PIPESTATUS[*]}\" > \"$HOME/pipeline\"");
+            states
+                .push(["directory", "argument", "pipeline"].map(|file| {
+                    fs::read_to_string(home.0.join(file)).unwrap()
+                }));
+        }
+        assert_eq!(
+            states[0],
+            ["d\n", "bar\n", "0:1 0\n"],
+            "{name}: plain baseline"
+        );
+        // Jim accepted Apple Bash 3.2's DEBUG-trap PIPESTATUS limitation on
+        // 2026-11-04. Keep the exception explicit while checking the other state.
+        let expected = if name == "/bin/bash" && cfg!(target_os = "macos") {
+            ["d\n", "bar\n", "0:0\n"]
+        } else {
+            ["d\n", "bar\n", "0:1 0\n"]
+        };
+        assert_eq!(states[1], expected, "{name}: integrated shell state");
+    }
+}
+
+#[test]
+fn native_bash_user_debug_trap_keeps_status_and_simple_command_firings() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        let mut logs = Vec::new();
+        for integrated in [false, true] {
+            let (home, mut command) = fixture(name, false);
+            command.program.clone_from(&binary);
+            if !integrated {
+                command.shell_integration =
+                    huterm_protocol::ShellIntegration::OFF;
+            }
+            home.write(".bashrc", "PS1='READY> '\ntrap 'printf \"%s:%s\\n\" \"$?\" \"$BASH_COMMAND\" >> \"$HOME/debug\"' DEBUG\n");
+            let mut shell = Shell::spawn(&command);
+            shell.prompt();
+            shell.plain("false; true; true");
+            let log = fs::read_to_string(home.0.join("debug")).unwrap();
+            logs.push(
+                log.lines()
+                    .filter(|line| {
+                        line.ends_with(":false") || line.ends_with(":true")
+                    })
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(
+            logs[0],
+            ["0:false", "1:true", "0:true"],
+            "{name}: plain baseline"
+        );
+        assert_eq!(logs[1], logs[0], "{name}: DEBUG trap changed");
+    }
+}
+
+#[test]
+fn native_bash_ps0_works_without_promptvars() {
+    let Some(binary) = executable("bash") else {
+        return;
+    };
+    let (home, mut command) = fixture("bash", false);
+    command.program = binary;
+    home.write(".bashrc", "PS1='READY> '\nshopt -u promptvars\n");
+    let mut shell = Shell::spawn(&command);
+    shell.prompt();
+    assert_stream(&mut shell, "bash", "false", "1");
+    assert!(!String::from_utf8_lossy(&shell.transcript).contains("${_huterm"));
+}
+
+#[test]
+fn native_bash_lazy_preexec_installer_keeps_first_and_later_callbacks() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        let (home, mut command) = fixture(name, false);
+        command.program = binary;
+        // Huterm-authored emulation of the public callback API and lazy
+        // installation boundary. It neither reads history nor vendors code.
+        home.write(
+            ".bashrc",
+            r#"PS1='READY> '
+bash_preexec_imported=fixture
+preexec_functions=(fixture_user_preexec)
+precmd_functions=(fixture_user_precmd)
+fixture_user_preexec() { printf 'preexec\n' >> "$HOME/callbacks"; }
+fixture_user_precmd() { local code=$?; printf 'precmd:%s\n' "$code" >> "$HOME/statuses"; }
+fixture_status() { return "$1"; }
+fixture_debug() {
+    local code=$?
+    if [[ ${fixture_armed-0} == 1 && $BASH_COMMAND != fixture_prompt ]]; then
+        fixture_armed=0
+        # Prompt commands are internal even when a lazy installer retained them.
+        case $'\n'"$PROMPT_COMMAND"$'\n' in
+            *$'\n'"$BASH_COMMAND"$'\n'*) return 0 ;;
+        esac
+        local callback
+        for callback in "${preexec_functions[@]}"; do
+            fixture_status "$code"
+            "$callback" "$BASH_COMMAND"
+        done
+    fi
+    return 0
+}
+fixture_prompt() {
+    local code=$? callback
+    fixture_armed=0
+    for callback in "${precmd_functions[@]}"; do
+        fixture_status "$code"
+        "$callback"
+    done
+    fixture_armed=1
+    return "$code"
+}
+__bp_interactive_mode() { fixture_armed=1; }
+fixture_install() {
+    trap 'fixture_debug "$_"' DEBUG
+    # Preserve the other entries, with the callback invoker first and the
+    # interactive boundary last. This is test data, not upstream source.
+    PROMPT_COMMAND=fixture_prompt$'\n'${PROMPT_COMMAND//fixture_install/}$'\n__bp_interactive_mode'
+    fixture_prompt
+}
+fixture_theme() { PS1='READY> '; }
+PROMPT_COMMAND=$'fixture_theme\nfixture_install'
+"#,
+        );
+        let mut shell = Shell::spawn(&command);
+        shell.until(|bytes| markers(bytes).last().is_some_and(|m| m == "B"));
+        shell.transcript.clear();
+        shell.send("\n");
+        shell.until(|bytes| markers(bytes).last().is_some_and(|m| m == "B"));
+        assert_eq!(
+            markers(&shell.transcript),
+            ["A", "B"],
+            "{name}: empty input after lazy installation"
+        );
+        assert!(
+            !home.0.join("callbacks").exists(),
+            "{name}: empty input ran preexec"
+        );
+        for (input, status) in [("true", "0"), ("false", "1"), ("true", "0")] {
+            assert_stream(&mut shell, name, input, status);
+        }
+        assert_eq!(
+            fs::read_to_string(home.0.join("callbacks")).unwrap(),
+            "preexec\npreexec\npreexec\n",
+            "{name}"
+        );
+        assert_eq!(
+            fs::read_to_string(home.0.join("statuses")).unwrap(),
+            "precmd:0\nprecmd:0\nprecmd:0\nprecmd:1\nprecmd:0\n",
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn native_bash_empty_input_has_no_execution_or_completion_marks() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        let (home, mut command) = fixture(name, false);
+        command.program = binary;
+        home.write(".bashrc", "PS1='READY> '\nHISTCONTROL=ignorespace\n");
+        let mut shell = Shell::spawn(&command);
+        shell.until(|bytes| markers(bytes).last().is_some_and(|m| m == "B"));
+        // Check empty input before the first command as well as between commands.
+        for input in ["", "false", "", " true", ""] {
+            if input.is_empty() {
+                shell.transcript.clear();
+                shell.send("\n");
+                shell.until(|bytes| {
+                    markers(bytes).last().is_some_and(|m| m == "B")
+                });
+                assert_eq!(markers(&shell.transcript), ["A", "B"], "{name}");
+            } else {
+                assert_stream(
+                    &mut shell,
+                    name,
+                    input,
+                    if input == "false" { "1" } else { "0" },
+                );
+                shell.until(|bytes| {
+                    markers(bytes).last().is_some_and(|m| m == "B")
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn native_bash_user_debug_trap_preserves_extdebug_skips() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        for integrated in [false, true] {
+            let (home, mut command) = fixture(name, false);
+            command.program.clone_from(&binary);
+            if !integrated {
+                command.shell_integration =
+                    huterm_protocol::ShellIntegration::OFF;
+            }
+            home.write(".bashrc", r#"PS1='READY> '
+shopt -s extdebug
+fixture_debug() {
+    local code=$?
+    case " ${FUNCNAME[*]} " in
+        *' _huterm_bash_install '*) printf internal >> "$HOME/internals" ;;
+    esac
+    case $BASH_COMMAND in
+        'false'|'true') printf '%s:%s\n' "$code" "$BASH_COMMAND" >> "$HOME/commands" ;;
+        'printf SKIP'*) return 1 ;;
+        'printf RETURN'*) return 2 ;;
+    esac
+    return 0
+}
+fixture_body() {
+    printf BEFORE >> "$HOME/steps"
+    printf RETURN >> "$HOME/steps"
+    printf AFTER >> "$HOME/steps"
+}
+trap fixture_debug DEBUG
+"#);
+            let mut shell = Shell::spawn(&command);
+            shell.prompt();
+            shell.plain("false; true; true; printf SKIP > \"$HOME/skipped\"; printf RUN > \"$HOME/ran\"");
+            assert!(
+                !home.0.join("skipped").exists(),
+                "{name}, integrated={integrated}: extdebug skip lost"
+            );
+            assert_eq!(fs::read_to_string(home.0.join("ran")).unwrap(), "RUN");
+            shell.plain("fixture_body");
+            assert_eq!(
+                fs::read_to_string(home.0.join("steps")).unwrap(),
+                "BEFORE",
+                "{name}, integrated={integrated}: extdebug return lost"
+            );
+            if name == "/bin/bash" && cfg!(target_os = "macos") {
+                assert!(
+                    !home.0.join("internals").exists(),
+                    "{name}, integrated={integrated}: installer internals reached user DEBUG trap"
+                );
+            }
+            assert_eq!(
+                fs::read_to_string(home.0.join("commands")).unwrap(),
+                "0:false\n1:true\n0:true\n",
+                "{name}, integrated={integrated}"
+            );
+        }
     }
 }

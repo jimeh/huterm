@@ -386,10 +386,42 @@ Recorded on 2026-11-04 from the dual review of PR #385 and its first CI run.
   user had installed. It never reads history. Huterm now vendors no shell code.
 - **Hook order.** Exit status is captured before user prompt hooks run, but
   marker decisions happen after the prompt is built. Bash appends its
-  decoration as the last `PROMPT_COMMAND` entry. zsh adds `A` and `B` from a
-  `line-init` ZLE widget, after every `precmd` hook. A theme that rebuilds the
-  prompt keeps a complete marker stream, and a prompt that already carries
-  OSC 133 gets none.
+  decoration as the last `PROMPT_COMMAND` entry. Zsh schedules decoration
+  through `zsh/sched`, after `precmd` hooks and before the single prompt
+  expansion. It uses no ZLE widget or reset-prompt. This survives Debian and
+  oh-my-zsh replacing `zle-line-init`, as well as later widget registrations.
+  Reordering `precmd_functions` during iteration only affects the next cycle
+  on zsh 5.9, so an array-only reordering cannot fix the first prompt.
+- **Bash hook redesign.** Bash 4.4 and later install no Huterm DEBUG trap.
+  `PS0` contains only prompt escapes, including with `promptvars` off, and
+  `\#` through parameter prompt expansion tracks command cycles independently
+  of history. The 3.2 fallback installs its trap at shell scope without a
+  traced installer. It restores `$_` and the incoming status before running
+  the original trap verbatim on every user simple command, preserving its
+  `extdebug` result and hiding Huterm function internals from that trap.
+- **Existing bash-preexec.** First-prompt installation runs after lazy
+  installers, then adds execution/status callbacks to their arrays. Decoration
+  remains a final prompt-command entry because existing prompt-command themes
+  can run after bash-preexec's callback invoker. This deliberately differs
+  from callback-only decoration: that approach cannot decorate those themes.
+  Huterm leaves bash-preexec's trap intact and calls its interactive-mode
+  function with `force` after decoration. Version 0.7 otherwise refuses to
+  re-arm from a nested function; 0.5 accepts the argument. Native fixtures
+  emulate this ordering independently; temporary checks cover both releases.
+- **Jim's PIPESTATUS decision, 2026-11-04.** Keep the DEBUG fallback on Apple
+  bash 3.2 without bash-preexec. Any DEBUG trap on that version clobbers
+  `PIPESTATUS`, including bash-preexec's, so only the last command's status
+  remains. This is the accepted exception to shell-state preservation; all
+  other preservation requirements still apply. Bash 4.4 and later retain the
+  full pipeline status through their trap-free PS0 path.
+- **Standalone bash 3.2 subshells.** `( false )` still has no C/D marks: the
+  parent receives no DEBUG event for the compound command, and child trap
+  state does not propagate to the parent. Function tracing would change user
+  DEBUG firing and cannot communicate completion state back. This remains
+  outside the complete marker coverage of the modern PS0 path.
+- **Zsh body reads.** The bootstrap requires `/bin/cat` to read the body
+  successfully before its in-shell parse check. A missing body therefore
+  produces only the generic load diagnostic, and restricted PATHs still work.
 - **History.** When `HISTFILE` was not exported, bash ends startup with its
   native unexported default, so history persists as in a plain start.
 - **`XDG_DATA_DIRS`.** fish, nushell, and elvish remove only Huterm's entry, and

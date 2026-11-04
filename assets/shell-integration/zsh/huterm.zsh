@@ -6,7 +6,6 @@ typeset -g _huterm_zsh_body_path=$HUTERM_RESOURCES_DIR/shell-integration/zsh/hut
 _huterm_zsh_disable() {
     _huterm_zsh_disabled=1
     precmd_functions=(${precmd_functions:#_huterm_zsh_precmd})
-    add-zle-hook-widget -d line-init _huterm_zsh_prompt
     preexec_functions=(${preexec_functions:#_huterm_zsh_preexec})
     chpwd_functions=(${chpwd_functions:#_huterm_zsh_cwd})
     PROMPT=${PROMPT#$'%{\e]133;A\a%}'}
@@ -40,6 +39,7 @@ _huterm_zsh_precmd() {
         printf '\e]133;D;%s\a' "$code" || { _huterm_zsh_failed; return; }
     fi
     _huterm_zsh_running=0
+    sched +0 _huterm_zsh_prompt || { _huterm_zsh_failed; return; }
     _huterm_zsh_cwd
     # Feature: path. Native startup files run before the first precmd.
     if [[ $_huterm_zsh_features == *,path,* && -n ${HUTERM_BIN_DIR-} ]] && (( ! ${path[(Ie)$HUTERM_BIN_DIR]} )); then
@@ -47,8 +47,9 @@ _huterm_zsh_precmd() {
     fi
     return 0
 }
-# ZLE starts after all precmd functions have constructed the prompt. Redraw the
-# final prompt with its markers, keeping framework detection in the same phase.
+# Scheduled commands run after precmd hooks, before the prompt is expanded.
+# Unlike changes to precmd_functions during iteration, this also takes effect
+# on the first prompt. No ZLE widget or second prompt expansion is needed.
 _huterm_zsh_prompt() {
     emulate -L zsh
     [[ $_huterm_zsh_disabled == 0 ]] || return 0
@@ -60,14 +61,11 @@ _huterm_zsh_prompt() {
     esac
     if [[ $_huterm_zsh_skip == 0 ]]; then
         PROMPT=$'%{\e]133;A\a%}'$PROMPT$'%{\e]133;B\a%}'
-        zle .reset-prompt || _huterm_zsh_failed
     fi
     return 0
 }
-zmodload zsh/zle
-autoload -Uz add-zle-hook-widget
-add-zle-hook-widget line-init _huterm_zsh_prompt
+zmodload zsh/sched || return
 typeset -ga precmd_functions preexec_functions chpwd_functions
-precmd_functions+=(_huterm_zsh_precmd)
+precmd_functions=(_huterm_zsh_precmd ${precmd_functions:#_huterm_zsh_precmd})
 preexec_functions+=(_huterm_zsh_preexec)
 chpwd_functions+=(_huterm_zsh_cwd)

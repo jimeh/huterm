@@ -197,9 +197,24 @@ one process does not install duplicate hooks.
 
 Bash preserves the user's history policy, including `HISTCONTROL=ignorespace`,
 and uses its normal unexported `HISTFILE=$HOME/.bash_history` default when no
-history file was inherited. Bash decorates prompts after `PROMPT_COMMAND`;
-zsh decorates the final prompt when ZLE starts, after `precmd` hooks finish.
-Both capture the command's status before user prompt construction.
+history file was inherited. Bash 4.4 and later emit the execution marker from
+`PS0`, using prompt escapes that also work with `promptvars` disabled. The
+prompt command number distinguishes executed commands from empty input without
+consulting history. Bash 3.2 uses a `DEBUG` trap that preserves the previous
+argument and chains an existing trap for each simple command, including its
+status and `extdebug` skip result.
+
+Installation finishes at the first prompt, after lazy installers. When
+bash-preexec is loaded, Huterm registers execution and status callbacks instead
+of installing a competing trap. Decoration follows existing `PROMPT_COMMAND`
+themes, and bash-preexec's own interactive-mode function re-arms its callbacks.
+Huterm does not change bash-preexec's history policy.
+
+Zsh captures completion status in its first `precmd` hook and schedules final
+prompt decoration with `zsh/sched`, after the other `precmd` hooks and before
+prompt expansion. It neither replaces ZLE widgets nor resets the prompt, so
+`prompt_subst` commands expand once. Both shells detect framework markers in
+the final prompt string and retain OSC 7 and `path` when suppressing OSC 133.
 
 Fish, nushell, and elvish remove only Huterm's entry from `XDG_DATA_DIRS` if a
 startup file changed its value. If it still matches the injected value, they
@@ -255,6 +270,15 @@ Limitations:
 
 - Apple bash's emulated login has `shopt login_shell` off, `logout` refuses,
   and `.bash_logout` does not run.
+- Apple bash 3.2's `DEBUG` trap reduces `PIPESTATUS` to the last command's
+  status. For example, after `false | true`, it reports `0` instead of `1 0`.
+  Every DEBUG-trap integration on that version, including bash-preexec, has
+  this limitation. Bash 4.4 and later use `PS0` without a Huterm trap and
+  preserve the full pipeline status.
+- A standalone subshell command such as `( false )` has no execution or
+  completion markers on bash 3.2. Bash does not run the parent's DEBUG trap
+  for a subshell compound command. Enabling function tracing would change
+  user traps and still leave the parent's completion state unchanged.
 - Elvish emits A, C, D, and OSC 7, with no B marker because its asynchronous
   prompt renderer filters control sequences. Its guarded `use` keeps a broken
   module from stopping the rest of `rc.elv`.

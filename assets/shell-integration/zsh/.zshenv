@@ -13,8 +13,12 @@ if [[ ${HUTERM_SHELL_INTEGRATION-} == zsh ]]; then
         {
             # Parse a function definition without executing it or finding zsh
             # on PATH. Strict syntax rejects incomplete short-loop constructs.
-            if ( unsetopt shortloops; eval "_huterm_zsh_load() { $(<"$_huterm_zsh_body")
-}" ) 2>/dev/null; then
+            if (
+                unsetopt shortloops
+                _huterm_zsh_source=$(/bin/cat -- "$_huterm_zsh_body") || exit
+                eval "_huterm_zsh_load() { $_huterm_zsh_source
+}"
+            ) 2>/dev/null; then
                 source "$_huterm_zsh_body"
             else
                 false
