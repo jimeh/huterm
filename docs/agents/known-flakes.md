@@ -156,14 +156,18 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   press listener exists only from the frame that draws it. With titles fitted
   to 125 points, a press at tab 1's centre on the old one-tab frame lands past
   the only label and the add button, which starts no reorder, so no drag record
-  exists and `drop` stays `none`. A located drag would have
-  published `tear_off`, or a `window:` label. This cause is inferred from the
-  state; no run captured the frame.
+  exists and `drop` stays `none`. `drop=none` alone would also fit a drag
+  whose locator sample came back `Blocked`, but `window_drag` reports any
+  pending reorder from its press on, and the button was still held at the
+  timeout, so `window_drag=false` means no reorder existed. This cause is
+  inferred from the state; no run captured the frame.
 - **Fix:** the smoke publishes `drawn_tab_ids`, the tabs the last frame drew,
   and waits for them to match `tab_ids` before each tab press.
 - **Triage:** a recurrence with `drawn_tab_ids` equal to `tab_ids` rules this
-  cause out; record the last state here. Remove this entry after about 20
-  clean aarch64 runs with the fix.
+  cause out; record the last state here. A timeout at "window N active and
+  drawn" or "tear-off source ready" with stale `drawn_tab_ids` means frames
+  stopped; compare it with the Linux renderer smoke startup hang above. Remove
+  this entry after about 20 clean aarch64 runs with the fix.
 
 ## `smoke:linux-integration` held-link hover timeout
 

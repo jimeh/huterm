@@ -3929,7 +3929,7 @@ struct WorkspaceView {
     drawn_drop: RefCell<Option<String>>,
     /// The tear-off pill bounds drawn in the last frame.
     drawn_tear_off: RefCell<Option<Bounds<Pixels>>>,
-    /// The tabs whose labels the last frame drew, in bar order. Their press
+    /// The tabs the last frame built labels for, in bar order. Their press
     /// listeners exist only from that frame, so smokes wait for these.
     drawn_tabs: RefCell<Vec<TabId>>,
     /// The pane titles the last frame's grab badges showed, for smoke state.
