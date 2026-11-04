@@ -64,7 +64,7 @@ fn main() -> ExitCode {
         failed |= failures > 0;
         let counters = &totals.counters;
         println!(
-            "{name:<15} seeds {seeds:>5} failed {failures:>3} | checked views {} stopped {} statuses {} | mutations {} unknown {} effects {} dropped {} inputs {} | cuts {} restarts {} stalls {} detections {} | downgrades {}/{}/{} lag {} busy {} stopped-subs {} deadline-drops {}",
+            "{name:<15} seeds {seeds:>5} failed {failures:>3} | checked views {} stopped {} statuses {} | mutations {} unknown {} effects {} dropped {} inputs {} | cuts {} restarts {} handovers {} renegotiated {} carried {}/{} stalls {} detections {} | downgrades {}/{}/{} lag {} busy {} stopped-subs {} deadline-drops {}",
             totals.views_checked,
             totals.stopped_checked,
             totals.statuses_checked,
@@ -75,6 +75,10 @@ fn main() -> ExitCode {
             totals.inputs,
             totals.cuts,
             totals.restarts,
+            totals.handovers,
+            totals.renegotiations,
+            totals.carried_statuses,
+            totals.carried_reports,
             totals.stalls,
             totals.detections,
             counters.downgrade_skipped,

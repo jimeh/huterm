@@ -47,6 +47,24 @@ Agreed with the maintainer on 2026-11-03, before drafting:
   `/tmp/huterm-<uid>/`, as tmux does. `HUTERM_SOCKET_DIR` overrides the
   directory.
 
+The maintainer approved two further requirements on 2026-11-04. Both keep
+open a later feature, a live handover, in which a running server passes its
+PTYs to a newer server version so Huterm can be upgraded without ending
+terminal programs. The handover itself is not part of #44 (see "Scope").
+
+- **Identity survives a handover.** A handover keeps the server
+  incarnation, and with it every session, workspace, tab, and terminal ID.
+  The build and protocol versions are recorded separately from it. To a
+  client, a handover looks like a reconnect followed by version
+  renegotiation and a snapshot resync, not like a new server. Only a real
+  restart, which loses the terminals, starts a new incarnation (see "Live
+  handover stays possible").
+- **Cross-version compatibility is the default.** Upgrading the GUI never
+  requires restarting the server. A newer client works with an older
+  running server, and an older client with a newer one, across every minor
+  version of the same major version, and capability-gated features degrade
+  as "Compatibility window" describes.
+
 ## Current state
 
 Observed on `main` at `56cbe26e`:
@@ -120,6 +138,7 @@ Out of scope, with the issue that owns each:
 | Attachment events in the hierarchy stream | [#26][issue-26], [#21][issue-21] |
 | CLI commands, output retrieval, exit codes | [#46][issue-46] |
 | Server-owned persistence and daemon restart restore | [#42][issue-42], [#45][issue-45] |
+| Live handover of a running server's PTYs to a newer server version | A later feature under [#18][issue-18], in its own issue |
 | Rich content capabilities and transfers | [#88][issue-88] |
 | WebSocket framing, browser authentication, gateway | [#131][issue-131], [#133][issue-133] |
 | Browser and TUI clients | [#134][issue-134], [#48][issue-48] |
@@ -381,13 +400,18 @@ The server answers with `Welcome` or `Reject`, then closes after a
 `Reject`. `Welcome` carries:
 
 - the major version, and the negotiated minor version: the smaller of the
-  two peers' minor versions;
+  two peers' minor versions. A client closes the connection as a protocol
+  violation if `Welcome` names another major version or a minor version
+  above its own;
 - the negotiated features: the intersection of both sets;
 - the server incarnation, a stable server ID, the host name, the socket
   name, the server's build version, and its process ID. The server ID is
   generated once and kept with the socket scope's saved state, so a session
   picker or a saved client layout ([#42][issue-42]) can name the same server
-  across restarts, while the incarnation still changes on every start;
+  across restarts, while the incarnation changes only when the terminals
+  are lost. The build version and process ID identify the process, which a
+  handover replaces under the same incarnation; they are diagnostics, and
+  no client behavior depends on them;
 - the negotiated `max_frame` and the transport profile, which holds the
   limits and deadlines that bind the client, such as credit, in-flight
   requests, message caps, and the stall and effect deadlines (see "Bounds
@@ -450,6 +474,37 @@ Features gate optional behavior inside a minor version: rich content
 clients receive as `Skipped`. A client that lacks a feature still receives
 complete text-terminal operation.
 
+**Compatibility window.** The window is the major version, in both
+directions. A client speaks every minor version of its major from 0 up to
+its own, and a server serves every client of its major. No minor version is
+dropped within a major, because dropping one is itself an incompatible
+change. A GUI updated by Sparkle therefore keeps working with the server
+already running, and a server replaced by a later handover keeps serving
+the older clients still attached, such as an older CLI. Only a major
+version bump falls outside the window: the server answers `Reject` with
+`IncompatibleMajor`, and until a handover can cross the bump, the user must
+restart the server and lose its terminals. A major bump is therefore a last
+resort (see "Risks").
+
+Anything newer than the negotiated minor version, or outside the negotiated
+features, degrades in one of three ways:
+
+- State and events the server sends downgrade as described above, so the
+  older peer always holds a complete, consistent state of its own version.
+- A client never sends a request, ordered message, or variant the
+  connection did not negotiate. Its library answers such a call locally
+  with `Unsupported` and sends nothing; a server that cannot serve a
+  request answers `Unsupported` too.
+- The client disables the commands that need a missing minor version or
+  feature and says why, for example that the command needs a newer Huterm
+  server, rather than letting them fail when used.
+
+Nothing negotiated outlives its connection. A reconnect, including one to
+the same incarnation after a handover, may negotiate a different minor
+version, feature set, `max_frame`, and transport profile, and the client
+derives its caps, digest profiles, and enabled commands from the new
+`Welcome` each time.
+
 Golden vectors pin the encoding: `huterm-wire`'s `vectors` module holds
 canonical values and their bytes per minor version. A test fails if an
 existing vector's bytes change, so a released minor version cannot change
@@ -463,8 +518,12 @@ peer identity and the client kind together, so a later authenticated remote
 transport adds a peer variant instead of changing every policy check.
 
 **Server incarnation.** `huterm-protocol` gains `ServerIncarnation`, 16
-bytes the server reads from `/dev/urandom` at startup. It distinguishes
-server processes across restarts and machines. IDs on the wire are bare
+bytes the server reads from `/dev/urandom` at a cold start. It names one
+lifetime of the runtime's terminals, not one process: a handover passes it
+to the successor process, and only a start that loses the terminals, such
+as a crash, a stop, or a restore from saved state ([#42][issue-42]), draws
+a new one. It distinguishes those lifetimes across restarts and machines.
+IDs on the wire are bare
 `u64` values; the connection's incarnation scopes them. That keeps every
 message small and makes scope a property of the connection rather than of
 each ID.
@@ -488,6 +547,48 @@ each ID.
   which the client fills in. The wire sends the incarnation once, in
   `Welcome`, not per event. A changed incarnation is a stream change, which
   cancels sequence waiters as the hierarchy plan specifies.
+
+**Live handover stays possible.** A later feature under [#18][issue-18]
+will let a running server hand its live PTYs to a newer server version.
+herdr's opt-in `herdr update --handoff` is prior art
+([`src/server/handoff.rs`][herdr-handoff],
+[session state][herdr-session-state]): it passes PTY master descriptors
+over `SCM_RIGHTS`, checks a manifest of handoff, build, and protocol
+versions, and commits a two-phase cutover in which the old server keeps its
+panes if the handover fails. This plan does not design the handover, but
+the contract must not rule it out:
+
+- Everything the protocol promises within an incarnation is plain state a
+  successor can inherit: the ID allocators for sessions, workspaces, tabs,
+  terminals, and viewers, so no ID is reused within an incarnation; the
+  hierarchy's committed sequence, so the `StreamId` and every sequence
+  waiter stay valid; and each terminal's publication revision, status
+  revision, bell count, and failure numbers, so carried status baselines
+  stay correct. None of it may derive from process identity, such as a
+  process ID, start time, memory address, or `Arc` identity.
+- Connection state is not inherited. A handover ends every connection, and
+  each client follows the ordinary reconnect rules: in-flight mutations
+  resolve `OutcomeUnknown`, unacknowledged input may be lost but is never
+  repeated, effects are never replayed, and viewers end with their
+  connection. The client then reconnects to the same incarnation, keeps its
+  ID mapping and status baselines, renegotiates the version, resubscribes,
+  and installs fresh snapshots. Viewers are connection state on every
+  reconnect, so only the viewer ID allocator crosses a handover.
+- A client keeps three things per incarnation: its ID mapping, its status
+  baselines, and the final views of stopped terminals. The status counters
+  belong to minor version 0, so a renegotiated minor version never
+  re-bases them. A stopped terminal's final view stays at the minor version
+  it arrived in, because subscribing to a stopped terminal again returns
+  only its status.
+- The handover itself owns flushing input that the old server admitted but
+  had not yet written to a PTY, passing the listening socket so the socket
+  name stays the same, and any notice that tells clients to reconnect at
+  once. Such a notice can arrive as a minor version; until then, clients
+  treat the handover as an ordinary disconnect. It also decides whether a
+  successor may be older than its predecessor, and what that successor does
+  with state newer than its own version. The wire contract only requires
+  that each connection receives state projected to its negotiated minor
+  version.
 
 ### Requests, results, and errors
 
@@ -773,8 +874,9 @@ before it. A client that reconnects to the same server incarnation and
 subscribes again to a terminal it already showed keeps that terminal's
 previous `StatusBaseline` instead. Status revisions, the bell count, and
 failure numbers are terminal-wide and never go backwards within an
-incarnation, so the first status after reconnecting reports an exit, bells,
-and failures that happened while the client was away, and drives
+incarnation, including across a handover, so the first status after
+reconnecting reports an exit, bells, and failures that happened while the
+client was away, and drives
 `close_on_exit` and bell handling as if it had never left. A new incarnation
 starts fresh baselines, because its terminals are new.
 
@@ -1208,6 +1310,7 @@ reconnects.
 | `newer-client` | Test-only minor 1 clients against a minor-0 server |
 | `newer-server` | A minor-1 server against minor-0 and text clients |
 | `state-corruption` | Damage that still decodes, injected into deltas and events on intact links; digests must catch every one |
+| `handover` | Live handovers on healthy links: the server keeps its state and incarnation, alternates between minor versions 0 and 1, and ends every connection; minor-0 and minor-1 clients must renegotiate and carry their status baselines |
 | `corruption` | Flipped and dropped bytes; only digested state is checked |
 | `swarm` | Each seed draws its own limits, fault rates, link, client kinds, and versions |
 
@@ -1217,12 +1320,14 @@ After the faults stop, each run waits for quiescence and checks:
 - every viewer's rows and metadata equal the terminal's current snapshot,
   and a stopped terminal's final view stays the client's;
 - each client's status counts (bells, exit, failures) since its first read
-  match the terminal's, including what happened while it was disconnected;
+  match the terminal's, including what happened while it was disconnected
+  or during a handover;
 - no intent runs twice, so no mutation is ever retried into a second run;
   a successful or committed result always ran, and a failed one never did;
 - every effect runs at most once, on the connection core chose, and, on a
   healthy link however slow, every effect and input for a live terminal
-  arrives;
+  arrives, except on a connection a handover ended, where they may be lost
+  as on any disconnect;
 - input reaches the PTY once and in order per viewer;
 - without damage, no client ever asks for a resync, and no connection ends
   for anything but a stall;
@@ -1234,28 +1339,29 @@ Each run also counts what it checked and which rare paths ran, and the tests
 require each scenario to have compared real views and statuses and to have
 exercised its faults, lag resyncs, `Busy` answers, subscriptions to stopped
 terminals, whose final status is checked too, effect deadlines, all three
-downgrade paths, and, in `state-corruption`, digests catching injected
-damage. The server encodes each frame through a writer that keeps only that
-frame's bytes, after a counting pass that sizes the message, so no whole
-encoded message ever exists. A unit test checks every window against the
-full encoding, and another checks that sizing stores no bytes and a window
-stores only its frame. The simulation re-walks the message for each frame,
-which is quadratic in its frame count; the real encoder should resume where
-the previous frame ended.
+downgrade paths, in `state-corruption`, digests catching injected damage, and,
+in `handover`, reconnects to the same incarnation that negotiated a different
+minor version and viewers whose carried baselines reported what happened during
+the handover. The server encodes each frame through a writer that keeps only
+that frame's bytes, after a counting pass that sizes the message, so no whole
+encoded message ever exists. A unit test checks every window against the full
+encoding, and another checks that sizing stores no bytes and a window stores
+only its frame. The simulation re-walks the message for each frame, which is
+quadratic in its frame count; the real encoder should resume where the previous
+frame ended.
 
-The fixed scenarios each test one combination of limits. The `swarm`
-scenario is a configuration fuzzer: every seed draws its frame size, stream
-count, caps, budgets, credit, queue sizes, digest intervals, grid, fault
-rates, link latency and fragmentation, and each peer's version and client
-kind, within bounds that keep the configuration valid, such as deadlines
-longer than the link's round trip. `mise run sim:ipc -- swarm 8` prints the
-configuration seed 8 draws and replays it. On its first run the swarm caught
-a model bug the fixed scenarios had hidden: with a status-text limit
-shorter than the word "fatal", the stop path published an over-long
-failure message that the client rejected, because that path skipped the
-truncation every other status writer applied. The plan already requires
-core to apply each invariant on every path that produces the value; the
-swarm is what checks it.
+The fixed scenarios each test one combination of limits. The `swarm` scenario is
+a configuration fuzzer: every seed draws its frame size, stream count, caps,
+budgets, credit, queue sizes, digest intervals, grid, fault rates including
+handovers, link latency and fragmentation, and each peer's version and client
+kind, within bounds that keep the configuration valid, such as deadlines longer
+than the link's round trip. `mise run sim:ipc -- swarm 8` prints the
+configuration seed 8 draws and replays it. On its first run the swarm caught a
+model bug the fixed scenarios had hidden: with a status-text limit shorter than
+the word "fatal", the stop path published an over-long failure message that the
+client rejected, because that path skipped the truncation every other status
+writer applied. The plan already requires core to apply each invariant on every
+path that produces the value; the swarm is what checks it.
 
 Each design rule the reviews argued over is load bearing: a test switches it
 off and shows the simulation catches its absence. Without ordering lanes,
@@ -1264,7 +1370,9 @@ reconnect misses status; without versioned digests, older peers mismatch
 while same-version peers still pass; retrying mutations after a reconnect
 runs some twice; without digest checks, damage in `state-corruption`
 diverges; without a complete final snapshot, a stopped view recovering
-from damage stays wrong. Without credit on discard, a discarded delta leaks its
+from damage stays wrong; a handover that draws a new incarnation makes
+clients re-base their status and miss the exits, bells, and failures that
+happened during it. Without credit on discard, a discarded delta leaks its
 credit, which a client unit test shows directly, because with ordering
 lanes no scenario discards a delta without corruption.
 
@@ -1445,6 +1553,10 @@ Acceptance:
   and keeps read-your-writes on a live stream with no resync.
 - A reconnect to a new incarnation makes old IDs foreign and cancels
   sequence waiters.
+- A reconnect to the same incarnation that negotiates a different minor
+  version, as after a handover, keeps every ID valid and every sequence
+  waiter live, and the client takes its caps and digest profile from the
+  new `Welcome`.
 - A mutation in flight at disconnect, including a rename and a
   `set_scrollback`, resolves `OutcomeUnknown` at once and is never resent;
   a runtime query in flight is retried on the next connection, and a
@@ -1585,6 +1697,7 @@ closed at the deadline.
 | Reconnect reports what was missed | Slice 3b status-baseline carry-over test |
 | Every state the limits permit is encodable | Slice 1 maximum-hierarchy test; slice 2 oversized-row, clamped-grid, and byte-split tests |
 | Incompatible versions, malformed and oversized messages, stale incarnations | Slice 1 decoder and negotiation tests, slice 3a incarnation test, fuzz targets |
+| A handover looks like a reconnect with renegotiation | Slice 3a same-incarnation renegotiation test; slice 3b status-baseline carry-over test; the simulation's `handover` scenario |
 | Bounded memory per connection | Slice 1 stream, cap, and reassembly tests; slice 1 and 2 core invariant tests; slice 3a flood, slow-reader, stall, and undo-slot tests on the injected clock |
 | Partial writes and slow or disconnected consumers | Slice 5 byte-split tests; slice 3a and 3b stall and disconnect tests |
 | Retry behavior | Slice 3a tests for in-flight runtime queries, viewer requests, mutations, and shared setters; slice 3b input-window test, in which no input is lost or repeated |
@@ -1631,6 +1744,15 @@ smoke changes are needed until [#45][issue-45].
 - **`/tmp` placement.** Linux systems that clean `/tmp` by age could remove
   a socket under a long-running server. `XDG_RUNTIME_DIR` avoids that where
   it exists; [#45][issue-45] owns stale-socket detection and recreation.
+- **Major version bumps.** A major bump ends the compatibility window, so
+  the GUI update that brings it cannot attach to the running server until
+  the server restarts and loses its terminals. Before the first major bump,
+  decide whether that release's client also speaks the previous major
+  version, or whether a handover that crosses the bump exists by then.
+- **Handover state.** The handover feature must carry every value listed in
+  "Live handover stays possible". A core change that adds state the
+  protocol relies on within an incarnation, such as a new counter, must
+  add it to that list.
 - **The nightly toolchain.** A second toolchain adds cache and bump work.
   The fuzz job is scheduled and optional, so a broken nightly never blocks a
   pull request.
@@ -1643,7 +1765,11 @@ Proposed edits to the issue, for the maintainer to apply:
   per connection in `Welcome` and only the sequence per event; the client
   rebuilds the `StreamId`.
 - "Stable IDs scoped to server incarnation": add that `TerminalId` becomes a
-  scoped ID and that `RuntimeId` allocation moves into `huterm-protocol`.
+  scoped ID, that `RuntimeId` allocation moves into `huterm-protocol`, and
+  that a later live handover keeps the incarnation, which changes only when
+  the terminals are lost.
+- Add the compatibility window: every minor version of the same major, in
+  both directions, so a GUI update never requires a server restart.
 - "Update the protocol dependency policy deliberately": the policy does not
   change; serialization lives in `huterm-wire`, and the gate gains rules.
 - The tests criterion gains property tests and nightly cargo-fuzz targets
@@ -1655,6 +1781,8 @@ Proposed edits to the issue, for the maintainer to apply:
 None blocking. The starting values in the bounds table are proposals that
 each slice may tune with evidence, recorded in this plan when they change.
 
+[herdr-handoff]: https://github.com/herdrdev/herdr/blob/master/src/server/handoff.rs
+[herdr-session-state]: https://herdr.dev/docs/session-state/
 [issue-18]: https://github.com/jimeh/huterm/issues/18
 [issue-19]: https://github.com/jimeh/huterm/issues/19
 [issue-21]: https://github.com/jimeh/huterm/issues/21

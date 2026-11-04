@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::broker::{Link, LinkProfile};
-use crate::client::{Client, Outcome};
+use crate::client::{Client, Outcome, Seen};
 use crate::message::{ClientKind, Request, RetryClass};
 use crate::model::{MINOR_0, MINOR_1};
 use crate::profile::{Design, Profile};
@@ -31,6 +31,10 @@ pub struct Scenario {
     pub stall_per_mille: u64,
     /// Chance per thousand fault draws of a daemon restart.
     pub restart_per_mille: u64,
+    /// Chance per thousand fault draws of a live handover: a successor
+    /// process on the other minor version takes over the runtime state and
+    /// the incarnation, and every connection ends.
+    pub handover_per_mille: u64,
     /// Chance per thousand ticks, per client, of a workload action.
     pub action_per_mille: u64,
     /// Chance per thousand ticks of terminal activity.
@@ -41,7 +45,9 @@ pub struct Scenario {
     /// in a way that still decodes, so digests must catch it.
     pub damage_per_mille: u64,
     /// Whether nothing interferes with delivery, so every effect and input
-    /// for a live terminal must arrive and no connection may end.
+    /// for a live terminal must arrive and no connection may end. A
+    /// handover still ends every connection; effects and unacknowledged
+    /// input on those connections may be lost, as on any disconnect.
     pub healthy: bool,
     /// The limits both ends use.
     pub profile: Profile,
@@ -88,6 +94,7 @@ pub fn scenarios() -> Vec<Scenario> {
         cut_per_mille: 0,
         stall_per_mille: 0,
         restart_per_mille: 0,
+        handover_per_mille: 0,
         action_per_mille: 60,
         activity_per_mille: 300,
         toggle_permission: false,
@@ -172,6 +179,22 @@ pub fn scenarios() -> Vec<Scenario> {
                 hierarchy_digest_every: 1,
                 ..Profile::default()
             },
+            ..base.clone()
+        },
+        // Live handovers on healthy links: clients reconnect to the same
+        // incarnation, renegotiate their minor version as the server
+        // alternates between versions, keep their status baselines, and
+        // resync from snapshots.
+        Scenario {
+            name: "handover",
+            server_minor: MINOR_1,
+            clients: vec![
+                desktop(MINOR_1),
+                desktop(MINOR_0),
+                (MINOR_1, ClientKind::Text),
+            ],
+            handover_per_mille: 15,
+            duration: 6_000,
             ..base.clone()
         },
         Scenario {
@@ -281,7 +304,7 @@ pub fn swarm(seed: u64) -> Scenario {
     if healthy {
         link.buffer = link.buffer.max(effect_buffer_floor(&link, &profile));
     }
-    Scenario {
+    let mut scenario = Scenario {
         name: "swarm",
         server_minor: minor(&mut rng),
         clients,
@@ -289,6 +312,7 @@ pub fn swarm(seed: u64) -> Scenario {
         cut_per_mille,
         stall_per_mille,
         restart_per_mille,
+        handover_per_mille: 0,
         action_per_mille: rng.range(10, 120),
         activity_per_mille: rng.range(50, 600),
         toggle_permission: !healthy && rng.chance(500),
@@ -297,7 +321,13 @@ pub fn swarm(seed: u64) -> Scenario {
         profile,
         duration: rng.range(1_000, 6_000),
         quiesce: 60_000,
+    };
+    // Drawn last, so every other draw stays what earlier seeds replayed. A
+    // handover keeps healthy checks valid, so healthy draws get them too.
+    if rng.chance(500) {
+        scenario.handover_per_mille = rng.range(1, 8);
     }
+    scenario
 }
 
 /// The smallest socket buffer with which `link` carries the profile's
@@ -334,6 +364,16 @@ pub struct Report {
     pub client_closes: u64,
     /// Daemon restarts.
     pub restarts: u64,
+    /// Live handovers.
+    pub handovers: u64,
+    /// Reconnects to the same incarnation that negotiated a different minor
+    /// version than the client's previous connection.
+    pub renegotiations: usize,
+    /// Viewers whose first read used a status baseline carried from an
+    /// earlier connection to the same incarnation.
+    pub carried_statuses: usize,
+    /// Of those, the ones that reported status changed while away.
+    pub carried_reports: usize,
     /// Mutations executed.
     pub executed: usize,
     /// Mutations whose outcome was unknown.
@@ -369,6 +409,10 @@ impl Report {
         self.server_closes += other.server_closes;
         self.client_closes += other.client_closes;
         self.restarts += other.restarts;
+        self.handovers += other.handovers;
+        self.renegotiations += other.renegotiations;
+        self.carried_statuses += other.carried_statuses;
+        self.carried_reports += other.carried_reports;
         self.executed += other.executed;
         self.unknown += other.unknown;
         self.effects += other.effects;
@@ -401,8 +445,18 @@ struct World {
     rng: Rng,
     now: u64,
     server: Server,
+    /// The incarnation the server announces.
     incarnation: u64,
+    /// The lifetime of the runtime state: a restart starts a new one, a
+    /// handover does not. With `handover_keeps_incarnation` it equals the
+    /// incarnation; without it, one lifetime spans several incarnations.
+    lifetime: u64,
+    lifetimes: BTreeMap<u64, u64>,
+    /// Records of earlier lifetimes.
     records: Vec<(u64, Record)>,
+    /// Links a handover ended, and the viewers on them per lifetime.
+    handed_over: BTreeSet<usize>,
+    handed_over_viewers: BTreeSet<(u64, u64)>,
     links: BTreeMap<usize, Link>,
     next_link: usize,
     clients: Vec<Client>,
@@ -446,7 +500,11 @@ impl World {
             rng: Rng::new(seed),
             now: 0,
             incarnation: 1,
+            lifetime: 1,
+            lifetimes: BTreeMap::from([(1, 1)]),
             records: Vec::new(),
+            handed_over: BTreeSet::new(),
+            handed_over_viewers: BTreeSet::new(),
             links: BTreeMap::new(),
             next_link: 0,
             clients,
@@ -477,8 +535,43 @@ impl World {
             Rc::clone(&self.profile),
         );
         let old = std::mem::replace(&mut self.server, fresh);
-        self.records.push((self.incarnation - 1, old.record));
+        self.records.push((self.lifetime, old.record));
+        self.lifetime += 1;
+        self.lifetimes.insert(self.incarnation, self.lifetime);
         self.report.restarts += 1;
+    }
+
+    /// A live handover: a successor process takes over the runtime state,
+    /// so the hierarchy, terminals, ID allocators, sequences, and status
+    /// stay, and so does the incarnation. Connection state does not cross;
+    /// every connection ends, as `Server::disconnect` ends one. The
+    /// successor serves the other minor version, so handovers alternate
+    /// between upgrades and downgrades.
+    fn handover(&mut self) {
+        for client in 0..self.clients.len() {
+            if let Some(link) = self.clients[client].link() {
+                self.handed_over.insert(link);
+            }
+            let lifetime = self.lifetime;
+            self.handed_over_viewers.extend(
+                self.clients[client]
+                    .viewer_ids()
+                    .into_iter()
+                    .map(|viewer| (lifetime, viewer)),
+            );
+            self.cut(client);
+        }
+        self.server.minor = if self.server.minor == MINOR_0 {
+            MINOR_1
+        } else {
+            MINOR_0
+        };
+        if !self.profile.design.handover_keeps_incarnation {
+            self.incarnation += 1;
+            self.server.incarnation = self.incarnation;
+            self.lifetimes.insert(self.incarnation, self.lifetime);
+        }
+        self.report.handovers += 1;
     }
 
     fn act(&mut self, index: usize) {
@@ -609,6 +702,14 @@ impl World {
             }
             if faults && self.rng.chance(self.scenario.restart_per_mille) {
                 self.restart();
+            }
+            // Scenarios without handovers skip the draw, so their seeds
+            // replay as before.
+            if faults
+                && self.scenario.handover_per_mille > 0
+                && self.rng.chance(self.scenario.handover_per_mille)
+            {
+                self.handover();
             }
             if self.rng.chance(self.scenario.activity_per_mille) {
                 self.server.terminal_activity(&mut self.rng, now);
@@ -840,7 +941,19 @@ impl World {
 
     #[expect(clippy::too_many_lines, reason = "every invariant, listed once")]
     fn check(&mut self) -> Result<(), String> {
-        let incarnation = self.incarnation;
+        let lifetime = self.lifetime;
+        let lifetimes = &self.lifetimes;
+        let lifetime_of = |incarnation: u64| {
+            lifetimes.get(&incarnation).copied().unwrap_or(0)
+        };
+        // The client's facts are per incarnation; the terminals' are per
+        // lifetime, which several incarnations share if a handover draws a
+        // new one.
+        let current: Vec<u64> = lifetimes
+            .iter()
+            .filter(|(_, l)| **l == lifetime)
+            .map(|(i, _)| *i)
+            .collect();
         // Damaged links can corrupt anything; damaged state only touches
         // digested deltas and events, so every other check still holds.
         let corrupt = self.scenario.link.corrupt_per_mille > 0;
@@ -879,12 +992,14 @@ impl World {
                 statuses.push(tab);
             }
             // A stopped terminal's final status and view stay the client's.
-            for (&(stopped_in, tab), view) in &client.stopped {
-                if stopped_in != incarnation {
+            // The view stays at the minor version it arrived in, which a
+            // handover may have changed since.
+            for (&(stopped_in, tab), (shown_at, view)) in &client.stopped {
+                if lifetime_of(stopped_in) != lifetime {
                     continue;
                 }
                 let Some((final_view, _, true)) =
-                    self.server.terminal(tab, minor)
+                    self.server.terminal(tab, *shown_at)
                 else {
                     continue;
                 };
@@ -896,7 +1011,9 @@ impl World {
                     ));
                 }
                 self.report.stopped_checked += 1;
-                statuses.push(tab);
+                if !statuses.contains(&tab) {
+                    statuses.push(tab);
+                }
             }
             // So does a stopped terminal the client learned of only from a
             // `Stopped` reply, after subscribing to it.
@@ -905,7 +1022,9 @@ impl World {
             for &(seen_in, tab) in &client.stopped_replies {
                 let stopped =
                     self.server.terminal(tab, minor).is_some_and(|(_, _, s)| s);
-                if seen_in == incarnation && stopped && !statuses.contains(&tab)
+                if lifetime_of(seen_in) == lifetime
+                    && stopped
+                    && !statuses.contains(&tab)
                 {
                     statuses.push(tab);
                 }
@@ -915,11 +1034,7 @@ impl World {
                 else {
                     continue;
                 };
-                let seen = client
-                    .seen
-                    .get(&(incarnation, tab))
-                    .cloned()
-                    .unwrap_or_default();
+                let seen = lifetime_seen(client, &current, tab);
                 // Status carries no digest, so corruption can alter it.
                 // Counts are deltas since the client's first read.
                 let last = status.failures.last().map_or(0, |f| f.0);
@@ -948,13 +1063,16 @@ impl World {
                     client.hierarchy_resyncs, client.viewer_resyncs
                 ));
             }
+            self.report.renegotiations += client.renegotiations as usize;
+            self.report.carried_statuses += client.carried_statuses as usize;
+            self.report.carried_reports += client.carried_reports as usize;
             self.report.detections += client.faults.len()
                 + client.hierarchy_resyncs as usize
                 + client.viewer_resyncs as usize;
             self.report.damage_injected += client.damage_injected as usize;
         }
         let mut records = std::mem::take(&mut self.records);
-        records.push((incarnation, std::mem::take(&mut self.server.record)));
+        records.push((lifetime, std::mem::take(&mut self.server.record)));
         // Request and effect identities carry no digest, so a corrupted ID
         // can still decode. The design relies on the transport for byte
         // integrity; under corruption only digested state is checked.
@@ -1029,15 +1147,15 @@ impl World {
         }
         // Each effect runs at most once, on the connection core chose.
         let mut admitted = BTreeMap::new();
-        for (incarnation, record) in &records {
+        for (lifetime, record) in &records {
             for (terminal, origin, conn, _) in &record.admitted {
-                admitted.insert((*incarnation, *terminal, *origin), *conn);
+                admitted.insert((*lifetime, *terminal, *origin), *conn);
             }
         }
         let mut ran = BTreeSet::new();
         for client in self.clients.iter().filter(|_| !corrupt) {
             for (incarnation, link, terminal, origin) in &client.executed {
-                let key = (*incarnation, *terminal, *origin);
+                let key = (lifetime_of(*incarnation), *terminal, *origin);
                 if !ran.insert(key) {
                     return Err(format!("effect {key:?} executed twice"));
                 }
@@ -1055,15 +1173,19 @@ impl World {
                 .is_some_and(|(_, _, stopped)| !stopped)
         };
         if healthy {
-            // Effects for a closed or stopped terminal are legitimately lost.
-            let expected = admitted
-                .keys()
-                .filter(|(i, t, _)| *i == incarnation && live(*t))
-                .count();
-            let done = ran
-                .iter()
-                .filter(|(i, t, _)| *i == incarnation && live(*t))
-                .count();
+            // Effects for a closed or stopped terminal are legitimately lost,
+            // and so are effects on a connection a handover ended: effects
+            // are never replayed.
+            let owed = |key: &(u64, u64, u64)| {
+                let (l, t, _) = *key;
+                l == lifetime
+                    && live(t)
+                    && admitted
+                        .get(key)
+                        .is_some_and(|conn| !self.handed_over.contains(conn))
+            };
+            let expected = admitted.keys().filter(|key| owed(key)).count();
+            let done = ran.iter().filter(|key| owed(key)).count();
             if done != expected {
                 return Err(format!(
                     "healthy run lost effects: {done} of {expected} ran"
@@ -1071,26 +1193,35 @@ impl World {
             }
         }
         // Input reaches the PTY once, in order, per viewer.
-        for (incarnation, record) in &records {
+        for (lifetime, record) in &records {
             let mut last: BTreeMap<(u64, u64, u64), u64> = BTreeMap::new();
             for (tab, client, viewer, seq, _) in &record.pty {
                 let previous =
                     last.insert((*tab, *client, *viewer), *seq).unwrap_or(0);
                 if *seq != previous + 1 {
                     return Err(format!(
-                        "input {seq} after {previous} on incarnation {incarnation}"
+                        "input {seq} after {previous} in lifetime {lifetime}"
                     ));
                 }
             }
             if healthy {
-                // Input for a closed or stopped terminal is legitimately lost.
+                // Input for a closed or stopped terminal is legitimately lost,
+                // and so is unacknowledged input on a connection a handover
+                // ended; the order check above shows none is repeated.
+                let owed = |tab: u64, viewer: u64| {
+                    live(tab)
+                        && !self
+                            .handed_over_viewers
+                            .contains(&(*lifetime, viewer))
+                };
                 let typed = self
                     .clients
                     .iter()
                     .flat_map(|c| &c.typed)
-                    .filter(|t| live(t.1))
+                    .filter(|t| lifetime_of(t.0) == *lifetime && owed(t.1, t.2))
                     .count();
-                let reached = record.pty.iter().filter(|p| live(p.0)).count();
+                let reached =
+                    record.pty.iter().filter(|p| owed(p.0, p.2)).count();
                 if typed != reached {
                     return Err(format!(
                         "healthy run lost input: {reached} of {typed}"
@@ -1100,6 +1231,27 @@ impl World {
         }
         Ok(())
     }
+}
+
+/// What `client` saw of `tab` over the incarnations of one runtime
+/// lifetime, oldest first: the first read's baseline and every report since.
+fn lifetime_seen(client: &Client, incarnations: &[u64], tab: u64) -> Seen {
+    let mut total: Option<Seen> = None;
+    for incarnation in incarnations {
+        let Some(seen) = client.seen.get(&(*incarnation, tab)) else {
+            continue;
+        };
+        match total.as_mut() {
+            None => total = Some(seen.clone()),
+            Some(total) => {
+                total.bells += seen.bells;
+                total.exits += seen.exits;
+                total.failures += seen.failures;
+                total.revision = seen.revision;
+            }
+        }
+    }
+    total.unwrap_or_default()
 }
 
 /// Runs `scenario` from `seed` with some design rules switched off.

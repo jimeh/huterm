@@ -93,6 +93,24 @@ fn every_scenario_holds_its_invariants_and_checks_real_work() {
         state.damage_injected > 0 && state.detections > 0,
         "no decodable damage was injected and caught"
     );
+    // Only handovers end connections here, so every renegotiation and
+    // carried baseline crossed one.
+    let handover = get("handover");
+    assert!(
+        handover.handovers > 0
+            && handover.cuts == 0
+            && handover.restarts == 0
+            && handover.client_closes == 0,
+        "handovers were not the only disconnects: {handover:?}"
+    );
+    assert!(
+        handover.renegotiations > 0,
+        "no reconnect to the same incarnation renegotiated its minor version"
+    );
+    assert!(
+        handover.carried_statuses > 0 && handover.carried_reports > 0,
+        "no status baseline carried status across a handover"
+    );
 }
 
 /// Returns the first failure with `design` in `scenario`, or `None`.
@@ -173,9 +191,31 @@ fn swarm_configurations_hold_their_invariants() {
         "the swarm did no work"
     );
     assert!(
-        total.cuts > 0 && total.restarts > 0,
+        total.cuts > 0 && total.restarts > 0 && total.handovers > 0,
         "the swarm drew no faults"
     );
+}
+
+#[test]
+fn a_handover_that_draws_a_new_incarnation_loses_status() {
+    let scenario = scenario("handover");
+    let design = Design {
+        handover_keeps_incarnation: false,
+        ..Design::default()
+    };
+    // Clients re-base their status on the new incarnation, so a bell, exit,
+    // or failure during the handover goes unreported.
+    let found = (0..40).find_map(|seed| {
+        run_with(&scenario, seed, design)
+            .err()
+            .map(|failure| (seed, failure))
+    });
+    let Some((seed, failure)) = found else {
+        panic!("no seed failed when a handover drew a new incarnation");
+    };
+    assert!(failure.contains("status"), "seed {seed}: {failure}");
+    let passed = run_with(&scenario, seed, Design::default());
+    assert!(passed.is_ok(), "seed {seed} failed anyway: {passed:?}");
 }
 
 #[test]

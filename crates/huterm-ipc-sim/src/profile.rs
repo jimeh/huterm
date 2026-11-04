@@ -24,6 +24,10 @@ pub struct Design {
     /// A stopped terminal's final update is a complete snapshot. Without
     /// it, a client recovering from a damaged delta keeps a wrong view.
     pub complete_final_snapshot: bool,
+    /// A live handover keeps the incarnation along with the runtime state.
+    /// Without it, the successor announces a new incarnation, so clients
+    /// re-base their status and miss what happened during the handover.
+    pub handover_keeps_incarnation: bool,
 }
 
 impl Default for Design {
@@ -36,6 +40,7 @@ impl Default for Design {
             retry_mutations: false,
             check_digests: true,
             complete_final_snapshot: true,
+            handover_keeps_incarnation: true,
         }
     }
 }

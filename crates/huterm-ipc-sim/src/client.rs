@@ -121,8 +121,10 @@ pub struct Client {
     /// Terminals whose subscription was answered `Stopped`, per
     /// (incarnation, tab).
     pub stopped_replies: BTreeSet<(u64, u64)>,
-    /// Final views of terminals that stopped, per (incarnation, tab).
-    pub stopped: BTreeMap<(u64, u64), Option<View>>,
+    /// Final views of terminals that stopped, per (incarnation, tab), with
+    /// the minor version the view was negotiated at. The view outlives its
+    /// connection, and a later connection may negotiate another version.
+    pub stopped: BTreeMap<(u64, u64), (u16, Option<View>)>,
     /// Effects executed: (incarnation, link, terminal, origin).
     pub executed: Vec<(u64, usize, u64, u64)>,
     /// Contract faults the client detected.
@@ -136,6 +138,20 @@ pub struct Client {
     pub damage_injected: u32,
     /// Inputs typed and their fate: (incarnation, tab, viewer, seq).
     pub typed: Vec<(u64, u64, u64, u64)>,
+    /// The incarnation and minor version the previous `Welcome` announced.
+    last_welcome: Option<(u64, u16)>,
+    /// Status baselines carried into the current connection from an earlier
+    /// one, per (incarnation, tab), until a viewer reads them.
+    carried: BTreeSet<(u64, u64)>,
+    /// Reconnects to the same incarnation that negotiated a different minor
+    /// version than the previous connection.
+    pub renegotiations: u32,
+    /// Viewers whose first read used a status baseline carried from an
+    /// earlier connection.
+    pub carried_statuses: u32,
+    /// Of those, the ones whose first read reported status that changed
+    /// while the client was away.
+    pub carried_reports: u32,
 }
 
 impl Client {
@@ -177,6 +193,11 @@ impl Client {
             viewer_resyncs: 0,
             damage_injected: 0,
             typed: Vec::new(),
+            last_welcome: None,
+            carried: BTreeSet::new(),
+            renegotiations: 0,
+            carried_statuses: 0,
+            carried_reports: 0,
         }
     }
 
@@ -417,6 +438,12 @@ impl Client {
         })
     }
 
+    /// The server's IDs of the client's viewers.
+    #[must_use]
+    pub fn viewer_ids(&self) -> Vec<u64> {
+        self.viewers.values().map(|v| v.viewer).collect()
+    }
+
     /// Tabs with live viewers.
     #[must_use]
     pub fn viewed_tabs(&self) -> Vec<u64> {
@@ -460,12 +487,29 @@ impl Client {
             ServerMsg::Welcome {
                 minor, incarnation, ..
             } => {
+                // Everything negotiated comes from this `Welcome`; nothing
+                // negotiated on an earlier connection carries over.
                 if let Some(conn) = self.conn.as_mut() {
                     conn.open = Some((incarnation, minor));
                 }
-                if self.incarnation != Some(incarnation) {
+                if self
+                    .last_welcome
+                    .is_some_and(|(i, m)| i == incarnation && m != minor)
+                {
+                    self.renegotiations += 1;
+                }
+                self.last_welcome = Some((incarnation, minor));
+                if self.incarnation == Some(incarnation) {
+                    self.carried = self
+                        .baselines
+                        .keys()
+                        .filter(|(i, _)| *i == incarnation)
+                        .copied()
+                        .collect();
+                } else {
                     self.hierarchy = None;
                     self.shown.clear();
+                    self.carried.clear();
                 }
                 self.incarnation = Some(incarnation);
                 self.request(Request::SubscribeHierarchy);
@@ -534,7 +578,9 @@ impl Client {
                     // A stopped terminal's final view stays the client's
                     // to show; it is not subscribed again.
                     let incarnation = self.incarnation.unwrap_or(0);
-                    self.stopped.insert((incarnation, tab), state.view);
+                    let minor = self.negotiated().unwrap_or(0);
+                    self.stopped
+                        .insert((incarnation, tab), (minor, state.view));
                     self.shown.remove(&tab);
                 }
             }
@@ -665,6 +711,8 @@ impl Client {
                     },
                 );
                 let key = (self.incarnation.unwrap_or(0), tab);
+                let carried = self.carried.remove(&key);
+                let before = self.seen.get(&key).cloned();
                 if !self.profile.design.carry_status_baseline
                     && self.baselines.contains_key(&key)
                 {
@@ -679,6 +727,16 @@ impl Client {
                     }
                 }
                 self.observe(tab, &status);
+                if carried {
+                    self.carried_statuses += 1;
+                    let reported =
+                        |seen: &Seen| (seen.bells, seen.exits, seen.failures);
+                    if before.as_ref().map(reported)
+                        != self.seen.get(&key).map(reported)
+                    {
+                        self.carried_reports += 1;
+                    }
+                }
                 if effects {
                     self.set_permission(tab, true);
                 }
