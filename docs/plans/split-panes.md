@@ -819,7 +819,7 @@ budgets are unchanged.
 
 ## Documentation
 
-- `CONTEXT.md`: **Split** (a node of a tab's pane layout that divides its
+- `GLOSSARY.md`: **Split** (a node of a tab's pane layout that divides its
   space among child panes or splits along one axis) and **Pane zoom** (a
   view showing one pane of a split tab across the whole tab, without
   changing the shared layout).

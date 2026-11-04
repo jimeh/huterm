@@ -536,8 +536,8 @@ inventory; record the result in the PR.
   of window facts use the window model; the weak view list is for broadcast
   updates only; never read another window's view entity or handle for facts.
   Keep the existing warning about reading the dispatching window.
-- `CONTEXT.md`: add "Window record", the client-owned facts for one window. Note
-  that client layout for #42 is built from window records, and that pane
+- `GLOSSARY.md`: add "Window record", the client-owned facts for one window.
+  Note that client layout for #42 is built from window records, and that pane
   layouts and panel placement are not yet part of them.
 - `docs/plans/quake-profiles-global-hotkeys.md`: point the registry description
   at the window model.

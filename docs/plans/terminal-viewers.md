@@ -204,7 +204,7 @@ detected. This plan adds:
 
 ## Terms
 
-Add to `CONTEXT.md`:
+Add to `GLOSSARY.md`:
 
 - **Viewer:** a client's registration to display and interact with one
   terminal, with its own capabilities. One attachment can hold many viewers,
@@ -1318,7 +1318,7 @@ room so [#44][issue-44] adds messages instead of changing semantics:
 4. Desktop: migrate `TerminalView`, its activity task, spawn registration,
    pending arbitration state, scroll intent on typing, GPUI tests,
    benchmarks, and examples to one viewer per view.
-5. Documentation: the agent guides, CONTEXT.md, and the plan references
+5. Documentation: the agent guides, GLOSSARY.md, and the plan references
    below.
 6. `pty::spawn` serializes PTY creation with a process-wide lock.
    Concurrent `openpty` calls in one process failed on macOS 27 under the
@@ -1824,7 +1824,7 @@ handoff. PR A's commands are listed with its verification.
   geometry stays latest-wins,
   accepted gestures always ending, and the controller deciding size and
   presentation.
-- `CONTEXT.md`: add Viewer and Controlling viewer.
+- `GLOSSARY.md`: add Viewer and Controlling viewer.
 - `docs/plans/workspaces-windows-tabs.md`: "Keep viewport dimensions per
   attachment" becomes per viewer, pointing here.
 - `docs/plans/event-driven-refresh.md`: note that cloned clients no longer
