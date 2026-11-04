@@ -474,22 +474,14 @@ impl TerminalRenderer {
         // must cover glyphs, such as the cursor, is painted after the layers.
         window.paint_layer(grid, |window| {
             // TerminalView alone fills the default background, including padding.
-            for (row_index, row) in self.rows.iter().enumerate() {
-                for background in &row.backgrounds {
-                    if background.is_default(snapshot.default_background) {
-                        continue;
-                    }
-                    window.paint_quad(fill(
-                        cell_bounds(
-                            bounds.origin,
-                            background.start,
-                            row_index,
-                            background.columns,
-                            metrics,
-                        ),
-                        background.color,
-                    ));
-                }
+            if snapshot.default_background.is_some() {
+                self.paint_backgrounds::<true>(bounds.origin, window, snapshot);
+            } else {
+                self.paint_backgrounds::<false>(
+                    bounds.origin,
+                    window,
+                    snapshot,
+                );
             }
             if let Some(selection) = self.selection {
                 paint_selection(
@@ -504,20 +496,14 @@ impl TerminalRenderer {
         });
 
         window.paint_layer(grid, |window| {
-            for (row_index, row) in self.rows.iter().enumerate() {
-                paint_row(
-                    row,
-                    row_index,
-                    bounds.origin,
-                    metrics,
-                    window,
-                    |column, original| {
-                        self.glyph_foreground(
-                            snapshot, row_index, column, original,
-                        )
-                    },
-                    |color| self.foreground(color),
-                );
+            // Specialize once per paint so opaque glyphs and decorations do
+            // no opacity or tint work, including checks for unchanged colors.
+            if self.foreground_opacity >= 1.0
+                && self.tint == crate::transparency::Tint::default()
+            {
+                self.paint_rows::<false>(bounds.origin, window, snapshot);
+            } else {
+                self.paint_rows::<true>(bounds.origin, window, snapshot);
             }
         });
 
@@ -539,6 +525,73 @@ impl TerminalRenderer {
             }
         }
         self.record_paint(started);
+    }
+
+    fn paint_backgrounds<const DEFAULT_OVERRIDE: bool>(
+        &self,
+        origin: Point<Pixels>,
+        window: &mut Window,
+        snapshot: &TerminalSnapshot,
+    ) {
+        for (row_index, row) in self.rows.iter().enumerate() {
+            for background in &row.backgrounds {
+                if DEFAULT_OVERRIDE
+                    && background.is_default(snapshot.default_background)
+                {
+                    continue;
+                }
+                window.paint_quad(fill(
+                    cell_bounds(
+                        origin,
+                        background.start,
+                        row_index,
+                        background.columns,
+                        self.metrics,
+                    ),
+                    background.color,
+                ));
+            }
+        }
+    }
+
+    fn paint_rows<const TRANSLUCENT: bool>(
+        &self,
+        origin: Point<Pixels>,
+        window: &mut Window,
+        snapshot: &TerminalSnapshot,
+    ) {
+        for (row_index, row) in self.rows.iter().enumerate() {
+            paint_row(
+                row,
+                row_index,
+                origin,
+                self.metrics,
+                window,
+                |column, original| {
+                    if TRANSLUCENT {
+                        self.glyph_foreground(
+                            snapshot, row_index, column, original,
+                        )
+                    } else {
+                        selected_foreground(
+                            snapshot,
+                            self.selection,
+                            &self.theme,
+                            row_index,
+                            column,
+                        )
+                        .map_or(original, rgb_color)
+                    }
+                },
+                |color| {
+                    if TRANSLUCENT {
+                        self.foreground(color)
+                    } else {
+                        color
+                    }
+                },
+            );
+        }
     }
 
     fn record_prepare(
