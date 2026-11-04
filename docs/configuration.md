@@ -197,24 +197,41 @@ one process does not install duplicate hooks.
 
 Bash preserves the user's history policy, including `HISTCONTROL=ignorespace`,
 and uses its normal unexported `HISTFILE=$HOME/.bash_history` default when no
-history file was inherited. Bash 4.4 and later emit the execution marker from
-`PS0`, using prompt escapes that also work with `promptvars` disabled. The
-prompt command number distinguishes executed commands from empty input without
-consulting history. Bash 3.2 uses a `DEBUG` trap that preserves the previous
-argument and chains an existing trap for each simple command, including its
-status and `extdebug` skip result.
+history file was inherited. Huterm's entries in `PROMPT_COMMAND` sit on lines
+(or array elements) of their own: the prompt decoration is last, and on bash
+3.2 or with `promptvars` off a status capture is first. Huterm rebuilds this
+layout at every prompt, so an installer that replaces or appends to
+`PROMPT_COMMAND` at the first prompt keeps its entries. With bash-preexec
+loaded, the capture follows its first entry and the decoration precedes its
+last one.
 
-Installation finishes at the first prompt, after lazy installers. When
-bash-preexec is loaded, Huterm registers execution and status callbacks instead
-of installing a competing trap. Decoration follows existing `PROMPT_COMMAND`
-themes, and bash-preexec's own interactive-mode function re-arms its callbacks.
-Huterm does not change bash-preexec's history policy.
+Bash 4.4 and later emit the execution marker from `PS0`. With `promptvars` on,
+the completion marker is part of the prompt string and expands `$?`, which bash
+restores to the command's status before expanding the prompt. User
+`PROMPT_COMMAND` entries and the prompt therefore see the same `$?`, `$_`, and
+`PIPESTATUS` as in a plain shell. `PS0`'s expansion records that a command ran,
+so empty input gets no execution or completion marker. With `promptvars` off,
+the first entry captures the status and restores `$?` and `$_` for the entries
+after it, and a rise in the prompt command number (`\#`) marks a command.
+Bash 3.2 marks execution from a `DEBUG` trap. When a `DEBUG` trap exists after
+the startup files, on any version, Huterm's trap runs it verbatim for every
+simple command except Huterm's own, with the previous status, `$_`, and
+`extdebug` result. Preexec-style traps, such as prompt timers, therefore see
+only user commands. Huterm does not use bash-preexec's callbacks or change its
+history policy.
 
-Zsh captures completion status in its first `precmd` hook and schedules final
-prompt decoration with `zsh/sched`, after the other `precmd` hooks and before
-prompt expansion. It neither replaces ZLE widgets nor resets the prompt, so
-`prompt_subst` commands expand once. Both shells detect framework markers in
-the final prompt string and retain OSC 7 and `path` when suppressing OSC 133.
+Zsh keeps a status hook first in `precmd_functions`, which reports completion
+and the directory, and a decoration hook last, so it wraps the prompt that the
+other hooks build. Huterm restores both positions before each command, and a
+startup file that assigns the hook arrays gets Huterm's hooks back at the first
+prompt. Commands see the prompt without Huterm's markers. When other hooks
+follow the decoration hook, as on the first prompt after startup files add
+theme hooks, decoration runs as a `zsh/sched` command after all `precmd` hooks
+and before the prompt is expanded. Zsh uses no ZLE widgets and never resets the
+prompt, so `prompt_subst` commands expand once. With `prompt_percent` unset,
+zsh cannot mark text as zero-width, so Huterm prints the prompt marker directly
+and omits the input marker. Both shells detect framework markers in the final
+prompt string and keep OSC 7 and `path` when they suppress OSC 133.
 
 Fish, nushell, and elvish remove only Huterm's entry from `XDG_DATA_DIRS` if a
 startup file changed its value. If it still matches the injected value, they
@@ -273,8 +290,20 @@ Limitations:
 - Apple bash 3.2's `DEBUG` trap reduces `PIPESTATUS` to the last command's
   status. For example, after `false | true`, it reports `0` instead of `1 0`.
   Every DEBUG-trap integration on that version, including bash-preexec, has
-  this limitation. Bash 4.4 and later use `PS0` without a Huterm trap and
-  preserve the full pipeline status.
+  this limitation. Bash 4.4 and later keep the full pipeline status, including
+  when Huterm's trap runs a user trap.
+- At the first prompt, bash's `$_` and `PIPESTATUS` come from Huterm's
+  bootstrap sourcing the last startup file: `$_` is that file's path. `$?`
+  matches a plain start. In zsh, a prompt decorated by the scheduled command
+  shows only `$?` in `pipestatus`. That happens at the first prompt when
+  startup files add `precmd` hooks or assign the hook arrays, and after a
+  command that adds `precmd` hooks.
+- A user `DEBUG` trap sees two bootstrap statements after the startup files:
+  the one that saves the trap and the one that sets it aside. A `DEBUG` trap
+  installed after startup on bash 4.4 or later also sees Huterm's final
+  `PROMPT_COMMAND` entry.
+- When readline redraws the whole prompt, as for Ctrl-L, bash resends the
+  prompt's markers, including the completion marker.
 - A standalone subshell command such as `( false )` has no execution or
   completion markers on bash 3.2. Bash does not run the parent's DEBUG trap
   for a subshell compound command. Enabling function tracing would change

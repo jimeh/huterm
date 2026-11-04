@@ -9,7 +9,7 @@ if [[ ${HUTERM_SHELL_INTEGRATION-} == zsh ]]; then
     unset HUTERM_ORIG_ZDOTDIR
     [[ ! -r ${ZDOTDIR-$HOME}/.zshenv ]] || source "${ZDOTDIR-$HOME}/.zshenv"
     if [[ -o interactive ]]; then
-        _huterm_zsh_body=$HUTERM_RESOURCES_DIR/shell-integration/zsh/huterm.zsh
+        _huterm_zsh_body=${HUTERM_RESOURCES_DIR-}/shell-integration/zsh/huterm.zsh
         {
             # Parse a function definition without executing it or finding zsh
             # on PATH. Strict syntax rejects incomplete short-loop constructs.

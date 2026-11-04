@@ -49,27 +49,39 @@ full marker stream natively. Nushell 0.116.1 provides native OSC 133; Huterm
 replaces enabled native OSC 7 with literal reports because its unencoded
 `file://` paths lose directories containing URL delimiters. Preserve its opt-out.
 
-Huterm's shell scripts must be independently written from shell documentation.
-Never consult or copy Kitty or Ghostty bash/zsh scripts, which are GPLv3, or any
-other terminal's shell scripts. The scripts are all Huterm-authored; their shell
-manual references live in `assets/shell-integration/README.md`. Bash's PS0 and DEBUG
-hooks do not read history or change `HISTCONTROL`. Bash 4.4+ uses only PS0
-prompt escapes and the prompt command number, without a Huterm DEBUG trap.
-The 3.2 fallback preserves `$_` and chains user traps per simple command,
-including status and extdebug results. Jim accepted its unavoidable loss of
-full `PIPESTATUS` on 2026-11-04. Standalone 3.2 subshell compounds remain without
-C/D markers because their parent receives no DEBUG event. Existing
-bash-preexec owns execution callbacks and its trap; final prompt decoration
-follows retained prompt-command themes and re-arms through its own function.
-Zsh uses a first precmd hook and a scheduled final decorator (`zsh/sched`),
-not ZLE widgets or reset-prompt. Changing the precmd array during iteration
-only affects the next prompt, so it cannot establish first-prompt ordering.
-Capture command status before construction and decorate after user hooks.
+Huterm writes its own shell scripts. Never consult or copy Kitty's, Ghostty's
+bash/zsh, or iTerm2's integration scripts, which are GPL. Since 2026-11-04,
+permissively licensed references such as VS Code's scripts and bash-preexec
+may be read once their license is checked; record them in
+`assets/shell-integration/README.md`, and any copied or closely adapted code
+needs a file header and a `third-party/` notice. Bash hooks do not read
+history or change `HISTCONTROL`. Bash restores `$?`, `$_`, and `PIPESTATUS`
+after `PROMPT_COMMAND`, so bash 4.4+ with `promptvars` puts `D;$?` in the
+prompt string and needs no first `PROMPT_COMMAND` entry. Any command that runs
+before a user's first entry changes the `PIPESTATUS` it sees. Do not count
+commands with `\#` in `${var@P}` when `PS0` can do it: bash 5.3 lowers that
+read by one only once a prompt has been shown. Huterm's entries keep lines or
+array elements of their own and are rebuilt at every prompt, because
+first-prompt installers rewrite `PROMPT_COMMAND`. bash-preexec's first and
+last entries stay first and last; an entry after its last one disarms its
+next-command detection. A user `DEBUG` trap present after startup runs inside
+Huterm's trap, which hides Huterm's own commands from it. Bash 3.2 also marks
+execution from that trap, and it reverts trap changes made inside untraced
+functions, so install traps at shell scope. Jim accepted 3.2's loss of full
+`PIPESTATUS` on 2026-11-04, and standalone 3.2 subshell compounds remain
+without C/D markers. Zsh hook functions preserve `$?`, `pipestatus`, and `$_`,
+but a `zsh/sched` command does not: it can restore `$?` and `$_` (its return
+value and last argument), never `pipestatus`. Keep zsh decoration in the last
+`precmd` hook, and use the scheduled command only when hooks follow it.
+Changing the precmd array during iteration only affects the next prompt.
+Do not decorate zsh prompts from ZLE widgets or reset-prompt.
 Native PTY tests cover the launch boundary. `HUTERM_REQUIRE_SHELLS=1` makes
 shell availability mandatory in CI Checks: Apple Bash 3.2 is required on macOS,
-where Bash 5 is optional; Linux requires Bash 5, including its POSIX ENV login
-path. Fixture `.zshenv` disables global compinit, and restoration assertions
-compare against the same shell's plain startup to account for system snippets.
+where a `bash` of 4.4 or later is optional; Linux requires one (Ubuntu 24.04
+ships 5.2), including its POSIX ENV login path. Run the bash tests against
+another version by putting its `bash` first on `PATH`. Fixture `.zshenv`
+disables global compinit, and restoration assertions compare against the same
+shell's plain startup to account for system snippets.
 Development resource discovery searches up to six executable-directory
 ancestors for `assets/shell-integration`, after packaged layouts, to cover
 custom Cargo target directories within the checkout.

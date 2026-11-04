@@ -440,3 +440,64 @@ Recorded on 2026-11-04 from the dual review of PR #385 and its first CI run.
   operands. An explicit `--rcfile ""` stays distinct from no rcfile. A failed
   nushell body restores the hooks and settings it changed. The package verifier
   checks and reads each file through one handle.
+
+### Correction round, 2026-11-04
+
+Jim decided that Claude implements one more correction round of the bash and
+zsh hook layers, and that permissively licensed (MIT) integration scripts may
+be read and adapted with recorded provenance. Kitty's, Ghostty's bash/zsh, and
+iTerm2's scripts stay off limits. Claude read VS Code's scripts and
+bash-preexec 0.5.0 and 0.7.0 for design and interoperability and copied no
+code; `assets/shell-integration/README.md` lists the revisions. Jim also
+accepted that a standalone subshell such as `( false )` on Apple bash 3.2 has
+no C/D marks. Fish, nushell, and elvish were not changed. These bullets
+supersede the "Hook order", "Bash hook redesign", and "Existing bash-preexec"
+revisions above.
+
+- **Bash completion status.** Bash restores `$?`, `$_`, and `PIPESTATUS` after
+  `PROMPT_COMMAND`, so with `promptvars` on, bash 4.4 and later put `D;$?` in
+  the decorated prompt. No Huterm command runs before user entries, which see
+  the plain state, including the full `PIPESTATUS`. The capture entry remains
+  first only on bash 3.2 and with `promptvars` off, where it restores `$?` and
+  `$_` and uses `&&` so a failing status triggers neither `errexit` nor `ERR`.
+- **Empty input.** `PS0`'s expansion sets a flag through a zero-length
+  substring, so bash 4.4 and later detect executed commands without counting.
+  With `promptvars` off, a rise in `\#` marks a command; bash 5.3 reports its
+  first `${var@P}` read, before any prompt, one higher (per its `parse.y`),
+  which is the cause of the 5.2/5.3 difference that broke the fixed offset.
+- **`PROMPT_COMMAND` layout.** Each prompt removes Huterm's entries wherever
+  they are, including text glued onto them, and re-adds them on lines or
+  elements of their own: decoration last, before a trailing
+  `__bp_interactive_mode`, and any capture first, after a leading
+  `__bp_precmd_invoke_cmd`. When bash-preexec installs itself earlier in the
+  same prompt-command run, Huterm re-arms it with `__bp_interactive_mode
+  force`. Huterm no longer registers bash-preexec callbacks.
+- **DEBUG traps.** Huterm's trap runs on bash 3.2, and on any version where a
+  user trap exists after startup. It ignores commands whose text or call stack
+  belongs to Huterm, so `set -T` and `extdebug` no longer turn Huterm's own
+  statements into C marks, and preexec-style user traps never see Huterm's
+  entries. The bootstrap sets the user's trap aside after the startup files
+  (two visible statements) and installs Huterm's trap last, at shell scope.
+- **Marks.** Bash writes the semicolons in its marks as `\073` and zsh ends its
+  marks with ST, so each decoration removes exactly its own marks, including
+  copies saved by commands such as a virtualenv's `activate`, and never a
+  framework's. An ST backslash before `PS0`'s expansion escaped it, so bash
+  marks use BEL.
+- **Zsh hooks.** A status hook stays first and a decoration hook last; both
+  are restored before each command, and at the first prompt after startup
+  files that assigned the hook arrays. The scheduled command decorates only
+  when hooks follow the decoration hook. It restores `$?` and `$_` through its
+  return value and last argument and cannot restore `pipestatus`, which then
+  shows only `$?`. Jim accepted that remaining case, mainly the first prompt
+  after startup files add theme hooks, on 2026-11-04. He also accepted the
+  bash first-prompt `$_` and `PIPESTATUS`, the bootstrap statements a user
+  `DEBUG` trap sees, and the marks a full readline redraw resends, which #352
+  must handle by ignoring a D without a preceding C. Commands see the prompt
+  without Huterm's marks. With `prompt_percent` unset, zsh prints A and omits
+  B.
+- **Bootstrap state.** The bash bootstrap restores the startup files' status
+  at the first prompt. `$_` and `PIPESTATUS` there come from sourcing the last
+  startup file, which the injected launch cannot avoid.
+- **C1 controls.** Both shells compare paths against the 32 UTF-8 C1
+  sequences as literal substrings, independent of locale and of zsh's
+  metafication.
