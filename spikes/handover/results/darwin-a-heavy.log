@@ -1,0 +1,7 @@
+== heavy [a] macos-aarch64: PASS
+   ok   handover mid-stream: {"cutover_ms":2.887,"outcome":"ok","reason":"","where":"new image, same PID"}
+   ok   handover mid-stream: {"cutover_ms":3.347,"outcome":"ok","reason":"","where":"new image, same PID"}
+   ok   generator exited 0: {"code":0,"raw":0}
+   ok   reader saw end of output: true
+   ok   exact byte count: {"got":52428800,"want":52428800}
+   ok   no lost or duplicated bytes: {"first_bad_offset":null}

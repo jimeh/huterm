@@ -1,0 +1,10 @@
+== close [a] macos-aarch64: PASS
+   ok   handover: {"cutover_ms":3.082,"outcome":"ok","reason":"","where":"new image, same PID"}
+   ok   pre-handover shell holds no stray descriptors: {"fds":["0=/dev/ttys013","1=/dev/ttys013","2=/dev/ttys013","255=/dev/ttys013"],"leaked":[]}
+   ok   post-handover shell inherits no masters: {"fds":["0=/dev/ttys020","1=/dev/ttys020","2=/dev/ttys020","255=/dev/ttys020"],"leaked":[]}
+   ok   same server PID: {"after":66768,"before":66768}
+   ok   close hangs up the trap script: {"exit":{"code":129,"raw":33024},"gone":true}
+   ok   trap saw SIGHUP: true
+   ok   trap exit status 129: {"code":129,"raw":33024}
+   ok   close hangs up the pre-handover bash: {"exit":{"raw":1,"signal":1},"gone":true}
+   ok   close hangs up the post-handover bash: {"exit":{"raw":1,"signal":1},"gone":true}

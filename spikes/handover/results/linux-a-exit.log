@@ -1,0 +1,6 @@
+== exit [a] linux-aarch64: PASS
+   ok   handover: {"cutover_ms":14.485107,"outcome":"ok","reason":"","where":"new image, same PID"}
+   ok   exit during the cutover keeps status 7: {"exit":{"code":7,"raw":1792},"pid":687}
+   ok   exit 42 after handover: {"eof":true,"exit":{"code":42,"raw":10752}}
+   ok   SIGKILL after handover: {"raw":9,"signal":9}
+   ok   control: shell spawned by the new server: {"code":42,"raw":10752}

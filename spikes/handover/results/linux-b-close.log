@@ -1,0 +1,11 @@
+== close [b] linux-aarch64: PASS
+   ok   handover: {"cutover_ms":1.878436,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
+   ok   pre-handover shell holds no stray descriptors: {"fds":["0=/dev/pts/1","1=/dev/pts/1","2=/dev/pts/1","255=/dev/pts/1"],"leaked":[]}
+   ok   post-handover shell inherits no masters: {"fds":["0=/dev/pts/2","1=/dev/pts/2","2=/dev/pts/2","255=/dev/pts/2"],"leaked":[]}
+   ok   source server exited: 1337
+   ok   close hangs up the trap script: {"exit":{"code":129,"raw":33024},"gone":true}
+   ok   trap saw SIGHUP: true
+   ok   trap exit status 129: {"code":129,"raw":33024}
+   ok   close hangs up the pre-handover bash: {"exit":{"raw":1,"signal":1},"gone":true}
+   ok   close hangs up the post-handover bash: {"exit":{"raw":1,"signal":1},"gone":true}
+   ok   shims exit with their shells: []

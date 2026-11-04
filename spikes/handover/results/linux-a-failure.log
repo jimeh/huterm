@@ -1,0 +1,8 @@
+== failure [a] linux-aarch64: PASS
+   ok   reject: rolled back: {"cutover_ms":4.611839,"outcome":"rolled_back","reason":"unsupported handover format 1 (this build reads [2])","where":"source build re-executed from its rollback copy; same PID"}
+   ok   reject: all terminals usable: 3
+   ok   precheck: nothing changed: {"cutover_ms":null,"outcome":"precheck_rejected","reason":"unsupported handover format 1 (this build reads [2])","where":"nothing changed; source kept running"}
+   ok   precheck: all terminals usable: 3
+   ok   missing binary: terminals usable: {"outcome":"exec_failed","reason":"execve /tmp/hs394-a-14b11010/missing-binary: No such file or directory (os error 2)","survivors":3}
+   ok   later handover: {"cutover_ms":2.864321,"outcome":"ok","reason":"","where":"new image, same PID"}
+   ok   crash on import (A): not covered, expect losses: {"outcome":"no_record","shells_alive":0}

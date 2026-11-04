@@ -1,0 +1,9 @@
+== failure [b] macos-aarch64: PASS
+   ok   reject: rolled back: {"cutover_ms":2.991,"outcome":"rolled_back","reason":"target refused: rejected: unsupported handover format 1 (this build reads [2])","where":"source server kept every terminal; it never released them"}
+   ok   reject: all terminals usable: 3
+   ok   missing binary: terminals usable: {"outcome":"rolled_back","reason":"spawn /tmp/user-jimeh/hs394-b-2802f35e/missing-binary: No such file or directory (os error 2)","survivors":3}
+   ok   shim killed: shell keeps running: {"alive":true,"usable":true}
+   ok   shim killed: exit reported as unknown: "unknown"
+   ok   later handover: {"cutover_ms":2.692,"outcome":"ok","reason":"","where":"new server process owns the terminals"}
+   ok   crash on import (B): rolled back: {"cutover_ms":2.814,"outcome":"rolled_back","reason":"peer closed the handover socket","where":"source server kept every terminal; it never released them"}
+   ok   crash on import (B): terminals usable: 3

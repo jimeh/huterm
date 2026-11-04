@@ -1,0 +1,5 @@
+== tui [a] linux-aarch64: PASS
+   ok   tui drew its first frame: "seen"
+   ok   shrink nudge redraws: {"detect_ms":0.01675,"handover":"ok","last_frame":"REDRAW 3 24x80\r\n","redrew":true}
+   ok   final frame has the restored size: "REDRAW 3 24x80\r\n"
+   ok   htop redraws after nudge: {"bytes_after":8692,"handover":"ok","redrew":true}
