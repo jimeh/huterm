@@ -11,6 +11,10 @@
 
 use super::*;
 
+// Private notice action, handled by the window rather than the command catalog.
+pub(super) const RETRY_INSTALL: huterm_protocol::CommandId =
+    huterm_protocol::CommandId::new("retry_view_install");
+
 /// Whether an install failed only because its target went away, such as a
 /// tab closed or moved to another session after reconcile started it.
 fn stale_install(error: &MuxError) -> bool {
@@ -20,6 +24,40 @@ fn stale_install(error: &MuxError) -> bool {
             | MuxError::TerminalNotInAttachment { .. }
             | MuxError::Runtime(RuntimeError::Stopped | RuntimeError::Revoked)
     )
+}
+
+/// Whether a failed install that leaves its pane without a view posts a
+/// notice: never in teardown, and for a stale failure only when the pane
+/// belongs to the pending transfer, which settles on it.
+fn report_install_failure(
+    error: &MuxError,
+    moved: bool,
+    terminating: bool,
+) -> bool {
+    !terminating && (!stale_install(error) || moved)
+}
+
+/// The notice for a failed install that left its pane without a view. It
+/// persists, like the other notices that offer a recovery action, until
+/// [`WorkspaceView::withdraw_install_notices`] finds no such pane left.
+fn install_failure(error: &MuxError, moved: bool) -> NoticeContent {
+    let title = if moved {
+        "Cannot show moved tab"
+    } else {
+        "Cannot show tab"
+    };
+    NoticeContent {
+        lifetime: Lifetime::Persistent,
+        ..NoticeContent::command_failure(title, format!("{title}: {error}"))
+    }
+    .action("Try Again", bare(RETRY_INSTALL))
+}
+
+fn is_install_failure(content: &NoticeContent) -> bool {
+    content
+        .actions
+        .iter()
+        .any(|action| action.command.id == RETRY_INSTALL)
 }
 
 /// The open window with `id`.
@@ -67,7 +105,7 @@ impl WorkspaceView {
 
     /// The viewers `tab` needs now: one for each projected pane without a
     /// view, and one for each pane view whose viewer was revoked.
-    fn pane_targets(&self, tab: TabId, cx: &App) -> Vec<PaneTarget> {
+    pub(super) fn pane_targets(&self, tab: TabId, cx: &App) -> Vec<PaneTarget> {
         let fresh =
             ViewerStart::fresh(terminal_presentation(&self.config.theme));
         let state = cx.global::<Desktop>().hierarchy.state();
@@ -103,9 +141,13 @@ impl WorkspaceView {
         let attachment = self.attachment_id(cx);
         let mut targets = Vec::new();
         for &tab in tabs {
-            let needed = self.pane_targets(tab, cx);
+            let needed: Vec<_> = self
+                .pane_targets(tab, cx)
+                .into_iter()
+                .filter(|target| !self.installs.failed(target.pane))
+                .collect();
             if attachment.is_none() || needed.is_empty() {
-                self.installs.finish(tab, false);
+                self.installs.finish(tab, &[]);
             } else {
                 targets.extend(needed);
             }
@@ -120,10 +162,24 @@ impl WorkspaceView {
         let requested = targets.clone();
         let task = cx.background_executor().spawn(async move {
             #[cfg(all(test, feature = "test-support"))]
-            runtime
+            if runtime
                 .worker_hooks
                 .enter(worker_hooks::Stage::Subscribe)
-                .await;
+                .await
+            {
+                return Committed {
+                    result: requested
+                        .iter()
+                        .map(|_| {
+                            Err(RuntimeError::Invariant(
+                                "injected viewer subscription failure",
+                            )
+                            .into())
+                        })
+                        .collect(),
+                    seq: runtime.lock().hierarchy_seq(),
+                };
+            }
             runtime.subscribe_panes(attachment, &requested, clipboard_allowed)
         });
         let id = self.window;
@@ -185,7 +241,7 @@ impl WorkspaceView {
             cx.notify();
         }
         if let Some(next) = reactivation(active, self.active_pane(cx)) {
-            let focus = !self.overlay_holds_focus();
+            let focus = !self.overlay_holds_focus() && self.transfer.is_none();
             self.select_tab(next, focus, window, cx);
         }
         if pushed {
@@ -199,8 +255,9 @@ impl WorkspaceView {
             self.restore_focus = None;
             self.focus_restored_pane(pane, window, cx);
         }
+        self.finish_transfer_install(window, cx);
         // A pane split into a tab while its install was in flight was
-        // excluded then; installs that failed stay excluded.
+        // excluded then; panes whose installs failed stay excluded.
         if current {
             self.reconcile_own(window, cx);
         }
@@ -217,14 +274,16 @@ impl WorkspaceView {
         match (self.active_tab(cx), self.tabs.first()) {
             (None, Some(first)) => {
                 let first = first.id;
-                let focus = !self.overlay_holds_focus();
+                let focus =
+                    !self.overlay_holds_focus() && self.transfer.is_none();
                 self.select_tab(first, focus, window, cx);
             }
             // Hidden views still report their geometry, and a shown tab
             // that gained a pane shows it.
             (Some(active), _) => {
                 self.sync_tab_layout(window, cx);
-                let focus = !self.overlay_holds_focus();
+                let focus =
+                    !self.overlay_holds_focus() && self.transfer.is_none();
                 self.select_tab(active, focus, window, cx);
             }
             (None, None) => {}
@@ -235,7 +294,7 @@ impl WorkspaceView {
     /// Applies one tab's subscribed viewers, as `finish_subscribe`
     /// describes. Reports whether it pushed a pane view, and whether a
     /// failed replacement removed the tab's last pane view.
-    fn apply_tab_viewers(
+    pub(super) fn apply_tab_viewers(
         &mut self,
         tab: TabId,
         entries: Vec<(&PaneTarget, Result<TerminalViewer, MuxError>)>,
@@ -244,7 +303,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> (bool, bool) {
-        let mut failed = false;
+        let mut failed = Vec::new();
         let mut new_panes = Vec::new();
         let mut gone_panes = Vec::new();
         for (target, result) in entries {
@@ -275,18 +334,17 @@ impl WorkspaceView {
                 Ok(_) => {}
                 Err(error) => {
                     if applies {
-                        failed = true;
+                        failed.push(target.pane);
                         if target.replace {
                             gone_panes.push(target.pane);
                         }
-                        if !stale_install(&error) {
-                            self.notify(
-                                NoticeContent::command_failure(
-                                    "Cannot show tab",
-                                    format!("Cannot show tab: {error}"),
-                                ),
-                                cx,
-                            );
+                        let moved = self.transfer_contains(target.pane);
+                        if report_install_failure(
+                            &error,
+                            moved,
+                            terminating(cx),
+                        ) {
+                            self.notify(install_failure(&error, moved), cx);
                         }
                     }
                 }
@@ -297,8 +355,25 @@ impl WorkspaceView {
             && !self.tabs.iter().any(|view| view.id == tab);
         let pushed = !new_panes.is_empty()
             && self.add_pane_views(tab, new_panes, committed, cx);
-        self.installs.finish(tab, failed);
+        self.installs.finish(tab, &failed);
         (pushed, removed)
+    }
+
+    /// Withdraws the install failure notices once no failed install leaves
+    /// a pane the projection places in this window's workspace without a
+    /// view: a retry or a batch touching the workspace cleared the failures,
+    /// or the failed panes left.
+    pub(super) fn withdraw_install_notices(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let outstanding = self.installs.failed_panes().any(|pane| {
+            self.tab_showing(pane).is_none()
+                && self.projected_pane_tab(pane, cx).is_some()
+        });
+        if !outstanding && self.notices.dismiss_where(is_install_failure) {
+            cx.notify();
+        }
     }
 
     /// Whether the projection holds `tab` in this window's workspace and

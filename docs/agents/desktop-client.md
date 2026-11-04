@@ -91,8 +91,11 @@ spawn holds `busy` until it pushes its view, a window without an attachment,
 and teardown. A worker subscribes the viewers under one Mux lock, the
 completion waits for the projection to reach the worker's sequence, and the
 window then pushes only the tabs and panes it still shows no view of, without
-activating them unless it has no active tab. A failed install waits for a
-later batch that touches the workspace. A window that gains an attachment runs
+activating them unless it has no active tab. A failed install excludes only
+its own pane, which waits for a later batch that touches the workspace or for
+the persistent notice's "Try Again"; other panes of its tab still install, and
+reconcile withdraws the notice once no failed pane stays projected here
+without a view. A window that gains an attachment runs
 its own full reconcile, because attaching emits no hierarchy event. A view
 installed after its pane exited shows the exit from status but announces
 nothing: only the exit transition raises a notice or records an exit-close.

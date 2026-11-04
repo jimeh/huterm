@@ -1,7 +1,8 @@
 //! Pane drags from a title bar, tab drags that nest a tab into a pane, and
 //! spring-loaded tabs. A drag resolves its target from the last drawn frame
 //! on each motion, draws the result it would have, and on release commits
-//! one Mux operation through the same path as the pane move commands.
+//! one Mux operation. Local drops share the pane move command path;
+//! cross-window transfers coordinate through `cross_window`.
 
 // User input picks positions here, so a stale index must not panic.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
@@ -37,6 +38,27 @@ fn drop_box(region: Bounds<Pixels>) -> Bounds<Pixels> {
     Bounds::new(
         point(region.origin.x + x, region.origin.y + y),
         size(region.size.width - x * 2.0, region.size.height - y * 2.0),
+    )
+}
+
+/// Place the measured drag chip relative to the event pointer.
+fn drag_chip_origin(
+    pointer: gpui::Point<Pixels>,
+    chip: gpui::Size<Pixels>,
+    viewport: gpui::Size<Pixels>,
+) -> gpui::Point<Pixels> {
+    let axis = |pointer: Pixels, extent: Pixels, limit: Pixels| {
+        let preferred = pointer + px(12.0);
+        let origin = if preferred < px(0.0) || preferred + extent > limit {
+            pointer - px(12.0) - extent
+        } else {
+            preferred
+        };
+        origin.clamp(px(0.0), (limit - extent).max(px(0.0)))
+    };
+    point(
+        axis(pointer.x, chip.width, viewport.width),
+        axis(pointer.y, chip.height, viewport.height),
     )
 }
 
@@ -157,7 +179,7 @@ impl PaneDrag {
         self.sprung.unwrap_or(self.tab)
     }
 
-    fn back(&self) -> Option<SpringBack> {
+    pub(super) fn back(&self) -> Option<SpringBack> {
         self.sprung.map(|sprung| SpringBack {
             origin: self.tab,
             sprung,
@@ -204,6 +226,7 @@ impl WorkspaceView {
         if !self.can_drag_panes(cx) || self.arrangements > 0 {
             return;
         }
+        self.end_cross_drag(true, cx);
         self.scroll_target = None;
         self.pane_drag = Some(PaneDrag {
             tab,
@@ -281,6 +304,15 @@ impl WorkspaceView {
         if !was_scrolling {
             self.last_scroll = Instant::now();
         }
+        if self.route_cross_drag(pointer, window, cx) {
+            if let Some(drag) = &mut self.pane_drag {
+                drag.over_bar = false;
+                drag.target = None;
+                drag.spring = SpringLoad::default();
+            }
+            cx.notify();
+            return;
+        }
         self.retarget_pane_drag(Instant::now(), false, window, cx);
         cx.notify();
     }
@@ -322,6 +354,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.cross_outside(cx) {
+            return;
+        }
         let Some(before) = self
             .pane_drag
             .as_ref()
@@ -338,7 +373,7 @@ impl WorkspaceView {
 
     /// Whether `pointer` is over the drawn tab strip: the bar without the
     /// window buttons or title-row controls at either end.
-    fn over_tab_bar(
+    pub(super) fn over_tab_bar(
         &self,
         pointer: gpui::Point<Pixels>,
         window: &Window,
@@ -419,7 +454,7 @@ impl WorkspaceView {
     }
 
     /// The drawn pane of the active tab under `pointer`, with its tab.
-    fn drawn_pane_at(
+    pub(super) fn drawn_pane_at(
         &self,
         pointer: gpui::Point<Pixels>,
     ) -> Option<(TabId, PaneRect)> {
@@ -509,7 +544,16 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         self.update_pane_drag(pointer, window, cx);
-        let Some(drag) = self.pane_drag.take() else {
+        if self.finish_cross_drag(window, cx) {
+            if let Some(drag) = self.take_pane_drag(cx)
+                && !self.busy
+            {
+                self.end_pane_drag(&drag, window, cx);
+            }
+            cx.notify();
+            return;
+        }
+        let Some(drag) = self.take_pane_drag(cx) else {
             return;
         };
         cx.notify();
@@ -537,6 +581,18 @@ impl WorkspaceView {
         }
     }
 
+    fn take_pane_drag(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<PaneDrag> {
+        self.end_cross_drag(true, cx);
+        let drag = self.pane_drag.take();
+        if drag.is_some() {
+            cx.notify();
+        }
+        drag
+    }
+
     /// Cancels a pane drag, switching back to the tab it started in when it
     /// spring-loaded another.
     pub(super) fn cancel_pane_drag(
@@ -544,7 +600,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if let Some(drag) = self.pane_drag.take() {
+        if let Some(drag) = self.take_pane_drag(cx) {
             self.end_pane_drag(&drag, window, cx);
         }
     }
@@ -584,13 +640,17 @@ impl WorkspaceView {
 
     /// Drops a pane drag that a tab switch it did not make interrupted;
     /// nothing switches back.
-    pub(super) fn interrupt_pane_drag(&mut self, selected: TabId) {
+    pub(super) fn interrupt_pane_drag(
+        &mut self,
+        selected: TabId,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self
             .pane_drag
             .as_ref()
             .is_some_and(|drag| drag.expected_active() != selected)
         {
-            self.pane_drag = None;
+            self.take_pane_drag(cx);
         }
     }
 
@@ -638,9 +698,12 @@ impl WorkspaceView {
         &mut self,
         now: Instant,
         window: &Window,
-        cx: &App,
+        cx: &mut App,
     ) {
-        if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
+        self.retarget_incoming(now, true, window, cx);
+        if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+            && !self.cross_outside(cx)
+        {
             self.retarget_pane_drag(now, true, window, cx);
         }
     }
@@ -759,7 +822,23 @@ impl WorkspaceView {
         cx: &App,
     ) -> Vec<gpui::AnyElement> {
         let mut elements = Vec::new();
-        let (target, pointer, title, source) = if let Some(drag) =
+        let (target, pointer, title, source) = if let Some(incoming) =
+            &self.incoming
+        {
+            (
+                incoming.target,
+                incoming.pointer,
+                incoming.payload.title.clone(),
+                None,
+            )
+        } else if self.cross_outside(cx) {
+            *self.drawn_drop.borrow_mut() = Some(if self.tear_off_cue(cx) {
+                "tear_off".into()
+            } else {
+                "none".into()
+            });
+            return elements;
+        } else if let Some(drag) =
             self.pane_drag.as_ref().filter(|drag| drag.dragging)
         {
             let tab = self.tabs.iter().find(|view| view.id == drag.tab);
@@ -793,24 +872,48 @@ impl WorkspaceView {
         };
         *self.drawn_drop.borrow_mut() = Some(drop_label(target, &self.tabs));
         elements.extend(self.target_elements(target, source, colors, window));
+        // Measure the actual chip before choosing its side of the pointer.
+        // All local pane, nesting-tab, and incoming drags share this path.
         elements.push(
-            div()
-                .absolute()
-                .left(pointer.x + px(12.0))
-                .top(pointer.y + px(12.0))
-                .max_w(px(240.0))
-                .overflow_hidden()
-                .px(px(8.0))
-                .py(px(2.0))
-                .rounded(px(6.0))
-                .bg(colors.active)
-                .border_1()
-                .border_color(colors.border)
-                .text_color(colors.foreground)
-                .opacity(0.9)
-                .whitespace_nowrap()
-                .child(title)
-                .into_any_element(),
+            gpui::canvas(
+                move |_, window, cx| {
+                    let viewport = window.viewport_size();
+                    let mut chip = div()
+                        .debug_selector(|| "drag-title-chip".to_owned())
+                        .max_w(px(240.0).min(viewport.width))
+                        .max_h(viewport.height)
+                        .overflow_hidden()
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(6.0))
+                        .bg(colors.active)
+                        .border_1()
+                        .border_color(colors.border)
+                        .text_color(colors.foreground)
+                        .opacity(0.9)
+                        .whitespace_nowrap()
+                        .child(title)
+                        .into_any_element();
+                    let measured = chip.layout_as_root(
+                        size(
+                            gpui::AvailableSpace::MaxContent,
+                            gpui::AvailableSpace::MaxContent,
+                        ),
+                        window,
+                        cx,
+                    );
+                    chip.prepaint_at(
+                        drag_chip_origin(pointer, measured, viewport),
+                        window,
+                        cx,
+                    );
+                    chip
+                },
+                |_, mut chip, window, cx| chip.paint(window, cx),
+            )
+            .absolute()
+            .inset_0()
+            .into_any_element(),
         );
         elements
     }
@@ -896,7 +999,10 @@ impl WorkspaceView {
 /// target pane's index in its tab's traversal order, `slot:<index>`,
 /// `title_row`, `spring:<tab index>`, or `none`. A refused zone ends in
 /// `:refused`.
-fn drop_label(target: Option<DropTarget>, tabs: &[TabView]) -> String {
+pub(super) fn drop_label(
+    target: Option<DropTarget>,
+    tabs: &[TabView],
+) -> String {
     match target {
         None => "none".to_owned(),
         Some(DropTarget::Slot(index)) => format!("slot:{index}"),
@@ -935,6 +1041,43 @@ fn drop_label(target: Option<DropTarget>, tabs: &[TabView]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drag_chip_flips_at_every_edge_and_corner_then_clamps() {
+        let chip = size(px(80.0), px(24.0));
+        let viewport = size(px(300.0), px(200.0));
+        for (pointer, expected) in [
+            ((150.0, 100.0), (162.0, 112.0)),
+            ((0.0, 100.0), (12.0, 112.0)),
+            ((300.0, 100.0), (208.0, 112.0)),
+            ((150.0, 0.0), (162.0, 12.0)),
+            ((150.0, 200.0), (162.0, 164.0)),
+            ((0.0, 0.0), (12.0, 12.0)),
+            ((300.0, 0.0), (208.0, 12.0)),
+            ((0.0, 200.0), (12.0, 164.0)),
+            ((300.0, 200.0), (208.0, 164.0)),
+            ((-100.0, -100.0), (0.0, 0.0)),
+            ((500.0, 400.0), (220.0, 176.0)),
+        ] {
+            assert_eq!(
+                drag_chip_origin(
+                    point(px(pointer.0), px(pointer.1)),
+                    chip,
+                    viewport
+                ),
+                point(px(expected.0), px(expected.1)),
+                "pointer {pointer:?}",
+            );
+        }
+        assert_eq!(
+            drag_chip_origin(
+                point(px(1.0), px(1.0)),
+                chip,
+                size(px(40.0), px(10.0))
+            ),
+            point(px(0.0), px(0.0))
+        );
+    }
 
     #[test]
     fn a_spring_load_arms_rearms_and_comes_due_at_its_deadline() {

@@ -30,6 +30,7 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
             ids::COPY_TAB_DIRECTORY,
             ids::OPEN_TAB_DIRECTORY,
             ids::MOVE_TAB_TO_PANE,
+            ids::MOVE_TAB_TO_NEW_WINDOW,
         ],
     ),
     (
