@@ -677,3 +677,35 @@ fn a_search_typed_before_the_reveal_settles_cancels_it(
     assert_eq!(query, "");
     assert_eq!(scrolled, px(0.0), "nothing scrolled to Transparency");
 }
+
+#[gpui::test]
+fn a_pane_press_before_the_reveal_settles_cancels_it(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new("panel-reveal-press", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    harness.cx.update(|cx| {
+        settings_window::open_at_group(
+            cx,
+            SectionId::Appearance,
+            "Transparency",
+        );
+    });
+    assert!(with_view(&mut harness, |view, _| view.group_reveal_pending()));
+    // A press and its release on the scrollbar's track, both before the
+    // reveal's next check, as a quick click lands between two frames.
+    let viewport = with_view(&mut harness, |view, _| view.pane_viewport());
+    let track = point(viewport.right() - px(3.0), viewport.bottom() - px(20.0));
+    let mut pressing = visual(&harness);
+    pressing.simulate_click(track, gpui::Modifiers::none());
+    assert!(
+        !with_view(&mut harness, |view, _| view.group_reveal_pending()),
+        "the press cancels the reveal"
+    );
+    let pressed = with_view(&mut harness, |view, _| view.pane_scrolled());
+    pressing.run_until_parked();
+    assert_eq!(
+        with_view(&mut harness, |view, _| view.pane_scrolled()),
+        pressed,
+        "nothing scrolled to Transparency after the press"
+    );
+}

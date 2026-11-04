@@ -451,5 +451,8 @@ owner's applied-state rules.
   chain or cycle cannot reach the Settings resolver.
 - `Alpha::sync` runs its landed callback only after a successful native
   write, so a failed write keeps the old painted root opacity.
-- A pending Settings group reveal cancels when the user edits the search or
-  scrolls the pane with the wheel, trackpad or scrollbar.
+- A pending Settings group reveal cancels when the user edits the search,
+  scrolls the pane with the wheel or trackpad, or presses anywhere in the
+  pane, its scrollbar included. The press cancels in the capture phase,
+  because a quick scrollbar click can press and release between two frames,
+  before a later check could see a drag.

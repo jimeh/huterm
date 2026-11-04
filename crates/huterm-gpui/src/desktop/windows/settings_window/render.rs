@@ -885,10 +885,18 @@ impl SettingsView {
                 |view| &mut view.scrollbar,
                 cx,
             )
-            // The user's own scroll wins over a pending group reveal.
+            // The user's own scroll wins over a pending group reveal, and
+            // so does any press in the pane. A scrollbar press and release
+            // can both land between two frames, before the reveal's next
+            // check could see a drag.
             .on_scroll(cx.listener(|view, _: &gpui::ScrollEvent, _, _| {
                 view.reveal_group = None;
-            }));
+            }))
+            .capture_any_mouse_down(cx.listener(
+                |view, _: &gpui::MouseDownEvent, _, _| {
+                    view.reveal_group = None;
+                },
+            ));
         div()
             .flex()
             .flex_col()
@@ -1056,10 +1064,6 @@ impl SettingsView {
         loading: bool,
         cx: &mut Context<'_, Self>,
     ) {
-        // A scrollbar drag is the user's scroll too.
-        if self.scrollbar.dragging() {
-            self.reveal_group = None;
-        }
         let Some(reveal) = &mut self.reveal_group else {
             return;
         };

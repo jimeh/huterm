@@ -493,6 +493,10 @@ impl Alpha {
 
 /// What one blur radius write did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(dead_code, reason = "only the macOS blur writer reports a write")
+)]
 pub(crate) enum BlurWrite {
     /// The window server took the radius.
     Written,
