@@ -292,10 +292,12 @@ pub(crate) fn resolve(
 }
 
 /// The opacity a window's root element paints. It follows the native alpha
-/// writes, so a switch into or out of blur mode never shows both factors
-/// (`opacity` squared) or a frame of opacity 1: entering, native alpha goes
-/// to 1 first; leaving, the root opacity drops to 1 as native alpha takes
-/// the opacity back. Without a pending native write both apply at once.
+/// writes: entering blur mode, native alpha goes to 1 first; leaving, the
+/// root opacity drops to 1 as native alpha takes the opacity back. That
+/// orders the state only. The native write and the GPUI frame present
+/// separately, so a switch can show one frame of both factors (`opacity`
+/// squared) or of opacity 1. Without a pending native write both apply at
+/// once.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RootOpacity {
     resolved: f32,
@@ -439,9 +441,23 @@ impl Alpha {
         factors.effective().to_bits() != factors.applied.to_bits()
     }
 
+    /// Writes what is owed through `write` and reports whether it all
+    /// landed. A failure logs and leaves the write owed.
+    fn settle(&self, write: impl FnMut(f64) -> anyhow::Result<()>) -> bool {
+        match self.apply(write) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("Window opacity: {error}");
+                false
+            }
+        }
+    }
+
     /// Writes the native alpha on a later foreground turn, then runs
-    /// `landed` on the view. Returns whether a write was scheduled; without
-    /// one, as when the window has no native handle, nothing waits on it.
+    /// `landed` on the view once the write succeeds; a failed write never
+    /// runs it, so the painted root opacity stays where it was. Returns
+    /// whether a write was scheduled; without one, as when the window has
+    /// no native handle, nothing waits on it.
     pub(crate) fn sync<V: 'static>(
         &self,
         window: &Window,
@@ -460,12 +476,9 @@ impl Alpha {
             Ok(native) => {
                 let owner = self.clone();
                 cx.spawn(async move |view, cx| {
-                    if let Err(error) =
-                        owner.apply(|value| native.opacity(value))
-                    {
-                        eprintln!("Window opacity: {error}");
+                    if owner.settle(|value| native.opacity(value)) {
+                        let _ = view.update(cx, landed);
                     }
-                    let _ = view.update(cx, landed);
                 })
                 .detach();
                 true
@@ -478,11 +491,21 @@ impl Alpha {
     }
 }
 
+/// What one blur radius write did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BlurWrite {
+    /// The window server took the radius.
+    Written,
+    /// The process cannot set a radius, so nothing was written.
+    Unsupported,
+}
+
 /// The window server's background blur radius for one window. It writes on
 /// a later foreground turn, outside GPUI update borrows, reading the live
 /// desired radius when it runs. Only a successful write records the
 /// applied radius. A failed write leaves it unknown and waits for the next
-/// change, reload, or style change to retry once. It never writes 0 to a
+/// change, reload, or style change to retry once. A write the process
+/// cannot make leaves it unknown and stops writing. It never writes 0 to a
 /// window that never blurred or already has 0, and closing the window drops
 /// pending work.
 #[derive(Clone, Default)]
@@ -499,6 +522,8 @@ struct BlurState {
     applied: Option<u8>,
     blurred: bool,
     failed: bool,
+    /// The process cannot set a radius; nothing changes that.
+    unsupported: bool,
     logged: bool,
     closed: bool,
     scheduled: bool,
@@ -508,6 +533,7 @@ struct BlurState {
 impl BlurState {
     fn wants_write(&self) -> bool {
         !self.failed
+            && !self.unsupported
             && !self.closed
             && match self.applied {
                 Some(applied) => applied != self.desired,
@@ -554,6 +580,11 @@ impl Blur {
         self.0.borrow().applied
     }
 
+    /// Whether a write found that the process cannot set a radius.
+    pub(crate) fn unsupported(&self) -> bool {
+        self.0.borrow().unsupported
+    }
+
     pub(crate) fn sync<V: 'static>(
         &self,
         window: &Window,
@@ -593,7 +624,7 @@ impl Blur {
 
     /// Writes the desired radius until it holds, outside any borrow of the
     /// state, since a native setter may reenter.
-    fn apply(&self, mut write: impl FnMut(u8) -> anyhow::Result<()>) {
+    fn apply(&self, mut write: impl FnMut(u8) -> anyhow::Result<BlurWrite>) {
         loop {
             let radius = {
                 let state = self.0.borrow();
@@ -602,13 +633,23 @@ impl Blur {
                 }
                 state.desired
             };
-            if let Err(error) = write(radius) {
-                self.failed(&error);
-                return;
+            match write(radius) {
+                Ok(BlurWrite::Written) => {
+                    let mut state = self.0.borrow_mut();
+                    state.applied = Some(radius);
+                    state.blurred |= radius > 0;
+                }
+                Ok(BlurWrite::Unsupported) => {
+                    let mut state = self.0.borrow_mut();
+                    state.applied = None;
+                    state.unsupported = true;
+                    return;
+                }
+                Err(error) => {
+                    self.failed(&error);
+                    return;
+                }
             }
-            let mut state = self.0.borrow_mut();
-            state.applied = Some(radius);
-            state.blurred |= radius > 0;
         }
     }
 }
@@ -617,7 +658,7 @@ impl Blur {
 #[cfg(target_os = "macos")]
 fn blur_writer(
     window: &Window,
-) -> anyhow::Result<impl FnMut(u8) -> anyhow::Result<()> + 'static> {
+) -> anyhow::Result<impl FnMut(u8) -> anyhow::Result<BlurWrite> + 'static> {
     let native = crate::native_appearance::macos::NativeWindow::of(window)?;
     Ok(move |radius| native.set_blur_radius(radius))
 }
@@ -625,7 +666,9 @@ fn blur_writer(
 /// Linux has no window server blur, and `resolve` never asks it for a
 /// radius, so no write reaches this.
 #[cfg(not(target_os = "macos"))]
-fn blur_writer(_: &Window) -> anyhow::Result<fn(u8) -> anyhow::Result<()>> {
+fn blur_writer(
+    _: &Window,
+) -> anyhow::Result<fn(u8) -> anyhow::Result<BlurWrite>> {
     anyhow::bail!("this platform has no window server blur")
 }
 
@@ -970,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn mode_switches_never_paint_opacity_squared_or_a_flash_of_one() {
+    fn root_opacity_follows_the_native_alpha_write_in_both_mode_switches() {
         for fade in [1.0, 0.5] {
             let alpha = Alpha::default();
             let mut root = RootOpacity::default();
@@ -1025,6 +1068,30 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_native_write_keeps_the_painted_root_opacity() {
+        let alpha = Alpha::default();
+        let mut root = RootOpacity::default();
+        alpha.configure(0.6);
+        assert!(alpha.settle(|_| Ok(())));
+        // Entering blur mode: native alpha owes a write to 1, and the root
+        // waits for it.
+        alpha.configure(1.0);
+        root.resolve(0.6, alpha.pending());
+        if alpha.settle(|_| Err(anyhow::anyhow!("refused"))) {
+            root.landed();
+        }
+        assert_eq!(root.painted(), 1.0, "the root never paints at 0.6");
+        assert!(alpha.pending(), "the write is still owed");
+        assert!((visible(&alpha, root) - 0.6).abs() < 1e-6);
+        // The next successful write publishes it.
+        if alpha.settle(|_| Ok(())) {
+            root.landed();
+        }
+        assert_eq!(root.painted(), 0.6);
+        assert!((visible(&alpha, root) - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
     fn blur_mode_fades_quake_from_a_configured_one_and_keeps_the_fade() {
         let alpha = Alpha::default();
         let written = Cell::new(1.0);
@@ -1055,7 +1122,7 @@ mod tests {
         let writes = RefCell::new(Vec::new());
         let ok = |radius| {
             writes.borrow_mut().push(radius);
-            Ok(())
+            Ok(BlurWrite::Written)
         };
         let blur = Blur::default();
         // A window that never blurred is never written 0.
@@ -1094,6 +1161,27 @@ mod tests {
         blur.close();
         blur.apply(ok);
         assert_eq!(*writes.borrow(), [20, 20, 0, 30]);
+    }
+
+    #[test]
+    fn blur_owner_without_the_window_server_symbols_records_no_radius() {
+        let attempts = Cell::new(0);
+        let unsupported = |_| {
+            attempts.set(attempts.get() + 1);
+            Ok(BlurWrite::Unsupported)
+        };
+        let blur = Blur::default();
+        blur.set_desired(20);
+        blur.apply(unsupported);
+        assert_eq!(blur.applied(), None, "no radius was written");
+        assert!(blur.unsupported());
+        // Nothing asks again: not a new radius, a reload, or a style change.
+        blur.set_desired(30);
+        blur.retry();
+        blur.invalidate();
+        assert!(!blur.wants_write());
+        blur.apply(unsupported);
+        assert_eq!((attempts.get(), blur.applied()), (1, None));
     }
 
     #[test]

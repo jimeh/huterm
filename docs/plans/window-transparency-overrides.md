@@ -129,13 +129,16 @@ Jim made these decisions on 2026-11-04:
 
 - `Alpha` stays the only native-alpha owner. Its configured factor becomes
   `effective.native_alpha`, and the Quake fade multiplies it in both modes.
-- `Alpha::sync` writes on a later foreground turn. So that a switch between
-  modes never shows `opacity²` or a flash of opacity 1, the view keeps the
-  root opacity it paints (`painted_root_opacity`) separate from the resolved
-  one:
+- `Alpha::sync` writes on a later foreground turn. So that the painted root
+  opacity follows the native alpha, the view keeps the root opacity it paints
+  (`painted_root_opacity`) separate from the resolved one. This orders the
+  state, not the screen: the native alpha write and the GPUI frame present
+  separately, so a mode switch can show at most one frame at the old
+  combination (`opacity²`, or opacity 1).
   - Entering blur mode, the native alpha goes to 1 first, and the root opacity
     is published only when `sync`'s write lands. The continuation updates the
-    view and notifies.
+    view and notifies. A failed write publishes nothing, so the root keeps
+    its old opacity.
   - Leaving blur mode, the root opacity drops to 1 in the same continuation
     that writes the native alpha.
   - Without a native window, as in tests or after a failed handle lookup, both
@@ -158,8 +161,9 @@ Jim made these decisions on 2026-11-04:
     once, with no timer loop.
   - It never writes 0 when `applied` is `Some(0)` or the window never had
     blur.
-  - A missing symbol logs once per process and leaves blur unused.
-    Translucency still works.
+  - A missing symbol logs once per process and leaves blur unused. The
+    write reports blur unsupported, so `applied` stays unknown. Translucency
+    still works.
   - Closing the window drops the pending work.
 - A Quake style change, conversion to or from regular, or native fullscreen
   marks `applied` unknown, so the next sync writes the desired radius again.
@@ -173,9 +177,10 @@ Jim made these decisions on 2026-11-04:
 - `WorkspaceView` resolves its effective values from three sources:
   - the global `Config.window`;
   - the layer of the profile its Quake association names. That follows the
-    window through temporary regular presentation, takes a renamed profile's
-    new name (`quake_windows.rs` ~1134), and is dropped when the association
-    is actually removed (~885), not when removal is requested;
+    window through temporary regular presentation and takes a renamed
+    profile's new name (`quake_windows.rs` ~1134). The layer drops on the
+    reload that removes the profile, because the profile's values are no
+    longer available, even while the window still holds the association;
   - its record's overrides.
 - It re-resolves at open, on reload, on a profile rename or removal, on
   conversion and recovery, on an override change, and on a decoration
@@ -348,7 +353,7 @@ Jim made these decisions on 2026-11-04:
 | --- | --- |
 | Private CGS symbol missing or failing | `dlsym` once, log once, and skip blur. Translucency still works. |
 | Radius 0 locks blur off (reported elsewhere) | Write only on change, and never write 0 to a window that never blurred. A manual check covers 20, then 0, then 20. |
-| Mode switch shows `opacity²` or a flash | The painted root opacity follows the native write (see ordering). |
+| Mode switch shows `opacity²` or a flash | The painted root opacity follows the native write (see ordering). At most one frame can still show the old combination, because the native write and the GPUI frame present separately. |
 | The shared menu popover closes the panel | The panel has its own popover. |
 | Blur mode underlay double-blends | Structural checks use `translucent`, and a window test asserts one background painter. |
 | A reload or fade reenters during a native write | Keep the `Alpha` reconcile loop. The blur owner applies on a later turn and rereads live state. |
@@ -370,7 +375,7 @@ Jim made these decisions on 2026-11-04:
 | Layering, sources, and per-value inheritance | Unit tests of `Layer::over` and `Source` |
 | Blur mode against native alpha, unsupported fallback, Linux never blurring, `translucent` | Unit tests of `resolve` |
 | Quake fade with configured 1 in blur mode; mode switches both ways during a fade keep generation, progress and deadlines | `Alpha` and Quake policy tests |
-| Mode-switch ordering never paints `opacity²` or 1 | Unit test of the painted-root-opacity handoff with a fake writer |
+| Mode-switch ordering: the painted root opacity follows the native write, and a failed write publishes nothing | Unit tests of the painted-root-opacity handoff with a fake writer |
 | Blur owner: write only on change, never 0 on a fresh window, failure marks unknown and retries once, close cancels | Unit tests with an injected writer |
 | Config ranges, optional profile keys, old key rejected | `huterm-config` tests |
 | Settings model `inherits` and nullable kinds | `settings.rs` tests |
@@ -432,3 +437,19 @@ owner's applied-state rules.
 - Smoke state gained `root_opacity`, `blur_radius` (the radius last written,
   or `unknown`), `transparency_overrides`, and `transparency_panel` (the
   focused control, `unfocused`, or `closed`).
+- The pane title bar's indicator tint follows `translucent`, like the other
+  structural checks: a translucent window blends the tint into the bar's one
+  fill, so blur mode over an opaque background no longer stacks a tint
+  overlay under the root's opacity.
+- Any command other than a `panel_*` command and `window_transparency`
+  closes the panel first and returns focus to the terminal, as the menu
+  does, so Next Tab, New Tab or a split leave no open panel behind focus.
+- Without the private blur symbols, a write reports blur unsupported: the
+  applied radius stays unknown, nothing writes again, and smoke state shows
+  `blur_radius=unsupported`.
+- `x-huterm-inherits` refuses a target that inherits another setting, so a
+  chain or cycle cannot reach the Settings resolver.
+- `Alpha::sync` runs its landed callback only after a successful native
+  write, so a failed write keeps the old painted root opacity.
+- A pending Settings group reveal cancels when the user edits the search or
+  scrolls the pane with the wheel, trackpad or scrollbar.

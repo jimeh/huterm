@@ -221,6 +221,8 @@ fn overflowing_strip_keeps_background_under_end_controls(
             harness.open_tab(ECHO);
         }
         let window = harness.attach_window();
+        // Keep this paint-policy test independent of the host compositor.
+        harness.support_transparency(window);
         harness.wait_for("the window to show every tab", |cx| {
             window
                 .update(cx, |root, _, cx| {
@@ -246,10 +248,6 @@ fn overflowing_strip_keeps_background_under_end_controls(
         // horizontal bar, and the new-tab row below a vertical column.
         for (label, past_end) in [("partly", px(-8.0)), ("wholly", px(2.0))] {
             let (at, bar) = harness.update_view(window, |view, window, cx| {
-                // Keep this paint-policy test independent of the host
-                // compositor.
-                view.transparency_support =
-                    crate::transparency::Support::Available;
                 let index =
                     view.tabs.iter().position(|tab| tab.id == active).unwrap();
                 let strip = view.tab_strip(window);
@@ -372,10 +370,13 @@ fn translucent_client_frame_shadows_only_the_ring_outside_its_content() {
 
 impl DesktopHarness {
     /// Gives `window` support and resolves its values again, so the test
-    /// does not depend on the host compositor.
+    /// does not depend on the host compositor. The desktop's cached support
+    /// changes too, since a reload copies it into every window.
     pub(super) fn support_transparency(&mut self, window: AnyWindowHandle) {
         self.update_view(window, |view, window, cx| {
-            view.transparency_support = crate::transparency::Support::Available;
+            let support = crate::transparency::Support::Available;
+            cx.global_mut::<Desktop>().transparency_support = support;
+            view.transparency_support = support;
             view.refresh_transparency(window, cx);
         });
     }
@@ -488,6 +489,34 @@ fn an_override_changes_one_window_and_a_reload_reaches_the_others(
     assert_eq!(state(&mut harness, first), (0.4, 0.5));
 }
 
+/// The alphas of the quads `handle` paints at `at` whose background
+/// `paints` selects, after drawing a frame. A gradient counts as opaque.
+fn painted_alphas(
+    harness: &mut DesktopHarness,
+    handle: AnyWindowHandle,
+    at: gpui::Point<Pixels>,
+    paints: &dyn Fn(&gpui::Background) -> bool,
+) -> Vec<f32> {
+    harness.cx.update(|cx| {
+        handle
+            .update(cx, |_, window, cx| {
+                let _ = window.draw(cx);
+                let at = at.scale(window.scale_factor());
+                window
+                    .painted_quads()
+                    .iter()
+                    .filter(|quad| {
+                        quad.bounds.contains(&at)
+                            && quad.content_mask.bounds.contains(&at)
+                            && paints(&quad.background)
+                    })
+                    .map(|quad| quad.background.as_solid().map_or(1.0, |c| c.a))
+                    .collect()
+            })
+            .unwrap()
+    })
+}
+
 #[gpui::test]
 fn blur_mode_over_an_opaque_background_paints_one_faded_background(
     cx: &mut TestAppContext,
@@ -502,8 +531,14 @@ fn blur_mode_over_an_opaque_background_paints_one_faded_background(
     let _ = harness.open_tab(ECHO);
     let (window, left, _) = harness.split_window(tab);
     harness.support_transparency(window);
+    // The default sync look tints each receiving pane's title bar.
+    harness
+        .runtime
+        .lock()
+        .set_input_sync(harness.workspace, tab, true)
+        .unwrap();
     let blurring = Platform::current() == Platform::MacOs;
-    let (terminal_at, bar_at, background, bar) =
+    let (terminal_at, bar_at, title_at, background, bar) =
         harness.update_view(window, |view, window, cx| {
             assert_eq!(view.transparency.translucent, blurring);
             // No overlay dims an inactive pane under a faded root; it
@@ -524,47 +559,60 @@ fn blur_mode_over_an_opaque_background_paints_one_faded_background(
             cx.notify();
             // The bottom padding of the pane, below its title bar.
             let frame = view.drawn_frame(left).expect("the pane was drawn");
+            let title = view
+                .drawn_panes
+                .borrow()
+                .as_ref()
+                .and_then(|(_, rects)| {
+                    rects.iter().find(|rect| rect.pane == left)?.title_bar
+                })
+                .expect("the pane's title bar was drawn");
             (
                 point(frame.left() + px(2.0), frame.bottom() - px(1.0)),
                 layout.tabs.origin + point(px(2.0), px(2.0)),
+                // The bar's leading padding, before its sync mark.
+                point(title.left() + px(2.0), title.center().y),
                 color(view.config.theme.background),
                 view.tab_colors().bar,
             )
         });
-    let painters = |harness: &mut DesktopHarness,
-                    at: gpui::Point<Pixels>,
-                    fill: gpui::Hsla| {
-        harness.cx.update(|cx| {
-            window
-                .update(cx, |_, window, cx| {
-                    let _ = window.draw(cx);
-                    let at = at.scale(window.scale_factor());
-                    window
-                        .painted_quads()
+    // Linux has no blur mode: the opacity stays native alpha, and the
+    // opaque underlays and overlays keep painting.
+    if !blurring {
+        return;
+    }
+    harness.wait_for("the sync tint on the title bar", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx)
+                        .drawn_focus
+                        .borrow()
+                        .indicator
+                        .tinted
                         .iter()
-                        .filter(|quad| {
-                            quad.bounds.contains(&at)
-                                && quad.content_mask.bounds.contains(&at)
-                                && quad
-                                    .background
-                                    .as_solid()
-                                    .is_some_and(|solid| same_rgb(solid, fill))
-                        })
-                        .map(|quad| quad.background.as_solid().unwrap().a)
-                        .collect::<Vec<_>>()
+                        .any(|(pane, _)| *pane == left)
                 })
-                .unwrap()
-        })
-    };
+            })
+            .unwrap_or(false)
+    });
     // The root's opacity multiplies every primitive, so each region has
     // exactly one background painter, at the opacity.
-    let expected = if blurring { 0.6 } else { 1.0 };
     for (label, at, fill) in [
         ("terminal padding", terminal_at, background),
         ("tab bar", bar_at, bar),
     ] {
-        let found = painters(&mut harness, at, fill);
+        let found = painted_alphas(&mut harness, window, at, &|paint| {
+            paint.as_solid().is_some_and(|solid| same_rgb(solid, fill))
+        });
         assert_eq!(found.len(), 1, "{label}: {found:?}");
-        assert!(close(found[0], expected), "{label}: {found:?}");
+        assert!(close(found[0], 0.6), "{label}: {found:?}");
     }
+    // A tinted title bar blends its tint into its one fill: whatever its
+    // colour, a second quad there would stack over the bar.
+    let found = painted_alphas(&mut harness, window, title_at, &|paint| {
+        !paint.is_transparent()
+    });
+    assert_eq!(found.len(), 1, "tinted title bar: {found:?}");
+    assert!(close(found[0], 0.6), "tinted title bar: {found:?}");
 }

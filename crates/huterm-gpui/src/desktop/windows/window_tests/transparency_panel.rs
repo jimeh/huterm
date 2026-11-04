@@ -1,7 +1,10 @@
 //! The Window Transparency panel: opening and closing, real key dispatch,
 //! focus return, outside presses, and its states.
 use super::super::transparency_panel::{Control, keys};
-use super::settings::{ScratchConfig, settings, settled, with_view};
+use super::settings::{
+    ScratchConfig, open_settings, settings, settled, with_view, with_window,
+};
+use super::settings_controls::visual;
 use super::*;
 use crate::transparency::{Key, Layer, Support};
 use huterm_config::settings::SectionId;
@@ -9,10 +12,12 @@ use huterm_ui::components::scroll_area::REVEAL_CLEARANCE;
 use serde_json::Value;
 
 impl DesktopHarness {
-    /// A focused window on an [`ECHO`] tab showing `READY`.
+    /// A focused window on an [`ECHO`] tab showing `READY`, with
+    /// transparency support whatever the host compositor offers.
     fn panel_window(&mut self) -> (AnyWindowHandle, TabId) {
         let tab = self.open_tab(ECHO);
         let window = self.attach_window();
+        self.support_transparency(window);
         self.activate(window, tab);
         self.wait_text(window, tab, "READY");
         (window, tab)
@@ -129,10 +134,6 @@ fn panel_keys_step_reset_and_move_through_its_controls(
         config.window.opacity = 0.6;
     });
     let (window, _) = harness.panel_window();
-    harness.update_view(window, |view, window, cx| {
-        view.transparency_support = Support::Available;
-        view.refresh_transparency(window, cx);
-    });
     harness.open_panel(window);
     let opacity = |harness: &mut DesktopHarness, keys: &str| {
         harness.press(window, keys);
@@ -196,10 +197,6 @@ fn a_user_binding_reaches_the_panel(cx: &mut TestAppContext) {
         });
     });
     let (window, _) = harness.panel_window();
-    harness.update_view(window, |view, window, cx| {
-        view.transparency_support = Support::Available;
-        view.refresh_transparency(window, cx);
-    });
     harness.open_panel(window);
     harness.press(window, "ctrl-u");
     let value = harness.overrides(window).opacity.unwrap();
@@ -245,6 +242,56 @@ fn outside_presses_deactivation_and_other_overlays_close_the_panel(
     harness.invoke(window, ids::OPEN_MENU).unwrap();
     harness.open_panel(window);
     assert!(harness.update_view(window, |view, _, _| view.menu.is_none()));
+}
+
+#[gpui::test]
+fn a_command_that_moves_focus_closes_the_panel_and_leaves_the_terminal_focused(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.panel_window();
+    let _ = harness.open_tab(ECHO);
+    harness.wait_for("the window to show both tabs", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .is_ok_and(|view| view.read(cx).tabs.len() == 2)
+            })
+            .unwrap_or(false)
+    });
+    let active = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, cx| view.active_pane(cx))
+    };
+    // Ctrl-Tab through real key dispatch, then commands that make a tab or
+    // a pane and focus it.
+    for (label, keys, command) in [
+        ("Next Tab", Some("ctrl-tab"), None),
+        ("New Tab", None, Some(ids::NEW_TAB)),
+        ("Split Right", None, Some(ids::SPLIT_RIGHT)),
+    ] {
+        harness.open_panel(window);
+        let before = active(&mut harness);
+        if let Some(keys) = keys {
+            harness.press(window, keys);
+        }
+        if let Some(command) = command {
+            harness.invoke(window, command).unwrap();
+        }
+        harness.wait_for(label, |cx| {
+            window
+                .update(cx, |root, window, cx| {
+                    let view = root.downcast::<WorkspaceView>().unwrap();
+                    let view = view.read(cx);
+                    view.active_pane(cx)
+                        .is_some_and(|pane| Some(pane) != before)
+                        && view.active_view(cx).is_some_and(|terminal| {
+                            terminal.read(cx).focus.is_focused(window)
+                        })
+                })
+                .unwrap_or(false)
+        });
+        assert_eq!(harness.panel_state(window), (false, None), "{label}");
+    }
 }
 
 #[gpui::test]
@@ -320,10 +367,6 @@ fn reset_all_enables_with_an_override_and_clears_every_value(
         config.window.background_opacity = 0.6;
     });
     let (window, _) = harness.panel_window();
-    harness.update_view(window, |view, window, cx| {
-        view.transparency_support = Support::Available;
-        view.refresh_transparency(window, cx);
-    });
     harness.open_panel(window);
     let reset_all = |harness: &mut DesktopHarness| {
         harness
@@ -411,10 +454,6 @@ fn each_slider_describes_where_its_value_comes_from(cx: &mut TestAppContext) {
         config.window.opacity = 0.6;
     });
     let (window, _) = harness.panel_window();
-    harness.update_view(window, |view, window, cx| {
-        view.transparency_support = Support::Available;
-        view.refresh_transparency(window, cx);
-    });
     harness.open_panel(window);
     let described = |harness: &mut DesktopHarness| {
         harness.cx.update(|cx| {
@@ -474,10 +513,6 @@ fn keyboard_focus_scrolls_a_short_panel_to_show_the_focused_row(
 ) {
     let mut harness = DesktopHarness::new(cx);
     let (window, _) = harness.panel_window();
-    harness.update_view(window, |view, window, cx| {
-        view.transparency_support = Support::Available;
-        view.refresh_transparency(window, cx);
-    });
     // The reviewer's window, which shows only the first two rows.
     VisualTestContext::from_window(window, &harness.cx)
         .simulate_resize(size(px(408.0), px(233.0)));
@@ -605,4 +640,40 @@ fn edit_defaults_shows_transparency_at_the_top_of_a_new_or_open_settings(
     harness.activate(window, tab);
     edit_defaults(&mut harness, window);
     assert_transparency_at_top(&mut harness, "an open window");
+}
+
+#[gpui::test]
+fn a_search_typed_before_the_reveal_settles_cancels_it(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("panel-reveal-search", "");
+    let mut harness = DesktopHarness::new(cx);
+    open_settings(&mut harness, &file.path());
+    // Edit Defaults' request, with no frame drawn since.
+    harness.cx.update(|cx| {
+        settings_window::open_at_group(
+            cx,
+            SectionId::Appearance,
+            "Transparency",
+        );
+    });
+    assert!(with_view(&mut harness, |view, _| view.group_reveal_pending()));
+    with_window(&mut harness, |view, window, cx| {
+        view.command(ids::SETTINGS_SEARCH, window, cx).unwrap();
+    });
+    let mut typing = visual(&harness);
+    typing.simulate_input("font");
+    typing.run_until_parked();
+    assert!(
+        !with_view(&mut harness, |view, _| view.group_reveal_pending()),
+        "the search cancels the reveal"
+    );
+    // Clearing the search shows the section where the user left it.
+    typing.simulate_keystrokes("backspace backspace backspace backspace");
+    typing.run_until_parked();
+    let (query, scrolled) = with_window(&mut harness, |view, _, cx| {
+        (view.search_text(cx), view.pane_scrolled())
+    });
+    assert_eq!(query, "");
+    assert_eq!(scrolled, px(0.0), "nothing scrolled to Transparency");
 }

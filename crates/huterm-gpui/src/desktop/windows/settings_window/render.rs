@@ -884,7 +884,11 @@ impl SettingsView {
                 &view,
                 |view| &mut view.scrollbar,
                 cx,
-            );
+            )
+            // The user's own scroll wins over a pending group reveal.
+            .on_scroll(cx.listener(|view, _: &gpui::ScrollEvent, _, _| {
+                view.reveal_group = None;
+            }));
         div()
             .flex()
             .flex_col()
@@ -1052,6 +1056,10 @@ impl SettingsView {
         loading: bool,
         cx: &mut Context<'_, Self>,
     ) {
+        // A scrollbar drag is the user's scroll too.
+        if self.scrollbar.dragging() {
+            self.reveal_group = None;
+        }
         let Some(reveal) = &mut self.reveal_group else {
             return;
         };

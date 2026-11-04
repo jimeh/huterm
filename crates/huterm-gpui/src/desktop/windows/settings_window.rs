@@ -47,7 +47,7 @@ use crate::native_appearance::FrameAppearance;
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 use huterm_ui::components::input::{
-    Changed, Chrome, ContextMenu as FieldContextMenu, Input,
+    Changed, Chrome, ContextMenu as FieldContextMenu, Edited, Input,
 };
 use huterm_ui::components::menu::{
     Menu as MenuView, MenuEvent, Role as MenuRole, min_width, select_width,
@@ -488,6 +488,13 @@ impl SettingsView {
         cx.subscribe(&search, |view, _, _: &Changed, cx| {
             view.scroll.set_offset(point(px(0.0), px(0.0)));
             cx.notify();
+        })
+        .detach();
+        // Typing a query replaces the pane a pending group reveal waited
+        // for. Only the user's edits cancel it: selecting a section clears
+        // the query just before Edit Defaults asks for its reveal.
+        cx.subscribe(&search, |view, _, _: &Edited, _| {
+            view.reveal_group = None;
         })
         .detach();
         search

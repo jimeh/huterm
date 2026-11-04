@@ -5175,6 +5175,7 @@ impl WorkspaceView {
     fn tab_colors(&self) -> TabColors {
         TabColors::new(&self.config.theme)
             .background_opacity(self.transparency.background)
+            .translucent(self.transparency.translucent)
     }
 
     /// Colors for drag cues that float over the bar or terminal content: the
@@ -9580,6 +9581,12 @@ impl WorkspaceView {
         // place of the menu.
         if !is_menu_command(invocation.id) {
             self.close_menu(MenuFocusReturn::Terminal, window, cx);
+        }
+        // So does one pressed while the panel is open, except the command
+        // that toggles it. Focus returns to the terminal first, so a command
+        // that moves it, such as Next Tab or a split, still decides where.
+        if invocation.id != ids::WINDOW_TRANSPARENCY {
+            self.close_panel(window, cx);
         }
         match invocation.id {
             ids::MOVE_TAB_TO_NEW_WINDOW => {
@@ -15182,10 +15189,11 @@ impl WorkspaceView {
             "{prefix}native_alpha={alpha} {prefix}background_appearance={:?} {prefix}root_opacity={} {prefix}blur_radius={} {prefix}transparency_overrides={} {prefix}transparency_panel={panel}",
             self.background_appearance,
             self.root_opacity.painted(),
-            self.blur.applied().map_or_else(
-                || "unknown".to_owned(),
-                |radius| radius.to_string()
-            ),
+            match self.blur.applied() {
+                _ if self.blur.unsupported() => "unsupported".to_owned(),
+                Some(radius) => radius.to_string(),
+                None => "unknown".to_owned(),
+            },
             !self.own_transparency(cx).is_empty(),
         )
     }

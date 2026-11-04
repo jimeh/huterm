@@ -111,8 +111,11 @@ pub(crate) mod macos {
         /// Sets the window server's background blur radius, through the
         /// private `CGSSetWindowBackgroundBlurRadius`, for this window's
         /// current `windowNumber`. Without the symbols it logs once per
-        /// process and leaves blur unused.
-        pub(crate) fn set_blur_radius(&self, radius: u8) -> anyhow::Result<()> {
+        /// process, writes nothing, and reports blur unsupported.
+        pub(crate) fn set_blur_radius(
+            &self,
+            radius: u8,
+        ) -> anyhow::Result<crate::transparency::BlurWrite> {
             let Some(symbols) = blur_symbols() else {
                 static LOGGED: std::sync::Once = std::sync::Once::new();
                 LOGGED.call_once(|| {
@@ -120,7 +123,7 @@ pub(crate) mod macos {
                         "Window blur: CGSSetWindowBackgroundBlurRadius is unavailable, so windows do not blur"
                     );
                 });
-                return Ok(());
+                return Ok(crate::transparency::BlurWrite::Unsupported);
             };
             // SAFETY: A retained main-thread NSWindow; both symbols were
             // resolved with their documented C signatures.
@@ -140,7 +143,7 @@ pub(crate) mod macos {
                     "CGSSetWindowBackgroundBlurRadius returned {status}"
                 );
             }
-            Ok(())
+            Ok(crate::transparency::BlurWrite::Written)
         }
 
         pub(super) fn set_dark(&self, dark: bool) -> anyhow::Result<()> {

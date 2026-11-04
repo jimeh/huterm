@@ -848,7 +848,9 @@ fn check(settings: &[Setting]) -> Result<(), ModelError> {
 }
 
 /// Checks that each `x-huterm-inherits` names another setting among
-/// `targets` of the same kind, so the inherited value fits the control.
+/// `targets` of the same kind, so the inherited value fits the control,
+/// and that the target inherits nothing itself. One level is all a profile
+/// key needs, and it rules out a cycle that would never resolve.
 fn check_inherits<'a>(
     settings: impl Iterator<Item = &'a Setting>,
     targets: &[Setting],
@@ -875,6 +877,14 @@ fn check_inherits<'a>(
                 &setting.path,
                 format!(
                     "x-huterm-inherits names {inherits}, which holds another kind of value"
+                ),
+            ));
+        }
+        if target.inherits.is_some() {
+            return Err(error(
+                &setting.path,
+                format!(
+                    "x-huterm-inherits names {inherits}, which inherits another setting"
                 ),
             ));
         }
@@ -1807,12 +1817,37 @@ mod tests {
                 }),
                 "x-huterm-inherits names a, which holds another kind of value",
             ),
+            // One level only: a chain, and so any cycle, is refused.
+            (
+                json!({
+                    "a": number(&json!({})),
+                    "c": number(&json!({
+                        "x-huterm-order": 20, "x-huterm-inherits": "a"
+                    })),
+                    "b": number(&json!({
+                        "x-huterm-order": 30, "x-huterm-inherits": "c"
+                    })),
+                }),
+                "x-huterm-inherits names c, which inherits another setting",
+            ),
         ] {
             assert_eq!(
                 SettingsModel::from_schema(&schema(&properties)),
                 Err(error("b", message)),
             );
         }
+        let cycle = SettingsModel::from_schema(&schema(&json!({
+            "a": number(&json!({"x-huterm-inherits": "b"})),
+            "b": number(&json!({
+                "x-huterm-order": 20, "x-huterm-inherits": "a"
+            })),
+        })));
+        assert!(
+            cycle.as_ref().is_err_and(|error| error
+                .to_string()
+                .contains("which inherits another setting")),
+            "{cycle:?}"
+        );
         // Two types besides null are no single kind.
         let mixed = SettingsModel::from_schema(&schema(&json!({
             "a": number(&json!({"type": ["number", "string", "null"]})),
