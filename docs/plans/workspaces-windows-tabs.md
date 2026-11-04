@@ -234,7 +234,7 @@ specific to private backing workspaces, not a permanent rule for server clients.
 
 ## Cross-window drag transfers
 
-[Cross-window drags](cross-window-drags.md) is in progress for #31. Tabs and
+[Cross-window drags](cross-window-drags.md) implements #31. Tabs and
 panes move between a window's private sessions through the existing atomic Mux
 moves, retaining terminal identities and processes. A transfer reserves both
 windows until projection and destination view installation settle. The emptied

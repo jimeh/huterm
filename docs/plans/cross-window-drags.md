@@ -1,6 +1,6 @@
 # Cross-window tab and pane drags
 
-Status: in progress. Delivers
+Status: implemented. Delivers
 [#31](https://github.com/jimeh/huterm/issues/31) under the
 [workspaces plan](workspaces-windows-tabs.md); Jim settled the product
 decisions below on 2026-11-03.
