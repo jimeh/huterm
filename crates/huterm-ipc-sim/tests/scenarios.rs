@@ -2,7 +2,7 @@
 //! rule is load bearing: switching one off makes some seed fail.
 
 use huterm_ipc_sim::profile::Design;
-use huterm_ipc_sim::sim::{Report, Scenario, run, run_with, scenarios};
+use huterm_ipc_sim::sim::{Report, Scenario, run, run_with, scenarios, swarm};
 
 /// Seeds per scenario in the normal suite. `HUTERM_SIM_SEEDS` raises it;
 /// the `huterm-ipc-sim` program runs hundreds.
@@ -49,6 +49,18 @@ fn every_scenario_holds_its_invariants_and_checks_real_work() {
             .get(name)
             .unwrap_or_else(|| panic!("no totals for {name}"))
     };
+    assert!(
+        get("remote").counters.deadline_drops > 0,
+        "no effect deadline fired"
+    );
+    assert!(
+        get("remote-healthy").counters.busy > 0,
+        "no request was answered Busy"
+    );
+    assert!(
+        get("clean").counters.stopped_subscribes > 0,
+        "no stopped terminal was subscribed"
+    );
     assert!(
         get("clean").stopped_checked > 0,
         "no stopped terminal was checked"
@@ -136,5 +148,27 @@ fn retrying_mutations_after_a_reconnect_runs_some_twice() {
             .as_deref()
             .is_some_and(|f| f.contains("ran 2 times")),
         "got {failure:?}"
+    );
+}
+
+#[test]
+fn swarm_configurations_hold_their_invariants() {
+    // Each seed draws its own limits, fault rates, link, and versions.
+    let mut total = Report::default();
+    for seed in 0..seeds() * 4 {
+        match run(&swarm(seed), seed) {
+            Ok(report) => total.add(&report),
+            Err(error) => panic!(
+                "{error}; replay with `mise run sim:ipc -- swarm {seed}`"
+            ),
+        }
+    }
+    assert!(
+        total.views_checked > 0 && total.executed > 0,
+        "the swarm did no work"
+    );
+    assert!(
+        total.cuts > 0 && total.restarts > 0,
+        "the swarm drew no faults"
     );
 }

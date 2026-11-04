@@ -1186,6 +1186,7 @@ reconnects.
 | `newer-client` | Test-only minor 1 clients against a minor-0 server |
 | `newer-server` | A minor-1 server against minor-0 and text clients |
 | `corruption` | Flipped and dropped bytes; only digested state is checked |
+| `swarm` | Each seed draws its own limits, fault rates, link, client kinds, and versions |
 
 After the faults stop, each run waits for quiescence and checks:
 
@@ -1208,7 +1209,22 @@ After the faults stop, each run waits for quiescence and checks:
 
 Each run also counts what it checked and which rare paths ran, and the tests
 require each scenario to have compared real views and statuses and to have
-exercised its faults, lag resyncs, and all three downgrade paths.
+exercised its faults, lag resyncs, `Busy` answers, subscriptions to stopped
+terminals, effect deadlines, and all three downgrade paths.
+
+The fixed scenarios each test one combination of limits. The `swarm`
+scenario is a configuration fuzzer: every seed draws its frame size, stream
+count, caps, budgets, credit, queue sizes, digest intervals, grid, fault
+rates, link latency and fragmentation, and each peer's version and client
+kind, within bounds that keep the configuration valid, such as deadlines
+longer than the link's round trip. `mise run sim:ipc -- swarm 8` prints the
+configuration seed 8 draws and replays it. On its first run the swarm caught
+a model bug the fixed scenarios had hidden: with a status-text limit
+shorter than the word "fatal", the stop path published an over-long
+failure message that the client rejected, because that path skipped the
+truncation every other status writer applied. The plan already requires
+core to apply each invariant on every path that produces the value; the
+swarm is what checks it.
 
 Each design rule the reviews argued over is load bearing: a test switches it
 off and shows the simulation catches its absence. Without ordering lanes,
@@ -1244,6 +1260,11 @@ The simulation changed the design in five places, all reflected above:
   reconnects only the clients whose links carried damaged bytes, so it
   also shows that recovery restores convergence.
 
+Coverage-guided fuzzing of the schedule, a cargo-fuzz target that drives
+the simulation's random choices from the fuzzer's input so it steers toward
+interleavings that seeds rarely reach, waits for slice 1's pinned nightly
+and fuzz setup.
+
 It does not model scrolling, mouse and focus arbitration, close tickets,
 undo tokens, effects that need a response, pane layouts, the real codec's
 encodings, sockets and peer credentials, the `wasm32-unknown-unknown`
@@ -1277,7 +1298,8 @@ admitted input.
   `wasm32-unknown-unknown` check, and the new crate's `deny` and license
   coverage.
 - The `fuzz/` directory (outside the workspace) with frame and message
-  decoder targets, a `fuzz:wire` Mise task on a pinned dated nightly that
+  decoder targets, a target that drives the simulation's schedule from
+  the fuzzer's input, a `fuzz:wire` Mise task on a pinned dated nightly that
   satisfies the release-age policy, and a scheduled, manually dispatchable
   workflow that is not a required check. The dependencies and CI guides
   record the nightly pin and how to bump it.

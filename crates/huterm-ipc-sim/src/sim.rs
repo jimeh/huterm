@@ -176,6 +176,104 @@ pub fn scenarios() -> Vec<Scenario> {
     ]
 }
 
+/// A scenario drawn at random from `seed`, for swarm testing: limits, fault
+/// rates, link behavior, versions, and client kinds all vary, so bugs that
+/// need an unusual combination have a chance to appear. The bounds keep
+/// every drawn configuration valid: limits leave room for the workload's
+/// largest message, and deadlines leave room for the link's round trip.
+#[must_use]
+pub fn swarm(seed: u64) -> Scenario {
+    let mut rng = Rng::new(seed ^ 0x5157_4152_4d53_4545);
+    let r = |rng: &mut Rng, low: u64, high: u64| {
+        usize::try_from(rng.range(low, high)).unwrap_or(1)
+    };
+    let minor = |rng: &mut Rng| if rng.chance(500) { MINOR_1 } else { MINOR_0 };
+    let remote = rng.chance(300);
+    let latency = if remote {
+        rng.range(20, 150)
+    } else {
+        rng.range(0, 3)
+    };
+    let jitter = if remote {
+        rng.range(0, 150)
+    } else {
+        rng.range(0, 3)
+    };
+    let link = LinkProfile {
+        latency,
+        jitter,
+        chunk: r(&mut rng, 1, 80),
+        buffer: r(&mut rng, 32, 1_024),
+        corrupt_per_mille: 0,
+    };
+    let healthy = rng.chance(250);
+    let fault =
+        |rng: &mut Rng, high: u64| if healthy { 0 } else { rng.range(0, high) };
+    let cut_per_mille = fault(&mut rng, 25);
+    let stall_per_mille = fault(&mut rng, 25);
+    let restart_per_mille = fault(&mut rng, 4);
+    let clipboard_payload = r(&mut rng, 1, 600);
+    let clients = (0..rng.range(1, 4))
+        .map(|_| {
+            let kind = if rng.chance(750) {
+                ClientKind::Desktop
+            } else {
+                ClientKind::Text
+            };
+            (minor(&mut rng), kind)
+        })
+        .collect();
+    // A round trip bounds how fast a handshake, an effect's first frame,
+    // and a stalled reader can be judged.
+    let round_trip = 2 * (latency + jitter) + 10;
+    let profile = Profile {
+        max_frame: r(&mut rng, 12, 160),
+        max_open_streams: r(&mut rng, 1, 6),
+        max_name_bytes: r(&mut rng, 12, 24),
+        max_tabs: r(&mut rng, 1, 10),
+        max_status_text: r(&mut rng, 0, 24),
+        max_rows: r(&mut rng, 1, 6),
+        max_columns: r(&mut rng, 2, 9),
+        input_payload: r(&mut rng, 12, 48),
+        clipboard_payload,
+        selection_payload: r(&mut rng, 1, 600),
+        credit: rng.range(1, 3),
+        outbound_budget: r(&mut rng, 32, 2_048),
+        stall_ms: rng.range(500, 3_000).max(4 * round_trip),
+        idle_ms: rng.range(500, 3_000).max(4 * round_trip),
+        handshake_ms: rng.range(200, 800).max(round_trip),
+        effect_first_ms: rng.range(50, 400).max(2 * round_trip),
+        effect_bytes_per_ms: rng.range(1, 4),
+        terminal_effects: r(&mut rng, 1, 10),
+        terminal_effect_bytes: clipboard_payload + r(&mut rng, 0, 600),
+        viewer_input_budget: r(&mut rng, 12, 96),
+        pty_drain_per_tick: r(&mut rng, 1, 16),
+        hierarchy_lane: r(&mut rng, 16, 512),
+        hierarchy_queue: r(&mut rng, 1, 10),
+        hierarchy_digest_every: rng.range(1, 8),
+        update_digest_every: rng.range(1, 8),
+        max_in_flight: r(&mut rng, 1, 10),
+        max_viewers: r(&mut rng, 1, 16),
+        design: Design::default(),
+    };
+    Scenario {
+        name: "swarm",
+        server_minor: minor(&mut rng),
+        clients,
+        link,
+        cut_per_mille,
+        stall_per_mille,
+        restart_per_mille,
+        action_per_mille: rng.range(10, 120),
+        activity_per_mille: rng.range(50, 600),
+        toggle_permission: !healthy && rng.chance(500),
+        healthy,
+        profile,
+        duration: rng.range(1_000, 6_000),
+        quiesce: 60_000,
+    }
+}
+
 /// Totals from one run.
 #[derive(Clone, Debug, Default)]
 pub struct Report {

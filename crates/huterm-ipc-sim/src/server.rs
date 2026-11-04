@@ -1516,7 +1516,11 @@ impl Server {
                 terminal
                     .status
                     .failures
-                    .push((terminal.next_failure, "fatal".into()));
+                    // Every path that writes status text applies the core cap.
+                    .push((
+                        terminal.next_failure,
+                        cap_text("fatal", profile.max_status_text),
+                    ));
                 if terminal.status.failures.len() > FAILURE_CAPACITY {
                     terminal.status.failures.remove(0);
                 }
@@ -1667,6 +1671,16 @@ fn random_row(rng: &mut Rng, columns: usize, minor: u16) -> crate::model::Row {
             })
             .collect(),
     )
+}
+
+/// Truncates `text` to `max` bytes at a character boundary, as core does
+/// for every status string it publishes.
+fn cap_text(text: &str, max: usize) -> String {
+    let mut end = max.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }
 
 fn random_text(rng: &mut Rng, max: usize) -> String {
