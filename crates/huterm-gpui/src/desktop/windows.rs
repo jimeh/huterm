@@ -2708,6 +2708,7 @@ fn open_window_with_profile(
                 drawn_panes: RefCell::new(None),
                 drawn_drop: RefCell::new(None),
                 drawn_tear_off: RefCell::new(None),
+                drawn_tabs: RefCell::new(Vec::new()),
                 drawn_focus: RefCell::new(FocusMarks::default()),
                 #[cfg(test)]
                 drawn_title_marks: RefCell::new(None),
@@ -3928,6 +3929,9 @@ struct WorkspaceView {
     drawn_drop: RefCell<Option<String>>,
     /// The tear-off pill bounds drawn in the last frame.
     drawn_tear_off: RefCell<Option<Bounds<Pixels>>>,
+    /// The tabs the last frame built labels for, in bar order. Their press
+    /// listeners exist only from that frame, so smokes wait for these.
+    drawn_tabs: RefCell<Vec<TabId>>,
     /// The pane titles the last frame's grab badges showed, for smoke state.
     drawn_badges: RefCell<Vec<String>>,
     /// The focus marks the last frame drew, for smoke state.
@@ -12600,6 +12604,7 @@ impl Render for WorkspaceView {
         let title_row = self.title_row_layout(&layout);
         let top_chrome = title_row.bounds.size.height;
         let bar_drawn = self.bar_drawn();
+        self.drawn_tabs.borrow_mut().clear();
         // The tab bar and the title strip are one row: the tabs cover the
         // strip, whose trailing space keeps the title bar's gestures.
         let merged_row = position == TabPosition::Titlebar && bar_drawn;
@@ -13107,6 +13112,7 @@ impl Render for WorkspaceView {
                             drag.spring.tab() == Some(tab.id)
                         }),
                 };
+                self.drawn_tabs.borrow_mut().push(tab.id);
                 bar = bar.child(
                     Self::tab_element(&item, bounds, tabs, colors, swatch, cx)
                         .when(
@@ -15319,8 +15325,9 @@ impl WorkspaceView {
         )
     }
 
-    /// Smoke output for tab geometry: each tab's painted bounds in logical
-    /// points as `x,y,w,h`, joined by `;`, from the strip's current layout.
+    /// Smoke output for tab geometry: each tab's bounds in logical points
+    /// as `x,y,w,h`, joined by `;`, from the strip's current layout. It can
+    /// run ahead of the drawn frame; `drawn_tabs` records what was drawn.
     pub(super) fn tab_smoke_rects(&self, window: &Window) -> String {
         let strip = self.tab_strip(window);
         let vertical = self.layout_tabs().position.vertical();

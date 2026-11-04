@@ -1319,10 +1319,12 @@ pub(super) fn smoke_state(cx: &mut App) -> String {
             let Ok(entity) = root.downcast::<WorkspaceView>() else { return };
             let view = entity.read(cx);
             let ids = view.tabs.iter().map(|tab| tab.id.get().to_string()).collect::<Vec<_>>().join(",");
+            let drawn = view.drawn_tabs.borrow().iter().map(|tab| tab.get().to_string()).collect::<Vec<_>>().join(",");
+            let drawn = if drawn.is_empty() { "none".to_owned() } else { drawn };
             let terminals = view.tabs.iter().flat_map(|tab| tab.panes.iter().map(|pane| pane.terminal.get().to_string())).collect::<Vec<_>>().join(",");
             let native = window_locator::identity(window).unwrap_or(0);
             let origin = window_locator::screen_point(window, point(px(0.0), px(0.0))).unwrap_or_default();
-            let _ = writeln!(output, "w{index}.native={native} w{index}.active={} w{index}.origin={},{} w{index}.size={},{} w{index}.tabs={} w{index}.tab_ids={ids} w{index}.terminals={terminals} w{index}.busy={} w{index}.tabs_rects={} {}",
+            let _ = writeln!(output, "w{index}.native={native} w{index}.active={} w{index}.origin={},{} w{index}.size={},{} w{index}.tabs={} w{index}.tab_ids={ids} w{index}.drawn_tab_ids={drawn} w{index}.terminals={terminals} w{index}.busy={} w{index}.tabs_rects={} {}",
                 window.is_window_active(), origin.x, origin.y, f32::from(window.viewport_size().width), f32::from(window.viewport_size().height), view.tabs.len(), view.busy,
                 view.tab_smoke_rects(window), view.pane_smoke_state(&format!("w{index}."), window, cx));
         });
