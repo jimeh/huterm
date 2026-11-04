@@ -58,13 +58,13 @@ impl Default for Typography {
 
 impl Typography {
     /// The platform's default monospace family: Menlo on macOS, and the
-    /// fontconfig alias elsewhere.
+    /// bundled `DejaVu Sans Mono` on Linux.
     #[must_use]
     pub fn platform_mono() -> SharedString {
         if cfg!(target_os = "macos") {
             "Menlo".into()
         } else {
-            "monospace".into()
+            "DejaVu Sans Mono".into()
         }
     }
 

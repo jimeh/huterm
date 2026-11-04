@@ -53,8 +53,25 @@ the same branch runs the generator:
 `gpui-pre` crates are ignored by Dependabot and upgrade through the vendor
 workflow below. So are the font crates `huterm-gpui` pins to GPUI's versions:
 `zed-font-kit`, `core-foundation`, `core-text`, and `fontdb`. A GPUI upgrade
-moves those pins to the versions it resolves. A bump that changes lint
-behavior, such as `syn`, may also need code changes before Clippy passes.
+moves those pins to the versions it resolves, along with the `gpui-pre-apple`
+and `gpui-pre-wgpu` dev-dependencies that the font registration tests use.
+A bump that changes lint behavior, such as `syn`, may also need code changes
+before Clippy passes.
+
+## Bundled terminal font
+
+DejaVu Sans Mono 2.37's four unmodified faces live in
+`crates/huterm-gpui/assets/fonts/dejavu/`. To bump them, fetch the official
+release archive, verify its origin and SHA-256, and copy the Book, Bold,
+Oblique, and Bold Oblique TTFs without rewriting them. Refresh the upstream
+`third-party/dejavu/LICENSE`, README, and every file hash and URL in
+`provenance.json`, plus the component version in
+`third-party/licenses/components.json`. The component records Bitstream Vera,
+Arev, and the public-domain DejaVu changes; keep the full upstream notice.
+Run `mise run licenses:generate`, `mise run licenses:check`, the
+`terminal_font` tests (native registration and weights on both platforms),
+`mise run smoke:renderer`, and the platform package checks. The notices ship
+as resources; the fonts themselves are embedded and registered before lookup.
 
 ## GPUI and nix
 

@@ -418,6 +418,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   (`results=84`, `highlighted_row=Some(0)`, `hover=Some(0)`,
   `scroll_offset=0.0`). The PR changes neither the palette nor
   `option_list`.
+- **Third occurrence:** 2026-11-04 on PR #383 (run 41761415801, job
+  126349739460, head `0ea47d2a`), aarch64, with the same last state
+  (`results=84`, `highlighted_row=Some(0)`, `hover=Some(0)`,
+  `wheel_events=1`, `scroll_offset=0.0`). The PR bundles a terminal font and
+  does not touch the palette or `option_list`.
 - **Triage:** rerun and record the run here. If it recurs, have the smoke
   wait for a frame drawn after `movePointerToRow` before the wheel, or make
   a hover change in `option_list` request a frame.
@@ -443,7 +448,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   extra tab 16 below `fixture-session` 19, active at `w0.active_index=2`.
   It recurred the same day on PR #363 (run 41212003791, job 124568761526,
   head `e7793fe7`), which changes window chrome and not the palette, again
-  with extra tab 16 below `fixture-session` 19.
+  with extra tab 16 below `fixture-session` 19. It recurred on 2026-11-03 on
+  PR #383 (run 41731482596, job 126249669677, head `9d5e1247`), which
+  bundles a terminal font and does not touch the palette or its smoke, again
+  with extra tab 16 below `fixture-session` 19, active at
+  `w0.active_index=2`; the next head passed.
 - **Evidence:** the count includes every core workspace's tabs: two in the
   main window and one in the quake window from step 2. The failure state
   shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux
@@ -476,7 +485,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   `88542f14`, run 41167918791, job 124439483926) with the same state,
   failing both Verify gates; the rerun passed. It recurred on aarch64 the
   same day (PR #363 at `c87cb93a`, run 41213983677, job 124574569527),
-  which changes window chrome and not the palette, with the same state.
+  which changes window chrome and not the palette, with the same state. It
+  recurred on aarch64 on 2026-11-03 in the same PR #383 run as the extra
+  tab above (job 126249669688), with the same state; the next head passed.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused
@@ -545,7 +556,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Occurrences:** 2026-10-31 on PR #353 (run 41163015658, job
   124424493459, head `65daebae`), in the same slow 127.96-second suite as
   the Edit menu flake above. It passed eight times in a row locally on
-  the same head.
+  the same head. It recurred on 2026-11-04 on PR #383 (run 41757767367,
+  job 126337838217, head `42b6f5d9`) in a 161.72-second suite. Since the
+  head's last fully passing run, only a plan document and a documentation
+  rename from main had changed.
 - **Evidence:** the test captures the right pane's default label before
   any rename and waits for the published title to return to it. That label
   resolves the terminal's title and directory, and the first foreground

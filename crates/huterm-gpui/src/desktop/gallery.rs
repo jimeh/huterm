@@ -127,6 +127,7 @@ fn bind_keys(cx: &mut App) {
 
 pub(crate) fn run() {
     crate::assets::application().run(|cx| {
+        crate::terminal_font::register_bundled_fonts(cx);
         bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(960.0), px(720.0)), cx);
         let opened = cx.open_window(

@@ -81,6 +81,8 @@ sound = "system"
 volume = 0.5
 
 [font]
+# Defaults to Menlo on macOS and bundled DejaVu Sans Mono on Linux.
+# The monospace alias and unavailable families use that platform default.
 family = "Menlo"
 size = 14.0
 # Terminal weight: thin, extra_light, light, regular, medium, semibold, bold,

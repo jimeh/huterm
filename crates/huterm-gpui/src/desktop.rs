@@ -47,7 +47,7 @@ use crate::renderer::{
     GridMetrics, TerminalRenderer, rgb_color as color, rgba_color,
 };
 use crate::scroll::ScrollController;
-use crate::terminal_font::TerminalFont;
+use crate::terminal_font::{ResolvedFamily, TerminalFont};
 use crate::ui::animation::AnimationSchedule;
 use crate::ui::scrollbar::{
     Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarColors,
@@ -252,30 +252,27 @@ fn install_menus(cx: &mut App) {
     }
 }
 
+fn resolve_terminal_family(config: &Config, cx: &App) -> ResolvedFamily {
+    let names = cx.text_system().all_font_names();
+    ResolvedFamily::resolve(&config.font.family, |family| {
+        names.iter().any(|name| name == family)
+    })
+}
+
 fn resolve_metrics(
     config: &Config,
     cx: &App,
-) -> anyhow::Result<(TerminalFont, GridMetrics)> {
+) -> anyhow::Result<(TerminalFont, GridMetrics, ResolvedFamily)> {
     let text_system = cx.text_system();
-    let mut family = config.font.family.clone();
-    if (cfg!(target_os = "macos") || family != "monospace")
-        && !text_system
-            .all_font_names()
-            .iter()
-            .any(|name| name == &family)
-    {
-        let fallback = if cfg!(target_os = "macos") {
-            "Menlo"
-        } else {
-            "monospace"
-        };
-        eprintln!("Huterm font {family:?} is unavailable; using {fallback}");
-        family = fallback.into();
+    let resolved = resolve_terminal_family(config, cx);
+    if let Some(warning) = resolved.warning() {
+        eprintln!("{warning}");
     }
-    let terminal_font = TerminalFont::new(family, config.font.weight);
+    let terminal_font =
+        TerminalFont::new(resolved.family.clone(), config.font.weight);
     let font_size = px(config.font.size);
     let metrics = GridMetrics::resolve(text_system, &terminal_font, font_size)?;
-    Ok((terminal_font, metrics))
+    Ok((terminal_font, metrics, resolved))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4138,16 +4135,26 @@ mod tests {
             huterm_config::FontWeight::parse(&toml::Value::Integer(300))
                 .unwrap();
         cx.update(|cx| {
-            let (font, _) = resolve_metrics(&config, cx).unwrap();
+            let (font, _, _) = resolve_metrics(&config, cx).unwrap();
             assert_ne!(font.family, config.font.family);
             assert_eq!(font.weight.number(), 300);
             assert_eq!(font.bold_weight.number(), 700);
-            #[cfg(target_os = "macos")]
-            {
-                assert_eq!(font.family, "Menlo");
-                config.font.family = "monospace".into();
-                assert_eq!(resolve_metrics(&config, cx).unwrap().0, font);
-            }
+            assert_eq!(font.family, Config::default().font.family);
+            let resolved = resolve_metrics(&config, cx).unwrap().2;
+            assert_eq!(
+                resolved.reason,
+                crate::terminal_font::FamilyReason::Missing
+            );
+            assert!(!resolved.available, "the test backend lists no fonts");
+            assert!(!resolved.warning().unwrap().contains("; using"));
+            config.font.family = "monospace".into();
+            let (alias, _, resolved) = resolve_metrics(&config, cx).unwrap();
+            assert_eq!(alias, font);
+            assert_eq!(
+                resolved.reason,
+                crate::terminal_font::FamilyReason::MonospaceAlias
+            );
+            assert_eq!(resolved.warning(), None);
         });
     }
 

@@ -85,6 +85,15 @@
       "files": ["third-party/terminal-graphics/LICENSE-Ghostty"]
     },
     {
+      "id": "dejavu-sans-mono",
+      "name": "DejaVu Sans Mono",
+      "version": "2.37",
+      "kind": "Font",
+      "license": "Bitstream-Vera AND LicenseRef-Arev AND LicenseRef-DejaVu-Public-Domain",
+      "url": "https://dejavu-fonts.github.io/",
+      "files": ["third-party/dejavu/LICENSE"]
+    },
+    {
       "id": "lucide",
       "name": "Lucide",
       "version": "$lucide",

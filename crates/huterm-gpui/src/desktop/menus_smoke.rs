@@ -12,6 +12,7 @@ const CONTROL_MODIFIER: usize = 1 << 18;
 
 pub(crate) fn run() {
     crate::assets::application().run(|cx| {
+        crate::terminal_font::register_bundled_fonts(cx);
         if let Err(error) = check(cx) {
             eprintln!("NATIVE_MENUS_SMOKE failed: {error:#}");
             std::process::exit(1);
