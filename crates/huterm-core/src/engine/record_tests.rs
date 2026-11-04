@@ -124,6 +124,23 @@ fn a_new_prompt_or_command_abandons_a_running_record() {
     );
 }
 
+/// Without OSC 133 `aid`, core cannot tell which shell sent a D. When an
+/// inner shell's last command is still running as the inner shell ends, as
+/// with `exit` or a dropped `ssh` connection, the outer D finishes that
+/// command with the outer command's status.
+#[test]
+fn an_outer_end_finishes_a_nested_command_that_is_still_running() {
+    let mut engine = engine(40, 6);
+    process(&mut engine, &format!("{}$ {}", mark("A"), mark("C")));
+    // The inner shell's prompt, then `exit`, whose C has no D.
+    process(&mut engine, &format!("{}> {}", mark("A"), mark("C")));
+    process(&mut engine, &mark("D;255"));
+    assert_eq!(
+        states(&engine.command_update().unwrap()),
+        [(1, CommandState::Abandoned), (2, finished(Some(255)))]
+    );
+}
+
 #[test]
 fn prompt_redraws_and_repeated_ends_make_no_extra_record() {
     let mut engine = engine(40, 6);

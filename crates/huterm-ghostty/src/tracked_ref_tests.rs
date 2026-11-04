@@ -84,6 +84,50 @@ fn ris_and_history_erasure_discard_tracked_references() {
     }
 }
 
+/// Pruning history past its limit, by output or by lowering the limit,
+/// discards references in the pruned pages and keeps newer ones. A pin
+/// bump that pruned through plain page erasure would instead leave them on
+/// the remapped top row, and command records would never leave history.
+#[test]
+fn pruning_history_discards_tracked_references_in_pruned_pages() {
+    const LINES: usize = 200_000;
+    let write_lines = |terminal: &mut Terminal<()>, count: usize| {
+        for line in 0..count {
+            terminal
+                .write(format!("line {line}\r\n").as_bytes())
+                .unwrap();
+        }
+    };
+
+    // By output, under a fixed limit. Ghostty prunes whole pages, so write
+    // until the anchored page goes, within a generous bound.
+    let mut limited = terminal(20);
+    limited.set_scrollback_lines(Some(100)).unwrap();
+    let pruned = limited.track(Point::active(0, 0)).unwrap();
+    let mut written = 0;
+    while limited.has_value(&pruned) && written < LINES {
+        write_lines(&mut limited, 1_000);
+        written += 1_000;
+    }
+    assert!(
+        !limited.has_value(&pruned),
+        "output pruned no page within {LINES} lines"
+    );
+    let recent = limited.track(Point::active(0, 0)).unwrap();
+    write_lines(&mut limited, 2);
+    assert!(limited.has_value(&recent));
+
+    // By lowering the limit after the output.
+    let mut unlimited = terminal(20);
+    let pruned = unlimited.track(Point::active(0, 0)).unwrap();
+    write_lines(&mut unlimited, written);
+    let recent = unlimited.track(Point::active(0, 0)).unwrap();
+    assert!(unlimited.has_value(&pruned));
+    unlimited.set_scrollback_lines(Some(100)).unwrap();
+    assert!(!unlimited.has_value(&pruned));
+    assert!(unlimited.has_value(&recent));
+}
+
 #[test]
 fn in_place_erasure_keeps_a_reference_on_its_row() {
     let mut terminal = terminal(20);

@@ -236,7 +236,9 @@ active screen it reads are the marker's own. A primary A replaces the pending
 prompt anchor and abandons a running record; other prompt kinds and B change
 nothing. C abandons a running record and starts one at the pending anchor, or
 at the cursor once RIS has discarded it. D finishes the newest record only
-while it runs, so a redraw's repeated D is ignored. A and C parsed on the
+while it runs, so a redraw's repeated D is ignored. Without OSC 133 `aid`,
+an outer shell's D finishes a nested shell's command that was still running
+when that shell ended, such as `exit` under `ssh`. A and C parsed on the
 alternate screen are ignored; D is not, because a crashed full-screen program
 can leave it active. A record changes once, when it leaves `Running`. Command
 text comes only from the shell (fish sends it), stripped of controls, capped
@@ -245,13 +247,18 @@ at 4 KiB, and never interpreted.
 The runtime calls `command_update` after every engine operation: output,
 resize, clear, reset, and scrollback limits. It drops records whose anchor lost
 its value, except the newest and any that left `Running` since the previous
-call, so a viewer sees each final state once, and it stages a changed list for
-the status flush. Root exit alone settles nothing, because the runtime observes
-the exit before it parses output already read. A running record is abandoned
-once the root has exited and the reader has ended (`PtyEof` or a reader
-failure). A macOS session leader's exit hangs the terminal up, so the end
-follows at once; on Linux a descendant that ignores SIGHUP keeps it open, and
-the record stays running until that descendant closes it.
+call, so each status revision carries every final state, and it stages a
+changed list for the status flush. Status is latest-value: a viewer that wakes
+once across two revisions can still miss a state the second one evicted, so a
+consumer that must see every completion (#81) needs its own signal. Root exit
+alone settles nothing, because the runtime observes the exit before it parses
+output already read. A running record is abandoned once the root has exited
+and the reader has ended (`PtyEof` or a reader failure), and at teardown, which
+parses no more output: a reader failure can stop the loop before it observes
+an exit that already happened. A macOS session leader's exit hangs the
+terminal up, so the end follows at once; on Linux a descendant that ignores
+SIGHUP keeps it open, and the record stays running until that descendant
+closes it.
 
 ## Snapshots and link lookup
 

@@ -1732,6 +1732,10 @@ fn run_terminal(
     // state may be inconsistent, and teardown reads only the PTY's
     // foreground group and the groups recorded for close.
     if unwound.is_none() {
+        // No output is parsed after this, so nothing can end a running
+        // command, even if the loop stopped before it observed the exit.
+        owner.engine.abandon_running_command();
+        owner.publish_commands();
         owner.status.flush(registry);
     }
     lifecycle.retire();

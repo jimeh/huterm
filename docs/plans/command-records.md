@@ -121,7 +121,11 @@ code. Core handles each event in output order:
 - **Nested shells** use the flat model above. An outer `bash` or `ssh` record
   ends `Abandoned` at the inner shell's first prompt, and the outer D is then
   ignored. Huterm's five shells all send D before A, so a normal prompt never
-  abandons the record it just finished.
+  abandons the record it just finished. One case differs: when the inner
+  shell ends while its last command still runs, as with `exit` or a dropped
+  `ssh` connection, the outer D finishes that inner command with the outer
+  command's status. The pinned callback exposes no `aid`, so core cannot tell
+  the two shells' markers apart.
 - An exit code of 130 is just an exit code. Core does not infer signals.
 - Markers annotate display state only. Nothing in a record is executed or
   interpreted, and explicit notifications (OSC 9, OSC 777) never create
@@ -173,9 +177,11 @@ still consumed in order, so terminal state matches a plain write.
   - The newest record is never removed by eviction, so the latest command's
     outcome stays observable even with `scrollback = 0`.
   - A record is never removed in the same publication in which it left
-    `Running`. The next pass can remove it. A viewer therefore always sees a
-    final state once, unless the count cap drops records created and finished
-    within one chunk; the sequence gap reports those.
+    `Running`. The next pass can remove it. Every status revision therefore
+    carries each final state, unless the count cap drops records created and
+    finished within one chunk; the sequence gap reports those. Status is
+    latest-value, so a viewer that wakes once across two revisions can miss a
+    final state whose record the second revision evicted.
   - A record whose reference could not be allocated has no anchor. It stays
     published, eviction skips it rather than treating it as evicted, and it
     leaves through the count cap.

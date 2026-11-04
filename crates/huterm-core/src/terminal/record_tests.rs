@@ -215,6 +215,45 @@ fn markers_queued_behind_the_exit_and_end_of_output_still_apply() {
     runtime.shutdown().unwrap();
 }
 
+/// A reader failure stops the runtime, so no later output can end a running
+/// record, even when the root's exit is still unobserved at that point.
+#[test]
+fn a_reader_failure_settles_a_running_record_when_the_runtime_stops() {
+    let gates = Gates::new(&["root"]);
+    let runtime = TerminalRuntime::spawn(
+        TerminalId::new(143),
+        &command(r#"printf READY; read -r x < "$GATES/root""#, &gates.0),
+    )
+    .unwrap();
+    let client = TestClient::new(&runtime);
+    wait_for_ready(&client);
+    output(&client, "\x1b]133;A\x07$ \x1b]133;C\x07");
+    wait_for_states(&client, &[(1, CommandState::Running)]);
+    let root = client.job_context().unwrap().shell.unwrap();
+
+    let resume = pause(&client);
+    gates.release("root");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while huterm_procinfo::process(root).is_some_and(|root| !root.zombie) {
+        assert!(Instant::now() < deadline, "the root did not exit");
+        thread::sleep(Duration::from_millis(5));
+    }
+    // The failure is the first thing the runtime handles after the exit,
+    // so it stops before another turn observes that exit.
+    control(&client, RuntimeControl::WorkerFailed("probe".into()));
+    resume.send(()).unwrap();
+    // The runtime publishes the failure once, as it stops.
+    let stopped = wait_for_status(&client, "the reader failure", |status| {
+        status
+            .failures
+            .iter()
+            .any(|failure| failure.message == "probe")
+    });
+    assert_eq!(states(&stopped), [(1, CommandState::Abandoned)]);
+    assert!(stopped.commands[0].duration.is_some());
+    runtime.shutdown().unwrap();
+}
+
 /// On Linux a descendant can hold the terminal open after the root exits;
 /// a macOS session leader's exit hangs the terminal up for every process.
 #[test]
