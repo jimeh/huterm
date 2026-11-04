@@ -1023,8 +1023,12 @@ payloads span frames like any message.
   `HOST_EFFECT_MIN_THROUGHPUT` (8 MiB) of payload, 10 s for a 64 MiB write.
   An effect that misses either deadline is dropped at once, releasing its
   reservations, and its message is aborted after the frame already in the
-  writer. A healthy client therefore receives every effect, including one
-  queued behind a maximum-size write, and a stalled remote recipient holds
+  writer. A healthy client, on a link that sustains the profile's minimum
+  throughput, therefore receives every effect, including one queued behind a
+  maximum-size write. The throughput is a transport-profile value: it must
+  stay below what the link carries, or maximum-size effects miss their
+  completion deadline and are dropped, so a profile for slow remote links
+  lowers it. Meanwhile a stalled remote recipient holds
   the terminal's effect and byte budgets for a bounded time, rather than
   denying every other recipient indefinitely, which the viewers plan
   flagged.
